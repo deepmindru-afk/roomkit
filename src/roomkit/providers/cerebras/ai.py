@@ -2,12 +2,54 @@
 
 from __future__ import annotations
 
+import json
+from collections.abc import AsyncIterator
 from typing import Any, ClassVar
 
-from roomkit.providers.ai.base import AIContext, AIMessage, AIThinkingPart, ModelInfo
+from roomkit.providers.ai.base import (
+    AIContext,
+    AIMessage,
+    AIResponse,
+    AIThinkingPart,
+    ModelInfo,
+    StreamEvent,
+    StreamToolCall,
+)
 from roomkit.providers.cerebras.config import CerebrasConfig
 from roomkit.providers.cerebras.models import MODELS
 from roomkit.providers.openai.ai import OpenAIAIProvider
+
+
+def _decode_arrays(value: Any, schema: dict[str, Any]) -> Any:
+    """Undo Cerebras's JSON-string arrays only where the tool declares an array.
+
+    Observed on qwen-3.8-27b's raw SSE output with an array-typed schema.
+    This is transport repair, not coercive validation: scalars, malformed JSON,
+    ambiguous schemas and unknown properties remain untouched for the guards.
+    Never repeatedly decode a string or mutate the provider's shared context.
+    """
+    if schema.get("type") == "array":
+        if isinstance(value, str):
+            try:
+                decoded = json.loads(value)
+            except (ValueError, RecursionError):
+                return value
+            if not isinstance(decoded, list):
+                return value
+            value = decoded
+        items = schema.get("items")
+        if isinstance(value, list) and isinstance(items, dict):
+            return [_decode_arrays(item, items) for item in value]
+    if schema.get("type") == "object" and isinstance(value, dict):
+        properties = schema.get("properties", {})
+        if isinstance(properties, dict):
+            return {
+                key: _decode_arrays(item, properties[key])
+                if isinstance(properties.get(key), dict)
+                else item
+                for key, item in value.items()
+            }
+    return value
 
 
 class CerebrasAIProvider(OpenAIAIProvider):
@@ -26,6 +68,33 @@ class CerebrasAIProvider(OpenAIAIProvider):
 
     _config: CerebrasConfig
     _install_extra: ClassVar[str] = "cerebras"
+
+    async def generate(self, context: AIContext) -> AIResponse:
+        response = await super().generate(context)
+        schemas = {tool.name: tool.parameters for tool in context.tools or []}
+        return response.model_copy(
+            update={
+                "tool_calls": [
+                    call.model_copy(
+                        update={
+                            "arguments": _decode_arrays(call.arguments, schemas.get(call.name, {}))
+                        }
+                    )
+                    for call in response.tool_calls
+                ]
+            }
+        )
+
+    async def generate_structured_stream(self, context: AIContext) -> AsyncIterator[StreamEvent]:
+        schemas = {tool.name: tool.parameters for tool in context.tools or []}
+        async for event in super().generate_structured_stream(context):
+            if isinstance(event, StreamToolCall):
+                event = event.model_copy(
+                    update={
+                        "arguments": _decode_arrays(event.arguments, schemas.get(event.name, {}))
+                    }
+                )
+            yield event
 
     @property
     def name(self) -> str:

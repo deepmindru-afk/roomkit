@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.72.1] — 2026-09-12
+
+### Fixed
+
+- Cerebras tool calls decode JSON-string arrays where the declared tool schema
+  requires an array, including nested array fields. Invalid JSON, scalar values
+  and ambiguous types remain unchanged for normal argument validation.
+- The AI tool-loop repetition guard counts rejected attempts as well as
+  dispatched calls. Repeated invalid arguments now end with a bounded final
+  response that is instructed to report the failure, rather than exhausting
+  the round budget.
+
 ## [0.72.0] — 2026-09-11
 
 ### Added

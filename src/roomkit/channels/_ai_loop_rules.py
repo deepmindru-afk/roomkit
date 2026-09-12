@@ -58,7 +58,9 @@ _FORCE_STOP_NUDGE = (
     "You have repeated the same tool call with identical arguments several "
     "times; it cannot produce anything new and further tool calls are "
     "disabled. Stop now and reply to the user in plain text with a summary of "
-    "what you found and what remains, using the results already above."
+    "what you found and what remains, using the results already above. "
+    "A rejected tool call did not execute. Report its failure and the correction "
+    "needed; never claim an action succeeded without a successful tool result."
 )
 
 # Every provider reports "I hit the output cap" in its own vocabulary, and

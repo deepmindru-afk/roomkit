@@ -263,6 +263,13 @@ class AIToolsMixin:
         async def _run_one(tc: Any) -> AIToolResultPart:
             logger.info("Executing tool: %s(%s)", tc.name, tc.id)
 
+            # Count attempts, including calls rejected by validation or policy.
+            # A guard inside the handler never sees these refusals, letting an
+            # invalid call repeat until the turn's budget is exhausted.
+            guard = self._repeated_call_guard(tc.name, tc.arguments)
+            if guard is not None:
+                return AIToolResultPart(tool_call_id=tc.id, name=tc.name, result=guard)
+
             # Execution guard: argument validation against the declared schema
             # (fail-closed) — reject malformed calls before any other gate.
             params = self._tool_parameters(tc.name, declared_tools)
@@ -632,9 +639,6 @@ class AIToolsMixin:
 
     async def _channel_tool_handler(self, name: str, arguments: dict[str, Any]) -> ToolResult:
         """Unified tool dispatcher: channel-managed -> sandbox -> skill -> user tools."""
-        guard = self._repeated_call_guard(name, arguments)
-        if guard is not None:
-            return guard
         handler = self._channel_tool_dispatch.get(name)
         if handler is not None:
             result = handler(arguments)
