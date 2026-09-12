@@ -263,12 +263,14 @@ class AIToolsMixin:
         async def _run_one(tc: Any) -> AIToolResultPart:
             logger.info("Executing tool: %s(%s)", tc.name, tc.id)
 
-            # Count attempts, including calls rejected by validation or policy.
-            # A guard inside the handler never sees these refusals, letting an
-            # invalid call repeat until the turn's budget is exhausted.
-            guard = self._repeated_call_guard(tc.name, tc.arguments)
-            if guard is not None:
-                return AIToolResultPart(tool_call_id=tc.id, name=tc.name, result=guard)
+            def rejected(error: dict[str, Any]) -> AIToolResultPart:
+                # Refusals never reach the handler's guard. Count their raw
+                # attempts here; successful calls are counted only by the
+                # handler, using the effective payload after folds and hooks.
+                guard = self._repeated_call_guard(tc.name, tc.arguments)
+                return AIToolResultPart(
+                    tool_call_id=tc.id, name=tc.name, result=guard or json.dumps(error)
+                )
 
             # Execution guard: argument validation against the declared schema
             # (fail-closed) — reject malformed calls before any other gate.
@@ -283,11 +285,7 @@ class AIToolsMixin:
                 recovered = self._recover_deferred_tool(tc.name)
                 if recovered is None:
                     logger.warning("Provider requested undeclared tool %s", tc.name)
-                    return AIToolResultPart(
-                        tool_call_id=tc.id,
-                        name=tc.name,
-                        result=json.dumps(self._undeclared_tool_error(tc.name)),
-                    )
+                    return rejected(self._undeclared_tool_error(tc.name))
                 # The model skipped find_tools but named a real catalogue tool:
                 # the reveal happened at call time instead of ahead of it, and
                 # every guard below still applies.
@@ -301,13 +299,7 @@ class AIToolsMixin:
                 folded, fold_error = fold_hoisted_arguments(params, call_arguments)
                 if fold_error is not None:
                     logger.warning("Tool %s arguments ambiguous: %s", tc.name, fold_error)
-                    return AIToolResultPart(
-                        tool_call_id=tc.id,
-                        name=tc.name,
-                        result=json.dumps(
-                            {"error": f"Invalid arguments for '{tc.name}': {fold_error}"}
-                        ),
-                    )
+                    return rejected({"error": f"Invalid arguments for '{tc.name}': {fold_error}"})
                 if folded is not None:
                     logger.info(
                         "Tool %s: folded hoisted arguments %s into its container (model=%s)",
@@ -319,13 +311,7 @@ class AIToolsMixin:
                 arg_error = validate_tool_arguments(params, call_arguments)
                 if arg_error is not None:
                     logger.warning("Tool %s arguments rejected: %s", tc.name, arg_error)
-                    return AIToolResultPart(
-                        tool_call_id=tc.id,
-                        name=tc.name,
-                        result=json.dumps(
-                            {"error": f"Invalid arguments for '{tc.name}': {arg_error}"}
-                        ),
-                    )
+                    return rejected({"error": f"Invalid arguments for '{tc.name}': {arg_error}"})
 
             # Execution guard: policy deny (defense-in-depth, role-aware)
             # Sandbox tools are exempt — they are channel-managed, not user-managed.
@@ -338,12 +324,8 @@ class AIToolsMixin:
                 and not effective_policy.is_allowed(tc.name)
             ):
                 logger.warning("Tool %s blocked by policy", tc.name)
-                return AIToolResultPart(
-                    tool_call_id=tc.id,
-                    name=tc.name,
-                    result=json.dumps(
-                        {"error": f"Tool '{tc.name}' is not permitted by the agent's tool policy."}
-                    ),
+                return rejected(
+                    {"error": f"Tool '{tc.name}' is not permitted by the agent's tool policy."}
                 )
 
             # Execution guard: skill gating. The gated entries are ToolPolicy
@@ -357,17 +339,13 @@ class AIToolsMixin:
                 and matches_any_pattern(tc.name, self._gated_tool_names)
             ):
                 logger.warning("Tool %s blocked by skill gating", tc.name)
-                return AIToolResultPart(
-                    tool_call_id=tc.id,
-                    name=tc.name,
-                    result=json.dumps(
-                        {
-                            "error": (
-                                f"Tool '{tc.name}' is gated by a skill. "
-                                "Activate the skill first using activate_skill."
-                            ),
-                        }
-                    ),
+                return rejected(
+                    {
+                        "error": (
+                            f"Tool '{tc.name}' is gated by a skill. "
+                            "Activate the skill first using activate_skill."
+                        ),
+                    }
                 )
 
             # Pre-execution gate: BEFORE_TOOL_USE hook can deny the tool call,
@@ -390,13 +368,7 @@ class AIToolsMixin:
                 decision = await self._before_tool_call_hook(pre_event)
                 if not decision:
                     logger.info("Tool %s denied by BEFORE_TOOL_USE hook", tc.name)
-                    return AIToolResultPart(
-                        tool_call_id=tc.id,
-                        name=tc.name,
-                        result=json.dumps(
-                            {"error": f"Tool '{tc.name}' denied by pre-execution hook."}
-                        ),
-                    )
+                    return rejected({"error": f"Tool '{tc.name}' denied by pre-execution hook."})
                 if decision.arguments is not None:
                     arguments = decision.arguments
                     arguments_rewritten = True
@@ -416,16 +388,8 @@ class AIToolsMixin:
                     logger.warning(
                         "Tool %s %sarguments rejected: %s", tc.name, qualifier, arg_error
                     )
-                    return AIToolResultPart(
-                        tool_call_id=tc.id,
-                        name=tc.name,
-                        result=json.dumps(
-                            {
-                                "error": (
-                                    f"Invalid {qualifier}arguments for '{tc.name}': {arg_error}"
-                                )
-                            }
-                        ),
+                    return rejected(
+                        {"error": (f"Invalid {qualifier}arguments for '{tc.name}': {arg_error}")}
                     )
 
             tool_span_id = telemetry.start_span(
@@ -639,6 +603,9 @@ class AIToolsMixin:
 
     async def _channel_tool_handler(self, name: str, arguments: dict[str, Any]) -> ToolResult:
         """Unified tool dispatcher: channel-managed -> sandbox -> skill -> user tools."""
+        guard = self._repeated_call_guard(name, arguments)
+        if guard is not None:
+            return guard
         handler = self._channel_tool_dispatch.get(name)
         if handler is not None:
             result = handler(arguments)

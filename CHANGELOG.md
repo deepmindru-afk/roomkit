@@ -7,8 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.72.1] — 2026-09-12
-
 ### Fixed
 
 - Cerebras tool calls decode JSON-string arrays where the declared tool schema

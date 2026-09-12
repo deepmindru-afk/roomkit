@@ -18,6 +18,7 @@ from roomkit.providers.ai.base import (
 from roomkit.providers.cerebras.config import CerebrasConfig
 from roomkit.providers.cerebras.models import MODELS
 from roomkit.providers.openai.ai import OpenAIAIProvider
+from roomkit.providers.utils import _aclose_stream
 
 
 def _decode_arrays(value: Any, schema: dict[str, Any]) -> Any:
@@ -28,19 +29,19 @@ def _decode_arrays(value: Any, schema: dict[str, Any]) -> Any:
     ambiguous schemas and unknown properties remain untouched for the guards.
     Never repeatedly decode a string or mutate the provider's shared context.
     """
+    if schema.get("type") == "array" and isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except (ValueError, RecursionError):
+            return value
+        if not isinstance(decoded, list):
+            return value
+        value = decoded
     if schema.get("type") == "array":
-        if isinstance(value, str):
-            try:
-                decoded = json.loads(value)
-            except (ValueError, RecursionError):
-                return value
-            if not isinstance(decoded, list):
-                return value
-            value = decoded
         items = schema.get("items")
         if isinstance(value, list) and isinstance(items, dict):
             return [_decode_arrays(item, items) for item in value]
-    if schema.get("type") == "object" and isinstance(value, dict):
+    if schema.get("type") in (None, "object") and isinstance(value, dict):
         properties = schema.get("properties", {})
         if isinstance(properties, dict):
             return {
@@ -87,14 +88,20 @@ class CerebrasAIProvider(OpenAIAIProvider):
 
     async def generate_structured_stream(self, context: AIContext) -> AsyncIterator[StreamEvent]:
         schemas = {tool.name: tool.parameters for tool in context.tools or []}
-        async for event in super().generate_structured_stream(context):
-            if isinstance(event, StreamToolCall):
-                event = event.model_copy(
-                    update={
-                        "arguments": _decode_arrays(event.arguments, schemas.get(event.name, {}))
-                    }
-                )
-            yield event
+        stream = super().generate_structured_stream(context)
+        try:
+            async for event in stream:
+                if isinstance(event, StreamToolCall):
+                    event = event.model_copy(
+                        update={
+                            "arguments": _decode_arrays(
+                                event.arguments, schemas.get(event.name, {})
+                            )
+                        }
+                    )
+                yield event
+        finally:
+            await _aclose_stream(stream)
 
     @property
     def name(self) -> str:

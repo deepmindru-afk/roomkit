@@ -3,13 +3,21 @@
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
 from copy import deepcopy
 from typing import Any
 
 import httpx
 import pytest
 
-from roomkit.providers.ai.base import AITool, StreamToolCall
+from roomkit.providers.ai.base import (
+    AIContext,
+    AITool,
+    StreamEvent,
+    StreamTextDelta,
+    StreamToolCall,
+)
+from roomkit.providers.openai.ai import OpenAIAIProvider
 from roomkit.tools.validation import validate_tool_arguments
 from tests.test_providers.test_cerebras import (
     _context,
@@ -39,6 +47,7 @@ _SCHEMA = {
 
 
 @pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("omit_object_types", [False, True])
 @pytest.mark.parametrize(
     ("blocks", "expected"),
     [
@@ -53,16 +62,19 @@ _SCHEMA = {
     ],
 )
 async def test_only_schema_declared_arrays_are_decoded(
-    streaming: bool, blocks: Any, expected: Any
+    streaming: bool, omit_object_types: bool, blocks: Any, expected: Any
 ) -> None:
     args = {"blocks": blocks, "content": "[]", "flexible": "[]", "unknown": "[]"}
     tool = AITool(name="display", description="Show a checklist", parameters=deepcopy(_SCHEMA))
+    if omit_object_types:
+        del tool.parameters["type"]
+        del tool.parameters["properties"]["blocks"]["items"]["type"]
     context = _context(tools=[tool])
     original = context.model_dump()
 
     def handle(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
-        assert body["tools"][0]["function"]["parameters"] == _SCHEMA
+        assert body["tools"][0]["function"]["parameters"] == tool.parameters
         call = {
             "id": "call-1",
             "type": "function",
@@ -115,3 +127,23 @@ async def test_undeclared_tools_are_not_repaired(streaming: bool) -> None:
         else:
             calls = (await provider.generate(context)).tool_calls
     assert calls[0].arguments == args
+
+
+async def test_closing_the_adapter_joins_the_transport_finalizer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    closed = False
+
+    async def transport(self: OpenAIAIProvider, context: AIContext) -> AsyncIterator[StreamEvent]:
+        nonlocal closed
+        try:
+            yield StreamTextDelta(text="partial")
+        finally:
+            closed = True
+
+    monkeypatch.setattr(OpenAIAIProvider, "generate_structured_stream", transport)
+    async with _provider(lambda request: _response()) as provider:
+        stream = provider.generate_structured_stream(_context())
+        await anext(stream)
+        await stream.aclose()
+        assert closed

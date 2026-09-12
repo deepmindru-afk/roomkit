@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
+from typing import Any
+
 import pytest
 
 from roomkit.channels.ai import AIChannel
 from roomkit.models.context import RoomContext
 from roomkit.models.room import Room
-from roomkit.providers.ai.base import AIResponse
+from roomkit.providers.ai.base import AIResponse, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from tests.conftest import make_event
+from tests.test_tool_arg_fold import BOARDS_TOOL, FOLDED_CALL, HOISTED_CALL
 from tests.test_tool_repeat_guard import (
     _ECHO_TOOL,
     _binding,
@@ -20,10 +24,12 @@ from tests.test_tool_repeat_guard import (
 
 @pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("args", [{"value": []}, {}, {"wrong": "value"}])
-async def test_invalid_calls_stop_before_budget_and_reset_next_turn(streaming, args) -> None:
-    executions = []
+async def test_invalid_calls_stop_before_budget_and_reset_next_turn(
+    streaming: bool, args: dict[str, Any]
+) -> None:
+    executions: list[dict[str, Any]] = []
 
-    async def handler(name, arguments):
+    async def handler(name: str, arguments: dict[str, Any]) -> str:
         executions.append(arguments)
         return "{}"
 
@@ -52,3 +58,38 @@ async def test_invalid_calls_stop_before_budget_and_reset_next_turn(streaming, a
         assert not calls[-1].tools
         assert any("never claim an action succeeded" in str(m.content) for m in calls[-1].messages)
     assert not executions
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_folded_equivalent_attempts_share_the_execution_budget(streaming: bool) -> None:
+    executions: list[dict[str, Any]] = []
+
+    async def handler(name: str, arguments: dict[str, Any]) -> str:
+        executions.append(arguments)
+        return "{}"
+
+    variants = [HOISTED_CALL, FOLDED_CALL, {**HOISTED_CALL, "params": {}}]
+    provider = MockAIProvider(
+        ai_responses=[
+            *[
+                AIResponse(
+                    content="",
+                    tool_calls=[AIToolCall(id=str(i), name="boards", arguments=deepcopy(args))],
+                )
+                for i, args in enumerate(variants)
+            ],
+            AIResponse(content="done"),
+        ],
+        streaming=streaming,
+    )
+    channel = AIChannel("ai1", provider=provider, tool_handler=handler)
+    output = await channel.on_event(
+        make_event(body="go", channel_id="sms1"),
+        _binding([BOARDS_TOOL]),
+        RoomContext(room=Room(id="r1")),
+    )
+    if output.response_stream is not None:
+        async for _ in output.response_stream:
+            pass
+    assert executions == [FOLDED_CALL, FOLDED_CALL]
+    assert "EXACT arguments" in _tool_results(provider.calls[-1])[-1]["error"]
