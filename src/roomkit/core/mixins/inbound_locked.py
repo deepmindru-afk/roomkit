@@ -556,6 +556,7 @@ class InboundLockedMixin(HelpersMixin):
         def plan_factory(committed: RoomEvent) -> Any:
             from roomkit.core.lanes import DeliveryPlan
 
+            cascade.unavailable_targets = list(committed.addressed_to or [])
             if source_binding is None:
                 if mutation_hook is None:
                     return None  # nothing to broadcast, nothing to fire

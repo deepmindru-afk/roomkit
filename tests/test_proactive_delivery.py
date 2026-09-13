@@ -188,6 +188,23 @@ async def test_agent_detaching_after_solicitation_does_not_change_outcome() -> N
         assert result.inbound.unavailable_targets == []
 
 
+async def test_source_detaching_before_commit_reports_unreached_agents() -> None:
+    kit, _, agents = await _room("a")
+
+    @kit.hook(HookTrigger.BEFORE_BROADCAST)
+    async def detach_source(event, context):
+        await kit.store.remove_binding("room-1", event.source.channel_id)
+        return HookResult.allow()
+
+    async with kit:
+        result = await kit.deliver("room-1", "external result", addressed_to=["a"])
+        assert result.status == "unavailable"
+        assert result.unavailable_targets == ["a"]
+        assert result.event_id is not None
+        assert not result.error.retryable
+        assert agents["a"].solicited == []
+
+
 async def test_no_fallible_context_lookup_after_text_publication() -> None:
     kit, _, agents = await _room("a")
     original = agents["a"].on_event
