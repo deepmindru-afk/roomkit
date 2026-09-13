@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Streamed AI messages retain the tasks, observations and injected events
+  returned by `BEFORE_BROADCAST` hooks, including when a hook blocks the
+  message. Allowed messages collect their effects after delivery and before
+  `AFTER_BROADCAST`, through the same delivery plan as other responses.
+- Cancelling an AI tool call closes its telemetry span with status `cancelled`,
+  including cancellation during the result hook or while draining a failed
+  parallel round. The cancellation still propagates to the caller.
 - Cerebras tool calls decode JSON-string arrays where the declared tool schema
   requires an array, including nested array fields. Invalid JSON, scalar values
   and ambiguous types remain unchanged for normal argument validation.

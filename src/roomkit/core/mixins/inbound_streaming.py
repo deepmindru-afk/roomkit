@@ -29,8 +29,9 @@ from roomkit.providers.utils import _aclose_stream
 if TYPE_CHECKING:
     from roomkit.channels.base import Channel
     from roomkit.core.event_router import EventRouter, StreamingResponse
-    from roomkit.core.hooks import HookEngine
+    from roomkit.core.hooks import HookEngine, SyncPipelineResult
     from roomkit.models.context import RoomContext
+    from roomkit.models.hook import InjectedEvent
     from roomkit.store.base import ConversationStore
 
 logger = logging.getLogger("roomkit.framework")
@@ -70,6 +71,14 @@ class InboundStreamingHost(Protocol):
 
     def _get_router(self) -> EventRouter: ...
 
+    async def _lane_injected_events(
+        self,
+        injected_events: list[InjectedEvent],
+        room_id: str,
+        context: RoomContext,
+        cascade: DeliveryCascade,
+    ) -> None: ...
+
 
 class InboundStreamingMixin(HelpersMixin):
     """Streaming response handling extracted from the inbound pipeline.
@@ -87,6 +96,7 @@ class InboundStreamingMixin(HelpersMixin):
 
     # Cross-mixin method — attribute annotation avoids MRO shadowing
     _commit_and_deliver: Any  # LaneExecutionMixin
+    _lane_injected_events: Any  # LaneExecutionMixin
 
     # Stub for cross-mixin call — implemented by RoomKit._get_router().
     def _get_router(self) -> EventRouter: ...
@@ -161,7 +171,12 @@ class InboundStreamingMixin(HelpersMixin):
             else sr.source_channel_id
         )
 
-        async def _lane_segment(event: RoomEvent, *, exclude: set[str] | None) -> None:
+        async def _lane_segment(
+            event: RoomEvent,
+            *,
+            exclude: set[str] | None,
+            hook_result: SyncPipelineResult | None = None,
+        ) -> None:
             """Commit a segment and queue its delivery on the room's lane.
 
             Deliberately not awaited to completion: this runs inside the
@@ -176,6 +191,7 @@ class InboundStreamingMixin(HelpersMixin):
                 plan_source,
                 exclude_delivery=exclude,
                 cascade=cascade,
+                hook_result=hook_result,
             )
             if stored is not None:
                 persisted_events.append(stored)
@@ -220,12 +236,6 @@ class InboundStreamingMixin(HelpersMixin):
             # reach by construction; this lands any hook modification (e.g. PII
             # de-anonymisation) on the persisted row and the re-broadcast to
             # non-streaming channels, and drops a segment a hook blocks.
-            #
-            # Scope: only the allow/modify/block decision is honoured here. The
-            # hook side effects the locked path also applies — injected_events,
-            # tasks, observations — are not yet replayed on the streaming path.
-            # No streaming hook uses them today; wiring full parity is a
-            # follow-up if one ever does.
             sync_result = await self._hook_engine.run_sync_hooks(
                 room_id, HookTrigger.BEFORE_BROADCAST, event, context
             )
@@ -236,6 +246,14 @@ class InboundStreamingMixin(HelpersMixin):
                     sync_result.hook_errors,
                 )
             if not sync_result.allowed:
+                # Blocking the message does not discard the hook's side effects.
+                await self._persist_side_effects(
+                    room_id, sync_result.tasks, sync_result.observations, event, context
+                )
+                if sync_result.injected_events:
+                    await self._lane_injected_events(
+                        sync_result.injected_events, room_id, context, cascade
+                    )
                 logger.info(
                     "Streamed segment blocked by BEFORE_BROADCAST hook (room %s): %s",
                     room_id,
@@ -246,7 +264,7 @@ class InboundStreamingMixin(HelpersMixin):
                 event = sync_result.event
             # The streaming channels already rendered this text chunk by
             # chunk — only the others get it as an event.
-            await _lane_segment(event, exclude=set(streamed_to))
+            await _lane_segment(event, exclude=set(streamed_to), hook_result=sync_result)
 
         async def _persist_tool_start(marker: ToolCallStartMarker) -> None:
             event = RoomEvent(

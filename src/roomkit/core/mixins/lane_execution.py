@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 
     from roomkit.channels.base import Channel
     from roomkit.core.event_router import BroadcastResult, EventRouter
-    from roomkit.core.hooks import HookEngine
+    from roomkit.core.hooks import HookEngine, SyncPipelineResult
     from roomkit.core.lanes import DeliveryCascade, DeliveryPlan, RoomLaneRegistry
     from roomkit.core.locks import RoomLockManager
     from roomkit.models.channel import ChannelBinding
@@ -191,6 +191,7 @@ class LaneExecutionMixin(HelpersMixin):
         allow_reentry: bool = False,
         policy_aware: bool = True,
         cascade: DeliveryCascade | None = None,
+        hook_result: SyncPipelineResult | None = None,
     ) -> RoomEvent | None:
         """Commit an event and hand its delivery to the room's lane.
 
@@ -220,6 +221,10 @@ class LaneExecutionMixin(HelpersMixin):
         a run of events that must not block on each one's delivery; that
         caller owns the single wait at the end.
 
+        ``hook_result`` carries effects from an already allowed sync hook
+        pipeline. Tasks and observations join the plan's post-delivery work;
+        injected events are committed after their triggering event.
+
         Returns the committed event, or ``None`` when the persistence
         policy excluded it (delivered, unstored — RFC §14.3).
         """
@@ -236,17 +241,36 @@ class LaneExecutionMixin(HelpersMixin):
                     room_id,
                     event,
                     cascade,
-                    self._plan_factory(resolved, exclude_delivery, allow_reentry),
+                    self._plan_factory(resolved, exclude_delivery, allow_reentry, hook_result),
                     policy_aware=policy_aware,
                 )
         else:
+            resolved = source
             committed = await self._commit_to_lane(
                 room_id,
                 event,
                 cascade,
-                self._plan_factory(source, exclude_delivery, allow_reentry),
+                self._plan_factory(resolved, exclude_delivery, allow_reentry, hook_result),
                 policy_aware=policy_aware,
             )
+
+        if hook_result is not None:
+            context = (
+                resolved.context if resolved is not None else await self._build_context(room_id)
+            )
+            if resolved is None:
+                # A detached source has no delivery plan to collect its effects.
+                await self._persist_side_effects(
+                    room_id,
+                    hook_result.tasks,
+                    hook_result.observations,
+                    committed or event,
+                    context,
+                )
+            if hook_result.injected_events:
+                await self._lane_injected_events(
+                    hook_result.injected_events, room_id, context, cascade
+                )
 
         # Off the lock: waiting under it would deadlock the lane against its
         # own caller, and ``wait()`` short-circuits rather than hang.
@@ -272,6 +296,7 @@ class LaneExecutionMixin(HelpersMixin):
         source: DeliverySource | None,
         exclude_delivery: set[str] | None,
         allow_reentry: bool,
+        hook_result: SyncPipelineResult | None = None,
     ) -> Callable[[RoomEvent], DeliveryPlan] | None:
         """The plan builder ``_commit_to_lane`` calls on the committed event.
 
@@ -296,6 +321,9 @@ class LaneExecutionMixin(HelpersMixin):
                 exclude_delivery=exclude_delivery,
             )
             plan.allow_reentry = allow_reentry
+            if hook_result is not None:
+                plan.hook_tasks = list(hook_result.tasks)
+                plan.hook_observations = list(hook_result.observations)
             return plan
 
         return factory

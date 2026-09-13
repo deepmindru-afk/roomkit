@@ -446,6 +446,9 @@ class AIToolsMixin:
                         result = override
 
                 telemetry.end_span(tool_span_id)
+            except asyncio.CancelledError:
+                telemetry.end_span(tool_span_id, status="cancelled")
+                raise
             except Exception as exc:
                 telemetry.end_span(tool_span_id, status="error", error_message=str(exc))
                 logger.warning("Tool %s raised %s: %s", tc.name, type(exc).__name__, exc)

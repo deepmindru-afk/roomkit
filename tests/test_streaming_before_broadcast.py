@@ -9,14 +9,24 @@ modification lands on the persisted segment and that a block drops it.
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import AsyncIterator
+from typing import Literal
+
+import pytest
+
 from roomkit.channels.ai import AIChannel
 from roomkit.channels.websocket import WebSocketChannel
+from roomkit.core.event_router import StreamingResponse
 from roomkit.core.framework import RoomKit
+from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
-from roomkit.models.enums import ChannelCategory, EventType, HookTrigger
-from roomkit.models.event import RoomEvent, TextContent
-from roomkit.models.hook import HookResult
+from roomkit.models.enums import ChannelCategory, ChannelType, EventType, HookTrigger
+from roomkit.models.event import EventSource, RoomEvent, TextContent
+from roomkit.models.hook import HookResult, InjectedEvent
+from roomkit.models.store_filter import PersistencePolicy
+from roomkit.models.task import Observation, Task
 from roomkit.providers.ai.base import AIResponse
 from roomkit.providers.ai.mock import MockAIProvider
 from tests.test_framework import SimpleChannel
@@ -124,3 +134,192 @@ async def test_streaming_transport_persists_modified_but_streams_raw() -> None:
     ai_msgs = _ai_messages(await kit.store.list_events("r1"))
     assert ai_msgs and ai_msgs[-1].content.body == "Hi Alice"  # persisted = de-anon
     assert "".join(chunks) == "Hi [PERSON_1]"  # live chunks = raw (by design)
+
+
+@pytest.mark.parametrize("action", ["allow", "modify", "block"])
+@pytest.mark.parametrize("live_transport", [False, True])
+async def test_streamed_hook_side_effects_survive_decision(
+    action: Literal["allow", "modify", "block"], live_transport: bool
+) -> None:
+    """Side effects run once, even for a blocked segment, on either delivery path."""
+    kit = RoomKit()
+    await _wire(kit, content="original")
+    audit = SimpleChannel("audit")
+    kit.register_channel(audit)
+    await kit.attach_channel("r1", "audit")
+    chunks: list[str] = []
+    if live_transport:
+        ws = WebSocketChannel("ws1")
+
+        async def send_fn(conn_id: str, event: RoomEvent) -> None:
+            pass
+
+        async def stream_send_fn(conn_id: str, msg: object) -> None:
+            delta = getattr(msg, "delta", None)
+            if delta:
+                chunks.append(delta)
+
+        ws.register_connection("c1", send_fn, stream_send_fn=stream_send_fn, room_id="r1")
+        kit.register_channel(ws)
+        await kit.attach_channel("r1", "ws1")
+
+    hook_calls: list[str] = []
+    created_tasks: list[str] = []
+    after_tasks: list[list[str]] = []
+    task = Task(id="follow-up", room_id="r1", title="Follow up")
+    observation = Observation(id="seen", room_id="r1", channel_id="ai1", content="Observed")
+    injected = RoomEvent(
+        room_id="r1",
+        source=EventSource(channel_id="system", channel_type=ChannelType.SYSTEM),
+        content=TextContent(body="audit notice"),
+    )
+
+    @kit.hook(HookTrigger.BEFORE_BROADCAST)
+    async def side_effects(event: RoomEvent, ctx: RoomContext) -> HookResult:
+        if event.source.channel_id != "ai1":
+            return HookResult.allow()
+        hook_calls.append(event.id)
+        return HookResult(
+            action=action,
+            reason="withheld" if action == "block" else None,
+            event=event.model_copy(update={"content": TextContent(body="modified")})
+            if action == "modify"
+            else None,
+            tasks=[task],
+            observations=[observation],
+            injected_events=[InjectedEvent(event=injected, target_channel_ids=["audit"])],
+        )
+
+    @kit.hook(HookTrigger.ON_TASK_CREATED)
+    async def task_created(event: RoomEvent, ctx: RoomContext) -> None:
+        created_tasks.append(event.metadata["task_id"])
+
+    @kit.hook(HookTrigger.AFTER_BROADCAST)
+    async def after_broadcast(event: RoomEvent, ctx: RoomContext) -> None:
+        if event.source.channel_id == "ai1":
+            after_tasks.append([t.id for t in await kit.store.list_tasks("r1")])
+
+    try:
+        await kit.process_inbound(
+            InboundMessage(channel_id="sms1", sender_id="u1", content=TextContent(body="go"))
+        )
+        assert len(hook_calls) == 1
+        assert await kit.store.list_tasks("r1") == [task]
+        assert await kit.store.list_observations("r1") == [observation]
+        assert created_tasks == [task.id]
+        events = await kit.store.list_events("r1")
+        injections = [e for e in events if e.id == injected.id]
+        assert len(injections) == 1
+        assert [e.id for e in audit.delivered].count(injected.id) == 1
+        replies = _ai_messages(events)
+        if action == "block":
+            assert replies == []
+            assert after_tasks == []
+        else:
+            assert len(replies) == 1
+            assert replies[0].content.body == ("modified" if action == "modify" else "original")
+            assert replies[0].index < injections[0].index
+            assert after_tasks == [[task.id]]
+        if live_transport:
+            assert "".join(chunks) == "original"
+    finally:
+        await kit.close()
+
+
+@pytest.mark.parametrize("detached", [False, True])
+async def test_stream_hook_effects_without_persistence_or_source_binding(detached: bool) -> None:
+    """Effects survive when the segment has no stored row or no delivery plan."""
+    kit = RoomKit(
+        persistence_policy=None
+        if detached
+        else PersistencePolicy(exclude_types={EventType.MESSAGE})
+    )
+    audit = SimpleChannel("audit")
+    kit.register_channel(audit)
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "audit")
+    if not detached:
+        kit.register_channel(SimpleChannel("ai1", channel_type=ChannelType.AI))
+        await kit.attach_channel("r1", "ai1", category=ChannelCategory.INTELLIGENCE)
+    task = Task(id="follow-up", room_id="r1", title="Follow up")
+    observation = Observation(id="seen", room_id="r1", channel_id="ai1", content="Observed")
+    notice = RoomEvent(
+        room_id="r1",
+        source=EventSource(channel_id="system", channel_type=ChannelType.SYSTEM),
+        content=TextContent(body="notice"),
+    )
+
+    @kit.hook(HookTrigger.BEFORE_BROADCAST)
+    async def side_effects(event: RoomEvent, ctx: RoomContext) -> HookResult:
+        return HookResult(
+            action="allow",
+            tasks=[task],
+            observations=[observation],
+            injected_events=[InjectedEvent(event=notice, target_channel_ids=["audit"])],
+        )
+
+    async def stream() -> AsyncIterator[str]:
+        yield "answer"
+
+    try:
+        response = StreamingResponse(
+            stream=stream(),
+            source_channel_id="ai1",
+            source_channel_type=ChannelType.AI,
+            trigger_event=notice,
+        )
+        await kit._handle_streaming_response(
+            kit._get_router(), response, "r1", await kit._build_context("r1")
+        )
+        assert await kit.store.list_tasks("r1") == [task]
+        assert await kit.store.list_observations("r1") == [observation]
+        events = await kit.store.list_events("r1")
+        assert len(_ai_messages(events)) == int(detached)
+        assert [event.id for event in events].count(notice.id) == 1
+        assert [event.id for event in audit.delivered].count(notice.id) == 1
+    finally:
+        await kit.close()
+
+
+async def test_stream_hook_tasks_wait_for_delivery_and_finish_before_return() -> None:
+    """A slow transport keeps the turn pending through its post-delivery effects."""
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class SlowTransport(SimpleChannel):
+        async def deliver(
+            self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+        ) -> ChannelOutput:
+            if event.source.channel_id == "ai1":
+                entered.set()
+                await release.wait()
+            return await super().deliver(event, binding, context)
+
+    kit = RoomKit()
+    await _wire(kit, content="answer")
+    kit.register_channel(SlowTransport("slow"))
+    await kit.attach_channel("r1", "slow")
+    follow_up = Task(id="follow-up", room_id="r1", title="Follow up")
+
+    @kit.hook(HookTrigger.BEFORE_BROADCAST)
+    async def side_effects(event: RoomEvent, ctx: RoomContext) -> HookResult:
+        return HookResult(
+            action="allow", tasks=[follow_up] if event.source.channel_id == "ai1" else []
+        )
+
+    processing = asyncio.create_task(
+        kit.process_inbound(
+            InboundMessage(channel_id="sms1", sender_id="u1", content=TextContent(body="go"))
+        )
+    )
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        assert not processing.done()
+        assert await kit.store.list_tasks("r1") == []
+        release.set()
+        await asyncio.wait_for(processing, 2)
+        assert await kit.store.list_tasks("r1") == [follow_up]
+    finally:
+        release.set()
+        await asyncio.gather(processing, return_exceptions=True)
+        await kit.close()
