@@ -49,7 +49,7 @@ class _MockAnamSession:
     ) -> None:
         self.sent_audio.append((audio, sample_rate, num_channels))
 
-    def send_message(self, content: str) -> None:
+    async def send_message(self, content: str) -> None:
         self.sent_messages.append(content)
 
     def talk(self, content: str) -> None:

@@ -842,9 +842,16 @@ class TestOutbound:
         self, provider: DeepgramAgentProvider, session: VoiceSession
     ) -> None:
         ws = await _connect(provider, session)
-        await provider.inject_text(session, "Quelle heure est-il ?")
+        result = await provider.inject_text(session, "Quelle heure est-il ?")
+        assert result.status == "sent"
         assert ws.last_of_type("InjectUserMessage")["content"] == "Quelle heure est-il ?"
         await provider.disconnect(session)
+
+    async def test_inject_without_connection(
+        self, provider: DeepgramAgentProvider, session: VoiceSession
+    ) -> None:
+        result = await provider.inject_text(session, "No connection")
+        assert result.status == "not_sent" and result.retryable
 
     async def test_inject_agent_message(
         self, provider: DeepgramAgentProvider, session: VoiceSession

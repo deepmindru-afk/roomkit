@@ -30,6 +30,7 @@ from roomkit.providers.deepgram.config import DeepgramAgentConfig
 from roomkit.providers.deepgram.settings import build_settings, patch_speak, patch_think
 from roomkit.providers.deepgram.voices import VOICES as _VOICES
 from roomkit.voice.base import VoiceSession, VoiceSessionState
+from roomkit.voice.realtime.injection import VoiceInjectionResult
 from roomkit.voice.realtime.provider import RealtimeVoiceProvider, VoiceInfo
 
 logger = logging.getLogger("roomkit.providers.deepgram.realtime")
@@ -661,7 +662,7 @@ class DeepgramAgentProvider(RealtimeVoiceProvider):
         *,
         role: str = "user",
         silent: bool = False,
-    ) -> None:
+    ) -> VoiceInjectionResult:
         """Inject text into the conversation.
 
         ``role="assistant"`` puts the words in the agent's mouth
@@ -675,17 +676,20 @@ class DeepgramAgentProvider(RealtimeVoiceProvider):
         """
         state = self._states.get(session.id)
         if state is None:
-            return
+            return VoiceInjectionResult(
+                status="not_sent", reason="voice_not_connected", retryable=True
+            )
 
         if silent or role == "system":
             await self._append_to_prompt(state, text)
-            return
+            return VoiceInjectionResult(status="sent")
 
         is_agent_message = role == "assistant"
         mtype = "InjectAgentMessage" if is_agent_message else "InjectUserMessage"
         content_key = "message" if is_agent_message else "content"
         logger.debug("[Deepgram →] %s (session %s)", mtype, session.id)
         await state.ws.send(json.dumps({"type": mtype, content_key: text}))
+        return VoiceInjectionResult(status="sent")
 
     def _warn_prompt_over_limit(
         self, session_id: str, think: dict[str, Any], limit: int | None

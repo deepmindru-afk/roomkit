@@ -84,10 +84,13 @@ class DeliverMixin(HelpersMixin):
             metadata: Optional metadata attached to the delivery event.
             addressed_to: Intelligence channel ids asked to act. None keeps
                 routing; [] solicits no agent. This does not change visibility.
-            idempotency_key: Text publication key, scoped to the room and retained
-                by the ConversationStore. Realtime injection is not deduplicated.
+            idempotency_key: Publication/injection key retained by the
+                ConversationStore. Scoped to the room for text and to the
+                room/channel/session for realtime voice. Uncertain voice
+                submissions return unknown and are never automatically repeated.
             session_id: Exact realtime session on the selected channel. An ended
                 or replaced session is unavailable; no substitute is selected.
+                A keyed receipt can still be replayed after its session ends.
 
         Returns:
             Queue acceptance or the actual execution outcome. ``sent`` does not

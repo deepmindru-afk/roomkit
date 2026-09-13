@@ -1,5 +1,7 @@
 """Realtime voice support for speech-to-speech AI providers."""
 
+from __future__ import annotations
+
 from roomkit.voice.realtime.bridge import RealtimeAVBridge
 from roomkit.voice.realtime.events import (
     RealtimeDelegationEvent,
@@ -8,6 +10,7 @@ from roomkit.voice.realtime.events import (
     RealtimeToolCallEvent,
     RealtimeTranscriptionEvent,
 )
+from roomkit.voice.realtime.injection import VoiceInjectionResult
 from roomkit.voice.realtime.mock import (
     MockCall,
     MockRealtimeAudioVideoProvider,
@@ -29,6 +32,7 @@ from roomkit.voice.realtime.reasoning import (
 )
 
 __all__ = [
+    "VoiceInjectionResult",
     # ABCs
     "RealtimeAudioVideoProvider",
     "RealtimeAVBridge",

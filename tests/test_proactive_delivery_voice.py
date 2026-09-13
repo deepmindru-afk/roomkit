@@ -12,14 +12,15 @@ from roomkit import Access, HookResult, HookTrigger, Immediate, Queued, RoomKit,
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 from roomkit.delivery.base import DeliveryItem
 from roomkit.delivery.worker import execute_delivery
+from roomkit.store.base import ConversationStore
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
 
 
 @asynccontextmanager
-async def voice_room(count: int = 2):
+async def voice_room(count: int = 2, *, store: ConversationStore | None = None):
     provider = MockRealtimeProvider()
     channel = RealtimeVoiceChannel("voice", provider=provider, transport=MockRealtimeTransport())
-    async with RoomKit() as kit:
+    async with RoomKit(store=store) as kit:
         kit.register_channel(channel)
         await kit.create_room(room_id="r")
         await kit.attach_channel("r", "voice")
@@ -43,7 +44,7 @@ async def test_exact_session_does_not_inject_other_sessions(strategy) -> None:
         assert result.status == "sent"
         assert result.session_ids == [sessions[0].id]
         assert provider.injected_texts == [(sessions[0].id, "external result", "user")]
-        assert result.reason == "voice_not_deduplicated"
+        assert result.reason is None
         assert not result.turn_complete
 
 
@@ -90,7 +91,7 @@ async def test_missing_session_in_direct_and_worker_paths() -> None:
         assert provider.injected_texts == []
 
 
-async def test_injection_error_can_retry_but_does_not_claim_deduplication() -> None:
+async def test_injection_error_remains_unknown_without_blind_retry() -> None:
     async with voice_room(1) as (kit, _, provider, sessions):
         item = DeliveryItem(
             room_id="r",
@@ -103,14 +104,14 @@ async def test_injection_error_can_retry_but_does_not_claim_deduplication() -> N
             provider, "inject_text", new=AsyncMock(side_effect=ConnectionError("offline"))
         ):
             failed = await execute_delivery(kit, item)
-        assert failed.status == "failed"
-        assert failed.reason == "voice_injection_failed"
+        assert failed.status == "unknown"
+        assert failed.reason == "voice_submission_unknown"
         assert failed.error.message == "offline"
-        assert failed.error.retryable
+        assert not failed.error.retryable
         retry = await execute_delivery(kit, item)
-        assert retry.status == "sent"
-        assert retry.reason == "voice_not_deduplicated"
-        assert provider.injected_texts == [(sessions[0].id, "result", "user")]
+        assert retry.status == "unknown"
+        assert retry.duplicate
+        assert provider.injected_texts == []
 
 
 @pytest.mark.parametrize("address", [[], ["missing-agent"]])
@@ -190,11 +191,12 @@ async def test_fanout_preserves_successes_when_next_target_becomes_unavailable(c
         inject = provider.inject_text
 
         async def inject_then_change(*args, **kwargs):
-            await inject(*args, **kwargs)
+            outcome = await inject(*args, **kwargs)
             if change == "detach":
                 await kit.detach_channel("r", "voice")
             else:
                 await kit.set_access("r", "voice", Access.NONE)
+            return outcome
 
         with patch.object(provider, "inject_text", side_effect=inject_then_change):
             result = await kit.deliver("r", "announcement")

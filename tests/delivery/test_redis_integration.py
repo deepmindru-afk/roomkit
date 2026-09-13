@@ -9,9 +9,13 @@ from uuid import uuid4
 
 import pytest
 
+from roomkit import RoomKit
 from roomkit.delivery.base import DeliveryItem
 from roomkit.delivery.redis import RedisDeliveryBackend
+from roomkit.delivery.worker import _settle_item, execute_delivery
 from roomkit.models.delivery import DeliveryError, DeliveryOutcome
+from roomkit.store.sqlite import SQLiteStore
+from tests.test_proactive_delivery_voice import voice_room
 
 pytestmark = pytest.mark.skipif(not os.environ.get("REDIS_URL"), reason="REDIS_URL not set")
 
@@ -48,6 +52,52 @@ async def test_abandoned_batch_is_reclaimed_after_worker_restart(backends) -> No
     await second.ack(recovered.id)
     assert await second.get_queue_depth() == 0
     assert (await client.xpending(first._pending_key, first._group))["pending"] == 0
+
+
+@pytest.mark.parametrize("uncertain", [False, True])
+async def test_reclaimed_voice_item_reuses_durable_receipt_after_restart(
+    backends, tmp_path, uncertain
+) -> None:
+    first, second, client = backends
+    database = tmp_path / "voice.db"
+    async with voice_room(1, store=SQLiteStore(database)) as (kit, _, provider, sessions):
+        request = DeliveryItem(
+            room_id="r",
+            content="done",
+            channel_id="voice",
+            session_id=sessions[0].id,
+            idempotency_key="task:42",
+        )
+        await first.enqueue(request)
+        [item] = await first.dequeue("old")
+        entry = first._entry_ids[item.id]
+        send = provider.inject_text
+
+        async def lost_confirmation(*args, **kwargs):
+            await send(*args, **kwargs)
+            raise ConnectionError("confirmation lost")
+
+        if uncertain:
+            with patch.object(provider, "inject_text", side_effect=lost_confirmation):
+                original = await execute_delivery(kit, item)
+        else:
+            original = await execute_delivery(kit, item)
+        assert len(provider.injected_texts) == 1
+        await first.close()
+    # The queue's original entry predates the outcome. A different worker and
+    # store connection recover the receipt independently of that stale payload.
+    await client.xclaim(first._pending_key, first._group, "old", 0, [entry], idle=1000)
+    [recovered] = await second.dequeue("new", timeout=0)
+    assert recovered.outcome is None
+    async with RoomKit(store=SQLiteStore(database)) as restarted:
+        replay = await execute_delivery(restarted, recovered)
+        assert replay.status == original.status == ("unknown" if uncertain else "sent")
+        assert replay.duplicate
+        await _settle_item(second, recovered, replay)
+    if uncertain:
+        [dead] = await second.get_dead_letter_items()
+        assert dead.outcome.status == "unknown" and dead.retry_count == 0
+    assert await second.get_queue_depth() == 0
 
 
 async def test_live_worker_renews_its_whole_batch(backends) -> None:

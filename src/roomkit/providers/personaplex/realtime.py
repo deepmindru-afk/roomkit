@@ -23,6 +23,7 @@ from urllib.parse import quote, urlencode
 
 from roomkit.providers.personaplex.voices import VOICES as _VOICES
 from roomkit.voice.base import VoiceSession, VoiceSessionState
+from roomkit.voice.realtime.injection import VoiceInjectionResult
 from roomkit.voice.realtime.provider import RealtimeVoiceProvider, VoiceInfo
 
 # Optional dependency, enforced at connect time by _check_dependencies. The type
@@ -217,10 +218,11 @@ class PersonaPlexRealtimeProvider(RealtimeVoiceProvider):
 
     async def inject_text(
         self, session: VoiceSession, text: str, *, role: str = "user", silent: bool = False
-    ) -> None:
+    ) -> VoiceInjectionResult:
         logger.warning(
             "PersonaPlex does not support text injection; ignored (session %s)", session.id
         )
+        return VoiceInjectionResult(status="not_sent", reason="voice_injection_unsupported")
 
     async def submit_tool_result(self, session: VoiceSession, call_id: str, result: str) -> None:
         logger.warning(

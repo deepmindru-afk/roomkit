@@ -67,8 +67,10 @@ from roomkit.models.task import Observation, Task
 from roomkit.models.thinking_event import ThinkingEvent
 from roomkit.models.tool_call import ToolCallCallback, ToolCallEvent
 from roomkit.models.trace import ProtocolTrace
+from roomkit.models.voice_delivery import VoiceDeliveryRecord
 
 __all__ = [
+    "VoiceDeliveryRecord",
     "Access",
     "AudioContent",
     "ChannelBinding",

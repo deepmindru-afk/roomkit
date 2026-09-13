@@ -16,6 +16,7 @@ from roomkit.models.participant import Participant
 from roomkit.models.room import Room
 from roomkit.models.store_filter import EventFilter
 from roomkit.models.task import Observation, Task
+from roomkit.models.voice_delivery import VoiceDeliveryRecord
 
 
 class ConversationStore(ABC):
@@ -31,6 +32,27 @@ class ConversationStore(ABC):
     # dependent on the store contract rather than a growing list of concrete
     # backend types.
     is_process_local: bool = False
+
+    async def get_voice_delivery(self, room_id: str, key_hash: str) -> VoiceDeliveryRecord | None:
+        """Read an injection reservation; unsupported stores fail before sending."""
+        raise NotImplementedError("This store does not support voice delivery reservations")
+
+    async def claim_voice_delivery(self, record: VoiceDeliveryRecord) -> VoiceDeliveryRecord:
+        """Atomically reserve an injection and return its authoritative record.
+
+        Insert if absent, or replace an explicitly retryable completed attempt
+        with matching content. Otherwise return the existing record unchanged.
+        Ownership requires a matching attempt_id. Retain records until room deletion.
+        """
+        raise NotImplementedError("This store does not support voice delivery reservations")
+
+    async def complete_voice_delivery(self, record: VoiceDeliveryRecord) -> bool:
+        """Set the outcome only if this token still owns an unresolved attempt.
+
+        Repeating the same completion is successful; replacing a terminal
+        outcome or completing another owner's attempt is refused.
+        """
+        raise NotImplementedError("This store does not support voice delivery reservations")
 
     # Connection tenure
 

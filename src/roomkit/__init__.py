@@ -147,6 +147,7 @@ from roomkit.models.tool_call import (
     ToolCallEvent,
     response_transcript,
 )
+from roomkit.models.voice_delivery import VoiceDeliveryRecord
 from roomkit.orchestration import (
     HANDOFF_TOOL,
     ConversationPhase,
@@ -188,6 +189,7 @@ from roomkit.video.pipeline.filter import (
 )
 from roomkit.voice.pipeline.agc.simple import SimpleAGCProvider
 from roomkit.voice.pipeline.denoiser.webrtc import WebRTCNoiseSuppressorProvider
+from roomkit.voice.realtime.injection import VoiceInjectionResult
 from roomkit.voice.realtime.reasoning import (
     AIProviderReasoningBackend,
     ReasoningBackend,
@@ -234,6 +236,8 @@ def get_ai_context() -> str:
 
 
 __all__ = [
+    "VoiceDeliveryRecord",
+    "VoiceInjectionResult",
     "CerebrasAIProvider",
     "CerebrasConfig",
     "__version__",

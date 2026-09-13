@@ -449,7 +449,8 @@ class TestGeminiLiveProvider:
         )
         provider._sessions[session.id] = state
 
-        await provider.inject_text(session, "Hello!")
+        result = await provider.inject_text(session, "Hello!")
+        assert result.status == "sent"
 
         mock_live_session.send_client_content.assert_awaited_once()
         call_kwargs = mock_live_session.send_client_content.call_args[1]
@@ -510,8 +511,8 @@ class TestGeminiLiveProvider:
         mod = _load_provider()
         provider = mod.GeminiLiveProvider(api_key="test-key")
         session = _make_session()
-        # No session — should return silently
-        await provider.inject_text(session, "No session")
+        result = await provider.inject_text(session, "No session")
+        assert result.status == "not_sent" and result.retryable
 
     async def test_inject_text_after_audio_uses_realtime_input(self):
         mod = _load_provider()
@@ -586,7 +587,9 @@ class TestGeminiLiveProvider:
         )
         provider._sessions[session.id] = state
 
-        await provider.inject_text(session, "Queued text", role="user", silent=True)
+        result = await provider.inject_text(session, "Queued text", role="user", silent=True)
+        assert result.status == "unknown" and not result.retryable
+        assert result.reason == "voice_provider_queued"
 
         # Should not send anything yet
         mock_live_session.send_client_content.assert_not_awaited()
