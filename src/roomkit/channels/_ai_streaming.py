@@ -15,6 +15,7 @@ from roomkit.channels._ai_loop_rules import (
     final_round_reason,
 )
 from roomkit.channels._ai_resilience import _StreamRetryBoundary
+from roomkit.channels._ai_stream_round import _PrefixDeduplicator, _StreamRoundState
 from roomkit.models.channel import ChannelOutput
 from roomkit.models.enums import ChannelType
 from roomkit.models.event import RoomEvent
@@ -443,15 +444,9 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
         # ends a segment; the next round's text starts the next one.
         _segments: list[list[str]] = []
         room_id = context.room.room.id if context.room else None
-        # The round's reasoning window, declared ahead of the try so the
-        # finally can reach it: a provider that dies mid-reasoning raises out
-        # of the round before the end-of-round close runs, and a consumer
-        # that stops reading closes this generator at a yield. Every round
-        # rebinds all four at its start; ``thinking_started`` is True exactly
-        # while a window is open on the bus.
-        thinking_started = False
-        thinking_parts: list[str] = []
-        thinking_published = 0
+        # Keep the current round reachable during cleanup, including a
+        # provider failure or a consumer closing between fragments.
+        round_state = _StreamRoundState()
         coalescer = self._new_thinking_coalescer(room_id, round_idx=0)
         _round_idx = 0
         stream: Any = None
@@ -478,24 +473,11 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                 # hammering the same call to the round limit.
                 context = self._prepare_round_context(context, loop_ctx, state, _round_idx)
 
-                thinking_parts = []
-                thinking_published = 0
-                thinking_signature: str | None = None
-                text_parts: list[str] = []
-                # What this round's consumer actually received. The dedup
-                # below withholds a replayed prefix from the room, and the
-                # hook's transcript reports what the room saw — not the raw
-                # text ``text_parts`` keeps for the model's own history.
-                reported: list[str] = []
-                _segments.append(reported)
-                tool_calls: list[StreamToolCall] = []
-                thinking_started = False
-                round_finish_reason: str | None = None
+                round_state = _StreamRoundState()
+                _segments.append(round_state.reported)
                 coalescer = self._new_thinking_coalescer(room_id, round_idx=_round_idx)
                 tool_coalescer = self._new_tool_call_coalescer(room_id, round_idx=_round_idx)
-                _dedup_active = bool(_dedup_prefix)
-                _dedup_offset = 0
-                _dedup_buffer: list[str] = []
+                dedup = _PrefixDeduplicator(_dedup_prefix)
 
                 stream = self._generate_stream_with_retry(context)
                 async for event in stream:
@@ -509,14 +491,14 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                             # so far, then the composition closes — or a
                             # subscriber stays on "thinking" for a turn that
                             # is over, with the buffered deltas lost.
-                            if thinking_started and thinking_parts:
-                                thinking_started = False
+                            if round_state.thinking_started and round_state.thinking_parts:
+                                round_state.thinking_started = False
                                 await self._close_thinking_window(
                                     coalescer,
                                     room_id,
-                                    thinking_parts,
+                                    round_state.thinking_parts,
                                     _round_idx,
-                                    published=thinking_published,
+                                    published=round_state.thinking_published,
                                 )
                             await tool_coalescer.close()
                         _loop_reason = "cancelled"
@@ -533,18 +515,18 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                         if event.signature:
                             # Signature arrives as its own delta (empty text);
                             # capture it so the thinking block round-trips.
-                            thinking_signature = event.signature
+                            round_state.thinking_signature = event.signature
                         if not event.thinking:
                             continue
-                        if not thinking_started and room_id:
-                            thinking_started = True
+                        if not round_state.thinking_started and room_id:
+                            round_state.thinking_started = True
                             await self._publish_thinking_event(
                                 EphemeralEventType.THINKING_START,
                                 room_id,
                                 "",
                                 _round_idx,
                             )
-                        thinking_parts.append(event.thinking)
+                        round_state.thinking_parts.append(event.thinking)
                         # Buffer the per-chunk delta and publish in windows on the
                         # realtime bus so remote WS subscribers stream the reasoning
                         # live; the buffered THINKING_END below still fires so an
@@ -557,42 +539,20 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                         # arrival order with text deltas.
                         yield ThinkingDeltaMarker(thinking=event.thinking)
                     elif isinstance(event, StreamTextDelta):
-                        if thinking_started and thinking_parts and room_id:
-                            thinking_started = False
-                            thinking_published = await self._close_thinking_window(
+                        if round_state.thinking_started and round_state.thinking_parts and room_id:
+                            round_state.thinking_started = False
+                            round_state.thinking_published = await self._close_thinking_window(
                                 coalescer,
                                 room_id,
-                                thinking_parts,
+                                round_state.thinking_parts,
                                 _round_idx,
-                                published=thinking_published,
+                                published=round_state.thinking_published,
                             )
-                        text_parts.append(event.text)
+                        round_state.text_parts.append(event.text)
 
-                        # --- Dedup: skip text that repeats previous rounds ---
-                        if _dedup_active:
-                            end = _dedup_offset + len(event.text)
-                            if end <= len(_dedup_prefix):
-                                if _dedup_prefix[_dedup_offset:end] == event.text:
-                                    _dedup_offset = end
-                                    _dedup_buffer.append(event.text)
-                                    continue
-                                _dedup_active = False
-                                to_yield = [*_dedup_buffer, event.text]
-                            else:
-                                prefix_tail = _dedup_prefix[_dedup_offset:]
-                                _dedup_active = False
-                                if event.text[: len(prefix_tail)] == prefix_tail:
-                                    new_text = event.text[len(prefix_tail) :]
-                                    to_yield = [new_text] if new_text else []
-                                else:
-                                    to_yield = [*_dedup_buffer, event.text]
-                            _dedup_buffer.clear()
-                        else:
-                            to_yield = [event.text]
-                        # The one place this round's text leaves for the room,
-                        # so the transcript cannot disagree with the stream.
-                        for text in to_yield:
-                            reported.append(text)
+                        # Only delivered fragments enter the reported transcript.
+                        for text in dedup.add(event.text):
+                            round_state.reported.append(text)
                             yield text
                     elif isinstance(event, StreamToolCallDelta):
                         # Composing a tool call's arguments ends the reasoning
@@ -601,14 +561,14 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                         # this a round that reasons and then calls a tool with
                         # no text leaves THINKING_START open for the whole
                         # composition.
-                        if thinking_started and thinking_parts and room_id:
-                            thinking_started = False
-                            thinking_published = await self._close_thinking_window(
+                        if round_state.thinking_started and round_state.thinking_parts and room_id:
+                            round_state.thinking_started = False
+                            round_state.thinking_published = await self._close_thinking_window(
                                 coalescer,
                                 room_id,
-                                thinking_parts,
+                                round_state.thinking_parts,
                                 _round_idx,
-                                published=thinking_published,
+                                published=round_state.thinking_published,
                             )
                         if room_id:
                             await tool_coalescer.add(
@@ -618,7 +578,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                                 len(event.arguments_delta),
                             )
                     elif isinstance(event, StreamToolCall):
-                        tool_calls.append(event)
+                        round_state.tool_calls.append(event)
                         # External tools: fire hooks and yield persistence markers
                         if self._tool_handler is None and self._external_tool_handler is not None:
                             handler = self._external_tool_handler
@@ -707,7 +667,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                                     duration_ms=ext_duration_ms,
                                 )
                     elif isinstance(event, StreamDone):
-                        round_finish_reason = event.finish_reason
+                        round_state.finish_reason = event.finish_reason
                         if event.usage:
                             round_in = event.usage.get("input_tokens", 0)
                             round_out = event.usage.get("output_tokens", 0)
@@ -725,20 +685,18 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                                 attributes={"channel_id": self.channel_id},
                             )
 
-                if _dedup_buffer:
-                    for buf in _dedup_buffer:
-                        reported.append(buf)
-                        yield buf
-                    _dedup_buffer.clear()
+                for text in dedup.finish():
+                    round_state.reported.append(text)
+                    yield text
 
-                if thinking_started and thinking_parts and room_id:
-                    thinking_started = False
+                if round_state.thinking_started and round_state.thinking_parts and room_id:
+                    round_state.thinking_started = False
                     await self._close_thinking_window(
                         coalescer,
                         room_id,
-                        thinking_parts,
+                        round_state.thinking_parts,
                         _round_idx,
-                        published=thinking_published,
+                        published=round_state.thinking_published,
                     )
                 # The composition is over for this round, whichever way the
                 # round now ends — including the exits below that never reach
@@ -755,18 +713,18 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                     yield LoopEndMarker(reason=_loop_reason, rounds=_round_idx)
                     return
 
-                if not tool_calls:
+                if not round_state.tool_calls:
                     # Final answer round. If it produced no text *after* a tool
                     # round, the model skipped verbalizing the result — re-prompt
                     # once (bounded) for the final answer instead of ending empty.
-                    final_text = "".join(text_parts)
+                    final_text = "".join(round_state.text_parts)
                     if self._try_empty_retry(
                         context,
                         loop_ctx,
                         state,
                         had_tool_round=_saw_tool_call_any,
                         final_text=final_text,
-                        finish_reason=round_finish_reason,
+                        finish_reason=round_state.finish_reason,
                     ):
                         continue
                     # The one exit that is both the happy path and a silent
@@ -774,7 +732,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                     reason: LoopEndReason = final_round_reason(
                         had_tool_round=_saw_tool_call_any,
                         final_text=final_text,
-                        finish_reason=round_finish_reason,
+                        finish_reason=round_state.finish_reason,
                         deadline_exceeded=state.deadline_exceeded(),
                         force_stopped=loop_ctx.force_stop,
                     )
@@ -791,7 +749,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                 # provider embedded ``_result`` after executing it.
                 if self._tool_handler is None:
                     if self._external_tool_handler is None:
-                        for tc in tool_calls:
+                        for tc in round_state.tool_calls:
                             external_args = dict(tc.arguments)
                             provider_already_executed = "_result" in external_args
                             external_result = external_args.pop("_result", None)
@@ -859,27 +817,29 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
 
                 state.warn_if_needed(_round_idx)
 
-                tool_calls = self._cap_round_tool_calls(tool_calls, state.log_label)
+                round_state.tool_calls = self._cap_round_tool_calls(
+                    round_state.tool_calls, state.log_label
+                )
 
                 logger.info(
                     "Streaming tool round %d: %d call(s)",
                     _round_idx + 1,
-                    len(tool_calls),
+                    len(round_state.tool_calls),
                 )
 
-                accumulated_text = "".join(text_parts)
+                accumulated_text = "".join(round_state.text_parts)
                 parts = self._build_assistant_parts(
-                    "".join(thinking_parts),
-                    thinking_signature,
+                    "".join(round_state.thinking_parts),
+                    round_state.thinking_signature,
                     accumulated_text,
-                    tool_calls,
+                    round_state.tool_calls,
                 )
                 if accumulated_text:
                     _dedup_prefix = accumulated_text
                 context.messages.append(AIMessage(role="assistant", content=parts))
 
                 # Yield start markers for each tool call (persistence boundary)
-                for tc in tool_calls:
+                for tc in round_state.tool_calls:
                     yield ToolCallStartMarker(
                         tool_name=tc.name,
                         tool_id=tc.id,
@@ -887,17 +847,17 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                     )
                 result_parts, duration_ms, executed_arguments = await self._execute_round_tools(
                     context,
-                    tool_calls,
+                    round_state.tool_calls,
                     telemetry,
                     room_id,
                     _round_idx,
                     parent_span_id=span_id,
                 )
-                _tool_calls_count += len(tool_calls)
+                _tool_calls_count += len(round_state.tool_calls)
                 _tool_rounds_count += 1
 
                 # Yield end markers with results (persistence boundary)
-                for tc, rp in zip(tool_calls, result_parts, strict=False):
+                for tc, rp in zip(round_state.tool_calls, result_parts, strict=False):
                     result_val = getattr(rp, "result", None)
                     is_error = isinstance(result_val, str) and result_val.startswith(
                         "Error executing tool"
@@ -945,13 +905,13 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                 # closes with the block reasoned so far, the way a cancelled
                 # round's does above. Publishing is best-effort: the error
                 # that got the round here is the one that propagates.
-                if room_id and thinking_started and thinking_parts:
+                if room_id and round_state.thinking_started and round_state.thinking_parts:
                     await self._close_thinking_window(
                         coalescer,
                         room_id,
-                        thinking_parts,
+                        round_state.thinking_parts,
                         _round_idx,
-                        published=thinking_published,
+                        published=round_state.thinking_published,
                     )
             finally:
                 # The close publishes, and a publish that suspends can be
