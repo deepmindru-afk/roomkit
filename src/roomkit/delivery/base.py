@@ -18,6 +18,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
+from roomkit.models.delivery import DeliveryOutcome
+
 if TYPE_CHECKING:
     from roomkit.core.framework import RoomKit
 
@@ -32,6 +34,8 @@ class DeliveryItemStatus(StrEnum):
     DELIVERED = "delivered"
     FAILED = "failed"
     DEAD_LETTER = "dead_letter"
+    BLOCKED = "blocked"
+    UNKNOWN = "unknown"
 
 
 class DeliveryItem(BaseModel):
@@ -41,6 +45,9 @@ class DeliveryItem(BaseModel):
     room_id: str
     content: str
     channel_id: str | None = None
+    addressed_to: list[str] | None = None
+    idempotency_key: str | None = None
+    session_id: str | None = None
     strategy: dict[str, Any] = Field(default_factory=lambda: {"type": "immediate", "params": {}})
     metadata: dict[str, Any] = Field(default_factory=dict)
     retry_count: int = 0
@@ -49,6 +56,7 @@ class DeliveryItem(BaseModel):
     status: DeliveryItemStatus = DeliveryItemStatus.PENDING
     worker_id: str | None = None
     error: str | None = None
+    outcome: DeliveryOutcome | None = None
 
 
 class DeliveryBackend(ABC):
@@ -74,7 +82,7 @@ class DeliveryBackend(ABC):
 
     @abstractmethod
     async def ack(self, item_id: str) -> None:
-        """Acknowledge successful delivery — removes the item."""
+        """Consume a terminal item (sent, blocked or unknown); removes it."""
 
     @abstractmethod
     async def nack(self, item_id: str, error: str | None = None) -> None:

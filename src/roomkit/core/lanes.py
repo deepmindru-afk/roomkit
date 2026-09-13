@@ -139,6 +139,7 @@ class DeliveryCascade:
         "_reentry_budget",
         "cancelled",
         "delivery_results",
+        "unavailable_targets",
         "error",
         "response_metadata",
         "response_events",
@@ -172,6 +173,7 @@ class DeliveryCascade:
         # whose deliveries belong to its own result, and merging them here
         # would collide on any channel both passes reached.
         self.delivery_results: dict[str, Any] = {}
+        self.unavailable_targets: list[str] = []
         self._tasks: set[asyncio.Task[Any]] = set()
         self._cleanup_task: asyncio.Task[None] | None = None
 

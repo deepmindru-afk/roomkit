@@ -346,7 +346,9 @@ class InboundLockedMixin(HelpersMixin):
             await self._lane_injected_events(
                 outcome.sync_result.injected_events, room_id, outcome.context, cascade
             )
-        return InboundResult(event=outcome.event)
+        return InboundResult(
+            event=outcome.event, unavailable_targets=list(cascade.unavailable_targets)
+        )
 
     async def _run_precommit(
         self,
@@ -421,8 +423,8 @@ class InboundLockedMixin(HelpersMixin):
                 },
             )
             if original is not None:
-                return InboundResult(event=original)
-            return InboundResult(blocked=True, reason="duplicate")
+                return InboundResult(event=original, duplicate=True)
+            return InboundResult(blocked=True, reason="duplicate", duplicate=True)
 
         # Provisional index for the hooks. The authoritative one is (re)assigned
         # inside the commit (§8.1), so this reads the counter the context
@@ -554,6 +556,7 @@ class InboundLockedMixin(HelpersMixin):
         def plan_factory(committed: RoomEvent) -> Any:
             from roomkit.core.lanes import DeliveryPlan
 
+            cascade.unavailable_targets = list(committed.addressed_to or [])
             if source_binding is None:
                 if mutation_hook is None:
                     return None  # nothing to broadcast, nothing to fire
@@ -580,6 +583,15 @@ class InboundLockedMixin(HelpersMixin):
                 }
             )
             plan = router.plan(committed, source_binding, broadcast_ctx)
+            reachable = {
+                target.channel_id
+                for target in plan.targets
+                if target.category == ChannelCategory.INTELLIGENCE
+                and self._channels.get(target.channel_id) is not None
+            }
+            cascade.unavailable_targets = [
+                target for target in committed.addressed_to or [] if target not in reachable
+            ]
             plan.mutation_hook = mutation_hook
             plan.response_visibility = committed.response_visibility
             plan.hook_tasks = list(sync_result.tasks)

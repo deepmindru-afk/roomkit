@@ -7,17 +7,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from roomkit.core._delivery_targets import deliver_to_realtime_voice as _deliver_to_realtime_voice
 from roomkit.core.delivery import (
     DeliveryContext,
     Immediate,
     Queued,
     WaitForIdle,
     _deliver_to_channel,
-    _deliver_to_realtime_voice,
     resolve_strategy,
 )
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.enums import ChannelCategory, ChannelType
+from roomkit.models.room import Room
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -33,6 +34,9 @@ def _make_kit(
     kit = MagicMock()
     kit.store = MagicMock()
     kit.store.list_bindings = AsyncMock(return_value=bindings or [])
+    kit.store.get_room = AsyncMock(return_value=Room(id="room-1"))
+    for cid, channel in (channels or {}).items():
+        channel.channel_id = cid
     kit.get_channel = MagicMock(side_effect=lambda cid: (channels or {}).get(cid))
     kit.process_inbound = AsyncMock()
     return kit
@@ -219,7 +223,7 @@ class TestWaitForIdleStrategy:
             "roomkit.core.delivery._wait_for_voice_idle", new_callable=AsyncMock
         ) as mock_wait:
             await strategy.deliver(ctx)
-            mock_wait.assert_called_once_with(ch, "room-1", 1.0, 0)
+            mock_wait.assert_called_once_with(ch, "room-1", 1.0, 0, None)
 
         kit.process_inbound.assert_called_once()
 
@@ -284,7 +288,7 @@ class TestQueuedStrategy:
             "roomkit.core.delivery._wait_for_voice_idle", new_callable=AsyncMock
         ) as mock_wait:
             await strategy.deliver(ctx)
-            mock_wait.assert_called_once_with(ch, "room-1", 2.0, 0)
+            mock_wait.assert_called_once_with(ch, "room-1", 2.0, 0, None)
 
     async def test_batching_multiple_deliveries(self) -> None:
         """When a second deliver() arrives while the first is in-flight,
@@ -367,7 +371,10 @@ class TestDeliverToChannel:
         ai_ch = _channel_mock(ChannelType.AI, ChannelCategory.INTELLIGENCE)
         sms_ch = _channel_mock(ChannelType.SMS)
         kit = _make_kit(
-            bindings=[_binding("sms-1", ChannelType.SMS)],
+            bindings=[
+                _binding("sms-1", ChannelType.SMS),
+                _binding("ai-1", ChannelType.AI, ChannelCategory.INTELLIGENCE),
+            ],
             channels={"ai-1": ai_ch, "sms-1": sms_ch},
         )
         ctx = DeliveryContext(kit=kit, room_id="room-1", content="hi")
@@ -466,7 +473,11 @@ class TestDeliverToRealtimeVoice:
         channel.get_room_sessions = MagicMock(return_value=[s1, s2])
         channel.inject_text = AsyncMock()
 
-        ctx = DeliveryContext(kit=MagicMock(), room_id="room-1", content="msg")
+        kit = _make_kit(
+            bindings=[_binding("rt", ChannelType.REALTIME_VOICE)],
+            channels={"rt": channel},
+        )
+        ctx = DeliveryContext(kit=kit, room_id="room-1", content="msg")
 
         await _deliver_to_realtime_voice(channel, ctx)
 

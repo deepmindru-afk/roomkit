@@ -22,6 +22,7 @@ if TYPE_CHECKING:
         """
 
         delivery_results: dict[str, Any]
+        unavailable_targets: list[str]
         error: Exception | None
         response_metadata: ResponseMetadata
         response_events: list[RoomEvent]
@@ -177,6 +178,8 @@ class DeliveryHandle:
         if self._cascade.cancelled is not None:
             await self._cascade.wait_drained()
         self._result.delivery_results = self._cascade.delivery_results
+        if not self._result.duplicate:
+            self._result.unavailable_targets = list(self._cascade.unavailable_targets)
         self._result.response_metadata.update(self._cascade.response_metadata)
         self._result.response_events = list(self._cascade.response_events)
         if self._result.error is None:
@@ -204,6 +207,14 @@ class InboundResult(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     event: RoomEvent | None = None
+    duplicate: bool = False
+    """The event is a replay of an existing idempotency key, not a new turn."""
+    unavailable_targets: list[str] | None = None
+    """Explicit addresses absent from the committed delivery plan.
+
+    Backfilled from execution by a deferred handle. None means no new plan was
+    resolved (for example a duplicate); availability is not re-read on replay.
+    """
     blocked: bool = False
     reason: str | None = None
     error: Exception | None = None
@@ -272,6 +283,27 @@ class DeliveryResult(BaseModel):
     error: DeliveryError | None = None
     retry_after: datetime | None = None
     provider_result: ProviderResult | None = None
+
+
+class DeliveryOutcome(BaseModel):
+    """Outcome of a proactive ``RoomKit.deliver()`` request (RFC §22).
+
+    ``sent`` means publication or provider acceptance, not agent completion.
+    ``inbound`` exposes the text turn's existing result/handle, in-process only.
+    A duplicate identifies an earlier publication without replaying its turn.
+    Realtime injection does not deduplicate idempotency keys.
+    """
+
+    status: Literal["queued", "sent", "blocked", "unavailable", "failed", "unknown"]
+    reason: str | None = None
+    delivery_item_id: str | None = None
+    event_id: str | None = None
+    duplicate: bool = False
+    unavailable_targets: list[str] = Field(default_factory=list)
+    session_ids: list[str] = Field(default_factory=list)
+    error: DeliveryError | None = None
+    turn_complete: bool = False
+    inbound: InboundResult | None = Field(default=None, exclude=True)
 
 
 class DeliveryStatus(BaseModel):

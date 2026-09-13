@@ -318,6 +318,11 @@ class InboundMixin(HelpersMixin):
         if message.addressed_to is not None and event.addressed_to is None:
             event = event.model_copy(update={"addressed_to": list(message.addressed_to)})
 
+        # Carry the caller's publication key even when the channel only parses
+        # content. The locked pipeline owns deduplication for every transport.
+        if message.idempotency_key is not None and event.idempotency_key is None:
+            event = event.model_copy(update={"idempotency_key": message.idempotency_key})
+
         # Where this message's answer may go — same central application, same
         # rule: a channel that resolved one itself keeps it.
         if message.response_visibility is not None and event.response_visibility is None:
@@ -443,6 +448,8 @@ class InboundMixin(HelpersMixin):
             result.error = cascade.error
         # Step 18 reports the delivery set the caller waited for.
         result.delivery_results = cascade.delivery_results
+        if not result.duplicate:
+            result.unavailable_targets = list(cascade.unavailable_targets)
         result.response_metadata.update(cascade.response_metadata)
         result.response_events = list(cascade.response_events)
 

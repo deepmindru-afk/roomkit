@@ -11,6 +11,7 @@ import pytest
 
 from roomkit.delivery.base import DeliveryItem
 from roomkit.delivery.redis import RedisDeliveryBackend
+from roomkit.models.delivery import DeliveryError, DeliveryOutcome
 
 pytestmark = pytest.mark.skipif(not os.environ.get("REDIS_URL"), reason="REDIS_URL not set")
 
@@ -117,3 +118,40 @@ async def test_nack_exhaustion_moves_once_to_dead_letter(backends) -> None:
     assert dead.id == item.id
     assert dead.retry_count == 1
     assert dead.error == "failed"
+
+
+@pytest.mark.parametrize("target", [{"addressed_to": ["agent-a"]}, {"session_id": "session-a"}])
+async def test_targets_and_outcome_survive_reclaim_and_retry(backends, target) -> None:
+    first, second, client = backends
+    original = DeliveryItem(
+        room_id="r1",
+        content="external result",
+        channel_id="transport",
+        idempotency_key="external:1",
+        metadata={"source": "external"},
+        **target,
+    )
+    await first.enqueue(original)
+    [claimed] = await first.dequeue("old")
+    entry = first._entry_ids[claimed.id]
+    await first.close()
+    await client.xclaim(first._pending_key, first._group, "old", 0, [entry], idle=1000)
+    [recovered] = await second.dequeue("new", timeout=0)
+    assert recovered.addressed_to == original.addressed_to
+    assert recovered.session_id == original.session_id
+    assert recovered.idempotency_key == original.idempotency_key
+    recovered.outcome = DeliveryOutcome(
+        status="unavailable",
+        reason="target_unavailable",
+        error=DeliveryError(code="target_unavailable", message="offline"),
+    )
+    await second.nack(recovered.id, "offline")
+    [retry] = await first.dequeue("retry", timeout=0)
+    assert retry.retry_count == 1
+    assert retry.metadata == original.metadata
+    assert retry.addressed_to == original.addressed_to
+    assert retry.session_id == original.session_id
+    assert retry.idempotency_key == original.idempotency_key
+    assert retry.outcome.status == "unavailable"
+    assert retry.outcome.error.message == "offline"
+    await first.ack(retry.id)

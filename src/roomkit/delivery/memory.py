@@ -88,7 +88,11 @@ class InMemoryDeliveryBackend(DeliveryBackend):
     async def ack(self, item_id: str) -> None:
         item = self._in_flight.pop(item_id, None)
         if item is not None:
-            item.status = DeliveryItemStatus.DELIVERED
+            status = item.outcome.status if item.outcome is not None else "sent"
+            item.status = {
+                "sent": DeliveryItemStatus.DELIVERED,
+                "blocked": DeliveryItemStatus.BLOCKED,
+            }.get(status, DeliveryItemStatus.UNKNOWN)
             logger.debug("Acked %s", item_id)
 
     async def nack(self, item_id: str, error: str | None = None) -> None:

@@ -620,6 +620,17 @@ class LaneExecutionMixin(HelpersMixin):
                     data={"error": error_msg},
                 )
             cascade.delivery_results = _delivery_results(result)
+            intelligence = {
+                target.channel_id
+                for target in plan.targets
+                if target.category == ChannelCategory.INTELLIGENCE
+            }
+            reached = result.outputs.keys() | result.errors.keys()
+            cascade.unavailable_targets = [
+                target
+                for target in event.addressed_to or []
+                if target not in intelligence or target not in reached
+            ]
             await self._record_failed_deliveries(event, cascade.delivery_results)
             # Surface intelligence-channel failures to ON_ERROR so hosts can
             # render an error card (transport delivery failures above are not
