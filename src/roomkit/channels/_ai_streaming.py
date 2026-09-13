@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import AsyncIterator
-from contextlib import aclosing
+from collections.abc import AsyncGenerator, AsyncIterator
+from contextlib import aclosing, asynccontextmanager
+from dataclasses import dataclass, field
 from functools import partial
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -17,7 +18,7 @@ from roomkit.channels._ai_loop_rules import (
 )
 from roomkit.channels._ai_resilience import _StreamRetryBoundary
 from roomkit.channels._ai_stream_external_tools import _ExternalStreamTools
-from roomkit.channels._ai_stream_round import _StreamRound
+from roomkit.channels._ai_stream_round import _StreamRound, _StreamRoundState
 from roomkit.models.channel import ChannelOutput
 from roomkit.models.event import RoomEvent
 from roomkit.models.streaming import (
@@ -38,7 +39,7 @@ from roomkit.providers.ai.base import (
 )
 from roomkit.providers.utils import _aclose_stream
 from roomkit.realtime.base import EphemeralEventType
-from roomkit.telemetry.base import Attr, SpanKind
+from roomkit.telemetry.base import Attr, SpanKind, TelemetryProvider
 from roomkit.telemetry.context import get_current_span
 
 if TYPE_CHECKING:
@@ -50,6 +51,24 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger("roomkit.channels.ai")
+
+
+@dataclass
+class _StreamTurnState:
+    """Invocation-owned state; each round contributes its delivered fragments."""
+
+    loop_ctx: _ToolLoopContext
+    telemetry: TelemetryProvider
+    span_id: str
+    room_id: str | None
+    usage: dict[str, int] = field(default_factory=dict)
+    segments: list[list[str]] = field(default_factory=list)
+    tool_calls_count: int = 0
+    tool_rounds_count: int = 0
+    reason: LoopEndReason = "completed"
+    started_at: float = field(default_factory=time.monotonic)
+    dedup_prefix: str = ""
+    saw_tool_call: bool = False
 
 
 @runtime_checkable
@@ -410,301 +429,231 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                 attributes={"channel_id": self.channel_id},
             )
 
-    async def _run_streaming_tool_loop(
-        self, context: AIContext, *, parent_loop_ctx: Any | None = None
-    ) -> AsyncIterator[StreamDelta]:
-        """Stream text deltas, executing tool calls between generation rounds."""
-        from roomkit.channels.ai import (
-            _current_loop_ctx,
-            _ToolLoopContext,
-        )
+    @asynccontextmanager
+    async def _streaming_tool_turn(
+        self, context: AIContext, parent_loop_ctx: _ToolLoopContext | None
+    ) -> AsyncIterator[_StreamTurnState]:
+        """Own the invocation context, activity registration and telemetry span."""
+        from roomkit.channels.ai import _current_loop_ctx, _ToolLoopContext
 
-        # The handle_event ctx is gone from the contextvar by the time this
-        # generator runs (reset in handle_event's finally); the caller
-        # captured it at stream creation.
-        parent_ctx = parent_loop_ctx if parent_loop_ctx is not None else _current_loop_ctx.get()
-        loop_ctx = _ToolLoopContext.for_loop(
-            parent_ctx, context.room.room.id if context.room else None
-        )
+        parent = parent_loop_ctx if parent_loop_ctx is not None else _current_loop_ctx.get()
+        room_id = context.room.room.id if context.room else None
+        loop_ctx = _ToolLoopContext.for_loop(parent, room_id)
         _current_loop_ctx.set(loop_ctx)
         self._active_loops[loop_ctx.loop_id] = loop_ctx
-        telemetry = self._telemetry_provider
-        span_id = telemetry.start_span(
-            SpanKind.LLM_GENERATE,
-            "llm.generate",
-            parent_id=get_current_span(),
-            room_id=context.room.room.id if context.room else None,
-            channel_id=self.channel_id,
-            attributes={
-                Attr.PROVIDER: type(self._provider).__name__,
-                Attr.LLM_STREAMING: True,
-            },
-        )
-        _total_usage: dict[str, int] = {}
-        _tool_calls_count = 0
-        _tool_rounds_count = 0
-        # Every exit below names its reason once, and both the marker it
-        # yields and the after-response hook in the finally read that name.
-        _loop_reason: LoopEndReason = "completed"
-        _span_errored = False
-        _t0_stream = time.monotonic()
-        # The turn's text for the after-response hook, one entry per round —
-        # the round's own ``reported`` list, the same object, so the finally
-        # reads a round that ended abnormally as far as it got. A tool call
-        # ends a segment; the next round's text starts the next one.
-        _segments: list[list[str]] = []
-        room_id = context.room.room.id if context.room else None
-        external_tools = _ExternalStreamTools(
-            channel_id=self.channel_id,
-            room_id=room_id,
-            publish=self._publish_tool_event,
-            handler=self._external_tool_handler,
-            before=self._before_tool_call_hook,
-            after=self._tool_call_hook,
-        )
         try:
-            context, should_cancel = self._drain_steering_queue(context, loop_ctx)
-            if should_cancel:
-                _loop_reason = "cancelled"
-                yield LoopEndMarker(reason=_loop_reason, rounds=0)
+            telemetry = self._telemetry_provider
+            span_id = telemetry.start_span(
+                SpanKind.LLM_GENERATE,
+                "llm.generate",
+                parent_id=get_current_span(),
+                room_id=room_id,
+                channel_id=self.channel_id,
+                attributes={
+                    Attr.PROVIDER: type(self._provider).__name__,
+                    Attr.LLM_STREAMING: True,
+                },
+            )
+            turn = _StreamTurnState(loop_ctx, telemetry, span_id, room_id)
+            failed = False
+            try:
+                yield turn
+            except Exception as exc:
+                failed = True
+                telemetry.end_span(span_id, status="error", error_message=str(exc))
+                raise
+            finally:
+                if not failed:
+                    await self._finish_streaming_tool_turn(turn)
+        finally:
+            # Finalization may itself be cancelled while publishing a hook.
+            self._active_loops.pop(loop_ctx.loop_id, None)
+            _current_loop_ctx.set(None)
+
+    async def _finish_streaming_tool_turn(self, turn: _StreamTurnState) -> None:
+        """Report the delivered transcript and the counters accumulated by this turn."""
+        attributes: dict[str, Any] = {Attr.LLM_TOOL_COUNT: turn.tool_calls_count}
+        if turn.usage.get("input_tokens") or turn.usage.get("output_tokens"):
+            attributes[Attr.LLM_INPUT_TOKENS] = turn.usage.get("input_tokens", 0)
+            attributes[Attr.LLM_OUTPUT_TOKENS] = turn.usage.get("output_tokens", 0)
+        turn.telemetry.end_span(turn.span_id, attributes=attributes)
+        if self._after_response_hook:
+            try:
+                segments, transcript = response_transcript("".join(text) for text in turn.segments)
+                await self._after_response_hook(
+                    AIResponseEvent(
+                        channel_id=self.channel_id,
+                        response_content=transcript,
+                        segments=segments,
+                        room_id=turn.room_id,
+                        tool_calls_count=turn.tool_calls_count,
+                        round_count=turn.tool_rounds_count,
+                        loop_end_reason=turn.reason,
+                        usage={"input_tokens": 0, "output_tokens": 0, **turn.usage},
+                        latency_ms=int((time.monotonic() - turn.started_at) * 1000),
+                        streaming=True,
+                    )
+                )
+            except Exception:
+                logger.debug("After-response hook failed (streaming)", exc_info=True)
+
+    async def _stream_local_tool_round(
+        self,
+        context: AIContext,
+        state: _StreamRoundState,
+        turn: _StreamTurnState,
+        index: int,
+    ) -> AsyncGenerator[StreamDelta, None]:
+        """Persist an assistant's calls and surround execution with lifecycle markers."""
+        calls = self._cap_round_tool_calls(state.tool_calls, "Streaming tool loop")
+        logger.info("Streaming tool round %d: %d call(s)", index + 1, len(calls))
+        if state.text:
+            turn.dedup_prefix = state.text
+        context.messages.append(
+            AIMessage(
+                role="assistant",
+                content=self._build_assistant_parts(
+                    state.thinking, state.thinking_signature, state.text, calls
+                ),
+            )
+        )
+        for call in calls:
+            yield ToolCallStartMarker(
+                tool_name=call.name, tool_id=call.id, arguments=call.arguments
+            )
+        results, duration_ms, executed_arguments = await self._execute_round_tools(
+            context, calls, turn.telemetry, turn.room_id, index, parent_span_id=turn.span_id
+        )
+        turn.tool_calls_count += len(calls)
+        turn.tool_rounds_count += 1
+        for call, result in zip(calls, results, strict=False):
+            value = result.result
+            is_error = isinstance(value, str) and value.startswith("Error executing tool")
+            yield ToolCallEndMarker(
+                tool_name=call.name,
+                tool_id=call.id,
+                arguments=executed_arguments.get(call.id, call.arguments),
+                result=value,
+                status="failed" if is_error else "completed",
+                duration_ms=duration_ms,
+                error=value if is_error else None,
+                structured_content=result.structured_content,
+            )
+        if turn.room_id:
+            await self._publish_tool_event(
+                EphemeralEventType.TOOL_CALL_END,
+                turn.room_id,
+                results,
+                index,
+                duration_ms=duration_ms,
+            )
+
+    async def _run_streaming_tool_loop(
+        self, context: AIContext, *, parent_loop_ctx: _ToolLoopContext | None = None
+    ) -> AsyncIterator[StreamDelta]:
+        """Orchestrate generation, termination decisions and local tool rounds."""
+        async with self._streaming_tool_turn(context, parent_loop_ctx) as turn:
+            loop_ctx = turn.loop_ctx
+            external = _ExternalStreamTools(
+                channel_id=self.channel_id,
+                room_id=turn.room_id,
+                publish=self._publish_tool_event,
+                handler=self._external_tool_handler,
+                before=self._before_tool_call_hook,
+                after=self._tool_call_hook,
+            )
+            context, cancelled = self._drain_steering_queue(context, loop_ctx)
+            if cancelled:
+                turn.reason = "cancelled"
+                yield LoopEndMarker(reason=turn.reason, rounds=0)
                 return
-            state = self._new_loop_state("Streaming tool loop")
+            rules = self._new_loop_state("Streaming tool loop")
 
-            _dedup_prefix = ""
-            _saw_tool_call_any = False
-
-            for _round_idx in range(self._max_tool_rounds + 1):
+            for index in range(self._max_tool_rounds + 1):
                 if loop_ctx.cancel_event.is_set():
-                    logger.info("Streaming tool loop cancelled before round %d", _round_idx)
-                    _loop_reason = "cancelled"
-                    yield LoopEndMarker(reason=_loop_reason, rounds=_round_idx)
+                    turn.reason = "cancelled"
+                    yield LoopEndMarker(reason=turn.reason, rounds=index)
                     return
-
-                # Anti-loop ripcord (force_stop): strip tools + nudge once so
-                # this round must produce a plain-text answer instead of
-                # hammering the same call to the round limit.
-                context = self._prepare_round_context(context, loop_ctx, state, _round_idx)
-
+                context = self._prepare_round_context(context, loop_ctx, rules, index)
                 round_ = _StreamRound(
-                    index=_round_idx,
-                    room_id=room_id,
+                    index=index,
+                    room_id=turn.room_id,
                     cancel_event=loop_ctx.cancel_event,
-                    thinking_coalescer=self._new_thinking_coalescer(room_id, _round_idx),
-                    new_composition=partial(self._new_tool_call_coalescer, room_id, _round_idx),
+                    thinking_coalescer=self._new_thinking_coalescer(turn.room_id, index),
+                    new_composition=partial(self._new_tool_call_coalescer, turn.room_id, index),
                     publish_thinking=self._publish_thinking_event,
                     close_thinking=self._close_thinking_window,
-                    record_usage=partial(self._record_stream_usage, _total_usage),
-                    prefix=_dedup_prefix,
-                    external_tools=external_tools if self._tool_handler is None else None,
+                    record_usage=partial(self._record_stream_usage, turn.usage),
+                    prefix=turn.dedup_prefix,
+                    external_tools=external if self._tool_handler is None else None,
                 )
-                round_state = round_.state
-                _segments.append(round_state.reported)
+                turn.segments.append(round_.state.reported)
                 async with aclosing(
                     round_.stream(self._generate_stream_with_retry(context))
                 ) as deltas:
                     async for delta in deltas:
                         yield delta
+                state = round_.state
 
-                if round_state.cancelled:
-                    _loop_reason = "cancelled"
-                    yield LoopEndMarker(reason=_loop_reason, rounds=_round_idx)
+                if state.cancelled or loop_ctx.force_stop:
+                    turn.reason = "cancelled" if state.cancelled else "force_stopped"
+                    yield LoopEndMarker(reason=turn.reason, rounds=index)
                     return
-
-                # The anti-loop final generation is terminal, even if the
-                # provider ignores the empty tool list or returns no text.
-                # Match the non-streaming loop: never dispatch another call
-                # or spend an empty-response retry after force-stop.
-                if loop_ctx.force_stop:
-                    _loop_reason = "force_stopped"
-                    yield LoopEndMarker(reason=_loop_reason, rounds=_round_idx)
-                    return
-
-                if not round_state.tool_calls:
-                    # Final answer round. If it produced no text *after* a tool
-                    # round, the model skipped verbalizing the result — re-prompt
-                    # once (bounded) for the final answer instead of ending empty.
-                    final_text = "".join(round_state.text_parts)
+                if not state.tool_calls:
                     if self._try_empty_retry(
                         context,
                         loop_ctx,
-                        state,
-                        had_tool_round=_saw_tool_call_any,
-                        final_text=final_text,
-                        finish_reason=round_state.finish_reason,
+                        rules,
+                        had_tool_round=turn.saw_tool_call,
+                        final_text=state.text,
+                        finish_reason=state.finish_reason,
                     ):
                         continue
-                    # The one exit that is both the happy path and a silent
-                    # failure, which is why it is the one that has to be named.
-                    reason: LoopEndReason = final_round_reason(
-                        had_tool_round=_saw_tool_call_any,
-                        final_text=final_text,
-                        finish_reason=round_state.finish_reason,
-                        deadline_exceeded=state.deadline_exceeded(),
+                    turn.reason = final_round_reason(
+                        had_tool_round=turn.saw_tool_call,
+                        final_text=state.text,
+                        finish_reason=state.finish_reason,
+                        deadline_exceeded=rules.deadline_exceeded(),
                         force_stopped=loop_ctx.force_stop,
                     )
-                    _loop_reason = reason
-                    yield LoopEndMarker(reason=_loop_reason, rounds=_round_idx)
+                    yield LoopEndMarker(reason=turn.reason, rounds=index)
                     return
 
-                _saw_tool_call_any = True
-
-                # Calls without a local handler are owned by an external
-                # provider. An ExternalToolHandler observes them inline above.
-                # Without one, dispatch the correct lifecycle hook directly:
-                # BEFORE only for a still-pending call, ON_TOOL_CALL when the
-                # provider embedded ``_result`` after executing it.
+                turn.saw_tool_call = True
                 if self._tool_handler is None:
-                    await external_tools.observe_calls(round_state.tool_calls)
-
-                    # External tools were handled inline during streaming.
-                    # Persistence markers were yielded alongside hook callbacks.
-                    # The turn's tool work is the provider's, already done, so
-                    # this exit is a completion — and it still names itself:
-                    # "every exit yields a marker" has no external-tools carve-out.
-                    _loop_reason = "completed"
-                    yield LoopEndMarker(reason=_loop_reason, rounds=_round_idx)
+                    await external.observe_calls(state.tool_calls)
+                    turn.reason = "completed"
+                    yield LoopEndMarker(reason=turn.reason, rounds=index)
                     return
-
-                if _round_idx >= self._max_tool_rounds:
+                if index >= self._max_tool_rounds:
                     logger.warning(
-                        "Streaming tool loop reached max_tool_rounds=%d",
-                        self._max_tool_rounds,
+                        "Streaming tool loop reached max_tool_rounds=%d", self._max_tool_rounds
                     )
-                    _loop_reason = "max_rounds"
-                    yield LoopEndMarker(reason=_loop_reason, rounds=_round_idx)
+                    turn.reason = "max_rounds"
+                    yield LoopEndMarker(reason=turn.reason, rounds=index)
                     return
-
-                if state.deadline_exceeded():
+                if rules.deadline_exceeded():
                     logger.warning(
                         "Streaming tool loop timeout after %d rounds (%.0fs)",
-                        _round_idx,
+                        index,
                         self._tool_loop_timeout_seconds,
                     )
-                    _loop_reason = "timeout"
-                    yield LoopEndMarker(reason=_loop_reason, rounds=_round_idx)
+                    turn.reason = "timeout"
+                    yield LoopEndMarker(reason=turn.reason, rounds=index)
                     return
 
-                state.warn_if_needed(_round_idx)
-
-                round_state.tool_calls = self._cap_round_tool_calls(
-                    round_state.tool_calls, state.log_label
-                )
-
-                logger.info(
-                    "Streaming tool round %d: %d call(s)",
-                    _round_idx + 1,
-                    len(round_state.tool_calls),
-                )
-
-                accumulated_text = "".join(round_state.text_parts)
-                parts = self._build_assistant_parts(
-                    "".join(round_state.thinking_parts),
-                    round_state.thinking_signature,
-                    accumulated_text,
-                    round_state.tool_calls,
-                )
-                if accumulated_text:
-                    _dedup_prefix = accumulated_text
-                context.messages.append(AIMessage(role="assistant", content=parts))
-
-                # Yield start markers for each tool call (persistence boundary)
-                for tc in round_state.tool_calls:
-                    yield ToolCallStartMarker(
-                        tool_name=tc.name,
-                        tool_id=tc.id,
-                        arguments=tc.arguments,
-                    )
-                result_parts, duration_ms, executed_arguments = await self._execute_round_tools(
-                    context,
-                    round_state.tool_calls,
-                    telemetry,
-                    room_id,
-                    _round_idx,
-                    parent_span_id=span_id,
-                )
-                _tool_calls_count += len(round_state.tool_calls)
-                _tool_rounds_count += 1
-
-                # Yield end markers with results (persistence boundary)
-                for tc, rp in zip(round_state.tool_calls, result_parts, strict=False):
-                    result_val = getattr(rp, "result", None)
-                    is_error = isinstance(result_val, str) and result_val.startswith(
-                        "Error executing tool"
-                    )
-                    yield ToolCallEndMarker(
-                        tool_name=tc.name,
-                        tool_id=tc.id,
-                        arguments=executed_arguments.get(tc.id, tc.arguments),
-                        result=result_val,
-                        status="failed" if is_error else "completed",
-                        duration_ms=duration_ms,
-                        error=result_val if is_error else None,
-                        structured_content=getattr(rp, "structured_content", None),
-                    )
-                if room_id:
-                    await self._publish_tool_event(
-                        EphemeralEventType.TOOL_CALL_END,
-                        room_id,
-                        result_parts,
-                        _round_idx,
-                        duration_ms=duration_ms,
-                    )
-
-                context, should_cancel = self._drain_steering_queue(context, loop_ctx)
-                if should_cancel:
-                    logger.info("Streaming tool loop cancelled after round %d", _round_idx)
-                    _loop_reason = "cancelled"
-                    yield LoopEndMarker(reason=_loop_reason, rounds=_round_idx)
+                rules.warn_if_needed(index)
+                async with aclosing(
+                    self._stream_local_tool_round(context, state, turn, index)
+                ) as deltas:
+                    async for delta in deltas:
+                        yield delta
+                context, cancelled = self._drain_steering_queue(context, loop_ctx)
+                if cancelled:
+                    turn.reason = "cancelled"
+                    yield LoopEndMarker(reason=turn.reason, rounds=index)
                     return
 
-            # The for loop ran out of indices without returning — only possible
-            # when an empty-retry consumed the final one. The budget is spent;
-            # name it rather than letting the stream just end.
-            _loop_reason = "max_rounds"
-            yield LoopEndMarker(reason=_loop_reason, rounds=self._max_tool_rounds)
-        except Exception as exc:
-            _span_errored = True
-            telemetry.end_span(span_id, status="error", error_message=str(exc))
-            raise
-        finally:
-            # The close publishes, and a publish that suspends can be
-            # cancelled under a consumer already being torn down. The
-            # loop still leaves ``_active_loops`` whatever happens to it,
-            # or a caller retiring the channel waits for zero forever.
-            if not _span_errored:
-                usage_attrs: dict[str, Any] = {Attr.LLM_TOOL_COUNT: _tool_calls_count}
-                if _total_usage.get("input_tokens") or _total_usage.get("output_tokens"):
-                    usage_attrs[Attr.LLM_INPUT_TOKENS] = _total_usage.get("input_tokens", 0)
-                    usage_attrs[Attr.LLM_OUTPUT_TOKENS] = _total_usage.get("output_tokens", 0)
-                telemetry.end_span(span_id, attributes=usage_attrs)
-
-            if self._after_response_hook and not _span_errored:
-                try:
-                    segments, transcript = response_transcript(
-                        "".join(round_text) for round_text in _segments
-                    )
-                    await self._after_response_hook(
-                        AIResponseEvent(
-                            channel_id=self.channel_id,
-                            response_content=transcript,
-                            segments=segments,
-                            room_id=room_id,
-                            tool_calls_count=_tool_calls_count,
-                            round_count=_tool_rounds_count,
-                            loop_end_reason=_loop_reason,
-                            # The zero defaults keep the two counters always
-                            # present, as consumers of this event have read them.
-                            usage={
-                                "input_tokens": 0,
-                                "output_tokens": 0,
-                                **_total_usage,
-                            },
-                            latency_ms=int((time.monotonic() - _t0_stream) * 1000),
-                            streaming=True,
-                        )
-                    )
-                except Exception:
-                    logger.debug("After-response hook failed (streaming)", exc_info=True)
-
-            self._active_loops.pop(loop_ctx.loop_id, None)
-            _current_loop_ctx.set(None)
+            # An empty-response retry can consume the final generation slot.
+            turn.reason = "max_rounds"
+            yield LoopEndMarker(reason=turn.reason, rounds=self._max_tool_rounds)

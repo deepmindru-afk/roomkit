@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The AI streaming tool loop now delegates generation events, prefix filtering
+  and external tool callbacks to private components. Turn accounting and cleanup
+  have explicit owners, while streaming delivery and shared tool-loop rules
+  retain their existing contracts.
+
 ### Fixed
 
 - Cerebras tool calls decode JSON-string arrays where the declared tool schema
