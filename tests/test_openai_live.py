@@ -31,6 +31,7 @@ from roomkit.providers.openai.live_events import (
     history_items,
 )
 from roomkit.voice.base import VoiceSession, VoiceSessionState
+from tests.test_proactive_delivery_voice import voice_room
 
 _EOF = object()
 TOOL = {
@@ -566,9 +567,13 @@ class TestInjectText:
         provider = _provider()
         ws, _ = await _connect(provider, session)
 
-        await provider.inject_text(session, "Be formal.", role="system")
-        await provider.inject_text(session, "Greet the user.", role="user")
-        await provider.inject_text(session, "The user is a VIP.", role="user", silent=True)
+        for text, role, silent in (
+            ("Be formal.", "system", False),
+            ("Greet the user.", "user", False),
+            ("The user is a VIP.", "user", True),
+        ):
+            result = await provider.inject_text(session, text, role=role, silent=silent)
+            assert result.status == "sent"
 
         assert ws.sent[1:] == [
             {
@@ -587,6 +592,54 @@ class TestInjectText:
                 "content": "The user is a VIP.",
             },
         ]
+
+    async def test_missing_connection_is_safe_to_retry(self, session: VoiceSession) -> None:
+        provider = _provider()
+        result = await provider.inject_text(session, "result")
+        assert result.status == "not_sent" and result.retryable
+
+    async def test_unstarted_session_is_safe_to_retry(self, session: VoiceSession) -> None:
+        provider = _provider()
+        ws, _ = await _connect(provider, session)
+        provider._states[session.id].started.clear()
+        result = await provider.inject_text(session, "result")
+        assert result.status == "not_sent" and result.retryable
+        assert not ws.of_type("session.commentary.append")
+
+    async def test_empty_input_does_not_report_an_injection(self, session: VoiceSession) -> None:
+        provider = _provider()
+        ws, _ = await _connect(provider, session)
+        result = await provider.inject_text(session, "   ")
+        assert result.status == "not_sent" and not result.retryable
+        assert not ws.of_type("session.commentary.append")
+
+    async def test_partial_append_is_unknown_and_is_not_replayed(self) -> None:
+        async with voice_room(1) as (kit, _, mock, sessions):
+            provider = _provider()
+            ws, _ = await _connect(provider, sessions[0])
+            text = " ".join(f"Sentence number {i} says something useful." for i in range(400))
+            assert len(chunk_text(text)) > 1
+            send = ws.send
+
+            async def fail_after_one_append(message: str) -> None:
+                if ws.of_type("session.commentary.append"):
+                    raise ConnectionError("second append failed")
+                await send(message)
+
+            args = dict(channel_id="voice", session_id=sessions[0].id, idempotency_key="key")
+            try:
+                with (
+                    patch.object(mock, "inject_text", side_effect=provider.inject_text),
+                    patch.object(ws, "send", side_effect=fail_after_one_append),
+                ):
+                    result = await kit.deliver("r", text, **args)
+                replay = await kit.deliver("r", text, **args)
+                assert result.status == replay.status == "unknown"
+                assert not result.error.retryable and replay.duplicate
+                assert len(ws.of_type("session.commentary.append")) == 1
+                assert mock.injected_texts == []
+            finally:
+                await provider.disconnect(sessions[0])
 
 
 class TestNoOps:

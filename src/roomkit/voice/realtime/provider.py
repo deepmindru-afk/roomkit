@@ -298,8 +298,8 @@ class RealtimeVoiceProvider(ABC):
         """Inject text and report the provider's submission boundary.
 
         Return ``VoiceInjectionResult`` to distinguish a completed send from
-        a guaranteed non-submission or uncertain acceptance. Legacy ``None``
-        remains callable, but proactive delivery reports its outcome as unknown.
+        a guaranteed non-submission or uncertain acceptance. Returning ``None``
+        is supported, but proactive delivery reports its outcome as unknown.
 
         Args:
             session: The active session.

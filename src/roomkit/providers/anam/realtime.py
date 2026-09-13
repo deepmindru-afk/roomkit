@@ -223,6 +223,11 @@ class AnamRealtimeProvider(RealtimeAudioVideoProvider):
     async def inject_text(
         self, session: VoiceSession, text: str, *, role: str = "user", silent: bool = False
     ) -> VoiceInjectionResult:
+        if silent:
+            # send_message simulates user speech and can trigger avatar output.
+            return VoiceInjectionResult(
+                status="not_sent", reason="voice_silent_injection_unsupported"
+            )
         state = self._states.get(session.id)
         if state is None or state.anam_session is None:
             return VoiceInjectionResult(

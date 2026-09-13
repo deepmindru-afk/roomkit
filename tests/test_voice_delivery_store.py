@@ -77,6 +77,15 @@ async def test_completion_is_idempotent_and_fences_other_owners(stores) -> None:
     )
     assert await first.complete_voice_delivery(sent)
     assert await second.complete_voice_delivery(sent)
+    if isinstance(first, PostgresStore):
+        async with first._acquire() as conn:
+            kind = await conn.fetchval(
+                "SELECT jsonb_typeof(outcome) FROM voice_deliveries "
+                "WHERE room_id = $1 AND key_hash = $2",
+                room,
+                sent.key_hash,
+            )
+        assert kind == "object"
     assert not await first.complete_voice_delivery(
         sent.model_copy(update={"outcome": DeliveryOutcome(status="unknown")})
     )

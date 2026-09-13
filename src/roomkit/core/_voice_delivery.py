@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+from collections.abc import Callable
 from contextlib import nullcontext
 from typing import TYPE_CHECKING, Any
 
@@ -49,11 +50,15 @@ def _unknown(reason: str, error: Exception | None = None) -> DeliveryOutcome:
     )
 
 
-def _not_sent(reason: str, error: Exception | None = None) -> DeliveryOutcome:
+def _not_sent(
+    reason: str, error: Exception | None = None, *, retryable: bool = True
+) -> DeliveryOutcome:
     return DeliveryOutcome(
         status="failed",
         reason=reason,
-        error=DeliveryError(code=reason, message=str(error) if error else reason, retryable=True),
+        error=DeliveryError(
+            code=reason, message=str(error) if error else reason, retryable=retryable
+        ),
     )
 
 
@@ -120,19 +125,19 @@ async def _validate(
     return binding.muted or binding.output_muted or not binding.can_write, None
 
 
+_INJECTION_OUTCOMES: dict[str, Callable[[VoiceInjectionResult, str], DeliveryOutcome]] = {
+    "sent": lambda result, sid: DeliveryOutcome(status="sent", session_ids=[sid]),
+    "not_sent": lambda result, sid: _not_sent(
+        result.reason or "voice_injection_not_sent", retryable=result.retryable
+    ),
+    "unknown": lambda result, sid: _unknown(result.reason or "voice_injection_unknown"),
+}
+
+
 def _reported(result: VoiceInjectionResult | None, session_id: str) -> DeliveryOutcome:
     if not isinstance(result, VoiceInjectionResult):
         return _unknown("voice_acceptance_unreported")
-    if result.status == "sent":
-        return DeliveryOutcome(status="sent", session_ids=[session_id])
-    if result.status == "not_sent":
-        reason = result.reason or "voice_injection_not_sent"
-        return DeliveryOutcome(
-            status="failed",
-            reason=reason,
-            error=DeliveryError(code=reason, message=reason, retryable=result.retryable),
-        )
-    return _unknown(result.reason or "voice_injection_unknown")
+    return _INJECTION_OUTCOMES[result.status](result, session_id)
 
 
 async def _persist(

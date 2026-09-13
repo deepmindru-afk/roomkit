@@ -1583,7 +1583,15 @@ class RealtimeVoiceChannel(
         # Inject text into all active sessions for this room
         for session in self.get_room_sessions(room_id):
             try:
-                await self._provider.inject_text(session, text, role=inject_role)
+                result = await self._provider.inject_text(
+                    session,
+                    text,
+                    role=inject_role,
+                    silent=binding.muted or binding.output_muted or not binding.can_write,
+                )
+                if result is None or result.status != "sent":
+                    logger.debug("Text injection unconfirmed for session %s", session.id)
+                    continue
 
                 # Fire ON_REALTIME_TEXT_INJECTED hook (async)
                 if self._framework:

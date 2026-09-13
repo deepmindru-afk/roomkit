@@ -239,7 +239,7 @@ class PostgresStore(ConversationStore):
                 record.room_id,
                 record.key_hash,
                 record.attempt_id,
-                record.outcome.model_dump_json(),
+                record.outcome.model_dump(mode="json"),
             )
             return tag == "UPDATE 1"
 

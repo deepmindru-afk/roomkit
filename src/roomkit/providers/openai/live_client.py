@@ -24,6 +24,7 @@ from roomkit.providers.openai.live_events import (
 from roomkit.voice.audio_frame import AudioFrame
 from roomkit.voice.base import VoiceSession
 from roomkit.voice.pipeline.resampler.linear import LinearResamplerProvider
+from roomkit.voice.realtime.injection import VoiceInjectionResult
 from roomkit.voice.realtime.provider import RealtimeVoiceProvider
 
 logger = logging.getLogger("roomkit.providers.openai.live")
@@ -68,10 +69,14 @@ class OpenAILiveClientMixin(RealtimeVoiceProvider):
         *,
         role: str = "user",
         silent: bool = False,
-    ) -> None:
+    ) -> VoiceInjectionResult:
         state = self._states.get(session.id)
-        if state is None:
-            return
+        if state is None or not state.started.is_set():
+            return VoiceInjectionResult(
+                status="not_sent", reason="voice_not_connected", retryable=True
+            )
+        if not text.strip():
+            return VoiceInjectionResult(status="not_sent", reason="voice_empty_input")
         if role == "system":
             event_type = EVT_INSTRUCTIONS_APPEND
         elif silent:
@@ -87,6 +92,7 @@ class OpenAILiveClientMixin(RealtimeVoiceProvider):
             session.id,
         )
         await self._send_append(state, event_type, None, text)
+        return VoiceInjectionResult(status="sent")
 
     async def submit_delegation_output(
         self,
