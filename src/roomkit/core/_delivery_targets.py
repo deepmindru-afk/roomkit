@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
+from roomkit.core._voice_delivery import active_sessions as _active_sessions
+from roomkit.core._voice_delivery import deliver_to_realtime_voice, replay_explicit_session
 from roomkit.models.delivery import DeliveryError, DeliveryOutcome, InboundMessage, InboundResult
 from roomkit.models.enums import Access, ChannelCategory, ChannelType, EventStatus, RoomStatus
 from roomkit.models.event import TextContent
-from roomkit.voice.base import VoiceSessionState
 
 if TYPE_CHECKING:
     from roomkit.core.delivery import DeliveryContext
@@ -29,6 +30,9 @@ async def prepare_delivery(
     channel_id: str | None = None,
 ) -> tuple[str | None, DeliveryOutcome | None]:
     """Resolve and validate the channel; pin realtime sessions before waiting."""
+    previous = await replay_explicit_session(ctx)
+    if previous is not None:
+        return None, previous
     channel_id = channel_id or await ctx.resolve_channel_id()
     if channel_id is None:
         return None, unavailable("no_transport")
@@ -66,10 +70,6 @@ async def prepare_delivery(
         ctx._voice_channel = channel
         ctx._voice_sessions = sessions
     return channel_id, None
-
-
-def _active_sessions(channel: Any, room_id: str) -> list[Any]:
-    return [s for s in channel.get_room_sessions(room_id) if s.state != VoiceSessionState.ENDED]
 
 
 async def deliver_to_channel(ctx: DeliveryContext, channel_id: str) -> DeliveryOutcome:
@@ -164,85 +164,4 @@ def _text_outcome(result: InboundResult) -> DeliveryOutcome:
                 ),
             }
         )
-    return outcome
-
-
-async def deliver_to_realtime_voice(channel: Any, ctx: DeliveryContext) -> DeliveryOutcome:
-    """Inject only pinned sessions and retain partial progress on failure.
-
-    Provider acceptance and store publication are not one transaction. A
-    retry may inject again, including when an idempotency key was supplied.
-    """
-    sessions = ctx._voice_sessions
-    if sessions is None:
-        sessions = _active_sessions(channel, ctx.room_id)
-    if not sessions:
-        return unavailable("voice_session_unavailable")
-    outcome = DeliveryOutcome(
-        status="sent",
-        reason="voice_not_deduplicated" if ctx.idempotency_key is not None else None,
-    )
-    for session in sessions:
-        if not any(session is active for active in _active_sessions(channel, ctx.room_id)):
-            return outcome.model_copy(
-                update={
-                    "status": "unavailable",
-                    "reason": "voice_session_replaced",
-                    "error": DeliveryError(
-                        code="voice_session_replaced", message="Pinned session ended or changed"
-                    ),
-                }
-            )
-        try:
-            bindings = await ctx.kit.store.list_bindings(ctx.room_id)
-            binding = next((b for b in bindings if b.channel_id == channel.channel_id), None)
-            if binding is None or ctx.kit.get_channel(channel.channel_id) is not channel:
-                return outcome.model_copy(
-                    update={
-                        "status": "unavailable",
-                        "reason": "channel_unavailable",
-                        "unavailable_targets": [channel.channel_id],
-                        "error": DeliveryError(
-                            code="channel_unavailable", message="Channel unavailable"
-                        ),
-                    }
-                )
-            if binding.access in (Access.WRITE_ONLY, Access.NONE):
-                return outcome.model_copy(
-                    update={"status": "blocked", "reason": "channel_cannot_read"}
-                )
-            if not any(session is active for active in _active_sessions(channel, ctx.room_id)):
-                return outcome.model_copy(
-                    update={
-                        "status": "unavailable",
-                        "reason": "voice_session_replaced",
-                        "error": DeliveryError(
-                            code="voice_session_replaced", message="Pinned session changed"
-                        ),
-                    }
-                )
-            silent = binding.muted or binding.output_muted or not binding.can_write
-            if silent:
-                await channel.inject_text(session, ctx.content, silent=True)
-            else:
-                await channel.inject_text(session, ctx.content)
-        except Exception as exc:
-            return outcome.model_copy(
-                update={
-                    "status": "failed",
-                    "reason": "voice_injection_failed",
-                    "error": DeliveryError(code=type(exc).__name__, message=str(exc)),
-                }
-            )
-        if not any(session is active for active in _active_sessions(channel, ctx.room_id)):
-            return outcome.model_copy(
-                update={
-                    "status": "unavailable",
-                    "reason": "voice_session_replaced",
-                    "error": DeliveryError(
-                        code="voice_session_replaced", message="Session changed during injection"
-                    ),
-                }
-            )
-        outcome.session_ids.append(session.id)
     return outcome

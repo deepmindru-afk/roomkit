@@ -22,6 +22,7 @@ from roomkit.models.participant import Participant
 from roomkit.models.room import Room
 from roomkit.models.store_filter import EventFilter
 from roomkit.models.task import Observation, Task
+from roomkit.models.voice_delivery import VoiceDeliveryRecord
 from roomkit.store.base import ConversationStore
 from roomkit.store.postgres_mappers import (
     _row_to_binding,
@@ -30,6 +31,7 @@ from roomkit.store.postgres_mappers import (
     _row_to_participant,
     _row_to_room,
     _row_to_task,
+    _row_to_voice_delivery,
     _source_extra,
 )
 from roomkit.store.postgres_schema import (
@@ -167,6 +169,79 @@ class PostgresStore(ConversationStore):
         self._dsn = dsn
         self._pool = pool
         self._owns_pool = pool is None
+
+    async def get_voice_delivery(self, room_id: str, key_hash: str) -> VoiceDeliveryRecord | None:
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM voice_deliveries WHERE room_id = $1 AND key_hash = $2",
+                room_id,
+                key_hash,
+            )
+        return _row_to_voice_delivery(row) if row is not None else None
+
+    async def claim_voice_delivery(self, record: VoiceDeliveryRecord) -> VoiceDeliveryRecord:
+        if record.outcome is not None:
+            raise ValueError("A new claim must have no outcome")
+        async with self._acquire() as conn, conn.transaction():
+            await conn.execute(
+                "INSERT INTO voice_deliveries "
+                "(room_id, key_hash, channel_id, session_id, idempotency_key, content_hash, "
+                "attempt_id, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) "
+                "ON CONFLICT (room_id, key_hash) DO NOTHING",
+                record.room_id,
+                record.key_hash,
+                record.channel_id,
+                record.session_id,
+                record.idempotency_key,
+                record.content_hash,
+                record.attempt_id,
+                record.created_at,
+            )
+            row = await conn.fetchrow(
+                "SELECT * FROM voice_deliveries WHERE room_id = $1 AND key_hash = $2 FOR UPDATE",
+                record.room_id,
+                record.key_hash,
+            )
+            if row is None:
+                raise RuntimeError("Voice delivery reservation disappeared")
+            current = _row_to_voice_delivery(row)
+            if current.retryable and current.content_hash == record.content_hash:
+                await conn.execute(
+                    "UPDATE voice_deliveries SET attempt_id = $3, created_at = $4, outcome = NULL "
+                    "WHERE room_id = $1 AND key_hash = $2",
+                    record.room_id,
+                    record.key_hash,
+                    record.attempt_id,
+                    record.created_at,
+                )
+                return record.model_copy(deep=True)
+            return current
+
+    async def complete_voice_delivery(self, record: VoiceDeliveryRecord) -> bool:
+        if record.outcome is None:
+            raise ValueError("Completion requires an outcome")
+        async with self._acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(
+                "SELECT * FROM voice_deliveries WHERE room_id = $1 AND key_hash = $2 FOR UPDATE",
+                record.room_id,
+                record.key_hash,
+            )
+            if row is None:
+                return False
+            current = _row_to_voice_delivery(row)
+            if current.attempt_id != record.attempt_id:
+                return False
+            if current.outcome is not None:
+                return current.outcome == record.outcome
+            tag = await conn.execute(
+                "UPDATE voice_deliveries SET outcome = $4::jsonb "
+                "WHERE room_id = $1 AND key_hash = $2 AND attempt_id = $3 AND outcome IS NULL",
+                record.room_id,
+                record.key_hash,
+                record.attempt_id,
+                record.outcome.model_dump(mode="json"),
+            )
+            return tag == "UPDATE 1"
 
     _acquire_timeout: float = 5.0
 

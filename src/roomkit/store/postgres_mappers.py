@@ -15,6 +15,7 @@ from roomkit.models.event import ChannelData, EventSource, RoomEvent
 from roomkit.models.participant import Participant
 from roomkit.models.room import Room, RoomTimers
 from roomkit.models.task import Observation, Task
+from roomkit.models.voice_delivery import VoiceDeliveryRecord
 
 
 def _row_to_room(row: Any) -> Room:
@@ -186,3 +187,18 @@ def _source_extra(source: EventSource) -> dict[str, Any]:
     if source.provider_message_id:
         extra["provider_message_id"] = source.provider_message_id
     return extra
+
+
+def _row_to_voice_delivery(row: Any) -> VoiceDeliveryRecord:
+    """Read a relational injection reservation and its optional result."""
+    outcome = row["outcome"]
+    return VoiceDeliveryRecord(
+        room_id=row["room_id"],
+        channel_id=row["channel_id"],
+        session_id=row["session_id"],
+        idempotency_key=row["idempotency_key"],
+        content_hash=row["content_hash"],
+        attempt_id=row["attempt_id"],
+        created_at=row["created_at"],
+        outcome=json.loads(outcome) if isinstance(outcome, str) else outcome,
+    )

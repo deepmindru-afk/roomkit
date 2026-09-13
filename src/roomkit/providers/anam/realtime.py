@@ -18,6 +18,7 @@ from typing import Any
 
 from roomkit.providers.anam.config import AnamConfig
 from roomkit.voice.base import VoiceSession, VoiceSessionState
+from roomkit.voice.realtime.injection import VoiceInjectionResult
 from roomkit.voice.realtime.provider import (
     RealtimeAudioVideoProvider,
     RealtimeVideoCallback,
@@ -221,15 +222,24 @@ class AnamRealtimeProvider(RealtimeAudioVideoProvider):
 
     async def inject_text(
         self, session: VoiceSession, text: str, *, role: str = "user", silent: bool = False
-    ) -> None:
+    ) -> VoiceInjectionResult:
+        if silent:
+            # send_message simulates user speech and can trigger avatar output.
+            return VoiceInjectionResult(
+                status="not_sent", reason="voice_silent_injection_unsupported"
+            )
         state = self._states.get(session.id)
         if state is None or state.anam_session is None:
-            return
+            return VoiceInjectionResult(
+                status="not_sent", reason="voice_not_connected", retryable=True
+            )
         try:
             # send_message goes through the LLM; talk() bypasses it
-            state.anam_session.send_message(text)
+            await state.anam_session.send_message(text)
         except Exception:
             logger.debug("inject_text failed (session %s)", session.id, exc_info=True)
+            return VoiceInjectionResult(status="unknown", reason="voice_submission_unknown")
+        return VoiceInjectionResult(status="sent")
 
     async def submit_tool_result(self, session: VoiceSession, call_id: str, result: str) -> None:
         logger.warning(

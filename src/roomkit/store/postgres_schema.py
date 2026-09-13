@@ -350,6 +350,20 @@ CREATE TABLE IF NOT EXISTS read_markers (
     PRIMARY KEY (room_id, channel_id)
 );
 
+-- Proactive voice injection reservations, independent of queue acknowledgement.
+CREATE TABLE IF NOT EXISTS voice_deliveries (
+    room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+    key_hash TEXT NOT NULL,
+    channel_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    attempt_id TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL,
+    outcome JSONB,
+    PRIMARY KEY (room_id, key_hash)
+);
+
 -- schema version
 CREATE TABLE IF NOT EXISTS schema_version (
     version INT NOT NULL,

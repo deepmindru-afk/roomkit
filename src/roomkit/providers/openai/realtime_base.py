@@ -24,6 +24,7 @@ from roomkit.providers.openai.realtime_events import (
 )
 from roomkit.voice._g711 import _G711Codec, _get_codec
 from roomkit.voice.base import VoiceSession, VoiceSessionState
+from roomkit.voice.realtime.injection import VoiceInjectionResult
 
 logger = logging.getLogger("roomkit.providers.openai.realtime_base")
 
@@ -253,10 +254,12 @@ class OpenAIRealtimeBase(OpenAIRealtimeEventHandlersMixin):
         *,
         role: str = "user",
         silent: bool = False,
-    ) -> None:
+    ) -> VoiceInjectionResult:
         ws = self._connections.get(session.id)
         if ws is None:
-            return
+            return VoiceInjectionResult(
+                status="not_sent", reason="voice_not_connected", retryable=True
+            )
 
         logger.debug(
             "[%s →] conversation.item.create (input_text, role=%s, silent=%s)",
@@ -278,6 +281,7 @@ class OpenAIRealtimeBase(OpenAIRealtimeEventHandlersMixin):
         )
 
         await self._maybe_request_response(session, ws, silent=silent)
+        return VoiceInjectionResult(status="sent")
 
     async def _maybe_request_response(
         self, session: VoiceSession, ws: Any, *, silent: bool

@@ -242,7 +242,10 @@ async def _settle_item(
     """Retry the same queue transition without repeating delivery execution."""
     while True:
         try:
-            if outcome.status not in ("unavailable", "failed"):
+            failure = outcome.status in ("unavailable", "failed") or (
+                outcome.status == "unknown" and outcome.error is not None
+            )
+            if not failure:
                 await backend.ack(item.id)
             elif outcome.error is not None and not outcome.error.retryable:
                 await backend.dead_letter(item.id, error=outcome.error.message)

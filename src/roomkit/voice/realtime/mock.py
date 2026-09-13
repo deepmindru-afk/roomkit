@@ -16,6 +16,7 @@ from roomkit.voice.base import (
     VoiceSession,
     VoiceSessionState,
 )
+from roomkit.voice.realtime.injection import VoiceInjectionResult
 from roomkit.voice.realtime.provider import (
     RealtimeAudioCallback,
     RealtimeAudioVideoProvider,
@@ -135,7 +136,7 @@ class MockRealtimeProvider(RealtimeVoiceProvider):
 
     async def inject_text(
         self, session: VoiceSession, text: str, *, role: str = "user", silent: bool = False
-    ) -> None:
+    ) -> VoiceInjectionResult:
         self.injected_texts.append((session.id, text, role))
         self.calls.append(
             MockCall(
@@ -143,6 +144,7 @@ class MockRealtimeProvider(RealtimeVoiceProvider):
                 args={"session_id": session.id, "text": text, "role": role},
             )
         )
+        return VoiceInjectionResult(status="sent")
 
     async def submit_tool_result(self, session: VoiceSession, call_id: str, result: str) -> None:
         self.tool_results.append((session.id, call_id, result))

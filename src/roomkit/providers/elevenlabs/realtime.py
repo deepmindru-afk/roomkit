@@ -31,6 +31,7 @@ from typing import Any, cast
 from roomkit.providers.elevenlabs.config import ElevenLabsRealtimeConfig
 from roomkit.providers.elevenlabs.voices import VOICES as _VOICES
 from roomkit.voice.base import VoiceSession, VoiceSessionState
+from roomkit.voice.realtime.injection import VoiceInjectionResult
 from roomkit.voice.realtime.provider import RealtimeVoiceProvider, VoiceInfo
 
 logger = logging.getLogger("roomkit.providers.elevenlabs.realtime")
@@ -327,16 +328,19 @@ class ElevenLabsRealtimeProvider(RealtimeVoiceProvider):
         *,
         role: str = "user",
         silent: bool = False,
-    ) -> None:
+    ) -> VoiceInjectionResult:
         conversation = self._conversations.get(session.id)
         if conversation is None:
-            return
+            return VoiceInjectionResult(
+                status="not_sent", reason="voice_not_connected", retryable=True
+            )
         if silent:
             logger.debug("[ElevenLabs →] contextual_update (silent inject)")
             await conversation.send_contextual_update(text)
         else:
             logger.debug("[ElevenLabs →] user_message")
             await conversation.send_user_message(text)
+        return VoiceInjectionResult(status="sent")
 
     async def submit_tool_result(self, session: VoiceSession, call_id: str, result: str) -> None:
         """Complete the SDK handler waiting on ``call_id``.

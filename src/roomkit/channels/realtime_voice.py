@@ -61,6 +61,7 @@ if TYPE_CHECKING:
     from roomkit.skills.registry import SkillRegistry
     from roomkit.voice.pipeline.config import AudioPipelineConfig
     from roomkit.voice.pipeline.engine import AudioPipeline
+    from roomkit.voice.realtime.injection import VoiceInjectionResult
     from roomkit.voice.realtime.provider import RealtimeVoiceProvider
     from roomkit.voice.realtime.reasoning import ReasoningBackend
 
@@ -735,7 +736,7 @@ class RealtimeVoiceChannel(
         role: str = "user",
         silent: bool = False,
         start_audio_stream: bool = False,
-    ) -> None:
+    ) -> VoiceInjectionResult | None:
         """Inject a text turn into the provider session.
 
         Args:
@@ -753,15 +754,18 @@ class RealtimeVoiceChannel(
         """
         if start_audio_stream:
             await self._provider.start_audio_stream(session)
-        await self._provider.inject_text(session, text, role=role, silent=silent)
-        await self._fire_text_injected(session, text, role=role)
+        result = await self._provider.inject_text(session, text, role=role, silent=silent)
+        if result is not None and result.status == "sent":
+            await self._fire_text_injected(session, text, role=role)
         logger.info(
-            "Injected text into session %s (role=%s, silent=%s, len=%d)",
+            "Text injection into session %s: %s (role=%s, silent=%s, len=%d)",
             session.id,
+            result.status if result is not None else "unknown",
             role,
             silent,
             len(text),
         )
+        return result
 
     async def _fire_text_injected(self, session: VoiceSession, text: str, *, role: str) -> None:
         """Announce a text injection to ON_REALTIME_TEXT_INJECTED (RFC §12.5).
@@ -1579,7 +1583,15 @@ class RealtimeVoiceChannel(
         # Inject text into all active sessions for this room
         for session in self.get_room_sessions(room_id):
             try:
-                await self._provider.inject_text(session, text, role=inject_role)
+                result = await self._provider.inject_text(
+                    session,
+                    text,
+                    role=inject_role,
+                    silent=binding.muted or binding.output_muted or not binding.can_write,
+                )
+                if result is None or result.status != "sent":
+                    logger.debug("Text injection unconfirmed for session %s", session.id)
+                    continue
 
                 # Fire ON_REALTIME_TEXT_INJECTED hook (async)
                 if self._framework:

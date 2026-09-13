@@ -291,7 +291,7 @@ class DeliveryOutcome(BaseModel):
     ``sent`` means publication or provider acceptance, not agent completion.
     ``inbound`` exposes the text turn's existing result/handle, in-process only.
     A duplicate identifies an earlier publication without replaying its turn.
-    Realtime injection does not deduplicate idempotency keys.
+    Keyed realtime injections reuse their recorded per-session outcomes.
     """
 
     status: Literal["queued", "sent", "blocked", "unavailable", "failed", "unknown"]
@@ -301,6 +301,8 @@ class DeliveryOutcome(BaseModel):
     duplicate: bool = False
     unavailable_targets: list[str] = Field(default_factory=list)
     session_ids: list[str] = Field(default_factory=list)
+    session_outcomes: dict[str, DeliveryOutcome] = Field(default_factory=dict)
+    """Per-session voice outcomes; child outcomes have no nested session outcomes."""
     error: DeliveryError | None = None
     turn_complete: bool = False
     inbound: InboundResult | None = Field(default=None, exclude=True)

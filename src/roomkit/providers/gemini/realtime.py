@@ -17,6 +17,7 @@ from roomkit.core.task_utils import _finish_cleanup
 from roomkit.providers.ai.base import ModelInfo
 from roomkit.providers.gemini.voices import VOICES as _VOICES
 from roomkit.voice.base import VoiceSession, VoiceSessionState
+from roomkit.voice.realtime.injection import VoiceInjectionResult
 from roomkit.voice.realtime.provider import RealtimeVoiceProvider, VoiceInfo
 
 logger = logging.getLogger("roomkit.providers.gemini.realtime")
@@ -640,9 +641,11 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
         *,
         role: str = "user",
         silent: bool = False,
-    ) -> None:
+    ) -> VoiceInjectionResult:
         if (state := self._get_active_state(session)) is None:
-            return
+            return VoiceInjectionResult(
+                status="not_sent", reason="voice_not_connected", retryable=True
+            )
 
         # Sanitize to prevent 1007 disconnects from control chars / surrogates.
         text = _sanitize_gemini_text(text)
@@ -651,7 +654,7 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
                 "inject_text: empty after sanitization, skipping (session %s)",
                 session.id,
             )
-            return
+            return VoiceInjectionResult(status="not_sent", reason="voice_empty_text")
 
         # Queue when tool results are pending — Gemini rejects input while
         # waiting for function responses (same guard as inject_image).
@@ -662,9 +665,10 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
                 state.pending_tool_calls,
             )
             state.queued_text_injections.append((text, role, silent))
-            return
+            return VoiceInjectionResult(status="unknown", reason="voice_provider_queued")
 
         await self._send_text(state, text, role, silent)
+        return VoiceInjectionResult(status="sent")
 
     async def _send_text(
         self,

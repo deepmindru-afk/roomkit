@@ -519,7 +519,8 @@ class TestOpenAIRealtimeProvider:
         mod = _load_provider()
         provider, ws, session = _make_connected_provider(mod)
 
-        await provider.inject_text(session, "Hello, world!")
+        result = await provider.inject_text(session, "Hello, world!")
+        assert result.status == "sent"
 
         assert ws.send.await_count == 2  # conversation.item.create + response.create
         first_msg = json.loads(ws.send.call_args_list[0][0][0])
@@ -577,8 +578,8 @@ class TestOpenAIRealtimeProvider:
         mod = _load_provider()
         provider = mod.OpenAIRealtimeProvider(api_key="sk-test")
         session = _make_session()
-        # Should return without error
-        await provider.inject_text(session, "No connection")
+        result = await provider.inject_text(session, "No connection")
+        assert result.status == "not_sent" and result.retryable
 
     # ── inject_image() ─────────────────────────────────────────
 

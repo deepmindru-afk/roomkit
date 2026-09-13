@@ -13,6 +13,7 @@ from roomkit.models.participant import Participant
 from roomkit.models.room import Room
 from roomkit.models.store_filter import EventFilter
 from roomkit.models.task import Observation, Task
+from roomkit.models.voice_delivery import VoiceDeliveryRecord
 from roomkit.store.base import ConversationStore
 
 
@@ -43,6 +44,7 @@ class InMemoryStore(ConversationStore):
         self._room_observations: dict[str, list[str]] = {}
         # Per-room locks for atomic index assignment
         self._room_locks: dict[str, asyncio.Lock] = {}
+        self._voice_deliveries: dict[tuple[str, str], VoiceDeliveryRecord] = {}
         # find_latest_room candidate index: participant id -> rooms where that
         # participant appears (as a Participant row or on a binding). Turns
         # the per-inbound-message room scan into a lookup over the handful of
@@ -89,6 +91,36 @@ class InMemoryStore(ConversationStore):
         if room_id not in self._room_locks:
             self._room_locks[room_id] = asyncio.Lock()
         return self._room_locks[room_id]
+
+    async def get_voice_delivery(self, room_id: str, key_hash: str) -> VoiceDeliveryRecord | None:
+        record = self._voice_deliveries.get((room_id, key_hash))
+        return record.model_copy(deep=True) if record is not None else None
+
+    async def claim_voice_delivery(self, record: VoiceDeliveryRecord) -> VoiceDeliveryRecord:
+        if record.outcome is not None:
+            raise ValueError("A new claim must have no outcome")
+        if record.room_id not in self._rooms:
+            raise ValueError("Room does not exist")
+        key = (record.room_id, record.key_hash)
+        current = self._voice_deliveries.get(key)
+        if current is None or (current.retryable and current.content_hash == record.content_hash):
+            current = record.model_copy(deep=True)
+            self._voice_deliveries[key] = current
+        return current.model_copy(deep=True)
+
+    async def complete_voice_delivery(self, record: VoiceDeliveryRecord) -> bool:
+        if record.outcome is None:
+            raise ValueError("Completion requires an outcome")
+        key = (record.room_id, record.key_hash)
+        current = self._voice_deliveries.get(key)
+        if current is None or current.attempt_id != record.attempt_id:
+            return False
+        if current.outcome is not None:
+            return current.outcome == record.outcome
+        self._voice_deliveries[key] = current.model_copy(
+            update={"outcome": record.outcome.model_copy(deep=True)}
+        )
+        return True
 
     def _reserve_event_index(self, room_id: str) -> int:
         """Return and advance the room sequence while its lock is held."""
@@ -168,6 +200,9 @@ class InMemoryStore(ConversationStore):
         self._read_markers.pop(room_id, None)
         self._next_event_index.pop(room_id, None)
         self._room_locks.pop(room_id, None)
+        self._voice_deliveries = {
+            key: value for key, value in self._voice_deliveries.items() if key[0] != room_id
+        }
         return True
 
     async def list_rooms(self, offset: int = 0, limit: int = 50) -> list[Room]:

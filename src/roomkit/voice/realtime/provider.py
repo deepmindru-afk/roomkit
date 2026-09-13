@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from roomkit.telemetry.base import Attr
 from roomkit.voice.base import VoiceSession
+from roomkit.voice.realtime.injection import VoiceInjectionResult
 
 logger = logging.getLogger("roomkit.voice.realtime.provider")
 
@@ -293,8 +294,12 @@ class RealtimeVoiceProvider(ABC):
         *,
         role: str = "user",
         silent: bool = False,
-    ) -> None:
-        """Inject text into the conversation (e.g. supervisor guidance).
+    ) -> VoiceInjectionResult | None:
+        """Inject text and report the provider's submission boundary.
+
+        Return ``VoiceInjectionResult`` to distinguish a completed send from
+        a guaranteed non-submission or uncertain acceptance. Returning ``None``
+        is supported, but proactive delivery reports its outcome as unknown.
 
         Args:
             session: The active session.

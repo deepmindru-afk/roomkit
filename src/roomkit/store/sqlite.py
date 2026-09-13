@@ -40,6 +40,7 @@ from roomkit.models.participant import Participant
 from roomkit.models.room import Room
 from roomkit.models.store_filter import EventFilter
 from roomkit.models.task import Observation, Task
+from roomkit.models.voice_delivery import VoiceDeliveryRecord
 from roomkit.store.base import ConversationStore
 
 _SCHEMA_VERSION = 3
@@ -121,6 +122,12 @@ CREATE TABLE IF NOT EXISTS read_markers(
     channel_id TEXT NOT NULL,
     event_id TEXT NOT NULL,
     PRIMARY KEY(room_id, channel_id)
+);
+CREATE TABLE IF NOT EXISTS voice_deliveries(
+    room_id TEXT NOT NULL,
+    key_hash TEXT NOT NULL,
+    data TEXT NOT NULL,
+    PRIMARY KEY(room_id, key_hash)
 );
 CREATE TABLE IF NOT EXISTS idempotency(
     room_id TEXT NOT NULL,
@@ -305,6 +312,76 @@ class SQLiteStore(ConversationStore):
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="roomkit-sqlite")
         self._conn: sqlite3.Connection | None = None
         self._closed = False
+
+    async def get_voice_delivery(self, room_id: str, key_hash: str) -> VoiceDeliveryRecord | None:
+        def read() -> VoiceDeliveryRecord | None:
+            row = (
+                self._db()
+                .execute(
+                    "SELECT data FROM voice_deliveries WHERE room_id = ? AND key_hash = ?",
+                    (room_id, key_hash),
+                )
+                .fetchone()
+            )
+            return VoiceDeliveryRecord.model_validate_json(row["data"]) if row else None
+
+        return await self._run(read)
+
+    async def claim_voice_delivery(self, record: VoiceDeliveryRecord) -> VoiceDeliveryRecord:
+        if record.outcome is not None:
+            raise ValueError("A new claim must have no outcome")
+
+        def claim() -> VoiceDeliveryRecord:
+            conn = self._db()
+            with _write_transaction(conn):
+                if (
+                    conn.execute("SELECT 1 FROM rooms WHERE id = ?", (record.room_id,)).fetchone()
+                    is None
+                ):
+                    raise ValueError("Room does not exist")
+                row = conn.execute(
+                    "SELECT data FROM voice_deliveries WHERE room_id = ? AND key_hash = ?",
+                    (record.room_id, record.key_hash),
+                ).fetchone()
+                if row:
+                    current = VoiceDeliveryRecord.model_validate_json(row["data"])
+                    if not current.retryable or current.content_hash != record.content_hash:
+                        return current
+                conn.execute(
+                    "INSERT INTO voice_deliveries(room_id, key_hash, data) VALUES (?, ?, ?) "
+                    "ON CONFLICT(room_id, key_hash) DO UPDATE SET data = excluded.data",
+                    (record.room_id, record.key_hash, record.model_dump_json()),
+                )
+                return record.model_copy(deep=True)
+
+        return await self._run(claim)
+
+    async def complete_voice_delivery(self, record: VoiceDeliveryRecord) -> bool:
+        if record.outcome is None:
+            raise ValueError("Completion requires an outcome")
+
+        def complete() -> bool:
+            conn = self._db()
+            with _write_transaction(conn):
+                row = conn.execute(
+                    "SELECT data FROM voice_deliveries WHERE room_id = ? AND key_hash = ?",
+                    (record.room_id, record.key_hash),
+                ).fetchone()
+                if row is None:
+                    return False
+                current = VoiceDeliveryRecord.model_validate_json(row["data"])
+                if current.attempt_id != record.attempt_id:
+                    return False
+                if current.outcome is not None:
+                    return current.outcome == record.outcome
+                completed = current.model_copy(update={"outcome": record.outcome})
+                conn.execute(
+                    "UPDATE voice_deliveries SET data = ? WHERE room_id = ? AND key_hash = ?",
+                    (completed.model_dump_json(), record.room_id, record.key_hash),
+                )
+                return True
+
+        return await self._run(complete)
 
     # -- Plumbing ----------------------------------------------------------
 
@@ -579,6 +656,7 @@ class SQLiteStore(ConversationStore):
                 "observations",
                 "read_markers",
                 "idempotency",
+                "voice_deliveries",
                 "event_sequences",
                 "events_fts",
             ):
