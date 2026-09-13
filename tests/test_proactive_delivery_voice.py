@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, patch
 
@@ -144,3 +145,59 @@ async def test_voice_refusal_permissions_and_muting() -> None:
         refused = await kit.deliver("r", "refused", channel_id="voice")
         assert refused.status == "blocked"
         assert len(provider.injected_texts) == 1
+
+
+async def test_session_ending_during_binding_lookup_is_never_injected() -> None:
+    async with voice_room(1) as (kit, channel, provider, sessions):
+        from roomkit.core._delivery_targets import deliver_to_realtime_voice
+        from roomkit.core.delivery import DeliveryContext
+
+        lookup = kit.store.list_bindings
+
+        async def end_during_lookup(room_id):
+            await channel.end_session(sessions[0])
+            return await lookup(room_id)
+
+        ctx = DeliveryContext(kit=kit, room_id="r", content="result", channel_id="voice")
+        ctx._voice_sessions = sessions
+        with patch.object(kit.store, "list_bindings", side_effect=end_during_lookup):
+            result = await deliver_to_realtime_voice(channel, ctx)
+        assert result.status == "unavailable"
+        assert result.reason == "voice_session_replaced"
+        assert provider.injected_texts == []
+
+
+@pytest.mark.parametrize(
+    "strategy", [WaitForIdle(buffer=0, playback_timeout=1), Queued(buffer=0, playback_timeout=1)]
+)
+async def test_busy_other_session_does_not_delay_selected_session(strategy) -> None:
+    async with voice_room() as (kit, channel, provider, sessions):
+        channel._idle_events[sessions[1].id].clear()
+        result = await asyncio.wait_for(
+            kit.deliver(
+                "r", "result", channel_id="voice", session_id=sessions[0].id, strategy=strategy
+            ),
+            0.2,
+        )
+        assert result.status == "sent"
+        assert result.reason is None
+        assert provider.injected_texts == [(sessions[0].id, "result", "user")]
+
+
+@pytest.mark.parametrize("change", ["detach", "access"])
+async def test_fanout_preserves_successes_when_next_target_becomes_unavailable(change) -> None:
+    async with voice_room() as (kit, _, provider, sessions):
+        inject = provider.inject_text
+
+        async def inject_then_change(*args, **kwargs):
+            await inject(*args, **kwargs)
+            if change == "detach":
+                await kit.detach_channel("r", "voice")
+            else:
+                await kit.set_access("r", "voice", Access.NONE)
+
+        with patch.object(provider, "inject_text", side_effect=inject_then_change):
+            result = await kit.deliver("r", "announcement")
+        assert result.status == ("unavailable" if change == "detach" else "blocked")
+        assert result.session_ids == [sessions[0].id]
+        assert provider.injected_texts == [(sessions[0].id, "announcement", "user")]

@@ -448,6 +448,8 @@ class InboundMixin(HelpersMixin):
             result.error = cascade.error
         # Step 18 reports the delivery set the caller waited for.
         result.delivery_results = cascade.delivery_results
+        if not result.duplicate:
+            result.unavailable_targets = list(cascade.unavailable_targets)
         result.response_metadata.update(cascade.response_metadata)
         result.response_events = list(cascade.response_events)
 

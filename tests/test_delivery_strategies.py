@@ -223,7 +223,7 @@ class TestWaitForIdleStrategy:
             "roomkit.core.delivery._wait_for_voice_idle", new_callable=AsyncMock
         ) as mock_wait:
             await strategy.deliver(ctx)
-            mock_wait.assert_called_once_with(ch, "room-1", 1.0, 0)
+            mock_wait.assert_called_once_with(ch, "room-1", 1.0, 0, None)
 
         kit.process_inbound.assert_called_once()
 
@@ -288,7 +288,7 @@ class TestQueuedStrategy:
             "roomkit.core.delivery._wait_for_voice_idle", new_callable=AsyncMock
         ) as mock_wait:
             await strategy.deliver(ctx)
-            mock_wait.assert_called_once_with(ch, "room-1", 2.0, 0)
+            mock_wait.assert_called_once_with(ch, "room-1", 2.0, 0, None)
 
     async def test_batching_multiple_deliveries(self) -> None:
         """When a second deliver() arrives while the first is in-flight,

@@ -9,7 +9,7 @@ from roomkit.core.delivery import DeliveryStrategy, Immediate, resolve_strategy
 from roomkit.core.mixins.helpers import HelpersMixin
 from roomkit.delivery.base import DeliveryItem
 from roomkit.delivery.serialization import serialize_strategy
-from roomkit.delivery.worker import execute_delivery
+from roomkit.delivery.worker import execute_delivery, reject_invalid_delivery
 from roomkit.models.delivery import DeliveryError, DeliveryOutcome
 
 if TYPE_CHECKING:
@@ -97,10 +97,6 @@ class DeliverMixin(HelpersMixin):
         if resolved is None:
             resolved = Immediate()
 
-        if session_id is not None and (channel_id is None or addressed_to is not None):
-            return DeliveryOutcome(status="blocked", reason="invalid_session_target")
-        if idempotency_key == "":
-            return DeliveryOutcome(status="blocked", reason="empty_idempotency_key")
         item = DeliveryItem(
             room_id=room_id,
             content=content,
@@ -112,6 +108,13 @@ class DeliverMixin(HelpersMixin):
             session_id=session_id,
         )
         if self._delivery_backend is not None:
+            refusal = await reject_invalid_delivery(
+                self,  # ty: ignore[invalid-argument-type]
+                item,
+                hook_engine=self._hook_engine,
+            )
+            if refusal is not None:
+                return refusal
             try:
                 await self._delivery_backend.enqueue(item)
             except Exception as exc:

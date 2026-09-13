@@ -67,6 +67,11 @@ async def fire_delivery_hooks(
     if not hooks.has_hooks(trigger):
         return item.content
     outcome = item.outcome
+    published = (
+        outcome.inbound.event
+        if trigger == HookTrigger.AFTER_DELIVER and outcome and outcome.inbound
+        else None
+    )
     extra: dict[str, object] = {
         **item.metadata,
         "delivery_item_id": item.id,
@@ -85,13 +90,17 @@ async def fire_delivery_hooks(
         extra["error"] = error
     event = build_delivery_hook_event(
         item.room_id,
-        item.content,
+        published.content.body
+        if published is not None and isinstance(published.content, TextContent)
+        else item.content,
         channel_id=item.channel_id,
         strategy_name=item.strategy.get("type", "immediate"),
         status=status,
         extra_meta=extra,
-        addressed_to=item.addressed_to,
-        idempotency_key=item.idempotency_key,
+        addressed_to=published.addressed_to if published is not None else item.addressed_to,
+        idempotency_key=published.idempotency_key
+        if published is not None
+        else item.idempotency_key,
     )
     if trigger == HookTrigger.AFTER_DELIVER:
         try:
@@ -119,6 +128,25 @@ async def fire_delivery_hooks(
     return item.content
 
 
+async def reject_invalid_delivery(
+    kit: RoomKit,
+    item: DeliveryItem,
+    *,
+    hook_engine: HookEngine | None = None,
+) -> DeliveryOutcome | None:
+    """Report invalid requests consistently before enqueue or execution."""
+    reason = None
+    if item.session_id is not None and (item.channel_id is None or item.addressed_to is not None):
+        reason = "invalid_session_target"
+    elif item.idempotency_key == "":
+        reason = "empty_idempotency_key"
+    if reason is None:
+        return None
+    item.outcome = DeliveryOutcome(status="blocked", reason=reason, delivery_item_id=item.id)
+    await fire_delivery_hooks(kit, item, HookTrigger.AFTER_DELIVER, hook_engine=hook_engine)
+    return item.outcome
+
+
 async def execute_delivery(
     kit: RoomKit,
     item: DeliveryItem,
@@ -128,6 +156,9 @@ async def execute_delivery(
 ) -> DeliveryOutcome:
     """Execute once and report its actual outcome, including hook refusals."""
     item.outcome = None
+    refusal = await reject_invalid_delivery(kit, item, hook_engine=hook_engine)
+    if refusal is not None:
+        return refusal
     content = await fire_delivery_hooks(
         kit, item, HookTrigger.BEFORE_DELIVER, hook_engine=hook_engine
     )

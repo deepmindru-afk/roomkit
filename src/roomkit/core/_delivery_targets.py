@@ -104,10 +104,10 @@ async def deliver_to_channel(ctx: DeliveryContext, channel_id: str) -> DeliveryO
         except asyncio.CancelledError:
             await result.delivery.cancel()
             raise
-    return await _text_outcome(ctx, result)
+    return _text_outcome(result)
 
 
-async def _text_outcome(ctx: DeliveryContext, result: InboundResult) -> DeliveryOutcome:
+def _text_outcome(result: InboundResult) -> DeliveryOutcome:
     event = result.event
     outcome = DeliveryOutcome(
         status="sent",
@@ -151,37 +151,19 @@ async def _text_outcome(ctx: DeliveryContext, result: InboundResult) -> Delivery
     # the address supplied on this call. Its turn's completion is unknown.
     if result.duplicate:
         outcome.reason = "duplicate_publication"
-    addresses = event.addressed_to
-    if addresses:
-        context = await ctx.kit._build_context(ctx.room_id)  # noqa: SLF001
-        source = next(
-            (b for b in context.bindings if b.channel_id == event.source.channel_id), None
+    if result.unavailable_targets:
+        return outcome.model_copy(
+            update={
+                "status": "unavailable",
+                "reason": "addressed_targets_unavailable",
+                "unavailable_targets": list(result.unavailable_targets),
+                "error": DeliveryError(
+                    code="addressed_targets_unavailable",
+                    message="The event was published but an addressed target was unavailable",
+                    retryable=False,
+                ),
+            }
         )
-        targets = (
-            ctx.kit._get_router().plan(event, source, context).targets  # noqa: SLF001
-            if source is not None
-            else []
-        )
-        eligible = {
-            b.channel_id
-            for b in targets
-            if b.category == ChannelCategory.INTELLIGENCE
-            and ctx.kit.get_channel(b.channel_id) is not None
-        }
-        missing = [target for target in addresses if target not in eligible]
-        if missing:
-            return outcome.model_copy(
-                update={
-                    "status": "unavailable",
-                    "reason": "addressed_targets_unavailable",
-                    "unavailable_targets": missing,
-                    "error": DeliveryError(
-                        code="addressed_targets_unavailable",
-                        message="The event was published but an addressed target was unavailable",
-                        retryable=False,
-                    ),
-                }
-            )
     return outcome
 
 
@@ -215,9 +197,30 @@ async def deliver_to_realtime_voice(channel: Any, ctx: DeliveryContext) -> Deliv
             bindings = await ctx.kit.store.list_bindings(ctx.room_id)
             binding = next((b for b in bindings if b.channel_id == channel.channel_id), None)
             if binding is None or ctx.kit.get_channel(channel.channel_id) is not channel:
-                return unavailable("channel_unavailable", [channel.channel_id])
+                return outcome.model_copy(
+                    update={
+                        "status": "unavailable",
+                        "reason": "channel_unavailable",
+                        "unavailable_targets": [channel.channel_id],
+                        "error": DeliveryError(
+                            code="channel_unavailable", message="Channel unavailable"
+                        ),
+                    }
+                )
             if binding.access in (Access.WRITE_ONLY, Access.NONE):
-                return DeliveryOutcome(status="blocked", reason="channel_cannot_read")
+                return outcome.model_copy(
+                    update={"status": "blocked", "reason": "channel_cannot_read"}
+                )
+            if not any(session is active for active in _active_sessions(channel, ctx.room_id)):
+                return outcome.model_copy(
+                    update={
+                        "status": "unavailable",
+                        "reason": "voice_session_replaced",
+                        "error": DeliveryError(
+                            code="voice_session_replaced", message="Pinned session changed"
+                        ),
+                    }
+                )
             silent = binding.muted or binding.output_muted or not binding.can_write
             if silent:
                 await channel.inject_text(session, ctx.content, silent=True)

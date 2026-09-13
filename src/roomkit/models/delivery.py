@@ -22,6 +22,7 @@ if TYPE_CHECKING:
         """
 
         delivery_results: dict[str, Any]
+        unavailable_targets: list[str]
         error: Exception | None
         response_metadata: ResponseMetadata
         response_events: list[RoomEvent]
@@ -177,6 +178,8 @@ class DeliveryHandle:
         if self._cascade.cancelled is not None:
             await self._cascade.wait_drained()
         self._result.delivery_results = self._cascade.delivery_results
+        if not self._result.duplicate:
+            self._result.unavailable_targets = list(self._cascade.unavailable_targets)
         self._result.response_metadata.update(self._cascade.response_metadata)
         self._result.response_events = list(self._cascade.response_events)
         if self._result.error is None:
@@ -206,6 +209,12 @@ class InboundResult(BaseModel):
     event: RoomEvent | None = None
     duplicate: bool = False
     """The event is a replay of an existing idempotency key, not a new turn."""
+    unavailable_targets: list[str] | None = None
+    """Explicit addresses absent from the committed delivery plan.
+
+    Backfilled from execution by a deferred handle. None means no new plan was
+    resolved (for example a duplicate); availability is not re-read on replay.
+    """
     blocked: bool = False
     reason: str | None = None
     error: Exception | None = None

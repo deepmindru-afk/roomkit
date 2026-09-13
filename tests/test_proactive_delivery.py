@@ -8,6 +8,9 @@ from pathlib import Path
 import pytest
 
 from roomkit import Access, DeliveryOutcome, HookExecution, HookResult, HookTrigger, RoomKit
+from roomkit.delivery.base import DeliveryItem
+from roomkit.delivery.memory import InMemoryDeliveryBackend
+from roomkit.delivery.worker import execute_delivery
 from roomkit.models.context import RoomContext
 from roomkit.models.event import RoomEvent
 from roomkit.store.sqlite import SQLiteStore
@@ -165,3 +168,100 @@ async def test_result_is_public_and_serializable_without_runtime_handle() -> Non
         snapshot = DeliveryOutcome.model_validate_json(result.model_dump_json())
         assert snapshot.event_id == result.event_id
         assert snapshot.inbound is None
+
+
+async def test_agent_detaching_after_solicitation_does_not_change_outcome() -> None:
+    kit, _, agents = await _room("a")
+    original = agents["a"].on_event
+
+    async def detach_after_acting(event, binding, context):
+        result = await original(event, binding, context)
+        await kit.detach_channel("room-1", "a")
+        return result
+
+    agents["a"].on_event = detach_after_acting
+    async with kit:
+        result = await kit.deliver("room-1", "external result", addressed_to=["a"])
+        assert result.status == "sent"
+        assert agents["a"].solicited == ["external result"]
+        assert result.unavailable_targets == []
+        assert result.inbound.unavailable_targets == []
+
+
+async def test_no_fallible_context_lookup_after_text_publication() -> None:
+    kit, _, agents = await _room("a")
+    original = agents["a"].on_event
+    build_context = kit._build_context
+
+    async def fail_context(*args, **kwargs):
+        raise ConnectionError("context service unavailable after publication")
+
+    async def act_then_disconnect(event, binding, context):
+        result = await original(event, binding, context)
+        kit._build_context = fail_context
+        return result
+
+    agents["a"].on_event = act_then_disconnect
+    async with kit:
+        try:
+            result = await kit.deliver("room-1", "external result", addressed_to=["a"])
+        finally:
+            kit._build_context = build_context
+        assert result.status == "sent"
+        assert result.event_id is not None
+        assert result.error is None
+        assert agents["a"].solicited == ["external result"]
+
+
+async def test_replay_hook_describes_original_publication() -> None:
+    kit, _, agents = await _room("a", "b")
+    observations = asyncio.Queue()
+
+    @kit.hook(HookTrigger.AFTER_DELIVER, execution=HookExecution.ASYNC)
+    async def observe(event, context):
+        await observations.put(event)
+
+    async with kit:
+        first = await kit.deliver("room-1", "original", addressed_to=["a"], idempotency_key="k")
+        await asyncio.wait_for(observations.get(), 1)
+        replay = await kit.deliver("room-1", "changed", addressed_to=["b"], idempotency_key="k")
+        observed = await asyncio.wait_for(observations.get(), 1)
+        assert replay.duplicate and replay.event_id == first.event_id
+        assert observed.content.body == "original"
+        assert observed.addressed_to == ["a"]
+        assert observed.metadata["delivery_outcome"]["event_id"] == first.event_id
+        assert observed.metadata["error"] is None
+        assert agents["b"].solicited == []
+
+
+@pytest.mark.parametrize("path", ["direct", "enqueue", "worker"])
+@pytest.mark.parametrize(
+    ("kwargs", "reason"),
+    [
+        ({"idempotency_key": ""}, "empty_idempotency_key"),
+        ({"session_id": "s"}, "invalid_session_target"),
+    ],
+)
+async def test_invalid_request_is_observable_without_publication(path, kwargs, reason) -> None:
+    backend = InMemoryDeliveryBackend() if path == "enqueue" else None
+    async with RoomKit(delivery_backend=backend) as kit:
+        await kit.create_room(room_id="r")
+        observations = asyncio.Queue()
+
+        @kit.hook(HookTrigger.AFTER_DELIVER, execution=HookExecution.ASYNC)
+        async def observe(event, context):
+            await observations.put(event)
+
+        if path == "worker":
+            result = await execute_delivery(
+                kit, DeliveryItem(room_id="r", content="bad", **kwargs)
+            )
+        else:
+            result = await kit.deliver("r", "bad", **kwargs)
+        observed = await asyncio.wait_for(observations.get(), 1)
+        assert result.status == observed.status == "blocked"
+        assert result.reason == reason
+        assert observed.metadata["delivery_outcome"] == result.model_dump(mode="json")
+        assert await kit.get_timeline("r") == []
+        if backend is not None:
+            assert await backend.dequeue("test", timeout=0) == []

@@ -562,8 +562,17 @@ class RealtimeVoiceChannel(
         with self._state_lock:
             return [s for s in self._sessions.values() if self._session_rooms.get(s.id) == room_id]
 
-    async def wait_idle(self, room_id: str, timeout: float = 15.0) -> None:
-        """Wait until all sessions in the room are idle (not speaking).
+    async def wait_idle(
+        self,
+        room_id: str,
+        timeout: float = 15.0,
+        *,
+        session_ids: list[str] | None = None,
+    ) -> None:
+        """Wait until the selected sessions in the room are idle (not speaking).
+
+        ``session_ids=None`` includes every session. A proactive delivery can
+        restrict the wait to its pinned destinations without waiting on others.
 
         An idle session has submitted its tool results, finished the provider
         response that follows them, and all audio
@@ -571,6 +580,8 @@ class RealtimeVoiceChannel(
         may still be playing that audio.
         """
         for session in self.get_room_sessions(room_id):
+            if session_ids is not None and session.id not in session_ids:
+                continue
             event = self._idle_events.get(session.id)
             if event is not None and not event.is_set():
                 await asyncio.wait_for(event.wait(), timeout=timeout)

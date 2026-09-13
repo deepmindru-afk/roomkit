@@ -96,7 +96,7 @@ class WaitForIdle(DeliveryStrategy):
         if channel is not None and channel.channel_type in _VOICE_TYPES:
             try:
                 await _wait_for_voice_idle(
-                    channel, ctx.room_id, self.playback_timeout, self.buffer
+                    channel, ctx.room_id, self.playback_timeout, self.buffer, ctx._voice_sessions
                 )
             except TimeoutError:
                 logger.warning("Voice idle timeout in room %s; delivering", ctx.room_id)
@@ -172,7 +172,11 @@ class Queued(DeliveryStrategy):
             try:
                 if channel is not None and channel.channel_type in _VOICE_TYPES:
                     await _wait_for_voice_idle(
-                        channel, first.context.room_id, self.playback_timeout, self.buffer
+                        channel,
+                        first.context.room_id,
+                        self.playback_timeout,
+                        self.buffer,
+                        first.context._voice_sessions,
                     )
             except Exception as exc:
                 first.result.set_result(_strategy_failure(exc))
@@ -232,7 +236,13 @@ def resolve_strategy(strategy: DeliveryStrategy | str | None) -> DeliveryStrateg
     return cls()
 
 
-async def _wait_for_voice_idle(channel: Any, room_id: str, timeout: float, buffer: float) -> None:
+async def _wait_for_voice_idle(
+    channel: Any,
+    room_id: str,
+    timeout: float,
+    buffer: float,
+    sessions: list[Any] | None = None,
+) -> None:
     """Wait for voice playback or provider idle, followed by a buffer."""
     from roomkit.channels.realtime_voice import RealtimeVoiceChannel
     from roomkit.channels.voice import VoiceChannel
@@ -240,7 +250,10 @@ async def _wait_for_voice_idle(channel: Any, room_id: str, timeout: float, buffe
     if isinstance(channel, VoiceChannel):
         await channel.wait_playback_done(room_id, timeout=timeout)
     elif isinstance(channel, RealtimeVoiceChannel):
-        await channel.wait_idle(room_id, timeout=timeout)
+        if sessions is None:
+            await channel.wait_idle(room_id, timeout=timeout)
+        else:
+            await channel.wait_idle(room_id, timeout=timeout, session_ids=[s.id for s in sessions])
     else:
         return
     if buffer > 0:
