@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.73.0] — 2026-09-13
+
 ### Changed
 
 - The AI streaming tool loop now delegates generation events, prefix filtering
@@ -25,7 +27,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   parallel round. The cancellation still propagates to the caller.
 - Cerebras tool calls decode JSON-string arrays where the declared tool schema
   requires an array, including nested array fields. Invalid JSON, scalar values
-  and ambiguous types remain unchanged for normal argument validation.
+  and ambiguous types remain unchanged for normal argument validation. The
+  adapting stream also closes the underlying provider stream when its consumer
+  stops early.
 - The AI tool-loop repetition guard counts rejected attempts as well as
   dispatched calls. Repeated invalid arguments now end with a bounded final
   response that is instructed to report the failure, rather than exhausting
@@ -7270,7 +7274,8 @@ See entries `0.7.0a1` through `0.7.0a18` below.
 - `STTProvider.transcribe()` returns `TranscriptionResult` (Phase 3.1)
 - Framework event names enriched with payloads (Phase 4)
 
-[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.72.0...HEAD
+[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.73.0...HEAD
+[0.73.0]: https://github.com/roomkit-live/roomkit/compare/v0.72.0...v0.73.0
 [0.72.0]: https://github.com/roomkit-live/roomkit/compare/v0.71.0...v0.72.0
 [0.71.0]: https://github.com/roomkit-live/roomkit/compare/v0.70.0...v0.71.0
 [0.70.0]: https://github.com/roomkit-live/roomkit/compare/v0.69.0...v0.70.0
