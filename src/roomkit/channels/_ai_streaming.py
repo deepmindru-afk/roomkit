@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import AsyncIterator
+from contextlib import aclosing
+from functools import partial
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.channels._ai_coalescers import _ThinkingCoalescer, _ToolCallDeltaCoalescer
@@ -15,7 +17,7 @@ from roomkit.channels._ai_loop_rules import (
 )
 from roomkit.channels._ai_resilience import _StreamRetryBoundary
 from roomkit.channels._ai_stream_external_tools import _ExternalStreamTools
-from roomkit.channels._ai_stream_round import _PrefixDeduplicator, _StreamRoundState
+from roomkit.channels._ai_stream_round import _StreamRound
 from roomkit.models.channel import ChannelOutput
 from roomkit.models.event import RoomEvent
 from roomkit.models.streaming import (
@@ -33,8 +35,6 @@ from roomkit.providers.ai.base import (
     StreamDone,
     StreamTextDelta,
     StreamThinkingDelta,
-    StreamToolCall,
-    StreamToolCallDelta,
 )
 from roomkit.providers.utils import _aclose_stream
 from roomkit.realtime.base import EphemeralEventType
@@ -398,6 +398,18 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
             response_metadata=ai_context.response_metadata,
         )
 
+    def _record_stream_usage(self, total: dict[str, int], usage: dict[str, Any]) -> None:
+        """Accumulate every counter and project the input/output metrics."""
+        _accumulate_usage(total, usage)
+        telemetry = self._telemetry_provider
+        for counter in ("input_tokens", "output_tokens"):
+            telemetry.record_metric(
+                f"roomkit.llm.{counter}",
+                float(usage.get(counter, 0)),
+                unit="tokens",
+                attributes={"channel_id": self.channel_id},
+            )
+
     async def _run_streaming_tool_loop(
         self, context: AIContext, *, parent_loop_ctx: Any | None = None
     ) -> AsyncIterator[StreamDelta]:
@@ -450,13 +462,6 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
             before=self._before_tool_call_hook,
             after=self._tool_call_hook,
         )
-        # Keep the current round reachable during cleanup, including a
-        # provider failure or a consumer closing between fragments.
-        round_state = _StreamRoundState()
-        coalescer = self._new_thinking_coalescer(room_id, round_idx=0)
-        _round_idx = 0
-        stream: Any = None
-        tool_coalescer: _ToolCallDeltaCoalescer | None = None
         try:
             context, should_cancel = self._drain_steering_queue(context, loop_ctx)
             if should_cancel:
@@ -480,156 +485,30 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                 # hammering the same call to the round limit.
                 context = self._prepare_round_context(context, loop_ctx, state, _round_idx)
 
-                round_state = _StreamRoundState()
+                round_ = _StreamRound(
+                    index=_round_idx,
+                    room_id=room_id,
+                    cancel_event=loop_ctx.cancel_event,
+                    thinking_coalescer=self._new_thinking_coalescer(room_id, _round_idx),
+                    new_composition=partial(self._new_tool_call_coalescer, room_id, _round_idx),
+                    publish_thinking=self._publish_thinking_event,
+                    close_thinking=self._close_thinking_window,
+                    record_usage=partial(self._record_stream_usage, _total_usage),
+                    prefix=_dedup_prefix,
+                    external_tools=external_tools if self._tool_handler is None else None,
+                )
+                round_state = round_.state
                 _segments.append(round_state.reported)
-                coalescer = self._new_thinking_coalescer(room_id, round_idx=_round_idx)
-                tool_coalescer = self._new_tool_call_coalescer(room_id, round_idx=_round_idx)
-                dedup = _PrefixDeduplicator(_dedup_prefix)
+                async with aclosing(
+                    round_.stream(self._generate_stream_with_retry(context))
+                ) as deltas:
+                    async for delta in deltas:
+                        yield delta
 
-                stream = self._generate_stream_with_retry(context)
-                async for event in stream:
-                    # Check cancel between every stream event — allows immediate
-                    # cancellation instead of waiting for the full stream to finish.
-                    if loop_ctx.cancel_event.is_set():
-                        logger.info("Streaming cancelled mid-generation at round %d", _round_idx)
-                        if room_id:
-                            # A cancel ends the round for the bus too: the
-                            # reasoning window closes with the block reasoned
-                            # so far, then the composition closes — or a
-                            # subscriber stays on "thinking" for a turn that
-                            # is over, with the buffered deltas lost.
-                            if round_state.thinking_started and round_state.thinking_parts:
-                                round_state.thinking_started = False
-                                await self._close_thinking_window(
-                                    coalescer,
-                                    room_id,
-                                    round_state.thinking_parts,
-                                    _round_idx,
-                                    published=round_state.thinking_published,
-                                )
-                            await tool_coalescer.close()
-                        _loop_reason = "cancelled"
-                        yield LoopEndMarker(reason=_loop_reason, rounds=_round_idx)
-                        return
-
-                    if isinstance(event, _StreamRetryBoundary):
-                        if room_id:
-                            await tool_coalescer.close()
-                            tool_coalescer = self._new_tool_call_coalescer(
-                                room_id, round_idx=_round_idx
-                            )
-                    elif isinstance(event, StreamThinkingDelta):
-                        if event.signature:
-                            # Signature arrives as its own delta (empty text);
-                            # capture it so the thinking block round-trips.
-                            round_state.thinking_signature = event.signature
-                        if not event.thinking:
-                            continue
-                        if not round_state.thinking_started and room_id:
-                            round_state.thinking_started = True
-                            await self._publish_thinking_event(
-                                EphemeralEventType.THINKING_START,
-                                room_id,
-                                "",
-                                _round_idx,
-                            )
-                        round_state.thinking_parts.append(event.thinking)
-                        # Buffer the per-chunk delta and publish in windows on the
-                        # realtime bus so remote WS subscribers stream the reasoning
-                        # live; the buffered THINKING_END below still fires so an
-                        # observer that joined mid-window recovers that window whole.
-                        # Windows the observer missed are gone — these events are
-                        # ephemeral, and the round's full reasoning lives in the
-                        # assistant message, not on the bus.
-                        await coalescer.add(event.thinking)
-                        # Inline marker so channels can render reasoning in
-                        # arrival order with text deltas.
-                        yield ThinkingDeltaMarker(thinking=event.thinking)
-                    elif isinstance(event, StreamTextDelta):
-                        if round_state.thinking_started and round_state.thinking_parts and room_id:
-                            round_state.thinking_started = False
-                            round_state.thinking_published = await self._close_thinking_window(
-                                coalescer,
-                                room_id,
-                                round_state.thinking_parts,
-                                _round_idx,
-                                published=round_state.thinking_published,
-                            )
-                        round_state.text_parts.append(event.text)
-
-                        # Only delivered fragments enter the reported transcript.
-                        for text in dedup.add(event.text):
-                            round_state.reported.append(text)
-                            yield text
-                    elif isinstance(event, StreamToolCallDelta):
-                        # Composing a tool call's arguments ends the reasoning
-                        # window exactly as the first text delta does: the model
-                        # has stopped thinking and started producing. Without
-                        # this a round that reasons and then calls a tool with
-                        # no text leaves THINKING_START open for the whole
-                        # composition.
-                        if round_state.thinking_started and round_state.thinking_parts and room_id:
-                            round_state.thinking_started = False
-                            round_state.thinking_published = await self._close_thinking_window(
-                                coalescer,
-                                room_id,
-                                round_state.thinking_parts,
-                                _round_idx,
-                                published=round_state.thinking_published,
-                            )
-                        if room_id:
-                            await tool_coalescer.add(
-                                event.index,
-                                event.id,
-                                event.name,
-                                len(event.arguments_delta),
-                            )
-                    elif isinstance(event, StreamToolCall):
-                        round_state.tool_calls.append(event)
-                        if self._tool_handler is None and external_tools.handler is not None:
-                            external_stream = external_tools.stream_call(event, _round_idx)
-                            try:
-                                async for delta in external_stream:
-                                    yield delta
-                            finally:
-                                await _aclose_stream(external_stream)
-                    elif isinstance(event, StreamDone):
-                        round_state.finish_reason = event.finish_reason
-                        if event.usage:
-                            round_in = event.usage.get("input_tokens", 0)
-                            round_out = event.usage.get("output_tokens", 0)
-                            _accumulate_usage(_total_usage, event.usage)
-                            telemetry.record_metric(
-                                "roomkit.llm.input_tokens",
-                                float(round_in),
-                                unit="tokens",
-                                attributes={"channel_id": self.channel_id},
-                            )
-                            telemetry.record_metric(
-                                "roomkit.llm.output_tokens",
-                                float(round_out),
-                                unit="tokens",
-                                attributes={"channel_id": self.channel_id},
-                            )
-
-                for text in dedup.finish():
-                    round_state.reported.append(text)
-                    yield text
-
-                if round_state.thinking_started and round_state.thinking_parts and room_id:
-                    round_state.thinking_started = False
-                    await self._close_thinking_window(
-                        coalescer,
-                        room_id,
-                        round_state.thinking_parts,
-                        _round_idx,
-                        published=round_state.thinking_published,
-                    )
-                # The composition is over for this round, whichever way the
-                # round now ends — including the exits below that never reach
-                # TOOL_CALL_START.
-                if room_id:
-                    await tool_coalescer.close()
+                if round_state.cancelled:
+                    _loop_reason = "cancelled"
+                    yield LoopEndMarker(reason=_loop_reason, rounds=_round_idx)
+                    return
 
                 # The anti-loop final generation is terminal, even if the
                 # provider ignores the empty tool list or returns no text.
@@ -788,64 +667,44 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
             telemetry.end_span(span_id, status="error", error_message=str(exc))
             raise
         finally:
-            try:
+            # The close publishes, and a publish that suspends can be
+            # cancelled under a consumer already being torn down. The
+            # loop still leaves ``_active_loops`` whatever happens to it,
+            # or a caller retiring the channel waits for zero forever.
+            if not _span_errored:
+                usage_attrs: dict[str, Any] = {Attr.LLM_TOOL_COUNT: _tool_calls_count}
+                if _total_usage.get("input_tokens") or _total_usage.get("output_tokens"):
+                    usage_attrs[Attr.LLM_INPUT_TOKENS] = _total_usage.get("input_tokens", 0)
+                    usage_attrs[Attr.LLM_OUTPUT_TOKENS] = _total_usage.get("output_tokens", 0)
+                telemetry.end_span(span_id, attributes=usage_attrs)
+
+            if self._after_response_hook and not _span_errored:
                 try:
-                    await _aclose_stream(stream)
-                    # A window still open here was left by an abnormal exit — a
-                    # provider error, a consumer that closed the stream — and
-                    # closes with the block reasoned so far, the way a cancelled
-                    # round's does above. Publishing is best-effort: the error
-                    # that got the round here is the one that propagates.
-                    if room_id and round_state.thinking_started and round_state.thinking_parts:
-                        await self._close_thinking_window(
-                            coalescer,
-                            room_id,
-                            round_state.thinking_parts,
-                            _round_idx,
-                            published=round_state.thinking_published,
+                    segments, transcript = response_transcript(
+                        "".join(round_text) for round_text in _segments
+                    )
+                    await self._after_response_hook(
+                        AIResponseEvent(
+                            channel_id=self.channel_id,
+                            response_content=transcript,
+                            segments=segments,
+                            room_id=room_id,
+                            tool_calls_count=_tool_calls_count,
+                            round_count=_tool_rounds_count,
+                            loop_end_reason=_loop_reason,
+                            # The zero defaults keep the two counters always
+                            # present, as consumers of this event have read them.
+                            usage={
+                                "input_tokens": 0,
+                                "output_tokens": 0,
+                                **_total_usage,
+                            },
+                            latency_ms=int((time.monotonic() - _t0_stream) * 1000),
+                            streaming=True,
                         )
-                finally:
-                    if room_id and tool_coalescer is not None:
-                        await tool_coalescer.close()
-            finally:
-                # The close publishes, and a publish that suspends can be
-                # cancelled under a consumer already being torn down. The
-                # loop still leaves ``_active_loops`` whatever happens to it,
-                # or a caller retiring the channel waits for zero forever.
-                if not _span_errored:
-                    usage_attrs: dict[str, Any] = {Attr.LLM_TOOL_COUNT: _tool_calls_count}
-                    if _total_usage.get("input_tokens") or _total_usage.get("output_tokens"):
-                        usage_attrs[Attr.LLM_INPUT_TOKENS] = _total_usage.get("input_tokens", 0)
-                        usage_attrs[Attr.LLM_OUTPUT_TOKENS] = _total_usage.get("output_tokens", 0)
-                    telemetry.end_span(span_id, attributes=usage_attrs)
+                    )
+                except Exception:
+                    logger.debug("After-response hook failed (streaming)", exc_info=True)
 
-                if self._after_response_hook and not _span_errored:
-                    try:
-                        segments, transcript = response_transcript(
-                            "".join(round_text) for round_text in _segments
-                        )
-                        await self._after_response_hook(
-                            AIResponseEvent(
-                                channel_id=self.channel_id,
-                                response_content=transcript,
-                                segments=segments,
-                                room_id=room_id,
-                                tool_calls_count=_tool_calls_count,
-                                round_count=_tool_rounds_count,
-                                loop_end_reason=_loop_reason,
-                                # The zero defaults keep the two counters always
-                                # present, as consumers of this event have read them.
-                                usage={
-                                    "input_tokens": 0,
-                                    "output_tokens": 0,
-                                    **_total_usage,
-                                },
-                                latency_ms=int((time.monotonic() - _t0_stream) * 1000),
-                                streaming=True,
-                            )
-                        )
-                    except Exception:
-                        logger.debug("After-response hook failed (streaming)", exc_info=True)
-
-                self._active_loops.pop(loop_ctx.loop_id, None)
-                _current_loop_ctx.set(None)
+            self._active_loops.pop(loop_ctx.loop_id, None)
+            _current_loop_ctx.set(None)

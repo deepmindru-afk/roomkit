@@ -8,6 +8,8 @@ from collections.abc import AsyncIterator
 import pytest
 
 from roomkit.channels.ai import AIChannel
+from roomkit.models.context import RoomContext
+from roomkit.models.room import Room
 from roomkit.models.streaming import LoopEndMarker, ThinkingDeltaMarker, ToolCallStartMarker
 from roomkit.models.tool_call import AIResponseEvent
 from roomkit.providers.ai.base import (
@@ -20,6 +22,7 @@ from roomkit.providers.ai.base import (
     StreamToolCallDelta,
 )
 from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.tools.context import current_tool_room_id
 from tests.conftest import make_event
 from tests.test_ai_streaming_tool_loop import _binding, _ctx
 
@@ -199,3 +202,58 @@ async def test_task_cancellation_closes_an_open_tool_composition() -> None:
         if not task.done():
             task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_interleaved_rounds_keep_room_state_and_usage_separate() -> None:
+    ready: set[str] = set()
+    both_started = asyncio.Event()
+    reports: dict[str, AIResponseEvent] = {}
+    executions: list[tuple[str | None, str]] = []
+
+    class Provider(MockAIProvider):
+        async def generate_structured_stream(
+            self, context: AIContext
+        ) -> AsyncIterator[StreamEvent]:
+            assert context.room is not None
+            room = context.room.room.id
+            if not any(message.role == "tool" for message in context.messages):
+                yield StreamTextDelta(text=f"Working {room}.")
+                ready.add(room)
+                if len(ready) == 2:
+                    both_started.set()
+                await both_started.wait()
+                yield StreamToolCall(id=room, name="search", arguments={"room": room})
+            else:
+                yield StreamTextDelta(text=f"Working {room}.Done {room}.")
+            yield StreamDone(
+                finish_reason="stop", usage={"input_tokens": 10 if room == "a" else 20}
+            )
+
+    async def handler(name: str, arguments: dict) -> str:
+        executions.append((current_tool_room_id(), arguments["room"]))
+        return "result"
+
+    async def report(event: AIResponseEvent) -> None:
+        assert event.room_id is not None
+        reports[event.room_id] = event
+
+    channel = AIChannel("ai1", provider=Provider(streaming=True), tool_handler=handler)
+    channel._after_response_hook = report
+
+    async def run(room: str) -> str:
+        output = await channel.on_event(
+            make_event(room_id=room),
+            _binding().model_copy(update={"room_id": room}),
+            RoomContext(room=Room(id=room)),
+        )
+        assert output.response_stream is not None
+        return "".join([item async for item in output.response_stream if isinstance(item, str)])
+
+    result = await asyncio.wait_for(asyncio.gather(run("a"), run("b")), 2)
+    assert result == ["Working a.Done a.", "Working b.Done b."]
+    assert sorted(executions) == [("a", "a"), ("b", "b")]
+    for room, tokens in (("a", 20), ("b", 40)):
+        assert reports[room].segments == [f"Working {room}.", f"Done {room}."]
+        assert reports[room].usage["input_tokens"] == tokens
+        assert reports[room].tool_calls_count == reports[room].round_count == 1
+    assert channel.active_turns == 0

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -41,7 +41,7 @@ class _ExternalStreamTools:
 
     async def stream_call(
         self, call: StreamToolCall, round_idx: int
-    ) -> AsyncIterator[StreamDelta]:
+    ) -> AsyncGenerator[StreamDelta, None]:
         """Observe a call inline, keeping persistence markers around its callbacks."""
         handler = self.handler
         if handler is None:
