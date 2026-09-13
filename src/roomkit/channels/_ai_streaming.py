@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import time
 from collections.abc import AsyncIterator
@@ -15,9 +14,9 @@ from roomkit.channels._ai_loop_rules import (
     final_round_reason,
 )
 from roomkit.channels._ai_resilience import _StreamRetryBoundary
+from roomkit.channels._ai_stream_external_tools import _ExternalStreamTools
 from roomkit.channels._ai_stream_round import _PrefixDeduplicator, _StreamRoundState
 from roomkit.models.channel import ChannelOutput
-from roomkit.models.enums import ChannelType
 from roomkit.models.event import RoomEvent
 from roomkit.models.streaming import (
     LoopEndMarker,
@@ -27,11 +26,10 @@ from roomkit.models.streaming import (
     ToolCallEndMarker,
     ToolCallStartMarker,
 )
-from roomkit.models.tool_call import AIResponseEvent, ToolCallEvent, response_transcript
+from roomkit.models.tool_call import AIResponseEvent, response_transcript
 from roomkit.providers.ai.base import (
     AIContext,
     AIMessage,
-    AIToolResultPart,
     StreamDone,
     StreamTextDelta,
     StreamThinkingDelta,
@@ -444,6 +442,14 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
         # ends a segment; the next round's text starts the next one.
         _segments: list[list[str]] = []
         room_id = context.room.room.id if context.room else None
+        external_tools = _ExternalStreamTools(
+            channel_id=self.channel_id,
+            room_id=room_id,
+            publish=self._publish_tool_event,
+            handler=self._external_tool_handler,
+            before=self._before_tool_call_hook,
+            after=self._tool_call_hook,
+        )
         # Keep the current round reachable during cleanup, including a
         # provider failure or a consumer closing between fragments.
         round_state = _StreamRoundState()
@@ -579,93 +585,13 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                             )
                     elif isinstance(event, StreamToolCall):
                         round_state.tool_calls.append(event)
-                        # External tools: fire hooks and yield persistence markers
-                        if self._tool_handler is None and self._external_tool_handler is not None:
-                            handler = self._external_tool_handler
-                            # Extract result from arguments if embedded by proxy
-                            args = dict(event.arguments)
-                            provider_already_executed = "_result" in args
-                            tool_result = args.pop("_result", None)
-                            tool_is_error = args.pop("_is_error", False)
-
-                            # Yield start marker for store persistence
-                            yield ToolCallStartMarker(
-                                tool_name=event.name,
-                                tool_id=event.id,
-                                arguments=args,
-                            )
-                            if room_id:
-                                await self._publish_tool_event(
-                                    EphemeralEventType.TOOL_CALL_START,
-                                    room_id,
-                                    [event.model_copy(update={"arguments": args})],
-                                    _round_idx,
-                                )
-
-                            t0_ext = time.monotonic()
-                            effective_result = tool_result or ""
-                            if not provider_already_executed:
-                                # Some external transports expose a pending call
-                                # through the stream. Only those calls can still
-                                # be gated or rewritten. A proxy that embeds
-                                # ``_result`` has already performed the side
-                                # effect; firing BEFORE_TOOL_USE then would give
-                                # a dangerous, retroactive illusion of control.
-                                decision = await handler.process_tool_call(
-                                    event.name,
-                                    args,
-                                    tool_call_id=event.id,
-                                    room_id=room_id,
-                                )
-                                if not decision.approved:
-                                    effective_result = json.dumps(
-                                        {
-                                            "error": decision.reason
-                                            or f"Tool '{event.name}' was denied"
-                                        }
-                                    )
-                                    tool_is_error = True
-                                else:
-                                    if decision.modified_input is not None:
-                                        args = decision.modified_input
-                                    if decision.result is not None:
-                                        effective_result = decision.result
-                                        tool_is_error = False
-                            # Fire on_tool_result with actual result
-                            await handler.on_tool_result(
-                                event.name,
-                                args,
-                                effective_result,
-                                is_error=bool(tool_is_error),
-                                tool_call_id=event.id,
-                                room_id=room_id,
-                            )
-
-                            # Yield end marker for store persistence
-                            ext_duration_ms = int((time.monotonic() - t0_ext) * 1000)
-                            yield ToolCallEndMarker(
-                                tool_name=event.name,
-                                tool_id=event.id,
-                                arguments=args,
-                                result=effective_result,
-                                status="failed" if tool_is_error else "completed",
-                                duration_ms=ext_duration_ms,
-                                error=effective_result if tool_is_error else None,
-                            )
-                            if room_id:
-                                await self._publish_tool_event(
-                                    EphemeralEventType.TOOL_CALL_END,
-                                    room_id,
-                                    [
-                                        AIToolResultPart(
-                                            tool_call_id=event.id,
-                                            name=event.name,
-                                            result=effective_result,
-                                        )
-                                    ],
-                                    _round_idx,
-                                    duration_ms=ext_duration_ms,
-                                )
+                        if self._tool_handler is None and external_tools.handler is not None:
+                            external_stream = external_tools.stream_call(event, _round_idx)
+                            try:
+                                async for delta in external_stream:
+                                    yield delta
+                            finally:
+                                await _aclose_stream(external_stream)
                     elif isinstance(event, StreamDone):
                         round_state.finish_reason = event.finish_reason
                         if event.usage:
@@ -748,44 +674,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                 # BEFORE only for a still-pending call, ON_TOOL_CALL when the
                 # provider embedded ``_result`` after executing it.
                 if self._tool_handler is None:
-                    if self._external_tool_handler is None:
-                        for tc in round_state.tool_calls:
-                            external_args = dict(tc.arguments)
-                            provider_already_executed = "_result" in external_args
-                            external_result = external_args.pop("_result", None)
-                            external_args.pop("_is_error", None)
-                            external_event = ToolCallEvent(
-                                channel_id=self.channel_id,
-                                channel_type=ChannelType.AI,
-                                tool_call_id=tc.id,
-                                name=tc.name,
-                                arguments=external_args,
-                                result=(
-                                    external_result
-                                    if isinstance(external_result, (str, list))
-                                    else json.dumps(external_result)
-                                    if external_result is not None
-                                    else None
-                                ),
-                                room_id=room_id,
-                            )
-                            if provider_already_executed and self._tool_call_hook is not None:
-                                await self._tool_call_hook(external_event)
-                            elif (
-                                not provider_already_executed
-                                and self._before_tool_call_hook is not None
-                            ):
-                                await self._before_tool_call_hook(
-                                    ToolCallEvent(
-                                        channel_id=self.channel_id,
-                                        channel_type=ChannelType.AI,
-                                        tool_call_id=tc.id,
-                                        name=tc.name,
-                                        arguments=external_args,
-                                        result=None,
-                                        room_id=room_id,
-                                    )
-                                )
+                    await external_tools.observe_calls(round_state.tool_calls)
 
                     # External tools were handled inline during streaming.
                     # Persistence markers were yielded alongside hook callbacks.
