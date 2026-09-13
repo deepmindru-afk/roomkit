@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dispatched calls. Repeated invalid arguments now end with a bounded final
   response that is instructed to report the failure, rather than exhausting
   the round budget.
+- Streaming tool loops stop after the anti-loop guard's final generation even
+  if the provider still requests tools or returns empty text. No further tool
+  executes and no empty-response retry restarts the stopped loop.
+- An aborted parallel tool round cancels and joins its remaining calls before
+  propagating a pre-execution error or a child tool's cancellation, so tools
+  cannot outlive the turn that owned them.
 
 ## [0.72.0] — 2026-09-11
 

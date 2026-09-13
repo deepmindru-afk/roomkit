@@ -746,6 +746,15 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                 if room_id:
                     await tool_coalescer.close()
 
+                # The anti-loop final generation is terminal, even if the
+                # provider ignores the empty tool list or returns no text.
+                # Match the non-streaming loop: never dispatch another call
+                # or spend an empty-response retry after force-stop.
+                if loop_ctx.force_stop:
+                    _loop_reason = "force_stopped"
+                    yield LoopEndMarker(reason=_loop_reason, rounds=_round_idx)
+                    return
+
                 if not tool_calls:
                     # Final answer round. If it produced no text *after* a tool
                     # round, the model skipped verbalizing the result — re-prompt

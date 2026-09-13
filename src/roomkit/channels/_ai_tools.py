@@ -468,7 +468,18 @@ class AIToolsMixin:
                 structured_content=structured_content,
             )
 
-        results = await asyncio.gather(*[_run_one(tc) for tc in tool_calls])
+        tasks = [asyncio.create_task(_run_one(tc)) for tc in tool_calls]
+        try:
+            results = await asyncio.gather(*tasks)
+        except BaseException:
+            # gather propagates a failed gate or a cancelled child immediately;
+            # its siblings otherwise keep running after the loop has ended.
+            # Own them through cleanup, without cancelling a finalizer twice.
+            for task in tasks:
+                if not task.done() and not task.cancelling():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
         return list(results)
 
     def _skill_tools(self) -> list[AITool]:

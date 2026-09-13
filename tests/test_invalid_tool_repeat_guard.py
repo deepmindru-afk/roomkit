@@ -10,6 +10,7 @@ import pytest
 from roomkit.channels.ai import AIChannel
 from roomkit.models.context import RoomContext
 from roomkit.models.room import Room
+from roomkit.models.streaming import LoopEndMarker
 from roomkit.providers.ai.base import AIResponse, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from tests.conftest import make_event
@@ -58,6 +59,45 @@ async def test_invalid_calls_stop_before_budget_and_reset_next_turn(
         assert not calls[-1].tools
         assert any("never claim an action succeeded" in str(m.content) for m in calls[-1].messages)
     assert not executions
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("final_kind", ["tool_call", "empty", "text"])
+async def test_force_stop_allows_only_one_final_generation(
+    streaming: bool, final_kind: str
+) -> None:
+    """A provider ignoring the no-tools request cannot restart a stopped loop."""
+    executions: list[dict[str, Any]] = []
+
+    async def handler(name: str, arguments: dict[str, Any]) -> str:
+        executions.append(arguments)
+        return "{}"
+
+    final = AIResponse(content="Stopped." if final_kind == "text" else "")
+    if final_kind == "tool_call":
+        final = _same_call_response("after-stop", {"value": "must not execute"})
+    provider = MockAIProvider(
+        ai_responses=[
+            *[_same_call_response(f"t{i}", {}) for i in range(6)],
+            final,
+            AIResponse(content="This extra generation must never be requested."),
+        ],
+        streaming=streaming,
+    )
+    channel = AIChannel("ai1", provider=provider, tool_handler=handler, max_tool_rounds=20)
+    output = await channel.on_event(
+        make_event(body="go", channel_id="sms1"),
+        _binding([_ECHO_TOOL]),
+        RoomContext(room=Room(id="r1")),
+    )
+    if output.response_stream is not None:
+        items = [item async for item in output.response_stream]
+        endings = [item for item in items if isinstance(item, LoopEndMarker)]
+        assert len(endings) == 1
+        assert endings[0].reason == "force_stopped"
+    assert not executions
+    assert len(provider.calls) == 7
+    assert not provider.calls[-1].tools
 
 
 @pytest.mark.parametrize("streaming", [False, True])
