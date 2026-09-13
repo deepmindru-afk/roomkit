@@ -456,6 +456,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
         coalescer = self._new_thinking_coalescer(room_id, round_idx=0)
         _round_idx = 0
         stream: Any = None
+        tool_coalescer: _ToolCallDeltaCoalescer | None = None
         try:
             context, should_cancel = self._drain_steering_queue(context, loop_ctx)
             if should_cancel:
@@ -788,20 +789,24 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
             raise
         finally:
             try:
-                await _aclose_stream(stream)
-                # A window still open here was left by an abnormal exit — a
-                # provider error, a consumer that closed the stream — and
-                # closes with the block reasoned so far, the way a cancelled
-                # round's does above. Publishing is best-effort: the error
-                # that got the round here is the one that propagates.
-                if room_id and round_state.thinking_started and round_state.thinking_parts:
-                    await self._close_thinking_window(
-                        coalescer,
-                        room_id,
-                        round_state.thinking_parts,
-                        _round_idx,
-                        published=round_state.thinking_published,
-                    )
+                try:
+                    await _aclose_stream(stream)
+                    # A window still open here was left by an abnormal exit — a
+                    # provider error, a consumer that closed the stream — and
+                    # closes with the block reasoned so far, the way a cancelled
+                    # round's does above. Publishing is best-effort: the error
+                    # that got the round here is the one that propagates.
+                    if room_id and round_state.thinking_started and round_state.thinking_parts:
+                        await self._close_thinking_window(
+                            coalescer,
+                            room_id,
+                            round_state.thinking_parts,
+                            _round_idx,
+                            published=round_state.thinking_published,
+                        )
+                finally:
+                    if room_id and tool_coalescer is not None:
+                        await tool_coalescer.close()
             finally:
                 # The close publishes, and a publish that suspends can be
                 # cancelled under a consumer already being torn down. The

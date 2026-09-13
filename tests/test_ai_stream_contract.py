@@ -160,3 +160,42 @@ async def test_reasoning_composition_and_execution_keep_their_order() -> None:
         "execute",
         "tool_call_end",
     ]
+
+
+async def test_task_cancellation_closes_an_open_tool_composition() -> None:
+    composing = asyncio.Event()
+    publications: list[list] = []
+
+    class Provider(MockAIProvider):
+        async def generate_structured_stream(
+            self, context: AIContext
+        ) -> AsyncIterator[StreamEvent]:
+            yield StreamToolCallDelta(id="call", name="search", arguments_delta="{")
+            composing.set()
+            await asyncio.Future()
+
+    async def publish_tool(event_type, room_id, calls, round_idx, **kwargs) -> None:
+        publications.append(calls)
+
+    channel = AIChannel("ai1", provider=Provider(streaming=True))
+    channel._publish_tool_event = publish_tool
+    output = await channel.on_event(make_event(), _binding(), _ctx())
+    assert output.response_stream is not None
+
+    async def consume() -> None:
+        async for _ in output.response_stream:
+            pass
+
+    task = asyncio.create_task(consume())
+    try:
+        await asyncio.wait_for(composing.wait(), 2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert len(publications) == 2
+        assert publications[-1] == []
+        assert channel.active_turns == 0
+    finally:
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)

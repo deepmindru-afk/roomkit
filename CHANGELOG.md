@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An aborted parallel tool round cancels and joins its remaining calls before
   propagating a pre-execution error or a child tool's cancellation, so tools
   cannot outlive the turn that owned them.
+- Cancelling a streaming task during tool-argument composition closes the
+  `TOOL_CALL_DELTA` window, so subscribers do not remain stuck on a call that
+  will never execute.
 
 ## [0.72.0] — 2026-09-11
 
