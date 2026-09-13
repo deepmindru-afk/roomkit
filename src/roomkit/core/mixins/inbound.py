@@ -318,6 +318,11 @@ class InboundMixin(HelpersMixin):
         if message.addressed_to is not None and event.addressed_to is None:
             event = event.model_copy(update={"addressed_to": list(message.addressed_to)})
 
+        # Carry the caller's publication key even when the channel only parses
+        # content. The locked pipeline owns deduplication for every transport.
+        if message.idempotency_key is not None and event.idempotency_key is None:
+            event = event.model_copy(update={"idempotency_key": message.idempotency_key})
+
         # Where this message's answer may go — same central application, same
         # rule: a channel that resolved one itself keeps it.
         if message.response_visibility is not None and event.response_visibility is None:

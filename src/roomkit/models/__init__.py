@@ -10,6 +10,7 @@ from roomkit.models.channel import (
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import (
     DeliveryError,
+    DeliveryOutcome,
     DeliveryResult,
     DeliveryStatus,
     InboundMessage,
@@ -83,6 +84,7 @@ __all__ = [
     "DeleteType",
     "DeliveryMode",
     "DeliveryError",
+    "DeliveryOutcome",
     "DeliveryResult",
     "DeliveryStatus",
     "EditContent",

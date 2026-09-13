@@ -1,8 +1,4 @@
-"""Delivery worker — shared execution logic.
-
-Used by both ``InMemoryDeliveryBackend`` and ``RedisDeliveryBackend``
-to dequeue items and execute the actual delivery.
-"""
+"""Shared proactive delivery execution and queue worker."""
 
 from __future__ import annotations
 
@@ -10,17 +6,27 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING
 
-from roomkit.core.delivery import DeliveryContext
+from roomkit.core.delivery import DeliveryContext, DeliveryStrategy
 from roomkit.delivery.base import DeliveryItem
 from roomkit.delivery.serialization import deserialize_strategy
+from roomkit.models.delivery import DeliveryError, DeliveryOutcome
 from roomkit.models.enums import EventStatus, EventType, HookTrigger, Visibility
 from roomkit.models.event import EventSource, RoomEvent, TextContent
 
 if TYPE_CHECKING:
     from roomkit.core.framework import RoomKit
+    from roomkit.core.hooks import HookEngine
     from roomkit.delivery.base import DeliveryBackend
 
 logger = logging.getLogger("roomkit.delivery.worker")
+_OUTCOME_STATUS = {
+    "queued": EventStatus.PENDING,
+    "sent": EventStatus.DELIVERED,
+    "blocked": EventStatus.BLOCKED,
+    "unavailable": EventStatus.FAILED,
+    "failed": EventStatus.FAILED,
+    "unknown": EventStatus.PENDING,
+}
 
 
 def build_delivery_hook_event(
@@ -31,17 +37,10 @@ def build_delivery_hook_event(
     strategy_name: str = "immediate",
     status: EventStatus = EventStatus.PENDING,
     extra_meta: dict[str, object] | None = None,
+    addressed_to: list[str] | None = None,
+    idempotency_key: str | None = None,
 ) -> RoomEvent:
-    """Build a RoomEvent for BEFORE_DELIVER / AFTER_DELIVER hooks.
-
-    Shared by the in-process path (``deliver.py``) and the worker path.
-    """
-    meta: dict[str, object] = {
-        "channel_id": channel_id,
-        "strategy": strategy_name,
-    }
-    if extra_meta:
-        meta.update(extra_meta)
+    """Build the observation shared by direct execution and queue workers."""
     return RoomEvent(
         room_id=room_id,
         source=EventSource(channel_id="system", channel_type="system"),
@@ -49,7 +48,9 @@ def build_delivery_hook_event(
         type=EventType.MESSAGE,
         status=status,
         visibility=Visibility.INTERNAL,
-        metadata=meta,
+        addressed_to=addressed_to,
+        idempotency_key=idempotency_key,
+        metadata={**(extra_meta or {}), "channel_id": channel_id, "strategy": strategy_name},
     )
 
 
@@ -59,64 +60,58 @@ async def fire_delivery_hooks(
     trigger: HookTrigger,
     *,
     error: str | None = None,
+    hook_engine: HookEngine | None = None,
 ) -> str | None:
-    """Fire BEFORE_DELIVER or AFTER_DELIVER hooks for a delivery item.
-
-    Returns the content to deliver — the hook's rewrite when it made one, the
-    item's own otherwise — or ``None`` when a BEFORE_DELIVER hook refused the
-    delivery. AFTER_DELIVER always returns the content: it reports, it does not
-    decide.
-    """
-    extra: dict[str, object] = {"delivery_item_id": item.id, **item.metadata}
-    if error is not None:
-        extra["error"] = error
-
+    """Return effective content, or None for an explicit BEFORE_DELIVER refusal."""
+    hooks = hook_engine if hook_engine is not None else kit.hook_engine
+    if not hooks.has_hooks(trigger):
+        return item.content
+    outcome = item.outcome
+    extra: dict[str, object] = {
+        **item.metadata,
+        "delivery_item_id": item.id,
+        "session_id": item.session_id,
+    }
     status = EventStatus.PENDING
     if trigger == HookTrigger.AFTER_DELIVER:
-        status = EventStatus.FAILED if error else EventStatus.DELIVERED
-
-    hook_event = build_delivery_hook_event(
+        if outcome is not None:
+            status = _OUTCOME_STATUS[outcome.status]
+            extra["delivery_outcome"] = outcome.model_dump(mode="json")
+            error = None
+            if outcome.status in ("blocked", "unavailable", "failed", "unknown"):
+                error = outcome.error.message if outcome.error else outcome.reason
+        else:
+            status = EventStatus.FAILED if error else EventStatus.DELIVERED
+        extra["error"] = error
+    event = build_delivery_hook_event(
         item.room_id,
         item.content,
         channel_id=item.channel_id,
         strategy_name=item.strategy.get("type", "immediate"),
         status=status,
         extra_meta=extra,
+        addressed_to=item.addressed_to,
+        idempotency_key=item.idempotency_key,
     )
-
     if trigger == HookTrigger.AFTER_DELIVER:
         try:
-            room_context = await kit._build_context(item.room_id)  # noqa: SLF001
-            await kit.hook_engine.run_async_hooks(item.room_id, trigger, hook_event, room_context)
+            context = await kit._build_context(item.room_id)  # noqa: SLF001
+            await hooks.run_async_hooks(item.room_id, trigger, event, context)
         except Exception:
-            logger.warning("%s hook failed for item %s", trigger.value, item.id, exc_info=True)
+            logger.warning("AFTER_DELIVER failed for item %s", item.id, exc_info=True)
         return item.content
-
-    # BEFORE_DELIVER is SYNC (RFC §9.2, §22.3): it can refuse the item or
-    # rewrite what goes out. Run async, a hook's block() was discarded and the
-    # item went out anyway.
-    #
-    # Failing to *run* the gate is not a refusal: BEFORE_DELIVER is not a
-    # fail-closed trigger (RFC §9.3), so an item goes out unfiltered rather
-    # than being dropped because the context could not be built.
+    # This trigger is fail-open (§9.3). Only an explicit refusal blocks.
     try:
-        room_context = await kit._build_context(item.room_id)  # noqa: SLF001
-        result = await kit.hook_engine.run_sync_hooks(
-            item.room_id, trigger, hook_event, room_context
-        )
+        context = await kit._build_context(item.room_id)  # noqa: SLF001
+        result = await hooks.run_sync_hooks(item.room_id, trigger, event, context)
     except Exception:
-        logger.warning(
-            "BEFORE_DELIVER could not run for item %s; delivering unfiltered",
-            item.id,
-            exc_info=True,
-        )
+        logger.warning("BEFORE_DELIVER could not run for item %s", item.id, exc_info=True)
         return item.content
     if not result.allowed:
-        logger.info(
-            "Delivery item %s blocked by hook: %s",
-            item.id,
-            result.reason or result.blocked_by or "no reason given",
-            extra={"room_id": item.room_id, "channel_id": item.channel_id},
+        item.outcome = DeliveryOutcome(
+            status="blocked",
+            reason=result.reason or result.blocked_by or "before_deliver_blocked",
+            delivery_item_id=item.id,
         )
         return None
     if isinstance(result.event, RoomEvent) and isinstance(result.event.content, TextContent):
@@ -124,37 +119,47 @@ async def fire_delivery_hooks(
     return item.content
 
 
-async def execute_delivery(kit: RoomKit, item: DeliveryItem) -> None:
-    """Execute a single delivery item against *kit*.
-
-    Deserializes the strategy, fires ``BEFORE_DELIVER`` / ``AFTER_DELIVER``
-    hooks, and calls ``strategy.deliver(ctx)``.
-    """
-    strategy = deserialize_strategy(item.strategy)
-    ctx = DeliveryContext(
-        kit=kit,
-        room_id=item.room_id,
-        content=item.content,
-        channel_id=item.channel_id,
-        metadata=item.metadata,
+async def execute_delivery(
+    kit: RoomKit,
+    item: DeliveryItem,
+    *,
+    strategy: DeliveryStrategy | None = None,
+    hook_engine: HookEngine | None = None,
+) -> DeliveryOutcome:
+    """Execute once and report its actual outcome, including hook refusals."""
+    item.outcome = None
+    content = await fire_delivery_hooks(
+        kit, item, HookTrigger.BEFORE_DELIVER, hook_engine=hook_engine
     )
-
-    content = await fire_delivery_hooks(kit, item, HookTrigger.BEFORE_DELIVER)
-    if content is None:
-        # Refused. A blocked item is dropped, not retried: the hook said no to
-        # this content, and the same content on the next attempt would get the
-        # same answer.
-        return
-    ctx.content = content
-
-    error: str | None = None
-    try:
-        await strategy.deliver(ctx)
-    except Exception as exc:
-        error = str(exc)
-        raise
-    finally:
-        await fire_delivery_hooks(kit, item, HookTrigger.AFTER_DELIVER, error=error)
+    effective = item.model_copy(update={"content": content}) if content is not None else item
+    if content is not None:
+        try:
+            resolved = strategy if strategy is not None else deserialize_strategy(item.strategy)
+            outcome = await resolved.deliver(
+                DeliveryContext(
+                    kit=kit,
+                    room_id=item.room_id,
+                    content=content,
+                    channel_id=item.channel_id,
+                    metadata=item.metadata,
+                    addressed_to=item.addressed_to,
+                    idempotency_key=item.idempotency_key,
+                    session_id=item.session_id,
+                )
+            )
+            if not isinstance(outcome, DeliveryOutcome):
+                outcome = DeliveryOutcome(status="unknown", reason="strategy_outcome_unknown")
+        except Exception as exc:
+            outcome = DeliveryOutcome(
+                status="failed",
+                reason="strategy_failed",
+                error=DeliveryError(code=type(exc).__name__, message=str(exc)),
+            )
+        item.outcome = outcome.model_copy(update={"delivery_item_id": item.id})
+    assert item.outcome is not None
+    effective.outcome = item.outcome
+    await fire_delivery_hooks(kit, effective, HookTrigger.AFTER_DELIVER, hook_engine=hook_engine)
+    return item.outcome
 
 
 async def run_worker_loop(
@@ -182,27 +187,42 @@ async def run_worker_loop(
 
         for item in items:
             try:
-                await execute_delivery(kit, item)
-                await backend.ack(item.id)
-                logger.debug("Delivered %s to room %s", item.id, item.room_id)
+                outcome = await execute_delivery(kit, item)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                logger.warning(
-                    "Delivery %s failed (attempt %d/%d): %s",
-                    item.id,
-                    item.retry_count + 1,
-                    item.max_retries,
-                    exc,
+                outcome = DeliveryOutcome(
+                    status="failed",
+                    reason="execution_failed",
+                    delivery_item_id=item.id,
+                    error=DeliveryError(code=type(exc).__name__, message=str(exc)),
                 )
-                # A failed queue write must not kill the worker and strand its
-                # batch. Retry the transition without delivering the item again.
-                while True:
-                    try:
-                        await backend.nack(item.id, error=str(exc))
-                        break
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception:
-                        logger.exception("Nack failed for %s, retrying after 1s", item.id)
-                        await asyncio.sleep(1)
+                item.outcome = outcome
+                logger.exception("Execution failed for item %s", item.id)
+            await _settle_item(backend, item, outcome)
+            logger.debug("Delivery %s: %s (%s)", item.id, outcome.status, outcome.reason)
+
+
+async def _settle_item(
+    backend: DeliveryBackend,
+    item: DeliveryItem,
+    outcome: DeliveryOutcome,
+) -> None:
+    """Retry the same queue transition without repeating delivery execution."""
+    while True:
+        try:
+            if outcome.status not in ("unavailable", "failed"):
+                await backend.ack(item.id)
+            elif outcome.error is not None and not outcome.error.retryable:
+                await backend.dead_letter(item.id, error=outcome.error.message)
+            else:
+                reason = (
+                    outcome.error.message if outcome.error else outcome.reason or outcome.status
+                )
+                await backend.nack(item.id, error=reason)
+            return
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Queue transition failed for %s; retrying after 1s", item.id)
+            await asyncio.sleep(1)

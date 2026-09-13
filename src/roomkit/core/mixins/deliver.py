@@ -5,13 +5,12 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from roomkit.core.delivery import DeliveryContext, DeliveryStrategy, Immediate, resolve_strategy
+from roomkit.core.delivery import DeliveryStrategy, Immediate, resolve_strategy
 from roomkit.core.mixins.helpers import HelpersMixin
 from roomkit.delivery.base import DeliveryItem
 from roomkit.delivery.serialization import serialize_strategy
-from roomkit.delivery.worker import build_delivery_hook_event
-from roomkit.models.enums import EventStatus, HookTrigger
-from roomkit.models.event import RoomEvent, TextContent
+from roomkit.delivery.worker import execute_delivery
+from roomkit.models.delivery import DeliveryError, DeliveryOutcome
 
 if TYPE_CHECKING:
     from roomkit.core.hooks import HookEngine
@@ -59,7 +58,10 @@ class DeliverMixin(HelpersMixin):
         channel_id: str | None = None,
         strategy: DeliveryStrategy | str | None = None,
         metadata: dict[str, Any] | None = None,
-    ) -> None:
+        addressed_to: list[str] | None = None,
+        idempotency_key: str | None = None,
+        session_id: str | None = None,
+    ) -> DeliveryOutcome:
         """Deliver content to a room/channel.
 
         Sends *content* to the target channel with awareness of channel
@@ -80,109 +82,49 @@ class DeliverMixin(HelpersMixin):
                 shorthand (``"immediate"``, ``"wait_for_idle"``,
                 ``"queued"``).  Falls back to the framework default.
             metadata: Optional metadata attached to the delivery event.
+            addressed_to: Intelligence channel ids asked to act. None keeps
+                routing; [] solicits no agent. This does not change visibility.
+            idempotency_key: Text publication key, scoped to the room and retained
+                by the ConversationStore. Realtime injection is not deduplicated.
+            session_id: Exact realtime session on the selected channel. An ended
+                or replaced session is unavailable; no substitute is selected.
+
+        Returns:
+            Queue acceptance or the actual execution outcome. ``sent`` does not
+            imply turn completion. Inspect ``inbound`` for text turn details.
         """
         resolved = resolve_strategy(strategy) or self._delivery_strategy
         if resolved is None:
             resolved = Immediate()
 
-        # Backend path: enqueue instead of executing in-process
-        if self._delivery_backend is not None:
-            item = DeliveryItem(
-                room_id=room_id,
-                content=content,
-                channel_id=channel_id,
-                strategy=serialize_strategy(resolved),
-                metadata=metadata or {},
-            )
-            await self._delivery_backend.enqueue(item)
-            return
-
-        # In-process path (no backend configured)
-        ctx = DeliveryContext(
-            kit=self,  # ty: ignore[invalid-argument-type]
+        if session_id is not None and (channel_id is None or addressed_to is not None):
+            return DeliveryOutcome(status="blocked", reason="invalid_session_target")
+        if idempotency_key == "":
+            return DeliveryOutcome(status="blocked", reason="empty_idempotency_key")
+        item = DeliveryItem(
             room_id=room_id,
             content=content,
             channel_id=channel_id,
-            metadata=metadata,
+            strategy=serialize_strategy(resolved),
+            metadata=metadata or {},
+            addressed_to=addressed_to,
+            idempotency_key=idempotency_key,
+            session_id=session_id,
         )
-
-        strategy_name = serialize_strategy(resolved).get("type", "immediate")
-        extra_meta = dict(metadata) if metadata else {}
-
-        # BEFORE_DELIVER. The announcement costs four store reads to build the
-        # context, so it is skipped outright when nothing is listening —
-        # has_hooks() is an O(1) set lookup covering global and room hooks.
-        if self._hook_engine.has_hooks(HookTrigger.BEFORE_DELIVER):
-            hook_event = build_delivery_hook_event(
-                room_id,
-                content,
-                channel_id=channel_id,
-                strategy_name=strategy_name,
-                extra_meta=extra_meta,
-            )
-            # SYNC (RFC §9.2, §22.3): a hook here can refuse the delivery or
-            # rewrite what goes out. Fired async, a moderation hook returned
-            # block() into the void and its exceptions were swallowed at debug
-            # — the delivery went out either way.
-            #
-            # Failing to *run* the gate is not a refusal: BEFORE_DELIVER is not
-            # a fail-closed trigger (RFC §9.3), so a store hiccup while building
-            # the context lets the delivery through rather than dropping the
-            # caller's message. Only an explicit block() stops it.
-            result = None
+        if self._delivery_backend is not None:
             try:
-                room_context = await self._build_context(room_id)
-                result = await self._hook_engine.run_sync_hooks(
-                    room_id, HookTrigger.BEFORE_DELIVER, hook_event, room_context
+                await self._delivery_backend.enqueue(item)
+            except Exception as exc:
+                return DeliveryOutcome(
+                    status="failed",
+                    reason="enqueue_failed",
+                    delivery_item_id=item.id,
+                    error=DeliveryError(code=type(exc).__name__, message=str(exc)),
                 )
-            except Exception:
-                logger.warning(
-                    "BEFORE_DELIVER could not run for room %s; delivering unfiltered",
-                    room_id,
-                    exc_info=True,
-                )
-            if result is not None and not result.allowed:
-                logger.info(
-                    "Delivery to room %s blocked by hook: %s",
-                    room_id,
-                    result.reason or result.blocked_by or "no reason given",
-                    extra={"room_id": room_id, "channel_id": channel_id},
-                )
-                return
-            # A hook that rewrote the content delivers the rewrite. Only a
-            # RoomEvent carrying text can replace it — the trigger's payload is
-            # what the hook was handed.
-            if (
-                result is not None
-                and isinstance(result.event, RoomEvent)
-                and isinstance(result.event.content, TextContent)
-            ):
-                content = result.event.content.body
-                ctx.content = content
-
-        # Execute delivery strategy
-        error: str | None = None
-        try:
-            await resolved.deliver(ctx)
-        except Exception as exc:
-            error = str(exc)
-            logger.exception("Delivery failed in room %s", room_id)
-
-        # AFTER_DELIVER — same guard, same reason.
-        if self._hook_engine.has_hooks(HookTrigger.AFTER_DELIVER):
-            after_extra = {**extra_meta, "error": error}
-            after_event = build_delivery_hook_event(
-                room_id,
-                content,
-                channel_id=channel_id,
-                strategy_name=strategy_name,
-                status=EventStatus.FAILED if error else EventStatus.DELIVERED,
-                extra_meta=after_extra,
-            )
-            try:
-                room_context = await self._build_context(room_id)
-                await self._hook_engine.run_async_hooks(
-                    room_id, HookTrigger.AFTER_DELIVER, after_event, room_context
-                )
-            except Exception:
-                logger.debug("AFTER_DELIVER hook failed", exc_info=True)
+            return DeliveryOutcome(status="queued", delivery_item_id=item.id)
+        return await execute_delivery(
+            self,  # ty: ignore[invalid-argument-type]
+            item,
+            strategy=resolved,
+            hook_engine=self._hook_engine,
+        )

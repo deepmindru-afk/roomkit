@@ -421,8 +421,8 @@ class InboundLockedMixin(HelpersMixin):
                 },
             )
             if original is not None:
-                return InboundResult(event=original)
-            return InboundResult(blocked=True, reason="duplicate")
+                return InboundResult(event=original, duplicate=True)
+            return InboundResult(blocked=True, reason="duplicate", duplicate=True)
 
         # Provisional index for the hooks. The authoritative one is (re)assigned
         # inside the commit (§8.1), so this reads the counter the context
