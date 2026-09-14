@@ -7,6 +7,96 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.74.0] — 2026-09-13
+
+### Added
+
+- **`RoomKit.deliver()` can name the agents that should act, carry an
+  idempotency key, pin one realtime session, and reports what happened.** An
+  external event delivered into a multi-agent room solicited the default
+  agent and returned `None` even when no destination existed, so a caller
+  could neither say which intelligence channel should answer nor tell queue
+  acceptance from a refusal or a missing target. `deliver()` now takes
+  `addressed_to` (intelligence channel ids asked to act; `[]` solicits no
+  agent, visibility is unchanged), `idempotency_key` (retained by the
+  `ConversationStore`; a replayed key identifies the earlier publication
+  without rerunning the agent) and `session_id` (an exact realtime session on
+  the selected channel; an ended or replaced session is `unavailable`, never
+  silently substituted). It returns a `DeliveryOutcome` — `queued`, `sent`,
+  `blocked`, `unavailable`, `failed` or `unknown` — with `unavailable_targets`,
+  `duplicate`, `event_id`, per-session `session_outcomes` and, in-process,
+  the text turn's `inbound` result. `sent` means publication or provider
+  acceptance, not agent completion. An address whose source binding
+  disappears before commit is reported in `unavailable_targets` without
+  retrying the published event. Direct calls and the delivery worker share
+  the same outcome and hook execution: the worker acks `sent` and `blocked`,
+  dead-letters a non-retryable failure and retries the rest.
+  `DeliveryItemStatus` gains `BLOCKED` and `UNKNOWN`, `DeliveryItem` carries
+  the new fields and its `outcome`, an `InboundMessage.idempotency_key` now
+  reaches the event on every transport, and `InboundResult` gains
+  `duplicate` and `unavailable_targets`. `RealtimeVoiceChannel.wait_idle()`
+  accepts `session_ids=` so a delivery waits only on its pinned
+  destinations. `DeliveryOutcome` is exported from `roomkit`; RFC §22
+  specifies the contract. See `examples/external_event_delivery.py`.
+- **Keyed proactive voice injections are reserved durably and are never
+  submitted twice.** A concurrent or redelivered `deliver()` aimed at a
+  realtime voice session could inject the same text more than once, and an
+  exception raised after submission triggered another injection, because
+  nothing recorded that the provider had already been asked. A delivery that
+  carries an `idempotency_key` now atomically reserves one
+  `VoiceDeliveryRecord` per room/channel/session in the `ConversationStore`,
+  keeps the result, and replays it on a repeat without calling the provider
+  again. Only a recorded, retryable failure known to precede submission may
+  be claimed again; an interrupted or ambiguous submission stays `unknown`
+  and the worker dead-letters it rather than retrying — preventing a
+  duplicate can leave an announcement undelivered, and the outcome says so.
+  `InMemoryStore`, `SQLiteStore` and `PostgresStore` implement the three new
+  `ConversationStore` methods (`get_voice_delivery`, `claim_voice_delivery`,
+  `complete_voice_delivery`); Postgres gains a `voice_deliveries` table that
+  the existing `CREATE TABLE IF NOT EXISTS` schema creates on the next
+  `initialize()`. A custom store that does not implement them refuses keyed
+  voice injection before anything is sent. Durable guarantees need a shared
+  durable store; unkeyed and direct channel injections do not use receipts.
+  `VoiceDeliveryRecord` is exported from `roomkit`. See
+  `examples/voice_delivery_idempotency.py`.
+
+### Changed
+
+- **`RealtimeVoiceProvider.inject_text()` reports its submission boundary.**
+  It returned `None`, so a caller could not tell a completed send from a
+  dropped one. It may now return a `VoiceInjectionResult` — `sent`,
+  `not_sent` or `unknown`, with `reason` and `retryable`. `sent` means the
+  provider's send operation completed, not that audio was heard; `not_sent`
+  guarantees nothing was submitted and is the only status that permits a
+  retry; an exception or a `None` return is treated as `unknown`. The
+  built-in Anam, Deepgram, ElevenLabs, Gemini, OpenAI Realtime and GPT-Live
+  providers return one; PersonaPlex, which has no text injection, returns
+  `not_sent`. A custom provider that still returns `None` remains callable,
+  and proactive delivery reports its outcome as `unknown`.
+  `RealtimeVoiceChannel.inject_text()` returns the result and fires
+  `ON_REALTIME_TEXT_INJECTED` only for a confirmed `sent`.
+  `VoiceInjectionResult` is exported from `roomkit`.
+
+### Fixed
+
+- **Anam text injection never reached the avatar.** `AnamRealtimeProvider`
+  called the SDK's `send_message()` without awaiting it, and that method has
+  been a coroutine since the SDK's first release, so the text was never
+  submitted and nothing reported it. The call is awaited and reports `sent`,
+  `unknown` when the send raises, or a retryable `not_sent` while the session
+  is not connected. A `silent` injection is refused as `not_sent`: the SDK's
+  `send_message` simulates user speech and can make the avatar answer, so
+  there is no silent path to offer.
+- **A room event injected into a muted or read-only realtime binding is
+  injected silently.** `RealtimeVoiceChannel.on_event()` injected every event
+  with `silent=False` regardless of the binding, so a binding that was muted,
+  output-muted or could not write could still trigger a spoken response. The
+  injection is silent for such a binding; a provider that cannot inject
+  silently (Anam) reports `not_sent` and the event is skipped.
+- GPT-Live `inject_text()` reports a retryable `not_sent` while the session
+  has not started and `not_sent` for empty text, rather than attempting the
+  append.
+
 ## [0.73.0] — 2026-09-13
 
 ### Changed
@@ -7274,7 +7364,8 @@ See entries `0.7.0a1` through `0.7.0a18` below.
 - `STTProvider.transcribe()` returns `TranscriptionResult` (Phase 3.1)
 - Framework event names enriched with payloads (Phase 4)
 
-[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.73.0...HEAD
+[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.74.0...HEAD
+[0.74.0]: https://github.com/roomkit-live/roomkit/compare/v0.73.0...v0.74.0
 [0.73.0]: https://github.com/roomkit-live/roomkit/compare/v0.72.0...v0.73.0
 [0.72.0]: https://github.com/roomkit-live/roomkit/compare/v0.71.0...v0.72.0
 [0.71.0]: https://github.com/roomkit-live/roomkit/compare/v0.70.0...v0.71.0
