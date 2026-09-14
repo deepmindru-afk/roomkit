@@ -12,7 +12,12 @@ from roomkit.models.trace import ProtocolTrace
 from roomkit.telemetry.base import Attr, SpanKind
 from roomkit.telemetry.noop import NoopTelemetryProvider
 from roomkit.voice.audio_frame import AudioFrame
-from roomkit.voice.backends._sip_types import STATS_INTERVAL, SIPSessionState, logger
+from roomkit.voice.backends._sip_types import (
+    STATS_INTERVAL,
+    SIPSessionState,
+    _notify_disconnected,
+    logger,
+)
 from roomkit.voice.base import AudioChunk, VoiceSession, VoiceSessionState
 from roomkit.voice.pipeline.dtmf.base import DTMFEvent
 from roomkit.voice.realtime.pacer import OutboundAudioPacer
@@ -199,8 +204,6 @@ class SIPAudioMixin:
         from the carrier's actual SIP listener — the dialog's
         ``remote_target`` Contact URI is the right destination.
         """
-        await self.cancel_audio(session)
-
         state = self._session_states.get(session.id)
         call = state.incoming_call if state is not None else None
         out_call = state.outgoing_call if state is not None else None
@@ -313,11 +316,12 @@ class SIPAudioMixin:
                     )
             except Exception:
                 logger.exception("Failed to send BYE for session %s", session.id)
+                raise
 
         try:
+            await self.cancel_audio(session)
             if call_session is not None:
-                async with asyncio.timeout(2):
-                    await call_session.close()
+                await call_session.close()
         finally:
             self._cleanup_session(session.id)
             session.state = VoiceSessionState.ENDED
@@ -383,14 +387,14 @@ class SIPAudioMixin:
             "media_lost" if st.audio_stats.inbound_packets else "media_not_established"
         )
         try:
-            await self.disconnect(session)
+            async with asyncio.timeout(2):
+                await self.disconnect(session)
         except Exception:
-            logger.exception("Failed to close expired SIP media: %s", sid)
+            # A failed BYE keeps the session tracked so the next stats pass retries.
+            logger.exception("Failed to disconnect expired SIP session: %s", sid)
         finally:
-            if not session.metadata.get("_sip_disconnect_notified"):
-                session.metadata["_sip_disconnect_notified"] = True
-                for cb in tuple(self._disconnect_callbacks):
-                    cb(session)
+            if session.state == VoiceSessionState.ENDED:
+                _notify_disconnected(session, self._disconnect_callbacks)
 
     async def _audio_stats_loop(self) -> None:
         """Periodically log per-session audio diagnostics.

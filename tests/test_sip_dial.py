@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
 import types
 from dataclasses import dataclass, field
@@ -444,6 +445,77 @@ class TestDialCodecSelection:
 
 
 class TestDisconnectOutgoing:
+    async def test_backend_close_can_finish_slow_media_and_remaining_sessions(
+        self, backend: SIPVoiceBackend
+    ) -> None:
+        backend._uac.send_invite = MagicMock(
+            side_effect=[FakeOutgoingCall(call_id="out-1"), FakeOutgoingCall(call_id="out-2")]
+        )
+        with patch("aiosipua.build_sdp", return_value=FakeSdpMessage()):
+            sessions = [
+                await backend.dial(to_uri=TO_URI, from_uri=FROM_URI, proxy_addr=PROXY_ADDR)
+                for _ in range(2)
+            ]
+
+        async def slow_close() -> None:
+            await asyncio.sleep(2.01)
+
+        backend._session_states[sessions[0].id].call_session.close = slow_close
+        backend._registration_task = None
+        backend._stats_task = None
+        backend._registered = False
+        backend._uas = types.SimpleNamespace(stop=AsyncMock())
+        await backend.close()
+        assert all(session.state == VoiceSessionState.ENDED for session in sessions)
+        assert not backend._session_states
+        backend._uas.stop.assert_awaited_once()
+
+    async def test_disconnect_sends_bye_before_stalled_audio_cancellation(
+        self, backend: SIPVoiceBackend
+    ) -> None:
+        with patch("aiosipua.build_sdp", return_value=FakeSdpMessage()):
+            session = await backend.dial(to_uri=TO_URI, from_uri=FROM_URI, proxy_addr=PROXY_ADDR)
+        call = backend._session_states[session.id].outgoing_call
+        call.hangup = MagicMock()
+
+        async def stalled_cancel(_session: Any) -> None:
+            call.hangup.assert_called_once_with(backend._uac)
+            await asyncio.Event().wait()
+
+        backend.cancel_audio = stalled_cancel
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(backend.disconnect(session), timeout=0.01)
+        assert session.state == VoiceSessionState.ENDED
+        assert backend.get_session(session.id) is None
+
+    async def test_failed_bye_preserves_session_for_retry(self, backend: SIPVoiceBackend) -> None:
+        with patch("aiosipua.build_sdp", return_value=FakeSdpMessage()):
+            session = await backend.dial(to_uri=TO_URI, from_uri=FROM_URI, proxy_addr=PROXY_ADDR)
+        call = backend._session_states[session.id].outgoing_call
+        call.hangup = MagicMock(side_effect=[OSError("send failed"), None])
+        with pytest.raises(OSError, match="send failed"):
+            await backend.disconnect(session)
+        assert backend.get_session(session.id) is session
+        assert session.state == VoiceSessionState.ACTIVE
+        await backend.disconnect(session)
+        assert call.hangup.call_count == 2
+        assert session.state == VoiceSessionState.ENDED
+
+    async def test_expiry_bounds_stalled_media_close(self, backend: SIPVoiceBackend) -> None:
+        with patch("aiosipua.build_sdp", return_value=FakeSdpMessage()):
+            session = await backend.dial(to_uri=TO_URI, from_uri=FROM_URI, proxy_addr=PROXY_ADDR)
+        state = backend._session_states[session.id]
+
+        async def stalled_close() -> None:
+            await asyncio.Event().wait()
+
+        state.call_session.close = stalled_close
+        notified = MagicMock()
+        backend.on_call_disconnected(notified)
+        await asyncio.wait_for(backend._expire_session(session.id, state), timeout=3)
+        assert backend.get_session(session.id) is None
+        notified.assert_called_once_with(session)
+
     @pytest.mark.parametrize(
         ("packets", "reason"), [(0, "media_not_established"), (12, "media_lost")]
     )
