@@ -752,8 +752,10 @@ class SIPCallingMixin:
 
         if session is not None:
             logger.info("SIP call ended (remote BYE): session=%s", session_id)
-            for cb in tuple(self._disconnect_callbacks):
-                cb(session)
+            if not session.metadata.get("_sip_disconnect_notified"):
+                session.metadata["_sip_disconnect_notified"] = True
+                for cb in tuple(self._disconnect_callbacks):
+                    cb(session)
 
     # -------------------------------------------------------------------------
     # Outbound calling

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.74.1] — 2026-09-14
+
+### Fixed
+
+- SIP RTP expiry sends BYE before releasing media and exposes
+  `VoiceSession.metadata["disconnect_reason"]` as `media_not_established` or
+  `media_lost`. Concurrent remote BYE and expiry notify disconnection once.
+  Media close has a bounded wait and releases session tracking on failure.
+
 ## [0.74.0] — 2026-09-13
 
 ### Added

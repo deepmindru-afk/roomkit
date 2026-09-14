@@ -6,7 +6,7 @@ import sys
 import types
 from dataclasses import dataclass, field
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -444,6 +444,74 @@ class TestDialCodecSelection:
 
 
 class TestDisconnectOutgoing:
+    @pytest.mark.parametrize(
+        ("packets", "reason"), [(0, "media_not_established"), (12, "media_lost")]
+    )
+    async def test_expiry_sends_bye_and_reports_reason_once(
+        self, backend: SIPVoiceBackend, packets: int, reason: str
+    ) -> None:
+        with patch("aiosipua.build_sdp", return_value=FakeSdpMessage()):
+            session = await backend.dial(
+                to_uri=TO_URI,
+                from_uri=FROM_URI,
+                proxy_addr=PROXY_ADDR,
+            )
+        state = backend._session_states[session.id]
+        state.audio_stats.inbound_packets = packets
+        out_call = state.outgoing_call
+        out_call.hangup = MagicMock()
+        notified = MagicMock()
+        backend.on_call_disconnected(notified)
+
+        await backend._expire_session(session.id, state)
+        await backend._expire_session(session.id, state)
+        await backend._finalize_bye(session.id, None, session)
+
+        out_call.hangup.assert_called_once_with(backend._uac)
+        notified.assert_called_once_with(session)
+        assert session.metadata["disconnect_reason"] == reason
+        assert session.state == VoiceSessionState.ENDED
+        assert backend.get_session(session.id) is None
+        assert state.rtp_port not in backend._allocated_ports
+
+    async def test_expiry_and_remote_bye_during_media_close_notify_once(
+        self, backend: SIPVoiceBackend
+    ) -> None:
+        with patch("aiosipua.build_sdp", return_value=FakeSdpMessage()):
+            session = await backend.dial(
+                to_uri=TO_URI,
+                from_uri=FROM_URI,
+                proxy_addr=PROXY_ADDR,
+            )
+        state = backend._session_states[session.id]
+        notified = MagicMock()
+        backend.on_call_disconnected(notified)
+
+        async def remote_bye() -> None:
+            await backend._finalize_bye(session.id, None, session)
+
+        state.call_session.close = AsyncMock(side_effect=remote_bye)
+        await backend._expire_session(session.id, state)
+        notified.assert_called_once_with(session)
+        assert backend.get_session(session.id) is None
+
+    async def test_media_close_failure_still_releases_expired_call(
+        self, backend: SIPVoiceBackend
+    ) -> None:
+        with patch("aiosipua.build_sdp", return_value=FakeSdpMessage()):
+            session = await backend.dial(
+                to_uri=TO_URI,
+                from_uri=FROM_URI,
+                proxy_addr=PROXY_ADDR,
+            )
+        state = backend._session_states[session.id]
+        state.call_session.close = AsyncMock(side_effect=TimeoutError)
+        notified = MagicMock()
+        backend.on_call_disconnected(notified)
+        await backend._expire_session(session.id, state)
+        notified.assert_called_once_with(session)
+        assert backend.get_session(session.id) is None
+
     async def test_bye_sent_for_outgoing_call(self, backend: SIPVoiceBackend) -> None:
         """BYE sent when disconnecting an outbound call."""
         with patch("aiosipua.build_sdp", return_value=FakeSdpMessage()):

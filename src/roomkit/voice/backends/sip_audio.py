@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import time
 from collections.abc import AsyncIterator
 from typing import Any, Protocol, runtime_checkable
@@ -315,11 +314,13 @@ class SIPAudioMixin:
             except Exception:
                 logger.exception("Failed to send BYE for session %s", session.id)
 
-        if call_session is not None:
-            await call_session.close()
-
-        self._cleanup_session(session.id)
-        session.state = VoiceSessionState.ENDED
+        try:
+            if call_session is not None:
+                async with asyncio.timeout(2):
+                    await call_session.close()
+        finally:
+            self._cleanup_session(session.id)
+            session.state = VoiceSessionState.ENDED
         logger.info("SIP session disconnected: session=%s", session.id)
 
     def get_session(self, session_id: str) -> VoiceSession | None:
@@ -372,6 +373,24 @@ class SIPAudioMixin:
                 f"(threshold={self._rtp_establishment_timeout:.0f}s)"
             )
         return None
+
+    async def _expire_session(self, sid: str, st: SIPSessionState) -> None:
+        """End the SIP dialog as well as RTP, preserving why the watchdog fired."""
+        if self._session_states.get(sid) is not st:
+            return
+        session = st.session
+        session.metadata["disconnect_reason"] = (
+            "media_lost" if st.audio_stats.inbound_packets else "media_not_established"
+        )
+        try:
+            await self.disconnect(session)
+        except Exception:
+            logger.exception("Failed to close expired SIP media: %s", sid)
+        finally:
+            if not session.metadata.get("_sip_disconnect_notified"):
+                session.metadata["_sip_disconnect_notified"] = True
+                for cb in tuple(self._disconnect_callbacks):
+                    cb(session)
 
     async def _audio_stats_loop(self) -> None:
         """Periodically log per-session audio diagnostics.
@@ -442,17 +461,7 @@ class SIPAudioMixin:
 
                 for sid, st, reason in inactive_sessions:
                     logger.warning("%s — forcing disconnect", reason)
-                    session = st.session
-                    call_session = st.call_session
-
-                    if call_session is not None:
-                        with contextlib.suppress(Exception):
-                            await call_session.close()
-
-                    self._cleanup_session(sid)
-
-                    for cb in tuple(self._disconnect_callbacks):
-                        cb(session)
+                    await self._expire_session(sid, st)
 
         except asyncio.CancelledError:
             pass
