@@ -41,6 +41,15 @@ DTMFReceivedCallback = Callable[["VoiceSession", DTMFEvent], Any]
 CallCallback = Callable[["VoiceSession"], Any]
 
 
+def _notify_disconnected(session: VoiceSession, callbacks: list[CallCallback]) -> None:
+    """A carrier BYE and network expiry may finish the same session concurrently."""
+    if session.metadata.get("_sip_disconnect_notified"):
+        return
+    session.metadata["_sip_disconnect_notified"] = True
+    for callback in tuple(callbacks):
+        callback(session)
+
+
 class AudioStats:
     """Per-session audio diagnostics counters."""
 

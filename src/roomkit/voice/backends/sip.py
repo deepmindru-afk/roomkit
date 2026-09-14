@@ -421,12 +421,33 @@ class SIPVoiceBackend(SIPAuthMixin, SIPCallingMixin, SIPAudioMixin, VoiceBackend
                 await self._stats_task
             self._stats_task = None
 
+        errors: list[Exception] = []
         for state in list(self._session_states.values()):
-            await self.disconnect(state.session)
+            errors.extend(await self._shutdown_session(state))
 
         if self._uas is not None:
-            await self._uas.stop()
+            try:
+                await self._uas.stop()
+            except Exception as exc:
+                errors.append(exc)
+        if errors:
+            raise ExceptionGroup("SIP backend shutdown failed", errors)
         logger.info("SIP backend closed")
+
+    async def _shutdown_session(self, state: SIPSessionState) -> list[Exception]:
+        """Collect a session's failures so shutdown still releases every socket."""
+        errors: list[Exception] = []
+        try:
+            await self.disconnect(state.session)
+        except Exception as exc:
+            errors.append(exc)
+        if self._session_states.get(state.session.id) is not state:
+            return errors
+        try:
+            await self._close_session_media(state.session, state.call_session)
+        except Exception as exc:
+            errors.append(exc)
+        return errors
 
     # -------------------------------------------------------------------------
     # Callbacks

@@ -15,6 +15,7 @@ from roomkit.voice.backends._sip_types import (
     CODEC_INFO,
     PT_PCMU,
     SIPSessionState,
+    _notify_disconnected,
     is_usable_rtp_address,
     logger,
     parse_bye_reason,
@@ -752,8 +753,7 @@ class SIPCallingMixin:
 
         if session is not None:
             logger.info("SIP call ended (remote BYE): session=%s", session_id)
-            for cb in tuple(self._disconnect_callbacks):
-                cb(session)
+            _notify_disconnected(session, self._disconnect_callbacks)
 
     # -------------------------------------------------------------------------
     # Outbound calling

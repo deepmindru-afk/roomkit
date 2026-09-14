@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import time
 from collections.abc import AsyncIterator
 from typing import Any, Protocol, runtime_checkable
@@ -13,7 +12,12 @@ from roomkit.models.trace import ProtocolTrace
 from roomkit.telemetry.base import Attr, SpanKind
 from roomkit.telemetry.noop import NoopTelemetryProvider
 from roomkit.voice.audio_frame import AudioFrame
-from roomkit.voice.backends._sip_types import STATS_INTERVAL, SIPSessionState, logger
+from roomkit.voice.backends._sip_types import (
+    STATS_INTERVAL,
+    SIPSessionState,
+    _notify_disconnected,
+    logger,
+)
 from roomkit.voice.base import AudioChunk, VoiceSession, VoiceSessionState
 from roomkit.voice.pipeline.dtmf.base import DTMFEvent
 from roomkit.voice.realtime.pacer import OutboundAudioPacer
@@ -200,8 +204,6 @@ class SIPAudioMixin:
         from the carrier's actual SIP listener — the dialog's
         ``remote_target`` Contact URI is the right destination.
         """
-        await self.cancel_audio(session)
-
         state = self._session_states.get(session.id)
         call = state.incoming_call if state is not None else None
         out_call = state.outgoing_call if state is not None else None
@@ -296,9 +298,8 @@ class SIPAudioMixin:
 
         # Send BYE for outgoing call
         if out_call is not None and self._uac is not None:
+            out_call.hangup(self._uac)
             try:
-                out_call.hangup(self._uac)
-
                 if self._trace_emitter is not None:
                     self._trace_emitter(
                         ProtocolTrace(
@@ -313,14 +314,19 @@ class SIPAudioMixin:
                         )
                     )
             except Exception:
-                logger.exception("Failed to send BYE for session %s", session.id)
+                logger.exception("Failed to trace BYE for session %s", session.id)
 
-        if call_session is not None:
-            await call_session.close()
-
-        self._cleanup_session(session.id)
-        session.state = VoiceSessionState.ENDED
+        await self._close_session_media(session, call_session)
         logger.info("SIP session disconnected: session=%s", session.id)
+
+    async def _close_session_media(self, session: VoiceSession, call_session: Any) -> None:
+        """Close RTP before releasing its port; cleanup also stops playback."""
+        try:
+            if call_session is not None:
+                await call_session.close()
+        finally:
+            self._cleanup_session(session.id)
+            session.state = VoiceSessionState.ENDED
 
     def get_session(self, session_id: str) -> VoiceSession | None:
         state = self._session_states.get(session_id)
@@ -372,6 +378,24 @@ class SIPAudioMixin:
                 f"(threshold={self._rtp_establishment_timeout:.0f}s)"
             )
         return None
+
+    async def _expire_session(self, sid: str, st: SIPSessionState) -> None:
+        """End the SIP dialog as well as RTP, preserving why the watchdog fired."""
+        if self._session_states.get(sid) is not st:
+            return
+        session = st.session
+        session.metadata["disconnect_reason"] = (
+            "media_lost" if st.audio_stats.inbound_packets else "media_not_established"
+        )
+        try:
+            async with asyncio.timeout(2):
+                await self.disconnect(session)
+        except Exception:
+            # A failed BYE keeps the session tracked so the next stats pass retries.
+            logger.exception("Failed to disconnect expired SIP session: %s", sid)
+        finally:
+            if session.state == VoiceSessionState.ENDED:
+                _notify_disconnected(session, self._disconnect_callbacks)
 
     async def _audio_stats_loop(self) -> None:
         """Periodically log per-session audio diagnostics.
@@ -442,17 +466,7 @@ class SIPAudioMixin:
 
                 for sid, st, reason in inactive_sessions:
                     logger.warning("%s — forcing disconnect", reason)
-                    session = st.session
-                    call_session = st.call_session
-
-                    if call_session is not None:
-                        with contextlib.suppress(Exception):
-                            await call_session.close()
-
-                    self._cleanup_session(sid)
-
-                    for cb in tuple(self._disconnect_callbacks):
-                        cb(session)
+                    await self._expire_session(sid, st)
 
         except asyncio.CancelledError:
             pass
