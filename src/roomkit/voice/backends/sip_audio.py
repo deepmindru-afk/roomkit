@@ -655,11 +655,14 @@ class SIPAudioMixin:
         ts = state.send_timestamp
 
         now = time.monotonic()
-        last_send = state.last_rtp_send_time
-        if last_send is not None:
-            gap = now - last_send
+        send_until = state.rtp_send_until
+        if send_until is not None and len(buf) >= bytes_per_frame:
+            # A pacer can send several frames ahead, then wait >100 ms.
+            # Their duration already advances RTP time: only silence beyond
+            # those samples is a gap, not the time since the last send call.
+            gap = now - send_until
             if gap > 0.100:
-                gap_ticks = int(gap * clock_rate)
+                gap_ticks = round(gap * clock_rate)
                 ts += gap_ticks
                 logger.debug(
                     "RTP timestamp gap: %.0fms → +%d ticks (session %s)",
@@ -681,7 +684,7 @@ class SIPAudioMixin:
 
         state.send_timestamp = ts
         if frames_this_call > 0:
-            state.last_rtp_send_time = now
+            state.rtp_send_until = max(now, send_until or now) + frames_this_call / 50
 
         stats = state.audio_stats
         stats.outbound_calls += 1

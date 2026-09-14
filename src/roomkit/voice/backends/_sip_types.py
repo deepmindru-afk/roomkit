@@ -131,7 +131,8 @@ class SIPSessionState:
     send_timestamp: int = 0
     send_buffer: bytearray = field(default_factory=bytearray)
     send_frame_count: int = 0
-    last_rtp_send_time: float | None = None
+    # Wall-clock end of all PCM already transmitted, including pacer headroom.
+    rtp_send_until: float | None = None
     rtp_port: int | None = None
     audio_stats: AudioStats = field(default_factory=AudioStats)
     pacer: Any = None

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.75.1] — 2026-09-14
+
+### Fixed
+
+- SIP RTP timestamps account for the duration of audio already sent by the
+  pacer. Continuous streams such as GPT-Live no longer gain artificial
+  silence between packet bursts. Actual idle gaps still advance the RTP
+  clock, and incomplete PCM packets wait for transmission before advancing it.
+
 ## [0.75.0] — 2026-09-14
 
 ### Changed
