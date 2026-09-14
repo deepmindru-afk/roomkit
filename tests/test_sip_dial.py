@@ -475,18 +475,58 @@ class TestDisconnectOutgoing:
     ) -> None:
         with patch("aiosipua.build_sdp", return_value=FakeSdpMessage()):
             session = await backend.dial(to_uri=TO_URI, from_uri=FROM_URI, proxy_addr=PROXY_ADDR)
-        call = backend._session_states[session.id].outgoing_call
+        state = backend._session_states[session.id]
+        call = state.outgoing_call
         call.hangup = MagicMock()
+        state.call_session.close = AsyncMock()
 
         async def stalled_cancel(_session: Any) -> None:
             call.hangup.assert_called_once_with(backend._uac)
             await asyncio.Event().wait()
 
         backend.cancel_audio = stalled_cancel
-        with pytest.raises(TimeoutError):
-            await asyncio.wait_for(backend.disconnect(session), timeout=0.01)
+        await asyncio.wait_for(backend.disconnect(session), timeout=0.01)
+        call.hangup.assert_called_once_with(backend._uac)
+        state.call_session.close.assert_awaited_once()
         assert session.state == VoiceSessionState.ENDED
         assert backend.get_session(session.id) is None
+
+    async def test_failed_trace_does_not_skip_media_close(self, backend: SIPVoiceBackend) -> None:
+        with patch("aiosipua.build_sdp", return_value=FakeSdpMessage()):
+            session = await backend.dial(to_uri=TO_URI, from_uri=FROM_URI, proxy_addr=PROXY_ADDR)
+        state = backend._session_states[session.id]
+        state.call_session.close = AsyncMock()
+        backend._trace_emitter = MagicMock(side_effect=RuntimeError("trace failed"))
+        await backend.disconnect(session)
+        state.call_session.close.assert_awaited_once()
+        assert backend.get_session(session.id) is None
+
+    async def test_failed_bye_during_shutdown_still_releases_all_sessions(
+        self, backend: SIPVoiceBackend
+    ) -> None:
+        backend._uac.send_invite = MagicMock(
+            side_effect=[FakeOutgoingCall(call_id="out-1"), FakeOutgoingCall(call_id="out-2")]
+        )
+        with patch("aiosipua.build_sdp", return_value=FakeSdpMessage()):
+            sessions = [
+                await backend.dial(to_uri=TO_URI, from_uri=FROM_URI, proxy_addr=PROXY_ADDR)
+                for _ in range(2)
+            ]
+        states = list(backend._session_states.values())
+        states[0].outgoing_call.hangup = MagicMock(side_effect=OSError("BYE failed"))
+        for state in states:
+            state.call_session.close = AsyncMock()
+        backend._registration_task = backend._stats_task = None
+        backend._registered = False
+        backend._uas = types.SimpleNamespace(stop=AsyncMock())
+        with pytest.raises(ExceptionGroup, match="SIP backend shutdown failed") as error:
+            await backend.close()
+        assert isinstance(error.value.exceptions[0], OSError)
+        for state in states:
+            state.call_session.close.assert_awaited_once()
+        assert all(session.state == VoiceSessionState.ENDED for session in sessions)
+        assert not backend._session_states
+        backend._uas.stop.assert_awaited_once()
 
     async def test_failed_bye_preserves_session_for_retry(self, backend: SIPVoiceBackend) -> None:
         with patch("aiosipua.build_sdp", return_value=FakeSdpMessage()):

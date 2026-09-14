@@ -298,9 +298,8 @@ class SIPAudioMixin:
 
         # Send BYE for outgoing call
         if out_call is not None and self._uac is not None:
+            out_call.hangup(self._uac)
             try:
-                out_call.hangup(self._uac)
-
                 if self._trace_emitter is not None:
                     self._trace_emitter(
                         ProtocolTrace(
@@ -315,17 +314,19 @@ class SIPAudioMixin:
                         )
                     )
             except Exception:
-                logger.exception("Failed to send BYE for session %s", session.id)
-                raise
+                logger.exception("Failed to trace BYE for session %s", session.id)
 
+        await self._close_session_media(session, call_session)
+        logger.info("SIP session disconnected: session=%s", session.id)
+
+    async def _close_session_media(self, session: VoiceSession, call_session: Any) -> None:
+        """Close RTP before releasing its port; cleanup also stops playback."""
         try:
-            await self.cancel_audio(session)
             if call_session is not None:
                 await call_session.close()
         finally:
             self._cleanup_session(session.id)
             session.state = VoiceSessionState.ENDED
-        logger.info("SIP session disconnected: session=%s", session.id)
 
     def get_session(self, session_id: str) -> VoiceSession | None:
         state = self._session_states.get(session_id)
