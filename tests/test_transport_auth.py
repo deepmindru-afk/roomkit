@@ -126,11 +126,11 @@ async def test_ws_transport_send_audio_binary() -> None:
 
 
 async def test_ws_transport_send_audio_base64_json() -> None:
-    """audio_format='base64_json' (default) should send base64-encoded JSON."""
+    """audio_format='base64_json' should send base64-encoded JSON."""
     import base64
     import json
 
-    transport = WebSocketRealtimeTransport()
+    transport = WebSocketRealtimeTransport(audio_format="base64_json")
 
     session = _make_session()
     mock_ws = AsyncMock()

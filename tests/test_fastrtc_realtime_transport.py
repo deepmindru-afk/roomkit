@@ -32,7 +32,9 @@ def transport():
     # Patch numpy import inside the module so we don't need it installed
     from roomkit.voice.realtime.fastrtc_transport import FastRTCRealtimeTransport
 
-    return FastRTCRealtimeTransport(input_sample_rate=16000, output_sample_rate=24000)
+    return FastRTCRealtimeTransport(
+        input_sample_rate=16000, output_sample_rate=24000, audio_transport="datachannel"
+    )
 
 
 @pytest.fixture
@@ -203,9 +205,7 @@ class TestFastRTCRealtimeTransport:
         assert session.id not in transport._sessions
         assert session.id not in transport._session_handlers
 
-        # Handler receives None sentinel
-        sentinel = handler._audio_queue.get_nowait()
-        assert sentinel is None
+        assert handler._playback._closed.is_set()
 
     async def test_on_client_connected_callback(self, transport) -> None:
         connected_ids: list[str] = []
@@ -334,12 +334,6 @@ class TestFastRTCRealtimeTransport:
         result = await handler.emit()
         assert result is None
 
-    async def test_handler_emit_none_sentinel(self, handler) -> None:
-        """emit() should return None when sentinel is queued."""
-        handler._audio_queue.put_nowait(None)
-        result = await handler.emit()
-        assert result is None
-
     async def test_handler_emit_always_returns_none(self, handler) -> None:
         """emit() is a no-op that always returns None (audio sent via send_audio_direct)."""
         result = await handler.emit()
@@ -396,11 +390,16 @@ class TestNegotiatedAudioRates:
 
         provider = MockRealtimeProvider()
         transport = FastRTCRealtimeTransport(
-            input_sample_rate=capture_rate, output_sample_rate=playback_rate
+            input_sample_rate=capture_rate,
+            output_sample_rate=playback_rate,
+            audio_transport="datachannel",
         )
         sent: list[bytes] = []
         transport._handlers["rtc"] = SimpleNamespace(  # type: ignore[assignment]
-            channel=None, send_audio_direct=sent.append, _audio_queue=asyncio.Queue()
+            channel=None,
+            send_audio_direct=sent.append,
+            _session_bound=asyncio.Event(),
+            _playback=MagicMock(),
         )
         channel = RealtimeVoiceChannel(
             "rt",

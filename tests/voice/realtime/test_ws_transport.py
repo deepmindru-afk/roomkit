@@ -41,7 +41,7 @@ class TestWebSocketRealtimeTransport:
     def test_default_audio_format(self):
         mod = _load_module()
         transport = mod.WebSocketRealtimeTransport()
-        assert transport._audio_format == "base64_json"
+        assert transport._audio_format == "binary"
 
     def test_binary_audio_format(self):
         mod = _load_module()
@@ -91,3 +91,23 @@ class TestWebSocketRealtimeTransport:
 
         transport = mod.WebSocketRealtimeTransport(authenticate=fake_auth)
         assert transport._authenticate is fake_auth
+
+
+async def test_default_sends_pcm_binary_and_legacy_json_is_explicit():
+    import base64
+    import json
+    from unittest.mock import AsyncMock
+
+    for mode in (None, "base64_json"):
+        mod = _load_module()
+        transport = mod.WebSocketRealtimeTransport(**({"audio_format": mode} if mode else {}))
+        connection = AsyncMock()
+        session = _make_session()
+        transport._websockets[session.id] = connection
+        audio = b"\x00\x01" * 80
+        await transport.send_audio(session, audio)
+        sent = connection.send.call_args.args[0]
+        if mode is None:
+            assert sent == audio
+        else:
+            assert base64.b64decode(json.loads(sent)["data"]) == audio

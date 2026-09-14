@@ -797,19 +797,20 @@ class AudioCallback(AudioStreamTrack):
             self.process_input_task.add_done_callback(lambda _: logger.debug("process_input_done"))
             self.start_up_task = asyncio.create_task(start_up)
             self.start_up_task.add_done_callback(lambda _: logger.debug("start_up_done"))
-            self.decode_task = asyncio.create_task(
-                player_worker_decode(
-                    callable,
-                    self.queue,
-                    self.thread_quit,
-                    lambda: self.channel,
-                    self.set_additional_outputs,
-                    False,
-                    self.event_handler.output_sample_rate,
-                    self.event_handler.output_frame_size,
+            if getattr(self.event_handler, "_recv_audio_frame", None) is None:
+                self.decode_task = asyncio.create_task(
+                    player_worker_decode(
+                        callable,
+                        self.queue,
+                        self.thread_quit,
+                        lambda: self.channel,
+                        self.set_additional_outputs,
+                        False,
+                        self.event_handler.output_sample_rate,
+                        self.event_handler.output_frame_size,
+                    )
                 )
-            )
-            self.decode_task.add_done_callback(lambda _: logger.debug("decode_done"))
+                self.decode_task.add_done_callback(lambda _: logger.debug("decode_done"))
             self.has_started = True
 
     async def recv(self):  # type: ignore
@@ -822,6 +823,12 @@ class AudioCallback(AudioStreamTrack):
             if current_channel.get() != self.event_handler.channel:
                 current_channel.set(self.event_handler.channel)
             await self.start()
+
+            # Realtime handlers own one interruptible PCM FIFO and clock.
+            # Avoid the generic resampler/queue retaining interrupted audio.
+            receive_frame = getattr(self.event_handler, "_recv_audio_frame", None)
+            if receive_frame is not None:
+                return await receive_frame()
 
             frame = await self.queue.get()
             if isinstance(frame, CloseStream):
@@ -845,6 +852,8 @@ class AudioCallback(AudioStreamTrack):
                 await asyncio.sleep(wait)
             self.last_timestamp = time.time()
             return frame
+        except MediaStreamError:
+            raise
         except Exception as e:
             logger.debug("exception %s", e)
             exec = traceback.format_exc()
@@ -853,6 +862,10 @@ class AudioCallback(AudioStreamTrack):
     def stop(self):
         logger.debug("audio callback stop")
         self.thread_quit.set()
+        for name in ("process_input_task", "start_up_task", "decode_task"):
+            task = getattr(self, name, None)
+            if task is not None and not task.done():
+                task.cancel()
         super().stop()
 
 

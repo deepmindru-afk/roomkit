@@ -22,6 +22,7 @@ from aiortc import (
     RTCIceCandidate,
     RTCIceServer,
     RTCPeerConnection,
+    RTCRtpSender,
     RTCSessionDescription,
 )
 from aiortc.contrib.media import MediaRelay  # type: ignore
@@ -404,7 +405,15 @@ class WebRTCConnectionMixin:
                     conn.set_channel(self.data_channels[body["webrtc_id"]])
             if self.mode == "send-receive":
                 logger.debug("Adding track to peer connection %s", cb)
-                pc.addTrack(cb)
+                sender = pc.addTrack(cb)
+                if track.kind == "audio" and hasattr(handler, "_recv_audio_frame"):
+                    codecs = RTCRtpSender.getCapabilities("audio").codecs
+                    # Prefer wideband Opus while retaining negotiated fallbacks.
+                    codecs.sort(key=lambda codec: codec.mimeType.lower() != "audio/opus")
+                    for transceiver in pc.getTransceivers():
+                        if transceiver.sender is sender:
+                            transceiver.setCodecPreferences(codecs)
+                            break
             elif self.mode == "send":
                 asyncio.create_task(cast(AudioCallback | VideoCallback, cb).start())
 

@@ -36,8 +36,8 @@ class WebSocketRealtimeTransport(VoiceBackend):
 
     Args:
         authenticate: Optional async callback to authenticate connections.
-        audio_format: Outbound audio encoding. ``"base64_json"`` (default) wraps
-            audio in a JSON text frame; ``"binary"`` sends raw bytes as a
+        audio_format: Outbound audio encoding. ``"base64_json"`` wraps
+            audio in a JSON text frame; ``"binary"`` (default) sends raw bytes as a
             WebSocket binary frame (lower overhead, suitable for Web Audio API).
 
     Requires the ``websockets`` package.
@@ -47,7 +47,7 @@ class WebSocketRealtimeTransport(VoiceBackend):
         self,
         *,
         authenticate: AuthCallback | None = None,
-        audio_format: Literal["binary", "base64_json"] = "base64_json",
+        audio_format: Literal["binary", "base64_json"] = "binary",
     ) -> None:
         self._websockets: dict[str, Any] = {}  # session_id -> WebSocket
         self._receive_tasks: dict[str, asyncio.Task[None]] = {}

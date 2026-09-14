@@ -34,7 +34,7 @@ import base64
 import json
 import logging
 from collections.abc import AsyncIterator, Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from roomkit.core.callbacks import subscribe_callback
 from roomkit.core.task_utils import log_task_exception
@@ -45,6 +45,7 @@ from roomkit.voice.backends.base import (
     VoiceBackend,
 )
 from roomkit.voice.base import AudioChunk, VoiceSession
+from roomkit.voice.realtime._fastrtc_playback import _PCMPlayback
 from roomkit.webrtc import AsyncStreamHandler
 
 if TYPE_CHECKING:
@@ -86,7 +87,9 @@ class _PassthroughHandler(AsyncStreamHandler):
         )
 
         self._transport = transport
-        self._audio_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+        self._playback = _PCMPlayback(output_sample_rate)
+        self._audio_transport = transport._audio_transport
+        self._session_bound = asyncio.Event()
         self._session: VoiceSession | None = None
         self._webrtc_id: str | None = None
         self._auth = auth
@@ -94,6 +97,14 @@ class _PassthroughHandler(AsyncStreamHandler):
         self._auth_meta: dict[str, Any] | None = None
 
         self._np = _np
+
+    async def _recv_audio_frame(self) -> Any:
+        # Legacy peers receive only DataChannel audio. Their RTP sender waits
+        # until teardown instead of producing a second playback stream.
+        await self._session_bound.wait()
+        if self._audio_transport == "datachannel":
+            await self._playback._closed.wait()
+        return await self._playback.recv()
 
     def copy(self) -> _PassthroughHandler:
         """Create a per-connection handler instance (FastRTC requirement)."""
@@ -147,12 +158,17 @@ class _PassthroughHandler(AsyncStreamHandler):
         await self._transport._fire_audio_callbacks(self._session, pcm_bytes)
 
     async def emit(self) -> EmitType:
-        """No-op: outgoing audio is sent directly via send_audio_direct()."""
-        await asyncio.sleep(0.1)
-        return None
+        """Generic WebSocket adapter fallback; RTP pulls _recv_audio_frame."""
+        if self._audio_transport == "datachannel":
+            await asyncio.sleep(0.1)
+            return None
+        frame = await self._playback.recv()
+        return self.output_sample_rate, frame.to_ndarray()
 
     def shutdown(self) -> None:
         """Called by FastRTC when the WebRTC connection is closed."""
+        self._playback.close()
+        self._session_bound.set()
         if self._webrtc_id:
             self._transport._unregister_handler(self._webrtc_id)
             logger.info("WebRTC handler shutdown: webrtc_id=%s", self._webrtc_id)
@@ -178,11 +194,7 @@ class _PassthroughHandler(AsyncStreamHandler):
             channel.send(message)
 
     def send_audio_direct(self, audio: bytes) -> None:
-        """Send audio directly on the WebSocket, bypassing FastRTC's emit queue.
-
-        Encodes PCM16 LE bytes as mu-law and sends immediately, avoiding
-        the double-queue + 20ms sleep latency of the emit pipeline.
-        """
+        """Compatibility output for clients explicitly selecting the DataChannel."""
         # Skip once the peer has closed the channel — sending on a non-"open"
         # RTCDataChannel raises aiortc's InvalidStateError.
         channel = self.channel
@@ -225,7 +237,11 @@ class FastRTCRealtimeTransport(VoiceBackend):
         *,
         input_sample_rate: int = 16000,
         output_sample_rate: int = 24000,
+        audio_transport: Literal["webrtc", "datachannel"] = "webrtc",
     ) -> None:
+        if audio_transport not in ("webrtc", "datachannel"):
+            raise ValueError("Unsupported audio transport")
+        self._audio_transport = audio_transport
         self._input_sample_rate = input_sample_rate
         self._output_sample_rate = output_sample_rate
 
@@ -260,6 +276,13 @@ class FastRTCRealtimeTransport(VoiceBackend):
             connection: The webrtc_id string identifying the WebRTC connection.
         """
         webrtc_id: str = connection
+        audio_transport = session.metadata.get("audio_transport", self._audio_transport)
+        if audio_transport not in ("webrtc", "datachannel"):
+            raise ValueError("Unsupported audio transport")
+        handler = self._handlers.get(webrtc_id)
+        if handler is not None:
+            handler._audio_transport = audio_transport
+            handler._session_bound.set()
         # Capture and playback may use different PCM rates. Declare both
         # before the channel constructs its per-session resamplers.
         session.metadata["transport_sample_rate"] = self._input_sample_rate
@@ -278,8 +301,8 @@ class FastRTCRealtimeTransport(VoiceBackend):
     ) -> None:
         """Send audio data to the connected WebRTC client.
 
-        Sends directly on the WebSocket, bypassing FastRTC's emit queue
-        for minimal latency.
+        WebRTC output enters one bounded PCM FIFO, pulled by the RTP track.
+        Only explicitly selected legacy sessions use mu-law JSON messages.
 
         Args:
             session: The session to send audio to.
@@ -292,7 +315,24 @@ class FastRTCRealtimeTransport(VoiceBackend):
             return
         handler = self._handlers.get(webrtc_id)
         if handler is not None:
-            handler.send_audio_direct(audio)
+            if handler._audio_transport == "datachannel":
+                handler.send_audio_direct(audio)
+            else:
+                await handler._playback.write(audio)
+
+    def interrupt(self, session: VoiceSession) -> None:
+        handler = self._handlers.get(self._session_handlers.get(session.id, ""))
+        if handler is not None:
+            handler._playback.clear()
+
+    def end_of_response(self, session: VoiceSession) -> None:
+        handler = self._handlers.get(self._session_handlers.get(session.id, ""))
+        if handler is not None:
+            handler._playback.end_response()
+
+    def is_playing(self, session: VoiceSession) -> bool:
+        handler = self._handlers.get(self._session_handlers.get(session.id, ""))
+        return handler is not None and handler._playback.buffered_ms > 0
 
     async def send_message(self, session: VoiceSession, message: dict[str, Any]) -> None:
         """Send a JSON message via the WebRTC DataChannel.
@@ -311,8 +351,7 @@ class FastRTCRealtimeTransport(VoiceBackend):
     async def disconnect(self, session: VoiceSession) -> None:
         """Disconnect the client for the given session.
 
-        Removes all mappings and sends a None sentinel to the handler's
-        audio queue to signal the end of the stream.
+        Removes all mappings and wakes the handler's pending audio reads/writes.
 
         Args:
             session: The session to disconnect.
@@ -323,7 +362,8 @@ class FastRTCRealtimeTransport(VoiceBackend):
             self._webrtc_sessions.pop(webrtc_id, None)
             handler = self._handlers.get(webrtc_id)
             if handler:
-                handler._audio_queue.put_nowait(None)  # Signal end
+                handler._playback.close()
+                handler._session_bound.set()
         logger.info("Session disconnected: session=%s", session.id)
 
     def on_audio_received(self, callback: AudioReceivedCallback) -> Callable[[], None]:
@@ -364,6 +404,11 @@ class FastRTCRealtimeTransport(VoiceBackend):
         )
         for session in list(self._sessions.values()):
             await self.disconnect(session)
+        # Connections can be waiting for authentication/session binding.
+        for handler in self._handlers.values():
+            handler._playback.close()
+            handler._session_bound.set()
+        self._handlers.clear()
 
     # ------------------------------------------------------------------
     # Internal methods called by _PassthroughHandler
@@ -386,6 +431,12 @@ class FastRTCRealtimeTransport(VoiceBackend):
     def _register_handler(self, webrtc_id: str, handler: _PassthroughHandler) -> None:
         """Register a handler and own its asynchronous connection callback."""
         self._handlers[webrtc_id] = handler
+        session = self._webrtc_sessions.get(webrtc_id)
+        if session is not None:
+            handler._audio_transport = session.metadata.get(
+                "audio_transport", self._audio_transport
+            )
+            handler._session_bound.set()
         if self._connected_callback is not None:
             try:
                 result = self._connected_callback(webrtc_id)

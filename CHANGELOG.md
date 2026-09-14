@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.75.0] — 2026-09-14
+
+### Changed
+
+- Realtime WebRTC sends audio over RTP with Opus preferred. One bounded PCM
+  queue provides a 40 ms startup reserve, 20 ms frames, continuous timestamps
+  and short fades at discontinuities. Interruptions flush pending PCM before
+  the next frame is taken; teardown wakes blocked reads and writes.
+- `FastRTCRealtimeTransport(audio_transport="datachannel")` retains the previous
+  mu-law JSON output. Select it for existing clients that decode media messages;
+  `VoiceSession.metadata["audio_transport"]` can override the default per session.
+  New clients consume the remote audio track and keep controls on the DataChannel.
+- `WebSocketRealtimeTransport` now defaults to binary PCM16 frames. Existing JSON
+  clients must set `audio_format="base64_json"`. Inbound formats remain accepted.
+
 ## [0.74.1] — 2026-09-14
 
 ### Fixed
