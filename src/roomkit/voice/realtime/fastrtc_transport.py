@@ -45,7 +45,6 @@ from roomkit.voice.backends.base import (
     VoiceBackend,
 )
 from roomkit.voice.base import AudioChunk, VoiceSession
-from roomkit.voice.realtime._fastrtc_playback import _PCMPlayback
 from roomkit.webrtc import AsyncStreamHandler
 
 if TYPE_CHECKING:
@@ -79,6 +78,8 @@ class _PassthroughHandler(AsyncStreamHandler):
         auth: AuthCallback | None = None,
     ) -> None:
         import numpy as _np
+
+        from roomkit.voice.realtime._fastrtc_playback import _PCMPlayback
 
         super().__init__(
             expected_layout="mono",

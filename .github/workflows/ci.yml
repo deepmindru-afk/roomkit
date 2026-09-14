@@ -214,3 +214,5 @@ jobs:
           tests/delivery/test_redis_integration.py
           tests/test_pyav_decode_native.py
           tests/test_fastrtc_audio_session.py
+          tests/test_fastrtc_playback.py
+          tests/test_fastrtc_realtime_transport.py
