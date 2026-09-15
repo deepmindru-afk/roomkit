@@ -99,12 +99,13 @@ def history_budget(
     safety_margin_ratio: float = 0.15,
     reserved_tokens: int = 0,
     messages: list[AIMessage] | None = None,
+    current_event: RoomEvent | None = None,
 ) -> int:
     """Tokens the conversation history may occupy, once the rest of the prompt is paid for.
 
-    A context window holds four things, not one: the system prompt, the tool
+    A context window holds the system prompt, the tool
     schemas, whatever pre-built messages the memory layer injects, and the
-    history. A trimmer handed the whole window and measuring only the history
+    history plus the current turn. A trimmer measuring only the history
     can return a result that overflows the very window it was given — which is
     what ``max_context_tokens * (1 - safety_margin_ratio)`` computed alone did.
 
@@ -120,9 +121,13 @@ def history_budget(
       besides what is passed here occupies the window".
     - ``messages`` are the injected blocks the trimmer passes through untouched.
       They are not trimmable, so they are subtracted rather than cut.
+    - ``current_event`` is the turn the channel appends after retrieving memory.
+      It is not history and cannot be trimmed. Its cost is local to this call,
+      never added to the wrapper's shared ``reserved_tokens``.
 
     What remains is the history's, and nothing else's.
     """
     prompt_budget = int(max_context_tokens * (1 - safety_margin_ratio))
     injected = sum(estimate_message_tokens(m) for m in messages or ())
-    return max(0, prompt_budget - reserved_tokens - injected)
+    current = estimate_event_tokens(current_event) if current_event is not None else 0
+    return max(0, prompt_budget - reserved_tokens - injected - current)

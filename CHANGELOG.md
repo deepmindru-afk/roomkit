@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.75.2] — 2026-09-15
+
+### Fixed
+
+- `BudgetAwareMemory` reserves the current turn in the shared `history_budget`
+  calculation. Large incoming messages now leave less room for history without
+  being trimmed themselves or changing another turn's reserve. A message that
+  alone exceeds a known window raises a non-retryable context-overflow error
+  before memory retrieval or provider generation.
+
 ## [0.75.1] — 2026-09-14
 
 ### Fixed

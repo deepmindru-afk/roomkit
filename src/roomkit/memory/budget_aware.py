@@ -9,6 +9,7 @@ from roomkit.memory.base import MemoryProvider, MemoryResult
 from roomkit.memory.token_estimator import estimate_event_tokens, history_budget
 from roomkit.models.context import RoomContext
 from roomkit.models.event import RoomEvent
+from roomkit.providers.ai.base import ProviderError
 
 logger = logging.getLogger("roomkit.memory.budget_aware")
 
@@ -20,7 +21,10 @@ class BudgetAwareMemory(_MemoryWrapper):
     it is paid for — see :func:`roomkit.memory.token_estimator.history_budget`,
     which owns the arithmetic. ``reserved_tokens`` is the caller's declaration
     of the non-history prompt it built (system prompt, tool schemas); the
-    injected ``messages`` this wrapper passes through are measured here.
+    injected ``messages`` and the current turn this wrapper passes through are
+    measured here. A current turn that alone exceeds a known window raises a
+    non-retryable ``ProviderError(context_overflow=True)`` before retrieval or
+    generation: trimming history cannot make that message fit.
 
     Events are trimmed from the oldest, preserving the most recent conversation.
 
@@ -58,6 +62,14 @@ class BudgetAwareMemory(_MemoryWrapper):
         *,
         channel_id: str | None = None,
     ) -> MemoryResult:
+        current_tokens = estimate_event_tokens(current_event)
+        if self._max_context_tokens > 0 and current_tokens > self._max_context_tokens:
+            raise ProviderError(
+                f"The current message alone exceeds the model's context window "
+                f"(~{current_tokens} tokens, window {self._max_context_tokens}). "
+                "Shorten the message or choose a model with a larger context window.",
+                context_overflow=True,
+            )
         inner_result = await self._inner.retrieve(
             room_id, current_event, context, channel_id=channel_id
         )
@@ -66,6 +78,7 @@ class BudgetAwareMemory(_MemoryWrapper):
             reserved_tokens=self._reserved_tokens,
             messages=inner_result.messages,
             safety_margin_ratio=self._safety_margin_ratio,
+            current_event=current_event,
         )
         trimmed_events = self._trim_events_to_budget(inner_result.events, budget)
         return MemoryResult(
