@@ -208,6 +208,7 @@ jobs:
           tests/test_store_postgres.py
           tests/test_postgres_multiprocess.py
           tests/test_webrtc_offer_auth.py
+          tests/test_webrtc_rtc_configuration.py
           tests/test_store_binding_contract.py
           tests/test_voice_delivery_store.py
           tests/test_knowledge_postgres.py
