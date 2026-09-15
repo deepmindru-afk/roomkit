@@ -85,7 +85,7 @@ class WebRTCConnectionMixin:
         self.mode: Literal["send", "receive", "send-receive"]
         self.allow_extra_tracks: bool
         self.rtc_configuration: dict[str, Any] | None | RTCConfigurationCallable | None
-        self.server_rtc_configuration: RTCConfiguration | None
+        self.server_rtc_configuration: RTCConfiguration | RTCConfigurationCallable | None
 
     @staticmethod
     async def wait_for_time_limit(pc: RTCPeerConnection, time_limit: float):
@@ -190,13 +190,27 @@ class WebRTCConnectionMixin:
         return set_outputs
 
     async def resolve_rtc_configuration(self) -> dict[str, Any] | None:
-        if inspect.isfunction(self.rtc_configuration):
-            if inspect.iscoroutinefunction(self.rtc_configuration):
-                return await self.rtc_configuration()
-            else:
-                return await run_sync(self.rtc_configuration)
-        else:
-            return cast(dict[str, Any], self.rtc_configuration) or {}
+        return await self._resolve_rtc_configuration(self.rtc_configuration) or {}
+
+    @staticmethod
+    async def _resolve_rtc_configuration(
+        configuration: RTCConfigurationCallable | None,
+    ) -> dict[str, Any] | None:
+        if not callable(configuration):
+            return configuration
+        result = (
+            configuration()
+            if inspect.iscoroutinefunction(configuration)
+            else await run_sync(configuration)
+        )
+        return await result if inspect.isawaitable(result) else result
+
+    async def resolve_server_rtc_configuration(self) -> RTCConfiguration | None:
+        """Resolve expiring server ICE credentials for one new peer connection."""
+        configuration = self.server_rtc_configuration
+        if not callable(configuration):
+            return cast(RTCConfiguration | None, configuration)
+        return self.convert_to_aiortc_format(await self._resolve_rtc_configuration(configuration))
 
     async def _trigger_response(self, webrtc_id: str, args: list[Any] | None = None):
         # ReplyOnPause is not vendored (roomkit brings its own VAD/turn handling),
@@ -280,7 +294,18 @@ class WebRTCConnectionMixin:
                 content={"status": "failed", "meta": {"error": "connection_closed"}},
             )
 
-        if body["webrtc_id"] in self.connections:
+        try:
+            configuration = await self.resolve_server_rtc_configuration()
+        except Exception:
+            logger.exception("Unable to resolve server RTC configuration for %s", body["webrtc_id"])
+            return JSONResponse(
+                status_code=200,
+                content={"status": "failed", "meta": {"error": "rtc_configuration_failed"}},
+            )
+
+        # Admission follows credential resolution so concurrent callbacks cannot
+        # pass the same capacity check before either peer has been registered.
+        if body["webrtc_id"] in self.pcs:
             return JSONResponse(
                 status_code=200,
                 content={
@@ -305,7 +330,7 @@ class WebRTCConnectionMixin:
 
         offer = RTCSessionDescription(sdp=body["sdp"], type=body["type"])
 
-        pc = RTCPeerConnection(configuration=self.server_rtc_configuration)
+        pc = RTCPeerConnection(configuration=configuration)
         self.pcs[body["webrtc_id"]] = pc
 
         if isinstance(self.event_handler, StreamHandlerImpl):

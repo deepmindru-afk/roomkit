@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.75.3] — 2026-09-15
+
+### Fixed
+
+- Server WebRTC ICE configuration accepts zero-argument sync/async callbacks,
+  resolved for each new peer instead of during mounting. Expiring TURN credentials
+  can refresh without rebuilding the stream. A failed resolution rejects only
+  that offer with `rtc_configuration_failed`, without allocating a peer; admission
+  limits remain atomic after the callback finishes. Static dictionaries and
+  default ICE configuration retain their behavior.
+- OpenAI live context appends respect the UTF-8 byte limit, including multibyte
+  text, so an oversized append cannot close the realtime connection.
+
 ## [0.75.2] — 2026-09-15
 
 ### Fixed

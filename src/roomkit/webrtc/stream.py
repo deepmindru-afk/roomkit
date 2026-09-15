@@ -2,7 +2,6 @@
 # directory. Trimmed to the headless WebRTC transport: the Gradio UI builder,
 # the `gr.WebRTC` component, the colab/spaces helpers and `fastphone` tunneling
 # were removed so roomkit ships WebRTC without depending on gradio.
-import inspect
 import logging
 import re
 from collections.abc import Callable
@@ -16,7 +15,6 @@ from typing import (
     cast,
 )
 
-import anyio
 from fastapi import FastAPI, Request, WebSocket
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
@@ -108,7 +106,7 @@ class Stream(WebRTCConnectionMixin):
         allow_extra_tracks: bool = False,
         rtp_params: dict[str, Any] | None = None,
         rtc_configuration: RTCConfigurationCallable | None = None,
-        server_rtc_configuration: dict[str, Any] | None = None,
+        server_rtc_configuration: RTCConfigurationCallable | None = None,
         track_constraints: dict[str, Any] | None = None,
         additional_inputs: list[Any] | None = None,
         additional_outputs: list[Any] | None = None,
@@ -129,8 +127,10 @@ class Stream(WebRTCConnectionMixin):
             rtp_params: Optional dictionary of RTP encoding parameters.
             rtc_configuration: Optional Callable or dictionary for RTCPeerConnection configuration (e.g., ICE servers).
                                Required when deploying on Colab or Spaces.
-            server_rtc_configuration: Optional dictionary for RTCPeerConnection configuration on the server side. Note
-                                      that setting iceServers to be an empty list will mean no ICE servers will be used in the server.
+            server_rtc_configuration: Optional dictionary or zero-argument sync/async callable
+                                      for server RTCPeerConnection configuration. Callables are
+                                      resolved for each new connection, never during mounting.
+                                      An empty iceServers list disables server ICE servers.
             track_constraints: Optional dictionary of constraints for media tracks (e.g., resolution, frame rate).
             additional_inputs: Optional list of extra Gradio input components.
             additional_outputs: Optional list of extra Gradio output components. Requires `additional_outputs_handler`.
@@ -161,7 +161,11 @@ class Stream(WebRTCConnectionMixin):
         self.additional_outputs_handler = additional_outputs_handler
         self.track_constraints = track_constraints
         self.rtc_configuration = rtc_configuration
-        self.server_rtc_configuration = self.convert_to_aiortc_format(server_rtc_configuration)
+        self.server_rtc_configuration = (
+            server_rtc_configuration
+            if callable(server_rtc_configuration)
+            else self.convert_to_aiortc_format(server_rtc_configuration)
+        )
         self.verbose = verbose
 
     def mount(self, app: FastAPI, path: str = "", tags: list[str | Enum] | None = None) -> None:
@@ -245,13 +249,7 @@ class Stream(WebRTCConnectionMixin):
         )
 
     async def get_rtc_configuration(self):
-        if inspect.isfunction(self.rtc_configuration):
-            if inspect.iscoroutinefunction(self.rtc_configuration):
-                return await self.rtc_configuration()
-            else:
-                return anyio.to_thread.run_sync(self.rtc_configuration)  # type: ignore
-        else:
-            return self.rtc_configuration
+        return await self._resolve_rtc_configuration(self.rtc_configuration)
 
     async def handle_incoming_call(self, request: Request):
         """

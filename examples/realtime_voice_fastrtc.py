@@ -6,10 +6,11 @@ passthrough handler (no VAD -- Gemini handles speech detection).
 Transcriptions are emitted as RoomEvents so other channels see
 the conversation.
 
-Demonstrates pluggable auth on the transport via ``auth=``.
+Demonstrates pluggable auth and per-connection TURN credential resolution.
+Set TURN_CREDENTIALS_URL to an HTTP endpoint returning {"iceServers": [...]}.
 
 Requirements:
-    pip install roomkit[realtime-gemini,fastrtc] fastapi uvicorn
+    pip install roomkit[realtime-gemini,fastrtc] fastapi uvicorn httpx
 
 Run with:
     GOOGLE_API_KEY=... uv run uvicorn examples.realtime_voice_fastrtc:app
@@ -21,6 +22,9 @@ import os
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
+
+import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -95,10 +99,24 @@ async def authenticate_connection(ctx: object) -> dict[str, object] | None:
 
 
 # --- FastAPI app ---
+async def rtc_configuration() -> dict[str, Any]:
+    """Fetch short-lived credentials when a peer connects, never at startup."""
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        response = await client.get(os.environ["TURN_CREDENTIALS_URL"])
+        response.raise_for_status()
+        return response.json()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Mount WebRTC endpoints with auth
-    mount_fastrtc_realtime(app, transport, path="/rtc-realtime", auth=authenticate_connection)
+    mount_fastrtc_realtime(
+        app,
+        transport,
+        path="/rtc-realtime",
+        auth=authenticate_connection,
+        rtc_configuration=rtc_configuration if os.environ.get("TURN_CREDENTIALS_URL") else None,
+    )
     yield
     if _console_cleanup:
         await _console_cleanup()

@@ -52,6 +52,7 @@ if TYPE_CHECKING:
     from fastapi import FastAPI
 
     from roomkit.webrtc import Stream
+    from roomkit.webrtc.utils import RTCConfigurationCallable
 
 logger = logging.getLogger("roomkit.voice.realtime.fastrtc_transport")
 
@@ -509,7 +510,7 @@ def mount_fastrtc_realtime(
     *,
     path: str = "/rtc-realtime",
     auth: AuthCallback | None = None,
-    rtc_configuration: dict[str, Any] | None = None,
+    rtc_configuration: RTCConfigurationCallable | None = None,
     concurrency_limit: int | None = None,
 ) -> None:
     """Mount FastRTC WebRTC endpoints for realtime voice transport.
@@ -525,8 +526,10 @@ def mount_fastrtc_realtime(
             the FastRTC context and returns a metadata dict on success or
             ``None`` to reject. Rejected connections are silently dropped.
         rtc_configuration: Optional server-side RTCPeerConnection config
-            (e.g. ``{"iceServers": [...]}``).  Passed through to aiortc so the
-            server can gather TURN relay candidates.
+            (e.g. ``{"iceServers": [...]}``) or zero-argument sync/async callable.
+            Callables run for each new connection, never during mounting, so
+            short-lived TURN credentials can refresh. A resolution failure
+            rejects that offer with ``meta.error="rtc_configuration_failed"``.
         concurrency_limit: Maximum number of concurrent WebRTC connections
             accepted on this mounted endpoint. ``None`` keeps FastRTC's
             default of 1; the offer endpoint rejects further connections with
