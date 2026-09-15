@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -29,11 +30,11 @@ def _offer(connection_id: str) -> dict[str, str]:
 
 
 @pytest.fixture
-def peer_configurations(monkeypatch):
+def peer_configurations(monkeypatch: pytest.MonkeyPatch) -> list[RTCConfiguration | None]:
     """Record aiortc's input while leaving route admission and resolution real."""
-    configurations = []
+    configurations: list[RTCConfiguration | None] = []
 
-    def peer(*, configuration):
+    def peer(*, configuration: RTCConfiguration | None) -> SimpleNamespace:
         configurations.append(configuration)
         return SimpleNamespace(
             on=lambda _event: lambda callback: callback,
@@ -49,7 +50,9 @@ def peer_configurations(monkeypatch):
 
 
 @pytest.mark.parametrize("configuration", [None, {"iceServers": []}])
-async def test_static_configuration_preserves_defaults(configuration) -> None:
+async def test_static_configuration_preserves_defaults(
+    configuration: dict[str, Any] | None,
+) -> None:
     stream = Stream(lambda: None, server_rtc_configuration=configuration)
     result = await stream.resolve_server_rtc_configuration()
     if configuration is None:
@@ -60,21 +63,24 @@ async def test_static_configuration_preserves_defaults(configuration) -> None:
 
 
 @pytest.mark.parametrize("kind", ["sync", "async", "bound", "async_object"])
-async def test_callable_forms_resolve_per_connection(kind, peer_configurations) -> None:
-    calls = []
+async def test_callable_forms_resolve_per_connection(
+    kind: str,
+    peer_configurations: list[RTCConfiguration],
+) -> None:
+    calls: list[int] = []
 
-    def resolve():
+    def resolve() -> dict[str, Any]:
         calls.append(len(calls) + 1)
         return {"iceServers": [{"urls": "turn:relay.example", "credential": str(calls[-1])}]}
 
-    async def async_resolve():
+    async def async_resolve() -> dict[str, Any]:
         return resolve()
 
     class Provider:
-        def resolve(self):
+        def resolve(self) -> dict[str, Any]:
             return resolve()
 
-        async def __call__(self):
+        async def __call__(self) -> dict[str, Any]:
             return resolve()
 
     provider = Provider()
@@ -93,7 +99,9 @@ async def test_callable_forms_resolve_per_connection(kind, peer_configurations) 
     assert calls == [1, 2]
 
 
-async def test_failed_callback_leaves_mounted_endpoint_available(peer_configurations) -> None:
+async def test_failed_callback_leaves_mounted_endpoint_available(
+    peer_configurations: list[RTCConfiguration],
+) -> None:
     callback = AsyncMock(side_effect=TimeoutError("private credential detail"))
     app = FastAPI()
     transport = FastRTCRealtimeTransport()
@@ -121,12 +129,13 @@ async def test_failed_callback_leaves_mounted_endpoint_available(peer_configurat
 
 @pytest.mark.parametrize("duplicate", [False, True])
 async def test_admission_is_atomic_after_awaiting_credentials(
-    duplicate, peer_configurations
+    duplicate: bool,
+    peer_configurations: list[RTCConfiguration],
 ) -> None:
     entered = asyncio.Event()
     release = asyncio.Event()
 
-    async def resolve():
+    async def resolve() -> dict[str, Any]:
         entered.set()
         await release.wait()
         return {"iceServers": []}
