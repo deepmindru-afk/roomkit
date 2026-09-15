@@ -17,6 +17,7 @@ from roomkit.memory.token_estimator import (
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import ChannelType
+from roomkit.models.event import CompositeContent, MediaContent, TextContent
 from roomkit.models.room import Room
 from roomkit.providers.ai.base import AIMessage, AITool, ProviderError
 from roomkit.providers.ai.mock import MockAIProvider
@@ -111,3 +112,52 @@ async def test_every_generation_path_refuses_without_calling_provider(
     assert failed.value.context_overflow is True
     assert provider.calls == []
     await channel.close()
+
+
+@pytest.mark.parametrize("inline", [False, True])
+@pytest.mark.parametrize("composite", [False, True])
+async def test_image_bytes_do_not_cost_text_tokens_or_reject_a_valid_turn(
+    inline: bool, composite: bool
+) -> None:
+    url = "data:image/png;base64," + "a" * 400000 if inline else "https://example.test/image.png"
+    media = MediaContent(url=url, mime_type="image/png", caption="A small image")
+    content = CompositeContent(parts=[TextContent(body="Describe"), media]) if composite else media
+    current = make_event().model_copy(update={"content": content})
+    history = [make_event(body="history" * 100) for _ in range(10)]
+    memory = BudgetAwareMemory(MockMemoryProvider(events=history), max_context_tokens=4000)
+    provider = MockAIProvider(vision=True)
+    channel = AIChannel("ai", provider=provider, memory=memory)
+    binding = ChannelBinding(room_id="test-room", channel_id="ai", channel_type=ChannelType.AI)
+    ctx = RoomContext(room=Room(id="test-room"), bindings=[binding])
+    # Keep the history through the real channel's visibility gate.
+    await channel.on_event(current, binding, ctx)
+    assert len(provider.calls) == 1
+    assert estimate_event_tokens(current) < 1100
+    assert any("historyhistory" in str(m.content) for m in provider.calls[0].messages)
+    assert url in str(provider.calls[0].messages[-1].content)
+    await channel.close()
+
+
+async def test_approximate_image_cost_cannot_refuse_a_small_window() -> None:
+    media = MediaContent(url="https://example.test/image.png", mime_type="image/png")
+    current = make_event().model_copy(update={"content": media})
+    assert estimate_event_tokens(current) > 100
+    assert estimate_event_tokens(current, text_only=True) == 0
+    memory = BudgetAwareMemory(MockMemoryProvider(), max_context_tokens=100)
+    await memory.retrieve("test-room", current, RoomContext(room=Room(id="test-room")))
+
+
+async def test_oversized_text_is_refused_even_when_an_image_is_attached() -> None:
+    current = make_event().model_copy(
+        update={
+            "content": CompositeContent(
+                parts=[
+                    TextContent(body="x" * 200000),
+                    MediaContent(url="https://example.test/image.png", mime_type="image/png"),
+                ]
+            )
+        }
+    )
+    memory = BudgetAwareMemory(MockMemoryProvider(), max_context_tokens=40000)
+    with pytest.raises(ProviderError):
+        await memory.retrieve("test-room", current, RoomContext(room=Room(id="test-room")))

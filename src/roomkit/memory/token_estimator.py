@@ -5,7 +5,13 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
-from roomkit.models.event import TextContent
+from roomkit.models.event import (
+    AudioContent,
+    CompositeContent,
+    MediaContent,
+    TextContent,
+    VideoContent,
+)
 from roomkit.providers.ai.base import (
     AIContext,
     AIImagePart,
@@ -75,8 +81,30 @@ def extract_event_text(event: RoomEvent) -> str:
     return str(event.content)
 
 
-def estimate_event_tokens(event: RoomEvent) -> int:
-    """Estimate tokens for a single RoomEvent."""
+def estimate_event_tokens(event: RoomEvent, *, text_only: bool = False) -> int:
+    """Estimate a RoomEvent without billing media payloads as text.
+
+    ``text_only`` omits approximate vision costs and non-text metadata. A
+    rejection based on message length cannot rely on the flat image estimate,
+    which may overstate what a small image actually costs.
+    """
+    content = event.content
+    if isinstance(content, CompositeContent):
+        return sum(
+            estimate_event_tokens(event.model_copy(update={"content": part}), text_only=text_only)
+            for part in content.parts
+        )
+    if isinstance(content, (MediaContent, AudioContent, VideoContent)):
+        parts: list[AITextPart | AIImagePart] = []
+        text = getattr(content, "caption", None) or getattr(content, "transcript", None)
+        if text:
+            parts.append(AITextPart(text=text))
+        if isinstance(content, MediaContent) and not text_only:
+            parts.append(AIImagePart(url=content.url, mime_type=content.mime_type))
+        return estimate_message_tokens(AIMessage(role="user", content=parts)) if parts else 0
+    if text_only:
+        text = _transport_text(event)
+        return estimate_tokens(text) if text else 0
     return estimate_tokens(extract_event_text(event))
 
 

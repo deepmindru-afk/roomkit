@@ -62,7 +62,7 @@ class BudgetAwareMemory(_MemoryWrapper):
         *,
         channel_id: str | None = None,
     ) -> MemoryResult:
-        current_tokens = estimate_event_tokens(current_event)
+        current_tokens = estimate_event_tokens(current_event, text_only=True)
         if self._max_context_tokens > 0 and current_tokens > self._max_context_tokens:
             raise ProviderError(
                 f"The current message alone exceeds the model's context window "

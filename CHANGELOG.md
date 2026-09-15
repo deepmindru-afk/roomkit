@@ -16,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   being trimmed themselves or changing another turn's reserve. A message that
   alone exceeds a known window raises a non-retryable context-overflow error
   before memory retrieval or provider generation.
+- Media payloads and URLs are not counted as plain text. Images use the
+  existing vision estimate for trimming; early message-length rejection
+  considers text only so approximate image costs cannot reject valid input.
 
 ## [0.75.1] — 2026-09-14
 
