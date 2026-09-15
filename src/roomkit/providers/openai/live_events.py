@@ -54,7 +54,7 @@ DELEGATION_TARGETS: dict[str, str] = {"responses": "hosted", "client": "integrat
 MAX_INPUT_ITEMS = 128
 
 #: The API bounds one context append at 500 tokens. Chunks are measured
-#: against a lower budget because what counts them is an estimate.
+#: against a conservative UTF-8 byte bound with headroom below that limit.
 MAX_APPEND_TOKENS = 450
 
 #: Correlation key for a wrapped Responses event whose envelope names no delegation.
@@ -237,66 +237,50 @@ def build_audio_format(rate: int, codec: str) -> tuple[dict[str, Any], str | Non
 _SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?])\s+|\n+")
 
 
-def _token_quarters(text: str) -> int:
-    """A text's cost in quarter-tokens: one per ASCII character, four otherwise.
-
-    A byte-pair encoding packs about four ASCII characters into a token;
-    other scripts cost more per character (CJK runs near one token each), so
-    anything outside ASCII is counted as a whole token.
-    """
-    return sum(1 if char.isascii() else 4 for char in text)
-
-
 def estimated_tokens(text: str) -> int:
-    """Estimate how many tokens a text costs, rounding up."""
-    return (_token_quarters(text) + 3) // 4
+    """Bound byte-pair tokens by the number of UTF-8 bytes.
+
+    A four-characters-per-token estimate undercounts identifiers, JSON,
+    punctuation and some scripts. Every byte can be its own token, so this
+    bound holds without a model-specific tokenizer or a network lookup.
+    """
+    return len(text.encode("utf-8"))
 
 
 def _split_at_token_limit(text: str, token_limit: int) -> tuple[str, str]:
-    """Split off the longest prefix within ``token_limit``, on a space if one exists."""
-    budget = token_limit * 4
-    end = len(text)
+    """Take a UTF-8-bounded prefix, preferring a sentence or whitespace boundary."""
+    end = 0
     cost = 0
-    for index, char in enumerate(text):
-        cost += _token_quarters(char)
-        if cost > budget:
-            end = max(index, 1)
+    for char in text:
+        cost += len(char.encode("utf-8"))
+        if cost > token_limit:
             break
-    space = text.rfind(" ", 0, end)
-    if space > 0:
-        end = space
-    return text[:end].strip(), text[end:].strip()
+        end += 1
+    if end == 0:
+        raise ValueError("token_limit cannot fit one UTF-8 character")
+    if end < len(text):
+        boundaries = list(_SENTENCE_BOUNDARY.finditer(text, 0, end))
+        if boundaries:
+            end = boundaries[-1].end()
+        else:
+            space = text.rfind(" ", 0, end)
+            if space >= 0:
+                end = space + 1
+    return text[:end], text[end:]
 
 
 def chunk_text(text: str, token_limit: int = MAX_APPEND_TOKENS) -> list[str]:
-    """Split text into appends of at most ``token_limit`` estimated tokens.
+    """Split appends within a conservative token bound, preserving inner text.
 
-    Chunks break on sentence boundaries; a sentence longer than the limit is
-    split at a space. RFC §12.4.1: a bounded append splits rather than
-    truncates or refuses.
+    UTF-8 characters stay whole. Splits prefer sentences, then spaces, then
+    character boundaries. RFC §12.4.1: bounded appends split rather than
+    truncate or refuse content.
     """
+    if token_limit <= 0:
+        raise ValueError("token_limit must be positive")
     text = text.strip()
-    if not text:
-        return []
-    if estimated_tokens(text) <= token_limit:
-        return [text]
-
     chunks: list[str] = []
-    current = ""
-    for piece in _SENTENCE_BOUNDARY.split(text):
-        piece = piece.strip()
-        while estimated_tokens(piece) > token_limit:
-            head, piece = _split_at_token_limit(piece, token_limit)
-            if current:
-                chunks.append(current)
-                current = ""
-            chunks.append(head)
-        if not piece:
-            continue
-        if current and estimated_tokens(f"{current} {piece}") > token_limit:
-            chunks.append(current)
-            current = ""
-        current = f"{current} {piece}".strip()
-    if current:
-        chunks.append(current)
+    while text:
+        head, text = _split_at_token_limit(text, token_limit)
+        chunks.append(head)
     return chunks

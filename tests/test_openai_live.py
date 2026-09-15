@@ -593,6 +593,28 @@ class TestInjectText:
             },
         ]
 
+    @pytest.mark.parametrize(
+        "text",
+        [
+            '{"id":"a9e82136-24cb-4692-a0f9-b7cf55be03e1","title":"PDF"}' * 80,
+            '\U0001f9d1\u200d\U0001f4bb 日本語 e\u0301 "quoted" \n' * 250,
+            "x_9!" * 1500,
+        ],
+    )
+    @pytest.mark.parametrize(
+        ("role", "silent"), [("system", False), ("user", True), ("user", False)]
+    )
+    async def test_dense_context_respects_wire_limit(
+        self, session: VoiceSession, text: str, role: str, silent: bool
+    ) -> None:
+        provider = _provider()
+        ws, _ = await _connect(provider, session)
+        await provider.inject_text(session, text, role=role, silent=silent)
+        appends = ws.sent[1:]
+        assert len(appends) > 1
+        assert all(len(a["content"].encode("utf-8")) <= 450 for a in appends)
+        assert "".join(a["content"] for a in appends) == text.strip()
+
     async def test_missing_connection_is_safe_to_retry(self, session: VoiceSession) -> None:
         provider = _provider()
         result = await provider.inject_text(session, "result")
@@ -814,9 +836,9 @@ class TestHelpers:
         assert len(chunks) > 1
         assert "".join(chunks) == long_word
 
-    def test_estimated_tokens_counts_non_ascii_as_whole_tokens(self) -> None:
-        assert estimated_tokens("abcd") == 1
-        assert estimated_tokens("日本") == 2
+    def test_estimated_tokens_bounds_utf8_byte_pair_tokens(self) -> None:
+        assert estimated_tokens("abcd") == 4
+        assert estimated_tokens("日本") == 6
 
     def test_build_audio_format_rejects_mismatches(self) -> None:
         with pytest.raises(ValueError, match="only for 8 kHz"):
