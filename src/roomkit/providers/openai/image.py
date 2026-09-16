@@ -40,6 +40,7 @@ class OpenAIImageProvider(ImageProvider):
 
     def __init__(self, config: OpenAIImageConfig) -> None:
         try:
+            import httpx
             import openai as _openai
         except ImportError as exc:
             raise ImportError(
@@ -48,12 +49,12 @@ class OpenAIImageProvider(ImageProvider):
             ) from exc
         self._config = config
         self._api_status_error = _openai.APIStatusError
-        self._api_connection_error = _openai.APIConnectionError
+        self._api_connection_error = (_openai.APIConnectionError, httpx.TransportError)
         self._client = _openai.AsyncOpenAI(
             api_key=config.api_key.get_secret_value(),
             base_url=config.base_url,
             timeout=http_timeout(config),
-            max_retries=config.max_retries,
+            max_retries=0,
             default_headers=config.default_headers,
         )
 
@@ -98,6 +99,7 @@ class OpenAIImageProvider(ImageProvider):
         mask: AIImagePart | None = None,
         on_progress: ImageProgressCallback | None = None,
     ) -> list[ImageResult]:
+        size = self._validated_size(size) if size is not None else None
         references = list(reference_images or [])
         defaults = {
             key: getattr(self._config, key)
@@ -147,6 +149,8 @@ class OpenAIImageProvider(ImageProvider):
                 if key not in {"prompt", "image", "mask"}
             }
         )
+        if references and "moderation" in kwargs:
+            kwargs["extra_body"] = {"moderation": kwargs.pop("moderation")}
         if on_progress:
             await notify_image_progress(on_progress, attempt, provider=self._provider_name)
         try:
@@ -156,7 +160,9 @@ class OpenAIImageProvider(ImageProvider):
                 attempt.results = []
             else:
                 response = await method(**kwargs)
-            attempt.provider_request_id = getattr(response, "_request_id", None)
+            attempt.provider_request_id = (
+                getattr(response, "_request_id", None) or attempt.provider_request_id
+            )
             attempt.usage = self._usage(response)
             attempt.raw_usage = plain_metadata(getattr(response, "usage", None)) or {}
             attempt.effective_options.update(
@@ -168,11 +174,13 @@ class OpenAIImageProvider(ImageProvider):
             )
             attempt.results = self._results(response, n, attempt)
             attempt.status = "succeeded"
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as cancelled:
             attempt.status = "unknown"
             attempt.error = "Cancelled locally; the provider may still bill this request"
-            if on_progress:
+            try:
                 await notify_image_progress(on_progress, attempt, provider=self._provider_name)
+            except Exception as exc:
+                cancelled.add_note(f"Failed to report unknown image outcome: {exc}")
             raise
         except Exception as exc:
             attempt.status = "unknown" if isinstance(exc, self._api_connection_error) else "failed"
@@ -189,16 +197,7 @@ class OpenAIImageProvider(ImageProvider):
 
     @staticmethod
     def _validated_size(size: str) -> str:
-        """Normalize a ``"WIDTHxHEIGHT"`` request and send it as-is.
-
-        This used to refuse anything off a fixed list, and the list went
-        stale: ``gpt-image-2`` takes near-arbitrary geometry (edges in
-        multiples of 16, long edge up to 3840, ratio up to 3:1 — the SDK types
-        ``size`` as an open string) while the ``gpt-image-1`` series keeps a
-        fixed menu, so no one list is right across the lineup this provider
-        configures. The vendor judges instead; its rejection still raises
-        rather than substituting another geometry (RFC §25.2).
-        """
+        """Normalize pixel geometry before model-specific capability validation."""
         if size == "auto":
             return size
         width, height = parse_size(size)

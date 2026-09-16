@@ -50,6 +50,7 @@ _PRO = ImageCapabilities(
     image_sizes=["1K", "2K", "4K"],
     formats=["png", "jpeg"],
     max_references=14,
+    max_images=None,
     continuity=True,
     search_types=["web_search"],
     verified=date(2026, 9, 15),

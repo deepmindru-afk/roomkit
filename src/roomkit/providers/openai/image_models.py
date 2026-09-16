@@ -164,7 +164,9 @@ MODELS: list[ModelInfo] = [
     ),
     ImageModelInfo(
         id="gpt-image-1-mini",
-        image=_STANDARD,
+        image=_STANDARD.model_copy(
+            update={"options": [o for o in _STANDARD.options if o != "input_fidelity"]}
+        ),
         display_name="GPT Image 1 mini",
         supports_vision=True,
         capabilities=_CAPS,

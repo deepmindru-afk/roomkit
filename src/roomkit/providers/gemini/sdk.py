@@ -84,14 +84,16 @@ def _restore_client_timeout(timeout: httpx.Timeout) -> Callable[[httpx.Request],
     return restore
 
 
-def build_genai_client(timeouts: HTTPTimeouts, *, provider: str, api_key: str) -> GenaiClient:
+def build_genai_client(
+    timeouts: HTTPTimeouts, *, provider: str, api_key: str, disable_retries: bool = False
+) -> GenaiClient:
     """A client for the Gemini Developer API, authenticated by *api_key*.
 
     ``timeouts.timeout`` is the read/write/pool budget, ``connect_timeout``
     bounds the TCP connect. *provider* names the caller in the ImportError
     raised when google-genai is not installed.
     """
-    return _build_client(timeouts, provider, api_key=api_key)
+    return _build_client(timeouts, provider, api_key=api_key, disable_retries=disable_retries)
 
 
 def build_vertex_genai_client(
@@ -118,7 +120,13 @@ def build_vertex_genai_client(
     )
 
 
-def _build_client(timeouts: HTTPTimeouts, provider: str, **client_kwargs: Any) -> GenaiClient:
+def _build_client(
+    timeouts: HTTPTimeouts,
+    provider: str,
+    *,
+    disable_retries: bool = False,
+    **client_kwargs: Any,
+) -> GenaiClient:
     """Build the pair behind both entry points; *client_kwargs* go to ``genai.Client``."""
     # Both optional: google-genai brings httpx along, and the package root
     # reaches this module (through the video vision providers), so neither
@@ -148,6 +156,14 @@ def _build_client(timeouts: HTTPTimeouts, provider: str, **client_kwargs: Any) -
             # The sync client is built by the SDK regardless; same budget.
             client_args={"timeout": timeout},
             httpx_async_client=http,
+            # Interactions interprets attempts as retries, while the parent
+            # client changes zero to one. Restrict status retries to success
+            # (never an error) to prevent an invisible second paid POST.
+            **(
+                {"retry_options": {"attempts": 1, "http_status_codes": [200]}}
+                if disable_retries
+                else {}
+            ),
         ),
     )
     return GenaiClient(client, http, genai.types)

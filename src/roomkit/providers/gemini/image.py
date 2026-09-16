@@ -70,7 +70,10 @@ class GeminiImageProvider(ImageProvider):
         # The client carries the connect/read split; see ``build_genai_client``
         # for why it cannot go on the request.
         built = build_genai_client(
-            config, provider="GeminiImageProvider", api_key=config.api_key.get_secret_value()
+            config,
+            provider="GeminiImageProvider",
+            api_key=config.api_key.get_secret_value(),
+            disable_retries=True,
         )
         self._client, self._http = built.client, built.http
 
@@ -110,8 +113,8 @@ class GeminiImageProvider(ImageProvider):
         mask: AIImagePart | None = None,
         on_progress: ImageProgressCallback | None = None,
     ) -> list[ImageResult]:
-        if not 1 <= n <= 10:
-            raise ValueError("n must be at least 1 and at most 10")
+        if n < 1:
+            raise ValueError("n must be at least 1")
         if mask:
             raise ValueError("Gemini does not support explicit masks")
         options = options or ImageOptions()
@@ -133,7 +136,7 @@ class GeminiImageProvider(ImageProvider):
             entry.image.validate_request(
                 options, size=None, n=n, references=len(references), mask=False
             )
-        elif options.model_dump(exclude_none=True):
+        elif set(options.model_dump(exclude_none=True)) - set(defaults):
             raise ValueError("Advanced controls require a model with known image capabilities")
         request = self._build_request(prompt, None, references)
         for field in ("aspect_ratio", "image_size"):
@@ -203,11 +206,13 @@ class GeminiImageProvider(ImageProvider):
                 )
             ]
             attempt.status = "succeeded"
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as cancelled:
             attempt.status = "unknown"
             attempt.error = "Cancelled locally; the provider may still bill this request"
-            if on_progress:
+            try:
                 await notify_image_progress(on_progress, attempt, provider="gemini")
+            except Exception as exc:
+                cancelled.add_note(f"Failed to report unknown image outcome: {exc}")
             raise
         except Exception as exc:
             failure = exc

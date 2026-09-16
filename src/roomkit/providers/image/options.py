@@ -51,7 +51,7 @@ class ImageCapabilities(BaseModel):
     thinking_levels: list[str] = Field(default_factory=list)
     sizes: list[str] = Field(default_factory=list)
     flexible_size: bool = False
-    max_images: int = 10
+    max_images: int | None = 10
     max_references: int = 0
     mask: bool = False
     continuity: bool = False
@@ -64,8 +64,8 @@ class ImageCapabilities(BaseModel):
         self, options: ImageOptions, *, size: str | None, n: int, references: int, mask: bool
     ) -> None:
         """Reject incompatible requests before any billable call."""
-        if not 1 <= n <= self.max_images:
-            raise ValueError(f"n must be at least 1 and at most {self.max_images}")
+        if n < 1 or (self.max_images is not None and n > self.max_images):
+            raise ValueError(f"n must be at least 1; model limit: {self.max_images}")
         if references > self.max_references:
             raise ValueError(f"This model accepts at most {self.max_references} references")
         if mask and (not self.mask or not references):
