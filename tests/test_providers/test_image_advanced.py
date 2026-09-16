@@ -229,3 +229,26 @@ async def test_invalid_first_openai_result_does_not_hide_a_valid_later_image() -
         await provider.generate_with_options("two foxes", n=2)
     assert len(caught.value.results) == 1
     assert caught.value.results[0].usage["output_image_tokens"] == 2200
+
+
+@pytest.mark.parametrize("store", [False, True, None])
+@pytest.mark.parametrize("model", ["gemini-3.1-flash-image", "custom-image-model"])
+async def test_gemini_explicit_storage_choice_reaches_the_request(
+    store: bool | None, model: str
+) -> None:
+    provider = gemini(model=model)
+    provider._client.aio.interactions.create = AsyncMock(return_value=_interaction())
+    await provider.generate_with_options("a fox", options=ImageOptions(store=store))
+    request = provider._client.aio.interactions.create.await_args.kwargs
+    if store is None:
+        assert "store" not in request
+    else:
+        assert request["store"] is store
+
+
+def test_gemini_portable_geometry_preflight_is_public_and_matches_execution() -> None:
+    provider = gemini()
+    assert provider.resolve_size("2048x2048") == ("1:1", "2K")
+    assert provider._geometry("2048x2048") == provider.resolve_size("2048x2048")
+    with pytest.raises(ValueError):
+        provider.resolve_size("bad-size")

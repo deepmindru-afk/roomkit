@@ -127,7 +127,7 @@ class GeminiImageProvider(ImageProvider):
         if self._config.output_mime_type:
             defaults["output_format"] = self._config.output_mime_type.removeprefix("image/")
         if size:
-            defaults["aspect_ratio"], defaults["image_size"] = self._geometry(size)
+            defaults["aspect_ratio"], defaults["image_size"] = self.resolve_size(size)
         options = ImageOptions.model_validate(
             {**defaults, **options.model_dump(exclude_none=True)}
         )
@@ -136,7 +136,7 @@ class GeminiImageProvider(ImageProvider):
             entry.image.validate_request(
                 options, size=None, n=n, references=len(references), mask=False
             )
-        elif set(options.model_dump(exclude_none=True)) - set(defaults):
+        elif set(options.model_dump(exclude_none=True)) - set(defaults) - {"store"}:
             raise ValueError("Advanced controls require a model with known image capabilities")
         request = self._build_request(prompt, None, references)
         for field in ("aspect_ratio", "image_size"):
@@ -144,6 +144,8 @@ class GeminiImageProvider(ImageProvider):
                 request["response_format"][field] = value
         if options.output_format:
             request["response_format"]["mime_type"] = "image/" + options.output_format
+        if options.store is not None:
+            request["store"] = options.store
         if options.previous_interaction_id:
             request["previous_interaction_id"] = options.previous_interaction_id
         if options.search_types:
@@ -254,7 +256,7 @@ class GeminiImageProvider(ImageProvider):
         if size is not None:
             # The requested pixels win over the deployment default: a caller
             # naming a geometry is more specific than a configured tier.
-            aspect_ratio, tier = self._geometry(size)
+            aspect_ratio, tier = self.resolve_size(size)
             response_format["aspect_ratio"] = aspect_ratio
             response_format["image_size"] = tier
         elif self._config.image_size is not None:
@@ -277,7 +279,7 @@ class GeminiImageProvider(ImageProvider):
             raise wrap_gemini_error(exc) from exc
 
     @staticmethod
-    def _geometry(size: str) -> tuple[str, str]:
+    def resolve_size(size: str) -> tuple[str, str]:
         """Translate ``"WIDTHxHEIGHT"`` into Gemini's aspect ratio and size tier.
 
         Gemini expresses geometry as a named ratio and a resolution tier, not
@@ -297,6 +299,9 @@ class GeminiImageProvider(ImageProvider):
             if largest <= ceiling:
                 return aspect_ratio, tier
         raise ValueError(f"size {size!r} exceeds Gemini's largest tier (4K)")
+
+    # Compatibility for consumers of the earlier conversion helper.
+    _geometry = resolve_size
 
     @staticmethod
     def _image_content(part: AIImagePart, index: int) -> dict[str, Any]:

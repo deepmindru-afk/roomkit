@@ -44,6 +44,7 @@ _PRO = ImageCapabilities(
         "image_size",
         "output_format",
         "previous_interaction_id",
+        "store",
         "search_types",
     ],
     aspect_ratios=_RATIOS,

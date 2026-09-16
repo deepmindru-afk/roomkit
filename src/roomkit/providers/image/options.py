@@ -31,6 +31,7 @@ class ImageOptions(BaseModel):
     image_size: Literal["512", "1K", "2K", "4K"] | None = None
     thinking_level: Literal["minimal", "high"] | None = None
     previous_interaction_id: str | None = Field(default=None, min_length=1)
+    store: bool | None = Field(default=None, strict=True)
     search_types: list[Literal["web_search", "image_search"]] | None = None
     partial_images: int | None = Field(default=None, ge=0, le=3, strict=True)
 
