@@ -300,7 +300,6 @@ class GeminiImageProvider(ImageProvider):
                 return aspect_ratio, tier
         raise ValueError(f"size {size!r} exceeds Gemini's largest tier (4K)")
 
-    # Compatibility for consumers of the earlier conversion helper.
     _geometry = resolve_size
 
     @staticmethod
