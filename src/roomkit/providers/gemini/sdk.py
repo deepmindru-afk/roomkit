@@ -157,10 +157,10 @@ def _build_client(
             client_args={"timeout": timeout},
             httpx_async_client=http,
             # Interactions interprets attempts as retries, while the parent
-            # client changes zero to one. Restrict status retries to success
-            # (never an error) to prevent an invisible second paid POST.
+            # client changes zero to one. Use an impossible HTTP status to
+            # disable status retries, including successful paid POSTs.
             **(
-                {"retry_options": {"attempts": 1, "http_status_codes": [200]}}
+                {"retry_options": {"attempts": 1, "http_status_codes": [0]}}
                 if disable_retries
                 else {}
             ),

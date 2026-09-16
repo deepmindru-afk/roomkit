@@ -18,7 +18,7 @@ from tests.test_providers.test_openai_image import PNG_B64, _response
 from tests.test_providers.test_openai_image import _provider as openai
 
 
-@pytest.mark.parametrize("failure", ["503", "timeout"])
+@pytest.mark.parametrize("failure", ["200", "503", "timeout"])
 async def test_real_gemini_sdk_does_not_repeat_503(
     monkeypatch: pytest.MonkeyPatch, failure: str
 ) -> None:
@@ -32,6 +32,22 @@ async def test_real_gemini_sdk_does_not_repeat_503(
         calls.append(request)
         if failure == "timeout":
             raise httpx.ReadTimeout("interrupted", request=request)
+        if failure == "200":
+            return httpx.Response(
+                200,
+                json={
+                    "id": "img-ok",
+                    "status": "completed",
+                    "steps": [
+                        {
+                            "type": "model_output",
+                            "content": [
+                                {"type": "image", "data": PNG_B64, "mime_type": "image/png"}
+                            ],
+                        }
+                    ],
+                },
+            )
         return httpx.Response(503, json={"error": {"code": 503, "message": "unavailable"}})
 
     client_class = httpx.AsyncClient
@@ -42,8 +58,12 @@ async def test_real_gemini_sdk_does_not_repeat_503(
     )
     provider = GeminiImageProvider(GeminiImageConfig(api_key="test"))
     try:
-        with pytest.raises(ImageGenerationError):
-            await provider.generate("a fox")
+        if failure == "200":
+            [result] = await provider.generate("a fox")
+            assert result.decoded() == base64.b64decode(PNG_B64)
+        else:
+            with pytest.raises(ImageGenerationError):
+                await provider.generate("a fox")
         assert len(calls) == 1
     finally:
         await provider.close()
