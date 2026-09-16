@@ -7,6 +7,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.76.0] — 2026-09-16
+
+### Added
+
+- **Image providers take per-request controls, publish what each model accepts,
+  and report every vendor call they make.** Image controls lived only on the
+  provider config, so a caller who wanted one transparent WebP or one 16:9 2K
+  render had to build a second provider; nothing said which controls a model
+  accepted until the vendor refused a paid request; and a failure among `n`
+  images discarded the ones already generated. `ImageProvider` gains
+  `generate_with_options(prompt, *, size, n, reference_images, options, mask,
+  on_progress)`. `ImageOptions` carries `quality`, `background`,
+  `output_format`, `output_compression`, `moderation`, `input_fidelity`,
+  `aspect_ratio`, `image_size`, `thinking_level`, `previous_interaction_id`,
+  `store`, `search_types` and `partial_images`; an omitted field inherits the
+  config default and an unknown one is refused. The OpenAI and Gemini catalogs
+  are now `ImageModelInfo` entries whose `image: ImageCapabilities` lists the
+  controls, values and reference limits verified for that model, and a request
+  is checked against it before any billable call. A model absent from the
+  catalog, such as an Azure deployment name, accepts only its configured
+  defaults. Dated OpenAI snapshot ids resolve to their catalog entry. OpenAI
+  edits accept a PNG `mask`, and `partial_images` streams previews. Gemini
+  requests native `aspect_ratio`/`image_size`, `thinking_level` (Flash and
+  Lite), `previous_interaction_id` for continuity, `store` (omitted keeps the
+  SDK default, stored) and `search_types`, and
+  `GeminiImageProvider.resolve_size()` exposes the portable size conversion.
+  `on_progress` receives an `ImageAttempt` per vendor call — `started`, then
+  `preview`, `succeeded`, `failed` or `unknown` — with the provider request id,
+  normalized and raw usage, and the effective options. `ImageResult` gains
+  `attempt_id`, `provider_request_id`, `raw_usage`, `effective_options`,
+  `metadata`, `width` and `height`. `generate()` keeps its signature. The ABC's
+  default `generate_with_options()` delegates to `generate()` and refuses any
+  advanced control, so third-party providers keep working. `ImageAttempt`,
+  `ImageCapabilities`, `ImageGenerationError`, `ImageModelInfo`,
+  `ImageOptions` and `ImageProgressCallback` are exported from `roomkit`. See
+  `examples/image_generation_options.py`.
+
+### Changed
+
+- **OpenAI and Gemini image failures are no longer retryable, and keep what
+  the failed call produced.** A 429, a 5xx or a dropped connection on an image
+  call was reported `retryable=True`, so a `RetryPolicy` repeated a request the
+  vendor may already have billed. With `n` Gemini images, one failure also
+  cancelled siblings whose images were already paid for. `OpenAIImageProvider`
+  and `GeminiImageProvider` now raise `ImageGenerationError`, a
+  `ProviderError` with `retryable=False` that keeps `status_code` and carries
+  `attempts` and `results`. Concurrent Gemini interactions settle
+  independently. A call whose outcome is unknown (a dropped connection, or a
+  local cancellation, which still raises `CancelledError`) is reported as
+  `unknown`. Code that catches `ProviderError` still catches these errors, but
+  nothing retries them automatically any more: reconcile `error.results` and
+  `error.attempts`, then generate again explicitly if needed.
+- **Image usage reports only the counters the vendor measured.** Missing
+  counters used to be reported as `0`, which priced an unmeasured generation
+  as free. They are now absent. A total without a modality split goes under
+  `unclassified_input_tokens` or `unclassified_output_tokens`, and Gemini
+  cached tokens under `unclassified_cached_tokens`. The four existing counters
+  keep their meaning and stay disjoint.
+- OpenAI checks `size`, `n` (at most 10) and controls against the model's
+  catalog entry before sending. A `gpt-image-1` series size outside its menu
+  now raises `ValueError` locally instead of a vendor 400. `"auto"` is
+  accepted.
+- The `gemini` extra requires `google-genai>=2.18.0` (was `>=2.0.0`), the
+  first release whose Interactions client honors the status-retry
+  configuration the image provider uses to turn retries off.
+- `gemini-2.5-flash-image` is marked `deprecated` in the image catalog, with
+  retirement scheduled for 2026-10-02.
+
+### Fixed
+
+- **Image requests are no longer repeated inside the vendor SDK.** The Gemini
+  Interactions client retried error responses up to three times on its own,
+  and `OpenAIImageProvider` passed `OpenAIImageConfig.max_retries` to the
+  OpenAI SDK. Either path could generate and bill the same image more than
+  once, and the caller could not see it. Both image clients are now built
+  without SDK retries. Setting `OpenAIImageConfig.max_retries` has no effect on
+  `OpenAIImageProvider` any more.
+
 ## [0.75.3] — 2026-09-15
 
 ### Fixed
@@ -7425,7 +7503,13 @@ See entries `0.7.0a1` through `0.7.0a18` below.
 - `STTProvider.transcribe()` returns `TranscriptionResult` (Phase 3.1)
 - Framework event names enriched with payloads (Phase 4)
 
-[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.74.0...HEAD
+[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.76.0...HEAD
+[0.76.0]: https://github.com/roomkit-live/roomkit/compare/v0.75.3...v0.76.0
+[0.75.3]: https://github.com/roomkit-live/roomkit/compare/v0.75.2...v0.75.3
+[0.75.2]: https://github.com/roomkit-live/roomkit/compare/v0.75.1...v0.75.2
+[0.75.1]: https://github.com/roomkit-live/roomkit/compare/v0.75.0...v0.75.1
+[0.75.0]: https://github.com/roomkit-live/roomkit/compare/v0.74.1...v0.75.0
+[0.74.1]: https://github.com/roomkit-live/roomkit/compare/v0.74.0...v0.74.1
 [0.74.0]: https://github.com/roomkit-live/roomkit/compare/v0.73.0...v0.74.0
 [0.73.0]: https://github.com/roomkit-live/roomkit/compare/v0.72.0...v0.73.0
 [0.72.0]: https://github.com/roomkit-live/roomkit/compare/v0.71.0...v0.72.0
