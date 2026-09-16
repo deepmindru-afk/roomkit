@@ -32,13 +32,59 @@ from datetime import date
 
 from roomkit.providers.ai.base import ModelInfo, ModelPricing
 from roomkit.providers.image.base import IMAGE_GEN_CAPABILITY
+from roomkit.providers.image.options import ImageCapabilities, ImageModelInfo
 
 _VERIFIED = date(2026, 8, 7)
 _CAPS = [IMAGE_GEN_CAPABILITY, "edit"]
 
+_RATIOS = ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"]
+_PRO = ImageCapabilities(
+    options=[
+        "aspect_ratio",
+        "image_size",
+        "output_format",
+        "previous_interaction_id",
+        "search_types",
+    ],
+    aspect_ratios=_RATIOS,
+    image_sizes=["1K", "2K", "4K"],
+    formats=["png", "jpeg"],
+    max_references=14,
+    continuity=True,
+    search_types=["web_search"],
+    verified=date(2026, 9, 15),
+)
+_FLASH = _PRO.model_copy(
+    update={
+        "options": [*_PRO.options, "thinking_level"],
+        "thinking_levels": ["minimal", "high"],
+        "aspect_ratios": [*_RATIOS, "1:4", "4:1", "1:8", "8:1"],
+        "image_sizes": ["512", "1K", "2K", "4K"],
+        "search_types": ["web_search", "image_search"],
+    }
+)
+_LITE = _PRO.model_copy(
+    update={
+        "image_sizes": ["1K"],
+        "search_types": [],
+        "options": [option for option in _PRO.options if option != "search_types"]
+        + ["thinking_level"],
+        "thinking_levels": ["minimal", "high"],
+    }
+)
+_V25 = _LITE.model_copy(
+    update={
+        "max_references": 3,
+        "retirement_date": date(2026, 10, 2),
+        "thinking_levels": [],
+        "options": [option for option in _LITE.options if option != "thinking_level"],
+    }
+)
+
 MODELS: list[ModelInfo] = [
-    ModelInfo(
+    ImageModelInfo(
         id="gemini-3-pro-image",
+        image=_PRO,
         display_name="Gemini 3 Pro Image (Nano Banana Pro)",
         supports_vision=True,
         capabilities=_CAPS,
@@ -51,8 +97,9 @@ MODELS: list[ModelInfo] = [
             verified=_VERIFIED,
         ),
     ),
-    ModelInfo(
+    ImageModelInfo(
         id="gemini-3.1-flash-image",
+        image=_FLASH,
         display_name="Gemini 3.1 Flash Image (Nano Banana 2)",
         supports_vision=True,
         capabilities=_CAPS,
@@ -64,8 +111,9 @@ MODELS: list[ModelInfo] = [
             verified=_VERIFIED,
         ),
     ),
-    ModelInfo(
+    ImageModelInfo(
         id="gemini-3.1-flash-lite-image",
+        image=_LITE,
         display_name="Gemini 3.1 Flash Lite Image (Nano Banana 2 Lite)",
         supports_vision=True,
         capabilities=_CAPS,
@@ -77,8 +125,10 @@ MODELS: list[ModelInfo] = [
             verified=_VERIFIED,
         ),
     ),
-    ModelInfo(
+    ImageModelInfo(
         id="gemini-2.5-flash-image",
+        image=_V25,
+        deprecated=True,
         display_name="Gemini 2.5 Flash Image (Nano Banana)",
         supports_vision=True,
         capabilities=_CAPS,

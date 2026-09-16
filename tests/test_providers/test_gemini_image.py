@@ -213,7 +213,7 @@ async def test_n_images_are_n_interactions() -> None:
 
 
 async def test_one_failure_among_several_surfaces_as_a_provider_error() -> None:
-    """The task group must not hand its caller an ExceptionGroup to unpack."""
+    """Partial success remains accessible through a single provider error."""
     provider = _provider()
     provider._client.aio.interactions.create = AsyncMock(
         side_effect=[_interaction(), RuntimeError("429 rate limit exceeded"), _interaction()]
@@ -221,9 +221,11 @@ async def test_one_failure_among_several_surfaces_as_a_provider_error() -> None:
 
     with pytest.raises(ProviderError) as exc_info:
         await provider.generate("three foxes", n=3)
-    assert exc_info.value.retryable is True
+    assert exc_info.value.retryable is False
     # The SDK exception underneath survives the unwrapping.
-    assert isinstance(exc_info.value.__cause__, RuntimeError)
+    assert len(exc_info.value.results) == 2
+    assert len(exc_info.value.attempts) == 3
+    assert exc_info.value.__cause__ is not None
 
 
 async def test_generate_rejects_n_below_one() -> None:
@@ -359,13 +361,13 @@ async def test_the_reported_usage_prices_against_the_catalog() -> None:
     ("message", "retryable"),
     [("429 rate limit exceeded", True), ("400 invalid argument", False)],
 )
-async def test_sdk_errors_map_to_retryability(message: str, retryable: bool) -> None:
+async def test_sdk_errors_do_not_repeat_paid_generations(message: str, retryable: bool) -> None:
     provider = _provider()
     provider._client.aio.interactions.create = AsyncMock(side_effect=RuntimeError(message))
 
     with pytest.raises(ProviderError) as exc_info:
         await provider.generate("a fox")
-    assert exc_info.value.retryable is retryable
+    assert exc_info.value.retryable is False  # A paid generation is not retried blindly.
     assert exc_info.value.provider == "gemini"
 
 
@@ -377,7 +379,7 @@ async def test_a_status_code_drives_retryability_when_present() -> None:
 
     with pytest.raises(ProviderError) as exc_info:
         await provider.generate("a fox")
-    assert exc_info.value.retryable is True
+    assert exc_info.value.retryable is False
     assert exc_info.value.status_code == 503
 
 

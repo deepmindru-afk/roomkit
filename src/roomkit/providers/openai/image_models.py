@@ -33,13 +33,46 @@ from datetime import date
 
 from roomkit.providers.ai.base import ModelInfo, ModelPricing
 from roomkit.providers.image.base import IMAGE_GEN_CAPABILITY
+from roomkit.providers.image.options import ImageCapabilities, ImageModelInfo
 
 _VERIFIED = date(2026, 8, 7)
 _CAPS = [IMAGE_GEN_CAPABILITY, "edit"]
 
+_STANDARD = ImageCapabilities(
+    options=[
+        "quality",
+        "background",
+        "output_format",
+        "output_compression",
+        "moderation",
+        "input_fidelity",
+        "partial_images",
+    ],
+    qualities=["auto", "low", "medium", "high"],
+    formats=["png", "jpeg", "webp"],
+    backgrounds=["auto", "opaque", "transparent"],
+    sizes=["auto", "1024x1024", "1536x1024", "1024x1536"],
+    max_references=16,
+    mask=True,
+    streaming=True,
+    verified=date(2026, 9, 15),
+)
+_FLEXIBLE = _STANDARD.model_copy(
+    update={
+        "flexible_size": True,
+        "sizes": ["auto"],
+        "options": [option for option in _STANDARD.options if option != "input_fidelity"],
+    }
+)
+_V25 = _FLEXIBLE.model_copy(
+    update={"qualities": ["auto", "low", "medium", "high", "xhigh", "max"]}
+)
+
 MODELS: list[ModelInfo] = [
-    ModelInfo(
+    ImageModelInfo(
         id="gpt-image-2.5-sunburst",
+        image=_V25,
+        aliases=["gpt-image-2.5-sunburst-2026-09-08"],
         display_name="GPT Image 2.5 Sunburst",
         supports_vision=True,
         capabilities=_CAPS,
@@ -52,8 +85,10 @@ MODELS: list[ModelInfo] = [
             verified=date(2026, 9, 9),
         ),
     ),
-    ModelInfo(
+    ImageModelInfo(
         id="gpt-image-2.5-flare",
+        image=_V25,
+        aliases=["gpt-image-2.5-flare-2026-09-08"],
         display_name="GPT Image 2.5 Flare",
         supports_vision=True,
         capabilities=_CAPS,
@@ -66,8 +101,10 @@ MODELS: list[ModelInfo] = [
             verified=date(2026, 9, 9),
         ),
     ),
-    ModelInfo(
+    ImageModelInfo(
         id="gpt-image-2",
+        image=_FLEXIBLE,
+        aliases=["gpt-image-2-2026-04-21"],
         display_name="GPT Image 2",
         supports_vision=True,
         capabilities=_CAPS,
@@ -80,8 +117,9 @@ MODELS: list[ModelInfo] = [
             verified=_VERIFIED,
         ),
     ),
-    ModelInfo(
+    ImageModelInfo(
         id="gpt-image-1.5",
+        image=_STANDARD,
         display_name="GPT Image 1.5",
         supports_vision=True,
         capabilities=_CAPS,
@@ -94,8 +132,9 @@ MODELS: list[ModelInfo] = [
             verified=_VERIFIED,
         ),
     ),
-    ModelInfo(
+    ImageModelInfo(
         id="chatgpt-image-latest",
+        image=_STANDARD,
         display_name="ChatGPT Image (latest)",
         supports_vision=True,
         capabilities=_CAPS,
@@ -108,8 +147,9 @@ MODELS: list[ModelInfo] = [
             verified=_VERIFIED,
         ),
     ),
-    ModelInfo(
+    ImageModelInfo(
         id="gpt-image-1",
+        image=_STANDARD,
         display_name="GPT Image 1",
         supports_vision=True,
         capabilities=_CAPS,
@@ -122,8 +162,9 @@ MODELS: list[ModelInfo] = [
             verified=_VERIFIED,
         ),
     ),
-    ModelInfo(
+    ImageModelInfo(
         id="gpt-image-1-mini",
+        image=_STANDARD,
         display_name="GPT Image 1 mini",
         supports_vision=True,
         capabilities=_CAPS,

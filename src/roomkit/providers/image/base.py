@@ -16,11 +16,14 @@ from __future__ import annotations
 
 import re
 from abc import ABC, abstractmethod
-from typing import Any
+from collections.abc import Awaitable, Callable
+from typing import Any, Literal
+from uuid import uuid4
 
 from pydantic import BaseModel, Field, field_validator
 
-from roomkit.providers.ai.base import AIImagePart, ModelInfo
+from roomkit.providers.ai.base import AIImagePart, ModelInfo, ProviderError
+from roomkit.providers.image.options import ImageOptions, image_model_entry
 from roomkit.providers.utils import parse_data_uri as parse_data_uri
 from roomkit.providers.utils import to_data_uri as to_data_uri
 
@@ -108,6 +111,13 @@ class ImageResult(BaseModel):
     mime_type: str
     revised_prompt: str | None = None
     usage: dict[str, Any] = Field(default_factory=dict)
+    attempt_id: str | None = None
+    provider_request_id: str | None = None
+    raw_usage: dict[str, Any] = Field(default_factory=dict)
+    effective_options: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    width: int | None = None
+    height: int | None = None
 
     @field_validator("data")
     @classmethod
@@ -134,6 +144,59 @@ class ImageResult(BaseModel):
     def to_image_part(self) -> AIImagePart:
         """The result as a message part — an AI input, or the next edit's reference."""
         return AIImagePart(url=self.data, mime_type=self.mime_type)
+
+
+class ImageAttempt(BaseModel):
+    """One vendor call, including outcomes that produced no usable image.
+
+    ``usage`` applies to the whole call. Result-level usage is the compatibility
+    projection of this same measurement; a consumer must not sum both.
+    """
+
+    id: str = Field(default_factory=lambda: str(uuid4()))
+    index: int = 0
+    status: Literal["started", "preview", "succeeded", "failed", "unknown"] = "started"
+    provider_request_id: str | None = None
+    usage: dict[str, Any] = Field(default_factory=dict)
+    raw_usage: dict[str, Any] = Field(default_factory=dict)
+    effective_options: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    results: list[ImageResult] = Field(default_factory=list)
+    error: str | None = None
+    status_code: int | None = None
+
+
+ImageProgressCallback = Callable[[ImageAttempt], Awaitable[None]]
+
+
+class ImageGenerationError(ProviderError):
+    """A failed generation with every available outcome; never auto-retry it."""
+
+    def __init__(self, message: str, *, provider: str, attempts: list[ImageAttempt]) -> None:
+        super().__init__(
+            message,
+            provider=provider,
+            retryable=False,
+            status_code=next(
+                (attempt.status_code for attempt in attempts if attempt.status_code), None
+            ),
+        )
+        self.attempts = attempts
+        self.results = [result for attempt in attempts for result in attempt.results]
+
+
+async def notify_image_progress(
+    callback: ImageProgressCallback | None, attempt: ImageAttempt, *, provider: str
+) -> None:
+    """Callback failure preserves the billed outcome and never repeats a request."""
+    if callback is None:
+        return
+    try:
+        await callback(attempt.model_copy(deep=True))
+    except Exception as exc:
+        raise ImageGenerationError(
+            f"Image progress callback failed: {exc}", provider=provider, attempts=[attempt]
+        ) from exc
 
 
 class ImageProvider(ABC):
@@ -174,11 +237,30 @@ class ImageProvider(ABC):
 
     def catalog_entry(self) -> ModelInfo | None:
         """The offline :class:`ModelInfo` for the active model, if the catalog has it."""
-        name = self.model_name
-        for model in type(self).available_models():
-            if model.id == name:
-                return model
-        return None
+        return image_model_entry(type(self).available_models(), self.model_name)
+
+    async def generate_with_options(
+        self,
+        prompt: str,
+        *,
+        size: str | None = None,
+        n: int = 1,
+        reference_images: list[AIImagePart] | None = None,
+        options: ImageOptions | None = None,
+        mask: AIImagePart | None = None,
+        on_progress: ImageProgressCallback | None = None,
+    ) -> list[ImageResult]:
+        """Generate with endpoint-specific controls and observable outcomes.
+
+        Providers override this additive entry point to support advanced controls.
+        The default preserves third-party implementations of ``generate`` and
+        rejects unsupported controls rather than silently discarding them.
+        """
+        if mask or (options and options.model_dump(exclude_none=True)):
+            raise ValueError(f"{self.name} does not support advanced image options")
+        if on_progress:
+            raise ValueError(f"{self.name} does not support image progress callbacks")
+        return await self.generate(prompt, size=size, n=n, reference_images=reference_images)
 
     @abstractmethod
     async def generate(

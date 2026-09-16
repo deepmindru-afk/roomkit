@@ -171,7 +171,17 @@ from roomkit.orchestration import (
 )
 from roomkit.providers.ai import ModelPricing
 from roomkit.providers.cerebras import CerebrasAIProvider, CerebrasConfig
-from roomkit.providers.image import ImageProvider, ImageResult, MockImageProvider
+from roomkit.providers.image import (
+    ImageAttempt,
+    ImageCapabilities,
+    ImageGenerationError,
+    ImageModelInfo,
+    ImageOptions,
+    ImageProgressCallback,
+    ImageProvider,
+    ImageResult,
+    MockImageProvider,
+)
 from roomkit.sandbox import SandboxExecutor, SandboxResult
 from roomkit.skills import ScriptExecutor, Skill, SkillMetadata, SkillRegistry
 from roomkit.store import ConversationStore, InMemoryStore, SQLiteSchemaError, SQLiteStore
@@ -427,6 +437,12 @@ __all__ = [
     "FrameworkEvent",
     "HookResult",
     "ImageProvider",
+    "ImageAttempt",
+    "ImageCapabilities",
+    "ImageGenerationError",
+    "ImageModelInfo",
+    "ImageOptions",
+    "ImageProgressCallback",
     "ImageResult",
     "InjectedEvent",
     "InboundMessage",

@@ -21,11 +21,17 @@ from roomkit.providers.gemini.errors import wrap_gemini_error
 from roomkit.providers.gemini.image_models import MODELS
 from roomkit.providers.gemini.sdk import build_genai_client, close_genai_client
 from roomkit.providers.image.base import (
+    ImageAttempt,
+    ImageGenerationError,
+    ImageProgressCallback,
     ImageProvider,
     ImageResult,
+    notify_image_progress,
     parse_data_uri,
     parse_size,
 )
+from roomkit.providers.image.options import ImageModelInfo, ImageOptions, plain_metadata
+from roomkit.providers.image.usage import gemini_image_usage
 
 # Aspect ratios the Interactions image format accepts. A requested size is
 # reduced to its ratio and looked up here; an unlisted one is refused rather
@@ -89,23 +95,136 @@ class GeminiImageProvider(ImageProvider):
         n: int = 1,
         reference_images: list[AIImagePart] | None = None,
     ) -> list[ImageResult]:
-        if n < 1:
-            raise ValueError(f"n must be at least 1, got {n}")
-        request = self._build_request(prompt, size, reference_images or [])
-        # A task group rather than ``gather``: when one interaction fails the
-        # siblings are cancelled instead of running to completion for a result
-        # nobody will read. Each one is a billed image.
+        return await self.generate_with_options(
+            prompt, size=size, n=n, reference_images=reference_images
+        )
+
+    async def generate_with_options(
+        self,
+        prompt: str,
+        *,
+        size: str | None = None,
+        n: int = 1,
+        reference_images: list[AIImagePart] | None = None,
+        options: ImageOptions | None = None,
+        mask: AIImagePart | None = None,
+        on_progress: ImageProgressCallback | None = None,
+    ) -> list[ImageResult]:
+        if not 1 <= n <= 10:
+            raise ValueError("n must be at least 1 and at most 10")
+        if mask:
+            raise ValueError("Gemini does not support explicit masks")
+        options = options or ImageOptions()
+        references = reference_images or []
+        if size and (options.aspect_ratio or options.image_size):
+            raise ValueError("Use size or aspect_ratio/image_size, not both")
+        defaults: dict[str, Any] = {}
+        if self._config.image_size:
+            defaults["image_size"] = self._config.image_size
+        if self._config.output_mime_type:
+            defaults["output_format"] = self._config.output_mime_type.removeprefix("image/")
+        if size:
+            defaults["aspect_ratio"], defaults["image_size"] = self._geometry(size)
+        options = ImageOptions.model_validate(
+            {**defaults, **options.model_dump(exclude_none=True)}
+        )
+        entry = self.catalog_entry()
+        if isinstance(entry, ImageModelInfo):
+            entry.image.validate_request(
+                options, size=None, n=n, references=len(references), mask=False
+            )
+        elif options.model_dump(exclude_none=True):
+            raise ValueError("Advanced controls require a model with known image capabilities")
+        request = self._build_request(prompt, None, references)
+        for field in ("aspect_ratio", "image_size"):
+            if (value := getattr(options, field)) is not None:
+                request["response_format"][field] = value
+        if options.output_format:
+            request["response_format"]["mime_type"] = "image/" + options.output_format
+        if options.previous_interaction_id:
+            request["previous_interaction_id"] = options.previous_interaction_id
+        if options.search_types:
+            request["tools"] = [{"type": "google_search", "search_types": options.search_types}]
+        if options.thinking_level:
+            request["generation_config"] = {"thinking_level": options.thinking_level}
+        # Each call settles independently. A rejected sibling does not erase a
+        # successful billed image or cancel a call whose outcome is still unknown.
+        outcomes = await asyncio.gather(
+            *[self._attempt(request, index, on_progress) for index in range(n)],
+            return_exceptions=True,
+        )
+        attempts: list[ImageAttempt] = []
+        failures: list[BaseException] = []
+        for outcome in outcomes:
+            if isinstance(outcome, ImageAttempt):
+                attempts.append(outcome)
+            elif isinstance(outcome, ImageGenerationError):
+                attempts.extend(outcome.attempts)
+                failures.append(outcome)
+            elif isinstance(outcome, BaseException):
+                failures.append(outcome)
+        if failures:
+            first = failures[0]
+            raise ImageGenerationError(str(first), provider="gemini", attempts=attempts) from (
+                first.__cause__ or first
+            )
+        return [result for attempt in attempts for result in attempt.results]
+
+    async def _attempt(
+        self, request: dict[str, Any], index: int, on_progress: ImageProgressCallback | None
+    ) -> ImageAttempt:
+        attempt = ImageAttempt(
+            index=index,
+            effective_options={key: value for key, value in request.items() if key != "input"},
+        )
+        if on_progress:
+            await notify_image_progress(on_progress, attempt, provider="gemini")
+        interaction = None
+        failure: Exception | None = None
         try:
-            async with asyncio.TaskGroup() as group:
-                tasks = [group.create_task(self._create(request)) for _ in range(n)]
-        except BaseExceptionGroup as failures:
-            # The caller asked for images and gets the failure that stopped
-            # them, not a group wrapper it would have to unpack to find the
-            # ProviderError its retry policy reads. Re-chained to its own cause
-            # so the SDK exception underneath survives the unwrapping.
-            first = failures.exceptions[0]
-            raise first from first.__cause__
-        return [self._result(task.result()) for task in tasks]
+            interaction = await self._create(request)
+            attempt.provider_request_id = getattr(interaction, "id", None)
+            attempt.usage = self._usage(interaction)
+            attempt.raw_usage = plain_metadata(getattr(interaction, "usage", None)) or {}
+            attempt.metadata = {
+                "steps": plain_metadata(getattr(interaction, "steps", [])),
+                "output_text": getattr(interaction, "output_text", None),
+            }
+            result = self._result(interaction)
+            attempt.results = [
+                result.model_copy(
+                    update={
+                        "attempt_id": attempt.id,
+                        "provider_request_id": attempt.provider_request_id,
+                        "raw_usage": attempt.raw_usage,
+                        "effective_options": attempt.effective_options,
+                        "metadata": attempt.metadata,
+                    }
+                )
+            ]
+            attempt.status = "succeeded"
+        except asyncio.CancelledError:
+            attempt.status = "unknown"
+            attempt.error = "Cancelled locally; the provider may still bill this request"
+            if on_progress:
+                await notify_image_progress(on_progress, attempt, provider="gemini")
+            raise
+        except Exception as exc:
+            failure = exc
+            attempt.status = (
+                "failed"
+                if interaction is not None or getattr(exc, "status_code", None)
+                else "unknown"
+            )
+            attempt.error = str(exc)
+            attempt.status_code = getattr(exc, "status_code", None)
+        if on_progress:
+            await notify_image_progress(on_progress, attempt, provider="gemini")
+        if failure:
+            raise ImageGenerationError(
+                str(failure), provider="gemini", attempts=[attempt]
+            ) from failure
+        return attempt
 
     def _build_request(
         self,
@@ -241,34 +360,10 @@ class GeminiImageProvider(ImageProvider):
         again, which would bill the pixels twice. Thought tokens are billed at
         the text output rate, so they join the text output counter.
         """
-        usage = getattr(interaction, "usage", None)
-        if usage is None:
-            return {}
-        input_total = int(getattr(usage, "total_input_tokens", 0) or 0)
-        output_total = int(getattr(usage, "total_output_tokens", 0) or 0)
-        thoughts = int(getattr(usage, "total_thought_tokens", 0) or 0)
-        input_image = _modality_tokens(getattr(usage, "input_tokens_by_modality", None), "image")
-        output_image = _modality_tokens(getattr(usage, "output_tokens_by_modality", None), "image")
-        return {
-            "input_tokens": max(input_total - input_image, 0),
-            "input_image_tokens": input_image,
-            "output_tokens": max(output_total - output_image, 0) + thoughts,
-            "output_image_tokens": output_image,
-        }
+        return gemini_image_usage(getattr(interaction, "usage", None))
 
     async def close(self) -> None:
         """Close the SDK and the httpx client it was given."""
         client, self._client = self._client, None
         http, self._http = self._http, None
         await close_genai_client(client, http)
-
-
-def _modality_tokens(breakdown: Any, modality: str) -> int:
-    """Sum the token counts one modality contributes to a usage breakdown."""
-    if not breakdown:
-        return 0
-    total = 0
-    for entry in breakdown:
-        if str(getattr(entry, "modality", "")).lower() == modality:
-            total += int(getattr(entry, "tokens", 0) or 0)
-    return total

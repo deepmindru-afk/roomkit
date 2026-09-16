@@ -2,22 +2,29 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from roomkit.providers.ai.base import (
-    RETRYABLE_STATUS_CODES,
     AIImagePart,
     ModelInfo,
     ProviderError,
 )
 from roomkit.providers.image.base import (
+    ImageAttempt,
+    ImageGenerationError,
+    ImageProgressCallback,
     ImageProvider,
     ImageResult,
+    notify_image_progress,
     parse_data_uri,
     parse_size,
 )
+from roomkit.providers.image.options import ImageModelInfo, ImageOptions, plain_metadata
+from roomkit.providers.image.usage import openai_image_usage
 from roomkit.providers.openai.config import OpenAIImageConfig
 from roomkit.providers.openai.image_models import MODELS
+from roomkit.providers.openai.image_stream import consume_image_stream
 from roomkit.providers.utils import http_timeout
 
 _EXTENSIONS = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}
@@ -76,46 +83,109 @@ class OpenAIImageProvider(ImageProvider):
         n: int = 1,
         reference_images: list[AIImagePart] | None = None,
     ) -> list[ImageResult]:
-        if n < 1:
-            raise ValueError(f"n must be at least 1, got {n}")
+        return await self.generate_with_options(
+            prompt, size=size, n=n, reference_images=reference_images
+        )
+
+    async def generate_with_options(
+        self,
+        prompt: str,
+        *,
+        size: str | None = None,
+        n: int = 1,
+        reference_images: list[AIImagePart] | None = None,
+        options: ImageOptions | None = None,
+        mask: AIImagePart | None = None,
+        on_progress: ImageProgressCallback | None = None,
+    ) -> list[ImageResult]:
         references = list(reference_images or [])
-        kwargs: dict[str, Any] = {"model": self._config.model, "prompt": prompt, "n": n}
+        defaults = {
+            key: getattr(self._config, key)
+            for key in ("quality", "background", "output_format")
+            if getattr(self._config, key) is not None
+        }
+        options = ImageOptions.model_validate(
+            {**defaults, **(options or ImageOptions()).model_dump(exclude_none=True)}
+        )
+        entry = self.catalog_entry()
+        if isinstance(entry, ImageModelInfo):
+            entry.image.validate_request(
+                options, size=size, n=n, references=len(references), mask=mask is not None
+            )
+        elif options.model_dump(exclude_none=True) or mask:
+            # User-named Azure deployments retain their configured controls;
+            # new controls cannot be advertised without a known model contract.
+            unknown = set(options.model_dump(exclude_none=True)) - set(defaults)
+            if unknown or mask:
+                raise ValueError("Advanced controls require a model with known image capabilities")
+        if not 1 <= n <= 10:
+            raise ValueError("n must be at least 1 and at most 10")
+        if options.input_fidelity and not references:
+            raise ValueError("input_fidelity requires reference images")
+        if options.partial_images is not None and not on_progress:
+            raise ValueError("Streaming previews require on_progress")
+        kwargs: dict[str, Any] = {
+            "model": self.model_name,
+            "prompt": prompt,
+            "n": n,
+            **options.model_dump(exclude_none=True),
+        }
         if size is not None:
             kwargs["size"] = self._validated_size(size)
-        if self._config.quality is not None:
-            kwargs["quality"] = self._config.quality
-        if self._config.background is not None:
-            kwargs["background"] = self._config.background
-        if self._config.output_format is not None:
-            kwargs["output_format"] = self._config.output_format
-        # Built before the try: a malformed reference is the caller's error and
-        # must stay a ValueError, not be relabelled as a provider failure by the
-        # catch-all below — and not be retried as one either.
         if references:
             kwargs["image"] = [
                 self._as_upload(part, index) for index, part in enumerate(references)
             ]
-
+        if mask:
+            kwargs["mask"] = self._as_upload(mask, 0)
+            if kwargs["mask"][2] != "image/png":
+                raise ValueError("A mask must be a PNG image")
+        attempt = ImageAttempt(
+            effective_options={
+                key: value
+                for key, value in kwargs.items()
+                if key not in {"prompt", "image", "mask"}
+            }
+        )
+        if on_progress:
+            await notify_image_progress(on_progress, attempt, provider=self._provider_name)
         try:
-            if references:
-                response = await self._client.images.edit(**kwargs)
+            method = self._client.images.edit if references else self._client.images.generate
+            if options.partial_images is not None:
+                response = await consume_image_stream(method, kwargs, attempt, on_progress)
+                attempt.results = []
             else:
-                response = await self._client.images.generate(**kwargs)
-        except ProviderError:
+                response = await method(**kwargs)
+            attempt.provider_request_id = getattr(response, "_request_id", None)
+            attempt.usage = self._usage(response)
+            attempt.raw_usage = plain_metadata(getattr(response, "usage", None)) or {}
+            attempt.effective_options.update(
+                {
+                    key: value
+                    for key in ("size", "quality", "background", "output_format")
+                    if (value := getattr(response, key, None)) is not None
+                }
+            )
+            attempt.results = self._results(response, n, attempt)
+            attempt.status = "succeeded"
+        except asyncio.CancelledError:
+            attempt.status = "unknown"
+            attempt.error = "Cancelled locally; the provider may still bill this request"
+            if on_progress:
+                await notify_image_progress(on_progress, attempt, provider=self._provider_name)
             raise
-        except self._api_connection_error as exc:
-            raise ProviderError(str(exc), retryable=True, provider=self._provider_name) from exc
-        except self._api_status_error as exc:
-            raise ProviderError(
-                str(exc),
-                retryable=exc.status_code in RETRYABLE_STATUS_CODES,
-                provider=self._provider_name,
-                status_code=exc.status_code,
-            ) from exc
         except Exception as exc:
-            raise ProviderError(str(exc), retryable=False, provider=self._provider_name) from exc
-
-        return self._results(response, n)
+            attempt.status = "unknown" if isinstance(exc, self._api_connection_error) else "failed"
+            attempt.error = str(exc)
+            attempt.status_code = getattr(exc, "status_code", None)
+            if on_progress:
+                await notify_image_progress(on_progress, attempt, provider=self._provider_name)
+            raise ImageGenerationError(
+                str(exc), provider=self._provider_name, attempts=[attempt]
+            ) from exc
+        if on_progress:
+            await notify_image_progress(on_progress, attempt, provider=self._provider_name)
+        return attempt.results
 
     @staticmethod
     def _validated_size(size: str) -> str:
@@ -129,6 +199,8 @@ class OpenAIImageProvider(ImageProvider):
         configures. The vendor judges instead; its rejection still raises
         rather than substituting another geometry (RFC §25.2).
         """
+        if size == "auto":
+            return size
         width, height = parse_size(size)
         return f"{width}x{height}"
 
@@ -148,39 +220,44 @@ class OpenAIImageProvider(ImageProvider):
             ) from exc
         return (f"reference-{index}.{_EXTENSIONS.get(mime_type, 'png')}", data, mime_type)
 
-    def _results(self, response: Any, expected: int) -> list[ImageResult]:
+    def _results(
+        self, response: Any, expected: int, attempt: ImageAttempt | None = None
+    ) -> list[ImageResult]:
         """Map an ``ImagesResponse`` onto :class:`ImageResult` objects."""
         images = list(getattr(response, "data", None) or [])
-        if len(images) != expected:
-            raise ProviderError(
-                f"{self._provider_name} returned {len(images)} image(s) "
-                f"for a request of {expected}",
-                retryable=False,
-                provider=self._provider_name,
-            )
         mime_type = self._response_mime_type(response)
+        if attempt and not getattr(response, "output_format", None):
+            mime_type = "image/" + str(attempt.effective_options.get("output_format", "png"))
         # The usage counters describe the whole call, not one image; splitting
         # them across n results would invent per-image numbers the vendor never
         # reported, so they ride the first result only and the rest report none.
         usage = self._usage(response)
-        results: list[ImageResult] = []
+        results: list[ImageResult] = [] if attempt is None else attempt.results
+        errors: list[str] = []
         for index, image in enumerate(images):
             payload = getattr(image, "b64_json", None)
             if not payload:
-                raise ProviderError(
-                    f"{self._provider_name} returned image {index} without inline bytes. The GPT "
-                    "image models on this endpoint always answer in base64; a model that "
-                    "answers with an expiring URL instead is not one roomkit supports here.",
-                    retryable=False,
-                    provider=self._provider_name,
-                )
+                errors.append(f"{self._provider_name} returned image {index} without inline bytes")
+                continue
             results.append(
                 ImageResult(
                     data=f"data:{mime_type};base64,{payload}",
                     mime_type=mime_type,
                     revised_prompt=getattr(image, "revised_prompt", None),
-                    usage=usage if index == 0 else {},
+                    usage=usage if not results else {},
+                    attempt_id=attempt.id if attempt else None,
+                    provider_request_id=attempt.provider_request_id if attempt else None,
+                    raw_usage=attempt.raw_usage if attempt and not results else {},
+                    effective_options=attempt.effective_options if attempt else {},
                 )
+            )
+        if errors:
+            raise ProviderError("; ".join(errors), retryable=False, provider=self._provider_name)
+        if len(images) != expected:
+            raise ProviderError(
+                f"{self._provider_name} returned {len(images)} images for a request of {expected}",
+                retryable=False,
+                provider=self._provider_name,
             )
         return results
 
@@ -200,18 +277,7 @@ class OpenAIImageProvider(ImageProvider):
         counter is reported, and summing the counters bills each token once.
         On the generation endpoint every output token is an image token.
         """
-        usage = getattr(response, "usage", None)
-        if usage is None:
-            return {}
-        input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
-        details = getattr(usage, "input_tokens_details", None)
-        input_image_tokens = int(getattr(details, "image_tokens", 0) or 0)
-        return {
-            "input_tokens": max(input_tokens - input_image_tokens, 0),
-            "input_image_tokens": input_image_tokens,
-            "output_tokens": 0,
-            "output_image_tokens": int(getattr(usage, "output_tokens", 0) or 0),
-        }
+        return openai_image_usage(getattr(response, "usage", None))
 
     async def close(self) -> None:
         await self._client.close()

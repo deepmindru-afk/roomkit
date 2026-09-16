@@ -278,18 +278,20 @@ async def test_the_reported_usage_prices_against_the_catalog() -> None:
 # --- Errors --------------------------------------------------------------------
 
 
-async def test_a_connection_failure_is_retryable() -> None:
+async def test_a_connection_failure_keeps_an_ambiguous_outcome_without_retry() -> None:
     provider = _provider()
     provider._client.images.generate = AsyncMock(side_effect=_FakeAPIConnectionError("down"))
 
     with pytest.raises(ProviderError) as exc_info:
         await provider.generate("a fox")
-    assert exc_info.value.retryable is True
+    assert exc_info.value.retryable is False
     assert exc_info.value.provider == "openai"
 
 
 @pytest.mark.parametrize(("status", "retryable"), [(429, True), (503, True), (400, False)])
-async def test_status_errors_map_to_retryability(status: int, retryable: bool) -> None:
+async def test_status_errors_preserve_status_without_automatic_retry(
+    status: int, retryable: bool
+) -> None:
     provider = _provider()
     provider._client.images.generate = AsyncMock(
         side_effect=_FakeAPIStatusError("boom", status_code=status)
@@ -297,7 +299,7 @@ async def test_status_errors_map_to_retryability(status: int, retryable: bool) -
 
     with pytest.raises(ProviderError) as exc_info:
         await provider.generate("a fox")
-    assert exc_info.value.retryable is retryable
+    assert exc_info.value.retryable is False  # A paid generation is not retried blindly.
     assert exc_info.value.status_code == status
 
 
