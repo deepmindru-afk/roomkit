@@ -82,6 +82,8 @@ class RealtimeDelegationHost(Protocol):
 
     def _update_idle_event(self, session_id: str) -> None: ...
 
+    def _expect_provider_output(self, session_id: str) -> None: ...
+
 
 class RealtimeDelegationMixin:
     """Reasoning-delegation handling for :class:`RealtimeVoiceChannel`.
@@ -104,6 +106,7 @@ class RealtimeDelegationMixin:
 
     _track_task: Any  # see RealtimeDelegationHost — cross-mixin
     _rt_span_ctx: Any  # see RealtimeDelegationHost — cross-mixin
+    _expect_provider_output: Any
     _update_idle_event: Any  # see RealtimeDelegationHost — cross-mixin
     _telemetry_provider: Any  # see RealtimeDelegationHost — cross-mixin
     _authorize_realtime_tool: Any  # see RealtimeToolsMixin
@@ -275,6 +278,8 @@ class RealtimeDelegationMixin:
                 if not text:
                     continue
                 answered = True
+                if output.spoken:
+                    self._expect_provider_output(session.id)
                 await self._provider.submit_delegation_output(
                     session, delegation_id, text, spoken=output.spoken
                 )
@@ -308,6 +313,7 @@ class RealtimeDelegationMixin:
         if session.state == VoiceSessionState.ENDED:
             return
         try:
+            self._expect_provider_output(session.id)
             await self._provider.submit_delegation_output(
                 session, delegation_id, text, spoken=True
             )

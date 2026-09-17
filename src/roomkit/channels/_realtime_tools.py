@@ -103,6 +103,8 @@ class RealtimeToolsHost(Protocol):
 
     def _update_idle_event(self, session_id: str) -> None: ...
 
+    def _expect_provider_output(self, session_id: str) -> None: ...
+
 
 class RealtimeToolsMixin:
     """Tool call execution for RealtimeVoiceChannel.
@@ -134,6 +136,7 @@ class RealtimeToolsMixin:
     _telemetry_provider: Any
 
     _track_task: Any  # see RealtimeToolsHost — cross-mixin
+    _expect_provider_output: Any
     _update_idle_event: Any
     _compose_session_prompt: Any
     _compose_session_tools: Any
@@ -503,12 +506,7 @@ class RealtimeToolsMixin:
         """Confirm delivery only while the session remains live."""
         if session.state == VoiceSessionState.ENDED:
             return False
-        self._awaiting_tool_response.add(session.id)
-        # A provider may end the function-call response while its handler
-        # runs. Submission starts the wait for the next provider response;
-        # that earlier boundary cannot make the acknowledgement idle.
-        self._provider_idle[session.id] = False
-        self._update_idle_event(session.id)
+        self._expect_provider_output(session.id)
         await self._provider.submit_tool_result(session, call_id, result)
         return session.state != VoiceSessionState.ENDED
 

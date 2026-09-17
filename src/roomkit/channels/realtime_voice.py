@@ -614,6 +614,12 @@ class RealtimeVoiceChannel(
         else:
             idle.clear()
 
+    def _expect_provider_output(self, session_id: str) -> None:
+        """Keep idle closed until a submitted result has an assistant continuation."""
+        self._awaiting_tool_response.add(session_id)
+        self._provider_idle[session_id] = False
+        self._update_idle_event(session_id)
+
     def _note_provider_output(self, session_id: str) -> None:
         """A new provider response can continue submitted tool results."""
         if session_id in self._awaiting_tool_response:

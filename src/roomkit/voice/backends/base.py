@@ -361,6 +361,19 @@ class VoiceBackend(ABC):
     def end_of_response(self, session: VoiceSession) -> None:  # noqa: B027
         """Signal end of an AI response for outbound pacing."""
 
+    async def wait_playback(self, session: VoiceSession) -> bool:
+        """Wait for queued response audio to play; return False if discarded.
+
+        Call after the channel is idle (its EOR has reached the transport).
+        Queued transports may override this with a response boundary so that
+        continuous silence after the response does not keep the wait open.
+        """
+        import asyncio
+
+        while self.is_playing(session):
+            await asyncio.sleep(0.02)
+        return True
+
     def is_playing(self, session: VoiceSession) -> bool:
         """Check if audio is currently being sent to the session.
 

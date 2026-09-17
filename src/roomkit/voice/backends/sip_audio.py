@@ -816,6 +816,13 @@ class SIPAudioMixin:
         state.send_buffer.clear()
         return was_playing
 
+    async def wait_playback(self, session: VoiceSession) -> bool:
+        """Wait through the latest EOR, including its final RTP packet's duration."""
+        state = self._session_states.get(session.id)
+        if state is None or state.pacer is None:
+            return True
+        return await state.pacer.wait_for_response_boundary()
+
     def is_playing(self, session: VoiceSession) -> bool:
         state = self._session_states.get(session.id)
         return state.is_playing if state is not None else False

@@ -95,6 +95,12 @@ class SIPRealtimeTransport(VoiceBackend):
     def supports_playback_callback(self) -> bool:
         return bool(getattr(self._backend, "supports_playback_callback", False))
 
+    async def wait_playback(self, session: VoiceSession) -> bool:
+        voice_session = self._voice_sessions.get(session.id)
+        if voice_session is None:
+            return True
+        return await self._backend.wait_playback(voice_session)
+
     def is_playing(self, session: VoiceSession) -> bool:
         voice_session = self._voice_sessions.get(session.id)
         return voice_session is not None and self._backend.is_playing(voice_session)

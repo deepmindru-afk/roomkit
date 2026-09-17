@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import struct
 from typing import Any
 
 _np: Any = None
@@ -42,3 +43,17 @@ def rms_db(data: bytes) -> float:
     if rms < 1e-10:
         return -60.0
     return max(-60.0, 20.0 * math.log10(rms))
+
+
+def pcm16_has_activity(data: bytes) -> bool:
+    """Whether PCM16 exceeds -60 dBFS, without requiring voice/DSP extras.
+
+    This detects output activity, not speech. G.711 decoded silence may be
+    nonzero (+/-8); transport samples must still be forwarded and recorded.
+    Compare mean-square energy to avoid a square root on each small chunk.
+    """
+    count = len(data) // 2
+    if not count:
+        return False
+    energy = sum(sample * sample for (sample,) in struct.iter_unpack("<h", data[: count * 2]))
+    return energy > count * (32768 * 0.001) ** 2

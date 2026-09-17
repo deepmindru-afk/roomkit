@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from roomkit.models.enums import Access, HookTrigger
 from roomkit.voice.audio_frame import AudioFrame
 from roomkit.voice.base import VoiceSessionState
-from roomkit.voice.utils import rms_db
+from roomkit.voice.utils import pcm16_has_activity, rms_db
 
 if TYPE_CHECKING:
     from roomkit.core.framework import RoomKit
@@ -167,6 +167,7 @@ class RealtimeAudioMixin:
     _playback_position_ms: dict[str, float]
     _playback_buffer: dict[str, tuple[float, float]]
 
+    _note_provider_output: Any
     _track_task: Any  # see RealtimeAudioHost — cross-mixin
     _pipeline_submit_inbound: Any  # see VoicePipelineMixin — cross-mixin
     _flush_and_signal_end: Any  # see RealtimeResponseMixin — cross-mixin
@@ -788,6 +789,8 @@ class RealtimeAudioMixin:
         Each item captures the current generation counter so that chunks
         enqueued before an interrupt are silently discarded.
         """
+        if self._provider.full_duplex and pcm16_has_activity(audio):
+            self._note_provider_output(session.id)
         with self._state_lock:
             if session.id not in self._sessions:
                 return

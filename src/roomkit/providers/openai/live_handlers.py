@@ -3,7 +3,7 @@
 Translates Live API server events into RoomKit provider callbacks: the
 dispatch table keyed on the wire event type, one handler per event, and the
 turn synthesis a full-duplex wire calls for (RFC §12.4.1) — response and
-speech boundaries closed by a quiet gap on each speaker's transcript. The
+speech boundaries closed by a quiet gap in transcript or assistant audio activity. The
 hosted-delegation envelope (``response.event``) is handled by
 :class:`~roomkit.providers.openai.live_hosted.OpenAILiveHostedDelegationMixin`.
 """
@@ -32,6 +32,7 @@ from roomkit.providers.openai.live_events import (
 from roomkit.telemetry.base import Attr
 from roomkit.voice.base import VoiceSession
 from roomkit.voice.realtime.provider import RealtimeVoiceProvider
+from roomkit.voice.utils import pcm16_has_activity
 
 logger = logging.getLogger("roomkit.providers.openai.live")
 
@@ -114,6 +115,10 @@ class OpenAILiveEventHandlersMixin(RealtimeVoiceProvider):
         audio = base64.b64decode(audio_b64)
         if state.codec is not None:
             audio = state.codec.decode(audio)
+        if pcm16_has_activity(audio):
+            # Open before forwarding audio, including audio-only responses.
+            # Full-duplex silence is still forwarded, but cannot hold a turn open.
+            await state.assistant_turn.feed("")
         await self._fire(self._audio_callbacks, state.session, audio, label="audio")
 
     async def _on_output_transcript_delta(

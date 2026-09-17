@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- GPT-Live response boundaries include assistant PCM audio activity as well as
+  transcript deltas. Continuous silence remains transmitted without holding a
+  response open. Spoken reasoning results keep the channel busy until the
+  assistant continues, including within an already open full-duplex turn.
+- `VoiceBackend.wait_playback(session)` waits for playback after channel idle.
+  SIP follows the latest response boundary and its RTP tail independently of
+  subsequent silence, and reports discarded or failed playback as `False`.
+  Cancelling a waiter cannot cancel another observer's playback boundary.
+
 ## [0.76.0] — 2026-09-16
 
 ### Added

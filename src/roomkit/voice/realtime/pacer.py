@@ -25,12 +25,17 @@ import contextlib
 import logging
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 
 logger = logging.getLogger("roomkit.voice.realtime.pacer")
 
 # Sentinel strings used as control signals on the queue
-_RESPONSE_END = "RESPONSE_END"
 _STOP = "STOP"
+
+
+@dataclass
+class _ResponseEnd:
+    done: asyncio.Future[bool] | None = None
 
 
 class OutboundAudioPacer:
@@ -77,7 +82,10 @@ class OutboundAudioPacer:
         self._fill_with_silence_when_idle = fill_with_silence_when_idle
         self._silence_frame = b"\x00" * self._frame_bytes
 
-        self._queue: asyncio.Queue[bytes | str] = asyncio.Queue()
+        self._queue: asyncio.Queue[bytes | str | _ResponseEnd] = asyncio.Queue()
+        self._playback_failed = False
+        self._last_boundary: asyncio.Future[bool] | None = None
+        self._pending_boundaries: set[asyncio.Future[bool]] = set()
         self._interrupt_event = asyncio.Event()
         self._response_done = asyncio.Event()
         self._response_done.set()  # No response in flight initially
@@ -95,19 +103,29 @@ class OutboundAudioPacer:
         self._drain_observer = on_drain
 
     async def _send_audio(self, data: bytes, *, silence: bool = False) -> None:
-        await self._send_fn(data)
+        try:
+            await self._send_fn(data)
+        except Exception:
+            self._playback_failed = True
+            raise
         if self._playback_observer is not None:
             try:
                 self._playback_observer(data, silence)
             except Exception:
                 logger.exception("Error reporting paced playback")
 
-    async def _finish_response(self) -> None:
+    async def _finish_response(self, boundary: _ResponseEnd) -> None:
+        drained = not self._playback_failed
         if self._drain_observer is not None:
             try:
                 await self._drain_observer()
             except Exception:
+                drained = False
                 logger.exception("Error draining transport playback")
+        if boundary.done is not None and not boundary.done.done():
+            boundary.done.set_result(drained)
+            self._pending_boundaries.discard(boundary.done)
+        self._playback_failed = False
         # A later response may have arrived while the transport drained.
         # Its push() cleared this event; the previous boundary cannot set it.
         if self._queue.empty():
@@ -135,11 +153,34 @@ class OutboundAudioPacer:
     def end_of_response(self) -> None:
         """Signal end of AI response. Resets pacing for next response."""
         self._response_done.clear()
-        self._queue.put_nowait(_RESPONSE_END)
+        done = asyncio.get_running_loop().create_future()
+        self._last_boundary = done
+        self._pending_boundaries.add(done)
+        self._queue.put_nowait(_ResponseEnd(done))
 
     async def wait_for_response_done(self) -> None:
         """Wait until the current response has been fully flushed."""
         await self._response_done.wait()
+
+    async def wait_for_response_boundary(self) -> bool:
+        """Wait for the latest EOR's playback, independent of following silence.
+
+        Follow newer EORs created while waiting. False means playback was
+        interrupted, stopped or failed; a timeout must not cancel shared state.
+        Without an EOR, wait for the outbound queue to finish its response.
+        """
+        while (boundary := self._last_boundary) is not None:
+            drained = await asyncio.shield(boundary)
+            if boundary is self._last_boundary:
+                return drained
+        await self.wait_for_response_done()
+        return True
+
+    def _discard_boundaries(self) -> None:
+        for boundary in self._pending_boundaries:
+            if not boundary.done():
+                boundary.set_result(False)
+        self._pending_boundaries.clear()
 
     def interrupt(self) -> None:
         """Drain queue + wake sender. Called on speech_start for barge-in."""
@@ -158,7 +199,8 @@ class OutboundAudioPacer:
         # Queue is unbounded (maxsize=0) so put_nowait() never raises QueueFull.
         # _interrupt_event.set() below is the primary wakeup and handles the
         # race where _run() has already switched to self._queue.
-        old_queue.put_nowait(_RESPONSE_END)
+        old_queue.put_nowait(_ResponseEnd())
+        self._discard_boundaries()
         self._interrupt_event.set()
         self._response_done.set()  # Unblock any wait_for_response_done() waiters
 
@@ -180,6 +222,7 @@ class OutboundAudioPacer:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._task
         self._task = None
+        self._discard_boundaries()
 
     # -- Internal sender loop --
 
@@ -250,9 +293,9 @@ class OutboundAudioPacer:
             if item == _STOP:
                 return
 
-            if item == _RESPONSE_END:
+            if isinstance(item, _ResponseEnd):
                 # Nothing to flush — channel handles resampler flush
-                await self._finish_response()
+                await self._finish_response(item)
                 continue
 
             # Clear interrupt flag at the start of each new audio burst
@@ -262,7 +305,7 @@ class OutboundAudioPacer:
 
             # --- Pre-buffer phase: accumulate ~prebuffer_ms before first send ---
             buf = bytearray(audio)
-            next_item: bytes | str | None = None
+            next_item: bytes | str | _ResponseEnd | None = None
             interrupted = False
 
             while len(buf) < self._prebuffer_bytes:
@@ -273,14 +316,14 @@ class OutboundAudioPacer:
                     next_item = await asyncio.wait_for(self._queue.get(), timeout=0.1)
                 except (TimeoutError, asyncio.CancelledError):
                     break
-                if isinstance(next_item, str):
+                if isinstance(next_item, str | _ResponseEnd):
                     if next_item == _STOP:
                         # Send what we have, then exit
                         if buf:
                             with contextlib.suppress(Exception):
                                 await self._send_audio(bytes(buf))
                         return
-                    if next_item == _RESPONSE_END:
+                    if isinstance(next_item, _ResponseEnd):
                         break
                 else:
                     if next_item:
@@ -301,6 +344,8 @@ class OutboundAudioPacer:
                     await self._send_audio(burst)
                 except Exception:
                     logger.exception("Error sending pre-buffered audio")
+                    if isinstance(next_item, _ResponseEnd):
+                        await self._finish_response(next_item)
                     continue
 
             burst_ms = len(burst) * 1000 / self._bytes_per_second
@@ -312,11 +357,11 @@ class OutboundAudioPacer:
             )
 
             # If we broke out due to RESPONSE_END, send overflow and loop back
-            if next_item == _RESPONSE_END:
+            if isinstance(next_item, _ResponseEnd):
                 if overflow:
                     with contextlib.suppress(Exception):
                         await self._send_audio(overflow)
-                await self._finish_response()
+                await self._finish_response(next_item)
                 continue
 
             # Start wall-clock pacing from after the burst
@@ -378,17 +423,17 @@ class OutboundAudioPacer:
                             cumulative += 0.02
                     continue
 
-                if isinstance(next_item, str):
+                if isinstance(next_item, str | _ResponseEnd):
                     if next_item == _STOP:
                         return
-                    if next_item == _RESPONSE_END:
+                    if isinstance(next_item, _ResponseEnd):
                         if underruns or max_behind_ms > 20:
                             logger.info(
                                 "Pacer: response done, underruns=%d max_behind=%.0fms",
                                 underruns,
                                 max_behind_ms,
                             )
-                        await self._finish_response()
+                        await self._finish_response(next_item)
                         break  # back to outer loop for next response
                     continue
 

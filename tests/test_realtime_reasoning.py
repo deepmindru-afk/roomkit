@@ -269,9 +269,14 @@ class TestIdleAndTeardown:
         await asyncio.sleep(0)
         assert not channel._idle_events[session.id].is_set()  # noqa: SLF001
 
+        await _settle(0.15)
+        assert provider.delegation_outputs[-1][2] == "ok"
+        with pytest.raises(TimeoutError):
+            await channel.wait_idle("r1", timeout=0.01)
+        await provider.simulate_response_start(session)
+        await provider.simulate_response_end(session)
         await channel.wait_idle("r1", timeout=1.0)
         assert channel._idle_events[session.id].is_set()  # noqa: SLF001
-        assert provider.delegation_outputs[-1][2] == "ok"
 
     async def test_end_session_cancels_the_run_and_releases_the_backend(self) -> None:
         backend = _ScriptedBackend([ReasoningOutput("late", is_final=True)], delay=5.0)

@@ -73,8 +73,8 @@ class OpenAILiveProvider(
     gates the model's audio on user speech, :meth:`interrupt` and
     :meth:`truncate_audio` do nothing, and a pipeline VAD stays in the
     observation role. The wire carries no response or speech boundaries;
-    this provider synthesizes them from the transcript deltas with a quiet
-    gap of ``turn_gap_ms`` per speaker (RFC §12.4.1).
+    this provider synthesizes them from transcript deltas and assistant audio
+    activity, with a quiet gap of ``turn_gap_ms`` per speaker (RFC §12.4.1).
 
     **Transcripts.** Partial transcriptions carry *deltas* for both roles and
     the final carries the whole turn, closed by the gap. A channel that keeps

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from roomkit.core.exceptions import ChannelNotFoundError
 from roomkit.models.enums import HookTrigger
 from roomkit.models.event import TextContent
+from roomkit.voice.realtime.provider import RealtimeVoiceProvider
 
 if TYPE_CHECKING:
     from roomkit.core.framework import RoomKit
@@ -38,6 +39,7 @@ class RealtimeTranscriptionHost(Protocol):
         _rt_span_ctx: Get the telemetry span context for a session.
     """
 
+    _provider: RealtimeVoiceProvider
     _state_lock: threading.Lock
     _session_rooms: dict[str, str]
     _barge_in_active: set[str]
@@ -62,6 +64,7 @@ class RealtimeTranscriptionMixin:
     Host contract: :class:`RealtimeTranscriptionHost`.
     """
 
+    _provider: RealtimeVoiceProvider
     _state_lock: threading.Lock
     _session_rooms: dict[str, str]
     _barge_in_active: set[str]
@@ -73,6 +76,7 @@ class RealtimeTranscriptionMixin:
     channel_id: str
     provider_name: str | None
 
+    _note_provider_output: Any
     _track_task: Any  # see RealtimeTranscriptionHost — cross-mixin
     _send_client_message: Any  # see RealtimeTranscriptionHost — cross-mixin
     _rt_span_ctx: Any  # see RealtimeTranscriptionHost — cross-mixin
@@ -81,6 +85,8 @@ class RealtimeTranscriptionMixin:
         self, session: VoiceSession, text: str, role: str, is_final: bool
     ) -> Any:
         """Handle transcription from provider."""
+        if self._provider.full_duplex and role == "assistant" and text and not is_final:
+            self._note_provider_output(session.id)
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:

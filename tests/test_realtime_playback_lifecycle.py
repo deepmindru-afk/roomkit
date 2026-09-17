@@ -311,7 +311,7 @@ async def test_tool_response_waits_for_acknowledgement_before_idle(late_end, new
         # Some providers continue the same response; others start another one.
         if new_response:
             await provider.simulate_response_start(session)
-        await provider.simulate_audio(session, b"\x01\x00" * 480)
+        await provider.simulate_audio(session, b"\x00\x20" * 480)
         with pytest.raises(TimeoutError):
             await channel.wait_idle("r", timeout=0.01)
         await provider.simulate_response_end(session)
@@ -404,12 +404,12 @@ async def test_audio_of_first_tool_ack_does_not_release_second_tool_result() -> 
         releases["b"].set()
         await asyncio.wait_for(submitted["b"].wait(), 1)
         # This is still A's response, already started before B was submitted.
-        await provider.simulate_audio(session, b"\x01\x00" * 480)
+        await provider.simulate_audio(session, b"\x00\x20" * 480)
         await provider.simulate_response_end(session)
         with pytest.raises(TimeoutError):
             await channel.wait_idle("r", timeout=0.01)
         await provider.simulate_response_start(session)
-        await provider.simulate_audio(session, b"\x01\x00" * 480)
+        await provider.simulate_audio(session, b"\x00\x20" * 480)
         await provider.simulate_response_end(session)
         await channel.wait_idle("r", timeout=1)
     finally:
