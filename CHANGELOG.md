@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.77.0] — 2026-09-17
+
 ### Fixed
 
 - GPT-Live response boundaries include assistant PCM audio activity as well as
