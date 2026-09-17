@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
+import inspect
 import logging
 import threading
+import time
 from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
@@ -1001,7 +1003,14 @@ class RealtimeVoiceChannel(
         Args:
             room_id: The room to join.
             participant_id: The participant's ID.
-            connection: Protocol-specific connection (e.g. WebSocket).
+            connection: Protocol-specific connection (e.g. WebSocket), or an
+                awaitable resolving to it. With an awaitable, provider setup
+                starts while the connection is pending (e.g. SIP ringing).
+                Cancel the start task if the connection will never arrive.
+                Both branches belong to this session and are rolled back on
+                failure. The session becomes ACTIVE only when both are ready.
+                Monotonic timestamps are written to metadata's
+                ``connection_timing`` for measuring setup and pre-answer cost.
             metadata: Optional session metadata. May include overrides
                 for system_prompt, voice, tools, temperature.
 
@@ -1087,6 +1096,8 @@ class RealtimeVoiceChannel(
         room_id, participant_id = session.room_id, session.participant_id
         self._session_config_locks[session.id] = asyncio.Lock()
         meta = session.metadata
+        timing: dict[str, float] = {}
+        meta["connection_timing"] = timing
         # Start telemetry session span early so transport/provider connect
         # phases appear as children in Jaeger.
         telemetry = self._telemetry_provider
@@ -1179,56 +1190,89 @@ class RealtimeVoiceChannel(
         if self._pipeline is not None:
             self._pipeline_session_active(session)
 
-        with telemetry.span(
-            SpanKind.BACKEND_CONNECT,
-            "transport.accept",
-            parent_id=session_span_id,
-            session_id=session.id,
-            attributes={Attr.BACKEND_TYPE: self._transport.name},
-        ):
-            await self._transport.accept(session, connection)
-        self._check_connecting_session(session)
-
-        # Connect to provider (with telemetry span).
-        # If provider.connect fails, clean up the already-accepted transport
-        # session to avoid leaking the connection.
-        try:
-            self._prepare_session_audio(session)
+        async def accept_transport() -> None:
+            resolved = await connection if inspect.isawaitable(connection) else connection
+            self._check_connecting_session(session)
             with telemetry.span(
                 SpanKind.BACKEND_CONNECT,
-                "provider.connect",
+                "transport.accept",
                 parent_id=session_span_id,
                 session_id=session.id,
-                attributes={Attr.BACKEND_TYPE: self._provider.name},
+                attributes={Attr.BACKEND_TYPE: self._transport.name},
             ):
-                await self._provider.connect(
-                    session,
-                    system_prompt=system_prompt,
-                    voice=voice,
-                    tools=tools,
-                    temperature=temperature,
-                    input_sample_rate=self._input_sample_rate,
-                    output_sample_rate=self._output_sample_rate,
-                    server_vad=self._provider.full_duplex or not has_pipeline_vad,
-                    provider_config=provider_config,
-                )
-        except (Exception, asyncio.CancelledError) as exc:
-            # CancelledError here is the orchestrator deliberately aborting
-            # a still-handshaking session (e.g. carrier hung up before the
-            # provider WS connected). It's expected control flow, not a
-            # bug — log it as info without a traceback so dashboards stay
-            # quiet. Real failures keep their full stack trace.
-            if isinstance(exc, asyncio.CancelledError):
+                await self._transport.accept(session, resolved)
+            self._check_connecting_session(session)
+            self._prepare_session_audio(session)
+            timing["transport_ready_at"] = time.monotonic()
+
+        async def connect_provider() -> None:
+            # Connect to provider (with telemetry span).
+            # If provider.connect fails, clean up the already-accepted transport
+            # session to avoid leaking the connection.
+            try:
+                timing["provider_connect_started_at"] = time.monotonic()
+                with telemetry.span(
+                    SpanKind.BACKEND_CONNECT,
+                    "provider.connect",
+                    parent_id=session_span_id,
+                    session_id=session.id,
+                    attributes={Attr.BACKEND_TYPE: self._provider.name},
+                ):
+                    await self._provider.connect(
+                        session,
+                        system_prompt=system_prompt,
+                        voice=voice,
+                        tools=tools,
+                        temperature=temperature,
+                        input_sample_rate=self._input_sample_rate,
+                        output_sample_rate=self._output_sample_rate,
+                        server_vad=self._provider.full_duplex or not has_pipeline_vad,
+                        provider_config=provider_config,
+                    )
+                timing["provider_ready_at"] = time.monotonic()
                 logger.info(
-                    "provider.connect cancelled for session %s — transport cleaned up",
+                    "Realtime provider ready: room=%s session=%s connect_ms=%.1f",
+                    room_id,
                     session.id,
+                    (timing["provider_ready_at"] - timing["provider_connect_started_at"]) * 1000,
                 )
-            else:
-                logger.exception(
-                    "provider.connect failed for session %s; cleaned up transport",
-                    session.id,
-                )
-            raise
+            except (Exception, asyncio.CancelledError) as exc:
+                # CancelledError here is the orchestrator deliberately aborting
+                # a still-handshaking session (e.g. carrier hung up before the
+                # provider WS connected). It's expected control flow, not a
+                # bug — log it as info without a traceback so dashboards stay
+                # quiet. Real failures keep their full stack trace.
+                if isinstance(exc, asyncio.CancelledError):
+                    logger.info(
+                        "provider.connect cancelled for session %s — transport cleaned up",
+                        session.id,
+                    )
+                else:
+                    logger.exception(
+                        "provider.connect failed for session %s; cleaned up transport",
+                        session.id,
+                    )
+                raise
+
+        if inspect.isawaitable(connection):
+            # One handshake owns both branches. gather alone would leave its
+            # sibling running after an error; drain both before rollback.
+            branches = [
+                asyncio.create_task(accept_transport(), name=f"rt_transport:{session.id}"),
+                asyncio.create_task(connect_provider(), name=f"rt_provider:{session.id}"),
+            ]
+            try:
+                await asyncio.gather(*branches)
+            finally:
+                for branch in branches:
+                    if not branch.done():
+                        branch.cancel()
+                await asyncio.gather(*branches, return_exceptions=True)
+        else:
+            # Preserve ordinary startup ordering, including codec validation
+            # before any provider connection is opened.
+            await accept_transport()
+            await connect_provider()
 
         self._check_connecting_session(session)
         session.state = VoiceSessionState.ACTIVE

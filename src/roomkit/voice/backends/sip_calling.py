@@ -857,6 +857,7 @@ class SIPCallingMixin:
                 )
 
             await out_call.wait_answered(timeout=timeout)
+            sip_answered_at = time.monotonic()
             setup.answered = True
 
             # Map call_id early so re-INVITEs arriving during RTP setup are
@@ -908,6 +909,7 @@ class SIPCallingMixin:
                     "callee": to_uri,
                     "room_id": effective_room_id,
                     "direction": "outbound",
+                    "sip_answered_at": sip_answered_at,
                     "input_sample_rate": actual_codec_rate,
                     "output_sample_rate": actual_codec_rate,
                     "codec_sample_rate": actual_codec_rate,

@@ -122,7 +122,11 @@ class VoiceOpsMixin(HelpersMixin):
                 so the bridge sends audio through the correct transport.
             connection: Protocol-specific connection for realtime voice
                 channels (e.g. WebSocket).  Required when joining a
-                :class:`RealtimeVoiceChannel`.
+                :class:`RealtimeVoiceChannel`. May be an awaitable resolving
+                to that connection: provider setup then overlaps the wait,
+                under the same cancellable join. Bound that wait at the call
+                site (e.g. the dial timeout); no active session or started hook
+                is exposed until both transport and provider are ready.
 
         Returns:
             The voice or video session (created or passed in).

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.78.0] — 2026-09-17
+
+### Added
+
+- Realtime voice joins accept an awaitable client connection, allowing provider
+  setup to overlap SIP ringing. Both setup branches share the session's existing
+  cancellation and cleanup; caller audio arriving during provider setup remains
+  buffered until the join completes. Ordinary joins retain transport-first setup.
+- Realtime session metadata reports provider and transport readiness on the
+  monotonic clock. Outbound SIP sessions report the answer timestamp before RTP
+  setup so applications can measure pickup latency and pre-answer provider time.
+
 ## [0.77.0] — 2026-09-17
 
 ### Fixed
