@@ -157,3 +157,75 @@ async def test_simultaneous_preparations_never_exchange_participants_or_audio() 
     await channel.end_session(session_b)
     assert channel.get_room_sessions("room-a") == [session_a]
     await channel.close()
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_prepared_tool_waits_for_authorization_and_cannot_outlive_start(
+    cancel: bool,
+) -> None:
+    from roomkit import HookResult, HookTrigger
+
+    effects, hooks = [], []
+    authorized = asyncio.Event()
+
+    async def handler(name: str, arguments: dict[str, Any]) -> str:
+        effects.append(name)
+        return "ok"
+
+    kit = RoomKit()
+
+    @kit.hook(HookTrigger.BEFORE_TOOL_USE)
+    async def deny(event: Any, context: Any) -> HookResult:
+        hooks.append(event.name)
+        authorized.set()
+        return HookResult.block("denied")
+
+    provider = ControlledProvider()
+    transport = MockRealtimeTransport()
+    channel = RealtimeVoiceChannel(
+        "rt", provider=provider, transport=transport, tool_handler=handler
+    )
+    kit.register_channel(channel)
+    await kit.create_room(room_id="r")
+    await kit.attach_channel("r", "rt")
+    connection = asyncio.get_running_loop().create_future()
+    start = asyncio.create_task(kit.join("r", "rt", connection=connection))
+    provider.release.set()
+    await provider.ready.wait()
+    assert provider.session is not None
+    await provider.simulate_tool_call(provider.session, "call", "restricted_action", {})
+    await asyncio.sleep(0)
+    assert not effects and not hooks
+    assert not any(t.get_name().startswith("rt_tool_call:") for t in channel._scheduled_tasks)
+    if cancel:
+        start.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await start
+    else:
+        connection.set_result("carrier")
+        await start
+        await asyncio.wait_for(authorized.wait(), 1)
+        await asyncio.gather(
+            *(t for t in channel._scheduled_tasks if t.get_name().startswith("rt_tool_call:"))
+        )
+        assert hooks == ["restricted_action"]
+    await kit.close()
+    assert not effects
+    assert not channel._scheduled_tasks
+
+
+async def test_startup_event_overflow_aborts_both_branches() -> None:
+    provider = ControlledProvider()
+    transport = MockRealtimeTransport()
+    channel = RealtimeVoiceChannel("rt", provider=provider, transport=transport)
+    connection = asyncio.get_running_loop().create_future()
+    start = asyncio.create_task(channel.start_session("r", "p", connection))
+    provider.release.set()
+    await provider.ready.wait()
+    assert provider.session is not None
+    await provider.simulate_audio(provider.session, b"\x01\x01" * (1024 * 1024 + 1))
+    with pytest.raises(RuntimeError, match="startup event buffer exceeded"):
+        await asyncio.wait_for(start, 1)
+    assert connection.cancelled()
+    assert not transport.sent_audio and not channel._connecting_sessions
+    await channel.close()

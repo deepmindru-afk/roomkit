@@ -12,7 +12,7 @@ import time
 from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -82,6 +82,15 @@ class _ConnectingSession:
 
     task: asyncio.Task[VoiceSession]
     disconnected: bool = False
+    deferred: bool = False
+    callbacks: list[tuple[Callable[..., Any], tuple[Any, ...]]] = field(default_factory=list)
+    audio_bytes: int = 0
+    failure: Exception | None = None
+
+    def fail(self, error: Exception) -> None:
+        self.failure = error
+        if not self.task.done() and not self.task.cancelling():
+            self.task.cancel()
 
 
 class RealtimeVoiceChannel(
@@ -513,16 +522,16 @@ class RealtimeVoiceChannel(
         self._turn_spans: dict[str, str] = {}
 
         # Wire internal callbacks
-        provider.on_audio(self._on_provider_audio)
-        provider.on_transcription(self._on_provider_transcription)
-        provider.on_transcription(self._on_transcript_fragment)
-        provider.on_speech_start(self._on_provider_speech_start)
-        provider.on_speech_end(self._on_provider_speech_end)
-        provider.on_tool_call(self._on_provider_tool_call)
-        provider.on_delegation(self._on_provider_delegation)
-        provider.on_response_start(self._on_provider_response_start)
-        provider.on_response_end(self._on_provider_response_end)
-        provider.on_error(self._on_provider_error)
+        provider.on_audio(self._gate_provider_callback(self._on_provider_audio))
+        provider.on_transcription(self._gate_provider_callback(self._on_provider_transcription))
+        provider.on_transcription(self._gate_provider_callback(self._on_transcript_fragment))
+        provider.on_speech_start(self._gate_provider_callback(self._on_provider_speech_start))
+        provider.on_speech_end(self._gate_provider_callback(self._on_provider_speech_end))
+        provider.on_tool_call(self._gate_provider_callback(self._on_provider_tool_call))
+        provider.on_delegation(self._gate_provider_callback(self._on_provider_delegation))
+        provider.on_response_start(self._gate_provider_callback(self._on_provider_response_start))
+        provider.on_response_end(self._gate_provider_callback(self._on_provider_response_end))
+        provider.on_error(self._on_startup_provider_error)
 
         # Direct audio path: only when no pipeline is configured.
         # When pipeline= is set, _create_pipeline() registers
@@ -1008,7 +1017,9 @@ class RealtimeVoiceChannel(
                 starts while the connection is pending (e.g. SIP ringing).
                 Cancel the start task if the connection will never arrive.
                 Both branches belong to this session and are rolled back on
-                failure. The session becomes ACTIVE only when both are ready.
+                failure. The channel publishes the session only when both are ready.
+                Provider callbacks wait for publication in a bounded startup
+                queue; exceeding 2 MiB of audio or 2048 events aborts startup.
                 Monotonic timestamps are written to metadata's
                 ``connection_timing`` for measuring setup and pre-answer cost.
             metadata: Optional session metadata. May include overrides
@@ -1030,7 +1041,7 @@ class RealtimeVoiceChannel(
         task = asyncio.create_task(
             self._start_session(session, connection), name=f"rt_connect:{session.id}"
         )
-        pending = _ConnectingSession(task)
+        pending = _ConnectingSession(task, deferred=inspect.isawaitable(connection))
         self._connecting_sessions[session.id] = pending
         try:
             return await task
@@ -1045,6 +1056,9 @@ class RealtimeVoiceChannel(
                 await _finish_cleanup(self.end_session(session))
             else:
                 await _finish_cleanup(self._cleanup_failed_start(session))
+            pending = self._connecting_sessions.get(session.id)
+            if pending is not None and pending.failure is not None:
+                raise pending.failure from None
             raise
 
     async def _cleanup_failed_start(self, session: VoiceSession) -> None:
@@ -1281,6 +1295,12 @@ class RealtimeVoiceChannel(
             self._session_rooms[session.id] = room_id
 
         await self._finish_session_start(session, room_id, participant_id)
+        self._check_connecting_session(session)
+        pending = self._connecting_sessions[session.id]
+        pending.deferred = False
+        for callback, args in pending.callbacks:
+            callback(*args)
+        pending.callbacks.clear()
 
         return session
 
@@ -1803,6 +1823,36 @@ class RealtimeVoiceChannel(
             )
 
     # -- Internal callbacks --
+
+    def _gate_provider_callback(self, callback: Callable[..., Any]) -> Callable[..., Any]:
+        """Keep startup events ordered until transport and authorization are ready.
+
+        No application task runs while SIP is ringing. Audio enters the normal
+        send FIFO only after the negotiated codec and binding are available.
+        Rollback discards the journal with its connecting-session owner.
+        """
+
+        def dispatch(session: VoiceSession, *args: Any) -> Any:
+            pending = self._connecting_sessions.get(session.id)
+            if pending is None or not pending.deferred:
+                return callback(session, *args)
+            if pending.failure is not None or pending.task.cancelling():
+                return None
+            size = sum(len(arg) for arg in args if isinstance(arg, bytes))
+            if len(pending.callbacks) >= 2048 or pending.audio_bytes + size > 2 * 1024 * 1024:
+                pending.fail(RuntimeError("Provider startup event buffer exceeded"))
+                return None
+            pending.audio_bytes += size
+            pending.callbacks.append((callback, (session, *args)))
+            return None
+
+        return dispatch
+
+    def _on_startup_provider_error(self, session: VoiceSession, code: str, message: str) -> Any:
+        pending = self._connecting_sessions.get(session.id)
+        if pending is not None and session.state == VoiceSessionState.ENDED:
+            pending.fail(RuntimeError(f"Provider connection failed [{code}]: {message}"))
+        return self._on_provider_error(session, code, message)
 
     def _on_client_disconnected(self, session: VoiceSession) -> Any:
         """Handle client disconnection — end the session."""

@@ -1356,7 +1356,8 @@ class TestChannelIntegration:
 
         await channel.end_session(session)
 
-    async def test_greeting_audio_during_handshake_reaches_transport(self) -> None:
+    @pytest.mark.parametrize("deferred", [False, True])
+    async def test_greeting_audio_during_handshake_reaches_transport(self, deferred: bool) -> None:
         """Early greeting callbacks wait until the channel publishes the session."""
         provider = DeepgramAgentProvider(DeepgramAgentConfig(api_key=SecretStr("dg")))
         transport = MockRealtimeTransport()
@@ -1380,7 +1381,20 @@ class TestChannelIntegration:
             ]
         )
         with patch("websockets.connect", AsyncMock(return_value=ws)):
-            session = await channel.start_session(room.id, "user-1", "fake-ws")
+            if deferred:
+                connection = asyncio.get_running_loop().create_future()
+                start = asyncio.create_task(channel.start_session(room.id, "user-1", connection))
+                while (
+                    not provider._states
+                    or not next(iter(provider._states.values())).callbacks_ready
+                ):
+                    await asyncio.sleep(0)
+                await asyncio.sleep(0)
+                assert not transport.sent_audio
+                connection.set_result("fake-ws")
+                session = await start
+            else:
+                session = await channel.start_session(room.id, "user-1", "fake-ws")
 
         for _ in range(100):
             if transport.sent_audio:
@@ -1389,3 +1403,22 @@ class TestChannelIntegration:
 
         assert transport.sent_audio == [(session.id, b"greeting-audio")]
         await channel.end_session(session)
+
+
+async def test_fatal_deepgram_close_aborts_deferred_transport() -> None:
+    provider = DeepgramAgentProvider(DeepgramAgentConfig(api_key=SecretStr("test")))
+    transport = MockRealtimeTransport()
+    channel = RealtimeVoiceChannel("rt", provider=provider, transport=transport)
+    ws = _FakeWS()
+    connection = asyncio.get_running_loop().create_future()
+    with patch("websockets.connect", AsyncMock(return_value=ws)):
+        start = asyncio.create_task(channel.start_session("r", "p", connection))
+        while not provider._states or not next(iter(provider._states.values())).callbacks_ready:
+            await asyncio.sleep(0)
+        ws.finish()
+        with pytest.raises(RuntimeError, match="Provider connection failed"):
+            await asyncio.wait_for(start, 1)
+    assert connection.cancelled()
+    assert not provider._states and not channel._connecting_sessions
+    assert not channel.get_room_sessions("r")
+    await channel.close()
