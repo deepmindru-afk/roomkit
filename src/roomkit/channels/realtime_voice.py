@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from roomkit.channels._realtime_audio import RealtimeAudioMixin
+from roomkit.channels._realtime_audio import _MAX_QUEUED_AUDIO_CHUNKS, RealtimeAudioMixin
 from roomkit.channels._realtime_context import (
     _current_voice_session as _current_voice_session,
 )
@@ -1019,7 +1019,7 @@ class RealtimeVoiceChannel(
                 Both branches belong to this session and are rolled back on
                 failure. The channel publishes the session only when both are ready.
                 Provider callbacks wait for publication in a bounded startup
-                queue; exceeding 2 MiB of audio or 2048 events aborts startup.
+                queue; exceeding 2 MiB of audio or 500 events aborts startup.
                 Monotonic timestamps are written to metadata's
                 ``connection_timing`` for measuring setup and pre-answer cost.
             metadata: Optional session metadata. May include overrides
@@ -1839,7 +1839,10 @@ class RealtimeVoiceChannel(
             if pending.failure is not None or pending.task.cancelling():
                 return None
             size = sum(len(arg) for arg in args if isinstance(arg, bytes))
-            if len(pending.callbacks) >= 2048 or pending.audio_bytes + size > 2 * 1024 * 1024:
+            if (
+                len(pending.callbacks) >= _MAX_QUEUED_AUDIO_CHUNKS
+                or pending.audio_bytes + size > 2 * 1024 * 1024
+            ):
                 pending.fail(RuntimeError("Provider startup event buffer exceeded"))
                 return None
             pending.audio_bytes += size
@@ -1852,6 +1855,8 @@ class RealtimeVoiceChannel(
         pending = self._connecting_sessions.get(session.id)
         if pending is not None and session.state == VoiceSessionState.ENDED:
             pending.fail(RuntimeError(f"Provider connection failed [{code}]: {message}"))
+            self._announce_provider_error(session, code, message)
+            return None
         return self._on_provider_error(session, code, message)
 
     def _on_client_disconnected(self, session: VoiceSession) -> Any:

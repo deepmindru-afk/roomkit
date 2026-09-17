@@ -7,8 +7,8 @@ from typing import Any
 
 import pytest
 
-from roomkit import RealtimeVoiceChannel, RoomKit
-from roomkit.voice.base import VoiceSession
+from roomkit import HookExecution, HookResult, HookTrigger, RealtimeVoiceChannel, RoomKit
+from roomkit.voice.base import VoiceSession, VoiceSessionState
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
 
 
@@ -163,8 +163,6 @@ async def test_simultaneous_preparations_never_exchange_participants_or_audio() 
 async def test_prepared_tool_waits_for_authorization_and_cannot_outlive_start(
     cancel: bool,
 ) -> None:
-    from roomkit import HookResult, HookTrigger
-
     effects, hooks = [], []
     authorized = asyncio.Event()
 
@@ -229,3 +227,60 @@ async def test_startup_event_overflow_aborts_both_branches() -> None:
     assert connection.cancelled()
     assert not transport.sent_audio and not channel._connecting_sessions
     await channel.close()
+
+
+@pytest.mark.parametrize("chunks", [500, 501])
+async def test_startup_replay_fits_existing_audio_fifo_without_clipping(chunks: int) -> None:
+    provider = ControlledProvider()
+    transport = MockRealtimeTransport()
+    channel = RealtimeVoiceChannel("rt", provider=provider, transport=transport)
+    connection = asyncio.get_running_loop().create_future()
+    start = asyncio.create_task(channel.start_session("r", "p", connection))
+    provider.release.set()
+    await provider.ready.wait()
+    assert provider.session is not None
+    for _ in range(chunks):
+        await provider.simulate_audio(provider.session, b"\x01\x01" * 480)
+    if chunks > 500:
+        with pytest.raises(RuntimeError, match="startup event buffer exceeded"):
+            await asyncio.wait_for(start, 1)
+        assert not transport.sent_audio
+    else:
+        connection.set_result("carrier")
+        session = await start
+        await provider.simulate_response_end(session)
+        await asyncio.wait_for(channel.wait_idle("r"), 1)
+        assert len(transport.sent_audio) == chunks
+        assert not channel._audio_dropped
+    await channel.close()
+
+
+async def test_fatal_provider_error_during_start_hook_has_one_cleanup_owner() -> None:
+    provider = ControlledProvider()
+    transport = MockRealtimeTransport()
+    channel = RealtimeVoiceChannel("rt", provider=provider, transport=transport)
+    kit = RoomKit()
+    kit.register_channel(channel)
+    await kit.create_room(room_id="r")
+    await kit.attach_channel("r", "rt")
+    hook_entered = asyncio.Event()
+
+    @kit.hook(HookTrigger.ON_SESSION_STARTED, HookExecution.ASYNC)
+    async def hold(event: Any, context: Any) -> None:
+        hook_entered.set()
+        await asyncio.Event().wait()
+
+    connection = asyncio.get_running_loop().create_future()
+    start = asyncio.create_task(kit.join("r", "rt", connection=connection))
+    provider.release.set()
+    connection.set_result("carrier")
+    await asyncio.wait_for(hook_entered.wait(), 1)
+    assert provider.session is not None
+    provider.session.state = VoiceSessionState.ENDED
+    await provider.simulate_error(provider.session, "closed", "provider closed")
+    with pytest.raises(RuntimeError, match="provider closed"):
+        await asyncio.wait_for(start, 1)
+    await asyncio.sleep(0)
+    assert [c.method for c in provider.calls].count("disconnect") == 1
+    assert [c.method for c in transport.calls].count("disconnect") == 1
+    await kit.close()
