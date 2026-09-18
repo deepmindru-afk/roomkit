@@ -1088,13 +1088,20 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
             "name": "",  # Gemini uses ID-based matching
             "response": result_dict,
         }
+        # Only when the caller asks. A default here looked harmless and was
+        # not: gemini-3.8-live-extended-thinking closes the session with
+        # `1007 Function response scheduling is not supported for this model`,
+        # and the models that do take it already deliver a background result
+        # sensibly on their own. Nothing to gain, a session to lose.
         was_blocking = call_id in state.blocking_call_ids
-        if not was_blocking:
-            scheduling = state.provider_config.get("tool_response_scheduling", "WHEN_IDLE")
-            if scheduling:
+        scheduling = state.provider_config.get("tool_response_scheduling")
+        if scheduling and not was_blocking:
+            if live_model_profile(self._model).response_scheduling:
                 response_kwargs["scheduling"] = _enum_value(
                     types.FunctionResponseScheduling, scheduling, "tool_response_scheduling"
                 )
+            else:
+                self._warn_unsupported("tool_response_scheduling")
 
         await state.live_session.send_tool_response(
             function_responses=[types.FunctionResponse(**response_kwargs)],

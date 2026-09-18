@@ -1062,7 +1062,14 @@ class TestGeminiLiveProvider:
         assert config.tools[0].function_declarations[0].behavior == "NON_BLOCKING"
         assert "BLOCKING" in caplog.text
 
-    async def test_a_background_result_says_when_to_use_it(self):
+    async def test_no_scheduling_is_sent_unless_it_is_asked_for(self):
+        """A default here cost a live session.
+
+        gemini-3.8-live-extended-thinking answers `1007 Function response
+        scheduling is not supported for this model` and closes the socket, and
+        the models that do take the field deliver a background result sensibly
+        without it. Opt-in only.
+        """
         mod = _load_provider()
         provider = mod.GeminiLiveProvider(api_key="test-key", model="gemini-3.8-live")
         session = _make_session()
@@ -1074,7 +1081,30 @@ class TestGeminiLiveProvider:
         await provider.submit_tool_result(session, "call-1", '{"ok": true}')
 
         sent = mock_live_session.send_tool_response.await_args.kwargs["function_responses"][0]
-        assert sent.scheduling == "WHEN_IDLE"
+        assert sent.scheduling is None
+
+    async def test_a_model_that_refuses_scheduling_never_receives_it(self, caplog):
+        """Verified live: extended-thinking closes the session over this field."""
+        mod = _load_provider()
+        provider = mod.GeminiLiveProvider(
+            api_key="test-key", model="gemini-3.8-live-extended-thinking"
+        )
+        session = _make_session()
+
+        mock_live_session = _make_mock_live_session()
+        state = mod._GeminiSessionState(
+            session=session,
+            live_session=mock_live_session,
+            provider_config={"tool_response_scheduling": "WHEN_IDLE"},
+        )
+        provider._sessions[session.id] = state
+
+        with caplog.at_level("WARNING"):
+            await provider.submit_tool_result(session, "call-1", '{"ok": true}')
+
+        sent = mock_live_session.send_tool_response.await_args.kwargs["function_responses"][0]
+        assert sent.scheduling is None
+        assert "tool_response_scheduling" in caplog.text
 
     async def test_the_scheduling_is_settable(self):
         mod = _load_provider()

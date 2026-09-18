@@ -13,11 +13,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   follows `interaction_status`: the model speaks several times per request
   while it reasons and runs tools, so `turn_complete` no longer means it has
   finished. Tool declarations go out `NON_BLOCKING` with their results
-  scheduled `WHEN_IDLE`, so the model keeps the floor while a call runs. Setup
+  run in the background, so the model keeps the floor while a call runs. Setup
   fields the target model no longer accepts (affective dialog, proactive
   audio, thinking budget) are dropped with a warning rather than failing the
   session. Models that send no `interaction_status` keep the previous
   behaviour, detected from the stream rather than from the model id.
+- `FunctionResponse.scheduling` is sent only when `tool_response_scheduling`
+  asks for it, and never to a model that refuses the field.
+  `gemini-3.8-live-extended-thinking` answers a scheduled response with
+  `1007 Function response scheduling is not supported for this model` and
+  closes the session; the models that do accept it deliver a background result
+  sensibly without it, so there was nothing to gain and a session to lose.
 - `gemini-3.8-live-extended-thinking` sessions carry a `thinking_level` even
   when the caller names none. The level is required, not optional: the model
   answers a missing one with `1007 Thinking level must be specified for this

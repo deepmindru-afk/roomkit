@@ -96,6 +96,16 @@ class LiveModelProfile:
     working session.
     """
 
+    response_scheduling: bool
+    """``FunctionResponse.scheduling`` may reach the API.
+
+    Never sent unless the caller asks for it, whatever this says: the field is
+    an optimisation, and the models that refuse it close the session with
+    ``1007 Function response scheduling is not supported for this model``
+    rather than ignoring it. This flag only decides whether an explicit
+    request is honoured or dropped with a warning.
+    """
+
     blocking_tools: bool
     """``BLOCKING`` is an accepted function-call behaviour. False where the
     model answers a hard error to it."""
@@ -110,6 +120,8 @@ PRE_38_PROFILE = LiveModelProfile(
     thinking_budget=True,
     thinking_level=False,
     default_thinking_level=None,
+    # Blocking anyway: the model is already waiting, there is nothing to schedule.
+    response_scheduling=False,
     blocking_tools=True,
     default_tool_behavior="BLOCKING",
 )
@@ -121,6 +133,9 @@ LIVE_38_PROFILE = LiveModelProfile(
     thinking_budget=False,
     thinking_level=False,
     default_thinking_level=None,
+    # Unverified against the live API; an explicit request is passed through,
+    # nothing is sent on its own.
+    response_scheduling=True,
     blocking_tools=True,
     default_tool_behavior="NON_BLOCKING",
 )
@@ -135,6 +150,9 @@ LIVE_38_THINKING_PROFILE = LiveModelProfile(
     # caller who named no level did not ask to pay latency for depth. Anyone
     # who wants more sets thinking_level themselves.
     default_thinking_level="LOW",
+    # Verified 2026-09-17 against the live API: the model answers
+    # `1007 Function response scheduling is not supported for this model`.
+    response_scheduling=False,
     blocking_tools=False,
     default_tool_behavior="NON_BLOCKING",
 )
