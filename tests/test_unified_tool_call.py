@@ -20,9 +20,14 @@ from roomkit import (
 )
 from roomkit.channels.ai import AIChannel
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
-from roomkit.models.enums import ChannelType
+from roomkit.models.channel import ChannelBinding
+from roomkit.models.enums import ChannelDirection, ChannelType, EventType
+from roomkit.models.event import EventSource, RoomEvent, TextContent, ToolCallContent
+from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.skills.registry import SkillRegistry
+from roomkit.tools.external import PolicyExternalToolHandler
+from roomkit.tools.policy import ToolPolicy
 from roomkit.voice.base import VoiceSession
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
 
@@ -206,7 +211,12 @@ class TestRealtimeVoiceToolCallHook:
         rt_channel: RealtimeVoiceChannel,
         rt_provider: MockRealtimeProvider,
     ) -> None:
-        """Without handler or hook result, channel returns a 'no handler' error."""
+        """Without handler or hook result, channel returns a 'no handler' error.
+
+        It used to answer ``{"status": "ok"}`` — a success for work nobody
+        did. The model acted on it and an audit trail recorded a completed
+        call, for a tool that was never served.
+        """
         room = await kit_with_rt.create_room()
         await kit_with_rt.attach_channel(room.id, "rt-voice")
         session = await rt_channel.start_session(room.id, "u1", "ws")
@@ -221,7 +231,7 @@ class TestRealtimeVoiceToolCallHook:
 
         _, _, result_str = rt_provider.tool_results[0]
         result = json.loads(result_str)
-        assert result == {"status": "ok"}
+        assert result == {"error": "No handler for tool unknown"}
 
 
 # ---------------------------------------------------------------------------
@@ -1152,3 +1162,265 @@ class TestRealtimeGateParityWithTheAIPath:
         assert gate_events[0]["tool_name"] == "anything"
         assert gate_events[0]["allowed"] is False
         assert gate_events[0]["reason"] == "nope"
+
+
+# ---------------------------------------------------------------------------
+# A refused or failed call is still a tool call
+# ---------------------------------------------------------------------------
+
+
+_WEATHER_TOOL = AITool(
+    name="get_weather",
+    description="Get weather for a city.",
+    parameters={"type": "object", "properties": {"city": {"type": "string"}}},
+)
+
+
+async def _ai_room(
+    *,
+    tool_handler: Any,
+    tools: list[AITool] | None = None,
+    tool_policy: ToolPolicy | None = None,
+    channel_id: str = "ai-ref",
+) -> tuple[RoomKit, AIChannel, str, list[ToolCallEvent], list[ToolCallEvent]]:
+    """An AI channel with one ASYNC observer and one SYNC servant attached."""
+    ch = AIChannel(
+        channel_id,
+        provider=MockAIProvider(streaming=False),
+        tool_handler=tool_handler,
+        tools=tools if tools is not None else [_WEATHER_TOOL],
+        tool_policy=tool_policy,
+    )
+    kit = RoomKit()
+    kit.register_channel(ch)
+    room = await kit.create_room()
+    await kit.attach_channel(room.id, channel_id)
+
+    observed: list[ToolCallEvent] = []
+    served: list[ToolCallEvent] = []
+
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="observe")
+    async def observe(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
+        observed.append(event)
+        return HookResult.allow()
+
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="serve")
+    async def serve(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
+        served.append(event)
+        return HookResult.allow()
+
+    return kit, ch, room.id, observed, served
+
+
+async def _call_one_tool(kit: RoomKit, ch: AIChannel, room_id: str, name: str) -> Any:
+    ch._provider._ai_responses = [
+        AIResponse(
+            content="",
+            tool_calls=[AIToolCall(id="tc-1", name=name, arguments={"city": "Paris"})],
+        ),
+        AIResponse(content="done"),
+    ]
+    event = RoomEvent(
+        room_id=room_id,
+        source=EventSource(
+            channel_id="sms-1",
+            channel_type=ChannelType.SMS,
+            direction=ChannelDirection.INBOUND,
+        ),
+        content=TextContent(body="weather?"),
+    )
+    binding = ChannelBinding(
+        channel_id=ch.channel_id, room_id=room_id, channel_type=ChannelType.AI
+    )
+    return await ch.on_event(event, binding, await kit._build_context(room_id))
+
+
+async def _ok_handler(name: str, arguments: dict[str, Any]) -> str:
+    return json.dumps({"temp": 22})
+
+
+class TestRefusedAIToolCallsAreObserved:
+    """A refusal reaches the observers of ON_TOOL_CALL, and says it is one.
+
+    The hook used to fire only for calls that worked: a tool denied by policy,
+    an unknown tool, a handler that raised — none of them reached it. An audit
+    trail could not tell an agent refused its tools from one that never asked.
+    """
+
+    async def test_a_policy_denial_is_observed_and_marked(self) -> None:
+        kit, ch, room_id, observed, served = await _ai_room(
+            tool_handler=_ok_handler, tool_policy=ToolPolicy(deny=["get_weather"])
+        )
+        await _call_one_tool(kit, ch, room_id, "get_weather")
+
+        assert len(observed) == 1
+        assert observed[0].is_error is True
+        assert observed[0].name == "get_weather"
+        assert "not permitted" in json.loads(observed[0].result)["error"]
+        # A denial must never reach a hook that could serve the call — that
+        # would hide the side effect instead of preventing it.
+        assert served == []
+
+    async def test_an_undeclared_tool_is_observed_and_marked(self) -> None:
+        kit, ch, room_id, observed, served = await _ai_room(tool_handler=_ok_handler)
+        await _call_one_tool(kit, ch, room_id, "wire_money")
+
+        assert len(observed) == 1
+        assert observed[0].is_error is True
+        assert observed[0].name == "wire_money"
+        assert served == []
+
+    async def test_a_handler_that_raised_is_observed_and_marked(self) -> None:
+        async def boom(name: str, arguments: dict[str, Any]) -> str:
+            raise RuntimeError("integration gateway unreachable")
+
+        kit, ch, room_id, observed, served = await _ai_room(tool_handler=boom)
+        await _call_one_tool(kit, ch, room_id, "get_weather")
+
+        assert len(observed) == 1
+        assert observed[0].is_error is True
+        # The body stays the sentence the model reads; the flag carries the
+        # outcome, which no reader of that sentence could be sure of.
+        assert observed[0].result.startswith("Error executing tool 'get_weather'")
+        assert "integration gateway unreachable" in observed[0].result
+        assert served == []
+
+    async def test_a_served_call_is_observed_unmarked(self) -> None:
+        kit, ch, room_id, observed, served = await _ai_room(tool_handler=_ok_handler)
+        await _call_one_tool(kit, ch, room_id, "get_weather")
+
+        assert len(observed) == 1
+        assert observed[0].is_error is False
+        assert json.loads(observed[0].result) == {"temp": 22}
+        assert len(served) == 1
+
+    async def test_a_refusal_persists_as_a_failed_tool_call_event(self) -> None:
+        """The stored event agrees with the hook.
+
+        It used to read the result body for a prose prefix, so a refusal — a
+        JSON error envelope — was persisted as ``completed``.
+        """
+        kit, ch, room_id, _observed, _served = await _ai_room(
+            tool_handler=_ok_handler, tool_policy=ToolPolicy(deny=["get_weather"])
+        )
+        output = await _call_one_tool(kit, ch, room_id, "get_weather")
+
+        ends = [e for e in output.response_events if e.type == EventType.TOOL_CALL_END]
+        assert len(ends) == 1
+        content = ends[0].content
+        assert isinstance(content, ToolCallContent)
+        assert content.status == "failed"
+        assert content.error is not None
+
+
+class TestExternalToolFailureReachesTheHook:
+    async def test_the_providers_verdict_is_forwarded(self) -> None:
+        """``is_error`` is the only place this outcome exists.
+
+        The body is the external provider's — a terminal's stderr, an SDK's
+        message — so an observer handed the body alone would read a failed
+        tool as a completed one.
+        """
+        seen: list[ToolCallEvent] = []
+
+        async def on_tool(event: ToolCallEvent) -> None:
+            seen.append(event)
+
+        handler = PolicyExternalToolHandler()
+        handler._on_tool_hook = on_tool
+
+        await handler.on_tool_result("Bash", {"cmd": "x"}, "x: not found", is_error=True)
+        await handler.on_tool_result("Read", {"path": "/tmp/a"}, "contents")
+
+        assert [e.is_error for e in seen] == [True, False]
+
+
+class TestRefusedRealtimeToolCallsAreObserved:
+    @staticmethod
+    def _lookup_tool() -> list[dict[str, Any]]:
+        return [
+            {
+                "name": "lookup",
+                "description": "Look a city up.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                    "additionalProperties": False,
+                },
+            }
+        ]
+
+    async def _channel(
+        self,
+        rt_provider: MockRealtimeProvider,
+        rt_transport: MockRealtimeTransport,
+        channel_id: str,
+    ) -> tuple[RoomKit, VoiceSession, list[ToolCallEvent], list[ToolCallEvent]]:
+        ch = RealtimeVoiceChannel(
+            channel_id,
+            provider=rt_provider,
+            transport=rt_transport,
+            tools=self._lookup_tool(),
+        )
+        kit = RoomKit()
+        kit.register_channel(ch)
+        room = await kit.create_room()
+        await kit.attach_channel(room.id, channel_id)
+        session = await ch.start_session(room.id, "u1", "ws")
+
+        observed: list[ToolCallEvent] = []
+        served: list[ToolCallEvent] = []
+
+        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="observe")
+        async def observe(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
+            observed.append(event)
+            return HookResult.allow()
+
+        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="serve")
+        async def serve(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
+            served.append(event)
+            return HookResult.allow()
+
+        return kit, session, observed, served
+
+    async def test_a_gate_refusal_is_observed_and_marked(
+        self,
+        rt_provider: MockRealtimeProvider,
+        rt_transport: MockRealtimeTransport,
+    ) -> None:
+        _kit, session, observed, served = await self._channel(
+            rt_provider, rt_transport, "rt-refused-args"
+        )
+
+        await rt_provider.simulate_tool_call(session, "c1", "lookup", {"city": 42})
+        await asyncio.sleep(0.1)
+
+        assert len(observed) == 1
+        assert observed[0].is_error is True
+        assert observed[0].session is session
+        assert "Invalid arguments" in json.loads(observed[0].result)["error"]
+        assert served == []
+
+    async def test_a_call_nothing_served_is_observed_as_a_failure(
+        self,
+        rt_provider: MockRealtimeProvider,
+        rt_transport: MockRealtimeTransport,
+    ) -> None:
+        """No handler, and no hook answered: the outcome is a refusal.
+
+        The dispatch firing carries ``result=None`` — it is the hooks' chance
+        to serve the call, not a report on it — so the failure needs a firing
+        of its own, or nothing downstream ever learns of it.
+        """
+        _kit, session, observed, _served = await self._channel(
+            rt_provider, rt_transport, "rt-refused-unserved"
+        )
+
+        await rt_provider.simulate_tool_call(session, "c2", "lookup", {"city": "Paris"})
+        await asyncio.sleep(0.1)
+
+        dispatch = [e for e in observed if e.result is None]
+        failures = [e for e in observed if e.is_error]
+        assert len(dispatch) == 1
+        assert len(failures) == 1
+        assert json.loads(failures[0].result) == {"error": "No handler for tool lookup"}

@@ -78,6 +78,14 @@ class AIToolResultPart(BaseModel):
     tool_call_id: str
     name: str
     result: str | list[AITextPart | AIImagePart]
+    # Whether this result is a failure or a refusal. Carried, never inferred:
+    # the tool loop knows (it caught the exception, or it refused the call
+    # itself), while a reader of ``result`` would have to recognise both the
+    # error envelopes and the prose sentence — and a tool whose own output
+    # happens to look like either would be misread. Never rendered to
+    # providers; it rides the part so tool-call events and the ON_TOOL_CALL
+    # hook can state the outcome instead of guessing it.
+    is_error: bool = False
     # MCP CallToolResult.structuredContent, captured before the LLM-facing
     # string is flattened and possibly evicted. Never rendered to providers —
     # it rides the part so tool-call events can hand it to UI surfaces

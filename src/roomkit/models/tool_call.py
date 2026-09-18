@@ -28,6 +28,11 @@ class ToolCallEvent:
     RealtimeVoiceChannel.  When ``result`` is None the hook is
     expected to provide a result; when set, the hook observes
     (and may override) the handler's result.
+
+    A call that failed or was refused fires the hook too, with
+    :attr:`is_error` set. That firing is **observational**: the hook's
+    override is discarded, because nothing ran and a refusal a hook could
+    rewrite into a result would not be a refusal.
     """
 
     channel_id: str
@@ -62,10 +67,38 @@ class ToolCallEvent:
     timestamp: datetime = field(default_factory=_utcnow)
     """When the tool call was received."""
 
+    is_error: bool = False
+    """Whether the call failed or was refused — the producer's own verdict.
+
+    ``result`` alone cannot answer it. A refusal is a body like any other:
+    roomkit's own refusals are JSON error envelopes, a handler that raised
+    leaves a prose sentence, and a failed external tool leaves whatever the
+    provider printed. A consumer reading the body can only guess, and guessing
+    reads a refusal as a completed call — which is how an audit trail ends up
+    recording ``ok`` for a tool that never ran.
+
+    True means nothing usable came back: a pre-execution refusal (undeclared
+    tool, invalid arguments, denied by policy, gated behind a skill, denied by
+    ``BEFORE_TOOL_USE``), a handler that raised, a call nothing served, or an
+    external provider reporting its own failure (``is_error`` on
+    :meth:`~roomkit.tools.external.ExternalToolHandler.on_tool_result`).
+
+    The body stays verbatim in :attr:`result` — it is what the model reads, and
+    its wording is tuned for that reader. This flag carries the one thing prose
+    cannot: that the call did not succeed.
+    """
+
 
 # Callback type injected into AIChannel by the framework.
 # Returns a result (str or content parts) to override, None to keep the original.
 ToolCallCallback = Callable[[ToolCallEvent], Awaitable[str | list[Any] | None]]
+
+
+# Callback type injected into AIChannel by the framework for a call that failed
+# or was refused. Returns nothing: it reaches the ASYNC observers of
+# ON_TOOL_CALL only, never a hook that could serve the call (see
+# ``HookEngine.run_observers``).
+ToolCallObserver = Callable[[ToolCallEvent], Awaitable[None]]
 
 
 RESPONSE_SEGMENT_SEPARATOR = "\n\n"

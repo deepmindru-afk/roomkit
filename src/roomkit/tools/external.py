@@ -172,7 +172,9 @@ class ExternalToolHandler(ABC):
 
         Fires ``ON_TOOL_CALL`` hooks via the injected callback for
         observability. Subclasses that override this should call
-        ``await self._fire_on_tool_hook(...)`` to preserve hook integration.
+        ``await self._fire_on_tool_hook(...)`` to preserve hook integration,
+        and MUST pass ``is_error`` on to it — it is the outcome of the call,
+        and nothing downstream can recover it from the result body.
 
         Args:
             tool_name: Name of the tool.
@@ -243,10 +245,18 @@ class ExternalToolHandler(ABC):
         tool_input: dict[str, Any],
         result: str,
         *,
+        is_error: bool = False,
         tool_call_id: str = "",
         room_id: str | None = None,
     ) -> None:
-        """Fire ON_TOOL_CALL hooks for observation."""
+        """Fire ON_TOOL_CALL hooks for observation.
+
+        ``is_error`` is the external provider's own verdict on the call, and it
+        MUST be forwarded: this boundary is the only place that holds it. The
+        body is the provider's — a terminal's stderr, an SDK's message — and
+        recognising a failure in it is guesswork, so an observer handed the
+        body alone reads a failed tool as a completed one.
+        """
         if self._on_tool_hook is None:
             return
         event = ToolCallEvent(
@@ -257,6 +267,7 @@ class ExternalToolHandler(ABC):
             arguments=tool_input,
             result=result,
             room_id=room_id,
+            is_error=is_error,
         )
         await self._on_tool_hook(event)
 
@@ -319,6 +330,7 @@ class PolicyExternalToolHandler(ExternalToolHandler):
             tool_name,
             tool_input,
             result,
+            is_error=is_error,
             tool_call_id=tool_call_id,
             room_id=room_id,
         )

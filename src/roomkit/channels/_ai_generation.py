@@ -392,9 +392,12 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
             # Tool call start + end events
             for tc, rp in zip(rnd.tool_calls, rnd.results, strict=False):
                 result_val = getattr(rp, "result", None)
-                is_error = isinstance(result_val, str) and result_val.startswith(
-                    "Error executing tool"
-                )
+                # Read the outcome, never the body: the tool loop already knows
+                # whether this call failed. Matching the prose sentence it
+                # writes for a raised handler missed every other failure — a
+                # refused call, a multimodal result — and misread a tool whose
+                # own output happened to start that way.
+                is_error = bool(getattr(rp, "is_error", False))
                 events.append(
                     RoomEvent(
                         room_id=room_id,
@@ -423,7 +426,7 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
                             result=result_val,
                             status="failed" if is_error else "completed",
                             duration_ms=rnd.duration_ms,
-                            error=result_val if is_error else None,
+                            error=rp.as_text() if is_error else None,
                             structured_content=getattr(rp, "structured_content", None),
                         ),
                         chain_depth=chain_depth,

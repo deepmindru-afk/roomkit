@@ -59,7 +59,7 @@ if TYPE_CHECKING:
     from roomkit.channels._tool_eviction import ToolEviction
     from roomkit.channels._tool_usage import ToolUsageMemory
     from roomkit.channels.ai import _ContentPart, _ToolLoopContext
-    from roomkit.models.tool_call import ToolCallCallback
+    from roomkit.models.tool_call import ToolCallCallback, ToolCallObserver
     from roomkit.realtime.base import RealtimeBackend
     from roomkit.sandbox.executor import SandboxExecutor
     from roomkit.skills.executor import ScriptExecutor
@@ -88,6 +88,8 @@ class AIToolsHost(Protocol):
         _planner: Optional task planner.
         _realtime: Realtime backend for ephemeral events.
         _tool_call_hook: Optional unified ON_TOOL_CALL hook callback.
+        _tool_observer_hook: Optional ON_TOOL_CALL observer callback, fired for
+            a call that failed or was refused.
         channel_id: Unique identifier for this channel.
 
     Properties / methods provided by other mixins:
@@ -113,6 +115,7 @@ class AIToolsHost(Protocol):
     _realtime: RealtimeBackend | None
     _plan_updated_hook: Any  # ON_PLAN_UPDATED callback — injected by register_channel
     _tool_call_hook: ToolCallCallback | None
+    _tool_observer_hook: ToolCallObserver | None
     _before_tool_call_hook: Any
     _tool_search: bool | None
     _tool_search_pinned: set[str]
@@ -155,6 +158,7 @@ class AIToolsMixin:
     _realtime: RealtimeBackend | None
     _plan_updated_hook: Any  # ON_PLAN_UPDATED callback — injected by register_channel
     _tool_call_hook: ToolCallCallback | None
+    _tool_observer_hook: ToolCallObserver | None
     _before_tool_call_hook: Any
     _tool_search: bool | None
     _tool_search_pinned: set[str]
@@ -242,6 +246,47 @@ class AIToolsMixin:
             }
         return {"error": f"Unknown tool '{name}': it is not declared"}
 
+    async def _fire_tool_refusal(
+        self,
+        tc: Any,
+        arguments: dict[str, Any],
+        result: str,
+        room_id: str | None,
+    ) -> None:
+        """Fire ON_TOOL_CALL for a call that failed or was refused.
+
+        The refusal paths below return before the handler runs, and a handler
+        that raises jumps past the firing that follows it — so without this,
+        ON_TOOL_CALL only ever reported the calls that worked. A host auditing
+        tool use saw a denied tool as a tool that was never called, which reads
+        the same as an agent that never tried.
+
+        Observational by construction: it reaches the ASYNC observers of
+        ON_TOOL_CALL and no further. A SYNC hook is the one that can *serve* a
+        call, so a refused call must not reach one — otherwise the refusal
+        would hide the side effect instead of preventing it. A hook that raises
+        must not turn a refusal into a crash either: the refusal is already on
+        its way to the model.
+        """
+        if self._tool_observer_hook is None:
+            return
+        event = ToolCallEvent(
+            channel_id=self.channel_id,
+            channel_type=ChannelType.AI,
+            tool_call_id=tc.id,
+            name=tc.name,
+            arguments=arguments,
+            result=result,
+            room_id=room_id,
+            is_error=True,
+        )
+        try:
+            await self._tool_observer_hook(event)
+        except Exception:
+            logger.debug(
+                "ON_TOOL_CALL observation failed for refused tool %s", tc.name, exc_info=True
+            )
+
     async def _execute_tools_parallel(
         self,
         tool_calls: list[Any],
@@ -263,13 +308,15 @@ class AIToolsMixin:
         async def _run_one(tc: Any) -> AIToolResultPart:
             logger.info("Executing tool: %s(%s)", tc.name, tc.id)
 
-            def rejected(error: dict[str, Any]) -> AIToolResultPart:
+            async def rejected(error: dict[str, Any]) -> AIToolResultPart:
                 # Refusals never reach the handler's guard. Count their raw
                 # attempts here; successful calls are counted only by the
                 # handler, using the effective payload after folds and hooks.
                 guard = self._repeated_call_guard(tc.name, tc.arguments)
+                body = guard or json.dumps(error)
+                await self._fire_tool_refusal(tc, tc.arguments, body, room_id)
                 return AIToolResultPart(
-                    tool_call_id=tc.id, name=tc.name, result=guard or json.dumps(error)
+                    tool_call_id=tc.id, name=tc.name, result=body, is_error=True
                 )
 
             # Execution guard: argument validation against the declared schema
@@ -285,7 +332,7 @@ class AIToolsMixin:
                 recovered = self._recover_deferred_tool(tc.name)
                 if recovered is None:
                     logger.warning("Provider requested undeclared tool %s", tc.name)
-                    return rejected(self._undeclared_tool_error(tc.name))
+                    return await rejected(self._undeclared_tool_error(tc.name))
                 # The model skipped find_tools but named a real catalogue tool:
                 # the reveal happened at call time instead of ahead of it, and
                 # every guard below still applies.
@@ -299,7 +346,9 @@ class AIToolsMixin:
                 folded, fold_error = fold_hoisted_arguments(params, call_arguments)
                 if fold_error is not None:
                     logger.warning("Tool %s arguments ambiguous: %s", tc.name, fold_error)
-                    return rejected({"error": f"Invalid arguments for '{tc.name}': {fold_error}"})
+                    return await rejected(
+                        {"error": f"Invalid arguments for '{tc.name}': {fold_error}"}
+                    )
                 if folded is not None:
                     logger.info(
                         "Tool %s: folded hoisted arguments %s into its container (model=%s)",
@@ -311,7 +360,9 @@ class AIToolsMixin:
                 arg_error = validate_tool_arguments(params, call_arguments)
                 if arg_error is not None:
                     logger.warning("Tool %s arguments rejected: %s", tc.name, arg_error)
-                    return rejected({"error": f"Invalid arguments for '{tc.name}': {arg_error}"})
+                    return await rejected(
+                        {"error": f"Invalid arguments for '{tc.name}': {arg_error}"}
+                    )
 
             # Execution guard: policy deny (defense-in-depth, role-aware)
             # Sandbox tools are exempt — they are channel-managed, not user-managed.
@@ -324,7 +375,7 @@ class AIToolsMixin:
                 and not effective_policy.is_allowed(tc.name)
             ):
                 logger.warning("Tool %s blocked by policy", tc.name)
-                return rejected(
+                return await rejected(
                     {"error": f"Tool '{tc.name}' is not permitted by the agent's tool policy."}
                 )
 
@@ -339,7 +390,7 @@ class AIToolsMixin:
                 and matches_any_pattern(tc.name, self._gated_tool_names)
             ):
                 logger.warning("Tool %s blocked by skill gating", tc.name)
-                return rejected(
+                return await rejected(
                     {
                         "error": (
                             f"Tool '{tc.name}' is gated by a skill. "
@@ -368,7 +419,9 @@ class AIToolsMixin:
                 decision = await self._before_tool_call_hook(pre_event)
                 if not decision:
                     logger.info("Tool %s denied by BEFORE_TOOL_USE hook", tc.name)
-                    return rejected({"error": f"Tool '{tc.name}' denied by pre-execution hook."})
+                    return await rejected(
+                        {"error": f"Tool '{tc.name}' denied by pre-execution hook."}
+                    )
                 if decision.arguments is not None:
                     arguments = decision.arguments
                     arguments_rewritten = True
@@ -388,7 +441,7 @@ class AIToolsMixin:
                     logger.warning(
                         "Tool %s %sarguments rejected: %s", tc.name, qualifier, arg_error
                     )
-                    return rejected(
+                    return await rejected(
                         {"error": (f"Invalid {qualifier}arguments for '{tc.name}': {arg_error}")}
                     )
 
@@ -399,6 +452,7 @@ class AIToolsMixin:
                 attributes={"tool.name": tc.name, "tool.id": tc.id},
             )
             structured_content: dict[str, Any] | None = None
+            tool_failed = False
             if executed_arguments is not None:
                 # Snapshot the post-hook payload before handing it to user
                 # code. Streaming persistence can then distinguish what the
@@ -453,6 +507,11 @@ class AIToolsMixin:
                 telemetry.end_span(tool_span_id, status="error", error_message=str(exc))
                 logger.warning("Tool %s raised %s: %s", tc.name, type(exc).__name__, exc)
                 result = f"Error executing tool '{tc.name}': {exc}"
+                tool_failed = True
+                # Fired here, on the raw sentence: the hook sees what the
+                # handler produced, before the repeated-result note annotates
+                # the model's copy of it — same as on the success path above.
+                await self._fire_tool_refusal(tc, arguments, result, room_id)
             # Remember this call (final result, success or error) so later turns
             # can show "tools you've already used" and re-reveal it under Tool
             # Search. Infra/discovery tools are filtered inside record().
@@ -469,6 +528,7 @@ class AIToolsMixin:
                 name=tc.name,
                 result=result,
                 structured_content=structured_content,
+                is_error=tool_failed,
             )
 
         tasks = [asyncio.create_task(_run_one(tc)) for tc in tool_calls]

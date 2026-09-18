@@ -152,6 +152,7 @@ class ChannelOpsMixin(HelpersMixin):
         if isinstance(channel, AIChannel):
             channel._realtime = self._realtime
             channel._tool_call_hook = self._build_tool_call_hook(channel.channel_id)
+            channel._tool_observer_hook = self._build_tool_observer_hook(channel.channel_id)
             channel._before_tool_call_hook = self._build_before_tool_call_hook(channel.channel_id)
             channel._tool_usage_loader = self._build_tool_usage_loader()
             channel._before_generation_hook = self._build_before_generation_hook(

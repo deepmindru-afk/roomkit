@@ -856,6 +856,54 @@ class HelpersMixin:
 
         return _callback
 
+    def _build_tool_observer_hook(self, channel_id: str) -> Any:
+        """Build a ToolCallObserver closure for an AIChannel.
+
+        The counterpart of :meth:`_build_tool_call_hook` for a call that failed
+        or was refused: it runs the ASYNC observers of ON_TOOL_CALL and returns
+        nothing. A refused call has no result for a hook to provide or correct,
+        and must not reach a hook that would serve it.
+        """
+        from roomkit.models.enums import HookTrigger
+        from roomkit.models.tool_call import ToolCallEvent
+
+        kit_ref = self
+
+        async def _callback(event: ToolCallEvent) -> None:
+            if not event.room_id:
+                return
+            try:
+                context = await kit_ref._build_context(event.room_id)
+            except Exception:
+                logger.warning(
+                    "Failed to build context for ON_TOOL_CALL observation in room %s",
+                    event.room_id,
+                    exc_info=True,
+                )
+                return
+
+            await kit_ref._hook_engine.run_observers(
+                event.room_id,
+                HookTrigger.ON_TOOL_CALL,
+                event,
+                context,
+                skip_event_filter=True,
+            )
+
+            await kit_ref._emit_framework_event(
+                "tool_call",
+                room_id=event.room_id,
+                channel_id=channel_id,
+                data={
+                    "tool_name": event.name,
+                    "tool_call_id": event.tool_call_id,
+                    "channel_type": str(event.channel_type),
+                    "is_error": True,
+                },
+            )
+
+        return _callback
+
     def _build_thinking_hook(self, channel_id: str) -> Any:
         """Build an ON_AI_THINKING callback closure for an AIChannel.
 

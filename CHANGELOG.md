@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ToolCallEvent.is_error` states the outcome of a tool call, so a consumer no
+  longer has to recognise a failure in the result body. The bodies do not agree
+  and cannot be made to: RoomKit's own refusals are `{"error": ...}` envelopes,
+  a handler that raised leaves the prose sentence the model is meant to read,
+  and an external tool leaves whatever the provider printed. Reading them was
+  guesswork that reported a refused call as a completed one.
+- `HookEngine.run_observers()` runs only the ASYNC-registered hooks of a
+  trigger. It is what lets a refused tool call be observed without being
+  served: only a SYNC hook can answer a call, so dispatching the async ones
+  alone makes the distinction structural rather than a rule each hook author
+  has to remember.
 - The Gemini Live provider handles the 3.8 contract. The end of a response
   follows `interaction_status`: the model speaks several times per request
   while it reasons and runs tools, so `turn_complete` no longer means it has
@@ -64,6 +75,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A realtime tool call that nothing served now answers
+  `{"error": "No handler for tool <name>"}` instead of `{"status": "ok"}`. It
+  reached that branch with no handler and no hook result — nobody had done the
+  work — and the model acted on the success anyway, while an audit trail
+  recorded a completed call. It is the answer the path without a framework
+  already gave.
 - Every example and guide now reads `GEMINI_API_KEY`. Thirteen examples asked
   for `GOOGLE_API_KEY`, the legacy alias, and the other thirteen asked for
   `GEMINI_API_KEY`, so which one you needed depended on the file. The library
@@ -90,6 +107,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   upstream added it in 2.19.0.
 
 ### Fixed
+
+- `ON_TOOL_CALL` fires for a tool call that was refused or failed, not only for
+  one that worked. A tool denied by the policy, a name the agent does not have,
+  invalid arguments, a skill-gated tool, a `BEFORE_TOOL_USE` block, a handler
+  that raised, a call nothing served: all of them returned before the hook, on
+  both the AI and the realtime path. A host auditing tool use saw a refused
+  agent and an idle one as the same thing — nothing — so no compliance trail or
+  friction metric could count a refusal. Such a call now fires with
+  `is_error=True` and reaches the **async observers only**: a refusal must not
+  reach a hook that would serve it, or the denial would hide the side effect
+  instead of preventing it. A result override offered on that firing is
+  ignored, and the realtime paths report after the provider has its answer, not
+  in front of it.
+- `is_error`, the verdict an external tool handler receives from its provider
+  (Claude Code, ACP), reaches `ON_TOOL_CALL`. `on_tool_result` took the flag and
+  dropped it when firing the hook, so a tool that genuinely failed was observed
+  with a body that is the provider's own output — a terminal's stderr — and read
+  as a completed call.
+- `TOOL_CALL_END` events state the outcome the tool loop knows instead of
+  matching the result text against `"Error executing tool"`. That prefix is one
+  of several failures, so a refusal — a JSON error envelope — persisted as
+  `completed`, a failure that answered with content parts was never marked, and
+  a tool whose own output began that way would have been misread.
+- `JSONLToolAuditor` and `ConsoleToolAuditor` recognise the failure envelopes
+  their own library emits. `_detect_status` matched `{"status": "failed"}`
+  alone, a shape no tool path in RoomKit produces, while missing the
+  `{"error": ...}` envelope every refusal returns and the `{"success": false}`
+  convention hosts commonly use: the built-in auditors recorded `ok` for every
+  denied tool.
 
 - GPT-Live disconnection no longer waits for the peer's TCP close once
   `session.closed` has landed. That event carries the billed seconds and the

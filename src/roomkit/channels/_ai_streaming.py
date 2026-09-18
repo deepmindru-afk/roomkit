@@ -528,7 +528,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
         turn.tool_rounds_count += 1
         for call, result in zip(calls, results, strict=False):
             value = result.result
-            is_error = isinstance(value, str) and value.startswith("Error executing tool")
+            is_error = result.is_error
             yield ToolCallEndMarker(
                 tool_name=call.name,
                 tool_id=call.id,
@@ -536,7 +536,9 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                 result=value,
                 status="failed" if is_error else "completed",
                 duration_ms=duration_ms,
-                error=value if is_error else None,
+                # ``error`` is text; a failure that answered with content parts
+                # flattens the way any text consumer of that result would.
+                error=result.as_text() if is_error else None,
                 structured_content=result.structured_content,
             )
         if turn.room_id:

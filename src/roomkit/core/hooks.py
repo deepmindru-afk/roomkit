@@ -443,6 +443,39 @@ class HookEngine:
 
         await self._run_async_hooks_list(hooks, room_id, trigger, event, context)
 
+    async def run_observers(
+        self,
+        room_id: str,
+        trigger: HookTrigger,
+        event: RoomEvent | Any,
+        context: RoomContext,
+        *,
+        skip_event_filter: bool = False,
+    ) -> None:
+        """Run only the ASYNC-registered hooks for *trigger*, fire-and-forget.
+
+        The counterpart of :meth:`run_async_hooks`, which deliberately ignores
+        the declared execution mode. Here the mode is the whole point: it is
+        what separates a hook that *observes* a call from one that *serves* it.
+
+        A refused tool call must still be observable — an audit trail that
+        cannot see a denial cannot tell a denied agent from an idle one — but
+        it must not reach a hook that would serve it, or the denial would
+        merely hide the side effect instead of preventing it. Only a SYNC hook
+        can serve a call (it is the one that returns a result), so dispatching
+        the ASYNC hooks alone makes the distinction structural rather than a
+        rule each hook author has to remember.
+        """
+        hooks = self._get_hooks(
+            room_id,
+            trigger,
+            HookExecution.ASYNC,
+            event=None if skip_event_filter else event,
+        )
+        if not hooks:
+            return
+        await self._run_async_hooks_list(hooks, room_id, trigger, event, context)
+
     async def _run_async_hooks_list(
         self,
         hooks: list[HookRegistration],

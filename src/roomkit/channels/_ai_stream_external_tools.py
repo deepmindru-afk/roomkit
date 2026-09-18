@@ -112,7 +112,10 @@ class _ExternalStreamTools:
             arguments = dict(call.arguments)
             already_executed = "_result" in arguments
             result = arguments.pop("_result", None)
-            arguments.pop("_is_error", None)
+            # The proxy's own verdict on a call it already ran. It travelled
+            # this far as a private argument; drop it from what the hook reads
+            # as arguments, keep it as the outcome it is.
+            is_error = bool(arguments.pop("_is_error", False))
             event = ToolCallEvent(
                 channel_id=self.channel_id,
                 channel_type=ChannelType.AI,
@@ -127,6 +130,7 @@ class _ExternalStreamTools:
                     else None
                 ),
                 room_id=self.room_id,
+                is_error=is_error,
             )
             if already_executed and self.after is not None:
                 await self.after(event)

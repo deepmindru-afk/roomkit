@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from roomkit.channels._skill_constants import TOOL_ACTIVATE_SKILL
 from roomkit.channels._tool_search_constants import TOOL_CALL_TOOL
 from roomkit.models.enums import ChannelType, HookTrigger
+from roomkit.models.tool_call import ToolCallEvent
 from roomkit.providers.ai.base import AIImagePart, AITextPart
 from roomkit.telemetry.base import Attr, SpanKind
 from roomkit.tools.validation import fold_hoisted_arguments, validate_tool_arguments
@@ -249,10 +250,14 @@ class RealtimeToolsMixin:
         try:
             result_str: str
             if transport_error is not None:
-                await self._submit_realtime_tool_result(
-                    session, call_id, json.dumps({"error": transport_error})
-                )
+                body = json.dumps({"error": transport_error})
+                await self._submit_realtime_tool_result(session, call_id, body)
                 telemetry.end_span(tool_span_id)
+                # After the wire: the provider is holding a turn open on this
+                # result, and an audit hook must not stand in front of it. Same
+                # order for the gate's own refusal and the fallback below —
+                # each of them answers before it reports.
+                await self._fire_tool_refusal(session, call_id, name, arguments, body, room_id)
                 return
 
             # Pre-execution gate (parity with the classic AI path): validate
@@ -276,6 +281,7 @@ class RealtimeToolsMixin:
                     call_id,
                     session.id,
                 )
+                await self._fire_tool_refusal(session, call_id, name, arguments, denial, room_id)
                 return
 
             # Tool Search infrastructure tools — handle internally
@@ -293,8 +299,6 @@ class RealtimeToolsMixin:
                 # has already executed, but audit + UI-broadcast hooks
                 # need visibility into it the same as any other tool.
                 if self._framework and room_id:
-                    from roomkit.models.tool_call import ToolCallEvent
-
                     skill_event = ToolCallEvent(
                         channel_id=self.channel_id,
                         channel_type=ChannelType.REALTIME_VOICE,
@@ -349,23 +353,21 @@ class RealtimeToolsMixin:
         except Exception:
             telemetry.end_span(tool_span_id, status="error", error_message=f"tool {name} failed")
             logger.exception("Error handling tool call %s for session %s", call_id, session.id)
-            try:
-                await self._submit_realtime_tool_result(
-                    session,
-                    call_id,
-                    json.dumps(
-                        {
-                            "error": "Internal error handling tool call",
-                            "tool": name,
-                            "hint": (
-                                "The call did not complete successfully. Do not infer an "
-                                "integration outage or repeat a write automatically."
-                            ),
-                        }
+            body = json.dumps(
+                {
+                    "error": "Internal error handling tool call",
+                    "tool": name,
+                    "hint": (
+                        "The call did not complete successfully. Do not infer an "
+                        "integration outage or repeat a write automatically."
                     ),
-                )
+                }
+            )
+            try:
+                await self._submit_realtime_tool_result(session, call_id, body)
             except Exception:
                 logger.exception("Error submitting fallback tool result")
+            await self._fire_tool_refusal(session, call_id, name, arguments, body, room_id)
         finally:
             if self._mute_on_tool_call and self._transport is not None:
                 self._transport.set_input_muted(session, False)
@@ -433,8 +435,6 @@ class RealtimeToolsMixin:
             await asyncio.sleep(0)
 
         # Run ON_TOOL_CALL hook (if framework + room).
-        from roomkit.models.tool_call import ToolCallEvent
-
         tool_event = ToolCallEvent(
             channel_id=self.channel_id,
             channel_type=ChannelType.REALTIME_VOICE,
@@ -641,7 +641,6 @@ class RealtimeToolsMixin:
         # Schema validation above stays unconditional — it needs no context.
         if not self._framework.hook_engine.has_hooks(HookTrigger.BEFORE_TOOL_USE):
             return arguments, None, None
-        from roomkit.models.tool_call import ToolCallEvent
 
         pre_event = ToolCallEvent(
             channel_id=self.channel_id,
@@ -717,6 +716,66 @@ class RealtimeToolsMixin:
                 )
         return effective_arguments, None, context
 
+    async def _fire_tool_refusal(
+        self,
+        session: VoiceSession,
+        call_id: str,
+        name: str,
+        arguments: dict[str, Any],
+        result: str,
+        room_id: str | None,
+    ) -> None:
+        """Fire ON_TOOL_CALL for a call that failed or was refused.
+
+        The pre-execution gate returns before anything serves the call, and a
+        failure inside it lands in the fallback below — neither path reached
+        the hook, so a host auditing tool use saw a denied tool as a tool the
+        agent never called.
+
+        Observational by construction: it reaches the ASYNC observers of
+        ON_TOOL_CALL and no further. A SYNC hook is the one that can *serve* a
+        call, so a refused call must not reach one — the gate exists to prevent
+        the side effect, not to hide it. A hook that raises must not turn the
+        refusal into a crash either.
+        """
+        if not self._framework or not room_id:
+            return
+        event = ToolCallEvent(
+            channel_id=self.channel_id,
+            channel_type=ChannelType.REALTIME_VOICE,
+            tool_call_id=call_id,
+            name=name,
+            arguments=arguments,
+            result=result,
+            room_id=room_id,
+            session=session,
+            is_error=True,
+        )
+        try:
+            context = await self._framework._build_context(room_id)
+            await self._framework.hook_engine.run_observers(
+                room_id,
+                HookTrigger.ON_TOOL_CALL,
+                event,
+                context,
+                skip_event_filter=True,
+            )
+            await self._framework._emit_framework_event(
+                "tool_call",
+                room_id=room_id,
+                channel_id=self.channel_id,
+                data={
+                    "tool_name": name,
+                    "tool_call_id": call_id,
+                    "channel_type": str(ChannelType.REALTIME_VOICE),
+                    "is_error": True,
+                },
+            )
+        except Exception:
+            logger.debug(
+                "ON_TOOL_CALL observation failed for refused tool %s", name, exc_info=True
+            )
+
     async def _fire_tool_hook(
         self,
         tool_event: Any,
@@ -750,7 +809,9 @@ class RealtimeToolsMixin:
             (time.perf_counter() - t_seg) * 1000,
         )
 
+        failed = False
         if not hook_result.allowed:
+            failed = True
             result_str = json.dumps({"error": hook_result.reason or "Tool call blocked by hook"})
         elif "result" in hook_result.metadata:
             hook_val = hook_result.metadata["result"]
@@ -758,6 +819,7 @@ class RealtimeToolsMixin:
         elif handler_result is not None:
             result_str = handler_result
         elif hook_result.hook_errors:
+            failed = True
             errors = "; ".join(f"{e['hook']}: {e['error']}" for e in hook_result.hook_errors)
             result_str = json.dumps(
                 {
@@ -765,7 +827,13 @@ class RealtimeToolsMixin:
                 }
             )
         else:
-            result_str = json.dumps({"status": "ok"})
+            # Nothing served this call: no handler, and the hooks that could
+            # have answered it did not. It used to report ``{"status": "ok"}``
+            # — a success for work nobody did, which the model then acted on
+            # and an audit trail recorded as a completed call. Say what
+            # happened, in the same words the no-framework path already uses.
+            failed = True
+            result_str = json.dumps({"error": f"No handler for tool {name}"})
 
         await self._framework._emit_framework_event(
             "tool_call",
@@ -777,6 +845,23 @@ class RealtimeToolsMixin:
                 "channel_type": str(ChannelType.REALTIME_VOICE),
             },
         )
+        if failed and handler_result is None:
+            # The firing above carried ``result=None`` — it was the hooks'
+            # chance to serve the call, not a report on it — so an observer
+            # would never learn that the call ended in a refusal. State it,
+            # with the body the model is about to read. Unlike the gate's
+            # refusals this one runs before the result reaches the wire, which
+            # costs nothing it has not already spent: the whole sync hook chain
+            # ran just above, on this same call.
+            #
+            # Only when nothing had served the call. A handler that ran and was
+            # then blocked is not a refused call: it executed, the firing above
+            # already reported its result, and a second report would put two
+            # outcomes on one ``tool_call_id`` — the withheld result is a
+            # substitution, which BEFORE_TOOL_USE is the trigger for refusing.
+            await self._fire_tool_refusal(
+                session, call_id, name, tool_event.arguments, result_str, room_id
+            )
         return result_str
 
     async def _dispatch_tool_search_call(
@@ -818,8 +903,6 @@ class RealtimeToolsMixin:
         # configuration lock. Their result cannot replace infrastructure delivery.
         # Fire ON_TOOL_CALL hook so audit + UI-broadcast hooks see search calls.
         if self._framework and room_id:
-            from roomkit.models.tool_call import ToolCallEvent
-
             search_event = ToolCallEvent(
                 channel_id=self.channel_id,
                 channel_type=ChannelType.REALTIME_VOICE,

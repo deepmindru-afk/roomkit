@@ -552,9 +552,23 @@ class TestToolCallEphemeralEvents:
             ),
         ]
 
-        # Non-streaming provider
+        # Non-streaming provider. The tool has to be declared: an undeclared
+        # name is refused before the handler, and the call this test means to
+        # observe would be a refusal — which is what it used to assert as
+        # "completed", back when the status was guessed from the result body.
         provider = MockAIProvider(ai_responses=responses, streaming=False)
-        ch = AIChannel("ai1", provider=provider, tool_handler=tool_handler)
+        ch = AIChannel(
+            "ai1",
+            provider=provider,
+            tool_handler=tool_handler,
+            tools=[
+                AITool(
+                    name="calculate",
+                    description="Calculate",
+                    parameters={"type": "object", "properties": {"x": {"type": "string"}}},
+                )
+            ],
+        )
 
         output = await ch.on_event(
             make_event(body="what is 6*7?", channel_id="sms1"),

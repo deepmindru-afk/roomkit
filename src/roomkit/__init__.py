@@ -145,6 +145,7 @@ from roomkit.models.tool_call import (
     BeforeGenerationCallback,
     ToolCallCallback,
     ToolCallEvent,
+    ToolCallObserver,
     response_transcript,
 )
 from roomkit.models.voice_delivery import VoiceDeliveryRecord
@@ -463,6 +464,7 @@ __all__ = [
     "ThinkingEvent",
     "Tool",
     "ToolCallCallback",
+    "ToolCallObserver",
     "ToolCallContent",
     "ToolCallEvent",
     "ToolHandler",

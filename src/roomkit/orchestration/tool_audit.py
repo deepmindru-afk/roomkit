@@ -162,13 +162,32 @@ class ConsoleToolAuditor(ToolAuditor):
 
 
 def _detect_status(result: str) -> str:
-    """Detect failed status from JSON tool results."""
+    """Read a tool result body for its producer's failure marker.
+
+    Covers the three envelopes live producers actually emit: ``status`` (this
+    module's own convention), the ``{"error": ...}`` envelope every refusal in
+    the library returns and ``MCPToolProvider`` wraps an ``isError`` result in,
+    and the ``{"success": false}`` convention hosts commonly use. Recognising
+    only ``status`` meant a denied tool — the most audit-relevant outcome there
+    is — was recorded as ``ok``.
+
+    A body outside every envelope reads ``ok``, which is the degradation for a
+    producer that said nothing, not the contract. Prefer the outcome the
+    library carries structurally (``ToolCallEvent.is_error``) wherever it is
+    available; this function is for handler output, which is a string.
+    """
     try:
         parsed = json.loads(result)
-        if isinstance(parsed, dict) and parsed.get("status") == "failed":
-            return "failed"
     except (json.JSONDecodeError, TypeError):
-        pass
+        return "ok"
+    if not isinstance(parsed, dict):
+        return "ok"
+    status = parsed.get("status")
+    if isinstance(status, str) and status.lower() in {"failed", "error"}:
+        return "failed"
+    success = parsed.get("success")
+    if success is False or (parsed.get("error") and success is not True):
+        return "failed"
     return "ok"
 
 

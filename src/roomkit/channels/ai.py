@@ -81,7 +81,7 @@ from roomkit.tools.compose import compose_tool_handlers, extract_tools
 from roomkit.tools.policy import ToolPolicy
 
 if TYPE_CHECKING:
-    from roomkit.models.tool_call import ToolCallCallback
+    from roomkit.models.tool_call import ToolCallCallback, ToolCallObserver
     from roomkit.sandbox.executor import SandboxExecutor
     from roomkit.skills.executor import ScriptExecutor
     from roomkit.skills.registry import SkillRegistry
@@ -378,6 +378,8 @@ class AIChannel(
         self._realtime: RealtimeBackend | None = None
         # Unified tool call hook callback (injected by framework on register_channel)
         self._tool_call_hook: ToolCallCallback | None = None
+        # Fired for a call that failed or was refused — observers only.
+        self._tool_observer_hook: ToolCallObserver | None = None
         # Pre-tool-use hook callback (injected by framework on register_channel)
         self._before_tool_call_hook: Any = None
         # AI response hook callback (injected by framework on register_channel)
