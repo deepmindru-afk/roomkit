@@ -13,10 +13,10 @@ Requirements:
     pip install roomkit[sip,realtime-gemini]
 
 Usage:
-    GOOGLE_API_KEY=... python examples/voice_sip_dial.py
+    GEMINI_API_KEY=... python examples/voice_sip_dial.py
 
     # Environment variables (all optional unless noted):
-    #   GOOGLE_API_KEY  — Google AI API key (REQUIRED)
+    #   GEMINI_API_KEY  — Gemini API key (REQUIRED)
     #   SIP_PROXY_HOST  — SIP proxy/PBX IP   (default: 127.0.0.1)
     #   SIP_PROXY_PORT  — SIP proxy port      (default: 5060)
     #   SIP_FROM_URI    — caller SIP URI       (default: sip:bot@example.com)
@@ -122,7 +122,7 @@ async def handle_tool_call(name: str, arguments: dict) -> str:
 
 
 async def main() -> None:
-    env = require_env("GOOGLE_API_KEY")
+    env = require_env("GEMINI_API_KEY")
 
     kit = RoomKit()
     console_cleanup = setup_console(kit)
@@ -151,7 +151,7 @@ async def main() -> None:
     )
 
     # -- Gemini Live provider --
-    gemini = GeminiLiveProvider(api_key=env["GOOGLE_API_KEY"], model=GEMINI_MODEL)
+    gemini = GeminiLiveProvider(api_key=env["GEMINI_API_KEY"], model=GEMINI_MODEL)
 
     # -- Bridge: SIP audio <-> Gemini audio --
     transport = SIPRealtimeTransport(backend)

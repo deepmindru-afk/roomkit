@@ -24,10 +24,10 @@ Requirements:
     pip install roomkit[realtime-gemini,local-audio]
 
 Run with:
-    GOOGLE_API_KEY=... uv run python examples/shared_mic_capture.py
+    GEMINI_API_KEY=... uv run python examples/shared_mic_capture.py
 
 Environment variables:
-    GOOGLE_API_KEY      (required) Google API key
+    GEMINI_API_KEY      (required) Gemini API key
     GEMINI_MODEL        Model name (default: gemini-3.8-live)
     GEMINI_VOICE        Voice preset (default: Aoede)
     BACKLOG_SECONDS     Ring size retained for replay (default: 10)
@@ -153,10 +153,10 @@ class SpeechTrigger:
 
 
 async def main() -> None:
-    api_key = os.environ.get("GOOGLE_API_KEY")
+    api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
-        print("Set GOOGLE_API_KEY to run this example.")
-        print("  GOOGLE_API_KEY=... uv run python examples/shared_mic_capture.py")
+        print("Set GEMINI_API_KEY to run this example.")
+        print("  GEMINI_API_KEY=... uv run python examples/shared_mic_capture.py")
         return
 
     # --- The microphone, owned by nobody in particular ---------------------

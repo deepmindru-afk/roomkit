@@ -14,11 +14,11 @@ Requirements:
     pip install roomkit[buzz,realtime-gemini]
 
 Run with:
-    GOOGLE_API_KEY=... BUZZ_RELAY_URL=wss://... BUZZ_NSEC=nsec1... \
+    GEMINI_API_KEY=... BUZZ_RELAY_URL=wss://... BUZZ_NSEC=nsec1... \
         BUZZ_CHANNEL_ID=<uuid> uv run python examples/buzz_voice_agent.py
 
 Environment variables:
-    GOOGLE_API_KEY     (required) Google API key
+    GEMINI_API_KEY     (required) Gemini API key
     BUZZ_RELAY_URL     (required) Buzz relay WebSocket URL
     BUZZ_NSEC          (required) agent secret key (hex or nsec…)
     BUZZ_CHANNEL_ID    (required) parent channel UUID to watch for huddles
@@ -57,13 +57,13 @@ DEFAULT_PROMPT = (
 
 
 async def main() -> None:
-    env = require_env("GOOGLE_API_KEY", "BUZZ_RELAY_URL", "BUZZ_NSEC", "BUZZ_CHANNEL_ID")
+    env = require_env("GEMINI_API_KEY", "BUZZ_RELAY_URL", "BUZZ_NSEC", "BUZZ_CHANNEL_ID")
 
     kit = RoomKit()
     voice = RealtimeVoiceChannel(
         "buzz-voice",
         provider=GeminiLiveProvider(
-            api_key=env["GOOGLE_API_KEY"],
+            api_key=env["GEMINI_API_KEY"],
             model=os.environ.get("GEMINI_MODEL", "gemini-3.8-live"),
         ),
         transport=BuzzHuddleBackend(),

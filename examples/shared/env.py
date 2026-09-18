@@ -86,10 +86,10 @@ def auto_select_provider(env_var: str, label: str) -> str:
         return forced
 
     has_openai = bool(os.environ.get("OPENAI_API_KEY"))
-    has_gemini = bool(os.environ.get("GOOGLE_API_KEY"))
+    has_gemini = bool(os.environ.get("GEMINI_API_KEY"))
 
     if has_openai and has_gemini:
-        print("Both OPENAI_API_KEY and GOOGLE_API_KEY are set.")
+        print("Both OPENAI_API_KEY and GEMINI_API_KEY are set.")
         print(f"Which provider for {label}?")
         print("  1) OpenAI")
         print("  2) Gemini")

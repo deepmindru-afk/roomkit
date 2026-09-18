@@ -8,7 +8,7 @@ Requirements:
     pip install roomkit[realtime-gemini] fastapi uvicorn websockets
 
 Run with:
-    GOOGLE_API_KEY=... uv run python examples/realtime_voice_gemini.py
+    GEMINI_API_KEY=... uv run python examples/realtime_voice_gemini.py
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ logger = setup_logging("realtime_voice_gemini")
 
 
 async def main() -> None:
-    env = require_env("GOOGLE_API_KEY")
+    env = require_env("GEMINI_API_KEY")
 
     kit = RoomKit()
 
@@ -42,7 +42,7 @@ async def main() -> None:
 
     # --- Gemini Live provider ---
     provider = GeminiLiveProvider(
-        api_key=env["GOOGLE_API_KEY"],
+        api_key=env["GEMINI_API_KEY"],
         model="gemini-3.8-live",
     )
     transport = WebSocketRealtimeTransport()

@@ -9,10 +9,10 @@ Requirements:
     System (optional): librnnoise for noise suppression
 
 Run with:
-    GOOGLE_API_KEY=... uv run python examples/realtime_voice_local_gemini.py
+    GEMINI_API_KEY=... uv run python examples/realtime_voice_local_gemini.py
 
 Environment variables:
-    GOOGLE_API_KEY      (required) Google API key
+    GEMINI_API_KEY      (required) Gemini API key
     GEMINI_MODEL        Model name (default: gemini-3.8-live)
     GEMINI_VOICE        Voice preset (default: Aoede)
     SYSTEM_PROMPT       Custom system prompt
@@ -56,10 +56,10 @@ SKILLS_DIR = Path(__file__).parent / "skills"
 
 
 async def main() -> None:
-    api_key = os.environ.get("GOOGLE_API_KEY")
+    api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
-        print("Set GOOGLE_API_KEY to run this example.")
-        print("  GOOGLE_API_KEY=... uv run python examples/realtime_voice_local_gemini.py")
+        print("Set GEMINI_API_KEY to run this example.")
+        print("  GEMINI_API_KEY=... uv run python examples/realtime_voice_local_gemini.py")
         return
 
     kit = RoomKit()

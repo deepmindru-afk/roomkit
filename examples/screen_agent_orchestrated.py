@@ -33,7 +33,7 @@ Run with:
 
 Environment variables:
     OMNIVIEW_URL         (required) OmniView API URL
-    GOOGLE_API_KEY       (optional) Google API key (voice)
+    GEMINI_API_KEY       (optional) Gemini API key (voice)
     OPENAI_API_KEY       (optional) OpenAI API key (voice or exec)
     ANTHROPIC_API_KEY    (optional) Anthropic API key (exec agent)
     VOICE_PROVIDER       Force voice: openai | gemini (auto)
@@ -214,7 +214,7 @@ def _build_exec_provider() -> object:
 
     return GeminiAIProvider(
         GeminiConfig(
-            api_key=os.environ["GOOGLE_API_KEY"],
+            api_key=os.environ["GEMINI_API_KEY"],
             model=os.environ.get("EXEC_MODEL", "gemini-2.0-flash"),
             max_tokens=2048,
         )
@@ -233,7 +233,7 @@ def _build_voice_provider(voice_choice: str) -> object:
     from roomkit.providers.gemini.realtime import GeminiLiveProvider
 
     return GeminiLiveProvider(
-        api_key=os.environ["GOOGLE_API_KEY"],
+        api_key=os.environ["GEMINI_API_KEY"],
         model=os.environ.get("GEMINI_MODEL", "gemini-3.8-live"),
     )
 
@@ -307,8 +307,8 @@ async def main() -> None:
     if voice_choice == "openai" and not os.environ.get("OPENAI_API_KEY"):
         print("OPENAI_API_KEY is required for OpenAI voice.")
         return
-    if voice_choice == "gemini" and not os.environ.get("GOOGLE_API_KEY"):
-        print("GOOGLE_API_KEY is required for Gemini voice.")
+    if voice_choice == "gemini" and not os.environ.get("GEMINI_API_KEY"):
+        print("GEMINI_API_KEY is required for Gemini voice.")
         return
 
     lang = os.environ.get("LANG_VOICE", "fr").lower()[:2]
@@ -373,19 +373,19 @@ async def main() -> None:
     logger.info("OmniView service: %s", omniview_url)
 
     # --- Gemini vision (for read_screen — semantic understanding) -------------
-    google_api_key = os.environ.get("GOOGLE_API_KEY", "")
+    gemini_api_key = os.environ.get("GEMINI_API_KEY", "")
     gemini_vision = None
-    if google_api_key:
+    if gemini_api_key:
         gemini_vision = GeminiVisionProvider(
             GeminiVisionConfig(
-                api_key=google_api_key,
+                api_key=gemini_api_key,
                 model="gemini-3.1-flash-image-preview",
                 max_tokens=4096,
             )
         )
         logger.info("Gemini vision: enabled (read_screen)")
     else:
-        logger.warning("GOOGLE_API_KEY not set — read_screen() will be unavailable")
+        logger.warning("GEMINI_API_KEY not set — read_screen() will be unavailable")
 
     # Also keep ScreenInputTools for keyboard/mouse actions
     input_tools = ScreenInputTools(monitor=monitor)
@@ -619,7 +619,7 @@ async def main() -> None:
             """Semantic understanding of the screen via Gemini vision."""
             if gemini_vision is None:
                 return json.dumps(
-                    {"status": "failed", "error": "No GOOGLE_API_KEY — read_screen unavailable"}
+                    {"status": "failed", "error": "No GEMINI_API_KEY — read_screen unavailable"}
                 )
             query = str(arguments.get("query", "Describe what is currently on screen."))
             frame = capture_screen_frame(monitor)

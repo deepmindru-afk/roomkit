@@ -64,6 +64,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Every example and guide now reads `GEMINI_API_KEY`. Thirteen examples asked
+  for `GOOGLE_API_KEY`, the legacy alias, and the other thirteen asked for
+  `GEMINI_API_KEY`, so which one you needed depended on the file. The library
+  itself never read either: it takes the key as an argument. Vertex keeps its
+  own Google Cloud names (`GOOGLE_CLOUD_PROJECT`,
+  `GOOGLE_APPLICATION_CREDENTIALS`), which are a different credential.
+- google-genai's "Both GOOGLE_API_KEY and GEMINI_API_KEY are set. Using
+  GOOGLE_API_KEY." is suppressed around the client constructions RoomKit keys
+  itself. The SDK resolves the environment before it looks at the key it was
+  given, so with both variables set it announced a key it was not using. The
+  filter is installed for the duration of that one call and matched on that
+  one message, so an application building its own client from the environment
+  still hears it.
+
 - `gemini-3.8-live` is the default realtime model, in the provider and in every
   example. A caller that never passed `model=` moves generation: an inherited
   `thinking_budget`, `enable_affective_dialog` or `proactive_audio` starts being

@@ -19,12 +19,12 @@ Models (download once):
     wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/ten-vad.onnx
 
 Run with:
-    GOOGLE_API_KEY=... DEEPGRAM_API_KEY=... ELEVENLABS_API_KEY=... \\
+    GEMINI_API_KEY=... DEEPGRAM_API_KEY=... ELEVENLABS_API_KEY=... \\
     VAD_MODEL=ten-vad.onnx python examples/orchestration_voice_triage.py
 
 Environment variables:
     SIP_HOST, SIP_PORT, RTP_IP, RTP_PORT_START, RTP_PORT_END
-    GOOGLE_API_KEY, GEMINI_MODEL
+    GEMINI_API_KEY, GEMINI_MODEL
     DEEPGRAM_API_KEY, STT_LANGUAGE
     ELEVENLABS_API_KEY, VOICE_TRIAGE, VOICE_ADVISOR
     VAD_MODEL, VAD_THRESHOLD
@@ -102,7 +102,7 @@ pipeline = ConversationPipeline(
 
 
 async def main() -> None:
-    env = require_env("GOOGLE_API_KEY", "DEEPGRAM_API_KEY", "ELEVENLABS_API_KEY", "VAD_MODEL")
+    env = require_env("GEMINI_API_KEY", "DEEPGRAM_API_KEY", "ELEVENLABS_API_KEY", "VAD_MODEL")
 
     kit = RoomKit(delivery_strategy=WaitForIdle())
 
@@ -160,7 +160,7 @@ async def main() -> None:
     # --- AI agents -----------------------------------------------------------
 
     gemini_config = GeminiConfig(
-        api_key=env["GOOGLE_API_KEY"],
+        api_key=env["GEMINI_API_KEY"],
         model=os.environ.get("GEMINI_MODEL", "gemini-3.1-flash-lite"),
         max_tokens=150,
         thinking_level="minimal",

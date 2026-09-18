@@ -26,12 +26,12 @@ Requirements:
     pip install roomkit[sip,realtime-gemini]
 
 Usage:
-    GOOGLE_API_KEY=... python examples/orchestration_realtime_triage.py
+    GEMINI_API_KEY=... python examples/orchestration_realtime_triage.py
 
     # From a SIP client or PBX, send an INVITE to port 5060
 
 Environment variables:
-    GOOGLE_API_KEY      (required) Google API key
+    GEMINI_API_KEY      (required) Gemini API key
     GEMINI_MODEL        Gemini model (default: gemini-3.8-live)
     SIP_HOST            Listening address (default: 0.0.0.0)
     SIP_PORT            SIP port (default: 5060)
@@ -102,7 +102,7 @@ pipeline = ConversationPipeline(
 
 
 async def main() -> None:
-    require_env("GOOGLE_API_KEY")
+    require_env("GEMINI_API_KEY")
 
     kit = RoomKit()
 
@@ -120,7 +120,7 @@ async def main() -> None:
 
     # --- Gemini Live provider -----------------------------------------------
     provider = GeminiLiveProvider(
-        api_key=os.environ["GOOGLE_API_KEY"],
+        api_key=os.environ["GEMINI_API_KEY"],
         model=GEMINI_MODEL,
     )
 

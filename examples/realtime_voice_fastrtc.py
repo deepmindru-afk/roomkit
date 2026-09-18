@@ -13,7 +13,7 @@ Requirements:
     pip install roomkit[realtime-gemini,fastrtc] fastapi uvicorn httpx
 
 Run with:
-    GOOGLE_API_KEY=... uv run uvicorn examples.realtime_voice_fastrtc:app
+    GEMINI_API_KEY=... uv run uvicorn examples.realtime_voice_fastrtc:app
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ _console_cleanup = setup_console(kit)
 
 # --- Gemini Live provider ---
 provider = GeminiLiveProvider(
-    api_key=os.environ.get("GOOGLE_API_KEY", ""),
+    api_key=os.environ.get("GEMINI_API_KEY", ""),
     model="gemini-3.8-live",
 )
 

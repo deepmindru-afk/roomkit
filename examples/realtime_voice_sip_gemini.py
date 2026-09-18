@@ -13,7 +13,7 @@ Requirements:
     pip install roomkit[sip,realtime-gemini]
 
 Usage:
-    GOOGLE_API_KEY=... python examples/realtime_voice_sip_gemini.py
+    GEMINI_API_KEY=... python examples/realtime_voice_sip_gemini.py
 """
 
 from __future__ import annotations
@@ -93,7 +93,7 @@ async def handle_tool_call(name: str, arguments: dict) -> str:
 
 
 async def main() -> None:
-    env = require_env("GOOGLE_API_KEY")
+    env = require_env("GEMINI_API_KEY")
 
     kit = RoomKit()
 
@@ -111,7 +111,7 @@ async def main() -> None:
     )
 
     # -- Gemini Live provider --
-    gemini = GeminiLiveProvider(api_key=env["GOOGLE_API_KEY"], model=GEMINI_MODEL)
+    gemini = GeminiLiveProvider(api_key=env["GEMINI_API_KEY"], model=GEMINI_MODEL)
 
     # -- Bridge transport: SIP audio ↔ Gemini audio --
     transport = SIPRealtimeTransport(sip)

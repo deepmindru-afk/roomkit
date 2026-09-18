@@ -25,14 +25,14 @@ Requirements:
     pip install aec-audio-processing       # WebRTC echo cancellation
 
 Run with (Gemini only):
-    GOOGLE_API_KEY=... uv run python examples/screen_assistant_ai.py
+    GEMINI_API_KEY=... uv run python examples/screen_assistant_ai.py
 
 Run with (OpenAI voice + Gemini vision):
-    GOOGLE_API_KEY=... OPENAI_API_KEY=... VISION_TOOL=gemini \
+    GEMINI_API_KEY=... OPENAI_API_KEY=... VISION_TOOL=gemini \
         uv run python examples/screen_assistant_ai.py
 
 Environment variables:
-    GOOGLE_API_KEY       (required) Google API key
+    GEMINI_API_KEY       (required) Gemini API key
     OPENAI_API_KEY       (optional) OpenAI API key
     VOICE_PROVIDER       Force voice: openai | gemini (auto)
     VISION_TOOL          Force tool:  openai | gemini (auto)
@@ -147,10 +147,10 @@ BLOCK_MS = 20
 
 async def main() -> None:
     # --- Env + provider selection -------------------------------------------
-    google_api_key = os.environ.get("GOOGLE_API_KEY", "")
-    if not google_api_key:
-        print("GOOGLE_API_KEY is required.")
-        print("  GOOGLE_API_KEY=... uv run python examples/screen_assistant_ai.py")
+    gemini_api_key = os.environ.get("GEMINI_API_KEY", "")
+    if not gemini_api_key:
+        print("GEMINI_API_KEY is required.")
+        print("  GEMINI_API_KEY=... uv run python examples/screen_assistant_ai.py")
         return
 
     voice_choice = auto_select_provider("VOICE_PROVIDER", "voice")
@@ -178,7 +178,7 @@ async def main() -> None:
     auditor.attach(kit)
 
     # --- Shared screen state ------------------------------------------------
-    vision = build_vision_provider(tool_choice, google_api_key)
+    vision = build_vision_provider(tool_choice, gemini_api_key)
     screen_backend = ScreenCaptureBackend(
         monitor=monitor,
         fps=2,

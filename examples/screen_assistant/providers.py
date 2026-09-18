@@ -10,7 +10,7 @@ from roomkit.video.vision.openai import OpenAIVisionConfig, OpenAIVisionProvider
 
 def build_vision_provider(
     tool_choice: str,
-    google_api_key: str,
+    gemini_api_key: str,
 ) -> GeminiVisionProvider | OpenAIVisionProvider:
     """Build a single vision provider used for both periodic and on-demand analysis."""
     if tool_choice == "openai":
@@ -28,7 +28,7 @@ def build_vision_provider(
     else:
         vision = GeminiVisionProvider(
             GeminiVisionConfig(
-                api_key=google_api_key,
+                api_key=gemini_api_key,
                 model=os.environ.get(
                     "GEMINI_VISION_MODEL",
                     "gemini-3.1-flash-image-preview",
@@ -58,7 +58,7 @@ def build_voice_provider(voice_choice: str) -> object:
     from roomkit.providers.gemini.realtime import GeminiLiveProvider
 
     return GeminiLiveProvider(
-        api_key=os.environ["GOOGLE_API_KEY"],
+        api_key=os.environ["GEMINI_API_KEY"],
         model=os.environ.get(
             "GEMINI_MODEL",
             "gemini-3.8-live",

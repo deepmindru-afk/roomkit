@@ -34,7 +34,8 @@ objects and closes them together.
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 from roomkit.providers.utils import HTTPTimeouts, http_timeout
@@ -82,6 +83,44 @@ def _restore_client_timeout(timeout: httpx.Timeout) -> Callable[[httpx.Request],
             request.extensions["timeout"] = {**current, "connect": ceiling}
 
     return restore
+
+
+_ENV_KEY_WARNING = "Both GOOGLE_API_KEY and GEMINI_API_KEY are set."
+"""Opening of the warning google-genai logs when both variables are set.
+
+It is emitted from ``get_env_api_key()``, which the SDK calls unconditionally
+at client construction and *before* it considers the key it was handed. So it
+fires for RoomKit too, and what it then says is not merely noisy but wrong:
+the client uses the key the provider passed, not ``GOOGLE_API_KEY``.
+"""
+
+
+class _DropEnvKeyWarning(logging.Filter):
+    """Drop exactly that one record, matched on its text."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not record.getMessage().startswith(_ENV_KEY_WARNING)
+
+
+@contextmanager
+def _without_env_key_warning(*, explicit_key: bool) -> Iterator[None]:
+    """Silence the SDK's env-key warning around a construction we key ourselves.
+
+    Installed for the duration of the ``genai.Client`` call and removed after,
+    rather than left on the logger: an application that builds its own client
+    from the environment still has a reason to hear it. Nothing is silenced
+    when RoomKit did not supply the key either.
+    """
+    if not explicit_key:
+        yield
+        return
+    sdk_logger = logging.getLogger("google_genai._api_client")
+    log_filter = _DropEnvKeyWarning()
+    sdk_logger.addFilter(log_filter)
+    try:
+        yield
+    finally:
+        sdk_logger.removeFilter(log_filter)
 
 
 def build_genai_client(
@@ -150,22 +189,23 @@ def _build_client(
         follow_redirects=True,
         event_hooks={"request": [_restore_client_timeout(timeout)]},
     )
-    client = genai.Client(
-        **client_kwargs,
-        http_options=genai.types.HttpOptions(
-            # The sync client is built by the SDK regardless; same budget.
-            client_args={"timeout": timeout},
-            httpx_async_client=http,
-            # Interactions interprets attempts as retries, while the parent
-            # client changes zero to one. Use an impossible HTTP status to
-            # disable status retries, including successful paid POSTs.
-            **(
-                {"retry_options": {"attempts": 1, "http_status_codes": [0]}}
-                if disable_retries
-                else {}
+    with _without_env_key_warning(explicit_key="api_key" in client_kwargs):
+        client = genai.Client(
+            **client_kwargs,
+            http_options=genai.types.HttpOptions(
+                # The sync client is built by the SDK regardless; same budget.
+                client_args={"timeout": timeout},
+                httpx_async_client=http,
+                # Interactions interprets attempts as retries, while the parent
+                # client changes zero to one. Use an impossible HTTP status to
+                # disable status retries, including successful paid POSTs.
+                **(
+                    {"retry_options": {"attempts": 1, "http_status_codes": [0]}}
+                    if disable_retries
+                    else {}
+                ),
             ),
-        ),
-    )
+        )
     return GenaiClient(client, http, genai.types)
 
 
