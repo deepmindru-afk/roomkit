@@ -335,7 +335,7 @@ class TestGeminiLiveProvider:
 
         assert caplog.text.count("enable_affective_dialog") == 1
 
-    def test_build_config_keeps_the_legacy_fields_on_older_models(self):
+    def test_build_config_keeps_the_pre_3_8_fields_on_older_models(self):
         """2.0 Flash Live still takes all three: no retroactive narrowing."""
         mod = _load_provider()
         provider = mod.GeminiLiveProvider(api_key="test-key", model="gemini-2.0-flash-live-001")
@@ -389,6 +389,45 @@ class TestGeminiLiveProvider:
         assert config.thinking_config is None
         assert "thinking_level" in caplog.text
 
+    # ── the SDK only warns, so the boundary refuses ─────────────
+
+    def test_an_unknown_turn_coverage_is_refused(self):
+        """google-genai warns and forwards; the server then kills the setup."""
+        mod = _load_provider()
+        provider = mod.GeminiLiveProvider(api_key="test-key", model="gemini-3.8-live")
+
+        with pytest.raises(ValueError, match="turn_coverage"):
+            provider._build_config(provider_config={"turn_coverage": "TURN_INCLUDES_EVERYTHING"})
+
+    def test_an_unknown_transcription_mode_is_refused(self):
+        mod = _load_provider()
+        provider = mod.GeminiLiveProvider(api_key="test-key", model="gemini-3.8-live")
+
+        with pytest.raises(ValueError, match="transcription.mode"):
+            provider._build_config(provider_config={"transcription": {"mode": "creative"}})
+
+    def test_an_unknown_tool_behavior_is_refused(self):
+        mod = _load_provider()
+        provider = mod.GeminiLiveProvider(api_key="test-key", model="gemini-3.8-live")
+
+        tools = [{"name": "t", "description": "d", "parameters": {}, "behavior": "EVENTUALLY"}]
+        with pytest.raises(ValueError, match="tool behavior"):
+            provider._build_config(tools=tools)
+
+    async def test_an_unknown_tool_response_scheduling_is_refused(self):
+        mod = _load_provider()
+        provider = mod.GeminiLiveProvider(api_key="test-key", model="gemini-3.8-live")
+        session = _make_session()
+        state = mod._GeminiSessionState(
+            session=session,
+            live_session=_make_mock_live_session(),
+            provider_config={"tool_response_scheduling": "EVENTUALLY"},
+        )
+        provider._sessions[session.id] = state
+
+        with pytest.raises(ValueError, match="tool_response_scheduling"):
+            await provider.submit_tool_result(session, "call-1", '{"ok": true}')
+
     # ── turn coverage and transcription options ─────────────────
 
     def test_build_config_turn_coverage_is_settable(self):
@@ -408,7 +447,7 @@ class TestGeminiLiveProvider:
             "transcription": {
                 "language_auto": True,
                 "language_hints": ["fr-FR", "en-US"],
-                "custom_vocabulary": ["RoomKit", "Luge"],
+                "custom_vocabulary": ["RoomKit", "Tarjan"],
                 "diarization": True,
             }
         }
@@ -416,7 +455,7 @@ class TestGeminiLiveProvider:
         inbound = config.input_audio_transcription
         assert inbound.language_auto is not None
         assert inbound.language_hints.language_codes == ["fr-FR", "en-US"]
-        assert inbound.custom_vocabulary == ["RoomKit", "Luge"]
+        assert inbound.custom_vocabulary == ["RoomKit", "Tarjan"]
         assert inbound.diarization is True
 
     def test_build_config_transcription_defaults_stay_bare(self):
@@ -726,6 +765,7 @@ class TestGeminiLiveProvider:
             session=session,
             live_session=mock_live_session,
             pending_tool_calls=1,
+            blocking_call_ids={"call-1"},
         )
         provider._sessions[session.id] = state
 
@@ -1028,13 +1068,18 @@ class TestGeminiLiveProvider:
         session = _make_session()
 
         mock_live_session = _make_mock_live_session()
-        state = mod._GeminiSessionState(session=session, live_session=mock_live_session)
+        state = mod._GeminiSessionState(
+            session=session,
+            live_session=mock_live_session,
+            blocking_call_ids={"call-1"},
+        )
         provider._sessions[session.id] = state
 
         await provider.submit_tool_result(session, "call-1", '{"ok": true}')
 
         sent = mock_live_session.send_tool_response.await_args.kwargs["function_responses"][0]
         assert sent.scheduling is None
+        assert state.blocking_call_ids == set()
 
     async def test_injection_is_not_held_back_by_a_background_call(self):
         """Queueing here would delay input the model is perfectly able to take."""
@@ -1055,6 +1100,67 @@ class TestGeminiLiveProvider:
         assert result.status == "sent"
         assert state.queued_text_injections == []
 
+    async def test_a_blocking_tool_on_3_8_still_holds_the_injection(self):
+        """The pair the two features form, which neither test covered alone.
+
+        A tool may opt back into BLOCKING on 3.8. Deriving the queue from the
+        model's default instead of the outstanding call let that injection go
+        straight to a socket the API was refusing input on.
+        """
+        mod = _load_provider()
+        provider = mod.GeminiLiveProvider(api_key="test-key", model="gemini-3.8-live")
+        session = _make_session()
+
+        tools = [
+            {"name": "charge", "description": "d", "parameters": {}, "behavior": "BLOCKING"},
+            {"name": "lookup", "description": "d", "parameters": {}},
+        ]
+        state = mod._GeminiSessionState(
+            session=session,
+            live_session=_make_mock_live_session(),
+            blocking_tool_names=provider._blocking_tool_names(tools),
+        )
+        provider._sessions[session.id] = state
+        assert state.blocking_tool_names == {"charge"}
+
+        await provider._on_tool_call(
+            session,
+            state,
+            SimpleNamespace(function_calls=[SimpleNamespace(name="charge", id="c1", args={})]),
+        )
+        assert state.blocking_call_ids == {"c1"}
+
+        result = await provider.inject_text(session, "bonjour")
+        assert result.reason == "voice_provider_queued"
+
+        await provider.submit_tool_result(session, "c1", '{"ok": true}')
+        sent = state.live_session.send_tool_response.await_args.kwargs["function_responses"][0]
+        assert sent.scheduling is None, "a call the API waited on needs no scheduling"
+        assert state.blocking_call_ids == set()
+
+    async def test_a_background_call_on_3_8_registers_no_blocking_id(self):
+        mod = _load_provider()
+        provider = mod.GeminiLiveProvider(api_key="test-key", model="gemini-3.8-live")
+        session = _make_session()
+
+        state = mod._GeminiSessionState(
+            session=session,
+            live_session=_make_mock_live_session(),
+            blocking_tool_names=provider._blocking_tool_names(
+                [{"name": "lookup", "description": "d", "parameters": {}}]
+            ),
+        )
+        provider._sessions[session.id] = state
+
+        await provider._on_tool_call(
+            session,
+            state,
+            SimpleNamespace(function_calls=[SimpleNamespace(name="lookup", id="c1", args={})]),
+        )
+
+        assert state.blocking_call_ids == set()
+        assert (await provider.inject_text(session, "bonjour")).status == "sent"
+
     async def test_injection_still_waits_on_a_blocking_call(self):
         mod = _load_provider()
         provider = mod.GeminiLiveProvider(api_key="test-key", model="gemini-2.0-flash-live-001")
@@ -1065,6 +1171,7 @@ class TestGeminiLiveProvider:
             session=session,
             live_session=mock_live_session,
             pending_tool_calls=1,
+            blocking_call_ids={"call-1"},
         )
         provider._sessions[session.id] = state
 
@@ -1513,6 +1620,51 @@ class TestGeminiLiveProvider:
 
         assert ends == [session.id, session.id]
         assert state.reports_interaction_status is False
+
+    async def test_the_sdk_enum_is_read_as_well_as_the_bare_string(self):
+        """Production receives the enum; every other test here passes a string."""
+        from google.genai import types
+
+        mod = _load_provider()
+        provider = mod.GeminiLiveProvider(api_key="test-key", model="gemini-3.8-live")
+        session = _make_session()
+        state = mod._GeminiSessionState(session=session, response_started=True)
+        provider._sessions[session.id] = state
+
+        ends = []
+        provider.on_response_end(lambda s: ends.append(s.id))
+
+        await provider._handle_server_response(
+            session,
+            self._content(
+                turn_complete=True, interaction_status=types.InteractionStatus.IN_PROGRESS
+            ),
+        )
+        assert ends == []
+
+        await provider._handle_server_response(
+            session, self._content(interaction_status=types.InteractionStatus.IDLE)
+        )
+        assert ends == [session.id]
+
+    async def test_an_unrecognised_status_does_not_mute_turn_complete(self):
+        """Latching on UNSPECIFIED would retire the only signal such a server sends."""
+        mod = _load_provider()
+        provider = mod.GeminiLiveProvider(api_key="test-key", model="gemini-3.8-live")
+        session = _make_session()
+        state = mod._GeminiSessionState(session=session, response_started=True)
+        provider._sessions[session.id] = state
+
+        ends = []
+        provider.on_response_end(lambda s: ends.append(s.id))
+
+        await provider._handle_server_response(
+            session,
+            self._content(turn_complete=True, interaction_status="INTERACTION_STATUS_UNSPECIFIED"),
+        )
+
+        assert state.reports_interaction_status is False
+        assert ends == [session.id]
 
     async def test_barge_in_still_ends_the_response_mid_interaction(self):
         """Interruption does not wait for IDLE: the user took the floor."""

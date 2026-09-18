@@ -21,17 +21,21 @@ text, so this exercises the Live tool protocol, not speech recognition.
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 import asyncio
 import json
 import os
 import tempfile
 import time
-from pathlib import Path
 from typing import Any
 
-from shared import setup_logging
+from shared import IncomingScenarioBackend, require_env, setup_logging
 
-from roomkit import RealtimeVoiceChannel, RoomKit, ScenarioVoiceBackend
+from roomkit import RealtimeVoiceChannel, RoomKit
 from roomkit.providers.gemini.realtime import GeminiLiveProvider
 from roomkit.voice.base import VoiceSession
 
@@ -39,13 +43,6 @@ logger = setup_logging("roomkit.examples.realtime_background_tools")
 
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-live-extended-thinking")
 TOOL_SECONDS = 6.0
-
-
-class IncomingScenarioBackend(ScenarioVoiceBackend):
-    """Accept an in-process connection while retaining the bench's capture."""
-
-    async def accept(self, session: VoiceSession, connection: Any) -> None:
-        self._sessions[session.id] = session
 
 
 def inventory_tool() -> dict[str, Any]:
@@ -136,9 +133,16 @@ async def run(api_key: str, output: Path) -> dict[str, Any]:
                 "How many units of the blue widget do we have in stock?",
                 role="user",
             )
-            await tool_done.wait()
-            # Leave the model room to deliver the scheduled result.
-            await asyncio.sleep(8)
+            # Bounded on purpose: if the model never calls the tool there is
+            # still a report to write, and a bare wait would turn that into a
+            # timeout traceback instead of an answer.
+            try:
+                await asyncio.wait_for(tool_done.wait(), timeout=45)
+            except TimeoutError:
+                mark("tool_never_called")
+            else:
+                # Leave the model room to deliver the scheduled result.
+                await asyncio.sleep(8)
     finally:
         report.update(
             {
@@ -159,11 +163,9 @@ async def run(api_key: str, output: Path) -> dict[str, Any]:
 
 
 async def main() -> None:
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        raise SystemExit("Set GEMINI_API_KEY to run the live example")
+    env = require_env("GEMINI_API_KEY")
     output = Path(await asyncio.to_thread(tempfile.mkdtemp, prefix="realtime-background-tools-"))
-    report = await run(api_key, output)
+    report = await run(env["GEMINI_API_KEY"], output)
     logger.info(
         "Spoke during the call: %s (%d assistant turns) | response_end fired %d time(s)",
         report["kept_talking_during_the_call"],

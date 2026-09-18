@@ -11,6 +11,7 @@ from .audio import (
     build_turn_detector,
     build_vad,
 )
+from .bench import IncomingScenarioBackend
 from .console import console_enabled, setup_console
 from .env import auto_select_provider, env_bool, os_info, require_env
 from .hooks import log_tool_call
@@ -19,6 +20,7 @@ from .log import setup_logging
 from .tools import WebSearchTool
 
 __all__ = [
+    "IncomingScenarioBackend",
     "WebSearchTool",
     "auto_select_provider",
     "build_aec",

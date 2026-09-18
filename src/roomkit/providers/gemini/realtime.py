@@ -18,6 +18,8 @@ from roomkit.providers.ai.base import ModelInfo
 from roomkit.providers.gemini.realtime_models import (
     MODELS,
     THINKING_LEVELS,
+    TOOL_BEHAVIORS,
+    LiveModelProfile,
     live_model_profile,
 )
 from roomkit.providers.gemini.voices import VOICES as _VOICES
@@ -26,6 +28,36 @@ from roomkit.voice.realtime.injection import VoiceInjectionResult
 from roomkit.voice.realtime.provider import RealtimeVoiceProvider, VoiceInfo
 
 logger = logging.getLogger("roomkit.providers.gemini.realtime")
+
+_IDLE_STATUSES = frozenset({"IDLE", "INTERACTION_STATUS_IDLE"})
+"""What ``interaction_status`` reads when the request is over. A set rather
+than a suffix match: a future ``NOT_IDLE`` would end every response early."""
+
+_KNOWN_INTERACTION_STATUSES = _IDLE_STATUSES | {"IN_PROGRESS", "INTERACTION_STATUS_IN_PROGRESS"}
+"""Statuses that prove the server reports its interaction state. ``UNSPECIFIED``
+does not: latching on it would retire ``turn_complete`` as an end-of-response
+signal while nothing ever reads IDLE, and the session would never hand back."""
+
+
+def _enum_value(enum_cls: Any, value: Any, field: str) -> str:
+    """Normalise *value* to a member of *enum_cls*, or refuse it here.
+
+    google-genai answers an unrecognised enum string with a ``UserWarning``
+    and forwards it unchanged, so a typo in ``provider_config`` reaches the
+    server and takes the whole setup down with it. Failing at the boundary
+    names the field and says what it takes, which is the point of validating
+    a developer-supplied value at all.
+    """
+    candidate = str(value).upper()
+    allowed = {str(member.value) for member in enum_cls}
+    if candidate not in allowed:
+        raise ValueError(f"{field} must be one of {sorted(allowed)}, got {value!r}")
+    return candidate
+
+
+def _interaction_status_is_known(status: Any) -> bool:
+    """Whether *status* is a state this build recognises."""
+    return str(getattr(status, "value", status)).upper() in _KNOWN_INTERACTION_STATUSES
 
 
 def _interaction_is_idle(status: Any) -> bool:
@@ -36,7 +68,7 @@ def _interaction_is_idle(status: Any) -> bool:
     """
     if status is None:
         return False
-    return str(getattr(status, "value", status)).upper().endswith("IDLE")
+    return str(getattr(status, "value", status)).upper() in _IDLE_STATUSES
 
 
 _MAX_INJECT_TEXT_LENGTH = 32_000
@@ -111,6 +143,15 @@ class _GeminiSessionState:
     tool_result_bytes: int = 0
     input_sample_rate: int = 16000
     pending_tool_calls: int = 0
+    # Tools this session declared BLOCKING. From 3.8 the model runs its calls
+    # in the background by default, but a single tool can still ask to block
+    # where the model allows it, so the mode is a property of the call and not
+    # of the model: deriving it from the model's default let a blocking call
+    # slip past the injection queue that exists precisely for it.
+    blocking_tool_names: set[str] = field(default_factory=set)
+    # Ids of the blocking calls currently outstanding. Non-empty means the API
+    # is waiting and refuses client_content.
+    blocking_call_ids: set[str] = field(default_factory=set)
     queued_injections: list[tuple[bytes, str, str, bool]] = field(default_factory=list)
     realtime_input_sent: bool = False
     queued_text_injections: list[tuple[str, str, bool]] = field(default_factory=list)
@@ -215,15 +256,6 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
         )
         self._model = model
 
-        # From 3.8 the API runs tools in the background by default and the
-        # model keeps talking through them; before that it blocked and
-        # refused input until the response came back. The two need opposite
-        # handling downstream, so the mode is resolved once here rather than
-        # rediscovered at each call site.
-        self._tools_run_in_background = (
-            live_model_profile(model).default_tool_behavior == "NON_BLOCKING"
-        )
-
         # Setup fields dropped for this model, already reported once each.
         # Reconnects rebuild the config, and a GoAway storm would otherwise
         # repeat the same warning for the whole session.
@@ -292,7 +324,25 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
             self._model,
         )
 
-    def _tool_behavior(self, profile: Any, requested: str | None) -> str:
+    def _warn_downgraded(self, field: str, replacement: str) -> None:
+        """Report a setup value replaced rather than dropped, once.
+
+        Separate from :meth:`_warn_unsupported` because "ignored" would be
+        false here, and the one log line an operator reads should say what
+        actually went out.
+        """
+        key = f"{self._model}:{field}"
+        if key in self._warned_unsupported:
+            return
+        self._warned_unsupported.add(key)
+        logger.warning(
+            "[Gemini] %s is not supported by %s - sent as %s",
+            field,
+            self._model,
+            replacement,
+        )
+
+    def _tool_behavior(self, profile: LiveModelProfile, requested: str | None) -> str:
         """Pick the execution mode a declaration is sent with.
 
         Left to the server the answer would differ by generation, which is
@@ -305,10 +355,31 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
         if requested is None:
             return profile.default_tool_behavior
         behavior = str(requested).upper()
+        if behavior not in TOOL_BEHAVIORS:
+            raise ValueError(
+                f"tool behavior must be one of {sorted(TOOL_BEHAVIORS)}, got {requested!r}"
+            )
         if behavior == "BLOCKING" and not profile.blocking_tools:
-            self._warn_unsupported("BLOCKING tool behavior")
+            self._warn_downgraded(
+                "BLOCKING tool behavior", "NON_BLOCKING, which the model does accept"
+            )
             return "NON_BLOCKING"
         return behavior
+
+    def _blocking_tool_names(self, tools: list[dict[str, Any]] | None) -> set[str]:
+        """Names whose calls the API waits on, so an injection must queue.
+
+        Resolved through the same :meth:`_tool_behavior` the declarations go
+        out with, so the runtime guard and the wire can never disagree about
+        which mode a tool is in.
+        """
+        profile = live_model_profile(self._model)
+        return {
+            name
+            for tool in tools or []
+            if (name := tool.get("name", ""))
+            and self._tool_behavior(profile, tool.get("behavior")) == "BLOCKING"
+        }
 
     def _transcription_config(self, types: Any, options: dict[str, Any] | None) -> Any:
         """Build the inbound transcription config from ``provider_config``.
@@ -345,7 +416,9 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
                 kwargs[key] = bool(value)
         mode = options.get("mode")
         if mode:
-            kwargs["mode"] = str(mode).upper()
+            kwargs["mode"] = _enum_value(
+                types.AudioTranscriptionConfigMode, mode, "transcription.mode"
+            )
         return types.AudioTranscriptionConfig(**kwargs)
 
     def _build_config(
@@ -509,7 +582,9 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
         # the knob.
         turn_coverage = pc.get("turn_coverage")
         if turn_coverage:
-            realtime_input_kwargs["turn_coverage"] = str(turn_coverage).upper()
+            realtime_input_kwargs["turn_coverage"] = _enum_value(
+                types.TurnCoverage, turn_coverage, "turn_coverage"
+            )
         config["realtime_input_config"] = types.RealtimeInputConfig(**realtime_input_kwargs)
 
         # --- Tools ---
@@ -712,6 +787,7 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
             temperature=temperature,
             server_vad=server_vad,
             provider_config=deepcopy(provider_config or {}),
+            blocking_tool_names=self._blocking_tool_names(tools),
         )
         self._sessions[session.id] = state
 
@@ -807,11 +883,11 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
             )
             return VoiceInjectionResult(status="not_sent", reason="voice_empty_text")
 
-        # Queue while a blocking tool call is outstanding: through 3.1 the
-        # API refuses input until the function response comes back. A model
-        # that runs its tools in the background is not waiting, and queueing
-        # there would hold the injection back for no reason.
-        if state.pending_tool_calls > 0 and not self._tools_run_in_background:
+        # Queue while a blocking tool call is outstanding: the API refuses
+        # input until its function response comes back. A background call is
+        # not one the API waits on, and queueing there would hold the
+        # injection back for no reason.
+        if state.blocking_call_ids:
             logger.debug(
                 "Queuing text injection for session %s (pending tool calls: %d)",
                 session.id,
@@ -900,7 +976,7 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
         # Same guard as inject_text: only a blocking call makes the API refuse
         # client_content. Queue the injection and flush after
         # submit_tool_result.
-        if state.pending_tool_calls > 0 and not self._tools_run_in_background:
+        if state.blocking_call_ids:
             logger.debug(
                 "Queuing image injection for session %s (pending tool calls: %d)",
                 session.id,
@@ -1007,18 +1083,22 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
             "name": "",  # Gemini uses ID-based matching
             "response": result_dict,
         }
-        if self._tools_run_in_background:
+        was_blocking = call_id in state.blocking_call_ids
+        if not was_blocking:
             scheduling = state.provider_config.get("tool_response_scheduling", "WHEN_IDLE")
             if scheduling:
-                response_kwargs["scheduling"] = str(scheduling).upper()
+                response_kwargs["scheduling"] = _enum_value(
+                    types.FunctionResponseScheduling, scheduling, "tool_response_scheduling"
+                )
 
         await state.live_session.send_tool_response(
             function_responses=[types.FunctionResponse(**response_kwargs)],
         )
 
-        # Decrement pending counter and flush queued injections
+        # Release the call and flush what its blocking waited on.
         state.pending_tool_calls = max(0, state.pending_tool_calls - 1)
-        if state.pending_tool_calls == 0:
+        state.blocking_call_ids.discard(call_id)
+        if not state.blocking_call_ids:
             if state.queued_text_injections:
                 text_injections = state.queued_text_injections[:]
                 state.queued_text_injections.clear()
@@ -1193,6 +1273,11 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
         state.voice = effective_voice
         state.tools = effective_tools
         state.temperature = effective_temperature
+        # The new declarations decide what blocks from here on. Calls
+        # outstanding from the old set keep their ids in blocking_call_ids
+        # until their results come back, so the guard stays honest across
+        # the change.
+        state.blocking_tool_names = self._blocking_tool_names(effective_tools)
         state.live_config = new_config
         state.provider_config = effective_provider_config
         logger.info(
@@ -1670,7 +1755,7 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
         # channel the reply is over while the model is still speaking, which
         # desynchronises the interruption handler and the bridge.
         status = getattr(content, "interaction_status", None)
-        if status is not None:
+        if status is not None and _interaction_status_is_known(status):
             state.reports_interaction_status = True
         interaction_done = _interaction_is_idle(status)
 
@@ -1731,6 +1816,8 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
         await self._flush_transcription_buffer(session, "user")
         for fc in tool_call.function_calls:
             state.pending_tool_calls += 1
+            if fc.name in state.blocking_tool_names and fc.id:
+                state.blocking_call_ids.add(fc.id)
             args_dict = dict(fc.args) if fc.args else {}
             self._log_event(
                 session.id,

@@ -18,8 +18,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   audio, thinking budget) are dropped with a warning rather than failing the
   session. Models that send no `interaction_status` keep the previous
   behaviour, detected from the stream rather than from the model id.
-- `gemini-3.8-live` is the default realtime model, in the provider and in
-  every example.
 - `provider_config` exposes `thinking_level` (extended thinking, `low` /
   `medium` / `high`), `turn_coverage`, `tool_response_scheduling`, and a
   `transcription` block carrying `language_auto` (switch language
@@ -37,10 +35,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `gemini-3.8-live` is the default realtime model, in the provider and in every
+  example. A caller that never passed `model=` moves generation: an inherited
+  `thinking_budget`, `enable_affective_dialog` or `proactive_audio` starts being
+  dropped with a warning instead of applied. Name a pre-3.8 model explicitly to
+  keep the old behaviour.
 - `google-genai` floor raised to 2.24.0 on the `gemini` and `realtime-gemini`
   extras, which previously disagreed (2.18.0 and 2.0.0) although the realtime
   path has the more recent needs. `InteractionStatus.IDLE`, which reports the
-  end of a Gemini 3.8 interaction, only exists from 2.19.0.
+  end of a Gemini 3.8 interaction, is absent from the 2.18.0 the extras pinned;
+  upstream added it in 2.19.0.
 
 ### Fixed
 

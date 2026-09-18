@@ -94,7 +94,7 @@ class LiveModelProfile:
     """``Behavior`` value put on a declaration the caller left unqualified."""
 
 
-LEGACY_PROFILE = LiveModelProfile(
+PRE_38_PROFILE = LiveModelProfile(
     affective_dialog=True,
     proactivity=True,
     thinking_budget=True,
@@ -125,6 +125,10 @@ LIVE_38_THINKING_PROFILE = LiveModelProfile(
 """``gemini-3.8-live-extended-thinking``: levels instead of a budget, and a
 hard error on a blocking tool."""
 
+TOOL_BEHAVIORS = frozenset({"BLOCKING", "NON_BLOCKING"})
+"""Execution modes a tool declaration may ask for. The SDK enum also carries
+``UNSPECIFIED``, which asks for nothing and is not a choice a caller makes."""
+
 THINKING_LEVELS = frozenset({"LOW", "MEDIUM", "HIGH"})
 """Levels the extended-thinking model takes, as the SDK's ``ThinkingLevel``
 spells them. The enum also carries ``MINIMAL``, which that model refuses: it
@@ -145,4 +149,4 @@ def live_model_profile(model: str) -> LiveModelProfile:
         return LIVE_38_THINKING_PROFILE
     if model.startswith("gemini-3.8-live"):
         return LIVE_38_PROFILE
-    return LEGACY_PROFILE
+    return PRE_38_PROFILE

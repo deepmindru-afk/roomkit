@@ -9,26 +9,25 @@ is injected text, so this verifies the Live tool protocol, not speech recognitio
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 import asyncio
 import json
 import logging
 import os
 import tempfile
-from pathlib import Path
 from typing import Any
 
-from roomkit import HookTrigger, RealtimeVoiceChannel, RoomKit, ScenarioVoiceBackend, VoiceTrace
+from shared import IncomingScenarioBackend
+
+from roomkit import HookTrigger, RealtimeVoiceChannel, RoomKit, VoiceTrace
 from roomkit.providers.gemini.realtime import GeminiLiveProvider
 from roomkit.voice.base import VoiceSession
 
 logger = logging.getLogger("roomkit.examples.realtime_tool_search")
-
-
-class IncomingScenarioBackend(ScenarioVoiceBackend):
-    """Accept an in-process connection while retaining the bench's WAV capture."""
-
-    async def accept(self, session: VoiceSession, connection: Any) -> None:
-        self._sessions[session.id] = session
 
 
 def catalogue() -> list[dict[str, Any]]:
