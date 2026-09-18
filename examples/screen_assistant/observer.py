@@ -105,8 +105,8 @@ def setup_screen_vision(
         #   2. Gemini Live's silent=True is best-effort once mic audio is
         #      flowing — the provider falls back to send_realtime_input,
         #      which has no turn_complete control. Even a "silent" inject
-        #      can barge in on the agent's own speech. See
-        #      providers/gemini/realtime.py:667 ("silent mode is
+        #      can barge in on the agent's own speech. See _send_text in
+        #      providers/gemini/realtime_input.py ("silent mode is
         #      best-effort via send_realtime_input").
         # The baseline description has already been recorded above, so by
         # the time this gate opens, build_change_context will diff
