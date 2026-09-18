@@ -135,6 +135,8 @@ class TestGeminiLiveProvider:
         """
         mod = _load_provider()
         for model in (
+            "gemini-3.8-live",
+            "gemini-3.8-live-extended-thinking",
             "gemini-3.1-flash-live-preview",
             "gemini-3.0-flash-live",
             "gemini-3-experimental",
@@ -233,8 +235,12 @@ class TestGeminiLiveProvider:
         assert config.tools is not None
 
     def test_build_config_with_provider_config_options(self):
+        # Pinned to a pre-3.8 model on purpose: affective dialog, proactivity
+        # and a thinking budget are exactly the three fields the 3.8 family
+        # stopped accepting, and this test is the one that guards them for
+        # the generations that still do.
         mod = _load_provider()
-        provider = mod.GeminiLiveProvider(api_key="test-key")
+        provider = mod.GeminiLiveProvider(api_key="test-key", model="gemini-2.0-flash-live-001")
 
         pc = {
             "response_modalities": ["TEXT"],
@@ -707,8 +713,12 @@ class TestGeminiLiveProvider:
         assert "Model response" in call_kwargs["text"]
 
     async def test_inject_text_queued_during_tool_calls(self):
+        # Pinned to a pre-3.8 model: the queue exists because the API refuses
+        # input while a blocking call is outstanding. From 3.8 tools run in
+        # the background and there is nothing to wait for, which
+        # test_injection_is_not_held_back_by_a_background_call covers.
         mod = _load_provider()
-        provider = mod.GeminiLiveProvider(api_key="test-key")
+        provider = mod.GeminiLiveProvider(api_key="test-key", model="gemini-2.0-flash-live-001")
         session = _make_session()
 
         mock_live_session = _make_mock_live_session()

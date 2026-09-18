@@ -76,7 +76,7 @@ def write_evidence(
 
 async def run(api_key: str, output: Path) -> dict[str, Any]:
     """Run one bounded session and retain evidence even when it fails."""
-    provider = GeminiLiveProvider(api_key=api_key, model="gemini-3.1-flash-live-preview")
+    provider = GeminiLiveProvider(api_key=api_key, model="gemini-3.8-live")
     backend = IncomingScenarioBackend(capture_sample_rate=24000)
     kit = RoomKit()
     trace = VoiceTrace(kit, triggers=[HookTrigger.BEFORE_TOOL_USE, HookTrigger.ON_TOOL_CALL])

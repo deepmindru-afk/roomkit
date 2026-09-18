@@ -13,7 +13,7 @@ Run with:
 
 Environment variables:
     GOOGLE_API_KEY      (required) Google API key
-    GEMINI_MODEL        Model name (default: gemini-3.1-flash-live-preview)
+    GEMINI_MODEL        Model name (default: gemini-3.8-live)
     GEMINI_VOICE        Voice preset (default: Aoede)
     SYSTEM_PROMPT       Custom system prompt
     AEC                 Echo cancellation: webrtc | speex | 1 (=webrtc) | 0
@@ -76,7 +76,7 @@ async def main() -> None:
     # --- Gemini Live provider (speech-to-speech) ---
     provider = GeminiLiveProvider(
         api_key=api_key,
-        model=os.environ.get("GEMINI_MODEL", "gemini-3.1-flash-live-preview"),
+        model=os.environ.get("GEMINI_MODEL", "gemini-3.8-live"),
     )
 
     # --- Audio pipeline stages ---

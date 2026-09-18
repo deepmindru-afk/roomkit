@@ -259,7 +259,7 @@ def build_realtime(notes: list[str]) -> Any | None:
     if os.getenv("GEMINI_API_KEY"):
         from roomkit.providers.gemini.realtime import GeminiLiveProvider
 
-        model = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-live-preview")
+        model = os.getenv("GEMINI_MODEL", "gemini-3.8-live")
         notes.append(f"REALTIME: Gemini Live {model}, voice {spoken} (ROOMKIT_VOICE=)")
         return ConferenceRealtimeConfig(
             provider=GeminiLiveProvider(api_key=os.environ["GEMINI_API_KEY"], model=model),

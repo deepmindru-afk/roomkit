@@ -352,7 +352,7 @@ class TestRealtimeChannel:
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
         """The line exists to measure the case per model, so it must name one."""
-        provider = MockRealtimeProvider(model="gemini-3.1-flash-live-preview")
+        provider = MockRealtimeProvider(model="gemini-3.8-live")
         handler, _calls = _recording_handler()
         _kit, channel, room_id = await _rt_setup(provider, handler, [BOARDS_TOOL])
         session = await channel.start_session(room_id, "user-1", "fake-ws")
@@ -363,5 +363,5 @@ class TestRealtimeChannel:
 
         folds = [r.getMessage() for r in caplog.records if "folded hoisted arguments" in r.message]
         assert len(folds) == 1
-        assert "model=gemini-3.1-flash-live-preview" in folds[0]
+        assert "model=gemini-3.8-live" in folds[0]
         assert "provider=MockRealtimeProvider" in folds[0]

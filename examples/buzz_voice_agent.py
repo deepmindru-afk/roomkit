@@ -24,7 +24,7 @@ Environment variables:
     BUZZ_CHANNEL_ID    (required) parent channel UUID to watch for huddles
     BUZZ_HUDDLE_ID     join this huddle immediately instead of watching
     BUZZ_AUTH_TAG      NIP-OA owner attestation tag JSON (optional)
-    GEMINI_MODEL       model name (default: gemini-3.1-flash-live-preview)
+    GEMINI_MODEL       model name (default: gemini-3.8-live)
     GEMINI_VOICE       voice preset (default: Aoede)
     SYSTEM_PROMPT      custom system prompt
 
@@ -64,7 +64,7 @@ async def main() -> None:
         "buzz-voice",
         provider=GeminiLiveProvider(
             api_key=env["GOOGLE_API_KEY"],
-            model=os.environ.get("GEMINI_MODEL", "gemini-3.1-flash-live-preview"),
+            model=os.environ.get("GEMINI_MODEL", "gemini-3.8-live"),
         ),
         transport=BuzzHuddleBackend(),
         system_prompt=os.environ.get("SYSTEM_PROMPT", DEFAULT_PROMPT),

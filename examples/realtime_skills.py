@@ -32,7 +32,7 @@ async def main() -> None:
     registry = SkillRegistry()
     await asyncio.to_thread(registry.discover, Path(__file__).parent / "skills")
     output = Path(await asyncio.to_thread(tempfile.mkdtemp, prefix="realtime-skills-"))
-    provider = GeminiLiveProvider(api_key=api_key, model="gemini-3.1-flash-live-preview")
+    provider = GeminiLiveProvider(api_key=api_key, model="gemini-3.8-live")
     backend = IncomingScenarioBackend(capture_sample_rate=24000)
     kit = RoomKit()
     trace = VoiceTrace(kit, triggers=[HookTrigger.ON_TOOL_CALL])

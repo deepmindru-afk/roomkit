@@ -16,7 +16,7 @@ from roomkit.voice.base import VoiceSession, VoiceSessionState
 
 @pytest.fixture
 def provider():
-    return GeminiLiveProvider(api_key="test-key", model="gemini-3.1-flash-live-preview")
+    return GeminiLiveProvider(api_key="test-key", model="gemini-3.8-live")
 
 
 def seed(provider, *, strict=True, live=None):

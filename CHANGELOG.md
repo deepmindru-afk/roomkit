@@ -18,12 +18,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   audio, thinking budget) are dropped with a warning rather than failing the
   session. Models that send no `interaction_status` keep the previous
   behaviour, detected from the stream rather than from the model id.
+- `gemini-3.8-live` is the default realtime model, in the provider and in
+  every example.
 - `provider_config` exposes `thinking_level` (extended thinking, `low` /
   `medium` / `high`), `turn_coverage`, `tool_response_scheduling`, and a
   `transcription` block carrying `language_auto` (switch language
   mid-conversation), `language_hints`, `custom_vocabulary`, `diarization` and
   `word_timestamp`. A tool may carry `behavior` to opt back into blocking
   execution where the model allows it.
+- `examples/realtime_background_tools.py` runs a deliberately slow tool on
+  `gemini-3.8-live-extended-thinking` and reports the assistant turns that
+  happened while the call was still outstanding.
 - Gemini Live catalog lists `gemini-3.8-live` and
   `gemini-3.8-live-extended-thinking`, which replaced
   `gemini-3.1-flash-live-preview` on 2026-09-15. The replaced preview stays

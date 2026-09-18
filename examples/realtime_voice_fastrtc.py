@@ -50,7 +50,7 @@ _console_cleanup = setup_console(kit)
 # --- Gemini Live provider ---
 provider = GeminiLiveProvider(
     api_key=os.environ.get("GOOGLE_API_KEY", ""),
-    model="gemini-3.1-flash-live-preview",
+    model="gemini-3.8-live",
 )
 
 # --- FastRTC transport (WebRTC, passthrough mode) ---

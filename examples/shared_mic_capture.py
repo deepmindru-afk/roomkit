@@ -28,7 +28,7 @@ Run with:
 
 Environment variables:
     GOOGLE_API_KEY      (required) Google API key
-    GEMINI_MODEL        Model name (default: gemini-3.1-flash-live-preview)
+    GEMINI_MODEL        Model name (default: gemini-3.8-live)
     GEMINI_VOICE        Voice preset (default: Aoede)
     BACKLOG_SECONDS     Ring size retained for replay (default: 10)
     ENERGY_THRESHOLD    RMS speech threshold, raise it in a noisy room
@@ -171,7 +171,7 @@ async def main() -> None:
     kit = RoomKit()
     provider = GeminiLiveProvider(
         api_key=api_key,
-        model=os.environ.get("GEMINI_MODEL", "gemini-3.1-flash-live-preview"),
+        model=os.environ.get("GEMINI_MODEL", "gemini-3.8-live"),
     )
 
     # The backend subscribes to the shared source instead of opening the

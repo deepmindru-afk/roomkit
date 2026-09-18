@@ -76,7 +76,7 @@ def _skills(tmp: Path) -> SkillRegistry:
 
 
 async def main() -> None:
-    provider = MockRealtimeProvider(model="gemini-3.1-flash-live-preview")
+    provider = MockRealtimeProvider(model="gemini-3.8-live")
     with TemporaryDirectory() as tmp:
         channel = RealtimeVoiceChannel(
             "voice",

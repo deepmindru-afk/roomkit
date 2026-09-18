@@ -85,7 +85,7 @@ PACER_HEADROOM_MS = float(os.environ.get("SIP_PACER_HEADROOM_MS", "60"))
 PLAYOUT = os.environ.get("SIP_PLAYOUT", "0") in ("1", "true", "yes")
 PLAYOUT_MAX_DELAY_MS = int(os.environ.get("SIP_PLAYOUT_MAX_DELAY_MS", "200"))
 
-GEMINI_MODEL = "gemini-3.1-flash-live-preview"
+GEMINI_MODEL = "gemini-3.8-live"
 SYSTEM_PROMPT = (
     "You are a friendly phone assistant making an outbound call. "
     "When the person answers, greet them in one short sentence (no more than "
