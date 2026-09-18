@@ -7,8 +7,7 @@ server sends ``tool_call_cancellation``: it will not read the result. RoomKit
 carries that to the application through ``on_tool_call_cancelled``, cancels
 the handler still running for the call, sends nothing back, and reports the
 call to ``ON_TOOL_CALL``'s async observers with ``cancelled=True`` beside
-``is_error=True``. Before, the handler ran to the end for a result the
-provider then dropped in silence, and no hook saw the call end.
+``is_error=True``.
 
 Runs on the mock provider, so it needs no key and no microphone: the
 cancellation is simulated where Gemini would emit it. A real Gemini Live

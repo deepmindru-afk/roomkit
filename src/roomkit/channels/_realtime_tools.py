@@ -192,29 +192,44 @@ class RealtimeToolsMixin:
                 )
                 continue
             name, arguments = recorded
-            task_name = f"rt_tool_call:{session.id}:{call_id}"
-            for task in list(self._scheduled_tasks):
-                if task.get_name() == task_name and not task.done():
-                    task.cancel()
+            self._cancel_tool_call_task(session.id, call_id)
             logger.info(
                 "Tool call %s(%s) cancelled by the model for session %s", name, call_id, session.id
             )
             with self._state_lock:
                 room_id = self._session_rooms.get(session.id)
-            body = json.dumps(
-                {
-                    "error": "Tool call cancelled",
-                    "tool": name,
-                    "hint": "The model abandoned this call before its result; nothing was sent.",
-                }
-            )
             self._track_task(
                 loop,
-                self._fire_tool_refusal(
-                    session, call_id, name, arguments, body, room_id, cancelled=True
-                ),
+                self._report_cancelled_tool_call(session, call_id, name, arguments, room_id),
                 name=f"rt_tool_cancelled:{session.id}:{call_id}",
             )
+
+    def _cancel_tool_call_task(self, session_id: str, call_id: str) -> None:
+        """Cancel one call's handler task, found by the name it was tracked under."""
+        task_name = f"rt_tool_call:{session_id}:{call_id}"
+        for task in list(self._scheduled_tasks):
+            if task.get_name() == task_name and not task.done():
+                task.cancel()
+
+    async def _report_cancelled_tool_call(
+        self,
+        session: VoiceSession,
+        call_id: str,
+        name: str,
+        arguments: dict[str, Any],
+        room_id: str | None,
+    ) -> None:
+        """Report an abandoned call to ON_TOOL_CALL's observers (RFC §9.3)."""
+        body = json.dumps(
+            {
+                "error": "Tool call cancelled",
+                "tool": name,
+                "hint": "The model abandoned this call before its result; nothing was sent.",
+            }
+        )
+        await self._fire_tool_refusal(
+            session, call_id, name, arguments, body, room_id, cancelled=True
+        )
 
     def _begin_tool_call(
         self, session_id: str, call_id: str, name: str, arguments: dict[str, Any]

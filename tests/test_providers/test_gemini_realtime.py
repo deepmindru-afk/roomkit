@@ -2383,7 +2383,7 @@ class TestServerCancelledToolCalls:
         assert told == [(session.id, ["call-1", "call-2"])]
 
     async def test_a_cancelled_call_is_told_then_its_late_result_is_dropped(self):
-        """The simulated flow of the card: cancellation first, the result arrives after."""
+        """The flow under test: cancellation first, the result arrives after."""
         provider, session, state, live = _blocking_call_state()
         told: list[list[str]] = []
         provider.on_tool_call_cancelled(lambda _s, ids: told.append(ids))
