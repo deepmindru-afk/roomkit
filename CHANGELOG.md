@@ -28,8 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `GeminiLiveProvider` is split into focused modules, the shape the GPT-Live
-  provider already has. `realtime.py` keeps the class, the connection and the
-  reconnect loop; `realtime_state.py` holds the session state,
+  provider already has. `realtime.py` keeps the class and the session
+  lifecycle; `realtime_connection.py` runs the receive loop and the
+  reconnect machine, `realtime_state.py` holds the session state,
   `realtime_config.py` builds the `LiveConnectConfig` as pure functions,
   `realtime_tools.py` handles tool calls and the bookkeeping of the ones the
   model waits on, `realtime_transcription.py` joins the transcription chunks,
