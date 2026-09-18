@@ -11,9 +11,10 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any
 
-from roomkit.providers.gemini.realtime_config import _genai_types, enum_value, warn_unsupported
+from roomkit.providers.gemini.realtime_config import enum_value, genai_types, warn_unsupported
 from roomkit.providers.gemini.realtime_models import live_model_profile
 from roomkit.providers.gemini.realtime_state import _GeminiSessionState
 from roomkit.voice.base import VoiceSession
@@ -36,14 +37,14 @@ class GeminiLiveToolsMixin(RealtimeVoiceProvider):
 
     # Owned by GeminiLiveProvider / its other mixins; declared for typing.
     _model: str
-    _get_active_state: Any
-    _log_event: Any
-    _send_text: Any
-    _send_image: Any
-    _flush_transcription_buffer: Any
+    _get_active_state: Callable[[VoiceSession], _GeminiSessionState | None]
+    _log_event: Callable[..., None]
+    _send_text: Callable[[_GeminiSessionState, str, str, bool], Awaitable[None]]
+    _send_image: Callable[[_GeminiSessionState, bytes, str, str, bool], Awaitable[None]]
+    _flush_transcription_buffer: Callable[[VoiceSession, str], Awaitable[None]]
 
     async def submit_tool_result(self, session: VoiceSession, call_id: str, result: str) -> None:
-        types = _genai_types()
+        types = genai_types()
 
         if (state := self._get_active_state(session)) is None:
             raise RuntimeError("Cannot deliver tool result without an active Gemini connection")
@@ -88,7 +89,7 @@ class GeminiLiveToolsMixin(RealtimeVoiceProvider):
         try:
             parsed = json.loads(result)
             result_dict = parsed if isinstance(parsed, dict) else {"result": parsed}
-        except (json.JSONDecodeError, ValueError):
+        except ValueError:  # json.JSONDecodeError is one
             result_dict = {"result": result}
 
         # A background call returns while the model is mid-sentence, so the

@@ -7,7 +7,7 @@ on the finals Gemini re-sends, for both the caller's and the model's speech.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from collections.abc import Callable
 
 from roomkit.providers.gemini.realtime_state import _GeminiSessionState, _TranscriptionBuffer
 from roomkit.voice.base import VoiceSession
@@ -28,7 +28,7 @@ class GeminiLiveTranscriptionMixin(RealtimeVoiceProvider):
     # Owned by GeminiLiveProvider; declared for typing.
     _sessions: dict[str, _GeminiSessionState]
     _transcription_buffer: _TranscriptionBuffer
-    _log_event: Any
+    _log_event: Callable[..., None]
 
     def _clear_transcription_buffers(self, session_id: str) -> None:
         """Remove all transcription buffer entries for a session."""

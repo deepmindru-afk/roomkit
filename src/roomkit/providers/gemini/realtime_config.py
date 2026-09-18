@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from collections.abc import Callable
 from typing import Any, cast
 
 from roomkit.providers.gemini.realtime_models import (
@@ -30,24 +31,27 @@ __all__ = [
     "build_live_config",
     "debug_enabled",
     "enum_value",
-    "log_config_dump",
-    "tool_behavior",
-    "transcription_config",
+    "genai_types",
     "warn_unsupported",
 ]
 
 
-def _genai_types() -> Any:
+def genai_types() -> Any:
     """The SDK's ``types`` module, resolved at call time.
 
-    google-genai is an optional dependency, validated once in
-    ``GeminiLiveProvider.__init__``. Binding ``types`` when this module is
-    imported would make it unimportable without the SDK, and would freeze
-    whichever module object ``sys.modules`` held at that moment, which is
-    not what a test that swaps the SDK in and out expects.
+    google-genai is an optional dependency. Binding ``types`` when this module
+    is imported would make it unimportable without the SDK, and would freeze
+    whichever module object ``sys.modules`` held at that moment, which is not
+    what a test that swaps the SDK in and out expects. A missing SDK is named
+    with the extra that installs it, as ``GeminiLiveProvider.__init__`` does.
     """
-    from google.genai import types
-
+    try:
+        from google.genai import types
+    except ImportError as exc:
+        raise ImportError(
+            "google-genai is required for the Gemini Live provider. "
+            "Install with: pip install 'roomkit[realtime-gemini]'"
+        ) from exc
     return types
 
 
@@ -167,7 +171,7 @@ _PROFILE_GATED: dict[str, str] = {
 
 
 def _gated(
-    pc: dict[str, Any], profile: LiveModelProfile, key: str, warned: set[str], model: str
+    model: str, pc: dict[str, Any], profile: LiveModelProfile, key: str, warned: set[str]
 ) -> Any:
     """The value of a profile-gated setup field, or None when absent or refused."""
     value = pc.get(key)
@@ -177,6 +181,43 @@ def _gated(
         return value
     warn_unsupported(model, key, warned)
     return None
+
+
+# Knobs copied from ``provider_config`` as they are, each through the type the
+# API takes. Generation parameters go on the config itself, the timing ones
+# on the server VAD.
+_GENERATION_FIELDS: dict[str, Callable[[Any], Any]] = {
+    "top_p": float,
+    "top_k": float,
+    "max_output_tokens": int,
+    "seed": int,
+}
+_VAD_TIMING_FIELDS: dict[str, Callable[[Any], Any]] = {
+    "silence_duration_ms": int,
+    "prefix_padding_ms": int,
+}
+
+
+def _apply_coerced(
+    source: dict[str, Any], target: dict[str, Any], fields: dict[str, Callable[[Any], Any]]
+) -> None:
+    """Copy each key of *fields* present in *source* into *target*, coerced."""
+    for key, coerce in fields.items():
+        value = source.get(key)
+        if value is not None:
+            target[key] = coerce(value)
+
+
+def _sensitivity_enum(value: str, prefix: str) -> str:
+    """The full enum name of a VAD sensitivity, from its short form or as given.
+
+    ``LOW`` and ``HIGH`` expand to ``<prefix>_SENSITIVITY_<value>``; a full
+    name passes through upper-cased.
+    """
+    val = str(value).upper()
+    if val in ("LOW", "HIGH"):
+        return f"{prefix}_SENSITIVITY_{val}"
+    return val
 
 
 def transcription_config(types: Any, options: dict[str, Any] | None) -> Any:
@@ -236,7 +277,7 @@ def build_live_config(
     reconfigure does not repeat what the connect said; a config built on
     its own reports everything.
     """
-    types = _genai_types()
+    types = genai_types()
 
     pc = provider_config or {}
     if warned is None:
@@ -271,28 +312,13 @@ def build_live_config(
     # --- Generation parameters ---
     if temperature is not None:
         config["temperature"] = temperature
-
-    top_p = pc.get("top_p")
-    if top_p is not None:
-        config["top_p"] = float(top_p)
-
-    top_k = pc.get("top_k")
-    if top_k is not None:
-        config["top_k"] = float(top_k)
-
-    max_output_tokens = pc.get("max_output_tokens")
-    if max_output_tokens is not None:
-        config["max_output_tokens"] = int(max_output_tokens)
-
-    seed = pc.get("seed")
-    if seed is not None:
-        config["seed"] = int(seed)
+    _apply_coerced(pc, config, _GENERATION_FIELDS)
 
     # --- Affective dialog (expressive/emotional responses) ---
     # Removed from the API with the 3.8 family. A deployment that carried
     # it over from 3.1 keeps working: the field is dropped here rather
     # than refused by the server.
-    affective = _gated(pc, profile, "enable_affective_dialog", warned, model)
+    affective = _gated(model, pc, profile, "enable_affective_dialog", warned)
     if affective is not None:
         config["enable_affective_dialog"] = bool(affective)
 
@@ -302,11 +328,11 @@ def build_live_config(
     # the one its model understands without branching on the model.
     thinking_kwargs: dict[str, Any] = {}
 
-    budget = _gated(pc, profile, "thinking_budget", warned, model)
+    budget = _gated(model, pc, profile, "thinking_budget", warned)
     if budget is not None:
         thinking_kwargs["thinking_budget"] = int(budget)
 
-    requested_level = _gated(pc, profile, "thinking_level", warned, model)
+    requested_level = _gated(model, pc, profile, "thinking_level", warned)
     if requested_level is not None:
         level = str(requested_level).upper()
         if level not in THINKING_LEVELS:
@@ -325,31 +351,20 @@ def build_live_config(
 
     # --- Proactivity (AI can speak without being prompted) ---
     # Permanently on from 3.8: stating it either way is an error there.
-    proactive = _gated(pc, profile, "proactive_audio", warned, model)
+    proactive = _gated(model, pc, profile, "proactive_audio", warned)
     if proactive is not None:
         config["proactivity"] = types.ProactivityConfig(proactive_audio=bool(proactive))
 
     # --- VAD / realtime input config ---
     vad_kwargs: dict[str, Any] = {}
-    start_sensitivity = pc.get("start_of_speech_sensitivity")
-    if start_sensitivity:
-        val = start_sensitivity.upper()
-        # Accept short form "LOW"/"HIGH" → expand to full enum name
-        if val in ("LOW", "HIGH"):
-            val = f"START_SENSITIVITY_{val}"
-        vad_kwargs["start_of_speech_sensitivity"] = val
-    end_sensitivity = pc.get("end_of_speech_sensitivity")
-    if end_sensitivity:
-        val = end_sensitivity.upper()
-        if val in ("LOW", "HIGH"):
-            val = f"END_SENSITIVITY_{val}"
-        vad_kwargs["end_of_speech_sensitivity"] = val
-    silence_duration_ms = pc.get("silence_duration_ms")
-    if silence_duration_ms is not None:
-        vad_kwargs["silence_duration_ms"] = int(silence_duration_ms)
-    prefix_padding_ms = pc.get("prefix_padding_ms")
-    if prefix_padding_ms is not None:
-        vad_kwargs["prefix_padding_ms"] = int(prefix_padding_ms)
+    for key, prefix in (
+        ("start_of_speech_sensitivity", "START"),
+        ("end_of_speech_sensitivity", "END"),
+    ):
+        sensitivity = pc.get(key)
+        if sensitivity:
+            vad_kwargs[key] = _sensitivity_enum(sensitivity, prefix)
+    _apply_coerced(pc, vad_kwargs, _VAD_TIMING_FIELDS)
 
     # When server_vad=True (default), enable automatic activity detection
     # so the provider's server-side VAD handles speech boundaries.

@@ -10,6 +10,7 @@ tool-call messages are handled by
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from roomkit.providers.gemini.realtime_state import _GeminiSessionState, _GoAwayError
@@ -58,9 +59,9 @@ class GeminiLiveEventHandlersMixin(RealtimeVoiceProvider):
 
     # Owned by GeminiLiveProvider / its other mixins; declared for typing.
     _sessions: dict[str, _GeminiSessionState]
-    _log_event: Any
-    _flush_transcription_buffer: Any
-    _handle_transcription_chunk: Any
+    _log_event: Callable[..., None]
+    _flush_transcription_buffer: Callable[[VoiceSession, str], Awaitable[None]]
+    _handle_transcription_chunk: Callable[[VoiceSession, str, str, bool], Awaitable[None]]
 
     # Ordered dispatch table for server response handling.  Each entry is
     # (response_attribute, handler_method).  Order matters: go_away is

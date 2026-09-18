@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Callable
 from typing import Any
 
-from roomkit.providers.gemini.realtime_config import _genai_types
+from roomkit.providers.gemini.realtime_config import genai_types
 from roomkit.providers.gemini.realtime_state import _GeminiSessionState
 from roomkit.voice.base import VoiceSession, VoiceSessionState
 from roomkit.voice.realtime.injection import VoiceInjectionResult
@@ -49,7 +50,7 @@ class GeminiLiveInputMixin(RealtimeVoiceProvider):
 
     # Owned by GeminiLiveProvider / its other mixins; declared for typing.
     _sessions: dict[str, _GeminiSessionState]
-    _get_active_state: Any
+    _get_active_state: Callable[[VoiceSession], _GeminiSessionState | None]
     _blob_cls: Any
     _mime_cache: dict[int, str]
 
@@ -157,7 +158,7 @@ class GeminiLiveInputMixin(RealtimeVoiceProvider):
         role: str,
         silent: bool,
     ) -> None:
-        types = _genai_types()
+        types = genai_types()
 
         effective_role = role if role in ("user", "model") else "user"
         if effective_role != role:
@@ -246,7 +247,7 @@ class GeminiLiveInputMixin(RealtimeVoiceProvider):
         prompt: str,
         silent: bool,
     ) -> None:
-        types = _genai_types()
+        types = genai_types()
 
         # Sanitize once, before branching.
         if prompt:
@@ -295,7 +296,7 @@ class GeminiLiveInputMixin(RealtimeVoiceProvider):
         """Send ActivityStart to Gemini (manual VAD mode)."""
         if (state := self._get_active_state(session)) is None:
             return
-        types = _genai_types()
+        types = genai_types()
 
         await state.live_session.send_realtime_input(
             activity_start=types.ActivityStart(),
@@ -306,7 +307,7 @@ class GeminiLiveInputMixin(RealtimeVoiceProvider):
         """Send ActivityEnd to Gemini (manual VAD mode)."""
         if (state := self._get_active_state(session)) is None:
             return
-        types = _genai_types()
+        types = genai_types()
 
         await state.live_session.send_realtime_input(
             activity_end=types.ActivityEnd(),
@@ -316,7 +317,7 @@ class GeminiLiveInputMixin(RealtimeVoiceProvider):
     def _make_audio_blob(self, data: bytes, sample_rate: int) -> Any:
         """Create a Blob without per-call import or string formatting."""
         if self._blob_cls is None:
-            types = _genai_types()
+            types = genai_types()
 
             self._blob_cls = types.Blob
         mime = self._mime_cache.get(sample_rate)
