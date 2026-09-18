@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from roomkit.providers.openai import live
 from roomkit.providers.openai.live import (
     HostedReasoning,
     IntegratorReasoning,
@@ -80,6 +81,18 @@ class _FakeWS:
         return [m for m in self.sent if m["type"] == event_type]
 
 
+class _HangingCloseWS(_FakeWS):
+    """A peer that acknowledges nothing: ``close()`` is entered and never returns."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.close_entered = False
+
+    async def close(self) -> None:
+        self.close_entered = True
+        await asyncio.Event().wait()
+
+
 class _Recorder:
     """Every provider callback, in arrival order."""
 
@@ -113,9 +126,13 @@ def _started() -> dict[str, Any]:
 
 
 async def _connect(
-    provider: OpenAILiveProvider, session: VoiceSession, **kwargs: Any
+    provider: OpenAILiveProvider,
+    session: VoiceSession,
+    *,
+    ws: _FakeWS | None = None,
+    **kwargs: Any,
 ) -> tuple[_FakeWS, AsyncMock]:
-    ws = _FakeWS()
+    ws = ws if ws is not None else _FakeWS()
     ws.push(_started())
     connect = AsyncMock(return_value=ws)
     with patch("websockets.connect", connect):
@@ -721,9 +738,49 @@ class TestLifecycle:
         ws.push({"type": "session.closed", "reason": "client", "usage": {"seconds": 12.5}})
         await asyncio.wait_for(task, timeout=1.0)
 
+        await _settle()  # the socket closes on its own task once the protocol is over
         assert ws.closed
         assert session.state == VoiceSessionState.ENDED
         assert session._last_usage["live_seconds"] == 12.5
+
+    async def test_acknowledged_close_does_not_wait_for_the_socket(
+        self, session: VoiceSession
+    ) -> None:
+        """Once ``session.closed`` lands, the TCP close is nobody's wall clock."""
+        provider = _provider(close_timeout_s=1.0)
+        ws, _ = await _connect(provider, session, ws=_HangingCloseWS())
+
+        task = asyncio.create_task(provider.disconnect(session))
+        await _settle()
+        ws.push({"type": "session.closed", "reason": "client"})
+
+        started = asyncio.get_running_loop().time()
+        await asyncio.wait_for(task, timeout=1.0)
+        assert asyncio.get_running_loop().time() - started < 0.1
+
+        assert session.state == VoiceSessionState.ENDED
+        assert provider._states == {}
+        await _settle()
+        assert ws.close_entered  # it still closes, just on its own task
+        for pending in list(provider._deferred_closes):
+            pending.cancel()
+        await _settle()
+
+    async def test_unacknowledged_close_still_waits_for_the_socket(
+        self, session: VoiceSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No ``session.closed`` means the close is not acknowledged: wait for it."""
+        monkeypatch.setattr(live, "_CLOSE_TIMEOUT", 0.15)
+        provider = _provider(close_timeout_s=0)
+        ws, _ = await _connect(provider, session, ws=_HangingCloseWS())
+
+        started = asyncio.get_running_loop().time()
+        await asyncio.wait_for(provider.disconnect(session), timeout=1.0)
+        elapsed = asyncio.get_running_loop().time() - started
+
+        assert elapsed >= 0.15
+        assert provider._deferred_closes == set()
+        assert session.state == VoiceSessionState.ENDED
 
     async def test_close_timeout_still_disconnects(self, session: VoiceSession) -> None:
         provider = _provider(close_timeout_s=0.05)

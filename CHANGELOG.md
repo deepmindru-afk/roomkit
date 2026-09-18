@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- GPT-Live disconnection no longer waits for the peer's TCP close once
+  `session.closed` has landed. That event carries the billed seconds and the
+  turns are already settled, so what `ws.close()` still waits for is a
+  connection teardown the API does not always perform, and callers paid up to
+  two seconds of it in their own shutdown path. The socket still closes, on its
+  own task and under the same bound. A close the server never acknowledged is
+  unchanged: there, waiting still means something.
+
 ## [0.78.0] — 2026-09-17
 
 ### Added

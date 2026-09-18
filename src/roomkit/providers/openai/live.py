@@ -27,6 +27,7 @@ from typing import Any
 
 from pydantic import SecretStr
 
+from roomkit.core.task_utils import log_task_exception
 from roomkit.providers.ai.base import ModelInfo
 from roomkit.providers.openai.live_client import OpenAILiveClientMixin
 from roomkit.providers.openai.live_config import (
@@ -148,6 +149,9 @@ class OpenAILiveProvider(
         self._close_timeout_s = close_timeout_s
         self._states: dict[str, _LiveSession] = {}
         self._resampler = LinearResamplerProvider()
+        # Sockets whose protocol is already over, still finishing their TCP
+        # close on their own. See :meth:`_release_socket`.
+        self._deferred_closes: set[asyncio.Task[None]] = set()
 
     @property
     def name(self) -> str:
@@ -371,8 +375,30 @@ class OpenAILiveProvider(
             await self._fire(
                 self._error_callbacks, session, "connection_closed", error_message, label="error"
             )
+        await self._close_socket(state)
+
+    async def _close_socket(self, state: _LiveSession) -> None:
+        """Close one socket, bounded: a peer that never closes cannot hold us."""
         with contextlib.suppress(Exception):
             await asyncio.wait_for(state.ws.close(), timeout=_CLOSE_TIMEOUT)
+
+    def _release_socket(self, state: _LiveSession) -> None:
+        """Let a socket whose protocol is over close on its own.
+
+        ``ws.close()`` sends the close frame and then waits for the peer to
+        close the TCP connection, which the API does not always do. Once
+        ``session.closed`` has landed there is nothing behind that wait: the
+        billed seconds rode that event and the turns are already settled. The
+        close still runs, still bounded by :data:`_CLOSE_TIMEOUT`, but off the
+        caller's path — it is the call's finalization, and it pays that wall
+        clock in full.
+        """
+        task = asyncio.create_task(
+            self._close_socket(state), name=f"roomkit-live-close-{state.session.id}"
+        )
+        self._deferred_closes.add(task)
+        task.add_done_callback(self._deferred_closes.discard)
+        task.add_done_callback(log_task_exception)
 
     async def disconnect(self, session: VoiceSession) -> None:
         state = self._states.get(session.id)
@@ -411,8 +437,13 @@ class OpenAILiveProvider(
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
-        with contextlib.suppress(Exception):
-            await asyncio.wait_for(state.ws.close(), timeout=_CLOSE_TIMEOUT)
+        # Either ``session.closed`` landed — the protocol is over — or
+        # ``_discard`` won the race and already closed this socket. Both mean
+        # the teardown has nothing left to deliver, so nobody waits on it.
+        if state.closed.is_set():
+            self._release_socket(state)
+        else:
+            await self._close_socket(state)
         state.user_turn.cancel()
         state.assistant_turn.cancel()
         session.state = VoiceSessionState.ENDED
