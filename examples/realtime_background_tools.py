@@ -42,6 +42,10 @@ from roomkit.voice.base import VoiceSession
 logger = setup_logging("roomkit.examples.realtime_background_tools")
 
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-live-extended-thinking")
+# Required by the extended-thinking model, which closes the session rather
+# than choosing for you. RoomKit falls back to LOW when nothing is named; the
+# example says it out loud because that is the knob this model is about.
+THINKING_LEVEL = os.environ.get("GEMINI_THINKING_LEVEL", "low")
 TOOL_SECONDS = 6.0
 
 
@@ -126,7 +130,14 @@ async def run(api_key: str, output: Path) -> dict[str, Any]:
         async with asyncio.timeout(120):
             room = await kit.create_room()
             await kit.attach_channel(room.id, channel.channel_id)
-            session = await channel.start_session(room.id, "caller", object())
+            # provider_config rides the session metadata, as the other
+            # realtime examples do; the channel constructor takes none.
+            session = await channel.start_session(
+                room.id,
+                "caller",
+                object(),
+                metadata={"provider_config": {"thinking_level": THINKING_LEVEL}},
+            )
             mark("session_started")
             await provider.inject_text(
                 session,

@@ -369,6 +369,39 @@ class TestGeminiLiveProvider:
         assert config.thinking_config is not None
         assert config.thinking_config.thinking_level == "HIGH"
 
+    def test_extended_thinking_gets_a_level_even_when_none_is_named(self):
+        """The model closes the socket on a missing level, it does not pick one.
+
+        Live run 2026-09-17: `1007 Thinking level must be specified for this
+        model`. The docs call the level supported; the server calls it
+        required.
+        """
+        mod = _load_provider()
+        provider = mod.GeminiLiveProvider(
+            api_key="test-key", model="gemini-3.8-live-extended-thinking"
+        )
+
+        config = provider._build_config()
+
+        assert config.thinking_config is not None
+        assert config.thinking_config.thinking_level == "LOW"
+
+    def test_a_named_level_wins_over_the_default(self):
+        mod = _load_provider()
+        provider = mod.GeminiLiveProvider(
+            api_key="test-key", model="gemini-3.8-live-extended-thinking"
+        )
+
+        config = provider._build_config(provider_config={"thinking_level": "high"})
+        assert config.thinking_config.thinking_level == "HIGH"
+
+    def test_no_level_is_invented_for_a_model_that_takes_none(self):
+        """Plain 3.8 refuses thinking_config outright; the default must not leak."""
+        mod = _load_provider()
+        for model in ("gemini-3.8-live", "gemini-2.0-flash-live-001"):
+            provider = mod.GeminiLiveProvider(api_key="test-key", model=model)
+            assert provider._build_config().thinking_config is None, model
+
     def test_build_config_rejects_a_thinking_level_the_model_refuses(self):
         """`minimal` is refused upstream: refuse it before spending a round trip."""
         mod = _load_provider()

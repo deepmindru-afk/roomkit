@@ -18,6 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   audio, thinking budget) are dropped with a warning rather than failing the
   session. Models that send no `interaction_status` keep the previous
   behaviour, detected from the stream rather than from the model id.
+- `gemini-3.8-live-extended-thinking` sessions carry a `thinking_level` even
+  when the caller names none. The level is required, not optional: the model
+  answers a missing one with `1007 Thinking level must be specified for this
+  model` and closes the socket. RoomKit falls back to `LOW`, the level that
+  costs a realtime voice session the least latency; name `thinking_level`
+  yourself for more.
 - `provider_config` exposes `thinking_level` (extended thinking, `low` /
   `medium` / `high`), `turn_coverage`, `tool_response_scheduling`, and a
   `transcription` block carrying `language_auto` (switch language

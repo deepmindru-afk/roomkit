@@ -524,6 +524,11 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
             else:
                 self._warn_unsupported("thinking_level")
 
+        # Required, not merely accepted: the model refuses the session outright
+        # when the level is missing, so a caller who named none still gets one.
+        if "thinking_level" not in thinking_kwargs and profile.default_thinking_level:
+            thinking_kwargs["thinking_level"] = profile.default_thinking_level
+
         if thinking_kwargs:
             config["thinking_config"] = types.ThinkingConfig(**thinking_kwargs)
 

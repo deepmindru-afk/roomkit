@@ -86,6 +86,16 @@ class LiveModelProfile:
     thinking_level: bool
     """``thinking_config.thinking_level`` may reach the API."""
 
+    default_thinking_level: str | None
+    """Level sent when the model requires one and the caller named none.
+
+    ``None`` where the model takes no level at all. Where it is set, the level
+    is not optional: ``gemini-3.8-live-extended-thinking`` closes the socket
+    with ``1007 Thinking level must be specified for this model`` rather than
+    picking one itself, so a caller who says nothing still has to get a
+    working session.
+    """
+
     blocking_tools: bool
     """``BLOCKING`` is an accepted function-call behaviour. False where the
     model answers a hard error to it."""
@@ -99,6 +109,7 @@ PRE_38_PROFILE = LiveModelProfile(
     proactivity=True,
     thinking_budget=True,
     thinking_level=False,
+    default_thinking_level=None,
     blocking_tools=True,
     default_tool_behavior="BLOCKING",
 )
@@ -109,6 +120,7 @@ LIVE_38_PROFILE = LiveModelProfile(
     proactivity=False,
     thinking_budget=False,
     thinking_level=False,
+    default_thinking_level=None,
     blocking_tools=True,
     default_tool_behavior="NON_BLOCKING",
 )
@@ -119,11 +131,15 @@ LIVE_38_THINKING_PROFILE = LiveModelProfile(
     proactivity=False,
     thinking_budget=False,
     thinking_level=True,
+    # LOW rather than MEDIUM or HIGH: this is a realtime voice model, and a
+    # caller who named no level did not ask to pay latency for depth. Anyone
+    # who wants more sets thinking_level themselves.
+    default_thinking_level="LOW",
     blocking_tools=False,
     default_tool_behavior="NON_BLOCKING",
 )
-"""``gemini-3.8-live-extended-thinking``: levels instead of a budget, and a
-hard error on a blocking tool."""
+"""``gemini-3.8-live-extended-thinking``: a level instead of a budget, required
+rather than optional, and a hard error on a blocking tool."""
 
 TOOL_BEHAVIORS = frozenset({"BLOCKING", "NON_BLOCKING"})
 """Execution modes a tool declaration may ask for. The SDK enum also carries
