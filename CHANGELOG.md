@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The Gemini Live provider handles the 3.8 contract. The end of a response
+  follows `interaction_status`: the model speaks several times per request
+  while it reasons and runs tools, so `turn_complete` no longer means it has
+  finished. Tool declarations go out `NON_BLOCKING` with their results
+  scheduled `WHEN_IDLE`, so the model keeps the floor while a call runs. Setup
+  fields the target model no longer accepts (affective dialog, proactive
+  audio, thinking budget) are dropped with a warning rather than failing the
+  session. Models that send no `interaction_status` keep the previous
+  behaviour, detected from the stream rather than from the model id.
+- `provider_config` exposes `thinking_level` (extended thinking, `low` /
+  `medium` / `high`), `turn_coverage`, `tool_response_scheduling`, and a
+  `transcription` block carrying `language_auto` (switch language
+  mid-conversation), `language_hints`, `custom_vocabulary`, `diarization` and
+  `word_timestamp`. A tool may carry `behavior` to opt back into blocking
+  execution where the model allows it.
 - Gemini Live catalog lists `gemini-3.8-live` and
   `gemini-3.8-live-extended-thinking`, which replaced
   `gemini-3.1-flash-live-preview` on 2026-09-15. The replaced preview stays

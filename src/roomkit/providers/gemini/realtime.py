@@ -15,12 +15,29 @@ from pydantic import SecretStr
 
 from roomkit.core.task_utils import _finish_cleanup
 from roomkit.providers.ai.base import ModelInfo
+from roomkit.providers.gemini.realtime_models import (
+    MODELS,
+    THINKING_LEVELS,
+    live_model_profile,
+)
 from roomkit.providers.gemini.voices import VOICES as _VOICES
 from roomkit.voice.base import VoiceSession, VoiceSessionState
 from roomkit.voice.realtime.injection import VoiceInjectionResult
 from roomkit.voice.realtime.provider import RealtimeVoiceProvider, VoiceInfo
 
 logger = logging.getLogger("roomkit.providers.gemini.realtime")
+
+
+def _interaction_is_idle(status: Any) -> bool:
+    """True when the server says the whole interaction is over.
+
+    Accepts the SDK enum or the bare wire string: older SDKs hand back the
+    latter, and the provider must not care which it got.
+    """
+    if status is None:
+        return False
+    return str(getattr(status, "value", status)).upper().endswith("IDLE")
+
 
 _MAX_INJECT_TEXT_LENGTH = 32_000
 _CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
@@ -106,6 +123,12 @@ class _GeminiSessionState:
     # Track that boundary independently from response_started so the duplicate
     # guard is reset exactly once, before the first assistant chunk is handled.
     assistant_response_observed: bool = False
+    # Whether this session's server reports ``interaction_status``. From the
+    # 3.8 generation the model may speak several times inside one request, so
+    # ``turn_complete`` stops meaning "the model is done" and only ``IDLE``
+    # does. Recorded from what the stream actually carries rather than from
+    # the model id, so a preview this build never heard of is handled right.
+    reports_interaction_status: bool = False
     # Effective config values, kept in sync across connect + reconfigure
     # so partial reconfigures (e.g. system_prompt-only) preserve the
     # other fields. Without these, ``_build_config`` (which treats
@@ -192,6 +215,20 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
         )
         self._model = model
 
+        # From 3.8 the API runs tools in the background by default and the
+        # model keeps talking through them; before that it blocked and
+        # refused input until the response came back. The two need opposite
+        # handling downstream, so the mode is resolved once here rather than
+        # rediscovered at each call site.
+        self._tools_run_in_background = (
+            live_model_profile(model).default_tool_behavior == "NON_BLOCKING"
+        )
+
+        # Setup fields dropped for this model, already reported once each.
+        # Reconnects rebuild the config, and a GoAway storm would otherwise
+        # repeat the same warning for the whole session.
+        self._warned_unsupported: set[str] = set()
+
         # Consolidated per-session state: session_id -> _GeminiSessionState
         self._sessions: dict[str, _GeminiSessionState] = {}
 
@@ -218,8 +255,6 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
     @classmethod
     def available_models(cls) -> list[ModelInfo]:
         """Curated, offline catalog of Gemini Live models."""
-        from roomkit.providers.gemini.realtime_models import MODELS
-
         return list(MODELS)
 
     @property
@@ -240,6 +275,79 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
             return None
         return state
 
+    def _warn_unsupported(self, field: str) -> None:
+        """Report a setup field the target model does not take, once.
+
+        Dropping it silently would leave a deployment believing a setting is
+        in force when it is not; raising would break a config that was valid
+        against the model it was written for.
+        """
+        key = f"{self._model}:{field}"
+        if key in self._warned_unsupported:
+            return
+        self._warned_unsupported.add(key)
+        logger.warning(
+            "[Gemini] %s is not supported by %s - ignored for this session",
+            field,
+            self._model,
+        )
+
+    def _tool_behavior(self, profile: Any, requested: str | None) -> str:
+        """Pick the execution mode a declaration is sent with.
+
+        Left to the server the answer would differ by generation, which is
+        how the same tool set works on one model and stalls on another. The
+        profile's default is stated instead, and a tool may ask for the other
+        mode by carrying ``behavior`` in its dict. Asking for BLOCKING where
+        the model answers a hard error to it is downgraded rather than sent:
+        a refused setup takes the whole session down with it.
+        """
+        if requested is None:
+            return profile.default_tool_behavior
+        behavior = str(requested).upper()
+        if behavior == "BLOCKING" and not profile.blocking_tools:
+            self._warn_unsupported("BLOCKING tool behavior")
+            return "NON_BLOCKING"
+        return behavior
+
+    def _transcription_config(self, types: Any, options: dict[str, Any] | None) -> Any:
+        """Build the inbound transcription config from ``provider_config``.
+
+        Only the inbound side is configurable: language biasing, a custom
+        vocabulary and diarization describe the caller's speech, and applying
+        them to the model's own transcript would bias it towards words the
+        model did not say.
+        """
+        if not options:
+            return types.AudioTranscriptionConfig()
+
+        kwargs: dict[str, Any] = {}
+
+        # A marker object rather than a boolean upstream: present means the
+        # server may switch language mid-conversation, absent means it may not.
+        if options.get("language_auto"):
+            kwargs["language_auto"] = types.LanguageAuto()
+
+        # Hints are a wrapper around the same list of codes that
+        # ``language_codes`` takes flat, so the caller writes a plain list
+        # either way and the shape is applied here.
+        hints = options.get("language_hints")
+        if hints:
+            kwargs["language_hints"] = types.LanguageHints(language_codes=list(hints))
+
+        for key in ("language_codes", "custom_vocabulary", "adaptation_phrases"):
+            value = options.get(key)
+            if value:
+                kwargs[key] = list(value)
+        for key in ("diarization", "word_timestamp"):
+            value = options.get(key)
+            if value is not None:
+                kwargs[key] = bool(value)
+        mode = options.get("mode")
+        if mode:
+            kwargs["mode"] = str(mode).upper()
+        return types.AudioTranscriptionConfig(**kwargs)
+
     def _build_config(
         self,
         *,
@@ -257,6 +365,7 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
         from google.genai import types
 
         pc = provider_config or {}
+        profile = live_model_profile(self._model)
 
         # Response modalities: ["AUDIO"], ["TEXT"], or ["AUDIO", "TEXT"]
         # Future: ["VIDEO"] when supported by the API.
@@ -264,7 +373,9 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
 
         config: dict[str, Any] = {
             "response_modalities": response_modalities,
-            "input_audio_transcription": types.AudioTranscriptionConfig(),
+            "input_audio_transcription": self._transcription_config(
+                types, pc.get("transcription")
+            ),
             "output_audio_transcription": types.AudioTranscriptionConfig(),
         }
 
@@ -304,23 +415,55 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
             config["seed"] = int(seed)
 
         # --- Affective dialog (expressive/emotional responses) ---
+        # Removed from the API with the 3.8 family. A deployment that carried
+        # it over from 3.1 keeps working: the field is dropped here rather
+        # than refused by the server.
         enable_affective_dialog = pc.get("enable_affective_dialog")
         if enable_affective_dialog is not None:
-            config["enable_affective_dialog"] = bool(enable_affective_dialog)
+            if profile.affective_dialog:
+                config["enable_affective_dialog"] = bool(enable_affective_dialog)
+            else:
+                self._warn_unsupported("enable_affective_dialog")
 
         # --- Thinking ---
+        # 3.1 took a token budget, extended-thinking takes a discrete level,
+        # and plain 3.8 takes neither. Both keys are read so a config can name
+        # the one its model understands without branching on the model.
+        thinking_kwargs: dict[str, Any] = {}
+
         thinking_budget = pc.get("thinking_budget")
         if thinking_budget is not None:
-            config["thinking_config"] = types.ThinkingConfig(
-                thinking_budget=int(thinking_budget),
-            )
+            if profile.thinking_budget:
+                thinking_kwargs["thinking_budget"] = int(thinking_budget)
+            else:
+                self._warn_unsupported("thinking_budget")
+
+        thinking_level = pc.get("thinking_level")
+        if thinking_level is not None:
+            if profile.thinking_level:
+                level = str(thinking_level).upper()
+                if level not in THINKING_LEVELS:
+                    raise ValueError(
+                        f"thinking_level must be one of "
+                        f"{sorted(THINKING_LEVELS)}, got {thinking_level!r}"
+                    )
+                thinking_kwargs["thinking_level"] = level
+            else:
+                self._warn_unsupported("thinking_level")
+
+        if thinking_kwargs:
+            config["thinking_config"] = types.ThinkingConfig(**thinking_kwargs)
 
         # --- Proactivity (AI can speak without being prompted) ---
+        # Permanently on from 3.8: stating it either way is an error there.
         proactive_audio = pc.get("proactive_audio")
         if proactive_audio is not None:
-            config["proactivity"] = types.ProactivityConfig(
-                proactive_audio=bool(proactive_audio),
-            )
+            if profile.proactivity:
+                config["proactivity"] = types.ProactivityConfig(
+                    proactive_audio=bool(proactive_audio),
+                )
+            else:
+                self._warn_unsupported("proactive_audio")
 
         # --- VAD / realtime input config ---
         vad_kwargs: dict[str, Any] = {}
@@ -360,6 +503,13 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
         no_interruption = pc.get("no_interruption")
         if no_interruption:
             realtime_input_kwargs["activity_handling"] = "NO_INTERRUPTION"
+        # Which input the server folds into a turn. The default moved to
+        # TURN_INCLUDES_AUDIO_ACTIVITY_AND_ALL_VIDEO with 3.8, which bills
+        # every video frame; a video deployment that does not want that needs
+        # the knob.
+        turn_coverage = pc.get("turn_coverage")
+        if turn_coverage:
+            realtime_input_kwargs["turn_coverage"] = str(turn_coverage).upper()
         config["realtime_input_config"] = types.RealtimeInputConfig(**realtime_input_kwargs)
 
         # --- Tools ---
@@ -375,6 +525,7 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
                                 name=tool.get("name", ""),
                                 description=tool.get("description", ""),
                                 parameters=cast(Any, clean_gemini_schema(tool.get("parameters"))),
+                                behavior=self._tool_behavior(profile, tool.get("behavior")),
                             )
                         ]
                     )
@@ -656,9 +807,11 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
             )
             return VoiceInjectionResult(status="not_sent", reason="voice_empty_text")
 
-        # Queue when tool results are pending — Gemini rejects input while
-        # waiting for function responses (same guard as inject_image).
-        if state.pending_tool_calls > 0:
+        # Queue while a blocking tool call is outstanding: through 3.1 the
+        # API refuses input until the function response comes back. A model
+        # that runs its tools in the background is not waiting, and queueing
+        # there would hold the injection back for no reason.
+        if state.pending_tool_calls > 0 and not self._tools_run_in_background:
             logger.debug(
                 "Queuing text injection for session %s (pending tool calls: %d)",
                 session.id,
@@ -744,9 +897,10 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
         if (state := self._get_active_state(session)) is None:
             return
 
-        # Gemini Live API does not accept client_content while a tool response
-        # is pending.  Queue the injection and flush after submit_tool_result.
-        if state.pending_tool_calls > 0:
+        # Same guard as inject_text: only a blocking call makes the API refuse
+        # client_content. Queue the injection and flush after
+        # submit_tool_result.
+        if state.pending_tool_calls > 0 and not self._tools_run_in_background:
             logger.debug(
                 "Queuing image injection for session %s (pending tool calls: %d)",
                 session.id,
@@ -842,14 +996,24 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
         except (json.JSONDecodeError, ValueError):
             result_dict = {"result": result}
 
+        # A background call returns while the model is mid-sentence, so the
+        # response has to say when to use it. WHEN_IDLE waits for the end of
+        # what is being said, which is what a voice agent wants by default;
+        # INTERRUPT cuts in, SILENT files it into context without a word. A
+        # blocking call needs none of this: the model is already waiting, and
+        # leaving the field unset keeps the pre-3.8 wire byte for byte.
+        response_kwargs: dict[str, Any] = {
+            "id": call_id,
+            "name": "",  # Gemini uses ID-based matching
+            "response": result_dict,
+        }
+        if self._tools_run_in_background:
+            scheduling = state.provider_config.get("tool_response_scheduling", "WHEN_IDLE")
+            if scheduling:
+                response_kwargs["scheduling"] = str(scheduling).upper()
+
         await state.live_session.send_tool_response(
-            function_responses=[
-                types.FunctionResponse(
-                    id=call_id,
-                    name="",  # Gemini uses ID-based matching
-                    response=result_dict,
-                )
-            ],
+            function_responses=[types.FunctionResponse(**response_kwargs)],
         )
 
         # Decrement pending counter and flush queued injections
@@ -1369,6 +1533,8 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
                 parts.append("model_turn")
             if getattr(sc, "turn_complete", None):
                 parts.append("turn_complete")
+            if getattr(sc, "interaction_status", None):
+                parts.append(f"interaction={sc.interaction_status}")
             if getattr(sc, "interrupted", None):
                 parts.append("interrupted")
             if getattr(sc, "input_transcription", None):
@@ -1491,13 +1657,31 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
                 await self._fire(self._response_end_callbacks, session, label="response_end")
             state.assistant_response_observed = False
 
-        # Turn complete
-        if getattr(content, "turn_complete", None):
+        # Turn complete, and separately, interaction complete.
+        #
+        # Through 3.1 the two were the same event: one request, one spoken
+        # turn, ``turn_complete`` at the end of it. From 3.8 the model
+        # reasons and runs tools in the background while it keeps talking, so
+        # it produces several turns per request and ``turn_complete`` no
+        # longer means it has finished. ``interaction_status`` does: it reads
+        # IN_PROGRESS while work remains and IDLE when the request is done.
+        #
+        # Firing ``response_end`` on every ``turn_complete`` would tell the
+        # channel the reply is over while the model is still speaking, which
+        # desynchronises the interruption handler and the bridge.
+        status = getattr(content, "interaction_status", None)
+        if status is not None:
+            state.reports_interaction_status = True
+        interaction_done = _interaction_is_idle(status)
+
+        turn_complete = bool(getattr(content, "turn_complete", None))
+        if turn_complete:
             state.turn_count += 1
             logger.info(
-                "[Gemini] turn_complete (session %s, %d audio chunks)",
+                "[Gemini] turn_complete (session %s, %d audio chunks, status=%s)",
                 session.id,
                 state.audio_chunk_count,
+                status,
             )
             self._log_event(
                 session.id,
@@ -1505,9 +1689,18 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
                 turn=state.turn_count,
                 audio_chunks=state.audio_chunk_count,
                 pending_tool_calls=state.pending_tool_calls,
+                interaction_status=str(status) if status is not None else None,
             )
+
+        if turn_complete or interaction_done:
             await self._flush_transcription_buffer(session, "user")
             await self._flush_transcription_buffer(session, "assistant")
+
+        # Where the server reports its state, only IDLE closes the response.
+        # Where it does not, ``turn_complete`` is the only signal there is and
+        # keeps its old meaning, so 2.0 Flash Live and 2.5 native audio still
+        # hand back control.
+        if interaction_done or (turn_complete and not state.reports_interaction_status):
             state.response_started = False
             state.user_speech_active = False
             state.awaiting_new_user_utterance = True

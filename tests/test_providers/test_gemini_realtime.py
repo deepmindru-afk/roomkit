@@ -291,6 +291,138 @@ class TestGeminiLiveProvider:
         config = provider._build_config(provider_config=pc)
         assert config.realtime_input_config is not None
 
+    # ── model profile: what each generation's setup accepts ─────
+
+    def test_build_config_drops_the_fields_3_8_refuses(self, caplog):
+        """A 3.1 config opened against 3.8 must connect, not 400.
+
+        Google removed affective dialog, made proactive audio permanent and
+        dropped thinking_config from gemini-3.8-live. Forwarding any of the
+        three is a server error, so they are dropped here and reported.
+        """
+        mod = _load_provider()
+        provider = mod.GeminiLiveProvider(api_key="test-key", model="gemini-3.8-live")
+
+        pc = {
+            "enable_affective_dialog": True,
+            "proactive_audio": False,
+            "thinking_budget": 1024,
+        }
+        with caplog.at_level("WARNING"):
+            config = provider._build_config(provider_config=pc)
+
+        assert config.enable_affective_dialog is None
+        assert config.proactivity is None
+        assert config.thinking_config is None
+        for field in ("enable_affective_dialog", "proactive_audio", "thinking_budget"):
+            assert field in caplog.text
+
+    def test_build_config_warns_once_per_field(self, caplog):
+        """Reconnects rebuild the config; the warning must not follow them."""
+        mod = _load_provider()
+        provider = mod.GeminiLiveProvider(api_key="test-key", model="gemini-3.8-live")
+
+        pc = {"enable_affective_dialog": True}
+        with caplog.at_level("WARNING"):
+            provider._build_config(provider_config=pc)
+            provider._build_config(provider_config=pc)
+
+        assert caplog.text.count("enable_affective_dialog") == 1
+
+    def test_build_config_keeps_the_legacy_fields_on_older_models(self):
+        """2.0 Flash Live still takes all three: no retroactive narrowing."""
+        mod = _load_provider()
+        provider = mod.GeminiLiveProvider(api_key="test-key", model="gemini-2.0-flash-live-001")
+
+        pc = {
+            "enable_affective_dialog": True,
+            "proactive_audio": True,
+            "thinking_budget": 1024,
+        }
+        config = provider._build_config(provider_config=pc)
+
+        assert config.enable_affective_dialog is True
+        assert config.proactivity is not None
+        assert config.thinking_config is not None
+
+    def test_build_config_unknown_model_keeps_todays_behaviour(self):
+        """An id the catalog never saw must not lose its configuration."""
+        mod = _load_provider()
+        provider = mod.GeminiLiveProvider(api_key="test-key", model="gemini-9.9-live-future")
+
+        config = provider._build_config(provider_config={"enable_affective_dialog": True})
+        assert config.enable_affective_dialog is True
+
+    def test_build_config_thinking_level_on_extended_thinking(self):
+        mod = _load_provider()
+        provider = mod.GeminiLiveProvider(
+            api_key="test-key", model="gemini-3.8-live-extended-thinking"
+        )
+
+        config = provider._build_config(provider_config={"thinking_level": "HIGH"})
+        assert config.thinking_config is not None
+        assert config.thinking_config.thinking_level == "HIGH"
+
+    def test_build_config_rejects_a_thinking_level_the_model_refuses(self):
+        """`minimal` is refused upstream: refuse it before spending a round trip."""
+        mod = _load_provider()
+        provider = mod.GeminiLiveProvider(
+            api_key="test-key", model="gemini-3.8-live-extended-thinking"
+        )
+
+        with pytest.raises(ValueError, match="thinking_level"):
+            provider._build_config(provider_config={"thinking_level": "minimal"})
+
+    def test_build_config_thinking_level_ignored_on_plain_3_8(self, caplog):
+        mod = _load_provider()
+        provider = mod.GeminiLiveProvider(api_key="test-key", model="gemini-3.8-live")
+
+        with caplog.at_level("WARNING"):
+            config = provider._build_config(provider_config={"thinking_level": "high"})
+
+        assert config.thinking_config is None
+        assert "thinking_level" in caplog.text
+
+    # ── turn coverage and transcription options ─────────────────
+
+    def test_build_config_turn_coverage_is_settable(self):
+        """3.8 defaults to folding all video into the turn, which bills more."""
+        mod = _load_provider()
+        provider = mod.GeminiLiveProvider(api_key="test-key", model="gemini-3.8-live")
+
+        pc = {"turn_coverage": "turn_includes_only_activity"}
+        config = provider._build_config(provider_config=pc)
+        assert config.realtime_input_config.turn_coverage == "TURN_INCLUDES_ONLY_ACTIVITY"
+
+    def test_build_config_transcription_options(self):
+        mod = _load_provider()
+        provider = mod.GeminiLiveProvider(api_key="test-key", model="gemini-3.8-live")
+
+        pc = {
+            "transcription": {
+                "language_auto": True,
+                "language_hints": ["fr-FR", "en-US"],
+                "custom_vocabulary": ["RoomKit", "Luge"],
+                "diarization": True,
+            }
+        }
+        config = provider._build_config(provider_config=pc)
+        inbound = config.input_audio_transcription
+        assert inbound.language_auto is not None
+        assert inbound.language_hints.language_codes == ["fr-FR", "en-US"]
+        assert inbound.custom_vocabulary == ["RoomKit", "Luge"]
+        assert inbound.diarization is True
+
+    def test_build_config_transcription_defaults_stay_bare(self):
+        """No options means the previous behaviour, not an empty-list config."""
+        mod = _load_provider()
+        provider = mod.GeminiLiveProvider(api_key="test-key")
+
+        config = provider._build_config()
+        assert config.input_audio_transcription is not None
+        assert config.input_audio_transcription.language_auto is None
+        assert config.output_audio_transcription is not None
+
     # ── connect() ───────────────────────────────────────────────
 
     async def test_connect_success(self):
@@ -807,6 +939,130 @@ class TestGeminiLiveProvider:
         await provider.submit_tool_result(session, "call-2", "plain text result")
         mock_live_session.send_tool_response.assert_awaited_once()
 
+    # ── background tool calls (3.8 Live) ────────────────────────
+
+    def test_declarations_run_in_background_on_3_8(self):
+        mod = _load_provider()
+        provider = mod.GeminiLiveProvider(api_key="test-key", model="gemini-3.8-live")
+
+        tools = [{"name": "get_weather", "description": "w", "parameters": {}}]
+        config = provider._build_config(tools=tools)
+        assert config.tools[0].function_declarations[0].behavior == "NON_BLOCKING"
+
+    def test_declarations_still_block_on_older_models(self):
+        mod = _load_provider()
+        provider = mod.GeminiLiveProvider(api_key="test-key", model="gemini-2.0-flash-live-001")
+
+        tools = [{"name": "get_weather", "description": "w", "parameters": {}}]
+        config = provider._build_config(tools=tools)
+        assert config.tools[0].function_declarations[0].behavior == "BLOCKING"
+
+    def test_a_tool_may_ask_to_block_where_the_model_allows_it(self):
+        mod = _load_provider()
+        provider = mod.GeminiLiveProvider(api_key="test-key", model="gemini-3.8-live")
+
+        tools = [{"name": "t", "description": "d", "parameters": {}, "behavior": "BLOCKING"}]
+        config = provider._build_config(tools=tools)
+        assert config.tools[0].function_declarations[0].behavior == "BLOCKING"
+
+    def test_blocking_is_downgraded_where_the_model_refuses_it(self, caplog):
+        """extended-thinking answers a hard error to BLOCKING: do not send it."""
+        mod = _load_provider()
+        provider = mod.GeminiLiveProvider(
+            api_key="test-key", model="gemini-3.8-live-extended-thinking"
+        )
+
+        tools = [{"name": "t", "description": "d", "parameters": {}, "behavior": "BLOCKING"}]
+        with caplog.at_level("WARNING"):
+            config = provider._build_config(tools=tools)
+
+        assert config.tools[0].function_declarations[0].behavior == "NON_BLOCKING"
+        assert "BLOCKING" in caplog.text
+
+    async def test_a_background_result_says_when_to_use_it(self):
+        mod = _load_provider()
+        provider = mod.GeminiLiveProvider(api_key="test-key", model="gemini-3.8-live")
+        session = _make_session()
+
+        mock_live_session = _make_mock_live_session()
+        state = mod._GeminiSessionState(session=session, live_session=mock_live_session)
+        provider._sessions[session.id] = state
+
+        await provider.submit_tool_result(session, "call-1", '{"ok": true}')
+
+        sent = mock_live_session.send_tool_response.await_args.kwargs["function_responses"][0]
+        assert sent.scheduling == "WHEN_IDLE"
+
+    async def test_the_scheduling_is_settable(self):
+        mod = _load_provider()
+        provider = mod.GeminiLiveProvider(api_key="test-key", model="gemini-3.8-live")
+        session = _make_session()
+
+        mock_live_session = _make_mock_live_session()
+        state = mod._GeminiSessionState(
+            session=session,
+            live_session=mock_live_session,
+            provider_config={"tool_response_scheduling": "interrupt"},
+        )
+        provider._sessions[session.id] = state
+
+        await provider.submit_tool_result(session, "call-1", '{"ok": true}')
+
+        sent = mock_live_session.send_tool_response.await_args.kwargs["function_responses"][0]
+        assert sent.scheduling == "INTERRUPT"
+
+    async def test_a_blocking_result_keeps_the_pre_3_8_wire(self):
+        """The model is already waiting: there is nothing to schedule."""
+        mod = _load_provider()
+        provider = mod.GeminiLiveProvider(api_key="test-key", model="gemini-2.0-flash-live-001")
+        session = _make_session()
+
+        mock_live_session = _make_mock_live_session()
+        state = mod._GeminiSessionState(session=session, live_session=mock_live_session)
+        provider._sessions[session.id] = state
+
+        await provider.submit_tool_result(session, "call-1", '{"ok": true}')
+
+        sent = mock_live_session.send_tool_response.await_args.kwargs["function_responses"][0]
+        assert sent.scheduling is None
+
+    async def test_injection_is_not_held_back_by_a_background_call(self):
+        """Queueing here would delay input the model is perfectly able to take."""
+        mod = _load_provider()
+        provider = mod.GeminiLiveProvider(api_key="test-key", model="gemini-3.8-live")
+        session = _make_session()
+
+        mock_live_session = _make_mock_live_session()
+        state = mod._GeminiSessionState(
+            session=session,
+            live_session=mock_live_session,
+            pending_tool_calls=1,
+        )
+        provider._sessions[session.id] = state
+
+        result = await provider.inject_text(session, "bonjour")
+
+        assert result.status == "sent"
+        assert state.queued_text_injections == []
+
+    async def test_injection_still_waits_on_a_blocking_call(self):
+        mod = _load_provider()
+        provider = mod.GeminiLiveProvider(api_key="test-key", model="gemini-2.0-flash-live-001")
+        session = _make_session()
+
+        mock_live_session = _make_mock_live_session()
+        state = mod._GeminiSessionState(
+            session=session,
+            live_session=mock_live_session,
+            pending_tool_calls=1,
+        )
+        provider._sessions[session.id] = state
+
+        result = await provider.inject_text(session, "bonjour")
+
+        assert result.reason == "voice_provider_queued"
+        assert len(state.queued_text_injections) == 1
+
     async def test_submit_tool_result_json_non_dict(self):
         mod = _load_provider()
         provider = mod.GeminiLiveProvider(api_key="test-key")
@@ -1167,6 +1423,103 @@ class TestGeminiLiveProvider:
 
         assert state.response_started is False
         assert state.turn_count == 1
+        assert ends == [session.id]
+
+    # ── end of interaction vs end of turn (3.8 Live) ────────────
+
+    @staticmethod
+    def _content(**fields):
+        """A server_content namespace with the fields the handler reads."""
+        base = {
+            "model_turn": None,
+            "turn_complete": False,
+            "interrupted": False,
+            "input_transcription": None,
+            "output_transcription": None,
+            "interaction_status": None,
+        }
+        base.update(fields)
+        return SimpleNamespace(server_content=SimpleNamespace(**base))
+
+    async def test_several_turns_inside_one_interaction_end_the_response_once(self):
+        """3.8 speaks while it reasons: only IDLE means the request is over."""
+        mod = _load_provider()
+        provider = mod.GeminiLiveProvider(api_key="test-key", model="gemini-3.8-live")
+        session = _make_session()
+        state = mod._GeminiSessionState(session=session, response_started=True)
+        provider._sessions[session.id] = state
+
+        ends = []
+        provider.on_response_end(lambda s: ends.append(s.id))
+
+        await provider._handle_server_response(
+            session, self._content(turn_complete=True, interaction_status="IN_PROGRESS")
+        )
+        await provider._handle_server_response(
+            session, self._content(turn_complete=True, interaction_status="IN_PROGRESS")
+        )
+        assert ends == []
+        assert state.turn_count == 2
+
+        await provider._handle_server_response(
+            session, self._content(turn_complete=True, interaction_status="IDLE")
+        )
+        assert ends == [session.id]
+        assert state.response_started is False
+        assert state.awaiting_new_user_utterance is True
+
+    async def test_idle_without_turn_complete_still_ends_the_response(self):
+        """The two signals are independent once the server reports its state."""
+        mod = _load_provider()
+        provider = mod.GeminiLiveProvider(api_key="test-key", model="gemini-3.8-live")
+        session = _make_session()
+        state = mod._GeminiSessionState(session=session, response_started=True)
+        provider._sessions[session.id] = state
+
+        ends = []
+        provider.on_response_end(lambda s: ends.append(s.id))
+
+        await provider._handle_server_response(
+            session, self._content(interaction_status="IN_PROGRESS")
+        )
+        await provider._handle_server_response(session, self._content(interaction_status="IDLE"))
+
+        assert ends == [session.id]
+        assert state.turn_count == 0
+
+    async def test_a_server_that_reports_no_status_keeps_the_old_meaning(self):
+        """2.0 Flash Live sends no interaction_status and must still hand back."""
+        mod = _load_provider()
+        provider = mod.GeminiLiveProvider(api_key="test-key", model="gemini-2.0-flash-live-001")
+        session = _make_session()
+        state = mod._GeminiSessionState(session=session, response_started=True)
+        provider._sessions[session.id] = state
+
+        ends = []
+        provider.on_response_end(lambda s: ends.append(s.id))
+
+        await provider._handle_server_response(session, self._content(turn_complete=True))
+        await provider._handle_server_response(session, self._content(turn_complete=True))
+
+        assert ends == [session.id, session.id]
+        assert state.reports_interaction_status is False
+
+    async def test_barge_in_still_ends_the_response_mid_interaction(self):
+        """Interruption does not wait for IDLE: the user took the floor."""
+        mod = _load_provider()
+        provider = mod.GeminiLiveProvider(api_key="test-key", model="gemini-3.8-live")
+        session = _make_session()
+        state = mod._GeminiSessionState(session=session, response_started=True)
+        provider._sessions[session.id] = state
+
+        ends = []
+        provider.on_response_end(lambda s: ends.append(s.id))
+
+        await provider._handle_server_response(
+            session, self._content(interaction_status="IN_PROGRESS")
+        )
+        await provider._handle_server_response(session, self._content(interrupted=True))
+
         assert ends == [session.id]
 
     async def test_handle_interrupted(self):
