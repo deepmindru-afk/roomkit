@@ -230,6 +230,42 @@ async def test_as_tool_handler_unknown_tool() -> None:
     assert parsed == {"error": "Unknown tool: nonexistent"}
 
 
+async def test_as_tool_handler_ungated_forwards_an_undiscovered_name() -> None:
+    """``gate_discovery=False`` hands every name to the server.
+
+    A gateway that routes by prefix serves tools this connection never
+    listed; the host that mounts it has its own allow-list in front. The
+    prefix normalisation still applies.
+    """
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    def record(name: str, args: dict[str, Any]) -> MockCallToolResult:
+        calls.append((name, args))
+        return MockCallToolResult([MockTextContent("found it")])
+
+    provider = _make_provider_connected([SEARCH_TOOL], call_tool_side_effect=record)
+    handler = provider.as_tool_handler(gate_discovery=False)
+
+    assert await handler("nonexistent", {"q": 1}) == "found it"
+    assert await handler("mcp__server__search", {"query": "x"}) == "found it"
+    assert calls == [("nonexistent", {"q": 1}), ("search", {"query": "x"})]
+
+
+async def test_as_tool_handler_ungated_still_raises_on_a_refused_call() -> None:
+    """Skipping the gate skips only the gate: the server's refusal is still raised."""
+    provider = _make_provider_connected(
+        [SEARCH_TOOL],
+        call_tool_side_effect=lambda name, args: MockCallToolResult(
+            [MockTextContent("Missing X-Tenant-ID header")], is_error=True
+        ),
+    )
+    handler = provider.as_tool_handler(gate_discovery=False)
+
+    with pytest.raises(ToolRefusedError) as raised:
+        await handler("nonexistent", {})
+    assert raised.value.message == "Missing X-Tenant-ID header"
+
+
 async def test_not_connected_guard() -> None:
     provider = MCPToolProvider("http://fake:8000/mcp")
     with pytest.raises(RuntimeError, match="not connected"):

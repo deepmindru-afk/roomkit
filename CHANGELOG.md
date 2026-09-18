@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `MCPToolProvider.as_tool_handler(gate_discovery=False)` forwards every name
+  to the server instead of answering `Unknown tool` for one this connection
+  did not list. A gateway that routes by name prefix and authenticates the
+  caller per call serves tools its `tools/list` never showed this connection
+  (a server that lists only behind the caller's own credential), and a host
+  with its own allow-list in front had to copy the handler, private entry
+  points included, to reach them. The refusal is raised the same way on
+  either side of the gate; such a handler sits last in a
+  `compose_tool_handlers` chain, since it produces no envelope to fall
+  through on.
+
 ## [0.79.0] — 2026-09-18
 
 ### Added

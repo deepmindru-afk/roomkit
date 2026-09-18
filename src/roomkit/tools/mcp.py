@@ -265,16 +265,26 @@ class MCPToolProvider:
         body, refused = await self._invoke(name, arguments, timeout=timeout)
         return json.dumps({"error": body}) if refused else body
 
-    def as_tool_handler(self) -> ToolHandler:
+    def as_tool_handler(self, *, gate_discovery: bool = True) -> ToolHandler:
         """Return a ToolHandler suitable for ``AIChannel(tool_handler=...)``.
 
         Unknown tools (not from this MCP server) return
         ``{"error": "Unknown tool: <name>"}``, which allows composition
         via ``compose_tool_handlers``.
 
+        ``gate_discovery=False`` forwards every name to the server instead. A
+        gateway that routes by name prefix and authenticates the caller per
+        call serves tools this connection never listed — a server whose
+        ``tools/list`` answers only behind the caller's own credential, say —
+        and a host with its own allow-list in front has already decided what
+        the model may call. Such a handler produces no ``Unknown tool``
+        envelope, so it sits last in a ``compose_tool_handlers`` chain:
+        nothing after it would be reached.
+
         A tool the server *refused* raises
-        :class:`~roomkit.core.exceptions.ToolRefusedError`: the tool loop marks
-        the call failed and hands the server's message to the model unchanged.
+        :class:`~roomkit.core.exceptions.ToolRefusedError` either way: the tool
+        loop marks the call failed and hands the server's message to the model
+        unchanged.
         """
         self._ensure_connected()
 
@@ -283,7 +293,7 @@ class MCPToolProvider:
             # Strip mcp__<server>__ prefix if present (e.g. from system prompt naming)
             if lookup.startswith("mcp__") and "__" in lookup[5:]:
                 lookup = lookup.split("__", 2)[-1]
-            if lookup not in self._tool_set:
+            if gate_discovery and lookup not in self._tool_set:
                 return json.dumps({"error": f"Unknown tool: {name}"})
             body, refused = await self._invoke(lookup, arguments, timeout=_DEFAULT_CALL_TIMEOUT)
             if refused:
