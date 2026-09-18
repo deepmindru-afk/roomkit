@@ -106,7 +106,7 @@ def test_buffer_bounds_memory_duration_and_age(gemini) -> None:
     state.input_sample_rate = 8000
     now = [10.0]
     with patch(
-        "roomkit.providers.gemini.realtime.time", SimpleNamespace(monotonic=lambda: now[0])
+        "roomkit.providers.gemini.realtime_state.time", SimpleNamespace(monotonic=lambda: now[0])
     ):
         for _ in range(500):
             state.buffer_audio(b"x" * 16000)
