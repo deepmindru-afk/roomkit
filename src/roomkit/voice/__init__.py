@@ -276,6 +276,20 @@ def get_elevenlabs_config() -> type:
     return ElevenLabsConfig
 
 
+def get_gemini_transcribe_provider() -> type:
+    """Get GeminiTranscribeProvider class (requires google-genai)."""
+    from roomkit.voice.stt.gemini_transcribe import GeminiTranscribeProvider
+
+    return GeminiTranscribeProvider
+
+
+def get_gemini_transcribe_config() -> type:
+    """Get GeminiTranscribeConfig class."""
+    from roomkit.voice.stt.gemini_transcribe import GeminiTranscribeConfig
+
+    return GeminiTranscribeConfig
+
+
 def get_gradium_stt_provider() -> type:
     """Get GradiumSTTProvider class (requires gradium)."""
     from roomkit.voice.stt.gradium import GradiumSTTProvider

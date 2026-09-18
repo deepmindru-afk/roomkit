@@ -1,13 +1,12 @@
 """Google Gemini speech-to-text provider — batch transcription of recordings.
 
-Gemini has no speech-to-text endpoint. Transcription here is an *instruction* to
-a multimodal model that takes audio as input, which is why this provider is
-batch-only: the API accepts a complete recording, not a stream, and answers in
-seconds. Google's own audio documentation points at Cloud Speech-to-Text for
-dedicated real-time transcription, and that remains the right advice for live
-turn-taking — reach for :mod:`~roomkit.voice.stt.deepgram`,
-:mod:`~roomkit.voice.stt.gradium` or a local
-:mod:`~roomkit.voice.stt.sherpa_onnx` model there.
+Transcription here is an *instruction* to a multimodal model that takes audio
+as input, which is why this provider is batch-only: the API accepts a complete
+recording, not a stream, and answers in seconds. For live turn-taking reach for
+:mod:`~roomkit.voice.stt.gemini_transcribe`, which drives Google's dedicated
+``gemini-3.5-transcribe-live`` recogniser over a WebSocket, or for
+:mod:`~roomkit.voice.stt.deepgram`, :mod:`~roomkit.voice.stt.gradium` or a
+local :mod:`~roomkit.voice.stt.sherpa_onnx` model.
 
 What the batch shape buys is what a streaming recogniser structurally cannot
 give: the model sees the whole recording before it answers, so one pass returns

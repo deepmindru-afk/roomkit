@@ -24,6 +24,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mid-conversation), `language_hints`, `custom_vocabulary`, `diarization` and
   `word_timestamp`. A tool may carry `behavior` to opt back into blocking
   execution where the model allows it.
+- `GeminiTranscribeProvider` streams speech-to-text on
+  `gemini-3.5-transcribe-live`, Google's dedicated recogniser over the Live
+  API: interim and final transcripts as the caller speaks, automatic language
+  detection across 85+ locales, and custom-vocabulary biasing. The existing
+  batch `GeminiSTTProvider` is unchanged and remains the one for finished
+  recordings, where a single pass returns the speaker turns and timestamps a
+  streaming recogniser cannot. Diarization and word timestamps are not
+  available over the Live API, so the streaming config offers neither.
+- `examples/stt_gemini_transcribe_live.py` synthesizes a sentence, resamples it
+  to the 16 kHz the model takes and prints the interim and final transcripts as
+  they arrive.
 - `examples/realtime_background_tools.py` runs a deliberately slow tool on
   `gemini-3.8-live-extended-thinking` and reports the assistant turns that
   happened while the call was still outstanding.
