@@ -805,9 +805,9 @@ class TestLifecycle:
         self, session: VoiceSession
     ) -> None:
         """The API answers no close frame after ``session.closed`` and drops the
-        connection two seconds later. Deferring that wait moved it; only not
-        waiting removes it: the socket is aborted right after its close frame,
-        and ``close()``, which awaits the deferred task, finds it done."""
+        connection two seconds later: the socket is aborted right after its
+        close frame, and ``close()``, which awaits the deferred task, finds it
+        done."""
         provider = _provider(close_timeout_s=1.0)
         ws, _ = await _connect(provider, session, ws=_SilentPeerWS())
 
@@ -824,11 +824,13 @@ class TestLifecycle:
         assert ws.closed
         assert provider._deferred_closes == set()
 
-    async def test_unacknowledged_close_keeps_the_peers_chance(
+    async def test_unacknowledged_close_keeps_the_peers_chance_and_releases_the_socket(
         self, session: VoiceSession, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Without ``session.closed`` nothing says the protocol is over: the
-        socket keeps the library's handshake wait, under ``_CLOSE_TIMEOUT``."""
+        socket keeps a handshake wait, ``_CLOSE_TIMEOUT`` long, and it is the
+        library's own bound, which aborts the transport on expiry. A silent
+        peer therefore costs the wait and never keeps the socket."""
         monkeypatch.setattr(live, "_CLOSE_TIMEOUT", 0.15)
         provider = _provider(close_timeout_s=0.05)
         ws, _ = await _connect(provider, session, ws=_SilentPeerWS())
@@ -836,8 +838,9 @@ class TestLifecycle:
         started = asyncio.get_running_loop().time()
         await asyncio.wait_for(provider.disconnect(session), timeout=1.0)
 
-        assert ws.close_timeout_at_close == 10.0
-        assert asyncio.get_running_loop().time() - started >= 0.2
+        assert ws.close_timeout_at_close == 0.15
+        assert ws.closed
+        assert asyncio.get_running_loop().time() - started >= 0.15
 
     async def test_close_releases_the_sockets_disconnect_deferred(
         self, session: VoiceSession

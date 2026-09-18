@@ -378,10 +378,25 @@ class OpenAILiveProvider(
             )
         await self._close_socket(state)
 
-    async def _close_socket(self, state: _LiveSession) -> None:
-        """Close one socket, bounded: a peer that never closes cannot hold us."""
+    async def _close_socket(self, state: _LiveSession, *, timeout: float | None = None) -> None:
+        """Close one socket under the library's own bound.
+
+        ``close_timeout`` is what websockets consults once the close frame is
+        out: on expiry it aborts the transport, so the socket is released
+        whether or not the peer answers. Cancelling ``close()`` from outside
+        would bound the wait and leave the transport open. The outer wait only
+        nets a send stalled on flow control, which that deadline does not
+        cover, and aborts the transport itself.
+        """
+        if timeout is None:
+            timeout = _CLOSE_TIMEOUT
+        ws = state.ws
         with contextlib.suppress(Exception):
-            await asyncio.wait_for(state.ws.close(), timeout=_CLOSE_TIMEOUT)
+            ws.close_timeout = timeout
+            try:
+                await asyncio.wait_for(ws.close(), timeout=timeout + _CLOSE_TIMEOUT)
+            except TimeoutError:
+                ws.transport.abort()
 
     def _release_socket(self, state: _LiveSession) -> None:
         """Close a socket whose protocol is over without waiting for the peer.
@@ -394,14 +409,15 @@ class OpenAILiveProvider(
         so ``ws.close()``, which waits for the handshake and the TCP close,
         would buy those two seconds and nothing else. The close frame is still
         sent; a ``close_timeout`` of zero then makes the library abort the
-        transport at once, its own bound rather than a cancellation that
-        leaves the transport open. It runs on its own task, off the path of a
-        caller that is usually tearing a call down; :meth:`close` is where it
-        is awaited again, and finds it done.
+        transport at once. That bound applies while no close deadline exists
+        yet, which is the case here: the peer has sent no close frame. It runs
+        on its own task, off the path of a caller that is usually tearing a
+        call down; :meth:`close` is where it is awaited again, and finds it
+        done.
         """
-        state.ws.close_timeout = _ACKNOWLEDGED_CLOSE_TIMEOUT
         task = asyncio.create_task(
-            self._close_socket(state), name=f"roomkit-live-close-{state.session.id}"
+            self._close_socket(state, timeout=_ACKNOWLEDGED_CLOSE_TIMEOUT),
+            name=f"roomkit-live-close-{state.session.id}",
         )
         self._deferred_closes.add(task)
         task.add_done_callback(self._deferred_closes.discard)

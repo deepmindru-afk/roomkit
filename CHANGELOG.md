@@ -46,7 +46,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `close()`, and by every teardown that awaits both in one breath. The close
   frame is still sent; the socket is then aborted at once through the
   library's own `close_timeout`. A close that `session.closed` never
-  acknowledged keeps its two-second chance.
+  acknowledged keeps its two-second chance, under that same bound: the
+  transport is released when it expires, where cancelling the close used to
+  leave it open.
 
 ## [0.80.0] — 2026-09-18
 
