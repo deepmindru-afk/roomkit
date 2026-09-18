@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from copy import deepcopy
@@ -30,6 +31,7 @@ from roomkit.providers.gemini.realtime_state import (  # noqa: F401 - tests read
 from roomkit.providers.gemini.realtime_tools import GeminiLiveToolsMixin
 from roomkit.providers.gemini.realtime_transcription import GeminiLiveTranscriptionMixin
 from roomkit.providers.gemini.voices import VOICES as _VOICES
+from roomkit.telemetry.noop import NoopTelemetryProvider
 from roomkit.voice.base import VoiceSession, VoiceSessionState
 from roomkit.voice.realtime.provider import RealtimeVoiceProvider, VoiceInfo
 
@@ -213,11 +215,7 @@ class GeminiLiveProvider(
             warned=warned,
         )
 
-        ctxmgr = self._client.aio.live.connect(
-            model=self._model,
-            config=live_config,
-        )
-        live_session = await ctxmgr.__aenter__()
+        ctxmgr, live_session = await self._open_live_session(live_config)
 
         state = _GeminiSessionState(
             session=session,
@@ -240,17 +238,29 @@ class GeminiLiveProvider(
         session.state = VoiceSessionState.ACTIVE
         session.provider_session_id = session.id
 
-        # Start receive loop
+        self._start_receive_loop(state)
+
+        logger.info("Gemini Live session connected: %s", session.id)
+
+    async def _open_live_session(self, live_config: Any) -> tuple[Any, Any]:
+        """Open one Live connection for *live_config*: the context manager and its session.
+
+        The one place the socket is opened, for ``connect`` and for both
+        attempts of ``_reconnect``; the caller owns the closing.
+        """
+        ctxmgr = self._client.aio.live.connect(model=self._model, config=live_config)
+        live_session = await ctxmgr.__aenter__()
+        return ctxmgr, live_session
+
+    def _start_receive_loop(self, state: _GeminiSessionState) -> None:
+        """Start the receive loop of *state*'s session on its own task."""
+        session = state.session
         state.receive_task = asyncio.create_task(
             self._receive_loop(session),
             name=f"gemini_live_recv:{session.id}",
         )
 
-        logger.info("Gemini Live session connected: %s", session.id)
-
     async def disconnect(self, session: VoiceSession) -> None:
-        import contextlib
-
         state = self._sessions.pop(session.id, None)
         if state is None:
             session.state = VoiceSessionState.ENDED
@@ -269,8 +279,6 @@ class GeminiLiveProvider(
         self._clear_transcription_buffers(session.id)
 
         # Record session metrics before cleanup
-        from roomkit.telemetry.noop import NoopTelemetryProvider
-
         telemetry = getattr(self, "_telemetry", None) or NoopTelemetryProvider()
         if state.started_at:
             uptime_s = time.monotonic() - state.started_at
@@ -330,8 +338,6 @@ class GeminiLiveProvider(
         wipe the existing tools and voice. Passing an empty list /
         empty string explicitly does still clear the field.
         """
-        import contextlib
-
         state = self._sessions.get(session.id)
         if state is None:
             return
@@ -400,18 +406,13 @@ class GeminiLiveProvider(
         await self._reconnect(session)
 
         # Start a fresh receive loop for the new connection.
-        state.receive_task = asyncio.create_task(
-            self._receive_loop(session),
-            name=f"gemini_live_recv:{session.id}",
-        )
+        self._start_receive_loop(state)
 
     async def close(self) -> None:
         for session_id in list(self._sessions.keys()):
             state = self._sessions.get(session_id)
             if state:
                 await self.disconnect(state.session)
-
-    # -- Hot-path helpers (avoid per-call imports and string formatting) --
 
     # -- Receive loop --
 
@@ -574,8 +575,6 @@ class GeminiLiveProvider(
 
     async def _reconnect(self, session: VoiceSession) -> None:
         """Reconnect to Gemini Live using the stored config."""
-        import contextlib
-
         state = self._sessions.get(session.id)
         if state is None or session.state == VoiceSessionState.ENDED:
             raise RuntimeError("No session state for reconnection")
@@ -611,11 +610,7 @@ class GeminiLiveProvider(
             live_config.session_resumption.handle = None
 
         try:
-            ctxmgr = self._client.aio.live.connect(
-                model=self._model,
-                config=live_config,
-            )
-            live_session = await ctxmgr.__aenter__()
+            ctxmgr, live_session = await self._open_live_session(live_config)
         except Exception as exc:
             # Fallback: if reconnection with handle failed, try one fresh connect
             if resumption_handle and live_config.session_resumption is not None:
@@ -626,11 +621,7 @@ class GeminiLiveProvider(
                 )
                 state.resumption_handle = None
                 live_config.session_resumption.handle = None
-                ctxmgr = self._client.aio.live.connect(
-                    model=self._model,
-                    config=live_config,
-                )
-                live_session = await ctxmgr.__aenter__()
+                ctxmgr, live_session = await self._open_live_session(live_config)
             else:
                 raise
 
