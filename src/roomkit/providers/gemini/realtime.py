@@ -27,6 +27,7 @@ from roomkit.providers.gemini.realtime_state import (  # noqa: F401 - tests read
     _TranscriptionBuffer,
 )
 from roomkit.providers.gemini.realtime_tools import GeminiLiveToolsMixin
+from roomkit.providers.gemini.realtime_transcription import GeminiLiveTranscriptionMixin
 from roomkit.providers.gemini.voices import VOICES as _VOICES
 from roomkit.voice.base import VoiceSession, VoiceSessionState
 from roomkit.voice.realtime.injection import VoiceInjectionResult
@@ -77,7 +78,9 @@ def _sanitize_gemini_text(text: str) -> str:
     return text
 
 
-class GeminiLiveProvider(GeminiLiveToolsMixin, RealtimeVoiceProvider):
+class GeminiLiveProvider(
+    GeminiLiveToolsMixin, GeminiLiveTranscriptionMixin, RealtimeVoiceProvider
+):
     """Realtime voice provider using the Google Gemini Live API.
 
     Connects to Gemini's live streaming API for bidirectional
@@ -879,10 +882,6 @@ class GeminiLiveProvider(GeminiLiveToolsMixin, RealtimeVoiceProvider):
                 # Suppress duplicate send_audio_failed errors during reconnect
                 state.error_suppressed = True
 
-    def _clear_transcription_buffers(self, session_id: str) -> None:
-        """Remove all transcription buffer entries for a session."""
-        self._transcription_buffer.clear_session(session_id)
-
     async def _reconnect(self, session: VoiceSession) -> None:
         """Reconnect to Gemini Live using the stored config."""
         import contextlib
@@ -1253,90 +1252,3 @@ class GeminiLiveProvider(GeminiLiveToolsMixin, RealtimeVoiceProvider):
             time_left,
         )
         raise _GoAwayError()
-
-    def _is_duplicate_final(self, session: VoiceSession, role: str, text: str) -> bool:
-        """Whether this final re-emits what was already flushed for this turn.
-
-        Gemini re-sends a finished utterance after the buffer already flushed
-        it at a lifecycle boundary (speech end, model turn) — unfiltered,
-        every re-emission renders as a duplicate final downstream. The guard
-        drops consecutive identical finals per role; it is cleared when new
-        speech or a new response genuinely begins, so a user repeating the
-        same words in a later turn still comes through.
-        """
-        state = self._sessions.get(session.id)
-        if state is None:
-            return False
-        if state.last_final_text.get(role) == text:
-            logger.info(
-                "[Gemini] dropping re-emitted %s final (%d chars, session %s)",
-                role,
-                len(text),
-                session.id,
-            )
-            return True
-        state.last_final_text[role] = text
-        return False
-
-    async def _handle_transcription_chunk(
-        self, session: VoiceSession, text: str, role: str, finished: bool
-    ) -> None:
-        """Accumulate transcription chunks and fire callback when complete."""
-        state = self._sessions.get(session.id)
-        if role == "user" and state is not None and state.awaiting_new_user_utterance:
-            state.last_final_text.pop("user", None)
-            state.awaiting_new_user_utterance = False
-        full_text = self._transcription_buffer.append(session.id, role, text, finished)
-        if full_text:
-            if self._is_duplicate_final(session, role, full_text):
-                return
-            # Log the FINAL transcription so we can see what each side
-            # actually said in the same stream as tool_call events.
-            # Truncate to keep log lines readable; full text still goes
-            # into the room transcript via the callback.
-            self._log_event(
-                session.id,
-                "transcription",
-                role=role,
-                text=full_text[:600] + ("…" if len(full_text) > 600 else ""),
-                len=len(full_text),
-            )
-            await self._fire(
-                self._transcription_callbacks,
-                session,
-                full_text,
-                role,
-                True,
-                label="transcription",
-            )
-        elif not finished:
-            # Send non-final for real-time display in the voice modal
-            await self._fire(
-                self._transcription_callbacks,
-                session,
-                text,
-                role,
-                False,
-                label="transcription",
-            )
-
-    async def _flush_transcription_buffer(self, session: VoiceSession, role: str) -> None:
-        """Flush buffered transcription at lifecycle boundaries."""
-        full_text = self._transcription_buffer.flush(session.id, role)
-        if full_text:
-            if self._is_duplicate_final(session, role, full_text):
-                return
-            logger.debug(
-                "Flushing %s transcription buffer (%d chars) for session %s",
-                role,
-                len(full_text),
-                session.id,
-            )
-            await self._fire(
-                self._transcription_callbacks,
-                session,
-                full_text,
-                role,
-                True,
-                label="transcription",
-            )
