@@ -1510,6 +1510,26 @@ class TestGeminiLiveProvider:
 
         assert tool_calls == [("fc-2", "ping", {})]
 
+    async def test_a_call_without_an_id_is_fired_but_not_tracked(self):
+        """Nothing could answer or cancel it, so the books have nothing to keep."""
+        mod = _load_provider()
+        provider = mod.GeminiLiveProvider(api_key="test-key")
+        session = _make_session()
+
+        state = mod._GeminiSessionState(session=session)
+        provider._sessions[session.id] = state
+
+        tool_calls = []
+        provider.on_tool_call(lambda s, cid, name, args: tool_calls.append((cid, name)))
+
+        fc = SimpleNamespace(id=None, name="ping", args=None)
+        await provider._handle_server_response(
+            session, SimpleNamespace(tool_call=SimpleNamespace(function_calls=[fc]))
+        )
+
+        assert tool_calls == [(None, "ping")]
+        assert state.pending_call_ids == set()
+
     async def test_handle_voice_activity_start(self):
         mod = _load_provider()
         provider = mod.GeminiLiveProvider(api_key="test-key")
@@ -2544,3 +2564,17 @@ class TestReconnectForgetsTheOldSocketsCalls:
 
         assert told == []
         assert state.cancelled_call_ids == set()
+
+    async def test_an_id_the_new_socket_reissues_is_answered_again(self):
+        """Ids are connection-scoped: the new socket may hand out one the old socket lost."""
+        provider, session, state, live = _background_call_state()
+        await _issue_calls(provider, session, ("lookup", "call-1"))
+        await provider._release_calls_lost_with_the_connection(state)
+        assert state.cancelled_call_ids == {"call-1"}
+
+        await _issue_calls(provider, session, ("lookup", "call-1"))
+        await provider.submit_tool_result(session, "call-1", "{}")
+
+        assert state.cancelled_call_ids == set()
+        live.send_tool_response.assert_awaited_once()
+        assert state.pending_call_ids == set()

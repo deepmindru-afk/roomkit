@@ -362,10 +362,10 @@ class GeminiLiveProvider(
         state.voice = effective_voice
         state.tools = effective_tools
         state.temperature = effective_temperature
-        # The new declarations decide what blocks from here on. Calls
-        # outstanding from the old set keep their ids in blocking_call_ids
-        # until their results come back, so the guard stays honest across
-        # the change.
+        # The new declarations decide what blocks from here on. The calls
+        # outstanding on the old socket do not carry over: the reconnect
+        # below releases and reports them, since the new connection never
+        # issued their ids.
         state.blocking_tool_names = self._blocking_tool_names(
             effective_tools, state.warned_unsupported
         )

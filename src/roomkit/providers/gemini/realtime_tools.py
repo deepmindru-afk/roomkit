@@ -1,8 +1,8 @@
 """Tool-call handling for the Gemini Live provider.
 
 The model's function calls, the results the application submits, and the
-state of the calls the API is waiting on: which ones block input, what got
-queued behind them, and how a cancelled or orphaned call is released. Kept
+state of the calls still in flight: which ones block input, what got queued
+behind them, and how a cancelled or orphaned call is released. Kept
 apart from the server-message dispatch because it is the one piece of the
 provider with a state machine of its own.
 """
@@ -24,7 +24,7 @@ logger = logging.getLogger("roomkit.providers.gemini.realtime")
 
 
 class GeminiLiveToolsMixin(RealtimeVoiceProvider):
-    """Tool calls and the bookkeeping of the ones the model waits on.
+    """Tool calls and the bookkeeping of the ones still in flight.
 
     Mixed into ``GeminiLiveProvider``, which owns the sessions and the model
     id. ``pending_call_ids`` names every call the current connection issued
@@ -124,8 +124,7 @@ class GeminiLiveToolsMixin(RealtimeVoiceProvider):
         )
 
         # Release the call and flush what its blocking waited on.
-        state.pending_call_ids.discard(call_id)
-        state.blocking_call_ids.discard(call_id)
+        self._release_call(state, call_id)
         if not state.blocking_call_ids:
             await self._flush_queued_injections(state)
 
@@ -157,6 +156,12 @@ class GeminiLiveToolsMixin(RealtimeVoiceProvider):
                 )
                 await self._send_image(state, image_data, mime_type, prompt, silent)
 
+    @staticmethod
+    def _release_call(state: _GeminiSessionState, call_id: str) -> None:
+        """Take one call off the books, whether or not the model waited on it."""
+        state.pending_call_ids.discard(call_id)
+        state.blocking_call_ids.discard(call_id)
+
     async def _release_calls_lost_with_the_connection(self, state: _GeminiSessionState) -> None:
         """Forget every tool call the old socket issued.
 
@@ -165,8 +170,7 @@ class GeminiLiveToolsMixin(RealtimeVoiceProvider):
         blocking one held every injection queued behind it until the
         application's handler finished work the model had already lost, and
         the result of any of them then went out for an id the server did not
-        know. Counting the background calls instead of naming them let
-        exactly that happen to them.
+        know.
         """
         orphaned = sorted(state.pending_call_ids)
         state.pending_call_ids.clear()
@@ -206,7 +210,11 @@ class GeminiLiveToolsMixin(RealtimeVoiceProvider):
         # (a late final reads as new user speech downstream).
         await self._flush_transcription_buffer(session, "user")
         for fc in tool_call.function_calls:
+            # A call without an id can be neither answered nor cancelled, so
+            # there is nothing to keep for it. One with an id belongs to this
+            # connection now, even if an earlier one cancelled the same id.
             if fc.id:
+                state.cancelled_call_ids.discard(fc.id)
                 state.pending_call_ids.add(fc.id)
                 if fc.name in state.blocking_tool_names:
                     state.blocking_call_ids.add(fc.id)
@@ -247,8 +255,7 @@ class GeminiLiveToolsMixin(RealtimeVoiceProvider):
         logger.info("[Gemini] server cancelled tool call(s) %s (session %s)", ids, session.id)
         self._log_event(session.id, "tool_call_cancellation", ids=ids)
         for call_id in ids:
-            state.pending_call_ids.discard(call_id)
-            state.blocking_call_ids.discard(call_id)
+            self._release_call(state, call_id)
             state.cancelled_call_ids.add(call_id)
         await self._fire(
             self._tool_call_cancelled_callbacks, session, ids, label="tool_call_cancelled"

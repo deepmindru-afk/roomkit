@@ -74,11 +74,11 @@ class _GeminiSessionState:
     turn_count: int = 0
     tool_result_bytes: int = 0
     input_sample_rate: int = 16000
-    # Ids of every call the current connection issued and has not released:
-    # the result went back, the server cancelled it, or the connection that
-    # issued it is gone. Ids are connection-scoped, so this is the set a
-    # reconnect orphans. A count could not say which calls, and the
-    # background ones then slipped past the release the reconnect owed them.
+    # Ids of every call the current connection issued and has not yet
+    # released. A call is released when its result goes back, when the server
+    # cancels it, or when the connection that issued it is gone: ids are
+    # connection-scoped, so this is the set a reconnect orphans, blocking
+    # calls and background calls alike.
     pending_call_ids: set[str] = field(default_factory=set)
     # Tools this session declared BLOCKING. From 3.8 the model runs its calls
     # in the background by default, but a single tool can still ask to block

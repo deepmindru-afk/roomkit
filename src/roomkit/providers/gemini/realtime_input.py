@@ -141,9 +141,9 @@ class GeminiLiveInputMixin(RealtimeVoiceProvider):
         # injection back for no reason.
         if state.blocking_call_ids:
             logger.debug(
-                "Queuing text injection for session %s (pending tool calls: %d)",
+                "Queuing text injection for session %s (blocking tool calls: %d)",
                 session.id,
-                len(state.pending_call_ids),
+                len(state.blocking_call_ids),
             )
             state.queued_text_injections.append((text, role, silent))
             return VoiceInjectionResult(status="unknown", reason="voice_provider_queued")
@@ -230,9 +230,9 @@ class GeminiLiveInputMixin(RealtimeVoiceProvider):
         # submit_tool_result.
         if state.blocking_call_ids:
             logger.debug(
-                "Queuing image injection for session %s (pending tool calls: %d)",
+                "Queuing image injection for session %s (blocking tool calls: %d)",
                 session.id,
-                len(state.pending_call_ids),
+                len(state.blocking_call_ids),
             )
             state.queued_injections.append((image_data, mime_type, prompt, silent))
             return
