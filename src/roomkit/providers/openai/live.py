@@ -390,8 +390,8 @@ class OpenAILiveProvider(
         ``session.closed`` has landed there is nothing behind that wait: the
         billed seconds rode that event and the turns are already settled. The
         close still runs, still bounded by :data:`_CLOSE_TIMEOUT`, but off the
-        caller's path — it is the call's finalization, and it pays that wall
-        clock in full.
+        path of a caller that is usually tearing a call down and pays every
+        millisecond it waits here. :meth:`close` is where it is awaited again.
         """
         task = asyncio.create_task(
             self._close_socket(state), name=f"roomkit-live-close-{state.session.id}"
@@ -451,6 +451,13 @@ class OpenAILiveProvider(
     async def close(self) -> None:
         for state in list(self._states.values()):
             await self.disconnect(state.session)
+        # ``disconnect`` hands its socket to a task so its caller does not pay
+        # the peer's TCP close. The provider-wide teardown is where that close
+        # is finally somebody's: ``close()`` releases every resource, and a
+        # peer that never closes costs it ``_CLOSE_TIMEOUT``, as it always did.
+        deferred = list(self._deferred_closes)
+        if deferred:
+            await asyncio.gather(*deferred, return_exceptions=True)
 
     async def reconfigure(
         self,

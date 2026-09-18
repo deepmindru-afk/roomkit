@@ -14,8 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   turns are already settled, so what `ws.close()` still waits for is a
   connection teardown the API does not always perform, and callers paid up to
   two seconds of it in their own shutdown path. The socket still closes, on its
-  own task and under the same bound. A close the server never acknowledged is
-  unchanged: there, waiting still means something.
+  own task and under the same bound, and `close()` still returns only once every
+  one of them is released. A close the server never acknowledged is unchanged:
+  there, waiting still means something.
 
 ## [0.78.0] — 2026-09-17
 

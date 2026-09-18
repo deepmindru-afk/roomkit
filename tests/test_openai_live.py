@@ -744,9 +744,10 @@ class TestLifecycle:
         assert session._last_usage["live_seconds"] == 12.5
 
     async def test_acknowledged_close_does_not_wait_for_the_socket(
-        self, session: VoiceSession
+        self, session: VoiceSession, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Once ``session.closed`` lands, the TCP close is nobody's wall clock."""
+        monkeypatch.setattr(live, "_CLOSE_TIMEOUT", 0.05)
         provider = _provider(close_timeout_s=1.0)
         ws, _ = await _connect(provider, session, ws=_HangingCloseWS())
 
@@ -756,31 +757,46 @@ class TestLifecycle:
 
         started = asyncio.get_running_loop().time()
         await asyncio.wait_for(task, timeout=1.0)
-        assert asyncio.get_running_loop().time() - started < 0.1
+        assert asyncio.get_running_loop().time() - started < 0.05
 
         assert session.state == VoiceSessionState.ENDED
         assert provider._states == {}
         await _settle()
         assert ws.close_entered  # it still closes, just on its own task
-        for pending in list(provider._deferred_closes):
-            pending.cancel()
-        await _settle()
+        await asyncio.sleep(0.1)  # and under the same bound, unattended
+        assert provider._deferred_closes == set()
 
     async def test_unacknowledged_close_still_waits_for_the_socket(
         self, session: VoiceSession, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """No ``session.closed`` means the close is not acknowledged: wait for it."""
         monkeypatch.setattr(live, "_CLOSE_TIMEOUT", 0.15)
-        provider = _provider(close_timeout_s=0)
+        provider = _provider(close_timeout_s=0.05)
         ws, _ = await _connect(provider, session, ws=_HangingCloseWS())
 
         started = asyncio.get_running_loop().time()
         await asyncio.wait_for(provider.disconnect(session), timeout=1.0)
         elapsed = asyncio.get_running_loop().time() - started
 
-        assert elapsed >= 0.15
+        assert "session.close" in ws.types()  # the peer was asked, and stayed silent
+        assert elapsed >= 0.2  # the ack it never sent, then the close it never made
         assert provider._deferred_closes == set()
         assert session.state == VoiceSessionState.ENDED
+
+    async def test_close_releases_the_sockets_disconnect_deferred(
+        self, session: VoiceSession
+    ) -> None:
+        """``close()`` releases every provider resource, deferred sockets included."""
+        provider = _provider(close_timeout_s=1.0)
+        ws, _ = await _connect(provider, session)
+        ws.push({"type": "session.closed", "reason": "client"})
+        await _settle()
+
+        await provider.close()
+
+        assert ws.closed
+        assert provider._deferred_closes == set()
+        assert provider._states == {}
 
     async def test_close_timeout_still_disconnects(self, session: VoiceSession) -> None:
         provider = _provider(close_timeout_s=0.05)
