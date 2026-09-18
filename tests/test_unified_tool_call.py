@@ -194,6 +194,45 @@ class TestRealtimeVoiceToolCallHook:
         assert len(observed) == 1
         assert observed[0].is_error is True
 
+    async def test_a_refused_call_does_not_trace_as_a_served_one(
+        self,
+        rt_provider: MockRealtimeProvider,
+        rt_transport: MockRealtimeTransport,
+    ) -> None:
+        """The span of a refused call says so.
+
+        A refusal that ends the call without marking its span leaves the trace
+        claiming the tool ran: the same wrong green the transcript used to
+        show, moved one layer down where nobody would look for it.
+        """
+        from roomkit.telemetry.base import Attr, SpanKind
+        from roomkit.telemetry.mock import MockTelemetryProvider
+
+        async def declines(name: str, args: dict[str, Any]) -> str:
+            raise ToolRefusedError(f"Error: Tool '{name}' is temporarily unavailable.")
+
+        ch = RealtimeVoiceChannel(
+            "rt-span",
+            provider=rt_provider,
+            transport=rt_transport,
+            tool_handler=declines,
+        )
+        kit = RoomKit()
+        kit.register_channel(ch)
+        # After registration: that is what wires the kit's own provider in.
+        telemetry = MockTelemetryProvider()
+        ch._telemetry = telemetry
+        room = await kit.create_room()
+        await kit.attach_channel(room.id, "rt-span")
+        session = await ch.start_session(room.id, "u1", "ws")
+
+        await rt_provider.simulate_tool_call(session, "c1", "get_weather", {"city": "NYC"})
+        await asyncio.sleep(0.1)
+
+        spans = telemetry.get_spans(SpanKind.REALTIME_TOOL_CALL)
+        assert len(spans) == 1
+        assert spans[0].attributes.get(Attr.REALTIME_TOOL_DENIED) is True
+
     async def test_handler_and_hook_coexist(
         self,
         rt_provider: MockRealtimeProvider,

@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._conference_mixer import ConferenceMixer
 from roomkit.channels._conference_operations import ConferenceResource
+from roomkit.core.exceptions import ToolRefusedError
 from roomkit.core.task_utils import log_task_exception
 from roomkit.models.event import TextContent
 from roomkit.voice.base import AudioChunk, VoiceSession
@@ -495,6 +496,17 @@ class ConferenceRealtime:
         else:
             try:
                 result = await config.tool_handler(session.room_id, name, arguments)
+            except ToolRefusedError as refusal:
+                # A declined call, in the handler's own words. Wrapping it the
+                # way the branch below wraps a crash would hand the model the
+                # exception's class name instead of the reason.
+                logger.info(
+                    "Conference channel %r: the tool handler refused %r in room %s",
+                    self._channel_id,
+                    name,
+                    session.room_id,
+                )
+                result = refusal.message
             except Exception as error:
                 logger.exception(
                     "Conference channel %r: the tool handler failed on %r in room %s",

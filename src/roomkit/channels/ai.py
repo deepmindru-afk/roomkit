@@ -93,6 +93,10 @@ if TYPE_CHECKING:
 # e.g. a screenshot) — providers without image support flatten via as_text().
 ToolResult = str | list[AITextPart | AIImagePart]
 ToolHandler = Callable[[str, dict[str, Any]], Awaitable[ToolResult]]
+# What a handler returns is the tool's answer. To decline a call instead, raise
+# ``roomkit.ToolRefusedError``: the message reaches the model verbatim and the
+# call is marked failed, where a returned body would read as work that was done.
+
 
 # Content part union — matches AIMessage.content list type
 _ContentPart = AITextPart | AIImagePart | AIToolCallPart | AIToolResultPart | AIThinkingPart

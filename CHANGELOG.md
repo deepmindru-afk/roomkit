@@ -21,9 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   steer could only keep that wording by returning it, which left the outcome
   where nothing could read it. Raising this states both at once: the loop marks
   the part `is_error`, fires the ON_TOOL_CALL observers, and hands the message
-  to the model unchanged. `MCPToolProvider.as_tool_handler()` raises it when the
-  server refuses; `call_tool()` keeps returning its `{"error": ...}` envelope
-  for its own callers.
+  to the model unchanged.
 - `HookEngine.run_observers()` runs only the ASYNC-registered hooks of a
   trigger. It is what lets a refused tool call be observed without being
   served: only a SYNC hook can answer a call, so dispatching the async ones
@@ -84,6 +82,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `MCPToolProvider.as_tool_handler()` raises `ToolRefusedError` when the server
+  refuses a call, where it used to return a `{"error": ...}` body. A host that
+  read that body from the handler catches the exception instead; its `.message`
+  is what the body carried. `call_tool()` is unchanged and still returns the
+  envelope to its own callers.
 - A realtime tool call that nothing served now answers
   `{"error": "No handler for tool <name>"}` instead of `{"status": "ok"}`. It
   reached that branch with no handler and no hook result — nobody had done the

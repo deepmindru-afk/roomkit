@@ -13,6 +13,11 @@ from roomkit.providers.ai.base import AITool
 
 logger = logging.getLogger("roomkit.tools.mcp")
 
+_DEFAULT_CALL_TIMEOUT = 30.0
+"""Seconds a tool call waits. One default for both entry points below:
+the handler used to inherit it by routing through :meth:`call_tool`, and
+the two would otherwise drift apart without anything noticing."""
+
 ToolHandler = Callable[[str, dict[str, Any]], Awaitable[str]]
 
 # Upper bound for publishing a structured result on the tool-call context
@@ -240,7 +245,7 @@ class MCPToolProvider:
         name: str,
         arguments: dict[str, Any],
         *,
-        timeout: float = 30.0,
+        timeout: float = _DEFAULT_CALL_TIMEOUT,
     ) -> str:
         """Call a tool on the MCP server and return the result as a string.
 
@@ -281,7 +286,7 @@ class MCPToolProvider:
                 lookup = lookup.split("__", 2)[-1]
             if lookup not in self._tool_set:
                 return json.dumps({"error": f"Unknown tool: {name}"})
-            body, refused = await self._invoke(lookup, arguments, timeout=30.0)
+            body, refused = await self._invoke(lookup, arguments, timeout=_DEFAULT_CALL_TIMEOUT)
             if refused:
                 # The server declined; say so instead of returning a body the
                 # loop would have to recognise, and keep the server's words —

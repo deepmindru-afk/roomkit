@@ -15,7 +15,15 @@ from typing import Any
 
 import pytest
 
-from roomkit import HookExecution, HookResult, HookTrigger, RoomContext, RoomKit, ToolCallEvent
+from roomkit import (
+    HookExecution,
+    HookResult,
+    HookTrigger,
+    RoomContext,
+    RoomKit,
+    ToolCallEvent,
+    ToolRefusedError,
+)
 from roomkit.channels._realtime_tool_recovery import _coerce_types, _parse_args
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 from roomkit.models.event import TextContent
@@ -200,6 +208,34 @@ class TestRecoveredCallsAreGated:
         await provider.simulate_transcription(session, "call:lookup{city:Paris}", "assistant")
         await asyncio.sleep(0.1)
 
+        assert provider.tool_results == []
+
+
+class TestARecoveredCallCanBeRefused:
+    """A handler that declines a call the model *spoke* rather than issued.
+
+    This path injects its outcome as context instead of submitting a tool
+    result, so a refusal that escaped the handler used to reach an ``except``
+    that injects nothing: the model asked, heard nothing back, and had no way
+    to know why.
+    """
+
+    async def test_the_refusal_reaches_the_model_in_the_handlers_words(
+        self, provider: MockRealtimeProvider
+    ) -> None:
+        async def declines(name: str, args: dict[str, Any]) -> str:
+            raise ToolRefusedError(f"Error: Tool '{name}' is temporarily unavailable.")
+
+        _kit, _channel, session = await _session(provider, "rt-rec-refused", handler=declines)
+
+        await provider.simulate_transcription(session, "call:lookup{city:Paris}", "assistant")
+        await asyncio.sleep(0.1)
+
+        injected = _injected(provider)
+        assert any("Error: Tool 'lookup' is temporarily unavailable." in t for t in injected), (
+            f"the refusal never reached the model: {injected}"
+        )
+        # Spoken call, so no FunctionResponse is pending — same as a denial.
         assert provider.tool_results == []
 
 

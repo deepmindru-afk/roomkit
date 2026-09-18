@@ -335,9 +335,27 @@ class RealtimeToolsMixin:
                 )
                 return
 
-            result_str = await self._serve_gated_tool_call(
-                session, call_id, name, arguments, room_id, gate_context
-            )
+            try:
+                result_str = await self._serve_gated_tool_call(
+                    session, call_id, name, arguments, room_id, gate_context
+                )
+            except ToolRefusedError as refusal:
+                # Ends this call the way the pre-execution denial above does:
+                # the span says denied, the model reads the handler's words,
+                # and the turn carries on.
+                body = refusal.message
+                if len(body) > self._tool_result_max_length:
+                    body = self._truncate_tool_result(body, name, call_id, session.id)
+                await self._submit_realtime_tool_result(session, call_id, body)
+                await self._fire_tool_refusal(session, call_id, name, arguments, body, room_id)
+                telemetry.end_span(tool_span_id, attributes={Attr.REALTIME_TOOL_DENIED: True})
+                logger.info(
+                    "Tool call %s(%s) refused by its handler for session %s",
+                    name,
+                    call_id,
+                    session.id,
+                )
+                return
             await self._submit_realtime_tool_result(session, call_id, result_str)
 
             telemetry.end_span(tool_span_id)
@@ -391,6 +409,11 @@ class RealtimeToolsMixin:
         the result length. Shared by the provider's own tool calls and by a
         reasoning backend's (RFC §12.4.1), which differ only in where the
         result then goes.
+
+        Raises :class:`~roomkit.core.exceptions.ToolRefusedError` when the
+        handler declines the call. It is not caught here: a refusal and a
+        served result end their caller's span differently and read differently
+        in its log, so the caller is where the distinction is spent.
         """
         handler_result: str | None = None
         if self._tool_handler is not None:
@@ -405,17 +428,11 @@ class RealtimeToolsMixin:
             t_seg = time.perf_counter()
             token = _current_voice_session.set(session)
             try:
+                # ``ToolRefusedError`` travels out of here on purpose. Flattening
+                # it into the returned string would put the outcome back in the
+                # body, which is what this whole mechanism removes, and both
+                # callers below own a span and a log line that have to know.
                 raw = await self._tool_handler(name, arguments)
-            except ToolRefusedError as refusal:
-                # A handler that declines states it by raising, and its words
-                # are the ones the model should hear. Observed like the gates
-                # above, then submitted as the call's result: a refusal ends
-                # this call, it does not end the turn.
-                logger.info("Tool %s refused: %s", name, refusal.message)
-                await self._fire_tool_refusal(
-                    session, call_id, name, arguments, refusal.message, room_id
-                )
-                return refusal.message
             finally:
                 _current_voice_session.reset(token)
             logger.debug(

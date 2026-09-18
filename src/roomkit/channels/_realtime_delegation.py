@@ -20,6 +20,7 @@ import threading
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 from uuid import uuid4
 
+from roomkit.core.exceptions import ToolRefusedError
 from roomkit.models.enums import HookTrigger
 from roomkit.telemetry.base import Attr, SpanKind
 from roomkit.telemetry.context import reset_span
@@ -111,6 +112,7 @@ class RealtimeDelegationMixin:
     _telemetry_provider: Any  # see RealtimeDelegationHost — cross-mixin
     _authorize_realtime_tool: Any  # see RealtimeToolsMixin
     _serve_gated_tool_call: Any  # see RealtimeToolsMixin
+    _fire_tool_refusal: Any  # see RealtimeToolsMixin
 
     # -----------------------------------------------------------------
     # Transcript ledger
@@ -376,9 +378,25 @@ class RealtimeDelegationMixin:
                 telemetry.end_span(span_id)
                 return denial
 
-            result_str = await self._serve_gated_tool_call(
-                session, call_id, name, arguments, room_id, gate_context
-            )
+            try:
+                result_str = await self._serve_gated_tool_call(
+                    session, call_id, name, arguments, room_id, gate_context
+                )
+            except ToolRefusedError as refusal:
+                # Same shape as the pre-execution denial above: the backend
+                # reads why it was refused, and the span does not report the
+                # call as one that ran.
+                telemetry.end_span(span_id, attributes={Attr.REALTIME_TOOL_DENIED: True})
+                logger.info(
+                    "Backend tool %s refused by its handler (delegation %s, session %s)",
+                    name,
+                    delegation_id,
+                    session.id,
+                )
+                await self._fire_tool_refusal(
+                    session, call_id, name, arguments, refusal.message, room_id
+                )
+                return refusal.message
             telemetry.end_span(span_id)
             logger.info(
                 "Backend tool %s handled (delegation %s, session %s)",
