@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
+import inspect
 import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
@@ -176,7 +176,7 @@ class HooksApiMixin(HelpersMixin):
                 elif status.status == "failed":
                     logger.error("Message %s failed: %s", status.message_id, status.error_message)
         """
-        if not asyncio.iscoroutinefunction(fn):
+        if not inspect.iscoroutinefunction(fn):
             orig = fn
 
             async def _sync_wrap(status: DeliveryStatus) -> Any:

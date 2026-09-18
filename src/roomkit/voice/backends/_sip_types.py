@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import ipaddress
 import logging
 import re
@@ -220,7 +221,7 @@ def wrap_async(callback: Callable[..., Any]) -> Callable[..., Any]:
     If *callback* is a coroutine function it is wrapped in
     ``asyncio.create_task``.  Sync callbacks are returned unchanged.
     """
-    if asyncio.iscoroutinefunction(callback):
+    if inspect.iscoroutinefunction(callback):
         orig = callback
 
         def _wrapper(*args: Any, **kwargs: Any) -> None:

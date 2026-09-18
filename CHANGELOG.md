@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   own task and under the same bound, and `close()` still returns only once every
   one of them is released. A close the server never acknowledged is unchanged:
   there, waiting still means something.
+- SIP callback wrapping and the delivery-status hook no longer call
+  `asyncio.iscoroutinefunction`, deprecated in Python 3.14 and removed in 3.16.
+  `requires-python` already allowed 3.14, where both call sites raised a
+  `DeprecationWarning`; they now use `inspect.iscoroutinefunction`.
 
 ## [0.78.0] — 2026-09-17
 
