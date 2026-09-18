@@ -12,8 +12,9 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -87,6 +88,8 @@ class _HangingCloseWS(_FakeWS):
     def __init__(self) -> None:
         super().__init__()
         self.close_entered = False
+        # What the outer bound reaches for once ``close()`` overstays it.
+        self.transport = SimpleNamespace(abort=Mock())
 
     async def close(self) -> None:
         self.close_entered = True
@@ -783,6 +786,7 @@ class TestLifecycle:
         assert ws.close_entered  # it still closes, just on its own task
         await asyncio.sleep(0.1)  # and under the same bound, unattended
         assert provider._deferred_closes == set()
+        assert ws.transport.abort.call_count == 1  # the bound released the transport
 
     async def test_unacknowledged_close_still_waits_for_the_socket(
         self, session: VoiceSession, monkeypatch: pytest.MonkeyPatch
@@ -799,6 +803,7 @@ class TestLifecycle:
         assert "session.close" in ws.types()  # the peer was asked, and stayed silent
         assert elapsed >= 0.2  # the ack it never sent, then the close it never made
         assert provider._deferred_closes == set()
+        assert ws.transport.abort.call_count == 1  # then the bound released the transport
         assert session.state == VoiceSessionState.ENDED
 
     async def test_acknowledged_socket_is_closed_without_waiting_for_the_peer(

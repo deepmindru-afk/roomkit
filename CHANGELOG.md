@@ -42,6 +42,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mixed into the provider. Public API unchanged:
   `roomkit.providers.gemini.realtime.GeminiLiveProvider` is still the import
   path, and behaviour is byte for byte what it was.
+- The `realtime-openai`, `realtime-deepgram` and `websocket` extras now
+  require `websockets>=14.2`, up from 14.0. The GPT-Live close below relies
+  on the library aborting the transport when `close_timeout` expires, which
+  14.2 introduced: 14.0 and 14.1 close it instead and, over TLS, wait for
+  the peer's close_notify, so an acknowledged close on those two still paid
+  the two seconds the entry says it no longer does. The lock already
+  resolved 16.x; only an install holding the old floor is affected.
 
 ### Fixed
 

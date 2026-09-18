@@ -5757,12 +5757,12 @@ requires-dist = [
     { name = "twilio", marker = "extra == 'twilio'", specifier = ">=9.0" },
     { name = "ty", marker = "extra == 'dev'", specifier = ">=0.0.26" },
     { name = "ultralytics", marker = "extra == 'yolo'", specifier = ">=8.3" },
-    { name = "websockets", marker = "extra == 'all'", specifier = ">=14.0" },
-    { name = "websockets", marker = "extra == 'dev'", specifier = ">=14.0" },
-    { name = "websockets", marker = "extra == 'realtime-deepgram'", specifier = ">=14.0" },
-    { name = "websockets", marker = "extra == 'realtime-openai'", specifier = ">=14.0" },
-    { name = "websockets", marker = "extra == 'sources'", specifier = ">=14.0" },
-    { name = "websockets", marker = "extra == 'websocket'", specifier = ">=14.0" },
+    { name = "websockets", marker = "extra == 'all'", specifier = ">=14.2" },
+    { name = "websockets", marker = "extra == 'dev'", specifier = ">=14.2" },
+    { name = "websockets", marker = "extra == 'realtime-deepgram'", specifier = ">=14.2" },
+    { name = "websockets", marker = "extra == 'realtime-openai'", specifier = ">=14.2" },
+    { name = "websockets", marker = "extra == 'sources'", specifier = ">=14.2" },
+    { name = "websockets", marker = "extra == 'websocket'", specifier = ">=14.2" },
 ]
 provides-extras = ["acp", "aicoustics", "all", "anam", "anthropic", "azure", "buzz", "cerebras", "console", "deepgram", "deepseek", "dev", "discord", "docs", "elevenlabs", "fastrtc", "gemini", "gradium", "httpx", "litellm", "livekit", "local-audio", "local-video", "mcp", "mediapipe", "mistral", "neutts", "ollama", "openai", "openrouter", "opentelemetry", "phonenumbers", "polargrid", "postgres", "providers", "pynacl", "pyroscope", "qwen-ai", "qwen-asr", "qwen-tts", "realtime-deepgram", "realtime-elevenlabs", "realtime-gemini", "realtime-openai", "redis", "rtp", "screen-capture", "screen-input", "sherpa-onnx", "sip", "smart-turn", "sources", "sse", "teams", "telegram", "twilio", "video", "video-overlay", "vllm", "webrtc-aec", "websocket", "webtransport", "whatsapp-personal", "xai", "yolo"]
 
