@@ -8,6 +8,7 @@ from collections.abc import Awaitable, Callable
 from types import TracebackType
 from typing import Any
 
+from roomkit.core.exceptions import ToolRefusedError
 from roomkit.providers.ai.base import AITool
 
 logger = logging.getLogger("roomkit.tools.mcp")
@@ -197,6 +198,43 @@ class MCPToolProvider:
         self._ensure_connected()
         return [t.name for t in self._tools]
 
+    async def _invoke(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        timeout: float,
+    ) -> tuple[str, bool]:
+        """Call the tool and return ``(body, refused)``.
+
+        The server's ``isError`` is the one place this outcome exists, and both
+        entry points below need it: :meth:`call_tool` renders it into the error
+        envelope its callers have always received, while the tool handler
+        raises, because a tool loop cannot recognise a refusal in a body.
+        """
+        import asyncio
+
+        self._ensure_connected()
+        result = await asyncio.wait_for(self._session.call_tool(name, arguments), timeout=timeout)
+
+        if result.isError:
+            parts = [getattr(c, "text", str(c)) for c in result.content]
+            return " ".join(parts), True
+
+        _publish_structured_content(result)
+
+        # Extract text from content parts
+        texts = []
+        for content in result.content:
+            if hasattr(content, "text"):
+                texts.append(content.text)
+            else:
+                texts.append(str(content))
+
+        if len(texts) == 1:
+            return str(texts[0]), False
+        return json.dumps(texts), False
+
     async def call_tool(
         self,
         name: str,
@@ -214,29 +252,14 @@ class MCPToolProvider:
         Returns:
             Result string. Single TextContent → plain text; multi-part → JSON array;
             error results → ``{"error": "..."}``.
+
+        The error envelope is this method's contract and does not change. A tool
+        loop reads :meth:`as_tool_handler` instead, which raises
+        :class:`~roomkit.core.exceptions.ToolRefusedError` so the outcome does
+        not have to be recognised in the body.
         """
-        import asyncio
-
-        self._ensure_connected()
-        result = await asyncio.wait_for(self._session.call_tool(name, arguments), timeout=timeout)
-
-        if result.isError:
-            parts = [getattr(c, "text", str(c)) for c in result.content]
-            return json.dumps({"error": " ".join(parts)})
-
-        _publish_structured_content(result)
-
-        # Extract text from content parts
-        texts = []
-        for content in result.content:
-            if hasattr(content, "text"):
-                texts.append(content.text)
-            else:
-                texts.append(str(content))
-
-        if len(texts) == 1:
-            return str(texts[0])
-        return json.dumps(texts)
+        body, refused = await self._invoke(name, arguments, timeout=timeout)
+        return json.dumps({"error": body}) if refused else body
 
     def as_tool_handler(self) -> ToolHandler:
         """Return a ToolHandler suitable for ``AIChannel(tool_handler=...)``.
@@ -244,6 +267,10 @@ class MCPToolProvider:
         Unknown tools (not from this MCP server) return
         ``{"error": "Unknown tool: <name>"}``, which allows composition
         via ``compose_tool_handlers``.
+
+        A tool the server *refused* raises
+        :class:`~roomkit.core.exceptions.ToolRefusedError`: the tool loop marks
+        the call failed and hands the server's message to the model unchanged.
         """
         self._ensure_connected()
 
@@ -254,6 +281,12 @@ class MCPToolProvider:
                 lookup = lookup.split("__", 2)[-1]
             if lookup not in self._tool_set:
                 return json.dumps({"error": f"Unknown tool: {name}"})
-            return await self.call_tool(lookup, arguments)
+            body, refused = await self._invoke(lookup, arguments, timeout=30.0)
+            if refused:
+                # The server declined; say so instead of returning a body the
+                # loop would have to recognise, and keep the server's words —
+                # they are what the model is meant to read.
+                raise ToolRefusedError(body)
+            return body
 
         return _handler

@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.channels._skill_constants import TOOL_ACTIVATE_SKILL
 from roomkit.channels._tool_search_constants import TOOL_CALL_TOOL
+from roomkit.core.exceptions import ToolRefusedError
 from roomkit.models.enums import ChannelType, HookTrigger
 from roomkit.models.tool_call import ToolCallEvent
 from roomkit.providers.ai.base import AIImagePart, AITextPart
@@ -405,6 +406,16 @@ class RealtimeToolsMixin:
             token = _current_voice_session.set(session)
             try:
                 raw = await self._tool_handler(name, arguments)
+            except ToolRefusedError as refusal:
+                # A handler that declines states it by raising, and its words
+                # are the ones the model should hear. Observed like the gates
+                # above, then submitted as the call's result: a refusal ends
+                # this call, it does not end the turn.
+                logger.info("Tool %s refused: %s", name, refusal.message)
+                await self._fire_tool_refusal(
+                    session, call_id, name, arguments, refusal.message, room_id
+                )
+                return refusal.message
             finally:
                 _current_voice_session.reset(token)
             logger.debug(

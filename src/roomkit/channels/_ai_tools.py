@@ -36,6 +36,7 @@ from roomkit.channels._tool_search_constants import (
     TOOL_LIST_TOOLS,
     TOOL_SEARCH_INFRA_TOOL_NAMES,
 )
+from roomkit.core.exceptions import ToolRefusedError
 from roomkit.models.enums import ChannelType
 from roomkit.models.tool_call import ToolCallEvent
 from roomkit.providers.ai.base import (
@@ -503,6 +504,16 @@ class AIToolsMixin:
             except asyncio.CancelledError:
                 telemetry.end_span(tool_span_id, status="cancelled")
                 raise
+            except ToolRefusedError as refusal:
+                # The branch below with the message kept. A handler that
+                # declines a call has words for the model — a host tunes them
+                # for a small one — and the generic wrapper would replace them
+                # with its own sentence, which is how the reason gets lost.
+                telemetry.end_span(tool_span_id, status="error", error_message=refusal.message)
+                logger.info("Tool %s refused: %s", tc.name, refusal.message)
+                result = refusal.message
+                tool_failed = True
+                await self._fire_tool_refusal(tc, arguments, result, room_id)
             except Exception as exc:
                 telemetry.end_span(tool_span_id, status="error", error_message=str(exc))
                 logger.warning("Tool %s raised %s: %s", tc.name, type(exc).__name__, exc)

@@ -158,3 +158,29 @@ class ConferenceCloseError(RoomKitError):
     def __init__(self, message: str, *, issues: tuple[Any, ...] = ()) -> None:
         super().__init__(message)
         self.issues = issues
+
+
+class ToolRefusedError(RoomKitError):
+    """Raised by a tool handler for a call it declined to serve.
+
+    The outcome of a tool call is carried, never inferred
+    (:attr:`~roomkit.providers.ai.base.AIToolResultPart.is_error`), and a
+    handler that *raises* already states it: the tool loop catches the
+    exception and marks the part. What it cannot state that way is a refusal
+    it wants the model to read in its own words, because the generic branch
+    replaces the body with ``Error executing tool '<name>': <exc>`` — the
+    wording a host tuned for a small model is gone, and with it the reason.
+
+    This is that branch with the message kept. A handler raises it to say two
+    things at once: nothing ran, and here is what the model should read. The
+    loop marks the part failed, fires the ON_TOOL_CALL observers, and hands
+    :attr:`message` to the model unchanged.
+
+    Returning a refusal as an ordinary string cannot express this: the loop
+    would have to recognise a failure in the body, and the bodies do not agree
+    — which is the guesswork ``is_error`` exists to end.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message

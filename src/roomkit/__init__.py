@@ -76,6 +76,7 @@ from roomkit.core.exceptions import (
     ParticipantNotAdmittedError,
     ProviderDeliveryError,
     RoomNotAttachedError,
+    ToolRefusedError,
     VoiceSessionEndedError,
 )
 from roomkit.core.framework import (
@@ -274,6 +275,7 @@ __all__ = [
     "ConferenceCapabilityError",
     "ConferenceCloseError",
     "RoomNotAttachedError",
+    "ToolRefusedError",
     # Delivery
     "DeliveryBackend",
     "DeliveryItem",

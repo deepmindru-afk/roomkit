@@ -17,6 +17,7 @@ from roomkit import (
     RoomContext,
     RoomKit,
     ToolCallEvent,
+    ToolRefusedError,
 )
 from roomkit.channels.ai import AIChannel
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
@@ -145,6 +146,53 @@ class TestRealtimeVoiceToolCallHook:
         _, call_id, result_str = rt_provider.tool_results[0]
         assert call_id == "c1"
         assert json.loads(result_str) == {"temp": 22}
+
+    async def test_a_refusing_handler_ends_the_call_not_the_turn(
+        self,
+        rt_provider: MockRealtimeProvider,
+        rt_transport: MockRealtimeTransport,
+    ) -> None:
+        """A handler that raises ``ToolRefusedError`` refuses one call.
+
+        The voice path awaits the handler under a bare ``try/finally``, so an
+        exception that escapes it takes the turn down: the model is left
+        waiting on a result that never arrives. The refusal is caught, observed
+        and submitted as this call's result instead, in the handler's words.
+        """
+
+        async def declines(name: str, args: dict[str, Any]) -> str:
+            raise ToolRefusedError(f"Error: Tool '{name}' is temporarily unavailable.")
+
+        ch = RealtimeVoiceChannel(
+            "rt-refuse",
+            provider=rt_provider,
+            transport=rt_transport,
+            tool_handler=declines,
+        )
+        kit = RoomKit()
+        kit.register_channel(ch)
+        room = await kit.create_room()
+        await kit.attach_channel(room.id, "rt-refuse")
+        session = await ch.start_session(room.id, "u1", "ws")
+
+        observed: list[ToolCallEvent] = []
+
+        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="observe")
+        async def observe(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
+            observed.append(event)
+            return HookResult.allow()
+
+        await rt_provider.simulate_tool_call(session, "c1", "get_weather", {"city": "NYC"})
+        await asyncio.sleep(0.1)
+
+        # The model got an answer to its call rather than silence.
+        assert len(rt_provider.tool_results) == 1
+        _, call_id, result_str = rt_provider.tool_results[0]
+        assert call_id == "c1"
+        assert result_str == "Error: Tool 'get_weather' is temporarily unavailable."
+        # And the outcome is stated, not left for a reader of that sentence.
+        assert len(observed) == 1
+        assert observed[0].is_error is True
 
     async def test_handler_and_hook_coexist(
         self,
@@ -1284,6 +1332,54 @@ class TestRefusedAIToolCallsAreObserved:
         assert observed[0].result.startswith("Error executing tool 'get_weather'")
         assert "integration gateway unreachable" in observed[0].result
         assert served == []
+
+    async def test_a_handler_that_refused_keeps_its_words(self) -> None:
+        """A refusal the handler *states* is marked, and not rewritten.
+
+        Raising anything else hands the model
+        ``Error executing tool '<name>': <exc>`` — the host's wording, tuned
+        for the model that has to act on it, replaced by the loop's own
+        sentence. ``ToolRefusedError`` is the same branch with the message
+        kept, which is the only reason it exists.
+        """
+
+        async def declines(name: str, arguments: dict[str, Any]) -> str:
+            raise ToolRefusedError(
+                f"Error: the tool '{name}' does not exist. Call one of your actual tools."
+            )
+
+        kit, ch, room_id, observed, served = await _ai_room(tool_handler=declines)
+        await _call_one_tool(kit, ch, room_id, "get_weather")
+
+        assert len(observed) == 1
+        assert observed[0].is_error is True
+        assert observed[0].result == (
+            "Error: the tool 'get_weather' does not exist. Call one of your actual tools."
+        )
+        assert "Error executing tool" not in observed[0].result
+        # A refusal is observed, never served: the gate prevents the side
+        # effect, it does not hide it.
+        assert served == []
+
+    async def test_a_handler_refusal_persists_as_a_failed_tool_call_event(self) -> None:
+        """The stored event agrees with the hook, so the transcript does too.
+
+        This is the half a person sees: a refused call used to render as a
+        green ``completed`` step with no error to show.
+        """
+
+        async def declines(name: str, arguments: dict[str, Any]) -> str:
+            raise ToolRefusedError("integration gateway is not reachable")
+
+        kit, ch, room_id, _observed, _served = await _ai_room(tool_handler=declines)
+        output = await _call_one_tool(kit, ch, room_id, "get_weather")
+
+        ends = [e for e in output.response_events if e.type == EventType.TOOL_CALL_END]
+        assert len(ends) == 1
+        content = ends[0].content
+        assert isinstance(content, ToolCallContent)
+        assert content.status == "failed"
+        assert content.error == "integration gateway is not reachable"
 
     async def test_a_served_call_is_observed_unmarked(self) -> None:
         kit, ch, room_id, observed, served = await _ai_room(tool_handler=_ok_handler)

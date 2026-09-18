@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from roomkit.core.exceptions import ToolRefusedError
 from roomkit.providers.ai.base import AITool
 from roomkit.tools.mcp import MCPToolProvider
 
@@ -176,6 +177,27 @@ async def test_call_tool_error() -> None:
     result = await provider.call_tool("search", {"query": "hello"})
     parsed = json.loads(result)
     assert parsed == {"error": "something failed"}
+
+
+async def test_tool_handler_raises_on_a_refused_call() -> None:
+    """The handler a tool loop reads states the refusal; ``call_tool`` renders it.
+
+    The loop cannot recognise a refusal in a body, so the outcome has to reach
+    it some other way. ``call_tool`` keeps the envelope its own callers have
+    always been given, and both read the same server verdict.
+    """
+    provider = _make_provider_connected(
+        [SEARCH_TOOL],
+        call_tool_side_effect=lambda name, args: MockCallToolResult(
+            [MockTextContent("Missing X-Tenant-ID header")], is_error=True
+        ),
+    )
+    handler = provider.as_tool_handler()
+
+    with pytest.raises(ToolRefusedError) as raised:
+        await handler("search", {"query": "hello"})
+    # The server's words reach the model unchanged — no envelope around them.
+    assert raised.value.message == "Missing X-Tenant-ID header"
 
 
 async def test_call_tool_multi_part() -> None:

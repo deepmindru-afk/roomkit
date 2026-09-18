@@ -15,6 +15,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a handler that raised leaves the prose sentence the model is meant to read,
   and an external tool leaves whatever the provider printed. Reading them was
   guesswork that reported a refused call as a completed one.
+- `ToolRefusedError` lets a tool handler decline a call in its own words. A
+  handler that raises anything else has its body replaced by `Error executing
+  tool '<name>': <exc>`, so a host that tuned a refusal for the model it has to
+  steer could only keep that wording by returning it, which left the outcome
+  where nothing could read it. Raising this states both at once: the loop marks
+  the part `is_error`, fires the ON_TOOL_CALL observers, and hands the message
+  to the model unchanged. `MCPToolProvider.as_tool_handler()` raises it when the
+  server refuses; `call_tool()` keeps returning its `{"error": ...}` envelope
+  for its own callers.
 - `HookEngine.run_observers()` runs only the ASYNC-registered hooks of a
   trigger. It is what lets a refused tool call be observed without being
   served: only a SYNC hook can answer a call, so dispatching the async ones

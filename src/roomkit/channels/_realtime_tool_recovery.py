@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from uuid import uuid4
 
 from roomkit.channels._realtime_tools import result_text
+from roomkit.core.exceptions import ToolRefusedError
 from roomkit.models.enums import ChannelType
 from roomkit.telemetry.base import Attr, SpanKind
 from roomkit.voice.base import VoiceSessionState
@@ -297,10 +298,28 @@ class RealtimeToolRecoveryMixin:
                 from roomkit.channels._realtime_context import _current_voice_session
 
                 token = _current_voice_session.set(session)
+                refused: str | None = None
                 try:
                     raw = await self._tool_handler(tool_name, arguments)
+                except ToolRefusedError as refusal:
+                    refused = refusal.message
                 finally:
                     _current_voice_session.reset(token)
+                if refused is not None:
+                    # Ends the call the way the pre-execution denial above
+                    # does, and for the same reason: the model reads why it was
+                    # refused, in the handler's words, and can correct itself.
+                    await self._inject_recovered_result(
+                        session, tool_name, call_id, refused, denied=True
+                    )
+                    telemetry.end_span(span_id, attributes={Attr.REALTIME_TOOL_DENIED: True})
+                    logger.info(
+                        "Recovered tool %s(%s) refused by its handler for session %s",
+                        tool_name,
+                        call_id,
+                        session.id,
+                    )
+                    return
                 handler_result = result_text(raw)
 
             # Fire ON_TOOL_CALL hook (for observability / overrides).
