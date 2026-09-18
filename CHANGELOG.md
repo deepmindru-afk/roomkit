@@ -44,6 +44,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   recordings, where a single pass returns the speaker turns and timestamps a
   streaming recogniser cannot. Diarization and word timestamps are not
   available over the Live API, so the streaming config offers neither.
+- `examples/stt_gemini_transcribe_mic.py` transcribes your own microphone: the
+  caption line rewrites itself while you speak and commits on a pause, which is
+  what a streaming recogniser is for and what a synthesized sentence cannot
+  show. `examples/realtime_background_tools_mic.py` does the same for background
+  tool calls: you hear the agent keep talking while a six-second lookup runs,
+  and the terminal marks every turn that happened during the call.
 - `examples/stt_gemini_transcribe_live.py` synthesizes a sentence, resamples it
   to the 16 kHz the model takes and prints the interim and final transcripts as
   they arrive.
