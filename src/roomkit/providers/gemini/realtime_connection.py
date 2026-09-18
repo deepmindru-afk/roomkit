@@ -136,6 +136,12 @@ class GeminiLiveConnectionMixin(RealtimeVoiceProvider):
                     )
                     return
 
+                # The calls the old socket issued die with it. Say so now, not
+                # after the handshake: a handler finishing during the back-off
+                # would otherwise submit into a connection that is not there,
+                # and an error is not what happened to its call.
+                await self._release_calls_lost_with_the_connection(state)
+
                 delay = min(0.5 * (2 ** (reconnect_count - 1)), 4.0)
                 logger.warning(
                     "Gemini Live connection lost for session %s (attempt %d/%d), "
@@ -303,6 +309,8 @@ class GeminiLiveConnectionMixin(RealtimeVoiceProvider):
         # Re-enable error callbacks for the next reconnection cycle
         state.error_suppressed = False
 
+        # A no-op when the receive loop released them before its back-off;
+        # the release itself for a reconnect requested anywhere else.
         await self._release_calls_lost_with_the_connection(state)
 
         logger.info("Gemini Live session %s reconnected", session.id)

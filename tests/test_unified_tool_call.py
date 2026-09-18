@@ -1672,6 +1672,39 @@ class TestCancelledRealtimeToolCallsAreObserved:
         assert observed == seen_before
         assert not any(e.cancelled for e in observed)
 
+    async def test_a_cancellation_after_the_result_was_reported_adds_no_second_outcome(
+        self,
+        rt_provider: MockRealtimeProvider,
+        rt_transport: MockRealtimeTransport,
+    ) -> None:
+        """ON_TOOL_CALL carried the result; a cancellation on the wire adds nothing."""
+
+        async def quick(name: str, arguments: dict[str, Any]) -> str:
+            return "done"
+
+        ch, session, observed, served = await self._channel(
+            rt_provider, rt_transport, quick, "rt-cancelled-reported"
+        )
+        submit = rt_provider.submit_tool_result
+
+        async def cancel_while_submitting(s: VoiceSession, call_id: str, result: str) -> None:
+            # The model abandons the call while its result is on its way out:
+            # the observers already received the served event.
+            await rt_provider.simulate_tool_call_cancellation(s, [call_id])
+            await submit(s, call_id, result)
+
+        rt_provider.submit_tool_result = cancel_while_submitting  # type: ignore[method-assign]
+
+        await rt_provider.simulate_tool_call(session, "c1", "lookup", {})
+        await asyncio.sleep(0.1)
+
+        assert [(e.tool_call_id, e.cancelled) for e in observed] == [("c1", False)]
+        assert [e.tool_call_id for e in served] == ["c1"]
+        # The submission ran to its end; the stale result is the provider's to drop.
+        assert len(rt_provider.tool_results) == 1
+        assert not ch._pending_tool_calls.get(session.id)
+        assert not ch._reported_tool_calls.get(session.id)
+
     async def test_a_cancellation_on_an_ended_session_is_ignored(
         self,
         rt_provider: MockRealtimeProvider,

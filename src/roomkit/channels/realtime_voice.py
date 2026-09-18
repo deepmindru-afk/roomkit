@@ -511,6 +511,9 @@ class RealtimeVoiceChannel(
         # call_id -> (name, arguments) per session: what a cancellation
         # report needs when the model abandons a call still in flight.
         self._pending_tool_calls: dict[str, dict[str, tuple[str, dict[str, Any]]]] = {}
+        # call_id per session whose outcome ON_TOOL_CALL's observers already
+        # received: a cancellation that lands afterwards adds no second one.
+        self._reported_tool_calls: dict[str, set[str]] = {}
         self._awaiting_tool_response: set[str] = set()
         # Wall-clock of the last user-turn start (VAD SPEECH_START). Consumed by
         # _realtime_transcription when emitting the final user turn as a
@@ -1087,6 +1090,7 @@ class RealtimeVoiceChannel(
             self._user_speaking.pop(session.id, None)
             self._provider_idle.pop(session.id, None)
             self._pending_tool_calls.pop(session.id, None)
+            self._reported_tool_calls.pop(session.id, None)
             self._awaiting_tool_response.discard(session.id)
             self._session_tools.pop(session.id, None)
             self._session_config_locks.pop(session.id, None)
@@ -1408,6 +1412,7 @@ class RealtimeVoiceChannel(
             self._user_turn_start_at.pop(session.id, None)
             self._provider_idle.pop(session.id, None)
             self._pending_tool_calls.pop(session.id, None)
+            self._reported_tool_calls.pop(session.id, None)
             self._awaiting_tool_response.discard(session.id)
             self._transcript_ledger.pop(session.id, None)
             self._delegated_before.discard(session.id)

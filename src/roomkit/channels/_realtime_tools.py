@@ -97,6 +97,7 @@ class RealtimeToolsHost(Protocol):
     _transcription_order_locks: dict[str, asyncio.Lock]
     _awaiting_tool_response: set[str]
     _pending_tool_calls: dict[str, dict[str, tuple[str, dict[str, Any]]]]
+    _reported_tool_calls: dict[str, set[str]]
     _provider_idle: dict[str, bool]
     _scheduled_tasks: set[asyncio.Task[Any]]
     channel_id: str
@@ -134,6 +135,7 @@ class RealtimeToolsMixin:
     _transcription_order_locks: dict[str, asyncio.Lock]
     _awaiting_tool_response: set[str]
     _pending_tool_calls: dict[str, dict[str, tuple[str, dict[str, Any]]]]
+    _reported_tool_calls: dict[str, set[str]]
     _provider_idle: dict[str, bool]
     _scheduled_tasks: set[asyncio.Task[Any]]
     channel_id: str
@@ -175,7 +177,10 @@ class RealtimeToolsMixin:
         session-end drain finds it — and the call is reported to ON_TOOL_CALL's
         observers as cancelled. A call no longer in the books (its result left
         before the cancellation arrived) has no event to build: the provider
-        dropped the stale result and logged it.
+        dropped the stale result and logged it. A call still in the books whose
+        outcome the observers already received is left to finish for the same
+        reason: a second event would put two outcomes on one ``tool_call_id``,
+        and the result it is submitting is the provider's to drop.
         """
         try:
             loop = asyncio.get_running_loop()
@@ -189,6 +194,13 @@ class RealtimeToolsMixin:
             if recorded is None:
                 logger.debug(
                     "Cancelled tool call %s is not in flight for session %s", call_id, session.id
+                )
+                continue
+            if self._tool_call_reported(session.id, call_id):
+                logger.debug(
+                    "Cancelled tool call %s already reported its outcome for session %s",
+                    call_id,
+                    session.id,
                 )
                 continue
             name, arguments = recorded
@@ -242,7 +254,17 @@ class RealtimeToolsMixin:
         pending = self._pending_tool_calls.get(session_id)
         if pending is not None:
             pending.pop(call_id, None)
+        reported = self._reported_tool_calls.get(session_id)
+        if reported is not None:
+            reported.discard(call_id)
         self._update_idle_event(session_id)
+
+    def _mark_tool_call_reported(self, session_id: str, call_id: str) -> None:
+        """Record that ON_TOOL_CALL's observers received this call's outcome."""
+        self._reported_tool_calls.setdefault(session_id, set()).add(call_id)
+
+    def _tool_call_reported(self, session_id: str, call_id: str) -> bool:
+        return call_id in (self._reported_tool_calls.get(session_id) or ())
 
     async def _handle_tool_call(
         self, session: VoiceSession, call_id: str, name: str, arguments: dict[str, Any]
@@ -459,7 +481,10 @@ class RealtimeToolsMixin:
                 await self._submit_realtime_tool_result(session, call_id, body)
             except Exception:
                 logger.exception("Error submitting fallback tool result")
-            await self._fire_tool_refusal(session, call_id, name, arguments, body, room_id)
+            if not self._tool_call_reported(session.id, call_id):
+                # A failure past the report — the submission itself — is in
+                # the log above; a refusal event now would be a second outcome.
+                await self._fire_tool_refusal(session, call_id, name, arguments, body, room_id)
         finally:
             if self._mute_on_tool_call and self._transport is not None:
                 self._transport.set_input_muted(session, False)
@@ -845,6 +870,7 @@ class RealtimeToolsMixin:
         """
         if not self._framework or not room_id:
             return
+        self._mark_tool_call_reported(session.id, call_id)
         event = ToolCallEvent(
             channel_id=self.channel_id,
             channel_type=ChannelType.REALTIME_VOICE,
@@ -911,6 +937,11 @@ class RealtimeToolsMixin:
             context,
             skip_event_filter=True,
         )
+        if handler_result is not None:
+            # The firing carried the handler's result: that was the report. A
+            # cancellation landing between here and the wire must not add a
+            # second outcome for the same call.
+            self._mark_tool_call_reported(session.id, call_id)
         # Wall time, not loop hold — sync hooks may legitimately await I/O.
         logger.debug(
             "tool %s ON_TOOL_CALL segment: %.0fms wall",

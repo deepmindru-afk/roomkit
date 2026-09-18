@@ -38,6 +38,7 @@ class GeminiLiveToolsMixin(RealtimeVoiceProvider):
 
     # Owned by GeminiLiveProvider / its other mixins; declared for typing.
     _model: str
+    _sessions: dict[str, _GeminiSessionState]
     _get_active_state: Callable[[VoiceSession], _GeminiSessionState | None]
     _log_event: Callable[..., None]
     _send_text: Callable[[_GeminiSessionState, str, str, bool], Awaitable[None]]
@@ -47,7 +48,26 @@ class GeminiLiveToolsMixin(RealtimeVoiceProvider):
     async def submit_tool_result(self, session: VoiceSession, call_id: str, result: str) -> None:
         types = genai_types()
 
-        if (state := self._get_active_state(session)) is None:
+        state = self._sessions.get(session.id)
+        if state is None:
+            raise RuntimeError("Cannot deliver tool result without an active Gemini connection")
+
+        if call_id in state.cancelled_call_ids:
+            # The server discarded this call (tool_call_cancellation) or the
+            # connection it belonged to is gone: it will not read the result,
+            # and a FunctionResponse for an id it does not know is an error
+            # the application never asked for. Checked before the connection
+            # is: the call was released the moment its socket was lost, so a
+            # result arriving during the back-off is stale, not an error.
+            state.cancelled_call_ids.discard(call_id)
+            logger.info(
+                "[Gemini] dropping the result of cancelled tool call %s (session %s)",
+                call_id,
+                session.id,
+            )
+            return
+
+        if state.live_session is None:
             raise RuntimeError("Cannot deliver tool result without an active Gemini connection")
 
         # Track tool result bytes for debugging
@@ -64,19 +84,6 @@ class GeminiLiveToolsMixin(RealtimeVoiceProvider):
             len=len(result),
             preview=(result[:800] + ("…" if len(result) > 800 else "")),
         )
-
-        if call_id in state.cancelled_call_ids:
-            # The server discarded this call (tool_call_cancellation) or the
-            # connection it belonged to is gone: it will not read the result,
-            # and a FunctionResponse for an id it does not know is an error
-            # the application never asked for.
-            state.cancelled_call_ids.discard(call_id)
-            logger.info(
-                "[Gemini] dropping the result of cancelled tool call %s (session %s)",
-                call_id,
-                session.id,
-            )
-            return
 
         if len(result) > 16384:
             logger.warning(

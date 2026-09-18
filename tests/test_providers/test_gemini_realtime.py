@@ -232,8 +232,10 @@ class TestGeminiLiveProvider:
         mod = _load_provider()
         provider = mod.GeminiLiveProvider(api_key="test-key")
         tools = [{"name": "get_weather", "description": "Get weather", "parameters": None}]
-        # Need to mock the schema cleaner
-        with patch("roomkit.providers.gemini.schema.clean_gemini_schema", return_value=None):
+        # The cleaner is bound at import time in realtime_config: patch it there.
+        with patch(
+            "roomkit.providers.gemini.realtime_config.clean_gemini_schema", return_value=None
+        ):
             config = provider._build_config(tools=tools)
         assert config.tools is not None
 
@@ -2508,6 +2510,46 @@ class TestReconnectForgetsTheOldSocketsCalls:
         await provider.submit_tool_result(session, "call-1", "{}")
 
         live.send_tool_response.assert_not_awaited()
+
+    async def test_a_result_arriving_during_the_back_off_is_dropped_not_an_error(self):
+        """The socket is gone and its calls were released: a late result is stale."""
+        provider, session, state, live = _blocking_call_state()
+        await provider._release_calls_lost_with_the_connection(state)
+        state.live_session = None
+
+        await provider.submit_tool_result(session, "call-1", "{}")
+
+        live.send_tool_response.assert_not_awaited()
+        assert state.cancelled_call_ids == set()
+
+    async def test_a_result_with_no_connection_for_a_live_call_is_still_refused(self):
+        provider, session, state, _live = _blocking_call_state()
+        state.live_session = None
+
+        with pytest.raises(RuntimeError):
+            await provider.submit_tool_result(session, "call-1", "{}")
+
+    async def test_the_old_sockets_calls_are_released_before_the_back_off(self):
+        """The receive loop says so on the drop, not after the handshake."""
+        provider, session, state, live = _blocking_call_state()
+        told: list[list[str]] = []
+        provider.on_tool_call_cancelled(lambda _s, ids: told.append(ids))
+
+        async def dropped():
+            raise RuntimeError("connection dropped")
+            yield  # an async generator, so the loop iterates it
+
+        live.receive = dropped
+        loop_task = asyncio.create_task(provider._receive_loop(session))
+        try:
+            await asyncio.sleep(0.1)  # inside the first 0.5 s back-off
+            assert told == [["call-1"]]
+            assert state.pending_call_ids == set()
+            assert state.cancelled_call_ids == {"call-1"}
+            assert state.live_session is None  # no reconnect yet
+        finally:
+            loop_task.cancel()
+            await asyncio.gather(loop_task, return_exceptions=True)
 
     async def test_a_flush_that_fails_does_not_undo_the_reconnect(self):
         provider, _session, state, live = _blocking_call_state()
