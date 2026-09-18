@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.79.0] — 2026-09-18
+
 ### Added
 
 - `ToolCallEvent.is_error` states the outcome of a tool call, so a consumer no
@@ -26,7 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   trigger. It is what lets a refused tool call be observed without being
   served: only a SYNC hook can answer a call, so dispatching the async ones
   alone makes the distinction structural rather than a rule each hook author
-  has to remember.
+  has to remember. `ToolCallObserver`, the callable the framework injects for
+  that firing, is exported beside `ToolCallCallback`.
 - The Gemini Live provider handles the 3.8 contract. The end of a response
   follows `interaction_status`: the model speaks several times per request
   while it reasons and runs tools, so `turn_complete` no longer means it has
@@ -106,7 +109,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   filter is installed for the duration of that one call and matched on that
   one message, so an application building its own client from the environment
   still hears it.
-
 - `gemini-3.8-live` is the default realtime model, in the provider and in every
   example. A caller that never passed `model=` moves generation: an inherited
   `thinking_budget`, `enable_affective_dialog` or `proactive_audio` starts being
@@ -148,7 +150,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `{"error": ...}` envelope every refusal returns and the `{"success": false}`
   convention hosts commonly use: the built-in auditors recorded `ok` for every
   denied tool.
-
 - GPT-Live disconnection no longer waits for the peer's TCP close once
   `session.closed` has landed. That event carries the billed seconds and the
   turns are already settled, so what `ws.close()` still waits for is a
@@ -7686,7 +7687,10 @@ See entries `0.7.0a1` through `0.7.0a18` below.
 - `STTProvider.transcribe()` returns `TranscriptionResult` (Phase 3.1)
 - Framework event names enriched with payloads (Phase 4)
 
-[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.76.0...HEAD
+[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.79.0...HEAD
+[0.79.0]: https://github.com/roomkit-live/roomkit/compare/v0.78.0...v0.79.0
+[0.78.0]: https://github.com/roomkit-live/roomkit/compare/v0.77.0...v0.78.0
+[0.77.0]: https://github.com/roomkit-live/roomkit/compare/v0.76.0...v0.77.0
 [0.76.0]: https://github.com/roomkit-live/roomkit/compare/v0.75.3...v0.76.0
 [0.75.3]: https://github.com/roomkit-live/roomkit/compare/v0.75.2...v0.75.3
 [0.75.2]: https://github.com/roomkit-live/roomkit/compare/v0.75.1...v0.75.2

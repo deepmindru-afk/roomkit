@@ -1415,6 +1415,26 @@ ai = AIChannel(
 )
 ```
 
+#### Refusing a call
+
+What the handler returns is the tool's answer, so a refusal returned as a body
+reads as work that was done: the tool-call event says `completed`, and an audit
+trail records a call that never ran. Raise `ToolRefusedError` instead.
+
+```python
+from roomkit import ToolRefusedError
+
+async def handle_tools(name: str, arguments: dict) -> str:
+    if name not in MY_TOOLS:
+        raise ToolRefusedError(f"Error: the tool '{name}' does not exist.")
+    ...
+```
+
+The message reaches the model verbatim, which is the point: a generic `raise`
+would replace it with `Error executing tool '<name>': <exc>`. The call is marked
+failed, `ON_TOOL_CALL` observers see `event.is_error`, and the stored
+`TOOL_CALL_END` carries the reason.
+
 ### Tool Protocol (Tool ABC)
 
 For structured tool definitions, use the `Tool` base class:
