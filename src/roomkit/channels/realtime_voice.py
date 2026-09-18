@@ -439,6 +439,9 @@ class RealtimeVoiceChannel(
         # Active sessions: session_id -> (session, room_id, binding)
         self._sessions: dict[str, VoiceSession] = {}
         self._connecting_sessions: dict[str, _ConnectingSession] = {}
+        # One teardown per session, owned by its first caller; the mirror of
+        # ``_connecting_sessions`` for the other end of a session's life.
+        self._session_teardowns: dict[str, asyncio.Future[None]] = {}
         self._closing = False
         self._session_rooms: dict[str, str] = {}  # session_id -> room_id
         # Cached bindings for audio gating (access/muted enforcement)
@@ -1321,9 +1324,34 @@ class RealtimeVoiceChannel(
 
         Disconnects both provider and transport, fires framework event.
 
+        One teardown per session: the first caller owns it, and a caller that
+        arrives while it runs (``close()``, the transport's disconnect callback,
+        a hangup tool) waits for it instead of tearing the session down a
+        second time. The work stays in the owner's task, so a tool ending its
+        own session is still the current task the tool sweep spares; a joiner
+        cancelled while waiting leaves the owner's teardown untouched.
+
         Args:
             session: The session to end.
         """
+        with self._state_lock:
+            teardown = self._session_teardowns.get(session.id)
+        if teardown is not None:
+            await asyncio.shield(teardown)
+            return
+        done: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        with self._state_lock:
+            self._session_teardowns[session.id] = done
+        try:
+            await self._end_session_owned(session)
+        finally:
+            with self._state_lock:
+                self._session_teardowns.pop(session.id, None)
+            if not done.done():
+                done.set_result(None)
+
+    async def _end_session_owned(self, session: VoiceSession) -> None:
+        """The teardown itself, run once per session by ``end_session``."""
         # Stop admitting calls before the first asynchronous cleanup step.
         # A session hangup must also stop its in-flight tools without touching
         # calls owned by other sessions sharing this channel.

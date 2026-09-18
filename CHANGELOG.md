@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A realtime session is torn down once. `RealtimeVoiceChannel.end_session`
+  keeps a teardown future per session: the first caller owns the teardown
+  and a caller that arrives while it runs (`close()`, the transport's
+  disconnect callback, a hangup tool) waits for it instead of disconnecting
+  the provider and the transport a second time. A remote hangup that
+  reaches the channel through both the transport and the application used
+  to run two concurrent teardowns of one session, which held only because
+  every step happened to be idempotent.
 - A Gemini Live tool result now names the function it answers.
   `FunctionResponse.name` went out empty, the id being enough for the
   models through 3.1; `gemini-3.8-live-extended-thinking` reads an unnamed
