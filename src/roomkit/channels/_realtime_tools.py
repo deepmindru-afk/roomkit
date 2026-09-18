@@ -96,8 +96,9 @@ class RealtimeToolsHost(Protocol):
     _framework: RoomKit | None
     _transcription_order_locks: dict[str, asyncio.Lock]
     _awaiting_tool_response: set[str]
-    _pending_tool_calls: dict[str, set[str]]
+    _pending_tool_calls: dict[str, dict[str, tuple[str, dict[str, Any]]]]
     _provider_idle: dict[str, bool]
+    _scheduled_tasks: set[asyncio.Task[Any]]
     channel_id: str
     _telemetry_provider: Any
 
@@ -132,8 +133,9 @@ class RealtimeToolsMixin:
     _framework: RoomKit | None
     _transcription_order_locks: dict[str, asyncio.Lock]
     _awaiting_tool_response: set[str]
-    _pending_tool_calls: dict[str, set[str]]
+    _pending_tool_calls: dict[str, dict[str, tuple[str, dict[str, Any]]]]
     _provider_idle: dict[str, bool]
+    _scheduled_tasks: set[asyncio.Task[Any]]
     channel_id: str
     _telemetry_provider: Any
 
@@ -157,7 +159,7 @@ class RealtimeToolsMixin:
             return
         if session.state == VoiceSessionState.ENDED:
             return
-        self._begin_tool_call(session.id, call_id)
+        self._begin_tool_call(session.id, call_id, name, arguments)
         task = self._track_task(
             loop,
             self._handle_tool_call(session, call_id, name, arguments),
@@ -165,15 +167,66 @@ class RealtimeToolsMixin:
         )
         task.add_done_callback(lambda _: self._finish_tool_call(session.id, call_id))
 
-    def _begin_tool_call(self, session_id: str, call_id: str) -> None:
-        self._pending_tool_calls.setdefault(session_id, set()).add(call_id)
+    def _on_provider_tool_call_cancelled(self, session: VoiceSession, call_ids: list[str]) -> Any:
+        """Provider callback: the model abandoned outstanding calls (RFC §12.4).
+
+        The handler still running for one of them is working for a result
+        nobody will read. Its task is cancelled — found by name, the way the
+        session-end drain finds it — and the call is reported to ON_TOOL_CALL's
+        observers as cancelled. A call no longer in the books (its result left
+        before the cancellation arrived) has no event to build: the provider
+        dropped the stale result and logged it.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        if session.state == VoiceSessionState.ENDED:
+            return
+        pending = self._pending_tool_calls.get(session.id) or {}
+        for call_id in call_ids:
+            recorded = pending.get(call_id)
+            if recorded is None:
+                logger.debug(
+                    "Cancelled tool call %s is not in flight for session %s", call_id, session.id
+                )
+                continue
+            name, arguments = recorded
+            task_name = f"rt_tool_call:{session.id}:{call_id}"
+            for task in list(self._scheduled_tasks):
+                if task.get_name() == task_name and not task.done():
+                    task.cancel()
+            logger.info(
+                "Tool call %s(%s) cancelled by the model for session %s", name, call_id, session.id
+            )
+            with self._state_lock:
+                room_id = self._session_rooms.get(session.id)
+            body = json.dumps(
+                {
+                    "error": "Tool call cancelled",
+                    "tool": name,
+                    "hint": "The model abandoned this call before its result; nothing was sent.",
+                }
+            )
+            self._track_task(
+                loop,
+                self._fire_tool_refusal(
+                    session, call_id, name, arguments, body, room_id, cancelled=True
+                ),
+                name=f"rt_tool_cancelled:{session.id}:{call_id}",
+            )
+
+    def _begin_tool_call(
+        self, session_id: str, call_id: str, name: str, arguments: dict[str, Any]
+    ) -> None:
+        self._pending_tool_calls.setdefault(session_id, {})[call_id] = (name, arguments)
         self._provider_idle[session_id] = False
         self._update_idle_event(session_id)
 
     def _finish_tool_call(self, session_id: str, call_id: str) -> None:
         pending = self._pending_tool_calls.get(session_id)
         if pending is not None:
-            pending.discard(call_id)
+            pending.pop(call_id, None)
         self._update_idle_event(session_id)
 
     async def _handle_tool_call(
@@ -181,7 +234,7 @@ class RealtimeToolsMixin:
     ) -> None:
         if session.state == VoiceSessionState.ENDED:
             return
-        self._begin_tool_call(session.id, call_id)
+        self._begin_tool_call(session.id, call_id, name, arguments)
         try:
             await self._execute_tool_call(session, call_id, name, arguments)
         finally:
@@ -211,6 +264,11 @@ class RealtimeToolsMixin:
             name, arguments, transport_error = self._tool_search_support.unwrap_call(
                 arguments, session.id
             )
+            # The books name the call the model issued; a cancellation report
+            # should name the tool it wrapped.
+            pending = self._pending_tool_calls.get(session.id)
+            if pending is not None and call_id in pending:
+                pending[call_id] = (name, arguments)
         # Order barrier: a tool call must not overtake the transcriptions the
         # provider emitted before it. The user final that closes the current
         # utterance travels the serialised transcription queue, while tool
@@ -752,13 +810,17 @@ class RealtimeToolsMixin:
         arguments: dict[str, Any],
         result: str,
         room_id: str | None,
+        *,
+        cancelled: bool = False,
     ) -> None:
-        """Fire ON_TOOL_CALL for a call that failed or was refused.
+        """Fire ON_TOOL_CALL for a call that failed, was refused, or was abandoned.
 
         The pre-execution gate returns before anything serves the call, and a
         failure inside it lands in the fallback below — neither path reached
         the hook, so a host auditing tool use saw a denied tool as a tool the
-        agent never called.
+        agent never called. ``cancelled`` is the third outcome: the model
+        discarded the call before its result (RFC §9.3), and the event says so
+        beside ``is_error`` rather than leaving it to be read as a refusal.
 
         Observational by construction: it reaches the ASYNC observers of
         ON_TOOL_CALL and no further. A SYNC hook is the one that can *serve* a
@@ -778,7 +840,16 @@ class RealtimeToolsMixin:
             room_id=room_id,
             session=session,
             is_error=True,
+            cancelled=cancelled,
         )
+        data: dict[str, Any] = {
+            "tool_name": name,
+            "tool_call_id": call_id,
+            "channel_type": str(ChannelType.REALTIME_VOICE),
+            "is_error": True,
+        }
+        if cancelled:
+            data["cancelled"] = True
         try:
             context = await self._framework._build_context(room_id)
             await self._framework.hook_engine.run_observers(
@@ -792,12 +863,7 @@ class RealtimeToolsMixin:
                 "tool_call",
                 room_id=room_id,
                 channel_id=self.channel_id,
-                data={
-                    "tool_name": name,
-                    "tool_call_id": call_id,
-                    "channel_type": str(ChannelType.REALTIME_VOICE),
-                    "is_error": True,
-                },
+                data=data,
             )
         except Exception:
             logger.debug(

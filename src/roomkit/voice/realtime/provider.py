@@ -27,6 +27,8 @@ RealtimeSpeechStartCallback = Callable[[VoiceSession], Any]
 RealtimeSpeechEndCallback = Callable[[VoiceSession], Any]
 RealtimeToolCallCallback = Callable[[VoiceSession, str, str, dict[str, Any]], Any]
 """(session, call_id, name, arguments)"""
+RealtimeToolCallCancelledCallback = Callable[[VoiceSession, list[str]], Any]
+"""(session, call_ids) — the model abandoned these outstanding calls"""
 RealtimeResponseStartCallback = Callable[[VoiceSession], Any]
 RealtimeResponseEndCallback = Callable[[VoiceSession], Any]
 RealtimeErrorCallback = Callable[[VoiceSession, str, str], Any]
@@ -92,6 +94,7 @@ class RealtimeVoiceProvider(ABC):
         self._speech_start_callbacks: list[RealtimeSpeechStartCallback] = []
         self._speech_end_callbacks: list[RealtimeSpeechEndCallback] = []
         self._tool_call_callbacks: list[RealtimeToolCallCallback] = []
+        self._tool_call_cancelled_callbacks: list[RealtimeToolCallCancelledCallback] = []
         self._response_start_callbacks: list[RealtimeResponseStartCallback] = []
         self._response_end_callbacks: list[RealtimeResponseEndCallback] = []
         self._error_callbacks: list[RealtimeErrorCallback] = []
@@ -541,6 +544,21 @@ class RealtimeVoiceProvider(ABC):
     def on_tool_call(self, callback: RealtimeToolCallCallback) -> None:
         """Register callback for tool/function calls from the AI."""
         self._tool_call_callbacks.append(callback)
+
+    def on_tool_call_cancelled(self, callback: RealtimeToolCallCancelledCallback) -> None:
+        """Register callback for tool calls the model abandoned (RFC §12.4).
+
+        Called as ``(session, call_ids)`` when the provider learns that the
+        model will not read the results of calls it issued: Gemini Live sends
+        ``tool_call_cancellation`` when the user interrupts while calls are
+        outstanding, and a reconnect orphans the calls the old socket was
+        waiting on. The channel cancels the handler still running for such a
+        call and reports it to ON_TOOL_CALL's observers as cancelled. A
+        provider whose protocol has no such event never fires it — OpenAI's
+        function calls stay in the conversation and their outputs are read on
+        the next turn — so the default is silence, not a no-op to override.
+        """
+        self._tool_call_cancelled_callbacks.append(callback)
 
     def on_delegation(self, callback: RealtimeDelegationCallback) -> None:
         """Register callback for reasoning delegations (RFC §12.4.1).

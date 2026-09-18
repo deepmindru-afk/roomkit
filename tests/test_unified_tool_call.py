@@ -487,6 +487,18 @@ class TestToolCallEvent:
         )
         assert event.result == '{"found": true}'
 
+    def test_outcome_markers_default_to_a_served_call(self) -> None:
+        event = ToolCallEvent(
+            channel_id="ch-1",
+            channel_type=ChannelType.REALTIME_VOICE,
+            tool_call_id="tc-3",
+            name="search",
+            arguments={},
+            result="{}",
+        )
+        assert event.is_error is False
+        assert event.cancelled is False
+
     def test_frozen(self) -> None:
         event = ToolCallEvent(
             channel_id="ch-1",
@@ -1559,3 +1571,124 @@ class TestRefusedRealtimeToolCallsAreObserved:
         assert len(dispatch) == 1
         assert len(failures) == 1
         assert json.loads(failures[0].result) == {"error": "No handler for tool lookup"}
+
+
+class TestCancelledRealtimeToolCallsAreObserved:
+    """The model abandoned a call (RFC §9.3, §12.4): the handler stops, the audit sees it."""
+
+    @staticmethod
+    async def _channel(rt_provider, rt_transport, handler, channel_id):  # noqa: ANN001, ANN205
+        ch = RealtimeVoiceChannel(
+            channel_id, provider=rt_provider, transport=rt_transport, tool_handler=handler
+        )
+        kit = RoomKit()
+        kit.register_channel(ch)
+        room = await kit.create_room()
+        await kit.attach_channel(room.id, channel_id)
+        session = await ch.start_session(room.id, "u1", "ws")
+
+        observed: list[ToolCallEvent] = []
+        served: list[ToolCallEvent] = []
+
+        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="observe")
+        async def observe(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
+            observed.append(event)
+            return HookResult.allow()
+
+        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="serve")
+        async def serve(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
+            served.append(event)
+            return HookResult.allow()
+
+        return ch, session, observed, served
+
+    async def test_the_handler_is_interrupted_and_no_result_goes_out(
+        self,
+        rt_provider: MockRealtimeProvider,
+        rt_transport: MockRealtimeTransport,
+    ) -> None:
+        started = asyncio.Event()
+        interrupted = asyncio.Event()
+
+        async def slow(name: str, arguments: dict[str, Any]) -> str:
+            started.set()
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                interrupted.set()
+                raise
+            return "too late"
+
+        ch, session, observed, served = await self._channel(
+            rt_provider, rt_transport, slow, "rt-cancelled"
+        )
+
+        await rt_provider.simulate_tool_call(session, "c1", "check_inventory", {"item": "widget"})
+        await asyncio.wait_for(started.wait(), 1)
+        assert ch._pending_tool_calls[session.id] == {
+            "c1": ("check_inventory", {"item": "widget"})
+        }
+
+        await rt_provider.simulate_tool_call_cancellation(session, ["c1"])
+        await asyncio.wait_for(interrupted.wait(), 1)
+        await asyncio.sleep(0.05)
+
+        # Nothing was sent for a call the model will not read.
+        assert rt_provider.tool_results == []
+        # The outcome is stated on the event, not read out of the body.
+        assert [e.tool_call_id for e in observed] == ["c1"]
+        event = observed[0]
+        assert event.cancelled is True
+        assert event.is_error is True
+        assert event.name == "check_inventory"
+        assert event.arguments == {"item": "widget"}
+        assert json.loads(event.result)["error"] == "Tool call cancelled"
+        # Observers only: a hook that could serve the call never saw it.
+        assert served == []
+        # The books are clean, so the session can go idle again.
+        assert not ch._pending_tool_calls.get(session.id)
+
+    async def test_a_cancellation_for_a_call_not_in_flight_reports_nothing(
+        self,
+        rt_provider: MockRealtimeProvider,
+        rt_transport: MockRealtimeTransport,
+    ) -> None:
+        """Once the result left, the call is out of the books: nothing to stop or report."""
+
+        async def quick(name: str, arguments: dict[str, Any]) -> str:
+            return "done"
+
+        _ch, session, observed, _served = await self._channel(
+            rt_provider, rt_transport, quick, "rt-cancelled-late"
+        )
+        await rt_provider.simulate_tool_call(session, "c1", "lookup", {})
+        await asyncio.sleep(0.1)
+        assert len(rt_provider.tool_results) == 1
+        seen_before = list(observed)
+
+        await rt_provider.simulate_tool_call_cancellation(session, ["c1", "never-issued"])
+        await asyncio.sleep(0.05)
+
+        assert observed == seen_before
+        assert not any(e.cancelled for e in observed)
+
+    async def test_a_cancellation_on_an_ended_session_is_ignored(
+        self,
+        rt_provider: MockRealtimeProvider,
+        rt_transport: MockRealtimeTransport,
+    ) -> None:
+        async def slow(name: str, arguments: dict[str, Any]) -> str:
+            await asyncio.sleep(30)
+            return "too late"
+
+        ch, session, observed, _served = await self._channel(
+            rt_provider, rt_transport, slow, "rt-cancelled-ended"
+        )
+        await rt_provider.simulate_tool_call(session, "c1", "lookup", {})
+        await asyncio.sleep(0.05)
+        await ch.end_session(session)
+
+        await rt_provider.simulate_tool_call_cancellation(session, ["c1"])
+        await asyncio.sleep(0.05)
+
+        assert not any(e.cancelled for e in observed)

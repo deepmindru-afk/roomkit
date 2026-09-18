@@ -164,6 +164,7 @@ class TestGeminiLiveProvider:
         speech_start_cb = lambda session: None  # noqa: E731
         speech_end_cb = lambda session: None  # noqa: E731
         tool_call_cb = lambda session, cid, name, args: None  # noqa: E731
+        tool_call_cancelled_cb = lambda session, ids: None  # noqa: E731
         response_start_cb = lambda session: None  # noqa: E731
         response_end_cb = lambda session: None  # noqa: E731
         error_cb = lambda session, code, msg: None  # noqa: E731
@@ -173,6 +174,7 @@ class TestGeminiLiveProvider:
         provider.on_speech_start(speech_start_cb)
         provider.on_speech_end(speech_end_cb)
         provider.on_tool_call(tool_call_cb)
+        provider.on_tool_call_cancelled(tool_call_cancelled_cb)
         provider.on_response_start(response_start_cb)
         provider.on_response_end(response_end_cb)
         provider.on_error(error_cb)
@@ -182,6 +184,7 @@ class TestGeminiLiveProvider:
         assert speech_start_cb in provider._speech_start_callbacks
         assert speech_end_cb in provider._speech_end_callbacks
         assert tool_call_cb in provider._tool_call_callbacks
+        assert tool_call_cancelled_cb in provider._tool_call_cancelled_callbacks
         assert response_start_cb in provider._response_start_callbacks
         assert response_end_cb in provider._response_end_callbacks
         assert error_cb in provider._error_callbacks
@@ -2360,11 +2363,51 @@ class TestServerCancelledToolCalls:
 
     async def test_an_empty_cancellation_changes_nothing(self):
         provider, session, state, _live = _blocking_call_state()
+        told: list[tuple[str, list[str]]] = []
+        provider.on_tool_call_cancelled(lambda s, ids: told.append((s.id, ids)))
 
         await provider._handle_server_response(session, self._cancellation())
 
         assert state.blocking_call_ids == {"call-1"}
         assert state.queued_text_injections == [("Queued text", "user", False)]
+        assert told == []
+
+    async def test_a_cancellation_tells_the_application_which_calls(self):
+        """The handler is still working for those ids; the application must hear it."""
+        provider, session, _state, _live = _blocking_call_state()
+        told: list[tuple[str, list[str]]] = []
+        provider.on_tool_call_cancelled(lambda s, ids: told.append((s.id, ids)))
+
+        await provider._handle_server_response(session, self._cancellation("call-1", "call-2"))
+
+        assert told == [(session.id, ["call-1", "call-2"])]
+
+    async def test_a_cancelled_call_is_told_then_its_late_result_is_dropped(self):
+        """The simulated flow of the card: cancellation first, the result arrives after."""
+        provider, session, state, live = _blocking_call_state()
+        told: list[list[str]] = []
+        provider.on_tool_call_cancelled(lambda _s, ids: told.append(ids))
+
+        await provider._handle_server_response(session, self._cancellation("call-1"))
+        await provider.submit_tool_result(session, "call-1", '{"in_stock": 42}')
+
+        assert told == [["call-1"]]
+        live.send_tool_response.assert_not_awaited()
+        assert state.cancelled_call_ids == set()
+
+    async def test_a_callback_that_raises_does_not_stop_the_release(self):
+        provider, session, state, live = _blocking_call_state()
+
+        def boom(_s, _ids):  # noqa: ANN001, ANN202
+            raise RuntimeError("application bug")
+
+        provider.on_tool_call_cancelled(boom)
+
+        await provider._handle_server_response(session, self._cancellation("call-1"))
+
+        assert state.blocking_call_ids == set()
+        assert state.queued_text_injections == []
+        live.send_client_content.assert_awaited()
 
 
 class TestReconnectForgetsTheOldSocketsCalls:
@@ -2380,6 +2423,25 @@ class TestReconnectForgetsTheOldSocketsCalls:
         assert state.cancelled_call_ids == {"call-1"}
         assert state.queued_text_injections == []
         live.send_client_content.assert_awaited()
+
+    async def test_orphaned_blocking_calls_are_reported_as_cancelled(self):
+        provider, session, state, _live = _blocking_call_state()
+        told: list[tuple[str, list[str]]] = []
+        provider.on_tool_call_cancelled(lambda s, ids: told.append((s.id, ids)))
+
+        await provider._release_calls_lost_with_the_connection(state)
+
+        assert told == [(session.id, ["call-1"])]
+
+    async def test_a_reconnect_with_nothing_outstanding_tells_nobody(self):
+        provider, _session, state, _live = _blocking_call_state()
+        state.blocking_call_ids.clear()
+        told: list[list[str]] = []
+        provider.on_tool_call_cancelled(lambda _s, ids: told.append(ids))
+
+        await provider._release_calls_lost_with_the_connection(state)
+
+        assert told == []
 
     async def test_a_late_result_for_an_orphaned_call_is_dropped(self):
         provider, session, state, live = _blocking_call_state()

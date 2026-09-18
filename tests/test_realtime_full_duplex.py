@@ -77,6 +77,47 @@ class TestProviderContract:
                 provider, session, "d1", "text", spoken=True
             )
 
+    async def test_cancellation_callbacks_register_on_the_base_and_fire_only_when_told(
+        self,
+    ) -> None:
+        """A provider without the wire event never fires it; one with it fires the list."""
+
+        class _Bare(RealtimeVoiceProvider):
+            @property
+            def name(self) -> str:
+                return "bare"
+
+            async def connect(self, *a, **k):  # noqa: ANN002, ANN003, ANN202
+                return None
+
+            async def send_audio(self, *a, **k):  # noqa: ANN002, ANN003, ANN202
+                return None
+
+            async def inject_text(self, *a, **k):  # noqa: ANN002, ANN003, ANN202
+                return None
+
+            async def submit_tool_result(self, *a, **k):  # noqa: ANN002, ANN003, ANN202
+                return None
+
+            async def interrupt(self, *a, **k):  # noqa: ANN002, ANN003, ANN202
+                return None
+
+            async def disconnect(self, *a, **k):  # noqa: ANN002, ANN003, ANN202
+                return None
+
+            async def close(self) -> None:
+                return None
+
+        provider = _Bare()
+        told: list[list[str]] = []
+        provider.on_tool_call_cancelled(lambda _s, ids: told.append(ids))
+        assert len(provider._tool_call_cancelled_callbacks) == 1
+        assert told == []
+
+        session = VoiceSession(id="s1", room_id="r1", participant_id="u1", channel_id="rt-1")
+        await provider._fire(provider._tool_call_cancelled_callbacks, session, ["c1"])
+        assert told == [["c1"]]
+
 
 class TestInterruptionBelongsToTheModel:
     async def test_provider_audio_keeps_flowing_while_the_user_speaks(self) -> None:

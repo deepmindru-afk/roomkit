@@ -27,6 +27,7 @@ from roomkit.voice.realtime.provider import (
     RealtimeSpeechEndCallback,
     RealtimeSpeechStartCallback,
     RealtimeToolCallCallback,
+    RealtimeToolCallCancelledCallback,
     RealtimeTranscriptionCallback,
     RealtimeVideoCallback,
     RealtimeVoiceProvider,
@@ -79,6 +80,7 @@ class MockRealtimeProvider(RealtimeVoiceProvider):
         self._speech_start_callbacks: list[RealtimeSpeechStartCallback] = []
         self._speech_end_callbacks: list[RealtimeSpeechEndCallback] = []
         self._tool_call_callbacks: list[RealtimeToolCallCallback] = []
+        self._tool_call_cancelled_callbacks: list[RealtimeToolCallCancelledCallback] = []
         self._response_start_callbacks: list[RealtimeResponseStartCallback] = []
         self._response_end_callbacks: list[RealtimeResponseEndCallback] = []
         self._error_callbacks: list[RealtimeErrorCallback] = []
@@ -214,6 +216,9 @@ class MockRealtimeProvider(RealtimeVoiceProvider):
     def on_tool_call(self, callback: RealtimeToolCallCallback) -> None:
         self._tool_call_callbacks.append(callback)
 
+    def on_tool_call_cancelled(self, callback: RealtimeToolCallCancelledCallback) -> None:
+        self._tool_call_cancelled_callbacks.append(callback)
+
     def on_delegation(self, callback: RealtimeDelegationCallback) -> None:
         self._delegation_callbacks.append(callback)
 
@@ -273,6 +278,15 @@ class MockRealtimeProvider(RealtimeVoiceProvider):
         args = arguments or {}
         for cb in self._tool_call_callbacks:
             result = cb(session, call_id, name, args)
+            if hasattr(result, "__await__"):
+                await result
+
+    async def simulate_tool_call_cancellation(
+        self, session: VoiceSession, call_ids: list[str]
+    ) -> None:
+        """Simulate the model abandoning outstanding tool calls (RFC §12.4)."""
+        for cb in self._tool_call_cancelled_callbacks:
+            result = cb(session, list(call_ids))
             if hasattr(result, "__await__"):
                 await result
 

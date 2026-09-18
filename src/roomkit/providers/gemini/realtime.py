@@ -1653,15 +1653,25 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
         finished work the model had already lost, and its result then went
         out for an id the server did not know.
         """
-        if state.blocking_call_ids:
+        orphaned = sorted(state.blocking_call_ids)
+        if orphaned:
             logger.info(
                 "[Gemini] %d blocking tool call(s) did not survive the reconnect (session %s)",
-                len(state.blocking_call_ids),
+                len(orphaned),
                 state.session.id,
             )
-            state.cancelled_call_ids.update(state.blocking_call_ids)
+            state.cancelled_call_ids.update(orphaned)
             state.blocking_call_ids.clear()
         state.pending_tool_calls = 0
+        if orphaned:
+            # The application is still working for the old socket. Same fact
+            # as a server cancellation: the model will not read the result.
+            await self._fire(
+                self._tool_call_cancelled_callbacks,
+                state.session,
+                orphaned,
+                label="tool_call_cancelled",
+            )
         try:
             await self._flush_queued_injections(state)
         except Exception:
@@ -1974,8 +1984,9 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
         input channel. Left in the books, the id kept every injection queued
         until the application's handler finished work the model had already
         abandoned, and if the stale FunctionResponse then failed to send,
-        nothing else ever cleared it. The handler itself is not interrupted:
-        its result is dropped when it arrives.
+        nothing else ever cleared it. The application hears of it through
+        ``on_tool_call_cancelled`` and stops the handler; a result that still
+        arrives is dropped.
         """
         ids = [call_id for call_id in (getattr(cancellation, "ids", None) or []) if call_id]
         if not ids:
@@ -1986,6 +1997,9 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
             state.pending_tool_calls = max(0, state.pending_tool_calls - 1)
             state.blocking_call_ids.discard(call_id)
             state.cancelled_call_ids.add(call_id)
+        await self._fire(
+            self._tool_call_cancelled_callbacks, session, ids, label="tool_call_cancelled"
+        )
         if not state.blocking_call_ids:
             await self._flush_queued_injections(state)
 

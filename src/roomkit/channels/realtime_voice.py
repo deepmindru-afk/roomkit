@@ -508,7 +508,9 @@ class RealtimeVoiceChannel(
         self._idle_events: dict[str, asyncio.Event] = {}
         self._user_speaking: dict[str, bool] = {}
         self._provider_idle: dict[str, bool] = {}
-        self._pending_tool_calls: dict[str, set[str]] = {}
+        # call_id -> (name, arguments) per session: what a cancellation
+        # report needs when the model abandons a call still in flight.
+        self._pending_tool_calls: dict[str, dict[str, tuple[str, dict[str, Any]]]] = {}
         self._awaiting_tool_response: set[str] = set()
         # Wall-clock of the last user-turn start (VAD SPEECH_START). Consumed by
         # _realtime_transcription when emitting the final user turn as a
@@ -531,6 +533,9 @@ class RealtimeVoiceChannel(
         provider.on_speech_start(self._gate_provider_callback(self._on_provider_speech_start))
         provider.on_speech_end(self._gate_provider_callback(self._on_provider_speech_end))
         provider.on_tool_call(self._gate_provider_callback(self._on_provider_tool_call))
+        provider.on_tool_call_cancelled(
+            self._gate_provider_callback(self._on_provider_tool_call_cancelled)
+        )
         provider.on_delegation(self._gate_provider_callback(self._on_provider_delegation))
         provider.on_response_start(self._gate_provider_callback(self._on_provider_response_start))
         provider.on_response_end(self._gate_provider_callback(self._on_provider_response_end))

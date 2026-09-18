@@ -140,6 +140,9 @@ def _make_handler(tag: str, state: ConsoleState, kit: RoomKit | None = None) -> 
         # A refused or failed call is a call: it counts, and it reads
         # differently. Shown the same as a served one, the console would say a
         # tool worked when the agent was told it could not use it.
+        if getattr(event, "cancelled", False):
+            state.voice_events.append(VoiceEvent(f"TOOL: {name} (cancelled)", "red"))
+            return
         if getattr(event, "is_error", False):
             state.voice_events.append(VoiceEvent(f"TOOL: {name} (refused)", "red"))
             return

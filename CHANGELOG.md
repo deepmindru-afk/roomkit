@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A tool call the model abandons is now interrupted and audited. Gemini Live
+  sends `tool_call_cancellation` when the caller interrupts while calls are
+  outstanding, and a reconnect orphans the blocking calls the old socket
+  issued: `RealtimeVoiceProvider.on_tool_call_cancelled(session, call_ids)`
+  carries it to the application, `RealtimeVoiceChannel` cancels the handler
+  still running for the call (it sees `asyncio.CancelledError`) and sends
+  nothing back, and `ON_TOOL_CALL`'s async observers receive the call with
+  the new `ToolCallEvent.cancelled` marker beside `is_error`. Before, the
+  handler ran to the end for a result the provider then dropped in silence,
+  and no hook saw the call end. Providers without such a wire event (OpenAI
+  Realtime and GPT-Live, ElevenLabs, xAI, PersonaPlex, Deepgram) never fire
+  the callback. `MockRealtimeProvider.simulate_tool_call_cancellation` drives
+  it in tests; `examples/realtime_tool_call_cancelled.py` shows the path.
+
 ## [0.80.0] — 2026-09-18
 
 ### Added
