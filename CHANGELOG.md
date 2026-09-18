@@ -23,6 +23,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the callback. `MockRealtimeProvider.simulate_tool_call_cancellation` drives
   it in tests; `examples/realtime_tool_call_cancelled.py` shows the path.
 
+### Changed
+
+- `GeminiLiveProvider` is split into focused modules, the shape the GPT-Live
+  provider already has. `realtime.py` keeps the class, the connection and the
+  reconnect loop; `realtime_state.py` holds the session state,
+  `realtime_config.py` builds the `LiveConnectConfig` as pure functions,
+  `realtime_tools.py` handles tool calls and the bookkeeping of the ones the
+  model waits on, `realtime_transcription.py` joins the transcription chunks,
+  `realtime_handlers.py` dispatches the server messages and
+  `realtime_input.py` sends audio, injections and activity markers, all
+  mixed into the provider. Public API unchanged:
+  `roomkit.providers.gemini.realtime.GeminiLiveProvider` is still the import
+  path, and behaviour is byte for byte what it was.
+
 ## [0.80.0] — 2026-09-18
 
 ### Added
