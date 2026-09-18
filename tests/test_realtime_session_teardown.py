@@ -46,7 +46,9 @@ async def test_concurrent_end_session_calls_share_one_teardown() -> None:
     await provider.disconnecting.wait()
     second = asyncio.create_task(channel.end_session(session))
     await asyncio.sleep(0)
-    assert not second.done(), "the second caller waits for the first"
+    # The second caller has reached the wait without starting a disconnect of
+    # its own: the provider still records none while the first waits on it.
+    assert not second.done() and _disconnects(provider.calls) == 0
     provider.release.set()
     await asyncio.gather(first, second)
 
@@ -92,4 +94,96 @@ async def test_a_joiner_cancelled_while_waiting_leaves_the_owner_untouched() -> 
     assert _disconnects(provider.calls) == 1
     assert _disconnects(transport.calls) == 1
     assert not channel.get_room_sessions("r")
+    await channel.close()
+
+
+class _FailingBeforeTeardown(RealtimeVoiceChannel):
+    """A subclass teardown that fails, once a joiner has had time to arrive."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def _before_session_teardown(self, session: VoiceSession) -> None:
+        self.entered.set()
+        await self.release.wait()
+        raise RuntimeError("the hook failed")
+
+
+async def test_an_owner_that_fails_still_releases_its_joiners() -> None:
+    """A joiner learns that the teardown ended, not how: the owner's exception
+    is the owner's, and the registry is clear for the next caller."""
+    provider = _SlowDisconnectProvider()
+    transport = MockRealtimeTransport()
+    channel = _FailingBeforeTeardown("rt", provider=provider, transport=transport)
+    session = await channel.start_session("r", "p", "fake-ws")
+
+    owner = asyncio.create_task(channel.end_session(session))
+    await channel.entered.wait()
+    joiner = asyncio.create_task(channel.end_session(session))
+    await asyncio.sleep(0)
+    channel.release.set()
+    results = await asyncio.gather(owner, joiner, return_exceptions=True)
+
+    assert isinstance(results[0], RuntimeError) and results[1] is None
+    assert not channel._session_teardowns
+    provider.release.set()
+    await channel.close()
+
+
+class _ReentrantBeforeTeardown(RealtimeVoiceChannel):
+    """A handler told the session ended ends it again, from the owner's task."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.reentered = 0
+
+    async def _before_session_teardown(self, session: VoiceSession) -> None:
+        self.reentered += 1
+        await self.end_session(session)
+
+
+async def test_a_call_reentered_from_the_teardown_returns_at_once() -> None:
+    provider = _SlowDisconnectProvider()
+    provider.release.set()
+    transport = MockRealtimeTransport()
+    channel = _ReentrantBeforeTeardown("rt", provider=provider, transport=transport)
+    session = await channel.start_session("r", "p", "fake-ws")
+
+    await asyncio.wait_for(channel.end_session(session), timeout=2)
+
+    assert channel.reentered == 1
+    assert _disconnects(provider.calls) == 1
+    assert not channel._session_teardowns
+    await channel.close()
+
+
+async def test_the_av_channel_runs_its_own_teardown_once_too() -> None:
+    """The arbitration covers a subclass's teardown: the video hooks ride the
+    owner, so a remote hangup reaching the AV channel twice fires them once."""
+    from roomkit.channels.realtime_av import RealtimeAudioVideoChannel
+
+    provider = _SlowDisconnectProvider()
+    transport = MockRealtimeTransport()
+    channel = RealtimeAudioVideoChannel("av", provider=provider, transport=transport)
+    session = await channel.start_session("r", "p", "fake-ws")
+    before = channel._before_session_teardown
+    ran: list[str] = []
+
+    async def counted(ended: VoiceSession) -> None:
+        ran.append(ended.id)
+        await before(ended)
+
+    channel._before_session_teardown = counted  # type: ignore[method-assign]
+
+    first = asyncio.create_task(channel.end_session(session))
+    await provider.disconnecting.wait()
+    second = asyncio.create_task(channel.end_session(session))
+    await asyncio.sleep(0)
+    provider.release.set()
+    await asyncio.gather(first, second)
+
+    assert ran == [session.id]
+    assert _disconnects(provider.calls) == 1
     await channel.close()

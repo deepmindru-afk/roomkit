@@ -77,6 +77,14 @@ logger = logging.getLogger("roomkit.channels.realtime_voice")
 
 
 @dataclass
+class _SessionTeardown:
+    """One teardown per session: the task running it, and what joiners wait on."""
+
+    owner: asyncio.Task[Any] | None
+    done: asyncio.Future[None]
+
+
+@dataclass
 class _ConnectingSession:
     """Own a handshake separately from the application task awaiting it."""
 
@@ -441,7 +449,7 @@ class RealtimeVoiceChannel(
         self._connecting_sessions: dict[str, _ConnectingSession] = {}
         # One teardown per session, owned by its first caller; the mirror of
         # ``_connecting_sessions`` for the other end of a session's life.
-        self._session_teardowns: dict[str, asyncio.Future[None]] = {}
+        self._session_teardowns: dict[str, _SessionTeardown] = {}
         self._closing = False
         self._session_rooms: dict[str, str] = {}  # session_id -> room_id
         # Cached bindings for audio gating (access/muted enforcement)
@@ -1324,31 +1332,45 @@ class RealtimeVoiceChannel(
 
         Disconnects both provider and transport, fires framework event.
 
-        One teardown per session: the first caller owns it, and a caller that
-        arrives while it runs (``close()``, the transport's disconnect callback,
-        a hangup tool) waits for it instead of tearing the session down a
-        second time. The work stays in the owner's task, so a tool ending its
-        own session is still the current task the tool sweep spares; a joiner
-        cancelled while waiting leaves the owner's teardown untouched.
+        Concurrent callers share one teardown: the first owns it, and a caller
+        that arrives while it runs (``close()``, the transport's disconnect
+        callback, a hangup tool) waits for it instead of tearing the session
+        down a second time. A joiner learns that the teardown ended, not how:
+        the owner's exception is the owner's. The work stays in the owner's
+        task, so a tool that is the first to end its own session is still the
+        current task the tool sweep spares; a joiner cancelled while waiting
+        leaves the owner's teardown untouched; and a call re-entered from the
+        teardown itself (a handler of the ended event ending the session it is
+        told about) returns at once instead of waiting on its own task. A
+        subclass's own teardown rides ``_before_session_teardown`` and is
+        covered by the same arbitration.
 
         Args:
             session: The session to end.
         """
+        current = asyncio.current_task()
         with self._state_lock:
             teardown = self._session_teardowns.get(session.id)
-        if teardown is not None:
-            await asyncio.shield(teardown)
+            owned = teardown is None
+            if teardown is None:
+                teardown = _SessionTeardown(
+                    owner=current, done=asyncio.get_running_loop().create_future()
+                )
+                self._session_teardowns[session.id] = teardown
+        if not owned:
+            if teardown.owner is not current:
+                await asyncio.shield(teardown.done)
             return
-        done: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-        with self._state_lock:
-            self._session_teardowns[session.id] = done
         try:
+            await self._before_session_teardown(session)
             await self._end_session_owned(session)
         finally:
             with self._state_lock:
                 self._session_teardowns.pop(session.id, None)
-            if not done.done():
-                done.set_result(None)
+            teardown.done.set_result(None)
+
+    async def _before_session_teardown(self, session: VoiceSession) -> None:
+        """A subclass's own teardown, run by the owner before the base one."""
 
     async def _end_session_owned(self, session: VoiceSession) -> None:
         """The teardown itself, run once per session by ``end_session``."""
@@ -1781,6 +1803,16 @@ class RealtimeVoiceChannel(
                 await self.end_session(session)
             except Exception:
                 logger.exception("Error ending session %s during close", session.id)
+
+        # A teardown under way whose session already left ``_sessions`` is in
+        # neither list above and not done: wait for it before the sweep below
+        # cancels the task running it, mid-emit.
+        with self._state_lock:
+            outstanding = [teardown.done for teardown in self._session_teardowns.values()]
+        if outstanding:
+            await asyncio.gather(
+                *(asyncio.shield(done) for done in outstanding), return_exceptions=True
+            )
 
         # Cancel all outstanding scheduled tasks with timeout
         tasks = list(self._scheduled_tasks)

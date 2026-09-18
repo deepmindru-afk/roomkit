@@ -181,8 +181,13 @@ class RealtimeAudioVideoChannel(VideoHooksMixin, RealtimeVoiceChannel):
 
         return session
 
-    async def end_session(self, session: VoiceSession) -> None:
-        """Fire video hooks, then clean up the realtime session."""
+    async def _before_session_teardown(self, session: VoiceSession) -> None:
+        """Fire video hooks and clear video state; the base teardown follows.
+
+        Rides the base channel's one-teardown-per-session arbitration, so a
+        remote hangup that reaches the channel twice fires the video events
+        once.
+        """
         with self._state_lock:
             room_id = self._session_rooms.get(session.id, session.room_id)
 
@@ -202,8 +207,6 @@ class RealtimeAudioVideoChannel(VideoHooksMixin, RealtimeVoiceChannel):
         # Clean up video state
         self._last_vision_results.pop(session.id, None)
         self._last_vision_ts.pop(session.id, None)
-
-        await super().end_session(session)
 
     async def close(self) -> None:
         """Close vision, video state, then delegate to parent."""
