@@ -100,6 +100,15 @@ class GeminiLiveToolsMixin(RealtimeVoiceProvider):
         except ValueError:  # json.JSONDecodeError is one
             result_dict = {"result": result}
 
+        # The response names the function the call named. The id alone was
+        # enough through 3.1, and the name went out empty on that account;
+        # gemini-3.8-live-extended-thinking reads an unnamed response as a
+        # call that failed and tells the user a system error occurred, while
+        # the same payload under the call's name is read as the result
+        # (verified against the live API, 2026-09-18). A result for a call
+        # this connection never issued still goes out unnamed: there is
+        # nothing to name it after, and the server answers for the id.
+        #
         # A background call returns while the model is mid-sentence, so the
         # response has to say when to use it. WHEN_IDLE waits for the end of
         # what is being said, which is what a voice agent wants by default;
@@ -108,7 +117,7 @@ class GeminiLiveToolsMixin(RealtimeVoiceProvider):
         # leaving the field unset keeps the pre-3.8 wire byte for byte.
         response_kwargs: dict[str, Any] = {
             "id": call_id,
-            "name": "",  # Gemini uses ID-based matching
+            "name": state.call_names.get(call_id, ""),
             "response": result_dict,
         }
         # Only when the caller asks. A default here looked harmless and was
@@ -168,6 +177,7 @@ class GeminiLiveToolsMixin(RealtimeVoiceProvider):
         """Take one call off the books, whether or not the model waited on it."""
         state.pending_call_ids.discard(call_id)
         state.blocking_call_ids.discard(call_id)
+        state.call_names.pop(call_id, None)
 
     async def _release_calls_lost_with_the_connection(self, state: _GeminiSessionState) -> None:
         """Forget every tool call the old socket issued.
@@ -182,6 +192,7 @@ class GeminiLiveToolsMixin(RealtimeVoiceProvider):
         orphaned = sorted(state.pending_call_ids)
         state.pending_call_ids.clear()
         state.blocking_call_ids.clear()
+        state.call_names.clear()
         if orphaned:
             logger.info(
                 "[Gemini] %d tool call(s) did not survive the reconnect (session %s)",
@@ -223,6 +234,7 @@ class GeminiLiveToolsMixin(RealtimeVoiceProvider):
             if fc.id:
                 state.cancelled_call_ids.discard(fc.id)
                 state.pending_call_ids.add(fc.id)
+                state.call_names[fc.id] = fc.name or ""
                 if fc.name in state.blocking_tool_names:
                     state.blocking_call_ids.add(fc.id)
             args_dict = dict(fc.args) if fc.args else {}

@@ -80,6 +80,11 @@ class _GeminiSessionState:
     # connection-scoped, so this is the set a reconnect orphans, blocking
     # calls and background calls alike.
     pending_call_ids: set[str] = field(default_factory=set)
+    # The function each pending call named, by id, so its result can carry
+    # the name back. ``gemini-3.8-live-extended-thinking`` reads a
+    # FunctionResponse without one as a failed call and tells the user a
+    # system error occurred; the earlier models matched on the id alone.
+    call_names: dict[str, str] = field(default_factory=dict)
     # Tools this session declared BLOCKING. From 3.8 the model runs its calls
     # in the background by default, but a single tool can still ask to block
     # where the model allows it, so the mode is a property of the call and not

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A Gemini Live tool result now names the function it answers.
+  `FunctionResponse.name` went out empty, the id being enough for the
+  models through 3.1; `gemini-3.8-live-extended-thinking` reads an unnamed
+  response as a call that failed and tells the user a system error occurred,
+  whatever the result held, while the same payload under the call's name is
+  read as the result. The provider keeps the name of each call in flight and
+  releases it with the call; a result for an id this connection never issued
+  still goes out unnamed.
+
 ## [0.81.0] — 2026-09-18
 
 ### Added

@@ -1042,6 +1042,61 @@ class TestGeminiLiveProvider:
         await provider.submit_tool_result(session, "call-2", "plain text result")
         mock_live_session.send_tool_response.assert_awaited_once()
 
+    async def test_a_result_carries_the_name_of_the_call_it_answers(self):
+        """The id alone was enough through 3.1 and the name went out empty.
+
+        gemini-3.8-live-extended-thinking reads an unnamed FunctionResponse as
+        a failed call and tells the user a system error occurred; under the
+        call's name the same payload is read as the result. The name is kept
+        per call in flight and released with it.
+        """
+        mod = _load_provider()
+        provider = mod.GeminiLiveProvider(api_key="test-key", model="gemini-3.8-live")
+        session = _make_session()
+        state = mod._GeminiSessionState(session=session, live_session=_make_mock_live_session())
+        provider._sessions[session.id] = state
+
+        await provider._on_tool_call(
+            session,
+            state,
+            SimpleNamespace(
+                function_calls=[SimpleNamespace(name="lookup_contact", id="c1", args={"q": "x"})]
+            ),
+        )
+        assert state.call_names == {"c1": "lookup_contact"}
+
+        await provider.submit_tool_result(session, "c1", '{"matches": []}')
+        sent = state.live_session.send_tool_response.await_args.kwargs["function_responses"][0]
+        assert sent.id == "c1"
+        assert sent.name == "lookup_contact"
+        assert state.call_names == {}, "released with the call"
+
+    async def test_a_result_for_a_call_never_issued_goes_out_unnamed(self):
+        mod = _load_provider()
+        provider = mod.GeminiLiveProvider(api_key="test-key", model="gemini-3.8-live")
+        session = _make_session()
+        state = mod._GeminiSessionState(session=session, live_session=_make_mock_live_session())
+        provider._sessions[session.id] = state
+
+        await provider.submit_tool_result(session, "unknown", '{"ok": true}')
+        sent = state.live_session.send_tool_response.await_args.kwargs["function_responses"][0]
+        assert sent.name == ""
+
+    async def test_a_reconnect_forgets_the_names_with_the_calls(self):
+        mod = _load_provider()
+        provider = mod.GeminiLiveProvider(api_key="test-key", model="gemini-3.8-live")
+        session = _make_session()
+        state = mod._GeminiSessionState(session=session, live_session=_make_mock_live_session())
+        provider._sessions[session.id] = state
+        await provider._on_tool_call(
+            session,
+            state,
+            SimpleNamespace(function_calls=[SimpleNamespace(name="lookup", id="c1", args={})]),
+        )
+
+        await provider._release_calls_lost_with_the_connection(state)
+        assert state.call_names == {}
+
     # ── background tool calls (3.8 Live) ────────────────────────
 
     def test_declarations_run_in_background_on_3_8(self):
