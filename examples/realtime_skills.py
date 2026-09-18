@@ -16,7 +16,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from realtime_tool_search import IncomingScenarioBackend, write_evidence
+from realtime_tool_search import write_evidence
+from shared import IncomingScenarioBackend
 
 from roomkit import HookTrigger, RealtimeVoiceChannel, RoomKit, VoiceTrace
 from roomkit.providers.gemini.realtime import GeminiLiveProvider

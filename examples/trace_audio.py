@@ -10,7 +10,7 @@ this module imported:
 Or simply:  import examples.trace_audio  at the top of the example.
 
 Traced points (logged as periodic summaries every ~2s):
-  [INBOUND]    VoiceChannel._on_audio_received     — mic → pipeline
+  [INBOUND]    VoiceChannel._pipeline_on_audio_received  — mic → pipeline
   [PIPELINE]   AudioPipeline.process_inbound        — inbound stage
   [PIPELINE]   AudioPipeline.process_outbound       — outbound stage
   [AEC]        AECProvider.process / feed_reference  — echo cancellation
@@ -160,7 +160,9 @@ def _frame_info(frame: object) -> str:
 def _patch_voice_channel() -> None:
     from roomkit.channels.voice import VoiceChannel
 
-    orig_on_audio = VoiceChannel._on_audio_received
+    # Renamed when the unified pipeline moved the hop into
+    # VoicePipelineMixin; the signature is unchanged.
+    orig_on_audio = VoiceChannel._pipeline_on_audio_received
 
     @functools.wraps(orig_on_audio)
     def traced_on_audio(self, session, frame):
@@ -181,7 +183,7 @@ def _patch_voice_channel() -> None:
         _flush_summary()
         return orig_on_audio(self, session, frame)
 
-    VoiceChannel._on_audio_received = traced_on_audio
+    VoiceChannel._pipeline_on_audio_received = traced_on_audio
 
     orig_deliver = VoiceChannel._deliver_voice
 
