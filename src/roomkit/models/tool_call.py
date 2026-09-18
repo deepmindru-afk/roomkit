@@ -92,9 +92,9 @@ class ToolCallEvent:
     """Whether the model abandoned the call before reading its result.
 
     A realtime model interrupted while a call is outstanding may discard it
-    (Gemini Live's ``tool_call_cancellation``, or a reconnect that orphans the
-    blocking calls the old socket was waiting on): the handler is interrupted, its result is
-    never sent, and the call ends with no outcome the model ever saw. That is
+    (Gemini Live's ``tool_call_cancellation``, or a reconnect that orphans
+    every call the old socket issued): the handler is interrupted, its result
+    is never sent, and the call ends with no outcome the model ever saw. That is
     neither a refusal nor a failure, and an audit counting refusals must not
     count it as one, so it travels as its own marker beside :attr:`is_error`
     (``True`` too: nothing usable came back). The firing is observational,

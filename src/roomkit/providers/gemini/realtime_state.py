@@ -74,15 +74,20 @@ class _GeminiSessionState:
     turn_count: int = 0
     tool_result_bytes: int = 0
     input_sample_rate: int = 16000
-    pending_tool_calls: int = 0
+    # Ids of every call the current connection issued and has not released:
+    # the result went back, the server cancelled it, or the connection that
+    # issued it is gone. Ids are connection-scoped, so this is the set a
+    # reconnect orphans. A count could not say which calls, and the
+    # background ones then slipped past the release the reconnect owed them.
+    pending_call_ids: set[str] = field(default_factory=set)
     # Tools this session declared BLOCKING. From 3.8 the model runs its calls
     # in the background by default, but a single tool can still ask to block
     # where the model allows it, so the mode is a property of the call and not
     # of the model: deriving it from the model's default let a blocking call
     # slip past the injection queue that exists precisely for it.
     blocking_tool_names: set[str] = field(default_factory=set)
-    # Ids of the blocking calls currently outstanding. Non-empty means the API
-    # is waiting and refuses client_content.
+    # The subset of ``pending_call_ids`` the API is waiting on. Non-empty
+    # means it refuses client_content.
     blocking_call_ids: set[str] = field(default_factory=set)
     queued_injections: list[tuple[bytes, str, str, bool]] = field(default_factory=list)
     realtime_input_sent: bool = False

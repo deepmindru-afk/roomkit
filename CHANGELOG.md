@@ -11,8 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A tool call the model abandons is now interrupted and audited. Gemini Live
   sends `tool_call_cancellation` when the caller interrupts while calls are
-  outstanding, and a reconnect orphans the blocking calls the old socket
-  issued: `RealtimeVoiceProvider.on_tool_call_cancelled(session, call_ids)`
+  outstanding, and a reconnect orphans every call the old socket issued,
+  background ones included (call ids are connection-scoped, and the provider
+  now names each call in flight instead of counting them):
+  `RealtimeVoiceProvider.on_tool_call_cancelled(session, call_ids)`
   carries it to the application, `RealtimeVoiceChannel` cancels the handler
   still running for the call (it sees `asyncio.CancelledError`) and sends
   nothing back, and `ON_TOOL_CALL`'s async observers receive the call with

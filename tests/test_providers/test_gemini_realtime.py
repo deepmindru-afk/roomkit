@@ -815,7 +815,7 @@ class TestGeminiLiveProvider:
         state = mod._GeminiSessionState(
             session=session,
             live_session=mock_live_session,
-            pending_tool_calls=1,
+            pending_call_ids={"call-1"},
             blocking_call_ids={"call-1"},
         )
         provider._sessions[session.id] = state
@@ -840,7 +840,7 @@ class TestGeminiLiveProvider:
         state = mod._GeminiSessionState(
             session=session,
             live_session=mock_live_session,
-            pending_tool_calls=1,
+            pending_call_ids={"call-1"},
             queued_text_injections=[("Queued text", "user", False)],
         )
         provider._sessions[session.id] = state
@@ -1172,7 +1172,7 @@ class TestGeminiLiveProvider:
         state = mod._GeminiSessionState(
             session=session,
             live_session=mock_live_session,
-            pending_tool_calls=1,
+            pending_call_ids={"call-1"},
         )
         provider._sessions[session.id] = state
 
@@ -1210,6 +1210,7 @@ class TestGeminiLiveProvider:
             SimpleNamespace(function_calls=[SimpleNamespace(name="charge", id="c1", args={})]),
         )
         assert state.blocking_call_ids == {"c1"}
+        assert state.pending_call_ids == {"c1"}
 
         result = await provider.inject_text(session, "bonjour")
         assert result.reason == "voice_provider_queued"
@@ -1218,6 +1219,7 @@ class TestGeminiLiveProvider:
         sent = state.live_session.send_tool_response.await_args.kwargs["function_responses"][0]
         assert sent.scheduling is None, "a call the API waited on needs no scheduling"
         assert state.blocking_call_ids == set()
+        assert state.pending_call_ids == set()
 
     async def test_a_background_call_on_3_8_registers_no_blocking_id(self):
         mod = _load_provider()
@@ -1240,6 +1242,7 @@ class TestGeminiLiveProvider:
         )
 
         assert state.blocking_call_ids == set()
+        assert state.pending_call_ids == {"c1"}, "a background call is still in the books"
         assert (await provider.inject_text(session, "bonjour")).status == "sent"
 
     async def test_injection_still_waits_on_a_blocking_call(self):
@@ -1251,7 +1254,7 @@ class TestGeminiLiveProvider:
         state = mod._GeminiSessionState(
             session=session,
             live_session=mock_live_session,
-            pending_tool_calls=1,
+            pending_call_ids={"call-1"},
             blocking_call_ids={"call-1"},
         )
         provider._sessions[session.id] = state
@@ -2212,7 +2215,7 @@ class TestGeminiLiveProvider:
         state = mod._GeminiSessionState(
             session=session,
             live_session=_make_mock_live_session(),
-            pending_tool_calls=1,
+            pending_call_ids={"call-1"},
         )
         provider._sessions[session.id] = state
 
@@ -2255,12 +2258,37 @@ def _blocking_call_state(model: str = "gemini-3.8-live"):
     state = mod._GeminiSessionState(
         session=session,
         live_session=live,
-        pending_tool_calls=1,
+        pending_call_ids={"call-1"},
         blocking_call_ids={"call-1"},
         queued_text_injections=[("Queued text", "user", False)],
     )
     provider._sessions[session.id] = state
     return provider, session, state, live
+
+
+def _background_call_state():
+    """A 3.8 session whose only tool runs in the background; no call issued yet."""
+    mod = _load_provider()
+    provider = mod.GeminiLiveProvider(api_key="test-key", model="gemini-3.8-live")
+    session = _make_session()
+    live = _make_mock_live_session()
+    state = mod._GeminiSessionState(
+        session=session,
+        live_session=live,
+        blocking_tool_names=provider._blocking_tool_names(
+            [{"name": "lookup", "description": "d", "parameters": {}}]
+        ),
+    )
+    provider._sessions[session.id] = state
+    return provider, session, state, live
+
+
+async def _issue_calls(provider, session, *calls: tuple[str, str]) -> None:
+    """Deliver one ``tool_call`` server message naming (tool, call id) pairs."""
+    function_calls = [SimpleNamespace(name=name, id=call_id, args={}) for name, call_id in calls]
+    await provider._handle_server_response(
+        session, SimpleNamespace(tool_call=SimpleNamespace(function_calls=function_calls))
+    )
 
 
 class TestAnInterruptedResponseEndsOnce:
@@ -2348,7 +2376,7 @@ class TestServerCancelledToolCalls:
         await provider._handle_server_response(session, self._cancellation("call-1"))
 
         assert state.blocking_call_ids == set()
-        assert state.pending_tool_calls == 0
+        assert state.pending_call_ids == set()
         assert state.queued_text_injections == []
         live.send_client_content.assert_awaited()
 
@@ -2409,6 +2437,15 @@ class TestServerCancelledToolCalls:
         assert state.queued_text_injections == []
         live.send_client_content.assert_awaited()
 
+    async def test_a_cancelled_background_call_leaves_the_books(self):
+        provider, session, state, _live = _background_call_state()
+        await _issue_calls(provider, session, ("lookup", "call-1"), ("lookup", "call-2"))
+
+        await provider._handle_server_response(session, self._cancellation("call-1"))
+
+        assert state.pending_call_ids == {"call-2"}
+        assert state.cancelled_call_ids == {"call-1"}
+
 
 class TestReconnectForgetsTheOldSocketsCalls:
     """Call ids are connection-scoped: nothing on the new socket will answer them."""
@@ -2419,7 +2456,7 @@ class TestReconnectForgetsTheOldSocketsCalls:
         await provider._release_calls_lost_with_the_connection(state)
 
         assert state.blocking_call_ids == set()
-        assert state.pending_tool_calls == 0
+        assert state.pending_call_ids == set()
         assert state.cancelled_call_ids == {"call-1"}
         assert state.queued_text_injections == []
         live.send_client_content.assert_awaited()
@@ -2435,6 +2472,7 @@ class TestReconnectForgetsTheOldSocketsCalls:
 
     async def test_a_reconnect_with_nothing_outstanding_tells_nobody(self):
         provider, _session, state, _live = _blocking_call_state()
+        state.pending_call_ids.clear()
         state.blocking_call_ids.clear()
         told: list[list[str]] = []
         provider.on_tool_call_cancelled(lambda _s, ids: told.append(ids))
@@ -2458,3 +2496,51 @@ class TestReconnectForgetsTheOldSocketsCalls:
         await provider._release_calls_lost_with_the_connection(state)
 
         assert state.blocking_call_ids == set()
+
+    async def test_a_background_call_is_reported_and_its_late_result_dropped(self):
+        """NON_BLOCKING is the 3.8 default: the reconnect owes it the same release."""
+        provider, session, state, live = _background_call_state()
+        told: list[tuple[str, list[str]]] = []
+        provider.on_tool_call_cancelled(lambda s, ids: told.append((s.id, ids)))
+        await _issue_calls(provider, session, ("lookup", "call-1"))
+        assert state.pending_call_ids == {"call-1"}
+        assert state.blocking_call_ids == set()
+
+        await provider._release_calls_lost_with_the_connection(state)
+        await provider.submit_tool_result(session, "call-1", '{"in_stock": 42}')
+
+        assert told == [(session.id, ["call-1"])]
+        live.send_tool_response.assert_not_awaited()
+        assert state.pending_call_ids == set()
+        assert state.cancelled_call_ids == set()
+
+    async def test_blocking_and_background_calls_are_released_together(self):
+        provider, session, state, live = _background_call_state()
+        state.blocking_tool_names.add("charge")
+        told: list[list[str]] = []
+        provider.on_tool_call_cancelled(lambda _s, ids: told.append(ids))
+        await _issue_calls(provider, session, ("charge", "call-1"), ("lookup", "call-2"))
+        assert state.blocking_call_ids == {"call-1"}
+        state.queued_text_injections.append(("Queued text", "user", False))
+
+        await provider._release_calls_lost_with_the_connection(state)
+
+        assert told == [["call-1", "call-2"]]
+        assert state.pending_call_ids == set()
+        assert state.blocking_call_ids == set()
+        assert state.cancelled_call_ids == {"call-1", "call-2"}
+        assert state.queued_text_injections == []
+        live.send_client_content.assert_awaited()
+
+    async def test_a_call_answered_before_the_reconnect_is_not_reported(self):
+        provider, session, state, _live = _background_call_state()
+        told: list[list[str]] = []
+        provider.on_tool_call_cancelled(lambda _s, ids: told.append(ids))
+        await _issue_calls(provider, session, ("lookup", "call-1"))
+        await provider.submit_tool_result(session, "call-1", "{}")
+        assert state.pending_call_ids == set()
+
+        await provider._release_calls_lost_with_the_connection(state)
+
+        assert told == []
+        assert state.cancelled_call_ids == set()

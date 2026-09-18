@@ -27,12 +27,13 @@ class GeminiLiveToolsMixin(RealtimeVoiceProvider):
     """Tool calls and the bookkeeping of the ones the model waits on.
 
     Mixed into ``GeminiLiveProvider``, which owns the sessions and the model
-    id. From 3.8 a tool runs in the background by default and a call the
-    model does wait on (a BLOCKING declaration, or any call on the pre-3.8
-    family) closes the input channel: ``blocking_call_ids`` says which, the
-    queued injections wait behind it, and three things release it: the
-    result, a server-side cancellation, or the loss of the connection that
-    issued the id.
+    id. ``pending_call_ids`` names every call the current connection issued
+    and has not released. From 3.8 a tool runs in the background by default
+    and a call the model does wait on (a BLOCKING declaration, or any call on
+    the pre-3.8 family) closes the input channel: ``blocking_call_ids`` says
+    which, and the queued injections wait behind it. Three things release a
+    call: the result, a server-side cancellation, or the loss of the
+    connection that issued the id.
     """
 
     # Owned by GeminiLiveProvider / its other mixins; declared for typing.
@@ -123,7 +124,7 @@ class GeminiLiveToolsMixin(RealtimeVoiceProvider):
         )
 
         # Release the call and flush what its blocking waited on.
-        state.pending_tool_calls = max(0, state.pending_tool_calls - 1)
+        state.pending_call_ids.discard(call_id)
         state.blocking_call_ids.discard(call_id)
         if not state.blocking_call_ids:
             await self._flush_queued_injections(state)
@@ -157,25 +158,26 @@ class GeminiLiveToolsMixin(RealtimeVoiceProvider):
                 await self._send_image(state, image_data, mime_type, prompt, silent)
 
     async def _release_calls_lost_with_the_connection(self, state: _GeminiSessionState) -> None:
-        """Forget the tool calls the old socket was waiting on.
+        """Forget every tool call the old socket issued.
 
         Call ids are connection-scoped: the new socket never issued them and
-        will not read their results. A blocking one left in the books held
-        every injection queued behind it until the application's handler
-        finished work the model had already lost, and its result then went
-        out for an id the server did not know.
+        will not read their results, blocking or not. Left in the books, a
+        blocking one held every injection queued behind it until the
+        application's handler finished work the model had already lost, and
+        the result of any of them then went out for an id the server did not
+        know. Counting the background calls instead of naming them let
+        exactly that happen to them.
         """
-        orphaned = sorted(state.blocking_call_ids)
+        orphaned = sorted(state.pending_call_ids)
+        state.pending_call_ids.clear()
+        state.blocking_call_ids.clear()
         if orphaned:
             logger.info(
-                "[Gemini] %d blocking tool call(s) did not survive the reconnect (session %s)",
+                "[Gemini] %d tool call(s) did not survive the reconnect (session %s)",
                 len(orphaned),
                 state.session.id,
             )
             state.cancelled_call_ids.update(orphaned)
-            state.blocking_call_ids.clear()
-        state.pending_tool_calls = 0
-        if orphaned:
             # The application is still working for the old socket. Same fact
             # as a server cancellation: the model will not read the result.
             await self._fire(
@@ -204,9 +206,10 @@ class GeminiLiveToolsMixin(RealtimeVoiceProvider):
         # (a late final reads as new user speech downstream).
         await self._flush_transcription_buffer(session, "user")
         for fc in tool_call.function_calls:
-            state.pending_tool_calls += 1
-            if fc.name in state.blocking_tool_names and fc.id:
-                state.blocking_call_ids.add(fc.id)
+            if fc.id:
+                state.pending_call_ids.add(fc.id)
+                if fc.name in state.blocking_tool_names:
+                    state.blocking_call_ids.add(fc.id)
             args_dict = dict(fc.args) if fc.args else {}
             self._log_event(
                 session.id,
@@ -244,7 +247,7 @@ class GeminiLiveToolsMixin(RealtimeVoiceProvider):
         logger.info("[Gemini] server cancelled tool call(s) %s (session %s)", ids, session.id)
         self._log_event(session.id, "tool_call_cancellation", ids=ids)
         for call_id in ids:
-            state.pending_tool_calls = max(0, state.pending_tool_calls - 1)
+            state.pending_call_ids.discard(call_id)
             state.blocking_call_ids.discard(call_id)
             state.cancelled_call_ids.add(call_id)
         await self._fire(

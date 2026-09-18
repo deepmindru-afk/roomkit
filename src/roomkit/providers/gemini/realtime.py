@@ -550,7 +550,7 @@ class GeminiLiveProvider(
                     exc,
                     status_code,
                     response_json,
-                    state.pending_tool_calls,
+                    len(state.pending_call_ids),
                 )
                 state.live_session = None
 
