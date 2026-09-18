@@ -11,8 +11,8 @@ multimodal model and waits for one answer, and the two are for different jobs
 rather than being two ways to do the same one.
 
 With no argument this synthesizes a short sentence with Gemini TTS, so the
-example runs on one API key. Pass a path to transcribe your own 16 kHz mono
-PCM WAV file.
+example runs on one API key. Pass a path to transcribe your own 16-bit mono PCM
+WAV file at any rate: it is resampled to the 16 kHz the model takes.
 
 What you should see: several `~` lines (interim, revised as the model hears
 more) followed by `=` lines (final). Seeing only `=` lines means the audio
