@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.81.0] — 2026-09-18
+
 ### Added
 
 - A tool call the model abandons is now interrupted and audited. Gemini Live
@@ -14,16 +16,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   outstanding, and a reconnect orphans every call the old socket issued,
   background ones included (call ids are connection-scoped, and the provider
   now names each call in flight instead of counting them):
-  `RealtimeVoiceProvider.on_tool_call_cancelled(session, call_ids)`
-  carries it to the application, `RealtimeVoiceChannel` cancels the handler
-  still running for the call (it sees `asyncio.CancelledError`) and sends
-  nothing back, and `ON_TOOL_CALL`'s async observers receive the call with
-  the new `ToolCallEvent.cancelled` marker beside `is_error`. Before, the
-  handler ran to the end for a result the provider then dropped in silence,
-  and no hook saw the call end. Providers without such a wire event (OpenAI
-  Realtime and GPT-Live, ElevenLabs, xAI, PersonaPlex, Deepgram) never fire
-  the callback. `MockRealtimeProvider.simulate_tool_call_cancellation` drives
-  it in tests; `examples/realtime_tool_call_cancelled.py` shows the path.
+  `RealtimeVoiceProvider.on_tool_call_cancelled()` registers the
+  `(session, call_ids)` callback that carries it to the application,
+  `RealtimeVoiceChannel` cancels the handler still running for the call (it
+  sees `asyncio.CancelledError`) and sends nothing back, and `ON_TOOL_CALL`'s
+  async observers receive the call with the new `ToolCallEvent.cancelled`
+  marker beside `is_error`. Before, the handler ran to the end for a result
+  the provider then dropped in silence, and no hook saw the call end.
+  Providers without such a wire event (OpenAI Realtime and GPT-Live,
+  ElevenLabs, xAI, PersonaPlex, Deepgram) never fire the callback.
+  `MockRealtimeProvider.simulate_tool_call_cancellation` drives it in tests;
+  `examples/realtime_tool_call_cancelled.py` shows the path.
 
 ### Changed
 
@@ -7772,7 +7775,8 @@ See entries `0.7.0a1` through `0.7.0a18` below.
 - `STTProvider.transcribe()` returns `TranscriptionResult` (Phase 3.1)
 - Framework event names enriched with payloads (Phase 4)
 
-[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.80.0...HEAD
+[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.81.0...HEAD
+[0.81.0]: https://github.com/roomkit-live/roomkit/compare/v0.80.0...v0.81.0
 [0.80.0]: https://github.com/roomkit-live/roomkit/compare/v0.79.0...v0.80.0
 [0.79.0]: https://github.com/roomkit-live/roomkit/compare/v0.78.0...v0.79.0
 [0.78.0]: https://github.com/roomkit-live/roomkit/compare/v0.77.0...v0.78.0
