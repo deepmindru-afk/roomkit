@@ -37,6 +37,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `roomkit.providers.gemini.realtime.GeminiLiveProvider` is still the import
   path, and behaviour is byte for byte what it was.
 
+### Fixed
+
+- `OpenAILiveProvider` no longer waits for the peer when it closes a socket
+  whose session is over. After `session.closed` the API answers no close
+  frame and drops the connection itself about two seconds later, so the
+  handshake wait that 0.79.0 moved off `disconnect()` was paid in full by
+  `close()`, and by every teardown that awaits both in one breath. The close
+  frame is still sent; the socket is then aborted at once through the
+  library's own `close_timeout`. A close that `session.closed` never
+  acknowledged keeps its two-second chance.
+
 ## [0.80.0] — 2026-09-18
 
 ### Added

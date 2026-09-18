@@ -93,6 +93,24 @@ class _HangingCloseWS(_FakeWS):
         await asyncio.Event().wait()
 
 
+class _SilentPeerWS(_FakeWS):
+    """A peer that never answers the close handshake, as the API does after
+    ``session.closed``: like websockets', ``close()`` returns only when its own
+    ``close_timeout`` expires and the transport is aborted."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.close_timeout: float | None = 10.0  # websockets' default
+        self.close_timeout_at_close: float | None = None
+
+    async def close(self) -> None:
+        self.close_timeout_at_close = self.close_timeout
+        if self.close_timeout is None:
+            await asyncio.Event().wait()
+        await asyncio.sleep(self.close_timeout)
+        self.closed = True
+
+
 class _Recorder:
     """Every provider callback, in arrival order."""
 
@@ -782,6 +800,44 @@ class TestLifecycle:
         assert elapsed >= 0.2  # the ack it never sent, then the close it never made
         assert provider._deferred_closes == set()
         assert session.state == VoiceSessionState.ENDED
+
+    async def test_acknowledged_socket_is_closed_without_waiting_for_the_peer(
+        self, session: VoiceSession
+    ) -> None:
+        """The API answers no close frame after ``session.closed`` and drops the
+        connection two seconds later. Deferring that wait moved it; only not
+        waiting removes it: the socket is aborted right after its close frame,
+        and ``close()``, which awaits the deferred task, finds it done."""
+        provider = _provider(close_timeout_s=1.0)
+        ws, _ = await _connect(provider, session, ws=_SilentPeerWS())
+
+        task = asyncio.create_task(provider.disconnect(session))
+        await _settle()
+        ws.push({"type": "session.closed", "reason": "client"})
+        await asyncio.wait_for(task, timeout=1.0)
+
+        started = asyncio.get_running_loop().time()
+        await provider.close()  # ``_CLOSE_TIMEOUT`` untouched: the bound is not what made it quick
+        assert asyncio.get_running_loop().time() - started < 0.1
+
+        assert ws.close_timeout_at_close == 0
+        assert ws.closed
+        assert provider._deferred_closes == set()
+
+    async def test_unacknowledged_close_keeps_the_peers_chance(
+        self, session: VoiceSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without ``session.closed`` nothing says the protocol is over: the
+        socket keeps the library's handshake wait, under ``_CLOSE_TIMEOUT``."""
+        monkeypatch.setattr(live, "_CLOSE_TIMEOUT", 0.15)
+        provider = _provider(close_timeout_s=0.05)
+        ws, _ = await _connect(provider, session, ws=_SilentPeerWS())
+
+        started = asyncio.get_running_loop().time()
+        await asyncio.wait_for(provider.disconnect(session), timeout=1.0)
+
+        assert ws.close_timeout_at_close == 10.0
+        assert asyncio.get_running_loop().time() - started >= 0.2
 
     async def test_close_releases_the_sockets_disconnect_deferred(
         self, session: VoiceSession

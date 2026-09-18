@@ -26,6 +26,12 @@ _CONNECT_TIMEOUT = 30.0
 
 _CLOSE_TIMEOUT = 2.0
 
+# The socket's own close bound once ``session.closed`` has landed: the API
+# answers no close frame after that event and drops the connection itself
+# about two seconds later, so the handshake wait is pure cost (see
+# ``OpenAILiveProvider._release_socket``).
+_ACKNOWLEDGED_CLOSE_TIMEOUT = 0.0
+
 _LOG_TAG = "GPT-Live"
 
 _VOICES: list[VoiceInfo] = [

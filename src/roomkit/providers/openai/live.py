@@ -31,6 +31,7 @@ from roomkit.core.task_utils import log_task_exception
 from roomkit.providers.ai.base import ModelInfo
 from roomkit.providers.openai.live_client import OpenAILiveClientMixin
 from roomkit.providers.openai.live_config import (
+    _ACKNOWLEDGED_CLOSE_TIMEOUT,
     _CLOSE_TIMEOUT,
     _CONNECT_TIMEOUT,
     _DEFAULT_BASE_URL,
@@ -383,16 +384,22 @@ class OpenAILiveProvider(
             await asyncio.wait_for(state.ws.close(), timeout=_CLOSE_TIMEOUT)
 
     def _release_socket(self, state: _LiveSession) -> None:
-        """Let a socket whose protocol is over close on its own.
+        """Close a socket whose protocol is over without waiting for the peer.
 
-        ``ws.close()`` sends the close frame and then waits for the peer to
-        close the TCP connection, which the API does not always do. Once
-        ``session.closed`` has landed there is nothing behind that wait: the
-        billed seconds rode that event and the turns are already settled. The
-        close still runs, still bounded by :data:`_CLOSE_TIMEOUT`, but off the
-        path of a caller that is usually tearing a call down and pays every
-        millisecond it waits here. :meth:`close` is where it is awaited again.
+        Once ``session.closed`` has landed there is nothing behind the close
+        handshake: the billed seconds rode that event and the turns are
+        already settled. The API answers no close frame after it and drops
+        the TCP connection itself about two seconds later (measured with the
+        bare ``websockets`` client, whether or not a close frame was sent),
+        so ``ws.close()``, which waits for the handshake and the TCP close,
+        would buy those two seconds and nothing else. The close frame is still
+        sent; a ``close_timeout`` of zero then makes the library abort the
+        transport at once, its own bound rather than a cancellation that
+        leaves the transport open. It runs on its own task, off the path of a
+        caller that is usually tearing a call down; :meth:`close` is where it
+        is awaited again, and finds it done.
         """
+        state.ws.close_timeout = _ACKNOWLEDGED_CLOSE_TIMEOUT
         task = asyncio.create_task(
             self._close_socket(state), name=f"roomkit-live-close-{state.session.id}"
         )
@@ -451,10 +458,10 @@ class OpenAILiveProvider(
     async def close(self) -> None:
         for state in list(self._states.values()):
             await self.disconnect(state.session)
-        # ``disconnect`` hands its socket to a task so its caller does not pay
-        # the peer's TCP close. The provider-wide teardown is where that close
-        # is finally somebody's: ``close()`` releases every resource, and a
-        # peer that never closes costs it ``_CLOSE_TIMEOUT``, as it always did.
+        # ``disconnect`` hands an acknowledged socket to a task, closed without
+        # waiting for the peer. The provider-wide teardown is where that task
+        # is finally somebody's: ``close()`` releases every resource, so it is
+        # awaited here, and costs what the abort cost, which is nothing.
         deferred = list(self._deferred_closes)
         if deferred:
             await asyncio.gather(*deferred, return_exceptions=True)
