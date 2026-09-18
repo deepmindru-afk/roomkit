@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Gemini Live catalog lists `gemini-3.8-live` and
+  `gemini-3.8-live-extended-thinking`, which replaced
+  `gemini-3.1-flash-live-preview` on 2026-09-15. The replaced preview stays
+  listed and is flagged deprecated, so a deployment still naming it reads a
+  catalog that knows the id.
+
+### Changed
+
+- `google-genai` floor raised to 2.24.0 on the `gemini` and `realtime-gemini`
+  extras, which previously disagreed (2.18.0 and 2.0.0) although the realtime
+  path has the more recent needs. `InteractionStatus.IDLE`, which reports the
+  end of a Gemini 3.8 interaction, only exists from 2.19.0.
+
 ### Fixed
 
 - GPT-Live disconnection no longer waits for the peer's TCP close once

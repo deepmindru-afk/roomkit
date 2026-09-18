@@ -1822,7 +1822,7 @@ wheels = [
 
 [[package]]
 name = "google-genai"
-version = "2.18.0"
+version = "2.24.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -1836,9 +1836,9 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "websockets" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/5f/2f/f8839312750ca9633606f187943eb9f73e6c44729d8fb67783c039f1680b/google_genai-2.18.0.tar.gz", hash = "sha256:836635534711dc358d1ae4a4b3731469042a07738befaa868ff444538a50944e", size = 659760, upload-time = "2026-08-13T00:12:52.975Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/35/26/176d04f442e82d60cadc74cfaf81f01017062ce274a790455a57aec48c8f/google_genai-2.24.0.tar.gz", hash = "sha256:814b63d05dca4776c5a322699eb30c565040cf8d5fd77c38714076535fb2e019", size = 705409, upload-time = "2026-09-16T22:38:37.367Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/99/63/84160760f74e6c74bab322afc26d064240f42b45a4150f184f7f2605d535/google_genai-2.18.0-py3-none-any.whl", hash = "sha256:4c5e60ccaed3ed35ac2ee81e87c5bebf7280cd49b81526d872a526e97ce25f46", size = 1052016, upload-time = "2026-08-13T00:12:51.03Z" },
+    { url = "https://files.pythonhosted.org/packages/84/5b/87913fe392ba7b6402577259289ed3740c577956554a674b191a2971d33e/google_genai-2.24.0-py3-none-any.whl", hash = "sha256:59e5f2d88bc2d6ed04aa1aa14cb5629090cfe9458401745e620b24d1fe9893d7", size = 1142675, upload-time = "2026-09-16T22:38:35.332Z" },
 ]
 
 [[package]]
@@ -5632,12 +5632,11 @@ requires-dist = [
     { name = "elevenlabs", marker = "extra == 'all'", specifier = ">=2.40" },
     { name = "elevenlabs", marker = "extra == 'elevenlabs'", specifier = ">=2.40" },
     { name = "elevenlabs", marker = "extra == 'realtime-elevenlabs'", specifier = ">=2.40" },
-    { name = "google-genai", marker = "extra == 'all'", specifier = ">=2.0.0" },
-    { name = "google-genai", marker = "extra == 'all'", specifier = ">=2.18.0" },
-    { name = "google-genai", marker = "extra == 'dev'", specifier = ">=2.18.0" },
-    { name = "google-genai", marker = "extra == 'gemini'", specifier = ">=2.18.0" },
-    { name = "google-genai", marker = "extra == 'providers'", specifier = ">=2.18.0" },
-    { name = "google-genai", marker = "extra == 'realtime-gemini'", specifier = ">=2.0.0" },
+    { name = "google-genai", marker = "extra == 'all'", specifier = ">=2.24.0" },
+    { name = "google-genai", marker = "extra == 'dev'", specifier = ">=2.24.0" },
+    { name = "google-genai", marker = "extra == 'gemini'", specifier = ">=2.24.0" },
+    { name = "google-genai", marker = "extra == 'providers'", specifier = ">=2.24.0" },
+    { name = "google-genai", marker = "extra == 'realtime-gemini'", specifier = ">=2.24.0" },
     { name = "gradium", marker = "extra == 'all'", specifier = ">=0.5.7" },
     { name = "gradium", marker = "extra == 'dev'", specifier = ">=0.5.7" },
     { name = "gradium", marker = "extra == 'gradium'", specifier = ">=0.5.7" },

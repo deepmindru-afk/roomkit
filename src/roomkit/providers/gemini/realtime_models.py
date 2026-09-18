@@ -5,7 +5,7 @@ counterpart to ``gemini/models.py`` kept apart from it for the reason the
 image catalog gives (RFC §25.6): the sets are disjoint. No id here answers a
 generate-content call, and no chat id opens a Live session.
 
-Sourced from Google's Live API docs (ai.google.dev), verified 2026-08-07. No
+Sourced from Google's Live API docs (ai.google.dev), verified 2026-09-17. No
 public aggregator mirrors the Live lineup, so ``scripts/check_models.py``
 names this catalog in ``UNMIRRORED_CATALOGS`` rather than comparing it
 against a slice that cannot contain it.
@@ -27,9 +27,20 @@ from roomkit.providers.ai.base import ModelInfo
 
 MODELS: list[ModelInfo] = [
     ModelInfo(
+        id="gemini-3.8-live",
+        display_name="Gemini 3.8 Live",
+        supports_vision=True,
+    ),
+    ModelInfo(
+        id="gemini-3.8-live-extended-thinking",
+        display_name="Gemini 3.8 Live Extended Thinking",
+        supports_vision=True,
+    ),
+    ModelInfo(
         id="gemini-3.1-flash-live-preview",
         display_name="Gemini 3.1 Flash Live (preview)",
         supports_vision=True,
+        deprecated=True,
     ),
     ModelInfo(
         id="gemini-2.5-flash-native-audio-preview-12-2025",

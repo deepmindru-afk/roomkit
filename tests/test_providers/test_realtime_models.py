@@ -100,6 +100,20 @@ def test_retired_preview_lineup_is_flagged_deprecated() -> None:
     assert deprecated == {"gpt-4o-realtime-preview", "gpt-4o-mini-realtime-preview"}
 
 
+def test_gemini_live_catalog_carries_the_3_8_lineup() -> None:
+    """3.8 Live replaced 3.1 Flash Live on 2026-09-15.
+
+    The replaced preview stays listed rather than being dropped: a deployment
+    still naming it must read a catalog that knows the id, and ``deprecated``
+    is how the catalog says "replaced" without breaking that lookup.
+    """
+    by_id = {m.id: m for m in GeminiLiveProvider.available_models()}
+    assert "gemini-3.8-live" in by_id
+    assert "gemini-3.8-live-extended-thinking" in by_id
+    assert by_id["gemini-3.1-flash-live-preview"].deprecated is True
+    assert by_id["gemini-3.8-live"].deprecated is False
+
+
 # --- release-gate coverage -----------------------------------------------------
 
 
