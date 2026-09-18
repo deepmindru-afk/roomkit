@@ -170,6 +170,18 @@ class _GeminiSessionState:
     # does. Recorded from what the stream actually carries rather than from
     # the model id, so a preview this build never heard of is handled right.
     reports_interaction_status: bool = False
+    # Setup fields already reported as dropped or downgraded for this
+    # session. One line per session is what an operator can act on; kept on
+    # the provider, it went out for the first call of the process and never
+    # again.
+    warned_unsupported: set[str] = field(default_factory=set)
+    # Ids the server cancelled (``tool_call_cancellation``) or that a
+    # reconnect orphaned. A result submitted for one is dropped rather than
+    # sent for an id the socket no longer knows.
+    cancelled_call_ids: set[str] = field(default_factory=set)
+    # The interruption already ended this response: the turn_complete (and
+    # IDLE) that closes the interrupted request must not end it again.
+    response_ended_by_interrupt: bool = False
     # Effective config values, kept in sync across connect + reconfigure
     # so partial reconfigures (e.g. system_prompt-only) preserve the
     # other fields. Without these, ``_build_config`` (which treats
@@ -256,11 +268,6 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
         )
         self._model = model
 
-        # Setup fields dropped for this model, already reported once each.
-        # Reconnects rebuild the config, and a GoAway storm would otherwise
-        # repeat the same warning for the whole session.
-        self._warned_unsupported: set[str] = set()
-
         # Consolidated per-session state: session_id -> _GeminiSessionState
         self._sessions: dict[str, _GeminiSessionState] = {}
 
@@ -307,34 +314,34 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
             return None
         return state
 
-    def _warn_unsupported(self, field: str) -> None:
-        """Report a setup field the target model does not take, once.
+    def _warn_unsupported(self, field: str, warned: set[str]) -> None:
+        """Report a setup field the target model does not take, once per session.
 
         Dropping it silently would leave a deployment believing a setting is
         in force when it is not; raising would break a config that was valid
-        against the model it was written for.
+        against the model it was written for. ``warned`` is the session's own
+        record: a provider-wide one reported the first call of the process
+        and stayed silent for every session after it.
         """
-        key = f"{self._model}:{field}"
-        if key in self._warned_unsupported:
+        if field in warned:
             return
-        self._warned_unsupported.add(key)
+        warned.add(field)
         logger.warning(
             "[Gemini] %s is not supported by %s - ignored for this session",
             field,
             self._model,
         )
 
-    def _warn_downgraded(self, field: str, replacement: str) -> None:
+    def _warn_downgraded(self, field: str, replacement: str, warned: set[str]) -> None:
         """Report a setup value replaced rather than dropped, once.
 
         Separate from :meth:`_warn_unsupported` because "ignored" would be
         false here, and the one log line an operator reads should say what
         actually went out.
         """
-        key = f"{self._model}:{field}"
-        if key in self._warned_unsupported:
+        if field in warned:
             return
-        self._warned_unsupported.add(key)
+        warned.add(field)
         logger.warning(
             "[Gemini] %s is not supported by %s - sent as %s",
             field,
@@ -342,7 +349,9 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
             replacement,
         )
 
-    def _tool_behavior(self, profile: LiveModelProfile, requested: str | None) -> str:
+    def _tool_behavior(
+        self, profile: LiveModelProfile, requested: str | None, warned: set[str]
+    ) -> str:
         """Pick the execution mode a declaration is sent with.
 
         Left to the server the answer would differ by generation, which is
@@ -361,12 +370,14 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
             )
         if behavior == "BLOCKING" and not profile.blocking_tools:
             self._warn_downgraded(
-                "BLOCKING tool behavior", "NON_BLOCKING, which the model does accept"
+                "BLOCKING tool behavior", "NON_BLOCKING, which the model does accept", warned
             )
             return "NON_BLOCKING"
         return behavior
 
-    def _blocking_tool_names(self, tools: list[dict[str, Any]] | None) -> set[str]:
+    def _blocking_tool_names(
+        self, tools: list[dict[str, Any]] | None, warned: set[str] | None = None
+    ) -> set[str]:
         """Names whose calls the API waits on, so an injection must queue.
 
         Resolved through the same :meth:`_tool_behavior` the declarations go
@@ -374,11 +385,13 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
         which mode a tool is in.
         """
         profile = live_model_profile(self._model)
+        if warned is None:
+            warned = set()
         return {
             name
             for tool in tools or []
             if (name := tool.get("name", ""))
-            and self._tool_behavior(profile, tool.get("behavior")) == "BLOCKING"
+            and self._tool_behavior(profile, tool.get("behavior"), warned) == "BLOCKING"
         }
 
     def _transcription_config(self, types: Any, options: dict[str, Any] | None) -> Any:
@@ -430,14 +443,20 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
         temperature: float | None = None,
         provider_config: dict[str, Any] | None = None,
         server_vad: bool = True,
+        warned: set[str] | None = None,
     ) -> Any:
         """Build a LiveConnectConfig from parameters.
 
-        Shared by :meth:`connect` and :meth:`reconfigure`.
+        Shared by :meth:`connect` and :meth:`reconfigure`. ``warned`` is the
+        session's record of the fields already reported as dropped, so a
+        reconfigure does not repeat what the connect said; a config built on
+        its own reports everything.
         """
         from google.genai import types
 
         pc = provider_config or {}
+        if warned is None:
+            warned = set()
         profile = live_model_profile(self._model)
 
         # Response modalities: ["AUDIO"], ["TEXT"], or ["AUDIO", "TEXT"]
@@ -496,7 +515,7 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
             if profile.affective_dialog:
                 config["enable_affective_dialog"] = bool(enable_affective_dialog)
             else:
-                self._warn_unsupported("enable_affective_dialog")
+                self._warn_unsupported("enable_affective_dialog", warned)
 
         # --- Thinking ---
         # 3.1 took a token budget, extended-thinking takes a discrete level,
@@ -509,7 +528,7 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
             if profile.thinking_budget:
                 thinking_kwargs["thinking_budget"] = int(thinking_budget)
             else:
-                self._warn_unsupported("thinking_budget")
+                self._warn_unsupported("thinking_budget", warned)
 
         thinking_level = pc.get("thinking_level")
         if thinking_level is not None:
@@ -522,7 +541,7 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
                     )
                 thinking_kwargs["thinking_level"] = level
             else:
-                self._warn_unsupported("thinking_level")
+                self._warn_unsupported("thinking_level", warned)
 
         # Required, not merely accepted: the model refuses the session outright
         # when the level is missing, so a caller who named none still gets one.
@@ -541,7 +560,7 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
                     proactive_audio=bool(proactive_audio),
                 )
             else:
-                self._warn_unsupported("proactive_audio")
+                self._warn_unsupported("proactive_audio", warned)
 
         # --- VAD / realtime input config ---
         vad_kwargs: dict[str, Any] = {}
@@ -605,7 +624,9 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
                                 name=tool.get("name", ""),
                                 description=tool.get("description", ""),
                                 parameters=cast(Any, clean_gemini_schema(tool.get("parameters"))),
-                                behavior=self._tool_behavior(profile, tool.get("behavior")),
+                                behavior=self._tool_behavior(
+                                    profile, tool.get("behavior"), warned
+                                ),
                             )
                         ]
                     )
@@ -764,6 +785,7 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
         server_vad: bool = True,
         provider_config: dict[str, Any] | None = None,
     ) -> None:
+        warned: set[str] = set()
         live_config = self._build_config(
             system_prompt=system_prompt,
             voice=voice,
@@ -771,6 +793,7 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
             temperature=temperature,
             provider_config=provider_config,
             server_vad=server_vad,
+            warned=warned,
         )
 
         ctxmgr = self._client.aio.live.connect(
@@ -792,7 +815,8 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
             temperature=temperature,
             server_vad=server_vad,
             provider_config=deepcopy(provider_config or {}),
-            blocking_tool_names=self._blocking_tool_names(tools),
+            blocking_tool_names=self._blocking_tool_names(tools, warned),
+            warned_unsupported=warned,
         )
         self._sessions[session.id] = state
 
@@ -1062,6 +1086,19 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
             preview=(result[:800] + ("…" if len(result) > 800 else "")),
         )
 
+        if call_id in state.cancelled_call_ids:
+            # The server discarded this call (tool_call_cancellation) or the
+            # connection it belonged to is gone: it will not read the result,
+            # and a FunctionResponse for an id it does not know is an error
+            # the application never asked for.
+            state.cancelled_call_ids.discard(call_id)
+            logger.info(
+                "[Gemini] dropping the result of cancelled tool call %s (session %s)",
+                call_id,
+                session.id,
+            )
+            return
+
         if len(result) > 16384:
             logger.warning(
                 "Large tool result (%d chars) for call %s may cause Gemini to "
@@ -1101,7 +1138,7 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
                     types.FunctionResponseScheduling, scheduling, "tool_response_scheduling"
                 )
             else:
-                self._warn_unsupported("tool_response_scheduling")
+                self._warn_unsupported("tool_response_scheduling", state.warned_unsupported)
 
         await state.live_session.send_tool_response(
             function_responses=[types.FunctionResponse(**response_kwargs)],
@@ -1111,27 +1148,35 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
         state.pending_tool_calls = max(0, state.pending_tool_calls - 1)
         state.blocking_call_ids.discard(call_id)
         if not state.blocking_call_ids:
-            if state.queued_text_injections:
-                text_injections = state.queued_text_injections[:]
-                state.queued_text_injections.clear()
-                for text, role, silent in text_injections:
-                    logger.debug(
-                        "Flushing queued text injection for session %s (len=%d)",
-                        session.id,
-                        len(text),
-                    )
-                    await self._send_text(state, text, role, silent)
-            if state.queued_injections:
-                injections = state.queued_injections[:]
-                state.queued_injections.clear()
-                for image_data, mime_type, prompt, silent in injections:
-                    logger.debug(
-                        "Flushing queued image injection for session %s (mime=%s, size=%d)",
-                        session.id,
-                        mime_type,
-                        len(image_data),
-                    )
-                    await self._send_image(state, image_data, mime_type, prompt, silent)
+            await self._flush_queued_injections(state)
+
+    async def _flush_queued_injections(self, state: _GeminiSessionState) -> None:
+        """Send what the blocking calls held back, text first, then images.
+
+        Called once nothing blocks any more: a result came back, the server
+        cancelled the call, or the connection that owned it is gone.
+        """
+        if state.queued_text_injections:
+            text_injections = state.queued_text_injections[:]
+            state.queued_text_injections.clear()
+            for text, role, silent in text_injections:
+                logger.debug(
+                    "Flushing queued text injection for session %s (len=%d)",
+                    state.session.id,
+                    len(text),
+                )
+                await self._send_text(state, text, role, silent)
+        if state.queued_injections:
+            injections = state.queued_injections[:]
+            state.queued_injections.clear()
+            for image_data, mime_type, prompt, silent in injections:
+                logger.debug(
+                    "Flushing queued image injection for session %s (mime=%s, size=%d)",
+                    state.session.id,
+                    mime_type,
+                    len(image_data),
+                )
+                await self._send_image(state, image_data, mime_type, prompt, silent)
 
     async def interrupt(self, session: VoiceSession) -> None:
         # Gemini doesn't have a direct cancel; send empty to reset
@@ -1277,6 +1322,7 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
             temperature=effective_temperature,
             provider_config=effective_provider_config,
             server_vad=state.server_vad,
+            warned=state.warned_unsupported,
         )
 
         # Remember effective values so the next partial reconfigure
@@ -1289,7 +1335,9 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
         # outstanding from the old set keep their ids in blocking_call_ids
         # until their results come back, so the guard stays honest across
         # the change.
-        state.blocking_tool_names = self._blocking_tool_names(effective_tools)
+        state.blocking_tool_names = self._blocking_tool_names(
+            effective_tools, state.warned_unsupported
+        )
         state.live_config = new_config
         state.provider_config = effective_provider_config
         logger.info(
@@ -1586,12 +1634,43 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
         state.ctxmgr = ctxmgr
         state.live_session = live_session
         state.response_started = False
+        state.response_ended_by_interrupt = False
         session.state = VoiceSessionState.ACTIVE
 
         # Re-enable error callbacks for the next reconnection cycle
         state.error_suppressed = False
 
+        await self._release_calls_lost_with_the_connection(state)
+
         logger.info("Gemini Live session %s reconnected", session.id)
+
+    async def _release_calls_lost_with_the_connection(self, state: _GeminiSessionState) -> None:
+        """Forget the tool calls the old socket was waiting on.
+
+        Call ids are connection-scoped: the new socket never issued them and
+        will not read their results. A blocking one left in the books held
+        every injection queued behind it until the application's handler
+        finished work the model had already lost, and its result then went
+        out for an id the server did not know.
+        """
+        if state.blocking_call_ids:
+            logger.info(
+                "[Gemini] %d blocking tool call(s) did not survive the reconnect (session %s)",
+                len(state.blocking_call_ids),
+                state.session.id,
+            )
+            state.cancelled_call_ids.update(state.blocking_call_ids)
+            state.blocking_call_ids.clear()
+        state.pending_tool_calls = 0
+        try:
+            await self._flush_queued_injections(state)
+        except Exception:
+            # The reconnect stands; what could not be delivered is logged.
+            logger.warning(
+                "Failed to flush queued injections after reconnecting session %s",
+                state.session.id,
+                exc_info=True,
+            )
 
     # Ordered dispatch table for server response handling.  Each entry is
     # (response_attribute, handler_method).  Order matters: go_away is
@@ -1602,6 +1681,7 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
         ("server_content", "_on_server_content"),
         ("data", "_on_audio_data"),
         ("tool_call", "_on_tool_call"),
+        ("tool_call_cancellation", "_on_tool_call_cancellation"),
         ("usage_metadata", "_on_usage_metadata"),
         ("go_away", "_on_go_away"),
     ]
@@ -1732,6 +1812,7 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
         # Model started generating
         if model_turn and not state.response_started:
             state.response_started = True
+            state.response_ended_by_interrupt = False
             state.audio_chunk_count = 0
             logger.info("[Gemini] response_start (session %s)", session.id)
             self._log_event(session.id, "response_start", turn=state.turn_count)
@@ -1751,6 +1832,7 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
                 await self._fire(self._speech_start_callbacks, session, label="speech_start")
             if state.response_started:
                 state.response_started = False
+                state.response_ended_by_interrupt = True
                 await self._fire(self._response_end_callbacks, session, label="response_end")
             state.assistant_response_observed = False
 
@@ -1802,7 +1884,14 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
             state.user_speech_active = False
             state.awaiting_new_user_utterance = True
             state.assistant_response_observed = False
-            await self._fire(self._response_end_callbacks, session, label="response_end")
+            if state.response_ended_by_interrupt:
+                # The barge-in above already ended this response. The server
+                # still closes the interrupted request with turn_complete (and
+                # IDLE from 3.8), and ending it again ran the channel's flush
+                # and end-of-response signalling twice per interruption.
+                state.response_ended_by_interrupt = False
+            else:
+                await self._fire(self._response_end_callbacks, session, label="response_end")
 
     async def _on_audio_data(
         self, session: VoiceSession, state: _GeminiSessionState, data: bytes
@@ -1874,6 +1963,31 @@ class GeminiLiveProvider(RealtimeVoiceProvider):
                 total_tokens=total_tokens,
             )
         self._record_usage(session, prompt_tokens, response_tokens)
+
+    async def _on_tool_call_cancellation(
+        self, session: VoiceSession, state: _GeminiSessionState, cancellation: Any
+    ) -> None:
+        """Release the calls the server discarded.
+
+        Sent when the user interrupts while calls are outstanding: the server
+        will not read their results, and a blocking one no longer holds the
+        input channel. Left in the books, the id kept every injection queued
+        until the application's handler finished work the model had already
+        abandoned, and if the stale FunctionResponse then failed to send,
+        nothing else ever cleared it. The handler itself is not interrupted:
+        its result is dropped when it arrives.
+        """
+        ids = [call_id for call_id in (getattr(cancellation, "ids", None) or []) if call_id]
+        if not ids:
+            return
+        logger.info("[Gemini] server cancelled tool call(s) %s (session %s)", ids, session.id)
+        self._log_event(session.id, "tool_call_cancellation", ids=ids)
+        for call_id in ids:
+            state.pending_tool_calls = max(0, state.pending_tool_calls - 1)
+            state.blocking_call_ids.discard(call_id)
+            state.cancelled_call_ids.add(call_id)
+        if not state.blocking_call_ids:
+            await self._flush_queued_injections(state)
 
     async def _on_go_away(
         self, session: VoiceSession, state: _GeminiSessionState, go_away: Any

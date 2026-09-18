@@ -455,3 +455,71 @@ class TestSpokenCallParsing:
 
         timeline = await kit.get_timeline(room_id)
         assert [e for e in timeline if isinstance(e.content, TextContent)] == []
+
+
+class TestARefusedRecoveredCallIsObserved:
+    """A refusal on this path reaches the async observers of ON_TOOL_CALL.
+
+    The function-calling path already reported its refusals; a call the model
+    *spoke* and was then refused stayed invisible to an audit hook, which is
+    the blind spot ``is_error`` exists to close. A hook that could serve the
+    call must still not see it.
+    """
+
+    @staticmethod
+    def _observe(kit: RoomKit) -> tuple[list[ToolCallEvent], list[str]]:
+        observed: list[ToolCallEvent] = []
+        served: list[str] = []
+
+        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+        async def audit(event: ToolCallEvent, ctx: RoomContext) -> None:
+            observed.append(event)
+
+        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="serve")
+        async def serve(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
+            served.append(event.name)
+            return HookResult.allow()
+
+        return observed, served
+
+    async def test_a_handler_refusal_is_observed_with_is_error(
+        self, provider: MockRealtimeProvider
+    ) -> None:
+        async def declines(name: str, args: dict[str, Any]) -> str:
+            raise ToolRefusedError(f"Error: Tool '{name}' is temporarily unavailable.")
+
+        kit, _channel, session = await _session(provider, "rt-rec-observed", handler=declines)
+        observed, served = self._observe(kit)
+
+        await provider.simulate_transcription(session, "call:lookup{city:Paris}", "assistant")
+        await asyncio.sleep(0.1)
+
+        assert [(e.name, e.is_error, e.result) for e in observed] == [
+            ("lookup", True, "Error: Tool 'lookup' is temporarily unavailable.")
+        ]
+        assert served == []
+
+    async def test_a_pre_execution_denial_is_observed_with_is_error(
+        self, provider: MockRealtimeProvider
+    ) -> None:
+        called: list[dict[str, Any]] = []
+
+        async def handler(name: str, args: dict[str, Any]) -> str:
+            called.append(args)
+            return "sunny"
+
+        kit, _channel, session = await _session(provider, "rt-rec-observed-deny", handler=handler)
+        observed, served = self._observe(kit)
+
+        @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="deny")
+        async def deny(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
+            return HookResult.block("lookup is off limits")
+
+        await provider.simulate_transcription(session, "call:lookup{city:Paris}", "assistant")
+        await asyncio.sleep(0.1)
+
+        assert called == []
+        assert len(observed) == 1
+        assert observed[0].is_error is True
+        assert "lookup is off limits" in observed[0].result
+        assert served == []

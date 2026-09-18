@@ -46,7 +46,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from shared import run_until_stopped, setup_logging
+from shared import require_env, run_until_stopped, setup_logging
 
 from roomkit import RealtimeVoiceChannel, RoomKit
 from roomkit.providers.gemini.realtime import GeminiLiveProvider
@@ -153,11 +153,7 @@ class SpeechTrigger:
 
 
 async def main() -> None:
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        print("Set GEMINI_API_KEY to run this example.")
-        print("  GEMINI_API_KEY=... uv run python examples/shared_mic_capture.py")
-        return
+    api_key = require_env("GEMINI_API_KEY")["GEMINI_API_KEY"]
 
     # --- The microphone, owned by nobody in particular ---------------------
     mic = LocalMicSource(

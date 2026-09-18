@@ -324,16 +324,31 @@ class TestGeminiLiveProvider:
             assert field in caplog.text
 
     def test_build_config_warns_once_per_field(self, caplog):
-        """Reconnects rebuild the config; the warning must not follow them."""
+        """Reconfigures rebuild the config; within a session the warning must not follow."""
+        mod = _load_provider()
+        provider = mod.GeminiLiveProvider(api_key="test-key", model="gemini-3.8-live")
+
+        pc = {"enable_affective_dialog": True}
+        warned: set[str] = set()
+        with caplog.at_level("WARNING"):
+            provider._build_config(provider_config=pc, warned=warned)
+            provider._build_config(provider_config=pc, warned=warned)
+
+        assert caplog.text.count("enable_affective_dialog") == 1
+
+    def test_every_session_hears_the_dropped_field_once(self, caplog):
+        """The record is the session's. Kept on the provider, only the first
+        call of the process was told and every later one lost the setting
+        in silence."""
         mod = _load_provider()
         provider = mod.GeminiLiveProvider(api_key="test-key", model="gemini-3.8-live")
 
         pc = {"enable_affective_dialog": True}
         with caplog.at_level("WARNING"):
-            provider._build_config(provider_config=pc)
-            provider._build_config(provider_config=pc)
+            provider._build_config(provider_config=pc, warned=set())
+            provider._build_config(provider_config=pc, warned=set())
 
-        assert caplog.text.count("enable_affective_dialog") == 1
+        assert caplog.text.count("enable_affective_dialog") == 2
 
     def test_build_config_keeps_the_pre_3_8_fields_on_older_models(self):
         """2.0 Flash Live still takes all three: no retroactive narrowing."""
@@ -2226,3 +2241,158 @@ class TestGeminiLiveProvider:
         p1._make_audio_blob(b"\x00", 16000)
         assert 16000 in p1._mime_cache
         assert 16000 not in p2._mime_cache
+
+
+def _blocking_call_state(model: str = "gemini-3.8-live"):
+    """A session with one blocking call outstanding and a text injection queued behind it."""
+    mod = _load_provider()
+    provider = mod.GeminiLiveProvider(api_key="test-key", model=model)
+    session = _make_session()
+    live = _make_mock_live_session()
+    state = mod._GeminiSessionState(
+        session=session,
+        live_session=live,
+        pending_tool_calls=1,
+        blocking_call_ids={"call-1"},
+        queued_text_injections=[("Queued text", "user", False)],
+    )
+    provider._sessions[session.id] = state
+    return provider, session, state, live
+
+
+class TestAnInterruptedResponseEndsOnce:
+    """The barge-in ends the response; the message that closes the request must not."""
+
+    @staticmethod
+    def _sc(**fields):
+        return TestGeminiLiveProvider._content(**fields)
+
+    @staticmethod
+    def _open_response(model: str):
+        mod = _load_provider()
+        provider = mod.GeminiLiveProvider(api_key="test-key", model=model)
+        session = _make_session()
+        provider._sessions[session.id] = mod._GeminiSessionState(
+            session=session, response_started=True
+        )
+        ends: list[str] = []
+        provider.on_response_end(lambda s: ends.append(s.id))
+        return provider, session, ends
+
+    async def test_the_idle_that_closes_an_interrupted_request_does_not_end_it_again(self):
+        provider, session, ends = self._open_response("gemini-3.8-live")
+
+        await provider._handle_server_response(session, self._sc(interaction_status="IN_PROGRESS"))
+        await provider._handle_server_response(session, self._sc(interrupted=True))
+        await provider._handle_server_response(
+            session, self._sc(turn_complete=True, interaction_status="IDLE")
+        )
+
+        assert ends == [session.id]
+
+    async def test_the_turn_complete_after_a_pre_3_8_interruption_does_not_either(self):
+        provider, session, ends = self._open_response("gemini-2.0-flash-live-001")
+
+        await provider._handle_server_response(session, self._sc(interrupted=True))
+        await provider._handle_server_response(session, self._sc(turn_complete=True))
+
+        assert ends == [session.id]
+
+    async def test_a_response_that_starts_after_the_interruption_ends_normally(self):
+        provider, session, ends = self._open_response("gemini-3.8-live")
+
+        await provider._handle_server_response(session, self._sc(interrupted=True))
+        await provider._handle_server_response(
+            session, self._sc(turn_complete=True, interaction_status="IDLE")
+        )
+        await provider._handle_server_response(
+            session,
+            self._sc(model_turn=SimpleNamespace(parts=[]), interaction_status="IN_PROGRESS"),
+        )
+        await provider._handle_server_response(
+            session, self._sc(turn_complete=True, interaction_status="IDLE")
+        )
+
+        assert ends == [session.id, session.id]
+
+    async def test_an_interruption_with_no_response_open_leaves_the_closing_end_in_place(self):
+        """Nothing ended at the interruption, so the closing message still hands back."""
+        mod = _load_provider()
+        provider = mod.GeminiLiveProvider(api_key="test-key", model="gemini-3.8-live")
+        session = _make_session()
+        provider._sessions[session.id] = mod._GeminiSessionState(session=session)
+        ends: list[str] = []
+        provider.on_response_end(lambda s: ends.append(s.id))
+
+        await provider._handle_server_response(session, self._sc(interrupted=True))
+        await provider._handle_server_response(
+            session, self._sc(turn_complete=True, interaction_status="IDLE")
+        )
+
+        assert ends == [session.id]
+
+
+class TestServerCancelledToolCalls:
+    """``tool_call_cancellation``: the server discarded the call, so must the books."""
+
+    @staticmethod
+    def _cancellation(*ids: str):
+        return SimpleNamespace(tool_call_cancellation=SimpleNamespace(ids=list(ids)))
+
+    async def test_a_cancellation_releases_the_call_and_sends_what_it_held(self):
+        provider, session, state, live = _blocking_call_state()
+
+        await provider._handle_server_response(session, self._cancellation("call-1"))
+
+        assert state.blocking_call_ids == set()
+        assert state.pending_tool_calls == 0
+        assert state.queued_text_injections == []
+        live.send_client_content.assert_awaited()
+
+    async def test_a_result_for_a_cancelled_call_is_dropped_not_sent(self):
+        provider, session, state, live = _blocking_call_state()
+        await provider._handle_server_response(session, self._cancellation("call-1"))
+
+        await provider.submit_tool_result(session, "call-1", '{"ok": true}')
+
+        live.send_tool_response.assert_not_awaited()
+        assert state.cancelled_call_ids == set()
+
+    async def test_an_empty_cancellation_changes_nothing(self):
+        provider, session, state, _live = _blocking_call_state()
+
+        await provider._handle_server_response(session, self._cancellation())
+
+        assert state.blocking_call_ids == {"call-1"}
+        assert state.queued_text_injections == [("Queued text", "user", False)]
+
+
+class TestReconnectForgetsTheOldSocketsCalls:
+    """Call ids are connection-scoped: nothing on the new socket will answer them."""
+
+    async def test_blocking_calls_are_released_and_their_injections_sent(self):
+        provider, _session, state, live = _blocking_call_state()
+
+        await provider._release_calls_lost_with_the_connection(state)
+
+        assert state.blocking_call_ids == set()
+        assert state.pending_tool_calls == 0
+        assert state.cancelled_call_ids == {"call-1"}
+        assert state.queued_text_injections == []
+        live.send_client_content.assert_awaited()
+
+    async def test_a_late_result_for_an_orphaned_call_is_dropped(self):
+        provider, session, state, live = _blocking_call_state()
+        await provider._release_calls_lost_with_the_connection(state)
+
+        await provider.submit_tool_result(session, "call-1", "{}")
+
+        live.send_tool_response.assert_not_awaited()
+
+    async def test_a_flush_that_fails_does_not_undo_the_reconnect(self):
+        provider, _session, state, live = _blocking_call_state()
+        live.send_client_content.side_effect = RuntimeError("socket gone")
+
+        await provider._release_calls_lost_with_the_connection(state)
+
+        assert state.blocking_call_ids == set()

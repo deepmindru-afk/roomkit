@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Callable
@@ -217,8 +218,6 @@ class MCPToolProvider:
         envelope its callers have always received, while the tool handler
         raises, because a tool loop cannot recognise a refusal in a body.
         """
-        import asyncio
-
         self._ensure_connected()
         result = await asyncio.wait_for(self._session.call_tool(name, arguments), timeout=timeout)
 

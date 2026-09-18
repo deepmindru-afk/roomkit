@@ -113,6 +113,7 @@ class RealtimeToolRecoveryMixin:
     _track_task: Any  # cross-mixin
     _authorize_realtime_tool: Any  # cross-mixin (RealtimeToolsMixin)
     _fire_tool_hook: Any  # cross-mixin (RealtimeToolsMixin)
+    _fire_tool_refusal: Any  # cross-mixin (RealtimeToolsMixin)
     _truncate_tool_result: Any  # cross-mixin (RealtimeToolsMixin)
 
     # ------------------------------------------------------------------
@@ -290,6 +291,11 @@ class RealtimeToolRecoveryMixin:
                     call_id,
                     session.id,
                 )
+                # Observed like a denial on the function-calling path: an audit
+                # hook sees the refusal, and nothing that could serve it does.
+                await self._fire_tool_refusal(
+                    session, call_id, tool_name, arguments, denial, room_id
+                )
                 return
 
             # Run tool_handler.
@@ -318,6 +324,9 @@ class RealtimeToolRecoveryMixin:
                         tool_name,
                         call_id,
                         session.id,
+                    )
+                    await self._fire_tool_refusal(
+                        session, call_id, tool_name, arguments, refused, room_id
                     )
                     return
                 handler_result = result_text(raw)

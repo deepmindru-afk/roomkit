@@ -337,9 +337,9 @@ def _patch_local_backend() -> None:
         orig_aec_feed = LocalAudioBackend._aec_feed_played
 
         @functools.wraps(orig_aec_feed)
-        def traced_aec_feed(self, data):
+        def traced_aec_feed(self, played, stream):
             _counts["backend_aec_ref"] += 1
-            return orig_aec_feed(self, data)
+            return orig_aec_feed(self, played, stream)
 
         LocalAudioBackend._aec_feed_played = traced_aec_feed
 

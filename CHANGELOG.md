@@ -150,6 +150,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `{"error": ...}` envelope every refusal returns and the `{"success": false}`
   convention hosts commonly use: the built-in auditors recorded `ok` for every
   denied tool.
+- A barge-in no longer ends the response twice on Gemini Live. The
+  interruption ends it at once, which is right: the user took the floor. The
+  server then still closes the interrupted request with `turn_complete`, and
+  IDLE from 3.8, and that closing fired `response_end` a second time for the
+  same response, so the channel flushed and signalled the end of a response
+  that had already ended. The provider now remembers that the interruption
+  ended it and lets the closing message pass; a response that starts after
+  the interruption ends normally.
+- Gemini Live handles `tool_call_cancellation`, and a reconnect forgets the
+  blocking calls the old socket was waiting on. Both left a call id in the
+  books that nothing would ever answer: the server had discarded it, or the
+  new connection had never issued it. A blocking id there held every
+  `inject_text` and `inject_image` queued behind it until the application's
+  handler finished work the model had abandoned, and the result then went
+  out for an id the server did not know. Cancelled and orphaned ids are
+  released, what they held back is sent, and a result submitted later for
+  one of them is dropped with a log line instead of sent. The application's
+  handler itself is not interrupted; there is no callback for that yet.
+- The "not supported by this model" warning for a dropped setup field is
+  reported once per session, not once per provider. The record lived on the
+  provider, which every call of a deployment shares, so only the first
+  session of the process heard that its `enable_affective_dialog` or
+  `thinking_budget` was being dropped and every later one lost the setting
+  in silence, which is what the warning exists to prevent.
 - GPT-Live disconnection no longer waits for the peer's TCP close once
   `session.closed` has landed. That event carries the billed seconds and the
   turns are already settled, so what `ws.close()` still waits for is a

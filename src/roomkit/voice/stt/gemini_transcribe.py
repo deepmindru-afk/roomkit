@@ -55,7 +55,9 @@ formats; Google documents it as incompatible with timestamps and diarization,
 neither of which the Live API offers anyway."""
 
 MAX_SESSION_SECONDS = 600
-"""Google's cap on one Live transcription session."""
+"""Google's cap on one Live transcription session. :meth:`transcribe` refuses a
+recording longer than this up front: the socket would close on it part-way
+through, and a partial transcript reads like a complete one."""
 
 
 @dataclass
@@ -262,6 +264,13 @@ class GeminiTranscribeProvider(STTProvider):
         returns speaker turns and timestamps.
         """
         chunk = self._as_chunk(audio)
+        seconds = len(chunk.data) / (chunk.sample_rate * chunk.channels * 2)
+        if seconds > MAX_SESSION_SECONDS:
+            raise ValueError(
+                f"GeminiTranscribeProvider takes at most {MAX_SESSION_SECONDS // 60} minutes "
+                f"of audio per session and this recording is {seconds:.0f} s long. "
+                "GeminiSTTProvider transcribes a finished recording of any length."
+            )
 
         async def one_chunk() -> AsyncIterator[AudioChunk]:
             yield chunk

@@ -5,10 +5,12 @@ from __future__ import annotations
 from typing import Any
 
 from roomkit.channels.ai import AIChannel
+from roomkit.core.exceptions import ToolRefusedError
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import ChannelCategory, ChannelType
 from roomkit.models.room import Room
+from roomkit.models.streaming import ToolCallEndMarker
 from roomkit.models.tool_call import AIResponseEvent
 from roomkit.providers.ai.base import (
     AIResponse,
@@ -715,3 +717,60 @@ class TestStreamingTokenAccumulation:
             "cache_read_input_tokens": 1_800,
             "cache_creation_input_tokens": 1_000,
         }
+
+
+class TestStreamingToolOutcome:
+    """The streaming loop states a call's outcome the way the batch loop does.
+
+    ``ToolCallEndMarker.status`` and ``.error`` are read off ``is_error``, not
+    matched against the result text; nothing asserted it on this loop.
+    """
+
+    @staticmethod
+    async def _end_marker(handler: Any) -> ToolCallEndMarker:
+        provider = MockAIProvider(
+            ai_responses=[
+                AIResponse(
+                    content="",
+                    finish_reason="tool_calls",
+                    tool_calls=[AIToolCall(id="tc1", name="search", arguments={"q": "x"})],
+                ),
+                AIResponse(content="done", finish_reason="stop"),
+            ],
+            streaming=True,
+        )
+        ch = AIChannel("ai1", provider=provider, tool_handler=handler)
+        output = await ch.on_event(
+            make_event(body="search", channel_id="sms1"), _binding(), _ctx()
+        )
+        assert output.response_stream is not None
+        items = [item async for item in output.response_stream]
+        return next(item for item in items if isinstance(item, ToolCallEndMarker))
+
+    async def test_a_refusal_is_a_failed_marker_in_the_handlers_words(self) -> None:
+        async def declines(name: str, args: dict[str, Any]) -> str:
+            raise ToolRefusedError(f"Error: Tool '{name}' is temporarily unavailable.")
+
+        end = await self._end_marker(declines)
+
+        assert end.status == "failed"
+        assert end.error == "Error: Tool 'search' is temporarily unavailable."
+
+    async def test_a_handler_that_raised_is_a_failed_marker(self) -> None:
+        async def boom(name: str, args: dict[str, Any]) -> str:
+            raise RuntimeError("upstream down")
+
+        end = await self._end_marker(boom)
+
+        assert end.status == "failed"
+        assert end.error is not None
+        assert end.error.startswith("Error executing tool 'search'")
+
+    async def test_a_served_call_is_a_completed_marker(self) -> None:
+        async def ok(name: str, args: dict[str, Any]) -> str:
+            return "ok"
+
+        end = await self._end_marker(ok)
+
+        assert end.status == "completed"
+        assert end.error is None

@@ -16,6 +16,7 @@ import pytest
 
 from roomkit.voice.base import AudioChunk
 from roomkit.voice.stt.gemini_transcribe import (
+    MAX_SESSION_SECONDS,
     GeminiTranscribeConfig,
     GeminiTranscribeProvider,
 )
@@ -277,3 +278,14 @@ class TestTranscribe:
 
         with pytest.raises(TypeError, match="GeminiSTTProvider"):
             await provider.transcribe(SimpleNamespace(url="https://example.test/a.wav"))
+
+
+class TestTheSessionCapIsStatedUpFront:
+    async def test_a_recording_longer_than_the_cap_is_refused_before_any_socket(self) -> None:
+        provider = GeminiTranscribeProvider(GeminiTranscribeConfig(api_key="k"))
+        # 601 s of 16-bit mono at a deliberately tiny rate keeps the fixture small.
+        rate = 100
+        chunk = AudioChunk(data=b"\x00" * (rate * 2 * (MAX_SESSION_SECONDS + 1)), sample_rate=rate)
+
+        with pytest.raises(ValueError, match="at most 10 minutes"):
+            await provider.transcribe(chunk)
