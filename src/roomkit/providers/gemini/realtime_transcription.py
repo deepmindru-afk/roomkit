@@ -19,7 +19,7 @@ logger = logging.getLogger("roomkit.providers.gemini.realtime")
 class GeminiLiveTranscriptionMixin(RealtimeVoiceProvider):
     """Transcription chunks in, one final per utterance out.
 
-    Mixed into GeminiLiveProvider. Gemini streams both transcripts in
+    Mixed into ``GeminiLiveProvider``. Gemini streams both transcripts in
     pieces and re-sends a finished utterance after its buffer flushed; this
     is where the pieces are joined per (session, role) and the re-send is
     recognised, so the channel sees each final once.

@@ -25,10 +25,10 @@ logger = logging.getLogger("roomkit.providers.gemini.realtime")
 class GeminiLiveToolsMixin(RealtimeVoiceProvider):
     """Tool calls and the bookkeeping of the ones the model waits on.
 
-    Mixed into GeminiLiveProvider, which owns the sessions and the model
+    Mixed into ``GeminiLiveProvider``, which owns the sessions and the model
     id. From 3.8 a tool runs in the background by default and a call the
     model does wait on (a BLOCKING declaration, or any call on the pre-3.8
-    family) closes the input channel: blocking_call_ids says which, the
+    family) closes the input channel: ``blocking_call_ids`` says which, the
     queued injections wait behind it, and three things release it: the
     result, a server-side cancellation, or the loss of the connection that
     issued the id.

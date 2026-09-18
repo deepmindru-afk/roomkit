@@ -2,7 +2,7 @@
 
 Audio frames, text and image injections, manual activity markers: the side of
 the socket the caller feeds. What comes back is handled by
-:class:.
+:class:`~roomkit.providers.gemini.realtime_handlers.GeminiLiveEventHandlersMixin`.
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ def _sanitize_gemini_text(text: str) -> str:
 class GeminiLiveInputMixin(RealtimeVoiceProvider):
     """Everything that goes to Gemini other than a tool result.
 
-    Mixed into GeminiLiveProvider. Caller audio, the text and image
+    Mixed into ``GeminiLiveProvider``. Caller audio, the text and image
     injections with their sanitising and their queue behind a blocking call,
     the manual activity markers, and the audio blob cache.
     """

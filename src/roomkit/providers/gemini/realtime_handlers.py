@@ -2,9 +2,9 @@
 
 Translates Live API server messages into RoomKit provider callbacks: the
 dispatch table keyed on the message field, one handler per field, and the
-reading of interaction_status that decides when a response is over. The
+reading of ``interaction_status`` that decides when a response is over. The
 tool-call messages are handled by
-:class:.
+:class:`~roomkit.providers.gemini.realtime_tools.GeminiLiveToolsMixin`.
 """
 
 from __future__ import annotations
@@ -49,8 +49,8 @@ def _interaction_is_idle(status: Any) -> bool:
 class GeminiLiveEventHandlersMixin(RealtimeVoiceProvider):
     """Server message to provider callback, one handler per field.
 
-    Mixed into GeminiLiveProvider, which owns the sessions and the
-    receive loop that feeds :meth:. This is where
+    Mixed into ``GeminiLiveProvider``, which owns the sessions and the
+    receive loop that feeds :meth:`_handle_server_response`. This is where
     the end of a turn is told from the end of an interaction (3.8 speaks
     several times per request), where a barge-in ends the response once, and
     where a GoAway becomes a reconnect.
