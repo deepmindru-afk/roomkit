@@ -24,8 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tool call it serves: `current_tool_room_id()`, `current_tool_room()` and
   `current_tool_actor_id()` answer the session's room and participant from a
   `RealtimeVoiceChannel` handler as they do from an `AIChannel` one, so one
-  handler serves both paths (RFC §21.4). `current_tool_call()` and its
-  structured-result channel remain the AI channel's.
+  handler serves both paths (RFC §21.4). The `Room` is the gate's when a
+  `BEFORE_TOOL_USE` hook made it build a context, and one room read per tool
+  call otherwise; `current_tool_call()`, `current_tool_allowed_names()` and
+  `current_response_metadata()` answer `None` there, since no turn merges a
+  record on that path.
 - `RoomKit.process_inbound` and `process_webhook` take `organization_id`
   (RFC §17.2). The room the message would land in is checked against it
   before any event is committed or any channel auto-attached: a room
@@ -67,9 +70,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A tool loop puts back the loop context it replaced instead of clearing it.
   A handler that ran a child channel's turn inside its own (delegation) read
   `None` from `current_tool_room()`, `current_tool_actor_id()` and
-  `current_response_metadata()` once the child's answer was consumed, and the
-  parent's steering lost its target for the rest of the turn. Restored by
-  value, so a stream drained in another task puts that task's value back.
+  `current_response_metadata()` once the child's answer was consumed.
+  Restored by value, so a stream drained in another task puts that task's
+  value back; on the non-streaming path the turn's context now also stays
+  visible to the after-response hook, which ran with none.
 - SQLite full-text search no longer finds the rows the room refused: a body a
   hook blocked is out of the timeline by default (RFC §14.1) and out of
   `search_events` too.

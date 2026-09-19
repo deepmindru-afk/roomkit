@@ -168,6 +168,12 @@ class _ToolLoopContext:
     # it, and a handler must not write on it (``current_tool_room`` says
     # why). ``None`` for a loop started without a turn above it.
     room: Room | None = None
+    # Whether a turn above this context merges ``response_metadata`` into the
+    # MESSAGE events it produces. False for the context the realtime voice
+    # channel builds around a tool call: no turn runs there, so
+    # ``current_response_metadata()`` answers ``None`` rather than a record
+    # nothing will carry.
+    has_turn: bool = True
     steering_queue: asyncio.Queue[SteeringDirective] = field(default_factory=asyncio.Queue)
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
     loop_id: str = ""

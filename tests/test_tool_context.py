@@ -576,6 +576,25 @@ class TestLoopContextRestoration:
         finally:
             _current_loop_ctx.reset(token)
 
+    async def test_the_turn_context_outlives_the_loop_within_the_turn(self) -> None:
+        """Non-streaming: the loop ends before the turn does, and what runs
+        after it (the after-response hook) reads the turn's context, not None."""
+        seen: list[str | None] = []
+
+        async def after_response(event: Any) -> None:
+            seen.append(current_tool_room_id())
+
+        provider = MockAIProvider(ai_responses=_tool_round_responses(), streaming=False)
+        ch = AIChannel("ai1", provider=provider, tool_handler=AsyncMock(return_value="ok"))
+        ch._after_response_hook = after_response
+        await ch.on_event(
+            make_event(room_id="room-a", body="go", channel_id="sms1"),
+            _binding("room-a"),
+            RoomContext(room=Room(id="room-a")),
+        )
+
+        assert seen == ["room-a"]
+
     async def test_a_stream_drained_in_another_task_restores_that_task_context(self) -> None:
         """The streamed turn runs in the consumer's context: ending it must not
         fail on a token from another context, and must put the consumer's own

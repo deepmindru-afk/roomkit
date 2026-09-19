@@ -12,9 +12,11 @@ from inside a tool loop sees the loop's context without any signature
 change. The realtime voice channel installs the same context around each
 tool call it serves, with the session's room and participant as the turn's
 room and actor, so a handler shared between an ``AIChannel`` and a
-``RealtimeVoiceChannel`` answers the same questions on both paths
-(:func:`current_tool_call` and its structured-result channel remain the AI
-channel's). Outside a tool call (a direct call) the accessors return
+``RealtimeVoiceChannel`` reads the room id, the Room and the actor on both
+paths; :func:`current_tool_call`, :func:`current_tool_allowed_names` and
+:func:`current_response_metadata` answer ``None`` there, since the per-call
+record, the resolved toolset and the merged response record are the AI
+channel's. Outside a tool call (a direct call) every accessor returns
 ``None`` — hosts keep their own fallback there.
 """
 
@@ -91,7 +93,10 @@ def current_tool_room() -> Room | None:
     ``RoomContext.room`` holds for that turn's hooks, memory provider and
     config provider, so a handler deciding whom a call acts for reads the
     room's ``organization_id``, ``metadata`` or ``status`` here instead of
-    re-reading the room by :func:`current_tool_room_id` on every call. A
+    re-reading the room by :func:`current_tool_room_id` on every call. On a
+    realtime tool call, which runs no turn, it is the room as the store
+    loaded it for that call, shared with the ``BEFORE_TOOL_USE`` gate's
+    context when a hook made the channel build one. A
     patch written to the store during the turn, by this handler or another,
     is not in it; re-read the room when the turn's own writes matter. Do not
     mutate it: the object is shared with the whole turn, a room changes
@@ -180,13 +185,14 @@ def current_response_metadata() -> ResponseMetadata | None:
     document it read is a fact about the turn, not about the tool's string
     result.
 
-    Returns ``None`` when no loop context is set (a direct call): the caller
-    then has nothing to attribute to, and writes nothing. A loop started
-    without a turn — no ``handle_event`` above it — and a realtime tool call
-    carry a record of their own that no MESSAGE event is built from; writes
-    to it are harmless and go nowhere.
+    Returns ``None`` when no loop context is set (a direct call) and on a
+    realtime tool call, where no turn merges the record: the guard
+    ``if record is not None`` then skips a write nothing would carry. A loop
+    started without a turn — no ``handle_event`` above it — carries a record
+    of its own that no MESSAGE event is built from; writes to it are harmless
+    and go nowhere.
     """
     from roomkit.channels.ai import _current_loop_ctx
 
     ctx = _current_loop_ctx.get()
-    return ctx.response_metadata if ctx is not None else None
+    return ctx.response_metadata if ctx is not None and ctx.has_turn else None

@@ -21,7 +21,15 @@ from roomkit import (
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 from roomkit.models.enums import ChannelType
 from roomkit.models.event import EventSource, RoomEvent
-from roomkit.tools import current_tool_actor_id, current_tool_room, current_tool_room_id
+from roomkit.models.room import Room
+from roomkit.tools import (
+    current_response_metadata,
+    current_tool_actor_id,
+    current_tool_allowed_names,
+    current_tool_call,
+    current_tool_room,
+    current_tool_room_id,
+)
 from roomkit.voice.audio_frame import AudioFrame
 from roomkit.voice.base import VoiceSession, VoiceSessionState
 from roomkit.voice.interruption import InterruptionConfig
@@ -577,6 +585,70 @@ class TestToolCalls:
 
         assert seen == {"room_id": room.id, "actor": "user-1", "tenant": "acme"}
         assert current_tool_room_id() is None
+
+    async def test_tool_context_with_a_gate_hook_and_the_ai_only_accessors(
+        self,
+        provider: MockRealtimeProvider,
+        transport: MockRealtimeTransport,
+    ) -> None:
+        """With a BEFORE_TOOL_USE hook the gate builds the context and the Room
+        comes from it; the accessors that belong to the AI channel's turn
+        answer None on this path, so a host's ``if record is not None`` guard
+        skips a write nothing would carry."""
+        seen: dict[str, Any] = {}
+
+        async def handler(name: str, arguments: dict[str, Any]) -> str:
+            room = current_tool_room()
+            seen.update(
+                tenant=room.metadata.get("tenant") if room is not None else None,
+                record=current_response_metadata(),
+                call=current_tool_call(),
+                names=current_tool_allowed_names(),
+            )
+            return "ok"
+
+        ch = RealtimeVoiceChannel(
+            "rt-gate", provider=provider, transport=transport, tool_handler=handler
+        )
+        kit = RoomKit()
+        kit.register_channel(ch)
+
+        @kit.hook(HookTrigger.BEFORE_TOOL_USE)
+        async def allow(event: Any, ctx: RoomContext) -> HookResult:
+            return HookResult.allow()
+
+        room = await kit.create_room(metadata={"tenant": "acme"})
+        await kit.attach_channel(room.id, "rt-gate")
+        session = await ch.start_session(room.id, "user-1", "fake-ws")
+
+        await provider.simulate_tool_call(session, "call-gate", "whoami", {})
+        await asyncio.sleep(0.1)
+
+        assert seen == {"tenant": "acme", "record": None, "call": None, "names": None}
+
+    async def test_realtime_loop_context_branches(
+        self,
+        provider: MockRealtimeProvider,
+        transport: MockRealtimeTransport,
+    ) -> None:
+        """The three ways the Room is resolved: the gate's when one was built,
+        None without a framework, and the session names the room and actor in
+        every case."""
+        ch = RealtimeVoiceChannel("rt-solo", provider=provider, transport=transport)
+        session = VoiceSession(
+            id="s1", room_id="room-x", participant_id="user-2", channel_id="rt-solo"
+        )
+        gate_room = Room(id="room-x")
+
+        with_gate = await ch._realtime_loop_context(session, "room-x", RoomContext(room=gate_room))
+        assert with_gate.room is gate_room
+        assert (with_gate.room_id, with_gate.actor_id) == ("room-x", "user-2")
+        assert with_gate.has_turn is False
+
+        assert ch._framework is None
+        without_framework = await ch._realtime_loop_context(session, None, None)
+        assert without_framework.room is None
+        assert (without_framework.room_id, without_framework.actor_id) == ("room-x", "user-2")
 
     async def test_tool_result_under_limit_not_truncated(
         self,

@@ -524,8 +524,8 @@ class RealtimeToolsMixin:
             )
             from roomkit.channels._realtime_context import _current_voice_session
 
-            t_seg = time.perf_counter()
             loop_ctx = await self._realtime_loop_context(session, room_id, gate_context)
+            t_seg = time.perf_counter()
             token = _current_voice_session.set(session)
             loop_token = _current_loop_ctx.set(loop_ctx)
             try:
@@ -597,20 +597,26 @@ class RealtimeToolsMixin:
     ) -> _ToolLoopContext:
         """The per-call context a handler reads through ``roomkit.tools`` (RFC §21.4).
 
-        The realtime path runs no tool loop, so it builds the turn's context
-        itself around the handler call: the session's room and participant as
-        the turn's room and actor, and the Room object the gate already loaded
-        when a BEFORE_TOOL_USE hook made it build a context, read once from the
-        store otherwise. A handler shared with an ``AIChannel`` then answers the
-        same questions on both paths.
+        The realtime path runs no turn, so it builds the context itself around
+        the handler call: the session's room and participant as the room and
+        actor, no response record to merge (``has_turn`` is off, so
+        ``current_response_metadata()`` answers ``None``), and the Room as
+        loaded for this call: the gate's when a BEFORE_TOOL_USE hook made it
+        build a context, one indexed read otherwise, taken under the
+        framework's lease like every store read a channel makes. That read is
+        the price of a sync accessor on a path that awaits the handler anyway;
+        the two session values cost nothing. A handler shared with an
+        ``AIChannel`` then answers the same questions on both paths.
         """
         ctx = _ToolLoopContext()
+        ctx.has_turn = False
         ctx.room_id = room_id or session.room_id
         ctx.actor_id = session.participant_id
         if gate_context is not None:
             ctx.room = gate_context.room
         elif self._framework is not None and ctx.room_id:
-            ctx.room = await self._framework.store.get_room(ctx.room_id)
+            with self._framework._resource_lease():
+                ctx.room = await self._framework.store.get_room(ctx.room_id)
         return ctx
 
     async def _deliver_skill_call(

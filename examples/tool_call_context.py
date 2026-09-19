@@ -24,6 +24,9 @@ because the actor is not something to trust on sight:
    the handler has to check ``identification`` itself and refuse.
 3. A system injection has no author at all: ``None``, and the tool refuses
    rather than borrowing whoever spoke last.
+4. The same handler, called from a realtime voice session: the realtime
+   channel installs the same context around the call, so Alice's voice turn
+   is answered like her text turn.
 
 Run with:
     uv run python examples/tool_call_context.py
@@ -39,6 +42,7 @@ from roomkit import (
     AIChannel,
     ChannelCategory,
     InboundMessage,
+    RealtimeVoiceChannel,
     RoomKit,
     TextContent,
     ToolCallContent,
@@ -53,6 +57,7 @@ from roomkit.tools import (
     current_tool_room,
     current_tool_room_id,
 )
+from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
 
 # The rows the tool guards. Keyed by *identity*, not by participant id: the
 # participant is how someone shows up in one room, the identity is who they are.
@@ -166,6 +171,26 @@ async def main() -> None:
     for event in await kit.store.list_events(room.id):
         if isinstance(event.content, ToolCallContent) and event.content.status == "completed":
             print(f"  {event.content.result}")
+
+    print("\n=== Alice asks by voice (same handler, realtime channel) ===")
+    rt_provider = MockRealtimeProvider()
+    voice = RealtimeVoiceChannel(
+        "voice-billing",
+        provider=rt_provider,
+        transport=MockRealtimeTransport(),
+        tool_handler=my_invoices,
+    )
+    kit.register_channel(voice)
+    await kit.attach_channel(room.id, "voice-billing")
+    session = await voice.start_session(room.id, "alice", "fake-ws")
+    # The realtime channel installs the per-call context around the handler:
+    # room, Room and actor read back as on the text path; the toolset and the
+    # response record are the AI channel's and read None here.
+    await rt_provider.simulate_tool_call(session, "call-voice", "my_invoices", {})
+    await asyncio.sleep(0.1)
+    _session_id, _call_id, submitted = rt_provider.tool_results[0]
+    print(f"  {submitted}")
+    await kit.close()
 
 
 if __name__ == "__main__":
