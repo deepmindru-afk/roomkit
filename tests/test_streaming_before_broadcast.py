@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
-from typing import Literal
+from typing import Any, Literal
 
 import pytest
 
@@ -27,7 +27,7 @@ from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.models.hook import HookResult, InjectedEvent
 from roomkit.models.store_filter import PersistencePolicy
 from roomkit.models.task import Observation, Task
-from roomkit.providers.ai.base import AIResponse
+from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from tests.test_framework import SimpleChannel
 
@@ -46,6 +46,46 @@ async def _wire(kit: RoomKit, content: str) -> None:
 
 def _ai_messages(events: list[RoomEvent]) -> list[RoomEvent]:
     return [e for e in events if e.type == EventType.MESSAGE and e.source.channel_id == "ai1"]
+
+
+_TOOL_EVENTS = (EventType.TOOL_CALL_START, EventType.TOOL_CALL_END)
+
+
+def _tool_events(events: list[RoomEvent]) -> list[RoomEvent]:
+    return [e for e in events if e.type in _TOOL_EVENTS]
+
+
+async def _wire_tool_turn(kit: RoomKit) -> SimpleChannel:
+    """A streamed turn that calls one tool, then answers; returns the transport."""
+    provider = MockAIProvider(
+        streaming=True,
+        ai_responses=[
+            AIResponse(
+                content="Looking.",
+                finish_reason="tool_calls",
+                tool_calls=[AIToolCall(id="tc1", name="lookup", arguments={"q": "x"})],
+            ),
+            AIResponse(content="Found.", finish_reason="stop"),
+        ],
+    )
+
+    async def handler(name: str, args: dict[str, Any]) -> str:
+        return "ok"
+
+    transport = SimpleChannel("sms1")
+    kit.register_channel(transport)
+    kit.register_channel(
+        AIChannel(
+            "ai1",
+            provider=provider,
+            tool_handler=handler,
+            tools=[AITool(name="lookup", description="Look up")],
+        )
+    )
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "sms1")
+    await kit.attach_channel("r1", "ai1", category=ChannelCategory.INTELLIGENCE)
+    return transport
 
 
 async def test_streamed_segment_applies_before_broadcast_modification() -> None:
@@ -322,4 +362,63 @@ async def test_stream_hook_tasks_wait_for_delivery_and_finish_before_return() ->
     finally:
         release.set()
         await asyncio.gather(processing, return_exceptions=True)
+        await kit.close()
+
+
+async def test_streamed_tool_call_events_carry_before_broadcast_modification() -> None:
+    """The tool call's start and end cross the hooks like the text around them.
+
+    Both used to commit straight from the stream: a hook that labels a tool
+    call for the reader stamped the text segments and nothing else, so the
+    stored rows and the non-streaming channels never saw the label.
+    """
+    kit = RoomKit()
+    transport = await _wire_tool_turn(kit)
+
+    @kit.hook(HookTrigger.BEFORE_BROADCAST, name="label")
+    async def label(event: RoomEvent, ctx: RoomContext) -> HookResult:
+        if event.type not in _TOOL_EVENTS:
+            return HookResult.allow()
+        stamped = {**event.metadata, "label": f"Lookup · {event.type.value}"}
+        return HookResult.modify(event.model_copy(update={"metadata": stamped}))
+
+    try:
+        await kit.process_inbound(
+            InboundMessage(channel_id="sms1", sender_id="u1", content=TextContent(body="go"))
+        )
+        expected = ["Lookup · tool_call_start", "Lookup · tool_call_end"]
+        stored = _tool_events(await kit.store.list_events("r1"))
+        assert [e.type for e in stored] == list(_TOOL_EVENTS)
+        assert [e.metadata["label"] for e in stored] == expected
+        # The delivery carries the modified event too, not the raw one.
+        assert [e.metadata.get("label") for e in _tool_events(transport.delivered)] == expected
+    finally:
+        await kit.close()
+
+
+async def test_streamed_tool_call_events_dropped_when_before_broadcast_blocks() -> None:
+    """A blocked tool-call event never lands, while its side effects do."""
+    kit = RoomKit()
+    transport = await _wire_tool_turn(kit)
+    task = Task(id="follow-up", room_id="r1", title="Follow up")
+
+    @kit.hook(HookTrigger.BEFORE_BROADCAST, name="blocker")
+    async def blocker(event: RoomEvent, ctx: RoomContext) -> HookResult:
+        if event.type not in _TOOL_EVENTS:
+            return HookResult.allow()
+        # One task, handed over on the call's start alone.
+        tasks = [task] if event.type == EventType.TOOL_CALL_START else []
+        return HookResult(action="block", reason="withheld", tasks=tasks)
+
+    try:
+        await kit.process_inbound(
+            InboundMessage(channel_id="sms1", sender_id="u1", content=TextContent(body="go"))
+        )
+        events = await kit.store.list_events("r1")
+        assert _tool_events(events) == []
+        assert _tool_events(transport.delivered) == []
+        # The turn's text is untouched by a block aimed at its tool calls.
+        assert [e.content.body for e in _ai_messages(events)] == ["Looking.", "Found."]
+        assert await kit.store.list_tasks("r1") == [task]
+    finally:
         await kit.close()

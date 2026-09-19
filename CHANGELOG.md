@@ -22,6 +22,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the same field, so a host has one reading whatever the turn's mode
   (RFC §6.4).
 
+### Fixed
+
+- A streamed turn's tool-call events cross the `BEFORE_BROADCAST` sync hooks
+  before they commit, as its text segments already did. `TOOL_CALL_START` and
+  `TOOL_CALL_END` were persisted and delivered straight from the stream, so a
+  hook's modification never reached their stored rows or the non-streaming
+  channels, and a hook that blocked one still saw it land, while the
+  non-streaming path ran the hooks on them all along. One gate now serves the
+  three segment kinds: a modification lands on the stored row and on the
+  delivery, a blocked event is dropped, and the hook's tasks, observations and
+  injected events are kept either way.
+
 ## [0.82.0] — 2026-09-19
 
 ### Added
