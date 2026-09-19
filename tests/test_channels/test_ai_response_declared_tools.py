@@ -170,7 +170,7 @@ async def test_the_union_keeps_a_tool_the_reveal_window_dropped() -> None:
     await _turn(ch, _binding([*_catalogue(5), _SMS_TOOL, _MAIL_TOOL]))
 
     # Round 1 declared send_sms; the second find_tools slid the window, so
-    # round 2 declared mail_deliver and no longer send_sms.
+    # round 2 declared mail_deliver and not send_sms.
     assert "send_sms" in _round_names(provider.calls[1])
     assert "mail_deliver" not in _round_names(provider.calls[1])
     assert "mail_deliver" in _round_names(provider.calls[2])
