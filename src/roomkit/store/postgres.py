@@ -944,13 +944,15 @@ class PostgresStore(ConversationStore):
 
         where = " AND ".join(conditions)
 
+        # The page is rendered by ``index`` whatever the window (RFC §14.1):
+        # ``created_at`` is stamped when the event is built and the index
+        # reserved at commit, so the two disagree under concurrent commits and
+        # backfills. ``created_at, id`` only break ties between events stored
+        # without an index (``add_event`` leaves the model default 0).
         descending = before_index is not None or (newest_first and not use_cursor)
-        if descending:
-            order_col = "index DESC"
-        elif use_cursor:
-            order_col = "index"
-        else:
-            order_col = "created_at"
+        order_col = (
+            "index DESC, created_at DESC, id DESC" if descending else "index, created_at, id"
+        )
 
         query = f"SELECT * FROM events WHERE {where} ORDER BY {order_col}"  # nosec B608
 

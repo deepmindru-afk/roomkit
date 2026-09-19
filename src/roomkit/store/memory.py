@@ -361,6 +361,9 @@ class InMemoryStore(ConversationStore):
 
         event_ids = self._room_events.get(room_id, [])
         events = [self._events[eid] for eid in event_ids if eid in self._events]
+        # Rendered by ``index`` whatever the commit order (RFC §14.1); the sort
+        # is stable, so events stored without an index keep commit order.
+        events.sort(key=lambda e: e.index)
 
         if after_index is not None:
             events = [e for e in events if e.index > after_index]

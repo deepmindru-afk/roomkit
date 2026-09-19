@@ -828,16 +828,16 @@ class TestPostgresStore:
         with pytest.raises(ValueError, match="mutually exclusive"):
             await store.list_events("room-1", after_index=5, before_index=10)
 
-    async def test_list_events_default_orders_chronologically(self) -> None:
-        """Without a cursor and without ``newest_first``, the query keeps the
-        historical head ordering (``created_at``) — the behaviour every existing
-        offset-based caller relies on."""
+    async def test_list_events_default_orders_by_index(self) -> None:
+        """Without a cursor and without ``newest_first``, the head page is
+        rendered by ``index`` (RFC §14.1), ``created_at`` and ``id`` breaking
+        ties between events stored without an index."""
         store, mock_conn = _make_store_with_pool()
         mock_conn.fetch.return_value = []
         await store.list_events("room-1", limit=50)
         sql = mock_conn.fetch.call_args[0][0]
-        assert "ORDER BY created_at" in sql
-        assert "index DESC" not in sql
+        assert "ORDER BY index, created_at, id" in sql
+        assert "DESC" not in sql
         assert "OFFSET" in sql  # still offset-paginated
 
     async def test_list_events_newest_first_uses_descending_index(self) -> None:

@@ -936,15 +936,18 @@ class SQLiteStore(ConversationStore):
             before_index is None and after_index is None and newest_first
         ):
             # Tail page: newest ``limit`` rows (offset counted from the newest
-            # end), returned in chronological order.
+            # end), returned in chronological order. Rendered by ``idx``
+            # whatever the write order (RFC §14.1); ``rowid`` breaks ties
+            # between rows stored without an index.
             tail_offset = 0 if before_index is not None else offset
             rows = self._db().execute(
-                f"{base} ORDER BY rowid DESC LIMIT ? OFFSET ?", [*params, limit, tail_offset]
+                f"{base} ORDER BY idx DESC, rowid DESC LIMIT ? OFFSET ?",
+                [*params, limit, tail_offset],
             )
             return [_load_event(r[0]) for r in rows][::-1]
         head_offset = 0 if after_index is not None else offset
         rows = self._db().execute(
-            f"{base} ORDER BY rowid LIMIT ? OFFSET ?", [*params, limit, head_offset]
+            f"{base} ORDER BY idx, rowid LIMIT ? OFFSET ?", [*params, limit, head_offset]
         )
         return [_load_event(r[0]) for r in rows]
 

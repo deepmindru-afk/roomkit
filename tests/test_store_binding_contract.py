@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -15,6 +16,7 @@ from roomkit.models.store_filter import EventFilter
 from roomkit.store.base import ConversationStore
 from roomkit.store.memory import InMemoryStore
 from roomkit.store.sqlite import SQLiteStore
+from tests.conftest import make_event
 
 
 @pytest.fixture(params=["memory", "sqlite", "postgres"])
@@ -79,9 +81,9 @@ async def test_pagination_order_contract(
     """A cursor or ``newest_first`` selects the *window*; the page is always
     rendered ascending (RFC §14.1). ``before_index`` and the newest-first
     offset page both come back oldest-first, so ``page[-1]`` is the newest
-    event of the window on every backend, never ``page[0]``."""
-    from tests.conftest import make_event
-
+    event of the window on every backend, never ``page[0]``. The ``offset=99``
+    under a cursor asserts the other half of the rule: a cursor ignores
+    ``offset``."""
     room = await contract_store.create_room(Room(id=uuid4().hex))
     try:
         for i in range(6):
@@ -111,8 +113,6 @@ async def test_refused_rows_are_served_on_request_only(contract_store: Conversat
     BLOCKED is skipped by default, before the page is cut; ``include_blocked``
     lifts the filter, ``get_event`` never applies it, and ``get_conversation``
     reads the whole conversation because hooks read it whole (§7.5 rule 8)."""
-    from tests.conftest import make_event
-
     room = await contract_store.create_room(Room(id=uuid4().hex))
     try:
         refused = make_event(
@@ -138,5 +138,36 @@ async def test_refused_rows_are_served_on_request_only(contract_store: Conversat
         by_id = await contract_store.get_event(refused.id)
         assert by_id is not None and by_id.status == EventStatus.BLOCKED
         assert [e.index for e in await contract_store.get_conversation(room.id)] == [0, 1, 2]
+    finally:
+        await contract_store.delete_room(room.id)
+
+
+async def test_pages_are_rendered_by_index_not_by_clock_or_write_order(
+    contract_store: ConversationStore,
+) -> None:
+    """RFC §14.1: the page is ascending by ``index`` whatever the order the rows
+    were written or stamped in. ``created_at`` is stamped when an event is built
+    and the index reserved at commit, so a concurrent commit or a backfill makes
+    the two disagree; a backend sorting by clock or by insertion renders the
+    same room differently from the others."""
+    room = await contract_store.create_room(Room(id=uuid4().hex))
+    try:
+        stamped = datetime.now(UTC)
+        # Written 1, 0, 2 with the clock running backwards along the index.
+        for i in (1, 0, 2):
+            await contract_store.add_event(
+                make_event(
+                    room_id=room.id,
+                    index=i,
+                    body=str(i),
+                    created_at=stamped - timedelta(seconds=i),
+                )
+            )
+        head = await contract_store.list_events(room.id)
+        tail = await contract_store.list_events(room.id, limit=2, newest_first=True)
+        forward = await contract_store.list_events(room.id, after_index=0)
+        assert [e.index for e in head] == [0, 1, 2]
+        assert [e.index for e in tail] == [1, 2]
+        assert [e.index for e in forward] == [1, 2]
     finally:
         await contract_store.delete_room(room.id)

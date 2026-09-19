@@ -689,7 +689,8 @@ class RoomKit(
 
         Args:
             room_id: Room to query.
-            offset: Number of events to skip (offset-based mode).
+            offset: Number of events to skip (offset-based mode), counted from
+                the newest end when ``newest_first`` is set.
             limit: Maximum number of events to return.
             visibility_filter: Optional visibility value to filter by.
             after_index: Return events with ``index > after_index``.
