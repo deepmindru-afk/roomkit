@@ -648,9 +648,13 @@ class VoiceSTTMixin:
                                 drain_ev = self._playback_done_events.get(session.id)
                                 if playback and not (drain_ev is not None and drain_ev.is_set()):
                                     handler: InterruptionHandler = self._interruption_handler
+                                    # The partial is what SEMANTIC classifies —
+                                    # a detector given "" cannot tell "uh-huh"
+                                    # from "wait, stop".
                                     decision = handler.evaluate(
                                         playback_position_ms=(playback.position_ms),
                                         speech_duration_ms=0,
+                                        speech_text=result.text,
                                     )
                                     logger.info(
                                         "Barge-in eval: partial=%r pos=%dms interrupt=%s",

@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The SEMANTIC interruption strategy now classifies the words the user said.
+  The continuous-STT loop consulted `InterruptionHandler.evaluate` on every
+  partial transcript during playback but left `speech_text` at its empty
+  default, so a `BackchannelDetector` behind `InterruptionStrategy.SEMANTIC`
+  always classified `""`: an acknowledgement and a real interruption were the
+  same utterance to it. The partial is passed through; the energy path, which
+  runs before any transcript exists, is unchanged.
 - A realtime session is torn down once by concurrent callers.
   `RealtimeVoiceChannel.end_session` keeps a teardown per session: the
   first caller owns it and a caller that arrives while it runs (`close()`,
