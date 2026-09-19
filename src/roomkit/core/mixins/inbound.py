@@ -55,6 +55,7 @@ class InboundHost(Protocol):
         _process_locked: From :class:`InboundLockedMixin`.
         _process_streaming_responses: From :class:`InboundStreamingMixin`.
         create_room: From :class:`RoomLifecycleMixin`.
+        get_room: From :class:`RoomLifecycleMixin` (the scoped read, RFC §17.2).
         attach_channel: From :class:`ChannelOpsMixin`.
     """
 
@@ -97,6 +98,7 @@ class InboundMixin(HelpersMixin):
     _process_streaming_responses: Any  # see InboundHost
     _consume_streams_when_cascade_completes: Any  # see LaneExecutionMixin
     create_room: Any  # see InboundHost
+    get_room: Any  # see InboundHost
     attach_channel: Any  # see InboundHost
 
     async def process_inbound(
@@ -105,6 +107,7 @@ class InboundMixin(HelpersMixin):
         *,
         room_id: str | None = None,
         defer_delivery: bool = False,
+        organization_id: str | None = None,
     ) -> InboundResult:
         """Process an inbound message through the full pipeline.
 
@@ -112,6 +115,16 @@ class InboundMixin(HelpersMixin):
             message: The inbound message to process.
             room_id: Explicit room to route to, bypassing the inbound router.
                 Useful for shared channels attached to multiple rooms.
+            organization_id: The organization the caller acts for (RFC
+                §17.2). The room the message lands in, routed or explicit,
+                is read scoped to it: a room belonging to another
+                organization is reported as **not found**, before any event
+                is committed or any channel auto-attached, and a room that
+                does not exist yet is created under it. Left unset, the read
+                is unscoped and behaves as it always has. A library has no
+                caller or auth context of its own, so the scope has to come
+                from the caller: the row that mapped an external identity
+                (a chat, a number) to a room is where it usually lives.
             defer_delivery: Return at the commit instead of waiting for the
                 delivery set (RFC §10.1 step 18 detached completion). The
                 result carries the committed event — a hook refusal is still
@@ -165,7 +178,13 @@ class InboundMixin(HelpersMixin):
         _inbound_result: InboundResult | None = None
         try:
             _inbound_result = await self._process_inbound_inner(
-                message, channel, room_id, telemetry, inbound_span_id, defer_delivery
+                message,
+                channel,
+                room_id,
+                telemetry,
+                inbound_span_id,
+                defer_delivery,
+                organization_id=organization_id,
             )
             return _inbound_result
         except Exception as exc:
@@ -194,6 +213,7 @@ class InboundMixin(HelpersMixin):
         telemetry: Any,
         inbound_span_id: str,
         defer_delivery: bool,
+        organization_id: str | None = None,
     ) -> InboundResult:
         """Inner inbound processing (extracted for telemetry wrapping)."""
 
@@ -203,7 +223,7 @@ class InboundMixin(HelpersMixin):
         # that can create a room, so a timeout here would leave an orphan
         # behind for a message that was refused.
         room_id, room_just_created = await self._route_to_room(
-            message, channel, room_id, telemetry, inbound_span_id
+            message, channel, room_id, telemetry, inbound_span_id, organization_id
         )
 
         # One budget for the whole pre-commit phase (RFC §13.6), as an absolute
@@ -505,8 +525,13 @@ class InboundMixin(HelpersMixin):
         room_id: str | None,
         telemetry: Any,
         inbound_span_id: str,
+        organization_id: str | None = None,
     ) -> tuple[str, bool]:
         """Route inbound message to a room, auto-creating if needed.
+
+        ``organization_id`` scopes the room the message lands in (RFC §17.2):
+        a room of another organization is not found, a room created here is
+        created under it.
 
         Returns:
             A tuple of (room_id, room_just_created).
@@ -531,7 +556,7 @@ class InboundMixin(HelpersMixin):
                 )
             if room_id is None:
                 # Auto-create room and attach channel
-                room = await self.create_room()
+                room = await self.create_room(organization_id=organization_id)
                 room_id = room.id
                 await self.attach_channel(room_id, message.channel_id)
                 room_just_created = True
@@ -549,8 +574,15 @@ class InboundMixin(HelpersMixin):
                     binding_present = room_present and await self._store.binding_exists(
                         room_id, message.channel_id
                     )
+                if room_present and organization_id is not None:
+                    # The caller acts for one organization, and a room of
+                    # another is not found to it (RFC §17.2): refused here,
+                    # before any auto-attach or commit. The scoped read costs
+                    # the decode the unscoped path avoids above; it is the
+                    # price of the check, paid only by callers that ask.
+                    await self.get_room(room_id, organization_id=organization_id)
                 if not room_present:
-                    await self.create_room(room_id=room_id)
+                    await self.create_room(room_id=room_id, organization_id=organization_id)
                     await self.attach_channel(room_id, message.channel_id)
                     room_just_created = True
                 elif not binding_present:

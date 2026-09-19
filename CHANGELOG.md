@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `RoomKit.process_inbound` takes `organization_id` (RFC §17.2). The room
+  the message lands in, routed or explicit, is read scoped to it: a room
+  belonging to another organization is reported as not found before any
+  event is committed or any channel auto-attached, and a room that does not
+  exist yet is created under it. Left unset, the read is unscoped and
+  behaves as it always has, so a channel that routes by its own binding
+  passes nothing and an application that resolved a tenant before the
+  call names it, the way `send_event` and the room verbs already allow.
+
 ### Fixed
 
 - The SEMANTIC interruption strategy now classifies the words the user said.

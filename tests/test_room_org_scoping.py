@@ -13,6 +13,7 @@ import pytest
 
 from roomkit import Access, AgentResponsePolicy, RoomKit, RoomTimers
 from roomkit.core.exceptions import RoomNotFoundError
+from roomkit.models.delivery import InboundMessage
 from roomkit.models.event import TextContent
 from tests.test_framework import SimpleChannel
 
@@ -192,3 +193,48 @@ class TestUnscopedRooms:
         assert (await kit.get_room("solo")).id == "solo"
         with pytest.raises(RoomNotFoundError):
             await kit.get_room("solo", organization_id="acme")
+
+
+def _message() -> InboundMessage:
+    return InboundMessage(channel_id="sms1", sender_id="+15550001", content=TextContent(body="hi"))
+
+
+class TestScopedInbound:
+    """``process_inbound`` scopes the room a message lands in: routed or
+    explicit, a room of another organization is not found to the caller, before
+    any event is committed or any channel auto-attached."""
+
+    async def test_an_explicit_room_of_another_organization_is_not_found(self) -> None:
+        kit = await _two_tenants()
+        with pytest.raises(RoomNotFoundError):
+            await kit.process_inbound(_message(), room_id="globex-room", organization_id="acme")
+        # The refusal left nothing behind: no event, and no auto-attach either.
+        assert await kit.store.list_events("globex-room") == []
+        assert await kit.store.get_binding("globex-room", "sms1") is None
+
+    async def test_a_matching_organization_processes_the_message(self) -> None:
+        kit = await _two_tenants()
+        result = await kit.process_inbound(_message(), room_id="acme-room", organization_id="acme")
+        assert result.event is not None and result.event.room_id == "acme-room"
+
+    async def test_a_room_that_does_not_exist_is_created_under_the_caller(self) -> None:
+        kit = await _two_tenants()
+        await kit.process_inbound(_message(), room_id="fresh-room", organization_id="acme")
+        assert (await kit.get_room("fresh-room")).organization_id == "acme"
+
+    async def test_a_routed_room_of_another_organization_is_not_found(self) -> None:
+        """The router picked the room off the channel's binding; the scope
+        still applies to what it picked."""
+        kit = RoomKit()
+        kit.register_channel(SimpleChannel("sms1"))
+        await kit.create_room(room_id="globex-room", organization_id="globex")
+        await kit.attach_channel("globex-room", "sms1")
+        before = len(await kit.store.list_events("globex-room"))
+        with pytest.raises(RoomNotFoundError):
+            await kit.process_inbound(_message(), organization_id="acme")
+        assert len(await kit.store.list_events("globex-room")) == before
+
+    async def test_unscoped_processing_is_unchanged(self) -> None:
+        kit = await _two_tenants()
+        result = await kit.process_inbound(_message(), room_id="globex-room")
+        assert result.event is not None and result.event.room_id == "globex-room"
