@@ -1066,7 +1066,10 @@ class SQLiteStore(ConversationStore):
 
         Not part of the :class:`ConversationStore` contract — an SQLite
         extra. *query* is free text: it is tokenised and matched as an AND
-        of terms, so user input can be passed through verbatim.
+        of terms, so user input can be passed through verbatim. Rows the room
+        refused (stored ``BLOCKED``) are not returned, as a default
+        :meth:`list_events` read does not serve them (RFC §14.1); the audit
+        read is :meth:`list_events` with ``include_blocked=True``.
         """
         return await self._run(self._x_search_events, query, room_id, limit)
 
