@@ -16,11 +16,12 @@ from datetime import UTC, datetime
 from typing import Any
 
 from roomkit.models.channel import ChannelBinding
+from roomkit.models.enums import EventStatus
 from roomkit.models.event import RoomEvent, ThreadSummary
 from roomkit.models.identity import Identity
 from roomkit.models.participant import Participant
 from roomkit.models.room import Room
-from roomkit.models.store_filter import EventFilter
+from roomkit.models.store_filter import EventFilter, includes_blocked
 from roomkit.models.task import Observation, Task
 from roomkit.models.voice_delivery import VoiceDeliveryRecord
 from roomkit.store.base import ConversationStore
@@ -933,6 +934,13 @@ class PostgresStore(ConversationStore):
 
         if event_filter is not None:
             idx = self._apply_event_filter_sql(event_filter, conditions, params, idx)
+
+        # The received-rows default (RFC §14.1), in SQL so the page is cut
+        # after the refused rows are gone.
+        if not includes_blocked(event_filter):
+            conditions.append(f"status != ${idx}")
+            params.append(EventStatus.BLOCKED.value)
+            idx += 1
 
         where = " AND ".join(conditions)
 

@@ -38,6 +38,7 @@ from roomkit.models.event import (
     TextContent,
 )
 from roomkit.models.hook import HookResult, InjectedEvent
+from roomkit.models.store_filter import EventFilter
 
 
 class RecordingTransport(Channel):
@@ -172,8 +173,8 @@ class TestSendEventTraversesHooks:
 
         # The hook blocked the event: it must not reach other channels...
         assert dst.delivered == []
-        # ...and it must be persisted BLOCKED, never DELIVERED.
-        events = await kit.store.list_events("r1")
+        # ...and it must be persisted BLOCKED, never DELIVERED (an audit read).
+        events = await kit.store.list_events("r1", event_filter=EventFilter(include_blocked=True))
         injected = [
             e
             for e in events

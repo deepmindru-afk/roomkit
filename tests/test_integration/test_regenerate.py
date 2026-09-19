@@ -20,6 +20,7 @@ from roomkit.models.enums import (
 from roomkit.models.event import TextContent
 from roomkit.models.framework_event import FrameworkEvent
 from roomkit.models.hook import HookResult
+from roomkit.models.store_filter import EventFilter
 from roomkit.providers.ai.mock import MockAIProvider
 
 
@@ -366,7 +367,7 @@ class TestRegenerateTarget:
         await kit.process_inbound(
             InboundMessage(channel_id="sms1", sender_id="user1", content=TextContent(body="SPAM"))
         )
-        events = await kit.store.list_events("r1")
+        events = await kit.store.list_events("r1", event_filter=EventFilter(include_blocked=True))
         assert events[-1].status == EventStatus.BLOCKED
         accepted = _user_messages(events, "sms1")[0]
 

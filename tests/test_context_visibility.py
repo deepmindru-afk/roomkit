@@ -29,6 +29,7 @@ from roomkit.models.enums import (
 from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.models.hook import HookResult
 from roomkit.models.room import Room
+from roomkit.models.store_filter import EventFilter
 from roomkit.providers.ai.mock import MockAIProvider
 
 MARKER = "SECRET-MARKER"
@@ -195,7 +196,11 @@ class TestRefusedEventsStayRefused:
             InboundMessage(channel_id="ws1", sender_id="u1", content=TextContent(body=MARKER))
         )
         assert refused.blocked is True
-        events = await kit.store.list_events("r1")
+        # A default timeline read serves what the room received (RFC §14.1);
+        # the audit reader asks for the refused row explicitly.
+        received = await kit.store.list_events("r1")
+        assert MARKER not in [getattr(e.content, "body", "") for e in received]
+        events = await kit.store.list_events("r1", event_filter=EventFilter(include_blocked=True))
         assert [e.status for e in events if getattr(e.content, "body", "") == MARKER] == [
             EventStatus.BLOCKED
         ]
@@ -226,7 +231,9 @@ class TestRefusedEventsStayRefused:
             InboundMessage(channel_id="ws1", sender_id="u1", content=TextContent(body="second"))
         )
 
-        events = await kit.store.list_events("r1")
+        received = await kit.store.list_events("r1")
+        assert [e for e in received if e.source.channel_id == "ai1"] == []
+        events = await kit.store.list_events("r1", event_filter=EventFilter(include_blocked=True))
         silenced = [e for e in events if e.source.channel_id == "ai1"]
         assert [e.status for e in silenced] == [EventStatus.BLOCKED] * 2
         assert {e.blocked_by for e in silenced} == {"source_muted"}

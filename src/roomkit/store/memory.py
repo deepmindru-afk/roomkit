@@ -11,7 +11,7 @@ from roomkit.models.event import RoomEvent, ThreadSummary
 from roomkit.models.identity import Identity
 from roomkit.models.participant import Participant
 from roomkit.models.room import Room
-from roomkit.models.store_filter import EventFilter
+from roomkit.models.store_filter import EventFilter, includes_blocked, received_events
 from roomkit.models.task import Observation, Task
 from roomkit.models.voice_delivery import VoiceDeliveryRecord
 from roomkit.store.base import ConversationStore
@@ -379,6 +379,11 @@ class InMemoryStore(ConversationStore):
         # Apply EventFilter criteria
         if event_filter is not None:
             events = self._apply_event_filter(events, event_filter)
+
+        # The received-rows default (RFC §14.1), ahead of the page cut so a
+        # page of ``limit`` events is full whatever was refused around them.
+        if not includes_blocked(event_filter):
+            events = received_events(events)
 
         if before_index is not None:
             return events[-limit:] if limit < len(events) else events

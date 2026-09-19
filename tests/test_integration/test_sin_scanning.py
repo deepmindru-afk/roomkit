@@ -14,6 +14,7 @@ from roomkit.models.event import (
     TextContent,
 )
 from roomkit.models.hook import HookResult, InjectedEvent
+from roomkit.models.store_filter import EventFilter
 
 
 class TestSINScanning:
@@ -147,7 +148,7 @@ class TestSINScanning:
         )
         result = await kit.process_inbound(msg)
         assert result.blocked
-        events = await kit.store.list_events("r1")
+        events = await kit.store.list_events("r1", event_filter=EventFilter(include_blocked=True))
         # RFC §4.2: both the blocked original event (audit) and the injected notice are stored
         assert len(events) >= 2
         blocked_events = [e for e in events if e.status.value == "blocked"]

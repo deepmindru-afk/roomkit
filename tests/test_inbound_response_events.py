@@ -11,6 +11,7 @@ from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import EventStatus, EventType, HookTrigger
 from roomkit.models.event import TextContent
 from roomkit.models.hook import HookResult
+from roomkit.models.store_filter import EventFilter
 from roomkit.providers.ai.mock import MockAIProvider
 
 
@@ -154,7 +155,9 @@ async def test_detached_response_still_obeys_broadcast_hooks(blocked: bool) -> N
         assert [e.content.body for e in result.response_events] == (
             [] if blocked else ["safe answer"]
         )
-        events = await kit.store.list_events("room")
+        events = await kit.store.list_events(
+            "room", event_filter=EventFilter(include_blocked=True)
+        )
         response = next(e for e in events if e.source.channel_id == "assistant")
         assert response.status == (EventStatus.BLOCKED if blocked else EventStatus.DELIVERED)
         if not blocked:

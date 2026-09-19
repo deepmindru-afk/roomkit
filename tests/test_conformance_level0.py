@@ -45,6 +45,7 @@ from roomkit.models.enums import (
 from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.models.hook import HookResult, InjectedEvent
 from roomkit.models.room import RoomTimers
+from roomkit.models.store_filter import EventFilter
 from roomkit.store.base import ConversationStore
 from roomkit.store.memory import InMemoryStore
 
@@ -279,7 +280,9 @@ class TestChainDepth:
         await kit.process_inbound(
             InboundMessage(channel_id="ws1", sender_id="u1", content=TextContent(body="go"))
         )
-        events = await kit.store.list_events("r1", limit=100)
+        events = await kit.store.list_events(
+            "r1", limit=100, event_filter=EventFilter(include_blocked=True)
+        )
         blocked = [e for e in events if e.status is EventStatus.BLOCKED]
         assert blocked, "a runaway reentry must be blocked"
         assert any(e.blocked_by == "event_chain_depth_limit" for e in blocked)

@@ -11,8 +11,9 @@ from __future__ import annotations
 
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.context import RoomContext
-from roomkit.models.enums import ChannelCategory, EventStatus, Visibility
+from roomkit.models.enums import ChannelCategory, Visibility
 from roomkit.models.event import RoomEvent
+from roomkit.models.store_filter import received_events
 
 
 def visibility_allows(visibility: str, target_binding: ChannelBinding) -> bool:
@@ -88,8 +89,11 @@ def visible_events(context: RoomContext, channel_id: str) -> list[RoomEvent]:
     history continues from a turn nobody received. A muted agent therefore
     keeps tracking the room while muted, and loses its own silenced answers
     from its prompt, on unmute too. The record stays in the timeline for host
-    code and audit; the own-events exception above is about what a channel
-    may *know*, and a refused turn is not that.
+    code and audit, behind ``EventFilter(include_blocked=True)`` on a timeline
+    read; the same predicate,
+    :func:`~roomkit.models.store_filter.received_events`, decides both. The
+    own-events exception above is about what a channel may *know*, and a
+    refused turn is not that.
 
     Answers the visibility half of §7.5 rule 1 only. Access is enforced where
     events are delivered (:meth:`EventRouter._filter_targets` drops WRITE_ONLY
@@ -100,7 +104,7 @@ def visible_events(context: RoomContext, channel_id: str) -> list[RoomEvent]:
     """
     bindings = {b.channel_id: b for b in context.bindings}
     reader = bindings.get(channel_id)
-    accepted = [e for e in context.recent_events if e.status != EventStatus.BLOCKED]
+    accepted = received_events(context.recent_events)
     if reader is None:
         return [e for e in accepted if e.source.channel_id == channel_id]
     return [

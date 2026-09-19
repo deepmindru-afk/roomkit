@@ -324,6 +324,13 @@ class ConversationStore(ABC):
         When *event_filter* is provided, its ``visibility`` field takes
         precedence over *visibility_filter*.
 
+        The page holds what the room **received**: an event stored ``BLOCKED``
+        (refused by a hook, sent by a source that could not write, stopped by
+        a cap) is skipped unless ``event_filter.include_blocked`` asks for it,
+        and skipped before the page is cut, so a page of ``limit`` events is
+        full whatever was refused around them (RFC §14.1). A read by id
+        (:meth:`get_event`) is never filtered.
+
         By default the offset-based mode returns the *oldest* ``limit`` events
         (the head of the room). Pass ``newest_first=True`` to return the most
         recent ``limit`` events instead — still in ascending chronological
@@ -494,10 +501,13 @@ class ConversationStore(ABC):
 
         The conversation is the host's whole one: a message stored
         ``BLOCKED`` (refused by a hook, or by a source that could not write)
-        is in it, as the audit record it is. What a *channel* may be handed
-        as history is a per-reader question, and
-        :func:`~roomkit.core.visibility.visible_events` answers it (RFC §7.5
-        rule 8): it drops BLOCKED events along with what visibility withholds.
+        is in it, as the audit record it is, unlike a :meth:`list_events`
+        page, which serves the received rows unless asked otherwise. This
+        read fills ``RoomContext.recent_events``, and hooks read that whole
+        (RFC §7.5 rule 8). What a *channel* may be handed as history is a
+        per-reader question, and
+        :func:`~roomkit.core.visibility.visible_events` answers it (same
+        rule): it drops BLOCKED events along with what visibility withholds.
 
         Returned events are immutable snapshots (RFC §14.4): treat them
         as frozen. A store may share objects between reads or return
@@ -507,7 +517,7 @@ class ConversationStore(ABC):
             room_id,
             limit=limit,
             after_index=after_index,
-            event_filter=EventFilter(event_types=[EventType.MESSAGE]),
+            event_filter=EventFilter(event_types=[EventType.MESSAGE], include_blocked=True),
             # Ignored when a cursor is supplied; spelled out so the no-cursor
             # read is unambiguously the tail of the room, not its head.
             newest_first=after_index is None,
@@ -524,8 +534,11 @@ class ConversationStore(ABC):
     ) -> list[RoomEvent]:
         """Return the full activity timeline for a room.
 
-        Returns all persisted events in order. Use *event_filter* to narrow
-        results (e.g. only tool calls, only a specific correlation group).
+        Returns the events the room received, in order; a row stored
+        ``BLOCKED`` is served only when *event_filter* asks for it
+        (``include_blocked=True``), as for :meth:`list_events`. Use
+        *event_filter* to narrow results further (e.g. only tool calls, only
+        a specific correlation group).
 
         Without a cursor the default is the *oldest* ``limit`` events; pass
         ``newest_first=True`` for the most recent ``limit`` (still ascending) —

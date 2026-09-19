@@ -26,13 +26,17 @@ from roomkit.models.enums import (
 )
 from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.models.hook import HookResult, InjectedEvent
-from roomkit.models.store_filter import PersistencePolicy
+from roomkit.models.store_filter import EventFilter, PersistencePolicy
 from roomkit.providers.ai.mock import MockAIProvider
 from tests.test_framework import SimpleChannel
 
 
 async def _assert_counters_match_timeline(kit: RoomKit, room_id: str) -> list[RoomEvent]:
-    events = await kit.store.list_events(room_id, limit=200)
+    # The counters count the refused rows too (a BLOCKED event consumes an
+    # index, RFC §8.3), so the audit read asks for them (§14.1).
+    events = await kit.store.list_events(
+        room_id, limit=200, event_filter=EventFilter(include_blocked=True)
+    )
     room = await kit.store.get_room(room_id)
     assert room is not None
     assert room.event_count == len(events), "event_count must equal the stored event count"

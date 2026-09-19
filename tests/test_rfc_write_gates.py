@@ -25,6 +25,7 @@ from roomkit.models.enums import (
 )
 from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.models.framework_event import FrameworkEvent
+from roomkit.models.store_filter import EventFilter
 from tests.test_framework import AILikeChannel, SimpleChannel
 
 
@@ -162,7 +163,7 @@ class TestNonWritableSourceResponses:
 
         await kit.process_inbound(_user_msg())
 
-        events = await kit.store.list_events("r1")
+        events = await kit.store.list_events("r1", event_filter=EventFilter(include_blocked=True))
         ai_events = [e for e in events if e.source.channel_type == ChannelType.AI]
         assert len(ai_events) == 1
         assert ai_events[0].status == EventStatus.BLOCKED
@@ -182,7 +183,7 @@ class TestNonWritableSourceResponses:
 
         await kit.process_inbound(_user_msg())
 
-        events = await kit.store.list_events("r1")
+        events = await kit.store.list_events("r1", event_filter=EventFilter(include_blocked=True))
         ai_events = [e for e in events if e.source.channel_type == ChannelType.AI]
         assert len(ai_events) == 1
         assert ai_events[0].status == EventStatus.BLOCKED

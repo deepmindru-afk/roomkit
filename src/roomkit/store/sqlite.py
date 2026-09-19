@@ -34,11 +34,12 @@ from pathlib import Path
 from typing import Any
 
 from roomkit.models.channel import ChannelBinding
+from roomkit.models.enums import EventStatus
 from roomkit.models.event import RoomEvent, ThreadSummary
 from roomkit.models.identity import Identity
 from roomkit.models.participant import Participant
 from roomkit.models.room import Room
-from roomkit.models.store_filter import EventFilter
+from roomkit.models.store_filter import EventFilter, includes_blocked
 from roomkit.models.task import Observation, Task
 from roomkit.models.voice_delivery import VoiceDeliveryRecord
 from roomkit.store.base import ConversationStore
@@ -923,6 +924,12 @@ class SQLiteStore(ConversationStore):
             if ef.before_time is not None:
                 where.append("created_ts < ?")
                 params.append(_ts(ef.before_time))
+        if not includes_blocked(ef):
+            # The received-rows default (RFC §14.1). ``status`` lives in the
+            # JSON document; it is a SQL condition all the same, so the page
+            # is cut after the refused rows are gone, not before.
+            where.append("json_extract(data, '$.status') IS NOT ?")
+            params.append(EventStatus.BLOCKED.value)
 
         base = f"SELECT data FROM events WHERE {' AND '.join(where)}"  # nosec B608 — fragments are internal, values parameterised
         if before_index is not None or (

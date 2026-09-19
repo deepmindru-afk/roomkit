@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import datetime
 
 from pydantic import BaseModel, Field, model_validator
 
-from roomkit.models.enums import ChannelType, EventType
+from roomkit.models.enums import ChannelType, EventStatus, EventType
+from roomkit.models.event import RoomEvent
 
 
 class EventFilter(BaseModel):
@@ -52,6 +54,14 @@ class EventFilter(BaseModel):
     before_time: datetime | None = None
     """Return events created before this timestamp (exclusive)."""
 
+    include_blocked: bool = False
+    """Serve the rows the room refused too. An event stored ``BLOCKED`` was
+    delivered to nobody (RFC §10.1 step 10, §7.5 rule 2): a hook refused it,
+    its source could not write, or a cap stopped it. By default
+    :meth:`ConversationStore.list_events` returns only what the room received;
+    set this for an audit, copy or deletion reader that must see the refused
+    rows as well. A read by id (``get_event``) is never filtered."""
+
     @model_validator(mode="after")
     def _validate_time_range(self) -> EventFilter:
         if (
@@ -69,6 +79,27 @@ class EventFilter(BaseModel):
             msg = "top_level_only and parent_event_id are mutually exclusive"
             raise ValueError(msg)
         return self
+
+
+def includes_blocked(event_filter: EventFilter | None) -> bool:
+    """Whether a timeline read asked for the rows the room refused.
+
+    ``None``, the default of every read, asks for the received rows only; so
+    does a filter that leaves :attr:`EventFilter.include_blocked` unset.
+    """
+    return event_filter is not None and event_filter.include_blocked
+
+
+def received_events(events: Iterable[RoomEvent]) -> list[RoomEvent]:
+    """The rows the room received: every event but those stored ``BLOCKED``.
+
+    The one predicate behind the store's default (``include_blocked=False``,
+    RFC §14.1) and behind the per-reader history filter
+    (:func:`~roomkit.core.visibility.visible_events`, §7.5 rule 8), so the two
+    cannot drift on what a refused row is. A SQL store expresses the same
+    predicate as a condition on the row, ahead of the page cut.
+    """
+    return [e for e in events if e.status != EventStatus.BLOCKED]
 
 
 class PersistencePolicy(BaseModel):

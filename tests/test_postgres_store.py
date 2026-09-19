@@ -19,6 +19,7 @@ from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.models.identity import Identity
 from roomkit.models.participant import Participant
 from roomkit.models.room import Room
+from roomkit.models.store_filter import EventFilter
 from roomkit.models.task import Observation, Task
 
 
@@ -847,6 +848,24 @@ class TestPostgresStore:
         sql = mock_conn.fetch.call_args[0][0]
         assert "ORDER BY index DESC" in sql
         assert "OFFSET" in sql  # newest_first is still offset-based, not a cursor
+
+    async def test_list_events_skips_refused_rows_in_sql(self) -> None:
+        """RFC §14.1: the received-rows default is a SQL condition, so the page
+        is cut after the BLOCKED rows are gone, not before."""
+        store, mock_conn = _make_store_with_pool()
+        mock_conn.fetch.return_value = []
+        await store.list_events("room-1", limit=50)
+        sql, *params = mock_conn.fetch.call_args[0]
+        assert "status != $" in sql
+        assert "blocked" in params
+
+    async def test_list_events_include_blocked_lifts_the_status_condition(self) -> None:
+        store, mock_conn = _make_store_with_pool()
+        mock_conn.fetch.return_value = []
+        await store.list_events("room-1", limit=50, event_filter=EventFilter(include_blocked=True))
+        sql, *params = mock_conn.fetch.call_args[0]
+        assert "status !=" not in sql
+        assert "blocked" not in params
 
     async def test_list_events_newest_first_reverses_to_ascending(self) -> None:
         """The DESC fetch is reversed so the caller gets ascending chronological

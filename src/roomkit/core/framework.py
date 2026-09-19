@@ -683,6 +683,10 @@ class RoomKit(
         recent ``limit`` instead (still ascending), which is the shape a
         reconnect snapshot wants: what was just said, not how the room opened.
 
+        The page holds what the room received: a row stored ``BLOCKED`` is not
+        served here. An audit reader asks the store for it with
+        ``EventFilter(include_blocked=True)`` (RFC §14.1).
+
         Args:
             room_id: Room to query.
             offset: Number of events to skip (offset-based mode).

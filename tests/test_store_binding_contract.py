@@ -9,7 +9,9 @@ from uuid import uuid4
 import pytest
 
 from roomkit.models.channel import ChannelBinding, RateLimit, RetryPolicy
+from roomkit.models.enums import EventStatus
 from roomkit.models.room import Room
+from roomkit.models.store_filter import EventFilter
 from roomkit.store.base import ConversationStore
 from roomkit.store.memory import InMemoryStore
 from roomkit.store.sqlite import SQLiteStore
@@ -100,5 +102,41 @@ async def test_pagination_order_contract(
             )
             expected = [3, 4] if newest_first else [1, 2]
         assert [event.index for event in page] == expected
+    finally:
+        await contract_store.delete_room(room.id)
+
+
+async def test_refused_rows_are_served_on_request_only(contract_store: ConversationStore) -> None:
+    """RFC §14.1: a timeline read serves what the room received. A row stored
+    BLOCKED is skipped by default, before the page is cut; ``include_blocked``
+    lifts the filter, ``get_event`` never applies it, and ``get_conversation``
+    reads the whole conversation because hooks read it whole (§7.5 rule 8)."""
+    from tests.conftest import make_event
+
+    room = await contract_store.create_room(Room(id=uuid4().hex))
+    try:
+        refused = make_event(
+            room_id=room.id, index=1, body="refused", status=EventStatus.BLOCKED, blocked_by="spam"
+        )
+        for event in (
+            make_event(room_id=room.id, index=0, body="0"),
+            refused,
+            make_event(room_id=room.id, index=2, body="2"),
+        ):
+            await contract_store.add_event(event)
+
+        assert [e.index for e in await contract_store.list_events(room.id)] == [0, 2]
+        assert [e.index for e in await contract_store.get_timeline(room.id)] == [0, 2]
+        # The filter runs ahead of the page cut: a page of two received rows is full.
+        page = await contract_store.list_events(room.id, before_index=3, limit=2)
+        assert [e.index for e in page] == [0, 2]
+
+        everything = await contract_store.list_events(
+            room.id, event_filter=EventFilter(include_blocked=True)
+        )
+        assert [e.index for e in everything] == [0, 1, 2]
+        by_id = await contract_store.get_event(refused.id)
+        assert by_id is not None and by_id.status == EventStatus.BLOCKED
+        assert [e.index for e in await contract_store.get_conversation(room.id)] == [0, 1, 2]
     finally:
         await contract_store.delete_room(room.id)

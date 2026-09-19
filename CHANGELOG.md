@@ -35,6 +35,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `update_event` / `delete_event`, the membership verbs, `send_greeting`,
   `delegate`, `submit_feedback` and the voice joins.
 
+### Changed
+
+- `ConversationStore.list_events` and `get_timeline` serve what the room
+  received. A row stored `BLOCKED` (refused by a `BEFORE_BROADCAST` hook,
+  sent by a read-only or muted source, stopped by the chain-depth or reentry
+  cap) is no longer returned unless `EventFilter(include_blocked=True)` asks
+  for it, on the in-memory, SQLite and PostgreSQL stores alike, and the
+  filter applies before the page is cut, so a page of `limit` events is
+  full whatever was refused around them. `get_event` is unchanged, and so
+  is `get_conversation`, which fills the `RoomContext.recent_events` hooks
+  read whole (RFC §7.5 rule 8); channels never saw refused rows, and
+  `visible_events` now drops them through the predicate the store uses
+  (`roomkit.models.store_filter.received_events`). A host that filtered
+  `status == BLOCKED` out of every `list_events` result can drop those
+  filters; one that read refused rows for audit passes
+  `include_blocked=True` (RFC §14.1).
+
 ### Fixed
 
 - The SEMANTIC interruption strategy now classifies the words the user said.
