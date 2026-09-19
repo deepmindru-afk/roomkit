@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.82.0] — 2026-09-19
+
 ### Added
 
 - `roomkit.tools.current_tool_room()` returns the `Room` of the turn a tool
@@ -47,10 +49,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `ConversationStore.list_events` and `get_timeline` serve what the room
-  received. A row stored `BLOCKED` (refused by a `BEFORE_BROADCAST` hook,
-  sent by a read-only or muted source, stopped by the chain-depth or reentry
-  cap) is no longer returned unless `EventFilter(include_blocked=True)` asks
+- **BREAKING — a timeline read serves what the room received.**
+  `ConversationStore.list_events` and `get_timeline` no longer return a row
+  stored `BLOCKED` (refused by a `BEFORE_BROADCAST` hook, sent by a read-only
+  or muted source, stopped by the chain-depth or reentry cap) unless
+  `EventFilter(include_blocked=True)` asks
   for it, on the in-memory, SQLite and PostgreSQL stores alike, and the
   filter applies before the page is cut, so a page of `limit` events is
   full whatever was refused around them. `get_event` is unchanged, and so
@@ -77,6 +80,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SQLite full-text search no longer finds the rows the room refused: a body a
   hook blocked is out of the timeline by default (RFC §14.1) and out of
   `search_events` too.
+- Every page of a room's timeline is rendered by `index` on every backend.
+  The head page (no cursor, no `newest_first`) was ordered by `created_at` on
+  PostgreSQL and by insertion order in memory and SQLite, so the same room
+  read in a different order per backend whenever the clock and the index
+  disagreed: `created_at` is stamped when an event is built and the index
+  reserved at commit, which concurrent commits and backfills pull apart. The
+  three stores sort by `index` (`created_at`, then `id`, break ties between
+  events stored without an index on PostgreSQL; commit order does in memory
+  and SQLite), and the RFC says so (§14.1): a cursor or `newest_first` selects
+  the window, the page is always ascending, and `offset` counts from the
+  newest end under `newest_first`.
 - The SEMANTIC interruption strategy now classifies the words the user said.
   The continuous-STT loop consulted `InterruptionHandler.evaluate` on every
   partial transcript during playback but left `speech_text` at its empty
@@ -7881,7 +7895,8 @@ See entries `0.7.0a1` through `0.7.0a18` below.
 - `STTProvider.transcribe()` returns `TranscriptionResult` (Phase 3.1)
 - Framework event names enriched with payloads (Phase 4)
 
-[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.81.0...HEAD
+[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.82.0...HEAD
+[0.82.0]: https://github.com/roomkit-live/roomkit/compare/v0.81.0...v0.82.0
 [0.81.0]: https://github.com/roomkit-live/roomkit/compare/v0.80.0...v0.81.0
 [0.80.0]: https://github.com/roomkit-live/roomkit/compare/v0.79.0...v0.80.0
 [0.79.0]: https://github.com/roomkit-live/roomkit/compare/v0.78.0...v0.79.0
