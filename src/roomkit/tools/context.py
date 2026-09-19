@@ -82,14 +82,17 @@ def current_tool_room_id() -> str | None:
 def current_tool_room() -> Room | None:
     """The :class:`~roomkit.models.room.Room` of the turn the caller is executing under.
 
-    The object the store loaded when the turn began: the same one
+    The room as the store loaded it when the turn began: the same object
     ``RoomContext.room`` holds for that turn's hooks, memory provider and
     config provider, so a handler deciding whom a call acts for reads the
-    room's organization, metadata or type here instead of re-reading the
-    room by :func:`current_tool_room_id` on every call. It is a snapshot of
-    the turn's start, exactly as ``RoomContext.room`` is: a metadata patch
-    made during the turn, by this handler or another, is not reflected in
-    it; re-read the room when the turn's own writes matter.
+    room's ``organization_id``, ``metadata`` or ``status`` here instead of
+    re-reading the room by :func:`current_tool_room_id` on every call. A
+    patch written to the store during the turn, by this handler or another,
+    is not in it; re-read the room when the turn's own writes matter. Do not
+    mutate it: the object is shared with the whole turn, a room changes
+    through the store, and a write on this object would be read by the rest
+    of the turn (the agent-response policy, the delivery plan) as if the
+    room had changed.
 
     Like :func:`current_tool_actor_id`, it names the turn and authenticates
     nothing. Which organization the room belongs to is a fact of the room;

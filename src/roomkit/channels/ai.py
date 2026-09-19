@@ -161,12 +161,12 @@ class _ToolLoopContext:
     actor_id: str | None = None
     room_id: str | None = None
     # The Room of the turn, as ``on_event`` received it in its ``RoomContext``:
-    # the object the store loaded when the turn began, carried by reference so
-    # a tool handler reads the same one the turn's hooks, memory provider and
-    # config provider hold, instead of re-reading it by ``room_id``. It is a
-    # snapshot of the turn's start, exactly like ``RoomContext.room``: a
-    # metadata patch made during the turn is not reflected in it. ``None``
-    # for a loop started without a turn above it.
+    # the room as the store loaded it when the turn began, carried by
+    # reference so a tool handler reads the same object the turn's hooks,
+    # memory provider and config provider hold, instead of re-reading it by
+    # ``room_id``. A patch written to the store during the turn is not in
+    # it, and a handler must not write on it (``current_tool_room`` says
+    # why). ``None`` for a loop started without a turn above it.
     room: Room | None = None
     steering_queue: asyncio.Queue[SteeringDirective] = field(default_factory=asyncio.Queue)
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
@@ -192,8 +192,11 @@ class _ToolLoopContext:
         tools re-application never fires (skill-gated tools would stay hidden
         after activation) and per-call allowlist accessors see nothing.
 
-        *room* names the loop's room for a loop started without a turn, as
-        *room_id* does; with a parent, the parent's is inherited by reference.
+        *room* names the loop's room for a loop started without a turn; with
+        a parent, the parent's is inherited by reference. The id follows the
+        room whenever one is known, so ``current_tool_room_id()`` and
+        ``current_tool_room().id`` cannot disagree; *room_id* stands in only
+        when no room is.
         """
         ctx = cls()
         # A uuid, not id(ctx): CPython recycles object ids after gc, and the
@@ -211,8 +214,11 @@ class _ToolLoopContext:
             # By reference: the loop writes into the record the turn already
             # holds, and the output built before the loop ran reads the same one.
             ctx.response_metadata = parent.response_metadata
-        ctx.room_id = room_id or (parent.room_id if parent else None)
         ctx.room = room if room is not None else (parent.room if parent else None)
+        if ctx.room is not None:
+            ctx.room_id = ctx.room.id
+        else:
+            ctx.room_id = room_id or (parent.room_id if parent else None)
         return ctx
 
 

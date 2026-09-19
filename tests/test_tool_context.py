@@ -405,6 +405,22 @@ class TestCurrentToolRoom:
     def test_none_outside_tool_loop(self) -> None:
         assert current_tool_room() is None
 
+    def test_for_loop_takes_the_room_of_a_loop_started_without_a_turn(self) -> None:
+        """No parent: the loop's Room is the one it is given, and the id
+        follows the Room rather than the separately passed ``room_id``."""
+        room = Room(id="r-solo")
+        ctx = _ToolLoopContext.for_loop(None, "stale-id", room=room)
+        assert ctx.room is room
+        assert ctx.room_id == "r-solo"
+
+    def test_for_loop_inherits_the_parent_room_by_reference(self) -> None:
+        parent = _ToolLoopContext()
+        parent.room = Room(id="r-parent")
+        parent.room_id = "r-parent"
+        ctx = _ToolLoopContext.for_loop(parent, None)
+        assert ctx.room is parent.room
+        assert ctx.room_id == "r-parent"
+
 
 class TestCurrentToolAllowedNames:
     async def test_handler_sees_turn_toolset_streaming(self) -> None:
