@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.83.0] — 2026-09-19
+
 ### Added
 
 - `ConversationStore.get_event_count(room_id, event_filter=)` counts a
@@ -18,7 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   committed row, the refused ones included, the twin of `Room.event_count`.
   A host that counted an agent's turns by measuring a `list_events` page
   inherited the page's cap (RFC §14.1). `received_events` is exported from
-  `roomkit` beside `visible_events`.
+  `roomkit` beside `visible_events`. A custom `ConversationStore` widens its
+  own `get_event_count` to match: the framework still calls it with the room
+  id alone, so nothing breaks at runtime, but a subclass that keeps the
+  narrow signature is an invalid override to a type checker, and answers a
+  filtered count with a `TypeError`.
 - `RoomKit.hook()` takes `event_types`, the filter the other three lacked: a
   hook declared for a set of `EventType` is not invoked for the rest, body and
   timeout budget included. `BEFORE_BROADCAST` fires once per text segment and
@@ -7953,7 +7959,8 @@ See entries `0.7.0a1` through `0.7.0a18` below.
 - `STTProvider.transcribe()` returns `TranscriptionResult` (Phase 3.1)
 - Framework event names enriched with payloads (Phase 4)
 
-[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.82.0...HEAD
+[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.83.0...HEAD
+[0.83.0]: https://github.com/roomkit-live/roomkit/compare/v0.82.0...v0.83.0
 [0.82.0]: https://github.com/roomkit-live/roomkit/compare/v0.81.0...v0.82.0
 [0.81.0]: https://github.com/roomkit-live/roomkit/compare/v0.80.0...v0.81.0
 [0.80.0]: https://github.com/roomkit-live/roomkit/compare/v0.79.0...v0.80.0
