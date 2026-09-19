@@ -28,6 +28,7 @@ from shared import setup_console, setup_logging
 
 from roomkit import (
     ChannelCategory,
+    EventFilter,
     HookResult,
     HookTrigger,
     InboundMessage,
@@ -245,7 +246,11 @@ async def main() -> None:
 
     # -- Conversation timeline ---------------------------------------------
 
-    events = await kit.store.list_events("call-room")
+    # The audit read: the intercepted SMS is stored BLOCKED, and a default
+    # timeline read serves only what the room received (RFC §14.1).
+    events = await kit.store.list_events(
+        "call-room", event_filter=EventFilter(include_blocked=True)
+    )
     msg_events = [e for e in events if e.type.value == "message"]
     print(f"\n--- Conversation Timeline ({len(msg_events)} events) ---")
     for ev in msg_events:

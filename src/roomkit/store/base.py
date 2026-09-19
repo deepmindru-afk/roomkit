@@ -373,7 +373,10 @@ class ConversationStore(ABC):
         For each root that has replies, the result maps its id to a
         :class:`ThreadSummary` (reply count + last-reply timestamp). Roots with
         no replies are absent from the mapping. Used to render a "N replies"
-        affordance without fetching every reply.
+        affordance without fetching every reply. A reply the room refused
+        (stored ``BLOCKED``) is not counted, as a default :meth:`list_events`
+        read of the thread does not serve it (RFC §14.1): the affordance and
+        the list agree.
         """
         ...
 
@@ -407,6 +410,10 @@ class ConversationStore(ABC):
 
         Call this when the number has to be right. Read ``Room.event_count``
         when a cheap, monotonically-growing hint is enough.
+
+        Both count every committed row, the refused ones included: a
+        ``BLOCKED`` event consumed an index (RFC §8.3) and stays in the count
+        while a default :meth:`list_events` page skips it (§14.1).
         """
         ...
 

@@ -117,7 +117,9 @@ class RegenerateMixin(HelpersMixin):
         }
         # A BLOCKED message is stored, never broadcast (RFC §10.1 step 10):
         # a hook refused it, or its source could not write. The room never
-        # answered it, so a regenerate does not answer it either.
+        # answered it, so a regenerate does not answer it either. A per-event
+        # check on a reversed scan; the list-building form of the same
+        # predicate is ``received_events``.
         trigger = next(
             (
                 e

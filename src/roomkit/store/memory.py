@@ -433,9 +433,13 @@ class InMemoryStore(ConversationStore):
     ) -> dict[str, ThreadSummary]:
         roots = set(root_event_ids)
         summaries: dict[str, ThreadSummary] = {}
-        for eid in self._room_events.get(room_id, []):
-            event = self._events.get(eid)
-            if event is None or event.parent_event_id not in roots:
+        stored = (
+            self._events[eid] for eid in self._room_events.get(room_id, []) if eid in self._events
+        )
+        # A refused reply is not counted: the list a reader opens from the
+        # affordance is a default timeline read, which does not serve it.
+        for event in received_events(stored):
+            if event.parent_event_id not in roots:
                 continue
             summary = summaries.get(event.parent_event_id)
             if summary is None:

@@ -115,14 +115,17 @@ async def test_refused_rows_are_served_on_request_only(contract_store: Conversat
     reads the whole conversation because hooks read it whole (§7.5 rule 8)."""
     room = await contract_store.create_room(Room(id=uuid4().hex))
     try:
+        root = make_event(room_id=room.id, index=0, body="0")
         refused = make_event(
-            room_id=room.id, index=1, body="refused", status=EventStatus.BLOCKED, blocked_by="spam"
+            room_id=room.id,
+            index=1,
+            body="refused",
+            status=EventStatus.BLOCKED,
+            blocked_by="spam",
+            parent_event_id=root.id,
         )
-        for event in (
-            make_event(room_id=room.id, index=0, body="0"),
-            refused,
-            make_event(room_id=room.id, index=2, body="2"),
-        ):
+        reply = make_event(room_id=room.id, index=2, body="2", parent_event_id=root.id)
+        for event in (root, refused, reply):
             await contract_store.add_event(event)
 
         assert [e.index for e in await contract_store.list_events(room.id)] == [0, 2]
@@ -138,6 +141,14 @@ async def test_refused_rows_are_served_on_request_only(contract_store: Conversat
         by_id = await contract_store.get_event(refused.id)
         assert by_id is not None and by_id.status == EventStatus.BLOCKED
         assert [e.index for e in await contract_store.get_conversation(room.id)] == [0, 1, 2]
+        # The thread affordance and the thread list agree: one received reply.
+        thread = await contract_store.list_events(
+            room.id, event_filter=EventFilter(parent_event_id=root.id)
+        )
+        assert [e.index for e in thread] == [2]
+        summaries = await contract_store.get_thread_summaries(room.id, [root.id])
+        assert summaries[root.id].reply_count == 1
+        assert summaries[root.id].last_reply_at == reply.created_at
     finally:
         await contract_store.delete_room(room.id)
 

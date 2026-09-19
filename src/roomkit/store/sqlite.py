@@ -965,8 +965,9 @@ class SQLiteStore(ConversationStore):
         rows = self._db().execute(
             f"""SELECT parent_event_id, COUNT(*), MAX(created_ts) FROM events
                 WHERE room_id = ? AND parent_event_id IN ({marks})
+                  AND json_extract(data, '$.status') IS NOT ?
                 GROUP BY parent_event_id""",  # nosec B608 — fragments are internal, values parameterised
-            [room_id, *root_event_ids],
+            [room_id, *root_event_ids, EventStatus.BLOCKED.value],
         )
         return {
             root: ThreadSummary(

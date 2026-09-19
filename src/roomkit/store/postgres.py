@@ -1030,12 +1030,12 @@ class PostgresStore(ConversationStore):
             "SELECT parent_event_id, count(*) AS reply_count, "  # nosec B608
             "max(created_at) AS last_reply_at "
             "FROM events "
-            "WHERE room_id = $1 AND parent_event_id = ANY($2) "
+            "WHERE room_id = $1 AND parent_event_id = ANY($2) AND status != $3 "
             "GROUP BY parent_event_id"
         )
         with self._query_span("get_thread_summaries", "events"):
             async with self._acquire() as conn:
-                rows = await conn.fetch(query, room_id, root_event_ids)
+                rows = await conn.fetch(query, room_id, root_event_ids, EventStatus.BLOCKED.value)
         return {
             row["parent_event_id"]: ThreadSummary(
                 root_event_id=row["parent_event_id"],

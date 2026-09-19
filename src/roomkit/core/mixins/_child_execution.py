@@ -18,6 +18,7 @@ from roomkit.models.channel import ChannelBinding
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import ChannelType, EventStatus, EventType
 from roomkit.models.event import EventSource, RoomEvent, TextContent, ToolCallContent
+from roomkit.models.store_filter import EventFilter
 from roomkit.models.streaming import ToolCallEndMarker, ToolCallStartMarker
 
 if TYPE_CHECKING:
@@ -147,7 +148,15 @@ async def _broadcast_and_collect(
     # committed, so this read must be the room's tail (``newest_first``),
     # not its head. A delegated room that outlives 50 events would
     # otherwise hand the agent the opening turns and never the new one.
-    recent = await kit.store.list_events(child_room_id, offset=0, limit=50, newest_first=True)
+    # Read whole, as ``_build_context`` reads it (RFC §7.5 rule 8): the
+    # per-reader filter drops the refused rows for the channels that read it.
+    recent = await kit.store.list_events(
+        child_room_id,
+        offset=0,
+        limit=50,
+        newest_first=True,
+        event_filter=EventFilter(include_blocked=True),
+    )
     context = RoomContext(room=room, bindings=bindings, recent_events=recent)
 
     router = kit._get_router()

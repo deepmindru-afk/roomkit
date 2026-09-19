@@ -856,8 +856,9 @@ class TestPostgresStore:
         mock_conn.fetch.return_value = []
         await store.list_events("room-1", limit=50)
         sql, *params = mock_conn.fetch.call_args[0]
-        assert "status != $" in sql
-        assert "blocked" in params
+        # The placeholder number, not only its presence: a collision with
+        # LIMIT/OFFSET would otherwise pass green.
+        assert f"status != ${params.index('blocked') + 1}" in sql
 
     async def test_list_events_include_blocked_lifts_the_status_condition(self) -> None:
         store, mock_conn = _make_store_with_pool()

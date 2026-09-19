@@ -17,6 +17,7 @@ import asyncio
 
 from roomkit import (
     ChannelCategory,
+    EventFilter,
     HookExecution,
     HookTrigger,
     InboundMessage,
@@ -140,7 +141,11 @@ async def main() -> None:
         print(f"  {entry}")
 
     # --- Show full conversation history ---
-    events = await kit.store.list_events("mute-room")
+    # The record, not the room's voice: the muted agent's answers are stored
+    # BLOCKED, and a default timeline read skips them (RFC §14.1).
+    events = await kit.store.list_events(
+        "mute-room", event_filter=EventFilter(include_blocked=True)
+    )
     msg_events = [e for e in events if e.type.value == "message"]
     print(f"\nConversation ({len(msg_events)} messages):")
     for ev in msg_events:

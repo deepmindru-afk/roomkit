@@ -77,7 +77,7 @@ from roomkit.models.enums import (
     Visibility,
 )
 from roomkit.models.event import EventSource, RoomEvent
-from roomkit.models.store_filter import PersistencePolicy
+from roomkit.models.store_filter import EventFilter, PersistencePolicy
 from roomkit.models.task import Observation, Task
 from roomkit.orchestration.status_bus import StatusBus, StatusEntry
 from roomkit.realtime.base import (
@@ -670,6 +670,7 @@ class RoomKit(
         after_index: int | None = None,
         before_index: int | None = None,
         newest_first: bool = False,
+        include_blocked: bool = False,
         organization_id: str | None = None,
     ) -> list[RoomEvent]:
         """Query the event timeline for a room.
@@ -683,9 +684,9 @@ class RoomKit(
         recent ``limit`` instead (still ascending), which is the shape a
         reconnect snapshot wants: what was just said, not how the room opened.
 
-        The page holds what the room received: a row stored ``BLOCKED`` is not
-        served here. An audit reader asks the store for it with
-        ``EventFilter(include_blocked=True)`` (RFC §14.1).
+        The page holds what the room received: a row stored ``BLOCKED`` is
+        served only when ``include_blocked`` asks for it, the audit read
+        (RFC §14.1).
 
         Args:
             room_id: Room to query.
@@ -698,6 +699,8 @@ class RoomKit(
             newest_first: In offset-based mode, return the most recent
                 ``limit`` events instead of the oldest. Ignored when a cursor
                 is supplied.
+            include_blocked: Serve the rows the room refused too (status
+                ``BLOCKED``), for audit.
         """
         await self.get_room(room_id, organization_id=organization_id)
         return await self._store.list_events(
@@ -708,6 +711,7 @@ class RoomKit(
             after_index=after_index,
             before_index=before_index,
             newest_first=newest_first,
+            event_filter=EventFilter(include_blocked=True) if include_blocked else None,
         )
 
     async def list_tasks(

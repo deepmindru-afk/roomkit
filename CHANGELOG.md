@@ -51,7 +51,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`roomkit.models.store_filter.received_events`). A host that filtered
   `status == BLOCKED` out of every `list_events` result can drop those
   filters; one that read refused rows for audit passes
-  `include_blocked=True` (RFC §14.1).
+  `include_blocked=True` (RFC §14.1), on the store or through
+  `RoomKit.get_timeline(..., include_blocked=True)`. Thread summaries
+  follow the same rule: a refused reply is not counted, so the "N replies"
+  affordance and the thread it opens agree.
 
 ### Fixed
 
