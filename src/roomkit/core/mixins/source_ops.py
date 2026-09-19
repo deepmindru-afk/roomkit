@@ -32,7 +32,12 @@ class SourceOpsHost(Protocol):
     _source_tasks: dict[str, asyncio.Task[None]]
 
     async def process_inbound(
-        self, message: InboundMessage, *, room_id: str | None = None
+        self,
+        message: InboundMessage,
+        *,
+        room_id: str | None = None,
+        defer_delivery: bool = False,
+        organization_id: str | None = None,
     ) -> InboundResult: ...
 
 
@@ -47,7 +52,12 @@ class SourceOpsMixin(HelpersMixin):
 
     # Stub for cross-mixin call — implemented by InboundMixin in the MRO.
     async def process_inbound(
-        self, message: InboundMessage, *, room_id: str | None = None
+        self,
+        message: InboundMessage,
+        *,
+        room_id: str | None = None,
+        defer_delivery: bool = False,
+        organization_id: str | None = None,
     ) -> InboundResult: ...
 
     async def attach_source(

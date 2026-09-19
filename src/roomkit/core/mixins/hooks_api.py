@@ -55,7 +55,12 @@ class HooksApiHost(Protocol):
     _identity_hooks: dict[HookTrigger, list[IdentityHookRegistration]]
 
     async def process_inbound(
-        self, message: InboundMessage, *, room_id: str | None = None
+        self,
+        message: InboundMessage,
+        *,
+        room_id: str | None = None,
+        defer_delivery: bool = False,
+        organization_id: str | None = None,
     ) -> InboundResult: ...
 
 
@@ -72,7 +77,12 @@ class HooksApiMixin(HelpersMixin):
 
     # Stub for cross-mixin call — implemented by InboundMixin.
     async def process_inbound(
-        self, message: InboundMessage, *, room_id: str | None = None
+        self,
+        message: InboundMessage,
+        *,
+        room_id: str | None = None,
+        defer_delivery: bool = False,
+        organization_id: str | None = None,
     ) -> InboundResult: ...
 
     def hook(
@@ -205,6 +215,7 @@ class HooksApiMixin(HelpersMixin):
         self,
         meta: WebhookMeta,
         channel_id: str,
+        organization_id: str | None = None,
     ) -> None:
         """Process any SMS provider webhook automatically.
 
@@ -236,10 +247,14 @@ class HooksApiMixin(HelpersMixin):
                 meta = extract_sms_meta(provider, await request.json())
                 await kit.process_webhook(meta, channel_id=f"sms-{provider}")
                 return {"ok": True}
+
+        ``organization_id`` scopes the room an inbound message lands in, as
+        on :meth:`process_inbound` (RFC §17.2): a host that resolved its tenant
+        from the webhook names it here.
         """
         if meta.is_inbound:
             inbound = meta.to_inbound(channel_id)
-            await self.process_inbound(inbound)
+            await self.process_inbound(inbound, organization_id=organization_id)
         elif meta.is_status:
             status = meta.to_status()
             status.channel_id = channel_id

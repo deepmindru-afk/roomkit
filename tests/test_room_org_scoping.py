@@ -238,3 +238,25 @@ class TestScopedInbound:
         kit = await _two_tenants()
         result = await kit.process_inbound(_message(), room_id="globex-room")
         assert result.event is not None and result.event.room_id == "globex-room"
+
+    async def test_a_routed_miss_creates_the_room_under_the_caller(self) -> None:
+        """No room routes for this channel: the auto-created one belongs to
+        the caller's organization."""
+        kit = RoomKit()
+        kit.register_channel(SimpleChannel("sms1"))
+        result = await kit.process_inbound(_message(), organization_id="acme")
+        assert (await kit.get_room(result.event.room_id)).organization_id == "acme"
+
+    async def test_a_deferred_send_to_another_organization_is_refused_synchronously(self) -> None:
+        kit = await _two_tenants()
+        with pytest.raises(RoomNotFoundError):
+            await kit.process_inbound(
+                _message(), room_id="globex-room", organization_id="acme", defer_delivery=True
+            )
+        assert await kit.store.list_events("globex-room") == []
+
+    async def test_a_matching_organization_still_auto_attaches_the_channel(self) -> None:
+        kit = await _two_tenants()
+        assert await kit.store.get_binding("acme-room", "sms1") is None
+        await kit.process_inbound(_message(), room_id="acme-room", organization_id="acme")
+        assert await kit.store.get_binding("acme-room", "sms1") is not None

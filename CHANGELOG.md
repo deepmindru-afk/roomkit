@@ -9,14 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `RoomKit.process_inbound` takes `organization_id` (RFC §17.2). The room
-  the message lands in, routed or explicit, is read scoped to it: a room
-  belonging to another organization is reported as not found before any
-  event is committed or any channel auto-attached, and a room that does not
-  exist yet is created under it. Left unset, the read is unscoped and
-  behaves as it always has, so a channel that routes by its own binding
-  passes nothing and an application that resolved a tenant before the
-  call names it, the way `send_event` and the room verbs already allow.
+- `RoomKit.process_inbound` and `process_webhook` take `organization_id`
+  (RFC §17.2). The room the message would land in is checked against it
+  before any event is committed or any channel auto-attached: a room
+  belonging to another organization is reported as not found, whether the
+  caller named it or the router picked it (the router is not organization
+  aware, so a routed pick outside the caller's organization is refused, not
+  replaced by a room of its own), and a room the caller names that does
+  not exist yet is created under it. That auto-create makes a miss
+  observable, so a scoped caller passes room ids it resolved itself. Left
+  unset, the read is unscoped and behaves as it always has: a channel that
+  routes by its own binding passes nothing, an application that resolved a
+  tenant from the row mapping an external identity to a room names it.
+  Still unscoped on the write surface: `deliver`, `regenerate_response`,
+  `update_event` / `delete_event`, the membership verbs, `send_greeting`,
+  `delegate`, `submit_feedback` and the voice joins.
 
 ### Fixed
 

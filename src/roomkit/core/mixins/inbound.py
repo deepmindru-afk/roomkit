@@ -7,7 +7,7 @@ import logging
 from contextlib import AsyncExitStack
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from roomkit.core.exceptions import ChannelNotRegisteredError
+from roomkit.core.exceptions import ChannelNotRegisteredError, RoomNotFoundError
 from roomkit.core.mixins.channel_ops import is_channel_detached
 from roomkit.core.mixins.helpers import HelpersMixin
 from roomkit.core.mixins.inbound_identity import _IdentityBlockedError
@@ -115,16 +115,6 @@ class InboundMixin(HelpersMixin):
             message: The inbound message to process.
             room_id: Explicit room to route to, bypassing the inbound router.
                 Useful for shared channels attached to multiple rooms.
-            organization_id: The organization the caller acts for (RFC
-                §17.2). The room the message lands in, routed or explicit,
-                is read scoped to it: a room belonging to another
-                organization is reported as **not found**, before any event
-                is committed or any channel auto-attached, and a room that
-                does not exist yet is created under it. Left unset, the read
-                is unscoped and behaves as it always has. A library has no
-                caller or auth context of its own, so the scope has to come
-                from the caller: the row that mapped an external identity
-                (a chat, a number) to a room is where it usually lives.
             defer_delivery: Return at the commit instead of waiting for the
                 delivery set (RFC §10.1 step 18 detached completion). The
                 result carries the committed event — a hook refusal is still
@@ -136,6 +126,22 @@ class InboundMixin(HelpersMixin):
                 event while the agent's turn runs on (an HTTP route returning
                 200, say); ``delivery_results`` is backfilled by
                 ``delivery.wait()``.
+            organization_id: The organization the caller acts for (RFC
+                §17.2). The room the message would land in is checked
+                against it before any event is committed or any channel
+                auto-attached: a room belonging to another organization is
+                reported as **not found**, whether the caller named it or
+                the router picked it (the router itself is not organization
+                aware, so on the routed path the refusal is the outcome, not
+                a room of the caller's own); a room the caller names that
+                does not exist yet is created under it. That auto-create
+                makes a miss observable, so a scoped caller passes room ids
+                it resolved itself, never one it was handed. Left unset, the
+                read is unscoped and behaves as it always has. A library has
+                no caller or auth context of its own, so the scope has to
+                come from the caller: the row that mapped an external
+                identity (a chat, a number) to a room is where it usually
+                lives.
 
         Cancelling an awaited call cancels only its delivery cascade and
         drains owned generation, tools and streams before propagating
@@ -223,7 +229,12 @@ class InboundMixin(HelpersMixin):
         # that can create a room, so a timeout here would leave an orphan
         # behind for a message that was refused.
         room_id, room_just_created = await self._route_to_room(
-            message, channel, room_id, telemetry, inbound_span_id, organization_id
+            message,
+            channel,
+            room_id,
+            telemetry,
+            inbound_span_id,
+            organization_id=organization_id,
         )
 
         # One budget for the whole pre-commit phase (RFC §13.6), as an absolute
@@ -525,7 +536,8 @@ class InboundMixin(HelpersMixin):
         room_id: str | None,
         telemetry: Any,
         inbound_span_id: str,
-        organization_id: str | None = None,
+        *,
+        organization_id: str | None,
     ) -> tuple[str, bool]:
         """Route inbound message to a room, auto-creating if needed.
 
@@ -570,17 +582,21 @@ class InboundMixin(HelpersMixin):
                 # (create, attach, lock) happens outside it, because a pooled
                 # connection must never be held across a lock or a write path.
                 async with self._store.connection():
-                    room_present = await self._store.room_exists(room_id)
+                    if organization_id is None:
+                        room_present = await self._store.room_exists(room_id)
+                    else:
+                        # The caller acts for one organization, and a room of
+                        # another is not found to it (RFC §17.2): refused
+                        # here, before any auto-attach or commit. One read
+                        # answers both existence and scope; the decode the
+                        # unscoped branch avoids is the price of the check.
+                        room = await self._store.get_room(room_id)
+                        if room is not None and room.organization_id != organization_id:
+                            raise RoomNotFoundError(f"Room {room_id} not found")
+                        room_present = room is not None
                     binding_present = room_present and await self._store.binding_exists(
                         room_id, message.channel_id
                     )
-                if room_present and organization_id is not None:
-                    # The caller acts for one organization, and a room of
-                    # another is not found to it (RFC §17.2): refused here,
-                    # before any auto-attach or commit. The scoped read costs
-                    # the decode the unscoped path avoids above; it is the
-                    # price of the check, paid only by callers that ask.
-                    await self.get_room(room_id, organization_id=organization_id)
                 if not room_present:
                     await self.create_room(room_id=room_id, organization_id=organization_id)
                     await self.attach_channel(room_id, message.channel_id)
