@@ -912,17 +912,6 @@ class PostgresStore(ConversationStore):
         params: list[object] = [room_id]
         idx = 2
 
-        # Visibility: event_filter.visibility takes precedence
-        effective_visibility = (
-            event_filter.visibility
-            if event_filter is not None and event_filter.visibility is not None
-            else visibility_filter
-        )
-        if effective_visibility is not None:
-            conditions.append(f"visibility = ${idx}")
-            params.append(effective_visibility)
-            idx += 1
-
         if after_index is not None:
             conditions.append(f"index > ${idx}")
             params.append(after_index)
@@ -932,15 +921,15 @@ class PostgresStore(ConversationStore):
             params.append(before_index)
             idx += 1
 
-        if event_filter is not None:
-            idx = self._apply_event_filter_sql(event_filter, conditions, params, idx)
-
-        # The received-rows default (RFC §14.1), in SQL so the page is cut
-        # after the refused rows are gone.
-        if not includes_blocked(event_filter):
-            conditions.append(f"status != ${idx}")
-            params.append(EventStatus.BLOCKED.value)
-            idx += 1
+        # Visibility: event_filter.visibility takes precedence.
+        effective_visibility = (
+            event_filter.visibility
+            if event_filter is not None and event_filter.visibility is not None
+            else visibility_filter
+        )
+        idx = self._apply_event_filter_sql(
+            event_filter, conditions, params, idx, visibility=effective_visibility
+        )
 
         where = " AND ".join(conditions)
 
@@ -975,12 +964,30 @@ class PostgresStore(ConversationStore):
 
     @staticmethod
     def _apply_event_filter_sql(
-        ef: EventFilter,
+        ef: EventFilter | None,
         conditions: list[str],
         params: list[object],
         idx: int,
+        *,
+        visibility: str | None = None,
     ) -> int:
-        """Append SQL conditions for EventFilter fields. Returns next param index."""
+        """Append the row conditions of a page, or of the count that stands for
+        it, under ``ef``. Returns the next parameter index.
+
+        The one constructor behind :meth:`list_events` and
+        :meth:`get_event_count`, so the two never diverge on a criterion: the
+        visibility the caller resolved, then the filter's own fields, then the
+        received-rows default (RFC §14.1) unless ``include_blocked`` lifts it.
+        In SQL, so a page is cut after the refused rows are gone, not before.
+        """
+        if visibility is not None:
+            conditions.append(f"visibility = ${idx}")
+            params.append(visibility)
+            idx += 1
+        if ef is None:
+            conditions.append(f"status != ${idx}")
+            params.append(EventStatus.BLOCKED.value)
+            return idx + 1
         if ef.event_types is not None:
             conditions.append(f"type = ANY(${idx})")
             params.append([t.value for t in ef.event_types])
@@ -1018,6 +1025,10 @@ class PostgresStore(ConversationStore):
         if ef.before_time is not None:
             conditions.append(f"created_at < ${idx}")
             params.append(ef.before_time)
+            idx += 1
+        if not includes_blocked(ef):
+            conditions.append(f"status != ${idx}")
+            params.append(EventStatus.BLOCKED.value)
             idx += 1
         return idx
 
@@ -1068,17 +1079,11 @@ class PostgresStore(ConversationStore):
         conditions = ["room_id = $1"]
         params: list[object] = [room_id]
         if event_filter is not None:
-            # The conditions of a ``list_events`` page under this filter, the
-            # received-rows default included, and no page (RFC §14.1).
-            idx = 2
-            if event_filter.visibility is not None:
-                conditions.append(f"visibility = ${idx}")
-                params.append(event_filter.visibility)
-                idx += 1
-            idx = self._apply_event_filter_sql(event_filter, conditions, params, idx)
-            if not includes_blocked(event_filter):
-                conditions.append(f"status != ${idx}")
-                params.append(EventStatus.BLOCKED.value)
+            # The conditions of a ``list_events`` page under this filter, and
+            # no page (RFC §14.1).
+            self._apply_event_filter_sql(
+                event_filter, conditions, params, 2, visibility=event_filter.visibility
+            )
         query = f"SELECT count(*) AS cnt FROM events WHERE {' AND '.join(conditions)}"  # nosec B608
         with self._query_span("get_event_count", "events"):
             async with self._acquire() as conn:

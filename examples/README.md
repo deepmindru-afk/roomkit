@@ -207,6 +207,7 @@ CONSOLE=1 uv run python examples/<example>.py
 | `rate_limiting.py` | Rate limiting | TokenBucketRateLimiter for message throttling |
 | `circuit_breaker_retry.py` | Resilience | Circuit breaker and retry patterns |
 | `postgres_store.py` | Storage | PostgreSQL storage backend for production |
+| `store_filtered_count.py` | Storage | Exact event counts under the filter a page would use |
 | `delivery_backend.py` | Delivery | Persistent delivery with InMemoryDeliveryBackend |
 | `delivery_redis.py` | Delivery | Redis-backed persistent distributed delivery |
 | `telemetry_console.py` | Telemetry | Console telemetry provider for span timing |

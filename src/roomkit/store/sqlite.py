@@ -889,17 +889,7 @@ class SQLiteStore(ConversationStore):
         visibility = (
             ef.visibility if ef is not None and ef.visibility is not None else visibility_filter
         )
-        if visibility is not None:
-            where.append("visibility = ?")
-            params.append(visibility)
-        if ef is not None:
-            self._apply_event_filter_sql(ef, where, params)
-        if not includes_blocked(ef):
-            # The received-rows default (RFC §14.1). ``status`` lives in the
-            # JSON document; it is a SQL condition all the same, so the page
-            # is cut after the refused rows are gone, not before.
-            where.append("json_extract(data, '$.status') IS NOT ?")
-            params.append(EventStatus.BLOCKED.value)
+        self._apply_event_filter_sql(ef, where, params, visibility=visibility)
 
         base = f"SELECT data FROM events WHERE {' AND '.join(where)}"  # nosec B608 — fragments are internal, values parameterised
         if before_index is not None or (
@@ -922,9 +912,30 @@ class SQLiteStore(ConversationStore):
         return [_load_event(r[0]) for r in rows]
 
     @staticmethod
-    def _apply_event_filter_sql(ef: EventFilter, where: list[str], params: list[Any]) -> None:
-        """Append the SQL conditions of ``ef``: the one constructor behind the
-        page and the count, so the two never diverge on a criterion."""
+    def _apply_event_filter_sql(
+        ef: EventFilter | None,
+        where: list[str],
+        params: list[Any],
+        *,
+        visibility: str | None = None,
+    ) -> None:
+        """Append the row conditions of a page, or of the count that stands for
+        it, under ``ef``.
+
+        The one constructor behind :meth:`list_events` and
+        :meth:`get_event_count`, so the two never diverge on a criterion: the
+        visibility the caller resolved, then the filter's own fields, then the
+        received-rows default (RFC §14.1) unless ``include_blocked`` lifts it.
+        ``status`` lives in the JSON document; it is a SQL condition all the
+        same, so a page is cut after the refused rows are gone, not before.
+        """
+        if visibility is not None:
+            where.append("visibility = ?")
+            params.append(visibility)
+        if ef is None:
+            where.append("json_extract(data, '$.status') IS NOT ?")
+            params.append(EventStatus.BLOCKED.value)
+            return
         if ef.event_types is not None:
             marks = ",".join("?" for _ in ef.event_types)
             where.append(f"type IN ({marks})")
@@ -956,6 +967,9 @@ class SQLiteStore(ConversationStore):
         if ef.before_time is not None:
             where.append("created_ts < ?")
             params.append(_ts(ef.before_time))
+        if not includes_blocked(ef):
+            where.append("json_extract(data, '$.status') IS NOT ?")
+            params.append(EventStatus.BLOCKED.value)
 
     async def get_thread_summaries(
         self, room_id: str, root_event_ids: list[str]
@@ -1016,15 +1030,9 @@ class SQLiteStore(ConversationStore):
         where = ["room_id = ?"]
         params: list[Any] = [room_id]
         if ef is not None:
-            # The conditions of a ``list_events`` page under this filter, the
-            # received-rows default included, and no page (RFC §14.1).
-            if ef.visibility is not None:
-                where.append("visibility = ?")
-                params.append(ef.visibility)
-            self._apply_event_filter_sql(ef, where, params)
-            if not includes_blocked(ef):
-                where.append("json_extract(data, '$.status') IS NOT ?")
-                params.append(EventStatus.BLOCKED.value)
+            # The conditions of a ``list_events`` page under this filter, and
+            # no page (RFC §14.1).
+            self._apply_event_filter_sql(ef, where, params, visibility=ef.visibility)
         query = f"SELECT COUNT(*) FROM events WHERE {' AND '.join(where)}"  # nosec B608 — fragments are internal, values parameterised
         return self._db().execute(query, params).fetchone()[0]
 

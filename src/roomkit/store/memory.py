@@ -370,23 +370,15 @@ class InMemoryStore(ConversationStore):
         elif before_index is not None:
             events = [e for e in events if e.index < before_index]
 
-        # Apply visibility: event_filter.visibility takes precedence
+        # Visibility: event_filter.visibility takes precedence. The criteria
+        # and the received-rows default run ahead of the page cut, so a page of
+        # ``limit`` events is full whatever was refused around them.
         effective_visibility = (
             event_filter.visibility
             if event_filter is not None and event_filter.visibility is not None
             else visibility_filter
         )
-        if effective_visibility is not None:
-            events = [e for e in events if e.visibility == effective_visibility]
-
-        # Apply EventFilter criteria
-        if event_filter is not None:
-            events = self._apply_event_filter(events, event_filter)
-
-        # The received-rows default (RFC §14.1), ahead of the page cut so a
-        # page of ``limit`` events is full whatever was refused around them.
-        if not includes_blocked(event_filter):
-            events = received_events(events)
+        events = self._apply_event_filter(events, event_filter, visibility=effective_visibility)
 
         if before_index is not None:
             return events[-limit:] if limit < len(events) else events
@@ -402,8 +394,20 @@ class InMemoryStore(ConversationStore):
         return events[offset : offset + limit]
 
     @staticmethod
-    def _apply_event_filter(events: list[RoomEvent], ef: EventFilter) -> list[RoomEvent]:
-        """Apply EventFilter criteria to an in-memory event list."""
+    def _apply_event_filter(
+        events: list[RoomEvent], ef: EventFilter | None, *, visibility: str | None = None
+    ) -> list[RoomEvent]:
+        """The rows of a page, or of the count that stands for it, under ``ef``.
+
+        The one constructor behind :meth:`list_events` and
+        :meth:`get_event_count`, so the two never diverge on a criterion: the
+        visibility the caller resolved, then the filter's own fields, then the
+        received-rows default (RFC §14.1) unless ``include_blocked`` lifts it.
+        """
+        if visibility is not None:
+            events = [e for e in events if e.visibility == visibility]
+        if ef is None:
+            return received_events(events)
         if ef.event_types is not None:
             allowed = set(ef.event_types)
             events = [e for e in events if e.type in allowed]
@@ -426,6 +430,8 @@ class InMemoryStore(ConversationStore):
             events = [e for e in events if e.created_at > ef.after_time]
         if ef.before_time is not None:
             events = [e for e in events if e.created_at < ef.before_time]
+        if not includes_blocked(ef):
+            events = received_events(events)
         return events
 
     async def get_thread_summaries(
@@ -461,15 +467,12 @@ class InMemoryStore(ConversationStore):
         event_ids = self._room_events.get(room_id, [])
         if event_filter is None:
             return len(event_ids)
-        # The rows a ``list_events`` page would serve under this filter, the
-        # received-rows default included, and no page (RFC §14.1).
+        # The rows a ``list_events`` page would serve under this filter, and
+        # no page (RFC §14.1).
         events = [self._events[eid] for eid in event_ids if eid in self._events]
-        if event_filter.visibility is not None:
-            events = [e for e in events if e.visibility == event_filter.visibility]
-        events = self._apply_event_filter(events, event_filter)
-        if not includes_blocked(event_filter):
-            events = received_events(events)
-        return len(events)
+        return len(
+            self._apply_event_filter(events, event_filter, visibility=event_filter.visibility)
+        )
 
     async def add_event_auto_index(self, room_id: str, event: RoomEvent) -> RoomEvent:
         """Atomically reserve the room's next monotonic index and append."""

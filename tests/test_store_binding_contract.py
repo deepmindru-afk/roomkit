@@ -205,13 +205,23 @@ async def test_a_filtered_count_is_the_page_it_stands_for(
                 type=EventType.SYSTEM,
                 created_at=t0 + timedelta(minutes=4),
             ),
+            make_event(
+                room_id=room.id,
+                index=5,
+                body="psst",
+                channel_id="ws",
+                channel_type=ChannelType.WEBSOCKET,
+                participant_id="alice",
+                visibility="private",
+                created_at=t0 + timedelta(minutes=5),
+            ),
         ]
         for event in rows:
             await contract_store.add_event(event)
         ai_turns = EventFilter(event_types=[EventType.MESSAGE], source_channel_type=ChannelType.AI)
 
-        assert await contract_store.get_event_count(room.id) == 5
-        assert await contract_store.get_event_count(room.id, EventFilter()) == 4
+        assert await contract_store.get_event_count(room.id) == 6
+        assert await contract_store.get_event_count(room.id, EventFilter()) == 5
         assert await contract_store.get_event_count(room.id, ai_turns) == 2
         assert (
             await contract_store.get_event_count(
@@ -235,9 +245,34 @@ async def test_a_filtered_count_is_the_page_it_stands_for(
             )
             == 1
         )
-        # The count is the page it stands for.
-        page = await contract_store.list_events(room.id, limit=1000, event_filter=ai_turns)
-        assert await contract_store.get_event_count(room.id, ai_turns) == len(page) == 2
+        # The two received messages written after the first minute: "a2" and
+        # the private one. The refused row sits between them and is not counted.
+        assert (
+            await contract_store.get_event_count(
+                room.id,
+                EventFilter(
+                    event_types=[EventType.MESSAGE],
+                    after_time=t0 + timedelta(minutes=1),
+                ),
+            )
+            == 2
+        )
+        assert (
+            await contract_store.get_event_count(room.id, EventFilter(participant_id="alice")) == 1
+        )
+        assert (
+            await contract_store.get_event_count(room.id, EventFilter(visibility="private")) == 1
+        )
+        # The count is the page it stands for, on every criterion.
+        for criteria in (
+            ai_turns,
+            EventFilter(participant_id="alice"),
+            EventFilter(visibility="private"),
+            EventFilter(after_time=t0 + timedelta(minutes=1)),
+            EventFilter(include_blocked=True),
+        ):
+            page = await contract_store.list_events(room.id, limit=1000, event_filter=criteria)
+            assert await contract_store.get_event_count(room.id, criteria) == len(page)
     finally:
         await contract_store.delete_room(room.id)
 
