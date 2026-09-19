@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `AIResponseEvent.declared_tools` reports the tools the provider received
+  over every generation round of the turn, revealed ones included: one
+  `DeclaredTool` per name, with the `description` and `parameters` as
+  declared and an `origin` naming why Tool Search let it through (`always`,
+  `pinned`, `sticky`, `revealed`). `BEFORE_AI_GENERATION` fires once, with
+  the first round's toolset, so under Tool Search a host recording "what the
+  model was offered" from that hook never saw a tool `find_tools` revealed:
+  a turn that created a card through a revealed tool listed ten tools and
+  not that one. The union over rounds keeps a tool the sliding reveal window
+  dropped, and a turn without Tool Search reports its one declaration through
+  the same field, so a host has one reading whatever the turn's mode
+  (RFC §6.4).
+
 ## [0.82.0] — 2026-09-19
 
 ### Added

@@ -5,13 +5,13 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from roomkit.models.enums import ChannelType
 from roomkit.models.streaming import LoopEndReason
 
 if TYPE_CHECKING:
-    from roomkit.providers.ai.base import AIContext
+    from roomkit.providers.ai.base import AIContext, AITool
     from roomkit.voice.base import VoiceSession
 
 
@@ -136,6 +136,47 @@ def response_transcript(segments: Iterable[str]) -> tuple[list[str], str]:
     return kept, RESPONSE_SEGMENT_SEPARATOR.join(kept)
 
 
+ToolDeclarationOrigin = Literal["always", "pinned", "sticky", "revealed"]
+"""Why a tool was in the toolset the provider received (:class:`DeclaredTool`).
+
+``"always"`` is a tool Tool Search never hid: every tool of a turn that ran
+without it, and, under it, a discovery or skill infrastructure tool and
+anything a hook added. The other three name which term of the Tool Search
+keep-set admitted a catalogue tool: ``"pinned"`` by the channel's
+``tool_search_pinned`` configuration, ``"sticky"`` because the room already
+called or found it in an earlier turn, ``"revealed"`` because ``find_tools``
+found it in this turn. A tool that qualifies on several counts carries the
+earliest reason it was visible, in that order.
+"""
+
+
+@dataclass(frozen=True)
+class DeclaredTool:
+    """One tool as the provider received it, and why it was there.
+
+    The record :attr:`AIResponseEvent.declared_tools` is made of. ``name``,
+    ``description`` and ``parameters`` are the ``AITool`` fields RoomKit handed
+    the provider: its declaration, not the provider's wire form of it. The
+    schema is that object, not a copy, so a consumer reads it and never
+    writes it.
+    """
+
+    name: str
+    description: str
+    parameters: dict[str, Any]
+    origin: ToolDeclarationOrigin = "always"
+
+    @classmethod
+    def from_tool(cls, tool: AITool, origin: ToolDeclarationOrigin = "always") -> DeclaredTool:
+        """The record for *tool*, declared for the reason *origin* says."""
+        return cls(
+            name=tool.name,
+            description=tool.description,
+            parameters=tool.parameters,
+            origin=origin,
+        )
+
+
 @dataclass(frozen=True)
 class AIResponseEvent:
     """Emitted through ON_AI_RESPONSE hooks after AI generation completes.
@@ -213,6 +254,26 @@ class AIResponseEvent:
     ACP includes the native session, prompt source and session usage report.
     These are observations, not a price or a claim that generation succeeded.
     Existing providers and consumers can leave this empty.
+    """
+
+    declared_tools: list[DeclaredTool] = field(default_factory=list)
+    """The tools the provider received this turn, over every generation round.
+
+    ``BEFORE_AI_GENERATION`` sees the toolset once, as the turn starts. Under
+    Tool Search that is the pinned floor plus ``find_tools`` / ``list_tools``:
+    a tool ``find_tools`` reveals only enters the declaration of the *next*
+    round, and no event carried it, so a host recording "what the model was
+    offered" from that hook never saw a revealed tool. This is the union of
+    the toolsets handed to the provider on each round of the turn, in first
+    declaration order, one entry per name: a tool declared on several rounds
+    keeps its first entry, and since the reveal window slides from one
+    ``find_tools`` to the next, the union is the only reading that keeps a
+    tool revealed earlier in the turn. A turn without Tool Search reports its
+    one declaration here too, every entry ``"always"``: one reading for the
+    host, whatever the turn's mode.
+
+    Empty when the turn declared no tool, and for a channel whose toolset is
+    not RoomKit's to declare (an external ACP agent).
     """
 
 

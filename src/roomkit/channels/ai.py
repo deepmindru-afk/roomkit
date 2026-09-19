@@ -82,7 +82,7 @@ from roomkit.tools.compose import compose_tool_handlers, extract_tools
 from roomkit.tools.policy import ToolPolicy
 
 if TYPE_CHECKING:
-    from roomkit.models.tool_call import ToolCallCallback, ToolCallObserver
+    from roomkit.models.tool_call import DeclaredTool, ToolCallCallback, ToolCallObserver
     from roomkit.sandbox.executor import SandboxExecutor
     from roomkit.skills.executor import ScriptExecutor
     from roomkit.skills.registry import SkillRegistry
@@ -183,6 +183,13 @@ class _ToolLoopContext:
     # ``_build_context`` hands it to ``AIContext`` and ``for_loop`` inherits the
     # reference, never a copy.
     response_metadata: ResponseMetadata = field(default_factory=ResponseMetadata)
+    # The tools the provider received, over every round of the turn, keyed by
+    # name in first-declaration order (see ``AIResponseEvent.declared_tools``).
+    # Round 0 is declared under the turn's context and later rounds under the
+    # loop's child, so ``for_loop`` shares this dict by reference like
+    # ``response_metadata``: whichever context recorded a round, the emission
+    # reads the whole turn.
+    declared_tools: dict[str, DeclaredTool] = field(default_factory=dict)
 
     @classmethod
     def for_loop(
@@ -220,6 +227,9 @@ class _ToolLoopContext:
             # By reference: the loop writes into the record the turn already
             # holds, and the output built before the loop ran reads the same one.
             ctx.response_metadata = parent.response_metadata
+            # By reference too: round 0 was declared under the parent, the
+            # rounds below run under this child, and the turn reports one union.
+            ctx.declared_tools = parent.declared_tools
         ctx.room = room if room is not None else (parent.room if parent else None)
         if ctx.room is not None:
             ctx.room_id = ctx.room.id

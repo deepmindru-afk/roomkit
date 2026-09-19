@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from roomkit.channels._skill_constants import SKILL_INFRA_TOOL_NAMES
 from roomkit.channels._tool_search_constants import TOOL_SEARCH_INFRA_TOOL_NAMES
+from roomkit.models.tool_call import DeclaredTool, ToolDeclarationOrigin
 from roomkit.providers.ai.base import AITool
 from roomkit.sandbox.tools import SANDBOX_TOOL_PREFIX
 from roomkit.tools.policy import ToolPolicy, matches_any_pattern
@@ -99,6 +100,47 @@ class AIToolPolicyMixin:
                 continue
             gated.update(meta.gated_tool_names)
         return gated
+
+    def _record_declared_tools(
+        self, loop_ctx: _ToolLoopContext, tools: list[AITool] | None
+    ) -> None:
+        """Record the toolset one generation round hands the provider.
+
+        Called with the ``AIContext.tools`` of every provider call of the turn,
+        by the loop that makes the call. Not from ``_apply_tool_filters``: its
+        output is not the round's declaration (a ``BEFORE_AI_GENERATION`` hook
+        may edit the tools, the eviction tool is injected per round beside it,
+        the force-stop ripcord strips them) and it also serves as a single-tool
+        probe. A name is recorded once per turn, on its first round, with the
+        reason Tool Search let it through as it stood then. The turn's
+        ``AIResponseEvent.declared_tools`` reports the union.
+        """
+        if not tools:
+            return
+        declared = loop_ctx.declared_tools
+        for tool in tools:
+            if tool.name not in declared:
+                origin = self._declaration_origin(tool.name, loop_ctx)
+                declared[tool.name] = DeclaredTool.from_tool(tool, origin)
+
+    def _declaration_origin(self, name: str, loop_ctx: _ToolLoopContext) -> ToolDeclarationOrigin:
+        """Why a tool is in this round's declaration (``ToolDeclarationOrigin``).
+
+        The keep-set of ``_apply_tool_filters`` is ``pinned | revealed |
+        sticky``; this names which term admitted the tool, pinned before
+        sticky before revealed: the earliest reason it was visible. Outside
+        Tool Search, and for a tool the collapse never touches (an
+        infrastructure tool, one a hook added), there is no such reason.
+        """
+        if not loop_ctx.tool_search_active:
+            return "always"
+        if name in self._tool_search_pinned:
+            return "pinned"
+        if name in loop_ctx.sticky_tools:
+            return "sticky"
+        if name in loop_ctx.revealed_tools:
+            return "revealed"
+        return "always"
 
     def _apply_tool_filters(self, tools: list[AITool]) -> list[AITool]:
         """Apply tool policy, skill gating, and Tool Search to a list of tools.

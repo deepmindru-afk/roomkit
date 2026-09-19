@@ -18,7 +18,12 @@ from roomkit.models.channel import ChannelOutput
 from roomkit.models.enums import EventType
 from roomkit.models.event import EventSource, RoomEvent, TextContent, ToolCallContent
 from roomkit.models.streaming import LoopEndReason
-from roomkit.models.tool_call import AIGenerationEvent, AIResponseEvent, response_transcript
+from roomkit.models.tool_call import (
+    AIGenerationEvent,
+    AIResponseEvent,
+    DeclaredTool,
+    response_transcript,
+)
 from roomkit.providers.ai.base import (
     AIContext,
     AIMessage,
@@ -63,6 +68,9 @@ class ToolLoopResult:
     response: AIResponse
     rounds: list[ToolRound] = field(default_factory=list)
     reason: LoopEndReason = "completed"
+    # The union of what every round declared to the provider, for the turn's
+    # ``AIResponseEvent`` (see ``AIResponseEvent.declared_tools``).
+    declared_tools: list[DeclaredTool] = field(default_factory=list)
 
 
 logger = logging.getLogger("roomkit.channels.ai")
@@ -117,6 +125,9 @@ class AIGenerationHost(Protocol):
         self, context: AIContext, loop_ctx: _ToolLoopContext
     ) -> tuple[AIContext, bool]: ...
     async def _generate_with_retry(self, context: AIContext) -> AIResponse: ...
+    def _record_declared_tools(
+        self, loop_ctx: _ToolLoopContext, tools: list[Any] | None
+    ) -> None: ...
     async def _publish_thinking_event(
         self,
         event_type: EphemeralEventType,
@@ -162,6 +173,7 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
     # (Agent.super()._build_context()). Call sites use type: ignore instead.
     _drain_steering_queue: Any  # see AIGenerationHost
     _generate_with_retry: Any  # see AIGenerationHost
+    _record_declared_tools: Any  # see AIGenerationHost
     _publish_thinking_event: Any  # see AIGenerationHost
     _publish_tool_event: Any  # see AIGenerationHost
     _extract_accumulated_text: Any  # see AIGenerationHost
@@ -301,6 +313,7 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
                         tool_calls_count=tool_calls_count,
                         round_count=len(loop_result.rounds),
                         loop_end_reason=loop_result.reason,
+                        declared_tools=loop_result.declared_tools,
                         usage=response.usage or {},
                         thinking=response.thinking or "",
                         latency_ms=int((time.monotonic() - _t0) * 1000),
@@ -497,6 +510,9 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
         total_usage: dict[str, int] = {}
 
         async def _generate(ctx: AIContext) -> AIResponse:
+            # What this round declares, as the provider receives it: after the
+            # hook, the re-filter and the loop's own injections.
+            self._record_declared_tools(loop_ctx, ctx.tools)
             resp: AIResponse = await self._generate_with_retry(ctx)
             _accumulate_usage(total_usage, resp.usage or {})
             return resp
@@ -647,6 +663,7 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
                             ),
                             rounds=rounds,
                             reason="error",
+                            declared_tools=list(loop_ctx.declared_tools.values()),
                         )
                     raise
 
@@ -686,7 +703,12 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
 
             if total_usage:
                 response = response.model_copy(update={"usage": dict(total_usage)})
-            return ToolLoopResult(response=response, rounds=rounds, reason=reason)
+            return ToolLoopResult(
+                response=response,
+                rounds=rounds,
+                reason=reason,
+                declared_tools=list(loop_ctx.declared_tools.values()),
+            )
         finally:
             self._active_loops.pop(loop_ctx.loop_id, None)
             _current_loop_ctx.set(enclosing_ctx)

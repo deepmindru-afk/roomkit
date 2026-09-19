@@ -21,8 +21,15 @@ exceed ``tool_search_threshold_pct`` % of the model's context window (default
 tool count when the window is unknown. Pass ``tool_search=True``/``False`` to
 force it on/off (this example forces ``True`` for determinism).
 
+A host that records "what the model was offered" must not read it from
+``BEFORE_AI_GENERATION``: that hook fires once, with round 0's toolset, so a
+tool ``find_tools`` reveals never appears there. ``ON_AI_RESPONSE`` carries
+``declared_tools``, the union over every round of what the provider received,
+each entry naming why it was visible (``pinned``, ``sticky``, ``revealed``,
+or ``always`` when Tool Search did not gate it).
+
 This example uses a scripted MockAIProvider so it runs without API keys and
-prints the visible tool surface at each round.
+prints the visible tool surface at each round, then the turn's declaration.
 
 Run with:
     uv run python examples/ai_tool_search.py
@@ -34,8 +41,12 @@ import asyncio
 import json
 
 from roomkit import (
+    AIResponseEvent,
     ChannelCategory,
+    HookExecution,
+    HookTrigger,
     InboundMessage,
+    RoomContext,
     RoomEvent,
     RoomKit,
     TextContent,
@@ -165,6 +176,14 @@ async def main() -> None:
 
     ws.register_connection("user-conn", on_recv, room_id="sms-room")
 
+    # What the provider received over the WHOLE turn, revealed tools included.
+    # BEFORE_AI_GENERATION would show round 0 only: no send_sms.
+    declared: list[AIResponseEvent] = []
+
+    @kit.hook(HookTrigger.ON_AI_RESPONSE, execution=HookExecution.ASYNC, name="offered")
+    async def on_response(event: AIResponseEvent, ctx: RoomContext) -> None:
+        declared.append(event)
+
     await kit.create_room(room_id="sms-room")
     await kit.attach_channel("sms-room", "ws-user")
     await kit.attach_channel(
@@ -205,6 +224,13 @@ async def main() -> None:
         body = getattr(ev.content, "body", None)
         if ev.source.channel_id == "ai-assistant" and body:
             print(f"AI replied: {body}")
+
+    # ON_AI_RESPONSE is async: give the hook a beat to land.
+    await asyncio.sleep(0.1)
+    print("\nON_AI_RESPONSE.declared_tools — the union over every round, with why:")
+    for tool in declared[0].declared_tools:
+        print(f"  {tool.name}: {tool.origin}")
+    print("  → send_sms is here with its full schema; BEFORE_AI_GENERATION never saw it.")
 
     await kit.close()
 

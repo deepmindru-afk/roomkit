@@ -29,7 +29,7 @@ from roomkit.models.streaming import (
     ToolCallEndMarker,
     ToolCallStartMarker,
 )
-from roomkit.models.tool_call import AIResponseEvent, response_transcript
+from roomkit.models.tool_call import AIResponseEvent, DeclaredTool, response_transcript
 from roomkit.providers.ai.base import (
     AIContext,
     AIMessage,
@@ -125,6 +125,9 @@ class AIStreamingHost(Protocol):
     async def _generate_stream_with_retry(
         self, context: AIContext
     ) -> AsyncIterator[StreamEvent | _StreamRetryBoundary]: ...
+    def _record_declared_tools(
+        self, loop_ctx: _ToolLoopContext, tools: list[Any] | None
+    ) -> None: ...
     async def _publish_thinking_event(
         self,
         event_type: EphemeralEventType,
@@ -174,6 +177,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
     # (Agent.super()._build_context()). Call sites use type: ignore instead.
     _drain_steering_queue: Any  # see AIStreamingHost
     _generate_stream_with_retry: Any  # see AIStreamingHost
+    _record_declared_tools: Any  # see AIStreamingHost
     _publish_thinking_event: Any  # see AIStreamingHost
     _publish_tool_event: Any  # see AIStreamingHost
     _telemetry_provider: Any  # see AIStreamingHost
@@ -390,6 +394,12 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                                 # No tool loop ran, and the hook fires only on
                                 # exhaustion: the turn ended on its own terms.
                                 loop_end_reason="completed",
+                                # One round, and Tool Search only gates a tool
+                                # loop's catalogue: whatever is declared here
+                                # (a hook's addition, typically) was never hidden.
+                                declared_tools=[
+                                    DeclaredTool.from_tool(tool) for tool in ai_context.tools or []
+                                ],
                             )
                         )
                     except Exception:
@@ -495,6 +505,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                         tool_calls_count=turn.tool_calls_count,
                         round_count=turn.tool_rounds_count,
                         loop_end_reason=turn.reason,
+                        declared_tools=list(turn.loop_ctx.declared_tools.values()),
                         usage={"input_tokens": 0, "output_tokens": 0, **turn.usage},
                         latency_ms=int((time.monotonic() - turn.started_at) * 1000),
                         streaming=True,
@@ -596,6 +607,8 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                     external_tools=external if self._tool_handler is None else None,
                 )
                 turn.segments.append(round_.state.reported)
+                # What this round declares, as the provider receives it.
+                self._record_declared_tools(loop_ctx, context.tools)
                 async with aclosing(
                     round_.stream(self._generate_stream_with_retry(context))
                 ) as deltas:
