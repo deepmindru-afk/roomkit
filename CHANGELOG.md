@@ -58,6 +58,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A tool loop puts back the loop context it replaced instead of clearing it.
+  A handler that ran a child channel's turn inside its own (delegation) read
+  `None` from `current_tool_room()`, `current_tool_actor_id()` and
+  `current_response_metadata()` once the child's answer was consumed, and the
+  parent's steering lost its target for the rest of the turn. Restored by
+  value, so a stream drained in another task puts that task's value back.
+- SQLite full-text search no longer finds the rows the room refused: a body a
+  hook blocked is out of the timeline by default (RFC §14.1) and out of
+  `search_events` too.
 - SQLite full-text search no longer finds the rows the room refused: a body a
   hook blocked is out of the timeline by default (RFC §14.1) and out of
   `search_events` too.

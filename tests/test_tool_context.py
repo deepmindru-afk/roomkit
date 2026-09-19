@@ -10,8 +10,11 @@ and the toolset it resolved (``current_tool_allowed_names()``).
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from unittest.mock import AsyncMock
+
+import pytest
 
 from roomkit.channels.ai import AIChannel, _current_loop_ctx, _ToolLoopContext
 from roomkit.models.channel import ChannelBinding
@@ -542,3 +545,56 @@ class TestCurrentToolCall:
         tool_ends = [e for e in output.response_events if e.type == EventType.TOOL_CALL_END]
         assert tool_ends and tool_ends[0].content.structured_content == {"rewritten": True}
         assert current_tool_call() is None
+
+
+class TestLoopContextRestoration:
+    """A tool loop puts back the loop context it replaced: a handler that runs
+    a child channel's turn inside its own turn (delegation) reads its own room
+    again once the child's answer, streamed or not, is consumed."""
+
+    async def _child_turn(self, streaming: bool) -> None:
+        provider = MockAIProvider(ai_responses=_tool_round_responses(), streaming=streaming)
+        ch = AIChannel("ai1", provider=provider, tool_handler=AsyncMock(return_value="ok"))
+        output = await ch.on_event(
+            make_event(room_id="child-room", body="go", channel_id="sms1"),
+            _binding("child-room"),
+            RoomContext(room=Room(id="child-room")),
+        )
+        if output.response_stream is not None:
+            _ = [chunk async for chunk in output.response_stream]
+
+    @pytest.mark.parametrize("streaming", [False, True])
+    async def test_the_enclosing_context_survives_a_nested_turn(self, streaming: bool) -> None:
+        outer = _ToolLoopContext()
+        outer.room = Room(id="parent-room")
+        outer.room_id = "parent-room"
+        token = _current_loop_ctx.set(outer)
+        try:
+            await self._child_turn(streaming)
+            assert current_tool_room_id() == "parent-room"
+            assert current_tool_room() is outer.room
+        finally:
+            _current_loop_ctx.reset(token)
+
+    async def test_a_stream_drained_in_another_task_restores_that_task_context(self) -> None:
+        """The streamed turn runs in the consumer's context: ending it must not
+        fail on a token from another context, and must put the consumer's own
+        value back."""
+        outer = _ToolLoopContext()
+        outer.room_id = "consumer-room"
+        provider = MockAIProvider(ai_responses=_tool_round_responses(), streaming=True)
+        ch = AIChannel("ai1", provider=provider, tool_handler=AsyncMock(return_value="ok"))
+        output = await ch.on_event(
+            make_event(room_id="child-room", body="go", channel_id="sms1"),
+            _binding("child-room"),
+            RoomContext(room=Room(id="child-room")),
+        )
+        assert output.response_stream is not None
+        stream = output.response_stream
+
+        async def drain() -> str | None:
+            _current_loop_ctx.set(outer)
+            _ = [chunk async for chunk in stream]
+            return current_tool_room_id()
+
+        assert await asyncio.create_task(drain()) == "consumer-room"

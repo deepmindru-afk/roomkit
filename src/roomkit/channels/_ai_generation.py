@@ -479,8 +479,13 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
         )
 
         room = context.room.room if context.room else None
+        # The value to put back when the loop ends: a caller running inside
+        # its own tool loop (a handler that runs a child channel's turn) must
+        # find its context intact afterwards. Restored by value, not by token:
+        # the loop may end in a context other than the one it began in.
+        enclosing_ctx = _current_loop_ctx.get()
         loop_ctx = _ToolLoopContext.for_loop(
-            _current_loop_ctx.get(), room.id if room is not None else None, room=room
+            enclosing_ctx, room.id if room is not None else None, room=room
         )
         _current_loop_ctx.set(loop_ctx)
         self._active_loops[loop_ctx.loop_id] = loop_ctx
@@ -684,4 +689,4 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
             return ToolLoopResult(response=response, rounds=rounds, reason=reason)
         finally:
             self._active_loops.pop(loop_ctx.loop_id, None)
-            _current_loop_ctx.set(None)
+            _current_loop_ctx.set(enclosing_ctx)

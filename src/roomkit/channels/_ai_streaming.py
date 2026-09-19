@@ -436,7 +436,12 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
         """Own the invocation context, activity registration and telemetry span."""
         from roomkit.channels.ai import _current_loop_ctx, _ToolLoopContext
 
-        parent = parent_loop_ctx if parent_loop_ctx is not None else _current_loop_ctx.get()
+        # This body runs in the CONSUMER's context, which may hold a loop
+        # context of its own (a handler draining a child channel's stream):
+        # that is the value to put back when the turn ends, by value rather
+        # than by token, since the turn may end in yet another context.
+        enclosing_ctx = _current_loop_ctx.get()
+        parent = parent_loop_ctx if parent_loop_ctx is not None else enclosing_ctx
         room = context.room.room if context.room else None
         room_id = room.id if room is not None else None
         loop_ctx = _ToolLoopContext.for_loop(parent, room_id, room=room)
@@ -469,7 +474,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
         finally:
             # Finalization may itself be cancelled while publishing a hook.
             self._active_loops.pop(loop_ctx.loop_id, None)
-            _current_loop_ctx.set(None)
+            _current_loop_ctx.set(enclosing_ctx)
 
     async def _finish_streaming_tool_turn(self, turn: _StreamTurnState) -> None:
         """Report the delivered transcript and the counters accumulated by this turn."""
