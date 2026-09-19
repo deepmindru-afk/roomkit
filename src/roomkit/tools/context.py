@@ -9,8 +9,13 @@ host's tool handler may need to resolve the call's origin.
 
 Contextvars propagate through the async call chain, so a handler invoked
 from inside a tool loop sees the loop's context without any signature
-change. Outside a tool loop (realtime voice pipelines, direct calls) the
-accessors return ``None`` — hosts keep their own fallback for those paths.
+change. The realtime voice channel installs the same context around each
+tool call it serves, with the session's room and participant as the turn's
+room and actor, so a handler shared between an ``AIChannel`` and a
+``RealtimeVoiceChannel`` answers the same questions on both paths
+(:func:`current_tool_call` and its structured-result channel remain the AI
+channel's). Outside a tool call (a direct call) the accessors return
+``None`` — hosts keep their own fallback there.
 """
 
 from __future__ import annotations
@@ -175,11 +180,11 @@ def current_response_metadata() -> ResponseMetadata | None:
     document it read is a fact about the turn, not about the tool's string
     result.
 
-    Returns ``None`` when no loop context is set (a realtime pipeline, a direct
-    call): the caller then has nothing to attribute to, and writes nothing. A
-    loop started without a turn — no ``handle_event`` above it — carries a
-    record of its own that no MESSAGE event is built from; writes to it are
-    harmless and go nowhere.
+    Returns ``None`` when no loop context is set (a direct call): the caller
+    then has nothing to attribute to, and writes nothing. A loop started
+    without a turn — no ``handle_event`` above it — and a realtime tool call
+    carry a record of their own that no MESSAGE event is built from; writes
+    to it are harmless and go nowhere.
     """
     from roomkit.channels.ai import _current_loop_ctx
 

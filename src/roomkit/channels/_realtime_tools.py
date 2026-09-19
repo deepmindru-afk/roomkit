@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.channels._skill_constants import TOOL_ACTIVATE_SKILL
 from roomkit.channels._tool_search_constants import TOOL_CALL_TOOL
+from roomkit.channels.ai import _current_loop_ctx, _ToolLoopContext
 from roomkit.core.exceptions import ToolRefusedError
 from roomkit.models.enums import ChannelType, HookTrigger
 from roomkit.models.tool_call import ToolCallEvent
@@ -524,7 +525,9 @@ class RealtimeToolsMixin:
             from roomkit.channels._realtime_context import _current_voice_session
 
             t_seg = time.perf_counter()
+            loop_ctx = await self._realtime_loop_context(session, room_id, gate_context)
             token = _current_voice_session.set(session)
+            loop_token = _current_loop_ctx.set(loop_ctx)
             try:
                 # ``ToolRefusedError`` travels out of here on purpose. Flattening
                 # it into the returned string would put the outcome back in the
@@ -532,6 +535,7 @@ class RealtimeToolsMixin:
                 # callers below own a span and a log line that have to know.
                 raw = await self._tool_handler(name, arguments)
             finally:
+                _current_loop_ctx.reset(loop_token)
                 _current_voice_session.reset(token)
             logger.debug(
                 "tool %s handler segment: %.0fms wall",
@@ -587,6 +591,27 @@ class RealtimeToolsMixin:
         if len(result_str) > self._tool_result_max_length:
             result_str = self._truncate_tool_result(result_str, name, call_id, session.id)
         return result_str
+
+    async def _realtime_loop_context(
+        self, session: VoiceSession, room_id: str | None, gate_context: RoomContext | None
+    ) -> _ToolLoopContext:
+        """The per-call context a handler reads through ``roomkit.tools`` (RFC §21.4).
+
+        The realtime path runs no tool loop, so it builds the turn's context
+        itself around the handler call: the session's room and participant as
+        the turn's room and actor, and the Room object the gate already loaded
+        when a BEFORE_TOOL_USE hook made it build a context, read once from the
+        store otherwise. A handler shared with an ``AIChannel`` then answers the
+        same questions on both paths.
+        """
+        ctx = _ToolLoopContext()
+        ctx.room_id = room_id or session.room_id
+        ctx.actor_id = session.participant_id
+        if gate_context is not None:
+            ctx.room = gate_context.room
+        elif self._framework is not None and ctx.room_id:
+            ctx.room = await self._framework.store.get_room(ctx.room_id)
+        return ctx
 
     async def _deliver_skill_call(
         self, session: VoiceSession, call_id: str, name: str, arguments: dict[str, Any]

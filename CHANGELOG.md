@@ -20,6 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   turn and authenticates nothing. It is the room as the store loaded it when
   the turn began, shared with the whole turn: a patch written to the store
   mid-turn is not in it, and a handler must not mutate it (RFC §21.4).
+- The realtime voice channel installs the per-call tool context around each
+  tool call it serves: `current_tool_room_id()`, `current_tool_room()` and
+  `current_tool_actor_id()` answer the session's room and participant from a
+  `RealtimeVoiceChannel` handler as they do from an `AIChannel` one, so one
+  handler serves both paths (RFC §21.4). `current_tool_call()` and its
+  structured-result channel remain the AI channel's.
 - `RoomKit.process_inbound` and `process_webhook` take `organization_id`
   (RFC §17.2). The room the message would land in is checked against it
   before any event is committed or any channel auto-attached: a room
@@ -64,9 +70,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `current_response_metadata()` once the child's answer was consumed, and the
   parent's steering lost its target for the rest of the turn. Restored by
   value, so a stream drained in another task puts that task's value back.
-- SQLite full-text search no longer finds the rows the room refused: a body a
-  hook blocked is out of the timeline by default (RFC §14.1) and out of
-  `search_events` too.
 - SQLite full-text search no longer finds the rows the room refused: a body a
   hook blocked is out of the timeline by default (RFC §14.1) and out of
   `search_events` too.

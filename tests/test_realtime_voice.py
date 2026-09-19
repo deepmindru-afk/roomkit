@@ -21,6 +21,7 @@ from roomkit import (
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 from roomkit.models.enums import ChannelType
 from roomkit.models.event import EventSource, RoomEvent
+from roomkit.tools import current_tool_actor_id, current_tool_room, current_tool_room_id
 from roomkit.voice.audio_frame import AudioFrame
 from roomkit.voice.base import VoiceSession, VoiceSessionState
 from roomkit.voice.interruption import InterruptionConfig
@@ -542,6 +543,40 @@ class TestToolCalls:
         assert "truncated" in submitted
         assert "100000 chars" in submitted
         assert "delivered to the client" in submitted
+
+    async def test_tool_handler_reads_the_turn_context(
+        self,
+        provider: MockRealtimeProvider,
+        transport: MockRealtimeTransport,
+    ) -> None:
+        """RFC §21.4 on the realtime path: a handler shared with an AIChannel
+        reads the room, the Room object and the actor here too, and the
+        context is gone once the call returned."""
+        seen: dict[str, Any] = {}
+
+        async def handler(name: str, arguments: dict[str, Any]) -> str:
+            room = current_tool_room()
+            seen.update(
+                room_id=current_tool_room_id(),
+                actor=current_tool_actor_id(),
+                tenant=room.metadata.get("tenant") if room is not None else None,
+            )
+            return "ok"
+
+        ch = RealtimeVoiceChannel(
+            "rt-ctx", provider=provider, transport=transport, tool_handler=handler
+        )
+        kit = RoomKit()
+        kit.register_channel(ch)
+        room = await kit.create_room(metadata={"tenant": "acme"})
+        await kit.attach_channel(room.id, "rt-ctx")
+        session = await ch.start_session(room.id, "user-1", "fake-ws")
+
+        await provider.simulate_tool_call(session, "call-ctx", "whoami", {})
+        await asyncio.sleep(0.1)
+
+        assert seen == {"room_id": room.id, "actor": "user-1", "tenant": "acme"}
+        assert current_tool_room_id() is None
 
     async def test_tool_result_under_limit_not_truncated(
         self,
