@@ -893,37 +893,7 @@ class SQLiteStore(ConversationStore):
             where.append("visibility = ?")
             params.append(visibility)
         if ef is not None:
-            if ef.event_types is not None:
-                marks = ",".join("?" for _ in ef.event_types)
-                where.append(f"type IN ({marks})")
-                params.extend(str(t) for t in ef.event_types)
-            if ef.exclude_types is not None:
-                marks = ",".join("?" for _ in ef.exclude_types)
-                where.append(f"type NOT IN ({marks})")
-                params.extend(str(t) for t in ef.exclude_types)
-            if ef.source_channel_id is not None:
-                where.append("source_channel_id = ?")
-                params.append(ef.source_channel_id)
-            if ef.source_channel_type is not None:
-                where.append("source_channel_type = ?")
-                params.append(str(ef.source_channel_type))
-            if ef.correlation_id is not None:
-                where.append("correlation_id = ?")
-                params.append(ef.correlation_id)
-            if ef.participant_id is not None:
-                where.append("participant_id = ?")
-                params.append(ef.participant_id)
-            if ef.parent_event_id is not None:
-                where.append("parent_event_id = ?")
-                params.append(ef.parent_event_id)
-            if ef.top_level_only:
-                where.append("parent_event_id IS NULL")
-            if ef.after_time is not None:
-                where.append("created_ts > ?")
-                params.append(_ts(ef.after_time))
-            if ef.before_time is not None:
-                where.append("created_ts < ?")
-                params.append(_ts(ef.before_time))
+            self._apply_event_filter_sql(ef, where, params)
         if not includes_blocked(ef):
             # The received-rows default (RFC §14.1). ``status`` lives in the
             # JSON document; it is a SQL condition all the same, so the page
@@ -950,6 +920,42 @@ class SQLiteStore(ConversationStore):
             f"{base} ORDER BY idx, rowid LIMIT ? OFFSET ?", [*params, limit, head_offset]
         )
         return [_load_event(r[0]) for r in rows]
+
+    @staticmethod
+    def _apply_event_filter_sql(ef: EventFilter, where: list[str], params: list[Any]) -> None:
+        """Append the SQL conditions of ``ef``: the one constructor behind the
+        page and the count, so the two never diverge on a criterion."""
+        if ef.event_types is not None:
+            marks = ",".join("?" for _ in ef.event_types)
+            where.append(f"type IN ({marks})")
+            params.extend(str(t) for t in ef.event_types)
+        if ef.exclude_types is not None:
+            marks = ",".join("?" for _ in ef.exclude_types)
+            where.append(f"type NOT IN ({marks})")
+            params.extend(str(t) for t in ef.exclude_types)
+        if ef.source_channel_id is not None:
+            where.append("source_channel_id = ?")
+            params.append(ef.source_channel_id)
+        if ef.source_channel_type is not None:
+            where.append("source_channel_type = ?")
+            params.append(str(ef.source_channel_type))
+        if ef.correlation_id is not None:
+            where.append("correlation_id = ?")
+            params.append(ef.correlation_id)
+        if ef.participant_id is not None:
+            where.append("participant_id = ?")
+            params.append(ef.participant_id)
+        if ef.parent_event_id is not None:
+            where.append("parent_event_id = ?")
+            params.append(ef.parent_event_id)
+        if ef.top_level_only:
+            where.append("parent_event_id IS NULL")
+        if ef.after_time is not None:
+            where.append("created_ts > ?")
+            params.append(_ts(ef.after_time))
+        if ef.before_time is not None:
+            where.append("created_ts < ?")
+            params.append(_ts(ef.before_time))
 
     async def get_thread_summaries(
         self, room_id: str, root_event_ids: list[str]
@@ -1003,15 +1009,24 @@ class SQLiteStore(ConversationStore):
         )
         return _load_event(row[0]) if row is not None else None
 
-    async def get_event_count(self, room_id: str) -> int:
-        return await self._run(self._x_get_event_count, room_id)
+    async def get_event_count(self, room_id: str, event_filter: EventFilter | None = None) -> int:
+        return await self._run(self._x_get_event_count, room_id, event_filter)
 
-    def _x_get_event_count(self, room_id: str) -> int:
-        return (
-            self._db()
-            .execute("SELECT COUNT(*) FROM events WHERE room_id = ?", (room_id,))
-            .fetchone()[0]
-        )
+    def _x_get_event_count(self, room_id: str, ef: EventFilter | None = None) -> int:
+        where = ["room_id = ?"]
+        params: list[Any] = [room_id]
+        if ef is not None:
+            # The conditions of a ``list_events`` page under this filter, the
+            # received-rows default included, and no page (RFC §14.1).
+            if ef.visibility is not None:
+                where.append("visibility = ?")
+                params.append(ef.visibility)
+            self._apply_event_filter_sql(ef, where, params)
+            if not includes_blocked(ef):
+                where.append("json_extract(data, '$.status') IS NOT ?")
+                params.append(EventStatus.BLOCKED.value)
+        query = f"SELECT COUNT(*) FROM events WHERE {' AND '.join(where)}"  # nosec B608 — fragments are internal, values parameterised
+        return self._db().execute(query, params).fetchone()[0]
 
     async def add_event_auto_index(self, room_id: str, event: RoomEvent) -> RoomEvent:
         return await self._run(self._x_add_event_auto_index, room_id, event)

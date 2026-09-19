@@ -136,7 +136,7 @@ from roomkit.models.plan_event import PlanUpdatedEvent
 from roomkit.models.response_metadata import ResponseMetadata
 from roomkit.models.room import Room, RoomTimers
 from roomkit.models.session_event import SessionStartedEvent
-from roomkit.models.store_filter import EventFilter, PersistencePolicy
+from roomkit.models.store_filter import EventFilter, PersistencePolicy, received_events
 from roomkit.models.thinking_event import ThinkingEvent
 from roomkit.models.tool_call import (
     RESPONSE_SEGMENT_SEPARATOR,
@@ -347,6 +347,7 @@ __all__ = [
     "ConversationRouter",
     "ConversationState",
     "get_conversation_state",
+    "received_events",
     "visible_events",
     "set_conversation_state",
     "HANDOFF_TOOL",

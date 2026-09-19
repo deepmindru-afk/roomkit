@@ -1064,12 +1064,25 @@ class PostgresStore(ConversationStore):
                 )
         return _row_to_event(row) if row is not None else None
 
-    async def get_event_count(self, room_id: str) -> int:
-        async with self._acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT count(*) AS cnt FROM events WHERE room_id = $1",
-                room_id,
-            )
+    async def get_event_count(self, room_id: str, event_filter: EventFilter | None = None) -> int:
+        conditions = ["room_id = $1"]
+        params: list[object] = [room_id]
+        if event_filter is not None:
+            # The conditions of a ``list_events`` page under this filter, the
+            # received-rows default included, and no page (RFC §14.1).
+            idx = 2
+            if event_filter.visibility is not None:
+                conditions.append(f"visibility = ${idx}")
+                params.append(event_filter.visibility)
+                idx += 1
+            idx = self._apply_event_filter_sql(event_filter, conditions, params, idx)
+            if not includes_blocked(event_filter):
+                conditions.append(f"status != ${idx}")
+                params.append(EventStatus.BLOCKED.value)
+        query = f"SELECT count(*) AS cnt FROM events WHERE {' AND '.join(conditions)}"  # nosec B608
+        with self._query_span("get_event_count", "events"):
+            async with self._acquire() as conn:
+                row = await conn.fetchrow(query, *params)
         return row["cnt"] if row else 0
 
     async def add_event_auto_index(self, room_id: str, event: RoomEvent) -> RoomEvent:

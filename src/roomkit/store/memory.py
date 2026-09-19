@@ -457,8 +457,19 @@ class InMemoryStore(ConversationStore):
         event_id = self._idempotency.get(room_id, {}).get(key)
         return self._events.get(event_id) if event_id is not None else None
 
-    async def get_event_count(self, room_id: str) -> int:
-        return len(self._room_events.get(room_id, []))
+    async def get_event_count(self, room_id: str, event_filter: EventFilter | None = None) -> int:
+        event_ids = self._room_events.get(room_id, [])
+        if event_filter is None:
+            return len(event_ids)
+        # The rows a ``list_events`` page would serve under this filter, the
+        # received-rows default included, and no page (RFC §14.1).
+        events = [self._events[eid] for eid in event_ids if eid in self._events]
+        if event_filter.visibility is not None:
+            events = [e for e in events if e.visibility == event_filter.visibility]
+        events = self._apply_event_filter(events, event_filter)
+        if not includes_blocked(event_filter):
+            events = received_events(events)
+        return len(events)
 
     async def add_event_auto_index(self, room_id: str, event: RoomEvent) -> RoomEvent:
         """Atomically reserve the room's next monotonic index and append."""

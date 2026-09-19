@@ -868,6 +868,31 @@ class TestPostgresStore:
         assert "status !=" not in sql
         assert "blocked" not in params
 
+    async def test_get_event_count_without_a_filter_counts_every_row(self) -> None:
+        """No filter: the timeline's size, refused rows included (RFC §8.3)."""
+        store, mock_conn = _make_store_with_pool()
+        mock_conn.fetchrow.return_value = {"cnt": 7}
+        assert await store.get_event_count("room-1") == 7
+        sql, *params = mock_conn.fetchrow.call_args[0]
+        assert "status" not in sql
+        assert params == ["room-1"]
+
+    async def test_get_event_count_with_a_filter_counts_the_page_it_stands_for(self) -> None:
+        """RFC §14.1: the conditions of the page under that filter, the
+        received-rows default included, and no page."""
+        store, mock_conn = _make_store_with_pool()
+        mock_conn.fetchrow.return_value = {"cnt": 2}
+        count = await store.get_event_count(
+            "room-1",
+            EventFilter(event_types=[EventType.MESSAGE], source_channel_type=ChannelType.AI),
+        )
+        assert count == 2
+        sql, *params = mock_conn.fetchrow.call_args[0]
+        assert sql.startswith("SELECT count(*)")
+        assert "LIMIT" not in sql and "OFFSET" not in sql
+        assert "type = ANY(" in sql and "source_channel_type =" in sql
+        assert f"status != ${params.index('blocked') + 1}" in sql
+
     async def test_list_events_newest_first_reverses_to_ascending(self) -> None:
         """The DESC fetch is reversed so the caller gets ascending chronological
         order — the newest ``limit`` events, oldest-first."""

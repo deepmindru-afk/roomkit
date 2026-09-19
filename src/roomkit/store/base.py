@@ -399,7 +399,7 @@ class ConversationStore(ABC):
         return None
 
     @abstractmethod
-    async def get_event_count(self, room_id: str) -> int:
+    async def get_event_count(self, room_id: str, event_filter: EventFilter | None = None) -> int:
         """Count the events a room currently holds, exactly, on demand.
 
         This is the authoritative count and the only one that survives
@@ -414,6 +414,15 @@ class ConversationStore(ABC):
         Both count every committed row, the refused ones included: a
         ``BLOCKED`` event consumed an index (RFC §8.3) and stays in the count
         while a default :meth:`list_events` page skips it (§14.1).
+
+        ``event_filter`` counts a subset instead: exactly the rows a
+        :meth:`list_events` page would serve under that filter, with no page
+        (RFC §14.1). The filter's own ``include_blocked`` decides whether the
+        refused rows are in, ``False`` by default as on a page, so
+        ``EventFilter()`` counts the received rows where no filter counts them
+        all. A host that needs the exact number of a subset (an agent's turns
+        before an instant) asks here rather than measuring a page and
+        inheriting its cap.
         """
         ...
 

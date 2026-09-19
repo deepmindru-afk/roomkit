@@ -10,7 +10,7 @@ from uuid import uuid4
 import pytest
 
 from roomkit.models.channel import ChannelBinding, RateLimit, RetryPolicy
-from roomkit.models.enums import EventStatus
+from roomkit.models.enums import ChannelType, EventStatus, EventType
 from roomkit.models.room import Room
 from roomkit.models.store_filter import EventFilter
 from roomkit.store.base import ConversationStore
@@ -149,6 +149,95 @@ async def test_refused_rows_are_served_on_request_only(contract_store: Conversat
         summaries = await contract_store.get_thread_summaries(room.id, [root.id])
         assert summaries[root.id].reply_count == 1
         assert summaries[root.id].last_reply_at == reply.created_at
+    finally:
+        await contract_store.delete_room(room.id)
+
+
+async def test_a_filtered_count_is_the_page_it_stands_for(
+    contract_store: ConversationStore,
+) -> None:
+    """RFC §14.1: without a filter the count is the timeline's size, refused
+    rows included (a refused row consumed an index, §8.3); with a filter it
+    counts exactly what ``list_events`` would serve under that filter, with no
+    page, the received-rows default lifted by ``include_blocked``."""
+    room = await contract_store.create_room(Room(id=uuid4().hex))
+    t0 = datetime(2026, 9, 19, 12, 0, tzinfo=UTC)
+    try:
+        rows = [
+            make_event(
+                room_id=room.id,
+                index=0,
+                body="q1",
+                channel_id="ws",
+                channel_type=ChannelType.WEBSOCKET,
+                created_at=t0,
+            ),
+            make_event(
+                room_id=room.id,
+                index=1,
+                body="a1",
+                channel_id="agent",
+                channel_type=ChannelType.AI,
+                created_at=t0 + timedelta(minutes=1),
+            ),
+            make_event(
+                room_id=room.id,
+                index=2,
+                body="refused",
+                channel_id="agent",
+                channel_type=ChannelType.AI,
+                status=EventStatus.BLOCKED,
+                blocked_by="budget",
+                created_at=t0 + timedelta(minutes=2),
+            ),
+            make_event(
+                room_id=room.id,
+                index=3,
+                body="a2",
+                channel_id="agent",
+                channel_type=ChannelType.AI,
+                created_at=t0 + timedelta(minutes=3),
+            ),
+            make_event(
+                room_id=room.id,
+                index=4,
+                body="joined",
+                type=EventType.SYSTEM,
+                created_at=t0 + timedelta(minutes=4),
+            ),
+        ]
+        for event in rows:
+            await contract_store.add_event(event)
+        ai_turns = EventFilter(event_types=[EventType.MESSAGE], source_channel_type=ChannelType.AI)
+
+        assert await contract_store.get_event_count(room.id) == 5
+        assert await contract_store.get_event_count(room.id, EventFilter()) == 4
+        assert await contract_store.get_event_count(room.id, ai_turns) == 2
+        assert (
+            await contract_store.get_event_count(
+                room.id,
+                EventFilter(
+                    event_types=[EventType.MESSAGE],
+                    source_channel_type=ChannelType.AI,
+                    include_blocked=True,
+                ),
+            )
+            == 3
+        )
+        assert (
+            await contract_store.get_event_count(
+                room.id,
+                EventFilter(
+                    event_types=[EventType.MESSAGE],
+                    source_channel_type=ChannelType.AI,
+                    before_time=t0 + timedelta(minutes=3),
+                ),
+            )
+            == 1
+        )
+        # The count is the page it stands for.
+        page = await contract_store.list_events(room.id, limit=1000, event_filter=ai_turns)
+        assert await contract_store.get_event_count(room.id, ai_turns) == len(page) == 2
     finally:
         await contract_store.delete_room(room.id)
 
