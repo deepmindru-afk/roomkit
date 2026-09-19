@@ -74,6 +74,10 @@ async def test_binding_round_trip_and_policy_updates(contract_store: Conversatio
 async def test_pagination_order_contract(
     contract_store: ConversationStore, newest_first: bool, cursor: str
 ) -> None:
+    """A cursor or ``newest_first`` selects the *window*; the page is always
+    rendered ascending (RFC §14.1). ``before_index`` and the newest-first
+    offset page both come back oldest-first, so ``page[-1]`` is the newest
+    event of the window on every backend, never ``page[0]``."""
     from tests.conftest import make_event
 
     room = await contract_store.create_room(Room(id=uuid4().hex))
