@@ -66,6 +66,7 @@ from roomkit.models.enums import (
 )
 from roomkit.models.event import RoomEvent
 from roomkit.models.response_metadata import ResponseMetadata
+from roomkit.models.room import Room
 from roomkit.models.steering import SteeringDirective
 from roomkit.providers.ai.base import (
     AIImagePart,
@@ -159,6 +160,14 @@ class _ToolLoopContext:
     # ``current_tool_actor_id()`` documents the resolution a host owes it.
     actor_id: str | None = None
     room_id: str | None = None
+    # The Room of the turn, as ``on_event`` received it in its ``RoomContext``:
+    # the object the store loaded when the turn began, carried by reference so
+    # a tool handler reads the same one the turn's hooks, memory provider and
+    # config provider hold, instead of re-reading it by ``room_id``. It is a
+    # snapshot of the turn's start, exactly like ``RoomContext.room``: a
+    # metadata patch made during the turn is not reflected in it. ``None``
+    # for a loop started without a turn above it.
+    room: Room | None = None
     steering_queue: asyncio.Queue[SteeringDirective] = field(default_factory=asyncio.Queue)
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
     loop_id: str = ""
@@ -170,13 +179,21 @@ class _ToolLoopContext:
     response_metadata: ResponseMetadata = field(default_factory=ResponseMetadata)
 
     @classmethod
-    def for_loop(cls, parent: _ToolLoopContext | None, room_id: str | None) -> _ToolLoopContext:
+    def for_loop(
+        cls,
+        parent: _ToolLoopContext | None,
+        room_id: str | None,
+        room: Room | None = None,
+    ) -> _ToolLoopContext:
         """Create a tool-loop context inheriting per-turn state from *parent*.
 
         _build_context ran under the parent (handle_event) ctx and stamped the
         turn's full toolset there — without this inheritance the per-round
         tools re-application never fires (skill-gated tools would stay hidden
         after activation) and per-call allowlist accessors see nothing.
+
+        *room* names the loop's room for a loop started without a turn, as
+        *room_id* does; with a parent, the parent's is inherited by reference.
         """
         ctx = cls()
         # A uuid, not id(ctx): CPython recycles object ids after gc, and the
@@ -195,6 +212,7 @@ class _ToolLoopContext:
             # holds, and the output built before the loop ran reads the same one.
             ctx.response_metadata = parent.response_metadata
         ctx.room_id = room_id or (parent.room_id if parent else None)
+        ctx.room = room if room is not None else (parent.room if parent else None)
         return ctx
 
 
@@ -548,6 +566,7 @@ class AIChannel(
         event_ctx.current_participant_role = self._resolve_participant_role(event, context)
         event_ctx.actor_id = event.source.participant_id
         event_ctx.room_id = context.room.id if context.room else event.room_id
+        event_ctx.room = context.room
         token = _current_loop_ctx.set(event_ctx)
         try:
             raw_tools = binding.metadata.get("tools", [])

@@ -437,8 +437,9 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
         from roomkit.channels.ai import _current_loop_ctx, _ToolLoopContext
 
         parent = parent_loop_ctx if parent_loop_ctx is not None else _current_loop_ctx.get()
-        room_id = context.room.room.id if context.room else None
-        loop_ctx = _ToolLoopContext.for_loop(parent, room_id)
+        room = context.room.room if context.room else None
+        room_id = room.id if room is not None else None
+        loop_ctx = _ToolLoopContext.for_loop(parent, room_id, room=room)
         _current_loop_ctx.set(loop_ctx)
         self._active_loops[loop_ctx.loop_id] = loop_ctx
         try:

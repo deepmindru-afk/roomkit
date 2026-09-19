@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from roomkit.models.response_metadata import ResponseMetadata
+from roomkit.models.room import Room
 
 
 @dataclass
@@ -76,6 +77,32 @@ def current_tool_room_id() -> str | None:
 
     ctx = _current_loop_ctx.get()
     return ctx.room_id if ctx is not None else None
+
+
+def current_tool_room() -> Room | None:
+    """The :class:`~roomkit.models.room.Room` of the turn the caller is executing under.
+
+    The object the store loaded when the turn began: the same one
+    ``RoomContext.room`` holds for that turn's hooks, memory provider and
+    config provider, so a handler deciding whom a call acts for reads the
+    room's organization, metadata or type here instead of re-reading the
+    room by :func:`current_tool_room_id` on every call. It is a snapshot of
+    the turn's start, exactly as ``RoomContext.room`` is: a metadata patch
+    made during the turn, by this handler or another, is not reflected in
+    it; re-read the room when the turn's own writes matter.
+
+    Like :func:`current_tool_actor_id`, it names the turn and authenticates
+    nothing. Which organization the room belongs to is a fact of the room;
+    whether the caller may act for it is the host's rule, applied by the
+    host.
+
+    ``None`` outside a tool loop, and ``None`` for a loop started without a
+    turn above it.
+    """
+    from roomkit.channels.ai import _current_loop_ctx
+
+    ctx = _current_loop_ctx.get()
+    return ctx.room if ctx is not None else None
 
 
 def current_tool_actor_id() -> str | None:

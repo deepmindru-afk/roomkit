@@ -10,6 +10,7 @@ from roomkit.tools.context import (
     current_tool_actor_id,
     current_tool_allowed_names,
     current_tool_call,
+    current_tool_room,
     current_tool_room_id,
 )
 from roomkit.tools.external import ExternalToolHandler, PolicyExternalToolHandler, ToolDecision
@@ -32,6 +33,7 @@ __all__ = [
     "current_tool_actor_id",
     "current_tool_call",
     "current_tool_allowed_names",
+    "current_tool_room",
     "current_tool_room_id",
     "extract_tools",
 ]

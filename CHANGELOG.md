@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `roomkit.tools.current_tool_room()` returns the `Room` of the turn a tool
+  handler is executing under, not only its id: the object the store loaded
+  when the turn began, the same one the turn's `RoomContext.room` holds for
+  its hooks, memory provider and config provider. A handler that decides
+  whom a call acts for reads the room's `organization_id` or `metadata`
+  there instead of re-reading the room by `current_tool_room_id()` on every
+  call. Inherited by the tool loop's own context, so every round reads the
+  same object; `None` outside a tool loop. Like the actor id, it names the
+  turn and authenticates nothing, and it is a snapshot of the turn's start:
+  a metadata patch made during the turn is not reflected in it (RFC §21.4).
 - `RoomKit.process_inbound` and `process_webhook` take `organization_id`
   (RFC §17.2). The room the message would land in is checked against it
   before any event is committed or any channel auto-attached: a room

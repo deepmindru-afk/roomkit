@@ -3,7 +3,8 @@
 The channel object is registered once per channel_id and shared by every
 room it serves, so every accessor here must reflect the turn being
 processed rather than any state stored on the channel: the room
-(``current_tool_room_id()``), its author (``current_tool_actor_id()``)
+(``current_tool_room_id()`` and the ``Room`` object itself,
+``current_tool_room()``), its author (``current_tool_actor_id()``)
 and the toolset it resolved (``current_tool_allowed_names()``).
 """
 
@@ -24,6 +25,7 @@ from roomkit.tools import (
     current_tool_actor_id,
     current_tool_allowed_names,
     current_tool_call,
+    current_tool_room,
     current_tool_room_id,
 )
 from roomkit.tools.context import _current_tool_call
@@ -288,6 +290,120 @@ class TestCurrentToolRoomId:
 
     def test_none_outside_tool_loop(self) -> None:
         assert current_tool_room_id() is None
+
+
+class TestCurrentToolRoom:
+    """The turn's ``Room`` object, not only its id: the one ``RoomContext.room``
+    holds, so a handler reads the room's metadata or organization without a
+    store round trip, and reads the same snapshot the turn's providers hold."""
+
+    async def test_non_streaming_handler_sees_the_turn_room_object(self) -> None:
+        seen: list[Room | None] = []
+
+        async def tool_handler(name: str, args: dict[str, Any]) -> str:
+            seen.append(current_tool_room())
+            return "ok"
+
+        provider = MockAIProvider(ai_responses=_tool_round_responses(), streaming=False)
+        ch = AIChannel("ai1", provider=provider, tool_handler=tool_handler)
+        context = RoomContext(room=Room(id="room-a", metadata={"tenant": "acme"}))
+
+        await ch.on_event(
+            make_event(room_id="room-a", body="go", channel_id="sms1"), _binding("room-a"), context
+        )
+
+        assert len(seen) == 1
+        assert seen[0] is context.room
+        assert seen[0].metadata["tenant"] == "acme"
+
+    async def test_streaming_handler_sees_the_turn_room_object(self) -> None:
+        seen: list[Room | None] = []
+
+        async def tool_handler(name: str, args: dict[str, Any]) -> str:
+            seen.append(current_tool_room())
+            return "ok"
+
+        provider = MockAIProvider(ai_responses=_tool_round_responses(), streaming=True)
+        ch = AIChannel("ai1", provider=provider, tool_handler=tool_handler)
+        context = RoomContext(room=Room(id="room-a"))
+
+        output = await ch.on_event(
+            make_event(room_id="room-a", body="go", channel_id="sms1"), _binding("room-a"), context
+        )
+        assert output.response_stream is not None
+        _ = [chunk async for chunk in output.response_stream]
+
+        assert len(seen) == 1
+        assert seen[0] is context.room
+
+    async def test_second_round_still_sees_the_room(self) -> None:
+        """The loop context ``for_loop`` builds inherits the room: a handler
+        called on the second tool round reads the same object as on the first."""
+        seen: list[Room | None] = []
+
+        async def tool_handler(name: str, args: dict[str, Any]) -> str:
+            seen.append(current_tool_room())
+            return "ok"
+
+        two_rounds = [
+            AIResponse(
+                content="First.",
+                finish_reason="tool_calls",
+                usage={"prompt_tokens": 10, "completion_tokens": 5},
+                tool_calls=[AIToolCall(id="tc1", name="search", arguments={"q": "x"})],
+            ),
+            AIResponse(
+                content="Again.",
+                finish_reason="tool_calls",
+                usage={"prompt_tokens": 10, "completion_tokens": 5},
+                tool_calls=[AIToolCall(id="tc2", name="search", arguments={"q": "y"})],
+            ),
+            AIResponse(
+                content="Done.",
+                finish_reason="stop",
+                usage={"prompt_tokens": 20, "completion_tokens": 10},
+            ),
+        ]
+        provider = MockAIProvider(ai_responses=two_rounds, streaming=False)
+        ch = AIChannel("ai1", provider=provider, tool_handler=tool_handler)
+        context = RoomContext(room=Room(id="room-a"))
+
+        await ch.on_event(
+            make_event(room_id="room-a", body="go", channel_id="sms1"), _binding("room-a"), context
+        )
+
+        assert len(seen) == 2
+        assert all(room is context.room for room in seen)
+
+    async def test_shared_channel_tracks_each_turn_room(self) -> None:
+        """One channel object serving two rooms hands each turn its own Room."""
+        seen: list[Room | None] = []
+
+        async def tool_handler(name: str, args: dict[str, Any]) -> str:
+            seen.append(current_tool_room())
+            return "ok"
+
+        provider = MockAIProvider(
+            ai_responses=_tool_round_responses() + _tool_round_responses(),
+            streaming=False,
+        )
+        ch = AIChannel("ai1", provider=provider, tool_handler=tool_handler)
+        contexts = [RoomContext(room=Room(id=room_id)) for room_id in ("room-a", "room-b")]
+
+        for context in contexts:
+            await ch.on_event(
+                make_event(room_id=context.room.id, body="go", channel_id="sms1"),
+                _binding(context.room.id),
+                context,
+            )
+
+        assert [room is context.room for room, context in zip(seen, contexts, strict=True)] == [
+            True,
+            True,
+        ]
+
+    def test_none_outside_tool_loop(self) -> None:
+        assert current_tool_room() is None
 
 
 class TestCurrentToolAllowedNames:

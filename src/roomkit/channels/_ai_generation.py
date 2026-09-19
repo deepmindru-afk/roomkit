@@ -479,7 +479,9 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
         )
 
         loop_ctx = _ToolLoopContext.for_loop(
-            _current_loop_ctx.get(), context.room.room.id if context.room else None
+            _current_loop_ctx.get(),
+            context.room.room.id if context.room else None,
+            room=context.room.room if context.room else None,
         )
         _current_loop_ctx.set(loop_ctx)
         self._active_loops[loop_ctx.loop_id] = loop_ctx

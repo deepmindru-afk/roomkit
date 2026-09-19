@@ -10,6 +10,7 @@ speaker it serves.
 sets:
 
 - ``current_tool_room_id()``      — the room this turn belongs to
+- ``current_tool_room()``         — the ``Room`` itself, as the turn loaded it
 - ``current_tool_actor_id()``     — whose turn it is
 - ``current_tool_allowed_names()`` — the toolset the turn resolved
 
@@ -46,7 +47,12 @@ from roomkit import (
 from roomkit.models.enums import IdentificationStatus
 from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
-from roomkit.tools import current_tool_actor_id, current_tool_allowed_names, current_tool_room_id
+from roomkit.tools import (
+    current_tool_actor_id,
+    current_tool_allowed_names,
+    current_tool_room,
+    current_tool_room_id,
+)
 
 # The rows the tool guards. Keyed by *identity*, not by participant id: the
 # participant is how someone shows up in one room, the identity is who they are.
@@ -80,7 +86,14 @@ async def main() -> None:
         """Answer the person whose turn it is — after establishing who that is."""
         room_id = current_tool_room_id()
         actor_id = current_tool_actor_id()
-        print(f"  [tool] room={room_id} actor={actor_id} toolset={current_tool_allowed_names()}")
+        # The Room object of the turn, the same one its RoomContext holds: the
+        # tenant a host would otherwise re-read by id on every call is right here.
+        room = current_tool_room()
+        tenant = room.metadata.get("tenant") if room is not None else None
+        print(
+            f"  [tool] room={room_id} tenant={tenant} actor={actor_id} "
+            f"toolset={current_tool_allowed_names()}"
+        )
 
         # No author: a system injection, a webhook, a scheduled run. Refusing is
         # the answer — the alternative is serving the last human who spoke.
@@ -116,7 +129,7 @@ async def main() -> None:
     kit.register_channel(ws)
     kit.register_channel(ai)
 
-    room = await kit.create_room(room_id="billing-room")
+    room = await kit.create_room(room_id="billing-room", metadata={"tenant": "acme"})
     await kit.attach_channel(room.id, "ws-user")
     await kit.attach_channel(room.id, "ai-billing", category=ChannelCategory.INTELLIGENCE)
 
