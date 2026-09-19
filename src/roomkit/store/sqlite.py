@@ -1080,6 +1080,10 @@ class SQLiteStore(ConversationStore):
         if room_id is not None:
             where.append("events_fts.room_id = ?")
             params.append(room_id)
+        # The received-rows rule reaches the index too (RFC §14.1): a body a
+        # hook refused is out of the timeline by default, and not findable.
+        where.append("json_extract(e.data, '$.status') IS NOT ?")
+        params.append(EventStatus.BLOCKED.value)
         params.append(limit)
         rows = self._db().execute(
             f"""SELECT e.data FROM events_fts JOIN events e ON e.id = events_fts.event_id

@@ -15,6 +15,7 @@ import sqlite3
 import pytest
 
 from roomkit import RoomKit
+from roomkit.models.enums import EventStatus
 from roomkit.models.room import Room
 from roomkit.store.sqlite import _SCHEMA_VERSION, SQLiteSchemaError, SQLiteStore
 from tests.conftest import make_event
@@ -249,6 +250,23 @@ class TestFullTextSearch:
 
         hits = await store.search_events("meeting", room_id="r2")
         assert [e.room_id for e in hits] == ["r2"]
+
+    async def test_search_does_not_find_the_rows_the_room_refused(
+        self, store: SQLiteStore
+    ) -> None:
+        """RFC §14.1 reaches the index too: a body a hook refused is stored
+        BLOCKED, out of the timeline by default, and not findable by search."""
+        await store.create_room(Room(id="r1"))
+        await store.commit_event("r1", make_event(room_id="r1", body="the secret plan"))
+        await store.commit_event(
+            "r1",
+            make_event(
+                room_id="r1", body="the secret leak", status=EventStatus.BLOCKED, blocked_by="dlp"
+            ),
+        )
+
+        hits = await store.search_events("secret")
+        assert [e.content.body for e in hits] == ["the secret plan"]
 
     async def test_search_survives_hostile_query_syntax(self, store: SQLiteStore) -> None:
         await store.create_room(Room(id="r1"))

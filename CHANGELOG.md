@@ -58,6 +58,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- SQLite full-text search no longer finds the rows the room refused: a body a
+  hook blocked is out of the timeline by default (RFC §14.1) and out of
+  `search_events` too.
 - The SEMANTIC interruption strategy now classifies the words the user said.
   The continuous-STT loop consulted `InterruptionHandler.evaluate` on every
   partial transcript during playback but left `speech_text` at its empty
