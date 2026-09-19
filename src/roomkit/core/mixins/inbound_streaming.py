@@ -175,7 +175,7 @@ class InboundStreamingMixin(HelpersMixin):
             event: RoomEvent,
             *,
             exclude: set[str] | None,
-            hook_result: SyncPipelineResult | None = None,
+            hook_result: SyncPipelineResult,
         ) -> None:
             """Commit a segment and queue its delivery on the room's lane.
 
@@ -197,6 +197,53 @@ class InboundStreamingMixin(HelpersMixin):
                 persisted_events.append(stored)
                 if response_events is not None:
                     response_events.append(stored)
+
+        async def _gate_segment(
+            event: RoomEvent,
+        ) -> tuple[RoomEvent, SyncPipelineResult] | None:
+            """Run the BEFORE_BROADCAST sync hooks on a segment before it commits.
+
+            Every event the stream persists crosses the hooks here — a text
+            segment, a tool call's start, its end — mirroring the locked path.
+            The live chunks already piped to streaming channels are outside a
+            hook's reach by construction; this lands any hook modification
+            (e.g. PII de-anonymisation, a display label on a tool call) on the
+            persisted row and on the delivery to the non-streaming channels,
+            and drops a segment a hook blocks.
+
+            Returns the event to commit and the pipeline result whose effects
+            the lane carries, or ``None`` for a blocked segment. Blocking does
+            not discard what the hook decided: its tasks and observations are
+            persisted and its injected events laned either way.
+            """
+            sync_result = await self._hook_engine.run_sync_hooks(
+                room_id, HookTrigger.BEFORE_BROADCAST, event, context
+            )
+            if sync_result.hook_errors:
+                logger.warning(
+                    "BEFORE_BROADCAST hook error on streamed %s (room %s): %s",
+                    event.type.value,
+                    room_id,
+                    sync_result.hook_errors,
+                )
+            if not sync_result.allowed:
+                await self._persist_side_effects(
+                    room_id, sync_result.tasks, sync_result.observations, event, context
+                )
+                if sync_result.injected_events:
+                    await self._lane_injected_events(
+                        sync_result.injected_events, room_id, context, cascade
+                    )
+                logger.info(
+                    "Streamed %s blocked by BEFORE_BROADCAST hook (room %s): %s",
+                    event.type.value,
+                    room_id,
+                    sync_result.reason,
+                )
+                return None
+            if isinstance(sync_result.event, RoomEvent):
+                event = sync_result.event
+            return event, sync_result
 
         async def _persist_text_segment(*, cancelled: bool = False) -> None:
             """Persist the accumulated text as a MESSAGE event.
@@ -230,67 +277,22 @@ class InboundStreamingMixin(HelpersMixin):
                 parent_event_id=parent_event_id,
                 metadata=metadata,
             )
-            gated, sync_result = await _gate_segment(event, "segment")
+            gated = await _gate_segment(event)
             if gated is None:
                 return
+            event, sync_result = gated
             # The streaming channels already rendered this text chunk by
             # chunk — only the others get it as an event.
-            await _lane_segment(gated, exclude=set(streamed_to), hook_result=sync_result)
-
-        async def _gate_segment(
-            event: RoomEvent, what: str
-        ) -> tuple[RoomEvent | None, SyncPipelineResult]:
-            """Run the BEFORE_BROADCAST sync hooks on a segment before it commits.
-
-            Every event the stream persists crosses the hooks here — a text
-            segment, a tool call's start, its end — mirroring the locked path.
-            The live chunks already piped to streaming channels are outside a
-            hook's reach by construction; this lands any hook modification
-            (e.g. PII de-anonymisation, a display label on a tool call) on the
-            persisted row and on the delivery to the non-streaming channels,
-            and drops a segment a hook blocks.
-
-            Returns the event to commit and the pipeline result whose effects
-            the lane carries, or ``None`` for a blocked segment. Blocking does
-            not discard what the hook decided: its tasks and observations are
-            persisted and its injected events laned either way.
-            """
-            sync_result = await self._hook_engine.run_sync_hooks(
-                room_id, HookTrigger.BEFORE_BROADCAST, event, context
-            )
-            if sync_result.hook_errors:
-                logger.warning(
-                    "BEFORE_BROADCAST hook error on streamed %s (room %s): %s",
-                    what,
-                    room_id,
-                    sync_result.hook_errors,
-                )
-            if not sync_result.allowed:
-                await self._persist_side_effects(
-                    room_id, sync_result.tasks, sync_result.observations, event, context
-                )
-                if sync_result.injected_events:
-                    await self._lane_injected_events(
-                        sync_result.injected_events, room_id, context, cascade
-                    )
-                logger.info(
-                    "Streamed %s blocked by BEFORE_BROADCAST hook (room %s): %s",
-                    what,
-                    room_id,
-                    sync_result.reason,
-                )
-                return None, sync_result
-            if isinstance(sync_result.event, RoomEvent):
-                event = sync_result.event
-            return event, sync_result
+            await _lane_segment(event, exclude=set(streamed_to), hook_result=sync_result)
 
         async def _persist_tool_call(event: RoomEvent) -> None:
-            gated, sync_result = await _gate_segment(event, "tool call")
+            gated = await _gate_segment(event)
             if gated is None:
                 return
+            event, sync_result = gated
             # Tool-call events are delivered to every channel, streaming ones
             # included: a stream renders text, not tool cards.
-            await _lane_segment(gated, exclude=None, hook_result=sync_result)
+            await _lane_segment(event, exclude=None, hook_result=sync_result)
 
         async def _persist_tool_start(marker: ToolCallStartMarker) -> None:
             await _persist_tool_call(

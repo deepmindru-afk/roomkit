@@ -366,11 +366,10 @@ async def test_stream_hook_tasks_wait_for_delivery_and_finish_before_return() ->
 
 
 async def test_streamed_tool_call_events_carry_before_broadcast_modification() -> None:
-    """The tool call's start and end cross the hooks like the text around them.
+    """The tool call's start and end cross the same gate as the text around them.
 
-    Both used to commit straight from the stream: a hook that labels a tool
-    call for the reader stamped the text segments and nothing else, so the
-    stored rows and the non-streaming channels never saw the label.
+    A hook that labels a tool call for the reader must reach the stored row
+    and the non-streaming channels, not the streamed text alone.
     """
     kit = RoomKit()
     transport = await _wire_tool_turn(kit)
@@ -401,14 +400,27 @@ async def test_streamed_tool_call_events_dropped_when_before_broadcast_blocks() 
     kit = RoomKit()
     transport = await _wire_tool_turn(kit)
     task = Task(id="follow-up", room_id="r1", title="Follow up")
+    observation = Observation(id="seen", room_id="r1", channel_id="ai1", content="Observed")
+    notice = RoomEvent(
+        room_id="r1",
+        source=EventSource(channel_id="system", channel_type=ChannelType.SYSTEM),
+        content=TextContent(body="tool call withheld"),
+    )
 
     @kit.hook(HookTrigger.BEFORE_BROADCAST, name="blocker")
     async def blocker(event: RoomEvent, ctx: RoomContext) -> HookResult:
         if event.type not in _TOOL_EVENTS:
             return HookResult.allow()
-        # One task, handed over on the call's start alone.
-        tasks = [task] if event.type == EventType.TOOL_CALL_START else []
-        return HookResult(action="block", reason="withheld", tasks=tasks)
+        if event.type == EventType.TOOL_CALL_END:
+            return HookResult.block("withheld")
+        # The effects ride the call's start alone, so each lands once.
+        return HookResult(
+            action="block",
+            reason="withheld",
+            tasks=[task],
+            observations=[observation],
+            injected_events=[InjectedEvent(event=notice, target_channel_ids=["sms1"])],
+        )
 
     try:
         await kit.process_inbound(
@@ -420,5 +432,54 @@ async def test_streamed_tool_call_events_dropped_when_before_broadcast_blocks() 
         # The turn's text is untouched by a block aimed at its tool calls.
         assert [e.content.body for e in _ai_messages(events)] == ["Looking.", "Found."]
         assert await kit.store.list_tasks("r1") == [task]
+        assert await kit.store.list_observations("r1") == [observation]
+        assert [e.id for e in events].count(notice.id) == 1
+        assert [e.id for e in transport.delivered].count(notice.id) == 1
+    finally:
+        await kit.close()
+
+
+async def test_streamed_tool_call_events_reach_the_streaming_transport_as_events() -> None:
+    """With a live stream attached, every copy the transport gets is the gated one.
+
+    The streaming transport renders the text chunk by chunk and is included in
+    the tool-call events' delivery; it also receives each persisted event
+    through the stream's own frames. Whichever path a copy took, it carries
+    the hook's modification.
+    """
+    kit = RoomKit()
+    await _wire_tool_turn(kit)
+    ws = WebSocketChannel("ws1")
+    chunks: list[str] = []
+    sent: list[RoomEvent] = []
+
+    async def send_fn(conn_id: str, event: RoomEvent) -> None:
+        sent.append(event)
+
+    async def stream_send_fn(conn_id: str, msg: object) -> None:
+        delta = getattr(msg, "delta", None)
+        if delta:
+            chunks.append(delta)
+
+    ws.register_connection("c1", send_fn, stream_send_fn=stream_send_fn, room_id="r1")
+    kit.register_channel(ws)
+    await kit.attach_channel("r1", "ws1")
+
+    @kit.hook(HookTrigger.BEFORE_BROADCAST, name="label")
+    async def label(event: RoomEvent, ctx: RoomContext) -> HookResult:
+        if event.type not in _TOOL_EVENTS:
+            return HookResult.allow()
+        return HookResult.modify(
+            event.model_copy(update={"metadata": {**event.metadata, "label": "Lookup"}})
+        )
+
+    try:
+        await kit.process_inbound(
+            InboundMessage(channel_id="sms1", sender_id="u1", content=TextContent(body="go"))
+        )
+        assert "".join(chunks) == "Looking.Found."
+        copies = _tool_events(sent)
+        assert {e.type for e in copies} == set(_TOOL_EVENTS)
+        assert all(e.metadata.get("label") == "Lookup" for e in copies)
     finally:
         await kit.close()

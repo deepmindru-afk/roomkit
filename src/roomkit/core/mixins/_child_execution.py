@@ -36,11 +36,14 @@ async def _persist_child_stream(
 ) -> str:
     """Drain a streaming response into the child room, persisting tool calls.
 
-    Mirrors the main inbound streaming path: text deltas accumulate into
-    MESSAGE segments split at tool-call boundaries, and each
-    ``ToolCall{Start,End}Marker`` is persisted as a TOOL_CALL_{START,END}
-    event — so the child room holds the worker's full trace (what it
-    searched/ran, with arguments and results), not just its final answer.
+    Segments the stream the way the main inbound streaming path does: text
+    deltas accumulate into MESSAGE segments split at tool-call boundaries,
+    and each ``ToolCall{Start,End}Marker`` is persisted as a
+    TOOL_CALL_{START,END} event — so the child room holds the worker's full
+    trace (what it searched/ran, with arguments and results), not just its
+    final answer. Unlike that path, the rows are committed directly: they
+    ride no delivery lane and cross no BEFORE_BROADCAST hook, because nobody
+    is delivered them — they are the record of a delegated turn.
     Returns the full concatenated text (the worker's output for the caller).
     """
     source = EventSource(channel_id=sr.source_channel_id, channel_type=sr.source_channel_type)

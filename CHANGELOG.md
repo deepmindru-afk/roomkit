@@ -32,7 +32,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   non-streaming path ran the hooks on them all along. One gate now serves the
   three segment kinds: a modification lands on the stored row and on the
   delivery, a blocked event is dropped, and the hook's tasks, observations and
-  injected events are kept either way.
+  injected events are kept either way. A `BEFORE_BROADCAST` hook therefore
+  receives a stream's `ToolCallContent` events as it already received the
+  non-streaming path's; one that assumed `TextContent` and raises is logged
+  and skipped, the trigger not being fail-closed.
 
 ## [0.82.0] — 2026-09-19
 
