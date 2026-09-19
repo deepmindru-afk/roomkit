@@ -4,7 +4,6 @@ Demonstrates how to compose RoomKit's guardrail primitives into a layered
 safety pipeline. Shows:
 - BEFORE_BROADCAST hooks for input filtering (block + modify)
 - PII redaction with HookResult.modify()
-- ON_AI_RESPONSE hook for output filtering
 - ToolPolicy with allow/deny patterns
 - Chain depth limit to prevent AI-to-AI loops
 - Rate limiting per channel
