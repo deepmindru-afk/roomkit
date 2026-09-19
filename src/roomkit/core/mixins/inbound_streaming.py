@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from uuid import uuid4
 
 from roomkit.core.lanes import DeliveryCascade
+from roomkit.core.mixins._streaming_segments import SegmentWriter
 from roomkit.core.mixins.helpers import HelpersMixin
 from roomkit.core.mixins.lane_execution import DeliverySource
 from roomkit.core.visibility import visibility_allows
@@ -16,11 +17,8 @@ from roomkit.models.enums import (
     Access,
     ChannelCategory,
     ChannelDirection,
-    EventStatus,
-    EventType,
-    HookTrigger,
 )
-from roomkit.models.event import RoomEvent, ToolCallContent
+from roomkit.models.event import RoomEvent
 from roomkit.models.response_metadata import ResponseMetadata
 from roomkit.models.streaming import ThinkingDeltaMarker, ToolCallEndMarker, ToolCallStartMarker
 from roomkit.providers.ai.base import ProviderError
@@ -29,7 +27,7 @@ from roomkit.providers.utils import _aclose_stream
 if TYPE_CHECKING:
     from roomkit.channels.base import Channel
     from roomkit.core.event_router import EventRouter, StreamingResponse
-    from roomkit.core.hooks import HookEngine, SyncPipelineResult
+    from roomkit.core.hooks import HookEngine
     from roomkit.models.context import RoomContext
     from roomkit.models.hook import InjectedEvent
     from roomkit.store.base import ConversationStore
@@ -124,21 +122,14 @@ class InboundStreamingMixin(HelpersMixin):
             len(streaming_targets),
         )
 
-        # Shared state for the segment persistence logic.
-        accumulated_text: list[str] = []
-        persisted_events: list[RoomEvent] = []
         # One cascade for the whole response: each segment's delivery is
         # enqueued without waiting (blocking the generator on an SMS round
         # trip would stall the stream), and the run is awaited once, after
         # the stream, by the caller.
         if cascade is None:
             cascade = DeliveryCascade(room_id, reentry_budget=self._max_chain_depth * 10)
-        # The channel a text segment is reaching *as it is produced* — the
-        # stream itself is its delivery, so the lane must not send it again.
-        # Only the first target streams (V1, below); any other streaming-capable
-        # channel is an ordinary recipient. Cleared when the stream fails: text
-        # accumulated past the failure never reached it and must go out like
-        # any other event.
+        # Only the first target streams (V1, below); any other
+        # streaming-capable channel is an ordinary recipient.
         streamed_to: set[str] = (
             {streaming_targets[0][1].channel_id} if streaming_targets else set()
         )
@@ -149,12 +140,6 @@ class InboundStreamingMixin(HelpersMixin):
         # thread (already normalised to a root by the locked pipeline). None
         # when the trigger is top-level — the reply stays top-level too.
         parent_event_id = sr.trigger_event.parent_event_id
-
-        def _make_source() -> EventSource:
-            return EventSource(
-                channel_id=sr.source_channel_id,
-                channel_type=sr.source_channel_type,
-            )
 
         # Planning inputs for the whole run, resolved once. Every segment has
         # the same sender and the same delivery set, so re-resolving per
@@ -172,181 +157,20 @@ class InboundStreamingMixin(HelpersMixin):
             else sr.source_channel_id
         )
 
-        async def _lane_segment(
-            event: RoomEvent,
-            *,
-            exclude: set[str] | None,
-            hook_result: SyncPipelineResult,
-        ) -> None:
-            """Commit a segment and queue its delivery on the room's lane.
-
-            Deliberately not awaited to completion: this runs inside the
-            streaming channel's ``deliver_stream``, and blocking the
-            generator on a transport round trip would stall the stream.
-            ``cascade`` collects every segment's unit instead, and the
-            caller waits on it once the stream is done.
-            """
-            stored = await self._commit_and_deliver(
-                room_id,
-                event,
-                plan_source,
-                exclude_delivery=exclude,
-                cascade=cascade,
-                hook_result=hook_result,
-            )
-            if stored is not None:
-                persisted_events.append(stored)
-                if response_events is not None:
-                    response_events.append(stored)
-
-        async def _gate_segment(
-            event: RoomEvent,
-        ) -> tuple[RoomEvent, SyncPipelineResult] | None:
-            """Run the BEFORE_BROADCAST sync hooks on a segment before it commits.
-
-            Every event the stream persists crosses the hooks here — a text
-            segment, a tool call's start, its end — mirroring the locked path.
-            The live chunks already piped to streaming channels are outside a
-            hook's reach by construction; this lands any hook modification
-            (e.g. PII de-anonymisation, a display label on a tool call) on the
-            persisted row and on the delivery to the non-streaming channels,
-            and drops a segment a hook blocks.
-
-            Returns the event to commit and the pipeline result whose effects
-            the lane carries, or ``None`` for a blocked segment. A blocked
-            segment is not dropped: it goes through the same block handler as
-            every other refusal (RFC §10.1 step 10) — committed with status
-            BLOCKED as the audit record, announced as ``event_blocked`` — and
-            what the hook decided still stands, its tasks and observations
-            persisted and its injected events laned.
-            """
-            sync_result = await self._hook_engine.run_sync_hooks(
-                room_id, HookTrigger.BEFORE_BROADCAST, event, context
-            )
-            if sync_result.hook_errors:
-                logger.warning(
-                    "BEFORE_BROADCAST hook error on streamed %s (room %s): %s",
-                    event.type.value,
-                    room_id,
-                    sync_result.hook_errors,
-                )
-            if not sync_result.allowed:
-                blocked = await self._handle_block(
-                    room_id=room_id,
-                    event=event,
-                    reason=sync_result.reason,
-                    blocked_by=sync_result.blocked_by,
-                    injected_events=sync_result.injected_events,
-                    context=context,
-                    cascade=cascade,
-                )
-                await self._persist_side_effects(
-                    room_id, sync_result.tasks, sync_result.observations, blocked, context
-                )
-                logger.info(
-                    "Streamed %s blocked by BEFORE_BROADCAST hook (room %s): %s",
-                    event.type.value,
-                    room_id,
-                    sync_result.reason,
-                )
-                return None
-            if isinstance(sync_result.event, RoomEvent):
-                event = sync_result.event
-            return event, sync_result
-
-        async def _persist_text_segment(*, cancelled: bool = False) -> None:
-            """Persist the accumulated text as a MESSAGE event.
-
-            ``sr.response_metadata`` (the turn's ``AIContext.response_metadata``,
-            the same live record) rides every MESSAGE segment as it stands
-            when the segment is persisted — persisted before broadcast, so
-            turn-level attribution, including what a tool handler wrote
-            mid-loop, lands in the stored row and in the stream_end frame
-            without any post-hoc rewrite.
-
-            ``cancelled`` marks a segment cut short by an interrupted turn, so
-            a reader can tell a finished answer from one the user stopped.
-            """
-            if not accumulated_text:
-                return
-            text = "".join(accumulated_text)
-            accumulated_text.clear()
-            metadata = dict(sr.response_metadata or {})
-            if cancelled:
-                metadata["cancelled"] = True
-            event = RoomEvent(
-                room_id=room_id,
-                source=_make_source(),
-                type=EventType.MESSAGE,
-                content=TextContent(body=text),
-                status=EventStatus.DELIVERED,
-                chain_depth=chain_depth,
-                visibility=visibility,
-                correlation_id=correlation_id,
-                parent_event_id=parent_event_id,
-                metadata=metadata,
-            )
-            gated = await _gate_segment(event)
-            if gated is None:
-                return
-            event, sync_result = gated
-            # The streaming channels already rendered this text chunk by
-            # chunk — only the others get it as an event.
-            await _lane_segment(event, exclude=set(streamed_to), hook_result=sync_result)
-
-        async def _persist_tool_call(event: RoomEvent) -> None:
-            gated = await _gate_segment(event)
-            if gated is None:
-                return
-            event, sync_result = gated
-            # Excluded like a text segment, and for the same reason: the
-            # channel consuming the stream is handed every persisted event
-            # inline, so laning it there too sent the same event id twice.
-            await _lane_segment(event, exclude=set(streamed_to), hook_result=sync_result)
-
-        async def _persist_tool_start(marker: ToolCallStartMarker) -> None:
-            await _persist_tool_call(
-                RoomEvent(
-                    room_id=room_id,
-                    source=_make_source(),
-                    type=EventType.TOOL_CALL_START,
-                    content=ToolCallContent(
-                        tool_name=marker.tool_name,
-                        tool_id=marker.tool_id,
-                        arguments=marker.arguments,
-                        status="pending",
-                    ),
-                    status=EventStatus.DELIVERED,
-                    chain_depth=chain_depth,
-                    visibility=visibility,
-                    correlation_id=correlation_id,
-                    parent_event_id=parent_event_id,
-                )
-            )
-
-        async def _persist_tool_end(marker: ToolCallEndMarker) -> None:
-            await _persist_tool_call(
-                RoomEvent(
-                    room_id=room_id,
-                    source=_make_source(),
-                    type=EventType.TOOL_CALL_END,
-                    content=ToolCallContent(
-                        tool_name=marker.tool_name,
-                        tool_id=marker.tool_id,
-                        arguments=marker.arguments,
-                        result=marker.result,
-                        status=marker.status,
-                        duration_ms=marker.duration_ms,
-                        error=marker.error,
-                        structured_content=marker.structured_content,
-                    ),
-                    status=EventStatus.DELIVERED,
-                    chain_depth=chain_depth,
-                    visibility=visibility,
-                    correlation_id=correlation_id,
-                    parent_event_id=parent_event_id,
-                )
-            )
+        writer = SegmentWriter(
+            self,
+            sr,
+            room_id=room_id,
+            context=context,
+            cascade=cascade,
+            plan_source=plan_source,
+            chain_depth=chain_depth,
+            visibility=visibility,
+            correlation_id=correlation_id,
+            parent_event_id=parent_event_id,
+            streamed_to=streamed_to,
+            response_events=response_events,
+        )
 
         # Generator that yields text deltas and persisted events.
         # Text deltas drive the streaming bubble; RoomEvents are delivered
@@ -361,39 +185,33 @@ class InboundStreamingMixin(HelpersMixin):
             """
             async for delta in sr.stream:
                 if isinstance(delta, str):
-                    accumulated_text.append(delta)
+                    writer.add_text(delta)
                     yield delta
                 elif isinstance(delta, ThinkingDeltaMarker):
                     yield delta
                 elif isinstance(delta, ToolCallStartMarker):
-                    # Persist text before the tool call and yield if new
-                    count = len(persisted_events)
-                    await _persist_text_segment()
-                    if len(persisted_events) > count:
-                        yield persisted_events[-1]
-                    # Persist and yield tool call start
-                    count = len(persisted_events)
-                    await _persist_tool_start(delta)
-                    if len(persisted_events) > count:
-                        yield persisted_events[-1]
+                    # The text before the tool call is its own segment.
+                    for row in (await writer.flush_text(), await writer.tool_start(delta)):
+                        if row is not None:
+                            yield row
                 elif isinstance(delta, ToolCallEndMarker):
-                    count = len(persisted_events)
-                    await _persist_tool_end(delta)
-                    if len(persisted_events) > count:
-                        yield persisted_events[-1]
+                    row = await writer.tool_end(delta)
+                    if row is not None:
+                        yield row
 
-            # Persist final text segment and yield it
-            count = len(persisted_events)
-            await _persist_text_segment()
-            if len(persisted_events) > count:
-                yield persisted_events[-1]
+            row = await writer.flush_text()
+            if row is not None:
+                yield row
 
         stream_error: Exception | None = None
         if streaming_targets:
             channel, binding = streaming_targets[0]  # V1: single target
             placeholder = RoomEvent(
                 room_id=room_id,
-                source=_make_source(),
+                source=EventSource(
+                    channel_id=sr.source_channel_id,
+                    channel_type=sr.source_channel_type,
+                ),
                 content=TextContent(body=""),
                 chain_depth=chain_depth,
                 visibility=visibility,
@@ -410,7 +228,7 @@ class InboundStreamingMixin(HelpersMixin):
                 # context missing what it already said. Not an error — nobody
                 # failed — so ON_ERROR stays silent and the cancellation
                 # propagates untouched.
-                await _persist_text_segment(cancelled=True)
+                await writer.flush_text(cancelled=True)
                 raise
             except Exception as exc:
                 stream_error = exc
@@ -420,12 +238,15 @@ class InboundStreamingMixin(HelpersMixin):
                 # Persist any text accumulated before the error. The stream is
                 # gone, so this text never reached its channels — it goes out
                 # as an ordinary event, to everyone.
-                streamed_to.clear()
-                await _persist_text_segment()
+                writer.stream_lost()
+                await writer.flush_text()
                 await self._fire_error_hook(
                     room_id,
                     context,
-                    _make_source(),
+                    EventSource(
+                        channel_id=sr.source_channel_id,
+                        channel_type=sr.source_channel_type,
+                    ),
                     error=str(exc),
                     error_type=type(exc).__name__,
                     error_category="streaming",
@@ -447,18 +268,21 @@ class InboundStreamingMixin(HelpersMixin):
                 async for _ in segment_stream():
                     pass
             except asyncio.CancelledError:
-                await _persist_text_segment(cancelled=True)
+                await writer.flush_text(cancelled=True)
                 raise
             except Exception as exc:
                 stream_error = exc
                 self._log_stream_failure(
                     exc, "stream consumption (no targets)", room_id, headless=True
                 )
-                await _persist_text_segment()
+                await writer.flush_text()
                 await self._fire_error_hook(
                     room_id,
                     context,
-                    _make_source(),
+                    EventSource(
+                        channel_id=sr.source_channel_id,
+                        channel_type=sr.source_channel_type,
+                    ),
                     error=str(exc),
                     error_type=type(exc).__name__,
                     error_category="streaming",
@@ -472,10 +296,10 @@ class InboundStreamingMixin(HelpersMixin):
         # done — the run's completion is what the caller's turn waits on.
         await cascade.wait()
 
-        if not persisted_events and stream_error is None:
+        if not writer.persisted and stream_error is None:
             return None
 
-        return _StreamingResult(events=persisted_events, error=stream_error)
+        return _StreamingResult(events=writer.persisted, error=stream_error)
 
     @staticmethod
     def _log_stream_failure(
