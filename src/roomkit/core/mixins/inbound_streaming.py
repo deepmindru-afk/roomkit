@@ -97,6 +97,7 @@ class InboundStreamingMixin(HelpersMixin):
     # Cross-mixin method — attribute annotation avoids MRO shadowing
     _commit_and_deliver: Any  # LaneExecutionMixin
     _lane_injected_events: Any  # LaneExecutionMixin
+    _handle_block: Any  # InboundLockedMixin
 
     # Stub for cross-mixin call — implemented by RoomKit._get_router().
     def _get_router(self) -> EventRouter: ...
@@ -212,9 +213,12 @@ class InboundStreamingMixin(HelpersMixin):
             and drops a segment a hook blocks.
 
             Returns the event to commit and the pipeline result whose effects
-            the lane carries, or ``None`` for a blocked segment. Blocking does
-            not discard what the hook decided: its tasks and observations are
-            persisted and its injected events laned either way.
+            the lane carries, or ``None`` for a blocked segment. A blocked
+            segment is not dropped: it goes through the same block handler as
+            every other refusal (RFC §10.1 step 10) — committed with status
+            BLOCKED as the audit record, announced as ``event_blocked`` — and
+            what the hook decided still stands, its tasks and observations
+            persisted and its injected events laned.
             """
             sync_result = await self._hook_engine.run_sync_hooks(
                 room_id, HookTrigger.BEFORE_BROADCAST, event, context
@@ -227,13 +231,18 @@ class InboundStreamingMixin(HelpersMixin):
                     sync_result.hook_errors,
                 )
             if not sync_result.allowed:
-                await self._persist_side_effects(
-                    room_id, sync_result.tasks, sync_result.observations, event, context
+                blocked = await self._handle_block(
+                    room_id=room_id,
+                    event=event,
+                    reason=sync_result.reason,
+                    blocked_by=sync_result.blocked_by,
+                    injected_events=sync_result.injected_events,
+                    context=context,
+                    cascade=cascade,
                 )
-                if sync_result.injected_events:
-                    await self._lane_injected_events(
-                        sync_result.injected_events, room_id, context, cascade
-                    )
+                await self._persist_side_effects(
+                    room_id, sync_result.tasks, sync_result.observations, blocked, context
+                )
                 logger.info(
                     "Streamed %s blocked by BEFORE_BROADCAST hook (room %s): %s",
                     event.type.value,
@@ -290,9 +299,10 @@ class InboundStreamingMixin(HelpersMixin):
             if gated is None:
                 return
             event, sync_result = gated
-            # Tool-call events are delivered to every channel, streaming ones
-            # included: a stream renders text, not tool cards.
-            await _lane_segment(event, exclude=None, hook_result=sync_result)
+            # Excluded like a text segment, and for the same reason: the
+            # channel consuming the stream is handed every persisted event
+            # inline, so laning it there too sent the same event id twice.
+            await _lane_segment(event, exclude=set(streamed_to), hook_result=sync_result)
 
         async def _persist_tool_start(marker: ToolCallStartMarker) -> None:
             await _persist_tool_call(

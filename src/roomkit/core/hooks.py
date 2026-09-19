@@ -9,7 +9,13 @@ from dataclasses import dataclass, field
 from typing import Any, ClassVar, cast
 
 from roomkit.models.context import RoomContext
-from roomkit.models.enums import ChannelDirection, ChannelType, HookExecution, HookTrigger
+from roomkit.models.enums import (
+    ChannelDirection,
+    ChannelType,
+    EventType,
+    HookExecution,
+    HookTrigger,
+)
 from roomkit.models.event import RoomEvent
 from roomkit.models.hook import HookResult, InjectedEvent
 from roomkit.models.task import Observation, Task
@@ -34,6 +40,7 @@ class HookRegistration:
         channel_types: Only run for events from these channel types (None = all)
         channel_ids: Only run for events from these channel IDs (None = all)
         directions: Only run for events with these directions (None = all)
+        event_types: Only run for events of these types (None = all)
     """
 
     trigger: HookTrigger
@@ -46,6 +53,7 @@ class HookRegistration:
     channel_types: set[ChannelType] | None = None
     channel_ids: set[str] | None = None
     directions: set[ChannelDirection] | None = None
+    event_types: set[EventType] | None = None
 
 
 @dataclass
@@ -178,8 +186,9 @@ class HookEngine:
         type_ok = hook.channel_types is None or source.channel_type in hook.channel_types
         id_ok = hook.channel_ids is None or source.channel_id in hook.channel_ids
         dir_ok = hook.directions is None or source.direction in hook.directions
+        event_ok = hook.event_types is None or event.type in hook.event_types
 
-        return type_ok and id_ok and dir_ok
+        return type_ok and id_ok and dir_ok and event_ok
 
     def _get_hooks(
         self,

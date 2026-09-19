@@ -19,6 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A host that counted an agent's turns by measuring a `list_events` page
   inherited the page's cap (RFC §14.1). `received_events` is exported from
   `roomkit` beside `visible_events`.
+- `RoomKit.hook()` takes `event_types`, the filter the other three lacked: a
+  hook declared for a set of `EventType` is not invoked for the rest, body and
+  timeout budget included. `BEFORE_BROADCAST` fires once per text segment and
+  once per tool-call event of a turn, so a hook that shapes tool calls alone
+  (a display label, an audit line) declares them rather than being invoked on
+  every segment to guard on `event.type` itself. Combines with
+  `channel_types`, `channel_ids` and `directions`: every filter must pass.
 - `AIResponseEvent.declared_tools` reports the tools the provider received
   over every generation round of the turn, revealed ones included: one
   `DeclaredTool` per name, with the `description` and `parameters` as
@@ -41,11 +48,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   channels, and a hook that blocked one still saw it land, while the
   non-streaming path ran the hooks on them all along. One gate now serves the
   three segment kinds: a modification lands on the stored row and on the
-  delivery, a blocked event is dropped, and the hook's tasks, observations and
-  injected events are kept either way. A `BEFORE_BROADCAST` hook therefore
+  delivery, a blocked event reaches nobody, and the hook's tasks, observations
+  and injected events are kept either way. A `BEFORE_BROADCAST` hook therefore
   receives a stream's `ToolCallContent` events as it already received the
   non-streaming path's; one that assumed `TextContent` and raises is logged
   and skipped, the trigger not being fail-closed.
+- A streamed segment a `BEFORE_BROADCAST` hook blocks leaves the audit record
+  every other refusal leaves. It went through the shared block handler's three
+  siblings and not through the handler itself, so it was dropped with a log
+  line: no row with status `BLOCKED`, no `event_blocked` framework event
+  (RFC §10.1 step 10). It is still kept out of the timeline a reader receives,
+  since a refused row is served only to an `EventFilter(include_blocked=True)`.
+- A streaming transport receives a turn's tool-call events once. It is handed
+  every persisted event inline by the stream it consumes, and the delivery
+  lane sent them to it as well, so a tool call reached that channel twice
+  under the same event id. The lane now leaves it out of the tool-call events
+  as it already did of the text segments.
 
 ## [0.82.0] — 2026-09-19
 

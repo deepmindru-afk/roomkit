@@ -22,10 +22,16 @@ from roomkit.core.framework import RoomKit
 from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
-from roomkit.models.enums import ChannelCategory, ChannelType, EventType, HookTrigger
+from roomkit.models.enums import (
+    ChannelCategory,
+    ChannelType,
+    EventStatus,
+    EventType,
+    HookTrigger,
+)
 from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.models.hook import HookResult, InjectedEvent
-from roomkit.models.store_filter import PersistencePolicy
+from roomkit.models.store_filter import EventFilter, PersistencePolicy
 from roomkit.models.task import Observation, Task
 from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
@@ -396,9 +402,20 @@ async def test_streamed_tool_call_events_carry_before_broadcast_modification() -
 
 
 async def test_streamed_tool_call_events_dropped_when_before_broadcast_blocks() -> None:
-    """A blocked tool-call event never lands, while its side effects do."""
+    """A blocked tool-call event is refused and recorded, and its effects stand.
+
+    Refused means: out of the timeline the room received and undelivered, but
+    committed with status BLOCKED as the audit record and announced as
+    ``event_blocked``, like every other refusal (RFC §10.1 step 10).
+    """
     kit = RoomKit()
     transport = await _wire_tool_turn(kit)
+    announced: list[str] = []
+
+    @kit.on("event_blocked")
+    async def on_blocked(_evt: object) -> None:
+        announced.append("blocked")
+
     task = Task(id="follow-up", room_id="r1", title="Follow up")
     observation = Observation(id="seen", room_id="r1", channel_id="ai1", content="Observed")
     notice = RoomEvent(
@@ -435,17 +452,24 @@ async def test_streamed_tool_call_events_dropped_when_before_broadcast_blocks() 
         assert await kit.store.list_observations("r1") == [observation]
         assert [e.id for e in events].count(notice.id) == 1
         assert [e.id for e in transport.delivered].count(notice.id) == 1
+        # The audit record: refused, kept, and announced once per event.
+        audited = _tool_events(
+            await kit.store.list_events("r1", event_filter=EventFilter(include_blocked=True))
+        )
+        assert [e.type for e in audited] == list(_TOOL_EVENTS)
+        assert {e.status for e in audited} == {EventStatus.BLOCKED}
+        assert {e.blocked_by for e in audited} == {"blocker"}
+        assert len(announced) == 2
     finally:
         await kit.close()
 
 
 async def test_streamed_tool_call_events_reach_the_streaming_transport_as_events() -> None:
-    """With a live stream attached, every copy the transport gets is the gated one.
+    """With a live stream attached, the transport gets each event once, gated.
 
-    The streaming transport renders the text chunk by chunk and is included in
-    the tool-call events' delivery; it also receives each persisted event
-    through the stream's own frames. Whichever path a copy took, it carries
-    the hook's modification.
+    The stream hands the channel consuming it every persisted event inline,
+    so the lane leaves that channel out — of the tool-call events as of the
+    text segments. Laning them there too delivered the same event id twice.
     """
     kit = RoomKit()
     await _wire_tool_turn(kit)
@@ -479,7 +503,8 @@ async def test_streamed_tool_call_events_reach_the_streaming_transport_as_events
         )
         assert "".join(chunks) == "Looking.Found."
         copies = _tool_events(sent)
-        assert {e.type for e in copies} == set(_TOOL_EVENTS)
+        assert [e.type for e in copies] == list(_TOOL_EVENTS)
+        assert len({e.id for e in copies}) == len(copies), "the same event was delivered twice"
         assert all(e.metadata.get("label") == "Lookup" for e in copies)
     finally:
         await kit.close()

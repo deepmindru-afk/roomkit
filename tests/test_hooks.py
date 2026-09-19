@@ -6,7 +6,7 @@ import asyncio
 
 from roomkit.core.hooks import HookEngine, HookRegistration
 from roomkit.models.context import RoomContext
-from roomkit.models.enums import ChannelType, HookExecution, HookTrigger
+from roomkit.models.enums import ChannelType, EventType, HookExecution, HookTrigger
 from roomkit.models.event import RoomEvent, TextContent
 from roomkit.models.hook import HookResult, InjectedEvent
 from roomkit.models.room import Room
@@ -594,6 +594,80 @@ class TestHookFiltering:
             )
 
         assert called == [ChannelType.SMS, ChannelType.EMAIL, ChannelType.WEBSOCKET]
+
+    async def test_filter_by_event_type(self) -> None:
+        """A hook declared for one event type is not invoked for the others.
+
+        BEFORE_BROADCAST fires once per text segment and once per tool-call
+        event of a turn, so a hook that only shapes tool calls declares the
+        types it wants rather than paying an invocation per segment to guard
+        on ``event.type`` itself.
+        """
+        engine = HookEngine()
+        called = []
+
+        async def tool_hook(event: RoomEvent, ctx: RoomContext) -> HookResult:
+            called.append(event.type)
+            return HookResult.allow()
+
+        engine.register(
+            HookRegistration(
+                trigger=HookTrigger.BEFORE_BROADCAST,
+                execution=HookExecution.SYNC,
+                fn=tool_hook,
+                name="tool_only",
+                event_types={EventType.TOOL_CALL_START, EventType.TOOL_CALL_END},
+            )
+        )
+
+        for event_type in (
+            EventType.MESSAGE,
+            EventType.TOOL_CALL_START,
+            EventType.SYSTEM,
+            EventType.TOOL_CALL_END,
+        ):
+            await engine.run_sync_hooks(
+                "r1",
+                HookTrigger.BEFORE_BROADCAST,
+                make_event(type=event_type),
+                _ctx(),
+            )
+
+        assert called == [EventType.TOOL_CALL_START, EventType.TOOL_CALL_END]
+
+    async def test_event_type_filter_combines_with_the_others(self) -> None:
+        """Every filter must pass, the new one included."""
+        engine = HookEngine()
+        called = []
+
+        async def narrow_hook(event: RoomEvent, ctx: RoomContext) -> HookResult:
+            called.append((event.source.channel_type, event.type))
+            return HookResult.allow()
+
+        engine.register(
+            HookRegistration(
+                trigger=HookTrigger.BEFORE_BROADCAST,
+                execution=HookExecution.SYNC,
+                fn=narrow_hook,
+                name="sms_messages_only",
+                channel_types={ChannelType.SMS},
+                event_types={EventType.MESSAGE},
+            )
+        )
+
+        for channel_type, event_type in (
+            (ChannelType.SMS, EventType.MESSAGE),
+            (ChannelType.SMS, EventType.TOOL_CALL_START),
+            (ChannelType.EMAIL, EventType.MESSAGE),
+        ):
+            await engine.run_sync_hooks(
+                "r1",
+                HookTrigger.BEFORE_BROADCAST,
+                make_event(channel_type=channel_type, type=event_type),
+                _ctx(),
+            )
+
+        assert called == [(ChannelType.SMS, EventType.MESSAGE)]
 
 
 class TestTriggerIndex:

@@ -19,6 +19,7 @@ from roomkit.models.delivery import DeliveryStatus
 from roomkit.models.enums import (
     ChannelDirection,
     ChannelType,
+    EventType,
     HookExecution,
     HookTrigger,
     RoomStatus,
@@ -95,8 +96,16 @@ class HooksApiMixin(HelpersMixin):
         channel_types: set[ChannelType] | None = None,
         channel_ids: set[str] | None = None,
         directions: set[ChannelDirection] | None = None,
+        event_types: set[EventType] | None = None,
     ) -> Callable[..., Any]:
         """Decorator to register a global hook.
+
+        A filtered-out hook is not called at all — neither its body nor its
+        timeout budget. A trigger that fires for every event a turn produces
+        (``BEFORE_BROADCAST`` runs once per text segment and once per
+        tool-call event) is where ``event_types`` pays: a hook that only
+        shapes tool calls declares it instead of guarding on ``event.type``
+        and being invoked on every segment of every turn.
 
         Args:
             trigger: When the hook fires (BEFORE_BROADCAST, AFTER_BROADCAST, etc.)
@@ -107,6 +116,7 @@ class HooksApiMixin(HelpersMixin):
             channel_types: Only run for events from these channel types (None = all)
             channel_ids: Only run for events from these channel IDs (None = all)
             directions: Only run for events with these directions (None = all)
+            event_types: Only run for events of these types (None = all)
         """
 
         def decorator(fn: SyncHookFn | AsyncHookFn) -> SyncHookFn | AsyncHookFn:
@@ -121,6 +131,7 @@ class HooksApiMixin(HelpersMixin):
                     channel_types=channel_types,
                     channel_ids=channel_ids,
                     directions=directions,
+                    event_types=event_types,
                 )
             )
             return fn
