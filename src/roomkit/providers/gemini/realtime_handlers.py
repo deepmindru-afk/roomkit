@@ -20,6 +20,48 @@ from roomkit.voice.realtime.provider import RealtimeVoiceProvider
 logger = logging.getLogger("roomkit.providers.gemini.realtime")
 
 
+def _modality_counts(details: Any) -> dict[str, int]:
+    """A list of ``ModalityTokenCount`` as ``{"AUDIO": n, "TEXT": n}``."""
+    counts: dict[str, int] = {}
+    for entry in details or ():
+        modality = getattr(entry, "modality", None)
+        name = getattr(modality, "name", None) or str(modality or "UNKNOWN")
+        counts[name] = counts.get(name, 0) + (getattr(entry, "token_count", 0) or 0)
+    return counts
+
+
+def _usage_details(meta: Any) -> dict[str, Any]:
+    """Everything the Live API reports beside its two totals.
+
+    A spoken turn is mostly audio, the modalities are priced apart, and the
+    cached share is priced apart again — so ``prompt_token_count`` alone
+    cannot say what a session spent its context on. The OpenAI realtime
+    handler already passes its own breakdown through ``_record_usage``; this
+    is the same reading for Gemini, and an empty dict where the server sends
+    none of it.
+    """
+    details: dict[str, Any] = {}
+    for key in (
+        "cached_content_token_count",
+        "thoughts_token_count",
+        "tool_use_prompt_token_count",
+        "total_token_count",
+    ):
+        value = getattr(meta, key, 0) or 0
+        if value:
+            details[key] = value
+    for key in (
+        "prompt_tokens_details",
+        "cache_tokens_details",
+        "response_tokens_details",
+        "tool_use_prompt_tokens_details",
+    ):
+        counts = _modality_counts(getattr(meta, key, None))
+        if counts:
+            details[key] = counts
+    return details
+
+
 _IDLE_STATUSES = frozenset({"IDLE", "INTERACTION_STATUS_IDLE"})
 """What ``interaction_status`` reads when the request is over. A set rather
 than a suffix match: a future ``NOT_IDLE`` would end every response early."""
@@ -323,7 +365,7 @@ class GeminiLiveEventHandlersMixin(RealtimeVoiceProvider):
                 response_tokens=response_tokens,
                 total_tokens=total_tokens,
             )
-        self._record_usage(session, prompt_tokens, response_tokens)
+        self._record_usage(session, prompt_tokens, response_tokens, details=_usage_details(meta))
 
     async def _on_go_away(
         self, session: VoiceSession, state: _GeminiSessionState, go_away: Any

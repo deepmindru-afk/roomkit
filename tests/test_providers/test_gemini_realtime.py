@@ -2023,6 +2023,60 @@ class TestGeminiLiveProvider:
         )
         await provider._handle_server_response(session, response)
 
+        assert session._last_usage["input_tokens"] == 100
+        assert session._last_usage["output_tokens"] == 50
+        assert session._last_usage["total_token_count"] == 150
+
+    async def test_usage_metadata_reports_its_breakdown(self):
+        """The two totals cannot say what a spoken session spent context on.
+
+        Audio, text and the cached share are priced apart, so the modality
+        counts ride the usage the host records, as they do on OpenAI.
+        """
+        mod = _load_provider()
+        provider = mod.GeminiLiveProvider(api_key="test-key")
+        session = _make_session()
+        provider._sessions[session.id] = mod._GeminiSessionState(session=session)
+
+        response = SimpleNamespace(
+            usage_metadata=SimpleNamespace(
+                prompt_token_count=23520,
+                response_token_count=44,
+                total_token_count=23564,
+                cached_content_token_count=12000,
+                thoughts_token_count=300,
+                prompt_tokens_details=[
+                    SimpleNamespace(modality=SimpleNamespace(name="AUDIO"), token_count=3520),
+                    SimpleNamespace(modality=SimpleNamespace(name="TEXT"), token_count=20000),
+                ],
+                response_tokens_details=[
+                    SimpleNamespace(modality=SimpleNamespace(name="AUDIO"), token_count=44),
+                ],
+            ),
+        )
+        await provider._handle_server_response(session, response)
+
+        usage = session._last_usage
+        assert usage["input_tokens"] == 23520
+        assert usage["prompt_tokens_details"] == {"AUDIO": 3520, "TEXT": 20000}
+        assert usage["response_tokens_details"] == {"AUDIO": 44}
+        assert usage["cached_content_token_count"] == 12000
+        assert usage["thoughts_token_count"] == 300
+
+    async def test_usage_metadata_without_a_breakdown_adds_nothing(self):
+        """A server that sends only the totals leaves the payload as it was."""
+        mod = _load_provider()
+        provider = mod.GeminiLiveProvider(api_key="test-key")
+        session = _make_session()
+        provider._sessions[session.id] = mod._GeminiSessionState(session=session)
+
+        response = SimpleNamespace(
+            usage_metadata=SimpleNamespace(prompt_token_count=10, response_token_count=2)
+        )
+        await provider._handle_server_response(session, response)
+
+        assert session._last_usage == {"input_tokens": 10, "output_tokens": 2}
+
     async def test_handle_go_away(self):
         mod = _load_provider()
         provider = mod.GeminiLiveProvider(api_key="test-key")

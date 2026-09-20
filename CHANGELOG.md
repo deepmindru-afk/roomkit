@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The Gemini Live provider reports its usage breakdown beside the two totals:
+  the per-modality prompt and response counts, the cached share, the thinking
+  tokens and the tool-use prompt tokens all ride `session._last_usage`, as the
+  OpenAI realtime handler's own breakdown already did. A spoken turn is mostly
+  audio and the modalities are priced apart, so `prompt_token_count` alone
+  cannot say what a session spent its context on — a host billing a call could
+  see a round jump from twenty thousand tokens to three hundred thousand with
+  nothing to attribute it to. Absent fields add nothing to the payload.
+
 ## [0.83.0] — 2026-09-19
 
 ### Added
