@@ -117,6 +117,25 @@ class VoiceSession:
     metadata: dict[str, Any] = field(default_factory=dict)
     _last_usage: dict[str, Any] = field(default_factory=dict)
 
+    @property
+    def last_usage(self) -> dict[str, Any]:
+        """What the provider recorded last for this session (RFC §12.4.2).
+
+        A snapshot, empty until the first report. ``input_tokens`` and
+        ``output_tokens`` are the two totals a token-billed provider reports;
+        beside them sits whatever breakdown its API sends — per modality, the
+        cached share, reasoning or tool use — under that API's own names, so an
+        absent key means unreported, not zero. A provider billed by session
+        duration reports its seconds here instead, and a hosted backend's
+        tokens ride under their own key.
+
+        The next report replaces it and the realtime channel clears it at the
+        end of each turn, so a reader that polls can miss a turn. To bill a
+        call, register :meth:`RealtimeVoiceProvider.on_usage` instead, which
+        fires on every report. Mutating the returned dict changes nothing.
+        """
+        return dict(self._last_usage)
+
     def renegotiate(self) -> None:
         """Return the session to CONNECTING for a provider renegotiation.
 

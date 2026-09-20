@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable
@@ -9,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
+from roomkit.core.task_utils import log_task_exception
 from roomkit.telemetry.base import Attr
 from roomkit.voice.base import VoiceSession
 from roomkit.voice.realtime.injection import VoiceInjectionResult
@@ -35,6 +37,8 @@ RealtimeErrorCallback = Callable[[VoiceSession, str, str], Any]
 """(session, code, message)"""
 RealtimeDelegationCallback = Callable[[VoiceSession, str, str], Any]
 """(session, delegation_id, target) — ``target`` is ``"hosted"`` or ``"integrator"``"""
+RealtimeUsageCallback = Callable[[VoiceSession, dict[str, Any]], Any]
+"""(session, usage) — what the provider has just recorded for the session"""
 
 
 class VoiceInfo(BaseModel):
@@ -99,6 +103,8 @@ class RealtimeVoiceProvider(ABC):
         self._response_end_callbacks: list[RealtimeResponseEndCallback] = []
         self._error_callbacks: list[RealtimeErrorCallback] = []
         self._delegation_callbacks: list[RealtimeDelegationCallback] = []
+        self._usage_callbacks: list[RealtimeUsageCallback] = []
+        self._usage_tasks: set[asyncio.Task[None]] = set()
 
     @property
     @abstractmethod
@@ -506,6 +512,7 @@ class RealtimeVoiceProvider(ABC):
         if details:
             usage.update(details)
         session._last_usage = usage
+        self._publish_usage(session)
 
         telemetry = getattr(self, "_telemetry", None)
         if telemetry is not None:
@@ -522,6 +529,35 @@ class RealtimeVoiceProvider(ABC):
                 unit="tokens",
                 attributes=attrs,
             )
+
+    def _publish_usage(self, session: VoiceSession) -> None:
+        """Hand the session's recorded usage to the ``on_usage`` callbacks.
+
+        Called by every path that records usage, tokens or seconds, once the
+        session holds the new reading. The callbacks run on a task of their
+        own: recording happens inside a provider's event handler, which must
+        not wait on an integrator's bookkeeping, and :meth:`_fire` already
+        keeps one failing callback from reaching the others.
+
+        Without a running loop — a provider driven from synchronous test code
+        — there is nothing to schedule on, and the snapshot on the session is
+        the only surface left.
+        """
+        if not self._usage_callbacks:
+            return
+        snapshot = dict(session._last_usage)
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            logger.debug("No running loop: on_usage callbacks skipped for session %s", session.id)
+            return
+        task = loop.create_task(
+            self._fire(self._usage_callbacks, session, snapshot, label="usage"),
+            name=f"realtime_usage:{session.id}",
+        )
+        self._usage_tasks.add(task)
+        task.add_done_callback(self._usage_tasks.discard)
+        task.add_done_callback(log_task_exception)
 
     # -- Callback registration --
 
@@ -581,6 +617,21 @@ class RealtimeVoiceProvider(ABC):
     def on_response_end(self, callback: RealtimeResponseEndCallback) -> None:
         """Register callback for when the AI finishes a response."""
         self._response_end_callbacks.append(callback)
+
+    def on_usage(self, callback: RealtimeUsageCallback) -> None:
+        """Register callback for the usage this provider reports (RFC §12.4.2).
+
+        Called as ``(session, usage)`` every time the provider records what a
+        session consumed: the two token totals and whatever breakdown its API
+        sends beside them, the cumulative duration of a provider billed by
+        session seconds, a hosted backend's own tokens.
+
+        This is the surface to bill a call from. :attr:`VoiceSession.last_usage`
+        holds the same map, but the next report replaces it and the channel
+        clears it at the end of each turn, so a reader that polls can miss a
+        turn while a callback sees every one.
+        """
+        self._usage_callbacks.append(callback)
 
     def on_error(self, callback: RealtimeErrorCallback) -> None:
         """Register callback for provider errors."""

@@ -471,6 +471,8 @@ class TestDelegation:
     ) -> None:
         provider = _provider(delegation=HostedReasoning(model="gpt-5.6-terra"))
         rec = _Recorder(provider)
+        billed: list[dict[str, Any]] = []
+        provider.on_usage(lambda _s, usage: billed.append(usage))
         ws, _ = await _connect(provider, session, tools=[TOOL])
 
         ws.push(_response_event({"type": "response.created"}))
@@ -516,6 +518,7 @@ class TestDelegation:
         assert (backend["input_tokens"], backend["output_tokens"]) == (120, 30)
         assert (backend["cached_tokens"], backend["reasoning_tokens"]) == (100, 10)
         assert "input_tokens" not in session._last_usage  # never the live model's
+        assert billed[-1]["backend"] == backend  # and the host is told, not polled
 
     async def test_results_before_completion_wait_for_it(self, session: VoiceSession) -> None:
         provider = _provider(delegation=HostedReasoning(model="gpt-5.6-terra"))
@@ -887,6 +890,21 @@ class TestLifecycle:
         ws.push({"type": "session.usage.updated", "usage": {"seconds": 3.0}})
         await _settle()
         assert session._last_usage == {"live_seconds": 3.0}
+
+    async def test_seconds_reach_on_usage(self, session: VoiceSession) -> None:
+        """Duration is this provider's usage, and it rides the public surface."""
+        provider = _provider()
+        seen: list[dict[str, Any]] = []
+        provider.on_usage(lambda _s, usage: seen.append(usage))
+        ws, _ = await _connect(provider, session)
+
+        ws.push({"type": "session.usage.updated", "usage": {"seconds": 3.0}})
+        await _settle()
+        ws.push({"type": "session.usage.updated", "usage": {"seconds": 7.5}})
+        await _settle()
+
+        assert [u["live_seconds"] for u in seen] == [3.0, 7.5]
+        assert session.last_usage == {"live_seconds": 7.5}
 
     async def test_runtime_error_reaches_on_error(self, session: VoiceSession) -> None:
         provider = _provider()

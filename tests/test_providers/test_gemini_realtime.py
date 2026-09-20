@@ -2077,6 +2077,35 @@ class TestGeminiLiveProvider:
 
         assert session._last_usage == {"input_tokens": 10, "output_tokens": 2}
 
+    async def test_the_breakdown_reaches_on_usage(self):
+        """A host bills the call from the callback, not from a private attribute."""
+        mod = _load_provider()
+        provider = mod.GeminiLiveProvider(api_key="test-key")
+        session = _make_session()
+        provider._sessions[session.id] = mod._GeminiSessionState(session=session)
+        seen: list[dict] = []
+        provider.on_usage(lambda _s, usage: seen.append(usage))
+
+        response = SimpleNamespace(
+            usage_metadata=SimpleNamespace(
+                prompt_token_count=23520,
+                response_token_count=44,
+                cached_content_token_count=12000,
+                prompt_tokens_details=[
+                    SimpleNamespace(modality=SimpleNamespace(name="AUDIO"), token_count=3520),
+                    SimpleNamespace(modality=SimpleNamespace(name="TEXT"), token_count=20000),
+                ],
+            ),
+        )
+        await provider._handle_server_response(session, response)
+        await asyncio.sleep(0.01)
+
+        assert len(seen) == 1
+        assert seen[0]["input_tokens"] == 23520
+        assert seen[0]["cached_content_token_count"] == 12000
+        assert seen[0]["prompt_tokens_details"] == {"AUDIO": 3520, "TEXT": 20000}
+        assert session.last_usage == seen[0]
+
     async def test_handle_go_away(self):
         mod = _load_provider()
         provider = mod.GeminiLiveProvider(api_key="test-key")

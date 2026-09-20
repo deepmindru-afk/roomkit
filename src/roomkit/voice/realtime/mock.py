@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
@@ -74,17 +75,9 @@ class MockRealtimeProvider(RealtimeVoiceProvider):
         self.delegation_outputs: list[tuple[str, str, str, bool]] = []
         self._full_duplex = full_duplex
         self._sessions: dict[str, VoiceSession] = {}
-        # Callbacks
-        self._audio_callbacks: list[RealtimeAudioCallback] = []
-        self._transcription_callbacks: list[RealtimeTranscriptionCallback] = []
-        self._speech_start_callbacks: list[RealtimeSpeechStartCallback] = []
-        self._speech_end_callbacks: list[RealtimeSpeechEndCallback] = []
-        self._tool_call_callbacks: list[RealtimeToolCallCallback] = []
-        self._tool_call_cancelled_callbacks: list[RealtimeToolCallCancelledCallback] = []
-        self._response_start_callbacks: list[RealtimeResponseStartCallback] = []
-        self._response_end_callbacks: list[RealtimeResponseEndCallback] = []
-        self._error_callbacks: list[RealtimeErrorCallback] = []
-        self._delegation_callbacks: list[RealtimeDelegationCallback] = []
+        # Callbacks: the base holds one list per registration method, this mock
+        # re-declared them and so missed every one the ABC gained afterwards.
+        super().__init__()
 
     @property
     def name(self) -> str:
@@ -289,6 +282,23 @@ class MockRealtimeProvider(RealtimeVoiceProvider):
             result = cb(session, list(call_ids))
             if hasattr(result, "__await__"):
                 await result
+
+    async def simulate_usage(
+        self,
+        session: VoiceSession,
+        input_tokens: int,
+        output_tokens: int,
+        *,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        """Simulate a usage report from the provider (RFC §12.4.2).
+
+        Lands on ``session.last_usage`` and fires ``on_usage``, the way a real
+        provider's own report does. ``details`` stands in for the breakdown an
+        API sends beside its two totals.
+        """
+        self._record_usage(session, input_tokens, output_tokens, details=details)
+        await asyncio.sleep(0)  # let the callbacks' task run
 
     async def simulate_delegation(
         self, session: VoiceSession, delegation_id: str, target: str = "integrator"

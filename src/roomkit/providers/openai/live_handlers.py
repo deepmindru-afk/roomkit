@@ -238,6 +238,7 @@ class OpenAILiveEventHandlersMixin(RealtimeVoiceProvider):
         delta = max(0.0, seconds - state.live_seconds)
         state.live_seconds = seconds
         state.session._last_usage["live_seconds"] = seconds
+        self._publish_usage(state.session)
         telemetry = getattr(self, "_telemetry", None)
         if telemetry is not None and delta > 0:
             telemetry.record_metric(

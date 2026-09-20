@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `RealtimeVoiceProvider.on_usage(callback)` and `VoiceSession.last_usage` are
+  the public surfaces a host bills a realtime call from (RFC §12.4.2). The
+  callback fires on every report, with the session and the map just recorded —
+  a response's tokens and whatever breakdown the API sent beside them, the
+  cumulative seconds of a provider billed by duration, a hosted backend's own
+  tokens. `last_usage` is the snapshot the last report left behind, a copy that
+  cannot be written through. Until now the only channel was `session._last_usage`,
+  a private attribute the next report replaces and the channel clears at the end
+  of each turn, so an integrator pricing a call either polled it and missed
+  turns or reached into `_record_usage` itself. `input_tokens` and
+  `output_tokens` remain the only keys the framework fixes; an absent key means
+  unreported, not zero. Callbacks may be sync or async, run on a task of their
+  own so a slow one never holds up the provider's event loop, and one that
+  raises is logged without reaching the others. `MockRealtimeProvider` grows
+  `simulate_usage()` and now inherits its callback lists from the base class
+  instead of re-declaring them, which had left it blind to every callback the
+  ABC gained after it was written.
+
 ## [0.84.0] — 2026-09-20
 
 ### Added

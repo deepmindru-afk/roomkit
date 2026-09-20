@@ -172,6 +172,7 @@ class OpenAILiveHostedDelegationMixin(RealtimeVoiceProvider):
             "reasoning_tokens": int(output_details.get("reasoning_tokens") or 0),
         }
         state.session._last_usage["backend"] = record
+        self._publish_usage(state.session)
         logger.info(
             "[%s] backend usage model=%s input=%d output=%d (session %s)",
             _LOG_TAG,
