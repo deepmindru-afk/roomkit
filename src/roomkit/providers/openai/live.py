@@ -435,6 +435,7 @@ class OpenAILiveProvider(
         if state is None:
             session.state = VoiceSessionState.ENDED
             return
+        state.closing = True
 
         # Deliver the finals of turns still open while the session can take
         # them; a session the channel already ended gets nothing more.

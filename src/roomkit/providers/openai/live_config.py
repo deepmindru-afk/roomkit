@@ -138,6 +138,10 @@ class _LiveSession:
     assistant_turn: TurnGrouper
     started: asyncio.Event = field(default_factory=asyncio.Event)
     closed: asyncio.Event = field(default_factory=asyncio.Event)
+    #: Set the moment this side decides to end the session. From then on the
+    #: API's complaints are about work this teardown interrupted, not faults
+    #: of the call (see ``_on_error``).
+    closing: bool = False
     start_error: str | None = None
     receive_task: asyncio.Task[None] | None = None
     responding: bool = False

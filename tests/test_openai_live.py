@@ -954,6 +954,49 @@ class TestLifecycle:
         assert rec.errors == [("rate_limited", "slow down")]
         assert session.state == VoiceSessionState.ACTIVE
 
+    async def test_error_after_a_requested_close_is_not_announced(
+        self, session: VoiceSession
+    ) -> None:
+        # Hanging up mid-append is the ordinary end of a call: the API reports
+        # the work the teardown interrupted, and the user must not be told
+        # their session failed. The complaint lands while ``disconnect`` waits
+        # for ``session.closed``, which is when the API actually sends it.
+        provider = _provider()
+        rec = _Recorder(provider)
+        ws, _ = await _connect(provider, session)
+
+        async def complain_then_close() -> None:
+            ws.push(
+                {
+                    "type": "error",
+                    "error": {
+                        "code": "context_injection_incomplete",
+                        "message": "The session closed before the estimated context injection "
+                        "completed.",
+                    },
+                }
+            )
+            ws.push({"type": "session.closed", "reason": "close_requested"})
+
+        complaint = asyncio.create_task(complain_then_close())
+        await provider.disconnect(session)
+        await complaint
+        await _settle()
+
+        assert rec.errors == []
+        assert session.state == VoiceSessionState.ENDED
+
+    async def test_error_before_any_close_still_reaches_on_error(
+        self, session: VoiceSession
+    ) -> None:
+        provider = _provider()
+        rec = _Recorder(provider)
+        ws, _ = await _connect(provider, session)
+        assert provider._states[session.id].closing is False
+        ws.push({"type": "error", "error": {"code": "rate_limited", "message": "slow down"}})
+        await _settle()
+        assert rec.errors == [("rate_limited", "slow down")]
+
     async def test_close_disconnects_every_session(self, session: VoiceSession) -> None:
         provider = _provider(close_timeout_s=0)
         ws, _ = await _connect(provider, session)

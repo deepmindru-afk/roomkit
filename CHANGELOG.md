@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A GPT-Live error that arrives after this side asked the session to close is
+  logged, not announced. The API reports the work a teardown interrupted — an
+  append whose estimated end the timeline never reached, for instance — and
+  that reached `ON_ERROR` like any provider fault, so every ordinary hang-up
+  raised an error on the call that had just ended normally, in the host's logs
+  and on whatever surface shows a session's errors. An error before the close
+  still reaches `on_error`, and a failure during startup still fails `connect`.
 - A GPT-Live context append within the API's 500-token bound is sent as one
   append. Appends were measured as one token per UTF-8 byte, the bound that
   holds for any byte-pair encoding, so a 1.3 KB spoken injection — about 260

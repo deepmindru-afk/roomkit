@@ -225,6 +225,20 @@ class OpenAILiveEventHandlersMixin(RealtimeVoiceProvider):
         message = str(error.get("message") or "Unknown error")
         if error.get("param"):
             message = f"{message} (param: {error['param']})"
+        if state.closing and state.started.is_set():
+            # This side asked for the close. What the API reports now is the
+            # work the teardown interrupted — an append whose estimated end
+            # the timeline never reached, a response cut mid-turn — and none
+            # of it is a fault of the call: announcing it (RFC §12.5) puts an
+            # error on a session the user ended normally.
+            logger.info(
+                "[%s] error after close requested [%s] %s (session %s)",
+                _LOG_TAG,
+                code,
+                message,
+                state.session.id,
+            )
+            return
         logger.error("[%s] error [%s] %s (session %s)", _LOG_TAG, code, message, state.session.id)
         if not state.started.is_set():
             # No session has started on this connection, so this one will not.
