@@ -292,6 +292,14 @@ PRICE_DELIBERATE: dict[str, str] = {
     "qwen3.7-max": "mirror resells at a discounted rate; catalog carries Alibaba's list price",
     "qwen3.7-plus": "mirror resells at the 20%-off promotion; catalog carries the list price",
     "qwen3.6-flash": "mirror resells at a discounted rate; catalog carries Alibaba's list price",
+    # A launch promotion, the gpt-5.6-sol shape again: the mirror quotes
+    # $1.6/$4.8/$0.4 against xAI's $2/$6/$0.5 — exactly 20% off all three rates,
+    # three days after the model shipped, while its own grok-4.6 slug still
+    # matches the card to the cent. RoomKit's xai provider calls api.x.ai, so
+    # the catalog carries xAI's list price (docs.x.ai/developers/models,
+    # 2026-09-21). Like every entry here this blinds the gate in both
+    # directions: a genuine xAI repricing of 4.7 will not be reported either.
+    "grok-4.7": "mirror runs a launch promo at 20% off; roomkit bills xAI's list rate",
 }
 
 # Per-field suppressions: a normalization where the upstream pricing object

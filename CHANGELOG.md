@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `grok-4.7` heads the xAI catalog and is `XAIConfig.model`'s default. It
+  arrives on grok-4.6's rate card exactly — $2 and $6 per million, $0.50 for a
+  cache hit, all three doubling above a 200k-token prompt — over the same
+  500k-token window, with image input and reasoning. A picker reading
+  `available_models()` offers it first, and a test holds the default and the
+  head of the catalog to the same id, so the two cannot drift apart. The price
+  gate needed one note to stay green: OpenRouter quotes the model at 20% off
+  all three rates three days after it shipped, while its own `grok-4.6` slug
+  matches xAI's card to the cent, so `check_models.py` records that divergence
+  and the catalog keeps the list price a call to `api.x.ai` is actually billed
+  at. Every other Grok entry was re-read against the same page in the same
+  pass; none had moved.
+
 ### Fixed
 
 - A GPT-Live error that arrives after this side asked the session to close is

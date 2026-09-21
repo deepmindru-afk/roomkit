@@ -27,7 +27,7 @@ class XAIAIProvider(OpenAIAIProvider):
 
     Example::
 
-        provider = XAIAIProvider(XAIConfig(api_key="xai-...", model="grok-4.6"))
+        provider = XAIAIProvider(XAIConfig(api_key="xai-...", model="grok-4.7"))
     """
 
     _config: XAIConfig

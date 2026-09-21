@@ -7,7 +7,7 @@ about what xAI currently offers. Call
 the account's ``/v1/models``.
 
 Sourced from the xAI model docs (docs.x.ai/developers/models), verified
-2026-08-13.
+2026-09-21.
 
 Scope is the chat-capable text + multimodal models. The realtime speech-to-speech
 models (``grok-2-audio``) belong to
@@ -26,14 +26,15 @@ family's behaviour.
 Aliases are not modelled here (``ModelInfo`` has no alias field), but the API
 accepts them. xAI publishes the rule rather than a table: ``<model>`` names the
 latest stable release of that line and ``<model>-latest`` its newest, so
-``grok-4.6-latest`` and ``grok-4.5-latest`` each resolve inside their own line.
+``grok-4.7-latest`` and ``grok-4.6-latest`` each resolve inside their own line.
 A bare ``grok-latest`` tracks whichever line xAI currently calls latest and is
-deliberately not restated here — it moved off ``grok-4.3`` when 4.6 shipped, and
-would go stale again on the next release. Dated ids stay put:
+deliberately not restated here — it moved off ``grok-4.6`` when 4.7 shipped,
+as it had off ``grok-4.3`` before that, and will move again on the next
+release. Dated ids stay put:
 ``grok-4.20``/``grok-4.20-reasoning-latest`` → ``grok-4.20-0309-reasoning``;
 ``grok-code-fast``/``grok-code-fast-1`` → ``grok-build-0.1``.
 
-Prices come from the same model docs, read 2026-08-13. Every entry represents
+Prices come from the same model docs, read 2026-09-21. Every entry represents
 xAI's 200k-token prompt threshold, beyond which all token rates double.
 ``cache_write`` is unset: xAI publishes a cached-input rate but bills nothing
 for populating the cache.
@@ -45,9 +46,25 @@ from datetime import date
 
 from roomkit.providers.ai.base import ModelInfo, ModelPricing
 
-_VERIFIED = date(2026, 8, 13)
+_VERIFIED = date(2026, 9, 21)
 
 MODELS: list[ModelInfo] = [
+    ModelInfo(
+        id="grok-4.7",
+        display_name="Grok 4.7",
+        context_window=500_000,
+        supports_vision=True,
+        capabilities=["tools", "thinking"],
+        pricing=ModelPricing(
+            input_per_million=2.0,
+            output_per_million=6.0,
+            cache_read_per_million=0.5,
+            long_context_threshold_tokens=200_000,
+            long_context_input_multiplier=2.0,
+            long_context_output_multiplier=2.0,
+            verified=_VERIFIED,
+        ),
+    ),
     ModelInfo(
         id="grok-4.6",
         display_name="Grok 4.6",
@@ -57,8 +74,8 @@ MODELS: list[ModelInfo] = [
         pricing=ModelPricing(
             input_per_million=2.0,
             output_per_million=6.0,
-            # 4.6 charges more for a cache hit than 4.5 does at the same
-            # input and output rates — the one place the two rate cards differ.
+            # 4.7 and 4.6 charge more for a cache hit than 4.5 does at the
+            # same input and output rates — the one place the cards differ.
             cache_read_per_million=0.5,
             long_context_threshold_tokens=200_000,
             long_context_input_multiplier=2.0,
