@@ -12,10 +12,14 @@ token bound, and the bookkeeping of a hosted delegation's function calls.
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
+import threading
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol
+
+logger = logging.getLogger("roomkit.providers.openai.live")
 
 # --- Client events -----------------------------------------------------------
 
@@ -53,8 +57,9 @@ DELEGATION_TARGETS: dict[str, str] = {"responses": "hosted", "client": "integrat
 #: Startup ``input`` history accepts at most this many text messages.
 MAX_INPUT_ITEMS = 128
 
-#: The API bounds one context append at 500 tokens. Chunks are measured
-#: against a conservative UTF-8 byte bound with headroom below that limit.
+#: The API bounds one context append at 500 tokens. Chunks are measured with
+#: the model's own tokenizer when it is installed, else by UTF-8 bytes (see
+#: ``tokenizer``), against this headroom below the limit.
 MAX_APPEND_TOKENS = 450
 
 #: Correlation key for a wrapped Responses event whose envelope names no delegation.
@@ -236,51 +241,149 @@ def build_audio_format(rate: int, codec: str) -> tuple[dict[str, Any], str | Non
 
 _SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?])\s+|\n+")
 
+#: The byte-pair encoding of the GPT-5 generation GPT-Live belongs to.
+TOKENIZER_ENCODING = "o200k_base"
 
-def estimated_tokens(text: str) -> int:
-    """Bound byte-pair tokens by the number of UTF-8 bytes.
+
+class Tokenizer(Protocol):
+    """What the chunker measures with: a text's tokens, and the bytes a token prefix spells."""
+
+    def encode(self, text: str) -> list[int]: ...
+
+    def decode_bytes(self, tokens: list[int]) -> bytes: ...
+
+
+class ByteTokenizer:
+    """One token per UTF-8 byte: the bound that holds for any byte-pair encoding.
 
     A four-characters-per-token estimate undercounts identifiers, JSON,
-    punctuation and some scripts. Every byte can be its own token, so this
-    bound holds without a model-specific tokenizer or a network lookup.
+    punctuation and some scripts, and an append the API refuses closes the
+    session. Every byte can be its own token, so this bound holds without a
+    model-specific tokenizer or a network lookup — at the price of splitting
+    ordinary prose about four times more often than the model's own count
+    would, and a split spoken append is spoken once per piece.
     """
-    return len(text.encode("utf-8"))
+
+    def encode(self, text: str) -> list[int]:
+        return list(text.encode("utf-8"))
+
+    def decode_bytes(self, tokens: list[int]) -> bytes:
+        return bytes(tokens)
 
 
-def _split_at_token_limit(text: str, token_limit: int) -> tuple[str, str]:
-    """Take a UTF-8-bounded prefix, preferring a sentence or whitespace boundary."""
-    end = 0
-    cost = 0
-    for char in text:
-        cost += len(char.encode("utf-8"))
-        if cost > token_limit:
-            break
-        end += 1
+class _Encoding:
+    """A tiktoken encoding as the chunker reads it: special-token text is ordinary text."""
+
+    def __init__(self, encoding: Any) -> None:
+        self._encoding = encoding
+
+    def encode(self, text: str) -> list[int]:
+        return self._encoding.encode(text, disallowed_special=())
+
+    def decode_bytes(self, tokens: list[int]) -> bytes:
+        return self._encoding.decode_bytes(tokens)
+
+
+BYTES = ByteTokenizer()
+_tokenizer: Tokenizer | None = None
+_tokenizer_lock = threading.Lock()
+
+
+def _load_tokenizer() -> Tokenizer:
+    """Blocking: import tiktoken and load the encoding, fetched over the network on first use."""
+    global _tokenizer
+    with _tokenizer_lock:
+        if _tokenizer is not None:
+            return _tokenizer
+        try:
+            import tiktoken
+        except ImportError:
+            logger.warning(
+                "GPT-Live context appends are bounded by UTF-8 bytes: tiktoken is not "
+                "installed (pip install 'roomkit[realtime-openai]')"
+            )
+            _tokenizer = BYTES
+            return _tokenizer
+        try:
+            _tokenizer = _Encoding(tiktoken.get_encoding(TOKENIZER_ENCODING))
+        except Exception as exc:  # the table could not be fetched; try again next session
+            logger.warning(
+                "GPT-Live context appends are bounded by UTF-8 bytes this session: %s could "
+                "not be loaded (%s: %s)",
+                TOKENIZER_ENCODING,
+                type(exc).__name__,
+                exc,
+            )
+            return BYTES
+        return _tokenizer
+
+
+async def tokenizer() -> Tokenizer:
+    """The tokenizer appends are measured with, loaded off the event loop once per process.
+
+    ``o200k_base`` through tiktoken when it is installed; its table is fetched
+    on first use, which is why the load runs in a thread. Without tiktoken, or
+    while the table cannot be fetched, :data:`BYTES` bounds the count instead.
+    """
+    if _tokenizer is not None:
+        return _tokenizer
+    return await asyncio.to_thread(_load_tokenizer)
+
+
+def estimated_tokens(text: str) -> int:
+    """Bound byte-pair tokens by the number of UTF-8 bytes (see :class:`ByteTokenizer`)."""
+    return len(BYTES.encode(text))
+
+
+def token_count(text: str, tok: Tokenizer | None = None) -> int:
+    """A text's cost in tokens, by ``tok`` or the tokenizer loaded for the process."""
+    return len((tok or _tokenizer or BYTES).encode(text))
+
+
+def _split_at_token_limit(text: str, token_limit: int, tok: Tokenizer) -> tuple[str, str]:
+    """Take the longest prefix within ``token_limit``, preferring a sentence or space boundary."""
+    tokens = tok.encode(text)
+    if len(tokens) <= token_limit:
+        return text, ""
+    # The first ``token_limit`` tokens spell a byte prefix of the text; a
+    # multibyte character they cut in half is dropped, which only shortens it.
+    end = len(tok.decode_bytes(tokens[:token_limit]).decode("utf-8", errors="ignore"))
     if end == 0:
         raise ValueError("token_limit cannot fit one UTF-8 character")
-    if end < len(text):
-        boundaries = list(_SENTENCE_BOUNDARY.finditer(text, 0, end))
-        if boundaries:
-            end = boundaries[-1].end()
-        else:
-            space = text.rfind(" ", 0, end)
-            if space >= 0:
-                end = space + 1
+    boundaries = list(_SENTENCE_BOUNDARY.finditer(text, 0, end))
+    if boundaries:
+        end = boundaries[-1].end()
+    else:
+        space = text.rfind(" ", 0, end)
+        if space >= 0:
+            end = space + 1
+    # Re-encoded on its own, a prefix can cost a token more than the slice it
+    # came from (a trailing space no longer merges with the word after it).
+    while len(tok.encode(text[:end])) > token_limit:
+        space = text.rfind(" ", 0, end - 1)
+        end = space + 1 if space > 0 else end - 1
+        if end == 0:
+            raise ValueError("token_limit cannot fit one UTF-8 character")
     return text[:end], text[end:]
 
 
-def chunk_text(text: str, token_limit: int = MAX_APPEND_TOKENS) -> list[str]:
-    """Split appends within a conservative token bound, preserving inner text.
+def chunk_text(
+    text: str, token_limit: int = MAX_APPEND_TOKENS, *, tok: Tokenizer | None = None
+) -> list[str]:
+    """Split appends within the token bound, preserving inner text.
 
-    UTF-8 characters stay whole. Splits prefer sentences, then spaces, then
-    character boundaries. RFC §12.4.1: bounded appends split rather than
-    truncate or refuse content.
+    Measured with ``tok``, else the tokenizer loaded for the process, else by
+    UTF-8 bytes. A text within the bound is one append — what a spoken append
+    needs, since the model voices each piece. UTF-8 characters stay whole.
+    Splits prefer sentences, then spaces, then character boundaries. RFC
+    §12.4.1: bounded appends split rather than truncate or refuse content.
     """
     if token_limit <= 0:
         raise ValueError("token_limit must be positive")
+    tok = tok or _tokenizer or BYTES
     text = text.strip()
     chunks: list[str] = []
     while text:
-        head, text = _split_at_token_limit(text, token_limit)
+        head, text = _split_at_token_limit(text, token_limit, tok)
         chunks.append(head)
     return chunks

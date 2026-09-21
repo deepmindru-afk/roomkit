@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A GPT-Live context append within the API's 500-token bound is sent as one
+  append. Appends were measured as one token per UTF-8 byte, the bound that
+  holds for any byte-pair encoding, so a 1.3 KB spoken injection — about 260
+  tokens — went out as four `session.commentary.append` events, and the model
+  voices each commentary piece: a greeting asked once was spoken three or four
+  times. Appends are now measured with the model's own tokenizer
+  (`o200k_base` through `tiktoken`, which the `realtime-openai` extra installs;
+  its table is fetched on first use, off the event loop, when the session
+  connects), and the byte bound remains the fallback when tiktoken is missing
+  or its table cannot be fetched. A split is still made where the API forces
+  one, on sentence boundaries, and each piece is re-measured on its own.
+
 ## [0.85.0] — 2026-09-20
 
 ### Added

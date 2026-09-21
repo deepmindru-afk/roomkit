@@ -20,6 +20,7 @@ from roomkit.providers.openai.live_events import (
     EVT_INSTRUCTIONS_APPEND,
     EVT_THINKING_APPEND,
     chunk_text,
+    tokenizer,
 )
 from roomkit.voice.audio_frame import AudioFrame
 from roomkit.voice.base import VoiceSession
@@ -120,10 +121,12 @@ class OpenAILiveClientMixin(RealtimeVoiceProvider):
     ) -> None:
         """Append context in as many bounded pieces as the API needs.
 
+        One piece for a text within the bound: the model voices every
+        commentary piece, so a split is only made where the API forces it.
         ``delegation_id`` is always sent, ``None`` included: on these events
         the field is required, and ``None`` means general session context.
         """
-        for chunk in chunk_text(text):
+        for chunk in chunk_text(text, tok=await tokenizer()):
             await state.ws.send(
                 json.dumps({"type": event_type, "delegation_id": delegation_id, "content": chunk})
             )

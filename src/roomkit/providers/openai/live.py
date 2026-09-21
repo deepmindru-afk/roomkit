@@ -51,6 +51,7 @@ from roomkit.providers.openai.live_events import (
     build_audio_format,
     format_backend_tools,
     history_items,
+    tokenizer,
 )
 from roomkit.providers.openai.live_handlers import OpenAILiveEventHandlersMixin
 from roomkit.providers.openai.live_hosted import OpenAILiveHostedDelegationMixin
@@ -99,9 +100,11 @@ class OpenAILiveProvider(
     **Text injection is paraphrased.** ``inject_text`` maps a ``system`` role
     to an instructions append and a ``user`` role to a spoken-context append
     (or a silent one with ``silent=True``); the model relays the text in its
-    own words rather than reading it. Appends over the API's per-append bound
-    are split on sentence boundaries. Image injection is not available on
-    the Live endpoint.
+    own words rather than reading it. An append is measured with the model's
+    tokenizer (``tiktoken``, installed with the extra; UTF-8 bytes bound it
+    when that is missing) and split on sentence boundaries only where it
+    exceeds the API's per-append bound — the model voices each piece of a
+    split commentary. Image injection is not available on the Live endpoint.
 
     **Audio.** One wire format serves both directions, chosen from the
     channel's ``output_sample_rate``: PCM16 at 16 or 24 kHz, or G.711 at
@@ -263,6 +266,10 @@ class OpenAILiveProvider(
                 _LOG_TAG,
             )
         codec = await asyncio.to_thread(_get_codec, law) if law is not None else None
+        # Appends are measured with the model's tokenizer, whose table is
+        # fetched on first use: load it here so the session's first append
+        # does not wait for it.
+        await tokenizer()
 
         logger.info(
             "[%s →] session.start model=%s format=%s/%s delegation=%s (session %s)",
