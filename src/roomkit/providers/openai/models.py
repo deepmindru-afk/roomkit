@@ -41,6 +41,10 @@ _VERIFIED = date(2026, 8, 5)
 # Astra and Sol prices rechecked 2026-09-08:
 # https://developers.openai.com/api/docs/models/gpt-6-astra
 # https://developers.openai.com/api/docs/models/gpt-5.6-sol
+# GPT-6 Sol and Luna added 2026-09-22 from their model pages and the pricing
+# page; like Astra they apply 2x input / 1.5x output above 272k input tokens:
+# https://developers.openai.com/api/docs/models/gpt-6-sol
+# https://developers.openai.com/api/docs/models/gpt-6-luna
 MODELS: list[ModelInfo] = [
     ModelInfo(
         id="gpt-6-astra",
@@ -56,6 +60,38 @@ MODELS: list[ModelInfo] = [
             long_context_input_multiplier=2.0,
             long_context_output_multiplier=1.5,
             verified=date(2026, 9, 8),
+        ),
+    ),
+    ModelInfo(
+        id="gpt-6-sol",
+        display_name="GPT-6 Sol",
+        context_window=_CTX_1M,
+        supports_vision=True,
+        pricing=ModelPricing(
+            input_per_million=2.0,
+            output_per_million=10.0,
+            cache_read_per_million=0.2,
+            cache_write_per_million=2.5,
+            long_context_threshold_tokens=272_000,
+            long_context_input_multiplier=2.0,
+            long_context_output_multiplier=1.5,
+            verified=date(2026, 9, 22),
+        ),
+    ),
+    ModelInfo(
+        id="gpt-6-luna",
+        display_name="GPT-6 Luna",
+        context_window=_CTX_1M,
+        supports_vision=True,
+        pricing=ModelPricing(
+            input_per_million=0.1,
+            output_per_million=0.5,
+            cache_read_per_million=0.01,
+            cache_write_per_million=0.125,
+            long_context_threshold_tokens=272_000,
+            long_context_input_multiplier=2.0,
+            long_context_output_multiplier=1.5,
+            verified=date(2026, 9, 22),
         ),
     ),
     ModelInfo(

@@ -18,8 +18,9 @@ Prices are the first-party Claude API rates from Anthropic's pricing page
 ``cache_write`` is the 5-minute write (1.25x input) because that is the TTL
 ``AnthropicAIProvider`` asks for — its markers are ``{"type": "ephemeral"}``,
 never the 1-hour variant, which costs 2x. ``cache_read`` is 0.1x input on
-every model but Claude Fable 5.1 and Claude Mythos 5.1, where a hit bills
-0.025x ($0.25 per million). Modifiers that are per-request rather than
+every model but three: Claude Fable 5.1 and Claude Mythos 5.1, where a hit
+bills 0.025x ($0.25 per million), and Claude Opus 5.5, where it bills 0.05x
+($0.20 per million; pricing page, read 2026-09-22). Modifiers that are per-request rather than
 per-model are absent by construction: the Batch API's 50%, fast mode's 2x,
 and the 1.1x for ``inference_geo: "us"``.
 
@@ -43,6 +44,20 @@ from roomkit.providers.ai.base import ModelInfo, ModelPricing
 _VERIFIED = date(2026, 9, 3)
 
 MODELS: list[ModelInfo] = [
+    ModelInfo(
+        id="claude-opus-5-5",
+        display_name="Claude Opus 5.5",
+        context_window=1_000_000,
+        supports_vision=True,
+        capabilities=["thinking"],
+        pricing=ModelPricing(
+            input_per_million=4.0,
+            output_per_million=20.0,
+            cache_read_per_million=0.2,
+            cache_write_per_million=5.0,
+            verified=date(2026, 9, 22),
+        ),
+    ),
     ModelInfo(
         id="claude-opus-5",
         display_name="Claude Opus 5",

@@ -199,6 +199,14 @@ MIRROR_ONLY: dict[str, str] = {
         "mirror route, not an official model id: Astra's model page lists gpt-6-astra "
         "and the model guide points to reasoning.mode=pro (official docs, 2026-09-08)"
     ),
+    "openai/gpt-6-sol-pro": (
+        "mirror route, not an official model id: 404 on OpenAI's model pages, absent "
+        "from its model list and pricing page (official docs, 2026-09-22)"
+    ),
+    "openai/gpt-6-luna-pro": (
+        "mirror route, not an official model id: 404 on OpenAI's model pages, absent "
+        "from its model list and pricing page (official docs, 2026-09-22)"
+    ),
     "openai/o4-mini-high": (
         "reasoning-effort route; OpenAI's API catalog lists o4-mini and its dated snapshot, "
         "not a separate -high model id (official model page, 2026-08-05)"
@@ -244,6 +252,10 @@ DELIBERATE: dict[str, str] = {
     # qwen3-vl-* checkpoints (235b, 30b, 32b, 8b) that anyone can self-host,
     # not the `-plus` id Model Studio answers to (billing page, 2026-08-14).
     "qwen3-vl-plus": "hosted-only id; mirror carries the open-weight qwen3-vl checkpoints",
+    # Mistral Large 3 (v25.12): the mirror dropped the dated id, but Mistral's
+    # model page still documents it with no deprecation, and its deprecation
+    # table names it as the replacement for mistral-large-2407 (2026-09-22).
+    "mistral-large-2512": "still documented and not deprecated on docs.mistral.ai",
 }
 
 # Catalog ids whose *rates* deliberately differ from the mirror's, same rule as

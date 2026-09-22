@@ -20,6 +20,7 @@ from roomkit.providers.ai.base import (
     StreamTextDelta,
 )
 from roomkit.providers.anthropic.config import AnthropicConfig
+from roomkit.providers.anthropic.models import MODELS as ANTHROPIC_MODELS
 from roomkit.providers.anthropic.request import build_kwargs, format_content
 
 
@@ -328,6 +329,44 @@ class TestAnthropicAIProvider:
         assert custom.supports_custom_temperature is True
         assert explicit.use_adaptive_thinking is False
         assert explicit.supports_custom_temperature is True
+
+    # Anthropic's own per-model table (extended-thinking troubleshooting and
+    # the sampling-parameter rule, read 2026-09-22): these refuse temperature
+    # and budget_tokens with HTTP 400.
+    _MODERN = {
+        "claude-opus-5-5",
+        "claude-opus-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7",
+        "claude-sonnet-5",
+        "claude-fable-5-1",
+        "claude-fable-5",
+        "claude-mythos-5-1",
+        "claude-mythos-5",
+    }
+
+    @pytest.mark.parametrize("model", [m.id for m in ANTHROPIC_MODELS])
+    def test_every_catalogued_model_gets_the_contract_anthropic_documents(
+        self, model: str
+    ) -> None:
+        cfg = _config(model=model)
+        modern = model in self._MODERN
+        assert cfg.use_adaptive_thinking is modern
+        assert cfg.supports_custom_temperature is not modern
+
+    @pytest.mark.parametrize("model", ["claude-opus-6", "claude-haiku-5", "claude-sonnet-5-5"])
+    def test_a_release_nobody_catalogued_gets_the_modern_contract(self, model: str) -> None:
+        # The day a model ships, before any catalog knows it: a request built
+        # with the old contract is a 400, so the unknown id is the modern one.
+        cfg = _config(model=model)
+        assert cfg.use_adaptive_thinking is True
+        assert cfg.supports_custom_temperature is False
+
+    @pytest.mark.parametrize("model", ["gpt-5", "my-deployment", "anthropic/claude-opus-5"])
+    def test_an_id_outside_the_claude_naming_is_left_alone(self, model: str) -> None:
+        cfg = _config(model=model)
+        assert cfg.use_adaptive_thinking is False
+        assert cfg.supports_custom_temperature is True
 
     def test_thinking_shape_follows_adaptive_flag(self) -> None:
         # use_adaptive_thinking sends the adaptive shape (newer models 400 on

@@ -2,18 +2,24 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from pydantic import BaseModel, SecretStr, field_validator
 
-_ADAPTIVE_THINKING_MODEL_PREFIXES = (
-    "claude-opus-4-7",
-    "claude-opus-4-8",
-    "claude-opus-5",
-    "claude-sonnet-5",
-    "claude-fable-5",
-    "claude-mythos-5",
-)
+# Claude models that still take ``temperature`` and the ``budget_tokens``
+# thinking shape: the 4.6 generation and everything before it. Every other
+# ``claude-`` id gets the modern contract (adaptive thinking, no sampling
+# parameters), which Anthropic has applied to each release since Opus 4.7.
+# Listing the old models rather than the new ones is what makes a release
+# nobody catalogued yet — Opus 5.5 shipped one — work on the day it ships:
+# the legacy set is closed, the modern one keeps growing. (4.6 accepts both
+# thinking shapes; ``budget_tokens`` is deprecated there, not refused.)
+_LEGACY_MODEL = re.compile(r"^claude-(?:2|3|instant|(?:opus|sonnet|haiku)-4-(?:[0-6]\b|\d{8}))")
+
+
+def _is_modern_claude(model: str) -> bool:
+    return model.startswith("claude-") and not _LEGACY_MODEL.match(model)
 
 
 class AnthropicConfig(BaseModel):
@@ -75,9 +81,7 @@ class AnthropicConfig(BaseModel):
 
     def model_post_init(self, __context: Any) -> None:
         """Apply safe defaults for Anthropic's modern first-party models."""
-        if self.base_url is not None or not self.model.startswith(
-            _ADAPTIVE_THINKING_MODEL_PREFIXES
-        ):
+        if self.base_url is not None or not _is_modern_claude(self.model):
             return
         if "use_adaptive_thinking" not in self.model_fields_set:
             self.use_adaptive_thinking = True

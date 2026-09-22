@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `claude-opus-5-5` heads the Anthropic catalog: a 1M-token window, image
+  input, and $4 / $20 per million with a cache hit at $0.20 — 0.05x input,
+  not the 0.1x the other Opus models bill — and a 5-minute cache write at $5
+  (Anthropic's models and pricing pages, 2026-09-22).
+- `gpt-6-sol` ($2 / $10, cached input $0.20) and `gpt-6-luna` ($0.10 /
+  $0.50, cached input $0.01) join the OpenAI catalog beside `gpt-6-astra`,
+  over the same 1.05M window with the same long-context rule: 2x input and
+  1.5x output above 272k input tokens. The mirror's `gpt-6-sol-pro` and
+  `gpt-6-luna-pro` are recorded in `check_models.py` as routes OpenAI does
+  not document, and `mistral-large-2512`, which the mirror dropped, as still
+  current on Mistral's own model page.
+
+### Fixed
+
+- `AnthropicConfig` gives an unknown `claude-` id the modern request
+  contract — adaptive thinking, no `temperature` — instead of the legacy one.
+  The profile used to list the modern families, so a model released after the
+  last catalog update was sent `temperature` and the `budget_tokens` thinking
+  shape, and every request to it was refused with HTTP 400 until a new
+  roomkit shipped. It now lists the closed legacy set (the 4.6 generation and
+  earlier, which accept both), and a test holds every catalogued model to the
+  contract Anthropic documents for it. Ids outside the `claude-` naming, and
+  any config with a `base_url`, are left untouched as before.
+
 ## [0.86.0] — 2026-09-21
 
 ### Added
