@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.87.0] — 2026-09-22
+
 ### Added
 
 - `claude-opus-5-5` heads the Anthropic catalog: a 1M-token window, image
@@ -8058,7 +8060,8 @@ See entries `0.7.0a1` through `0.7.0a18` below.
 - `STTProvider.transcribe()` returns `TranscriptionResult` (Phase 3.1)
 - Framework event names enriched with payloads (Phase 4)
 
-[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.86.0...HEAD
+[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.87.0...HEAD
+[0.87.0]: https://github.com/roomkit-live/roomkit/compare/v0.86.0...v0.87.0
 [0.86.0]: https://github.com/roomkit-live/roomkit/compare/v0.85.0...v0.86.0
 [0.85.0]: https://github.com/roomkit-live/roomkit/compare/v0.84.0...v0.85.0
 [0.84.0]: https://github.com/roomkit-live/roomkit/compare/v0.83.0...v0.84.0
