@@ -159,6 +159,7 @@ class VoiceSTTMixin:
     _broadcast_bridge_transcription: Any  # see STTHost — VoiceChannel
     _task_done: Any  # see STTHost — VoiceChannel._task_done
     _pipeline_audio_rate: Any  # see STTHost — VoicePipelineMixin
+    _on_held_transcript: Any  # see STTHost — VoiceChannel._on_held_transcript
 
     # -----------------------------------------------------------------
     # Per-session STT language
@@ -333,6 +334,10 @@ class VoiceSTTMixin:
                             self._fire_partial_transcription_hook(session, result, room_id),
                             name=f"partial_stt:{session.id}",
                         )
+                    if result.text:
+                        # A segment SEMANTIC holds during playback is judged
+                        # on its words as they come (RFC §12.3.13).
+                        self._on_held_transcript(session, room_id, result.text)
             except asyncio.CancelledError:
                 state.cancelled = True
             except Exception:

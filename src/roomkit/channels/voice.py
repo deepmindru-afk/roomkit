@@ -267,6 +267,9 @@ class VoiceChannel(
         # Sessions whose speech is queued until playback ends (RFC §12.6
         # DISABLED) — the speech is not echo, it is simply not allowed to cut in
         self._queueing_sessions: set[str] = set()
+        # SEMANTIC segments held during playback while their words are
+        # transcribed (session_id -> whether ON_BACKCHANNEL already fired)
+        self._held_for_transcript: dict[str, bool] = {}
         # Speech segments captured while queueing, replayed once TTS finishes
         self._queued_speech: dict[str, list[bytes]] = {}
         # Monotonic timestamp of the current speech onset per session, used to
@@ -518,6 +521,7 @@ class VoiceChannel(
             self._speech_started_at.pop(session.id, None)
             was_suppressed = session.id in self._suppressed_sessions
             self._suppressed_sessions.discard(session.id)
+            was_held = self._held_for_transcript.pop(session.id, None) is not None
             was_queueing = session.id in self._queueing_sessions
             self._queueing_sessions.discard(session.id)
             if was_queueing and audio:
@@ -536,6 +540,10 @@ class VoiceChannel(
         # The segment that just ended owns any DTMF heard since the last one.
         dtmf_seen = self._tts_context is not None and self._tts_context.take_dtmf(session.id)
         if was_suppressed:
+            if was_held:
+                # SEMANTIC transcribed it to classify it, and it did not cut
+                # in: the words go nowhere (RFC §12.6 step 5).
+                self._cancel_stt_stream(session.id)
             logger.debug("Suppressed echo speech end for %s", session.id)
             return
 
@@ -633,6 +641,8 @@ class VoiceChannel(
                             self._arm_barge_in_confirmation(
                                 session, room_id, decision.confirm_after_ms
                             )
+                            if decision.awaiting_transcript:
+                                self._hold_for_transcript(session, room_id, vad_event.audio_bytes)
 
             if not suppress_speech:
                 # Start streaming STT if provider supports it
@@ -1130,6 +1140,7 @@ class VoiceChannel(
         self._cancel_stt_stream(session.id)
         with self._state_lock:
             self._session_ready_pending.discard(session.id)
+            self._held_for_transcript.pop(session.id, None)
             binding_info = self._session_bindings.pop(session.id, None)
         if binding_info is None:
             return  # Already unbound — prevent double pipeline/telemetry calls
@@ -1364,16 +1375,113 @@ class VoiceChannel(
         while waiting and therefore owns un-suppressing it on confirmation. A
         transport that detected the speech itself keeps its own capture.
         """
-        with self._state_lock:
-            existing = self._confirm_tasks.pop(session.id, None)
-        if existing is not None:
-            existing.cancel()
+        self._cancel_barge_in_confirmation(session.id)
         self._schedule(
             self._confirm_barge_in(
                 session, room_id, delay_ms, onset=time.monotonic(), from_vad=from_vad
             ),
             name=f"barge_in_confirm:{session.id}",
         )
+
+    def _cancel_barge_in_confirmation(self, session_id: str) -> None:
+        with self._state_lock:
+            existing = self._confirm_tasks.pop(session_id, None)
+        if existing is not None:
+            existing.cancel()
+
+    def _hold_for_transcript(
+        self, session: VoiceSession, room_id: str, pre_roll: bytes | None
+    ) -> None:
+        """Transcribe a held SEMANTIC segment so its words can be classified.
+
+        The segment stays suppressed: nothing reaches hooks or the AI unless a
+        partial transcript (or the duration-only second look) says it cuts in.
+        Without a streaming STT there are no words to wait for, and the second
+        look armed alongside decides on duration alone (CONFIRMED fallback).
+        """
+        if self._stt is None or not self._stt.supports_streaming or self._continuous_stt:
+            return
+        with self._state_lock:
+            self._held_for_transcript[session.id] = False
+        self._start_stt_stream(session, room_id, pre_roll=pre_roll)
+
+    def _held_transcript(self, session_id: str) -> str:
+        """Latest words of a held segment, empty when none arrived yet."""
+        with self._state_lock:
+            if session_id not in self._held_for_transcript:
+                return ""
+        state = self._stt_streams.get(session_id)
+        if state is None:
+            return ""
+        return state.partial_text or state.final_text or ""
+
+    def _on_held_transcript(self, session: VoiceSession, room_id: str, text: str) -> None:
+        """Classify the words of a held SEMANTIC segment as they arrive."""
+        with self._state_lock:
+            if session.id not in self._held_for_transcript:
+                return
+            playback = self._playing_sessions.get(session.id)
+            onset = self._speech_started_at.get(session.id)
+        if playback is None:
+            return
+        done_ev = self._playback_done_events.get(session.id)
+        if done_ev is not None and done_ev.is_set():
+            return
+        duration_ms = int((time.monotonic() - onset) * 1000) if onset is not None else 0
+        decision = self._interruption_handler.evaluate(
+            playback_position_ms=playback.played_ms,
+            speech_duration_ms=duration_ms,
+            speech_text=text,
+        )
+        if decision.should_interrupt:
+            with self._state_lock:
+                # One partial cuts in; the ones behind it find nothing held.
+                if self._held_for_transcript.pop(session.id, None) is None:
+                    return
+            self._cancel_barge_in_confirmation(session.id)
+            logger.info("Barge-in on held transcript %r (session %s)", text, session.id)
+            self._schedule(
+                self._cut_in(session, playback, room_id, restart_stt=False),
+                name=f"barge_in:{session.id}",
+            )
+        elif decision.is_backchannel:
+            # Acknowledged: the timer must not cut it for running long. Later
+            # words are still classified, so "uh-huh... wait" can cut in.
+            self._cancel_barge_in_confirmation(session.id)
+            self._note_backchannel(session, text, room_id)
+
+    def _note_backchannel(self, session: VoiceSession, text: str, room_id: str) -> None:
+        """Fire ON_BACKCHANNEL, once per held segment."""
+        with self._state_lock:
+            if self._held_for_transcript.get(session.id):
+                return
+            if session.id in self._held_for_transcript:
+                self._held_for_transcript[session.id] = True
+        self._schedule(
+            self._fire_backchannel_hook(session, text, room_id),
+            name=f"backchannel:{session.id}",
+        )
+
+    async def _cut_in(
+        self,
+        session: VoiceSession,
+        playback: TTSPlaybackState,
+        room_id: str,
+        *,
+        restart_stt: bool,
+    ) -> None:
+        """Let a held VAD segment through as the user's turn, then barge in.
+
+        ``restart_stt`` is False when the segment is already being transcribed
+        (SEMANTIC held it for its words, pre-roll included).
+        """
+        with self._state_lock:
+            self._suppressed_sessions.discard(session.id)
+            self._held_for_transcript.pop(session.id, None)
+        if restart_stt and self._stt is not None and self._stt.supports_streaming:
+            self._start_stt_stream(session, room_id)
+        await self._fire_speech_start_hooks(session, room_id)
+        await self._handle_barge_in(session, playback, room_id)
 
     async def _confirm_barge_in(
         self,
@@ -1412,7 +1520,10 @@ class VoiceChannel(
             decision = self._interruption_handler.evaluate(
                 playback_position_ms=playback.played_ms,
                 speech_duration_ms=speech_duration_ms,
+                speech_text=self._held_transcript(session.id),
             )
+            if decision.is_backchannel and from_vad:
+                self._note_backchannel(session, self._held_transcript(session.id), room_id)
             if not decision.should_interrupt:
                 return
 
@@ -1423,13 +1534,12 @@ class VoiceChannel(
             )
             if from_vad:
                 # Confirmed: the segment is the user talking, not echo. Let it
-                # through and start capturing it.
+                # through and capture it, unless SEMANTIC already does.
                 with self._state_lock:
-                    self._suppressed_sessions.discard(session.id)
-                if self._stt is not None and self._stt.supports_streaming:
-                    self._start_stt_stream(session, room_id)
-                await self._fire_speech_start_hooks(session, room_id)
-            await self._handle_barge_in(session, playback, room_id)
+                    held = session.id in self._held_for_transcript
+                await self._cut_in(session, playback, room_id, restart_stt=not held)
+            else:
+                await self._handle_barge_in(session, playback, room_id)
         except asyncio.CancelledError:
             raise
         finally:

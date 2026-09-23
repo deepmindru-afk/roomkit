@@ -78,6 +78,13 @@ class InterruptionDecision:
     """How much longer the speech must sustain before re-evaluating. Only
     meaningful when ``pending_confirmation`` is True."""
 
+    awaiting_transcript: bool = False
+    """True when SEMANTIC had nothing to classify yet: no words and too short
+    a speech for a duration-only judgement. The caller transcribes the held
+    speech and re-evaluates with each partial transcript; the
+    ``pending_confirmation`` second look classifies on duration alone when
+    no words arrive in time."""
+
     queue_speech: bool = False
     """True when the speech must be queued and delivered once playback ends
     rather than discarded (RFC §12.6 DISABLED: "user speech is queued until
@@ -178,6 +185,18 @@ class InterruptionHandler:
                     pending_confirmation=True,
                     confirm_after_ms=self._config.min_speech_ms - speech_duration_ms,
                     reason="speech too short (semantic fallback)",
+                )
+
+            if not speech_text and speech_duration_ms < self._config.min_speech_ms:
+                # Speech onset: no words, no duration. Any detector answering
+                # here would judge an empty utterance (RFC §12.3.13 timing
+                # constraint), so wait for a transcript or min_speech_ms.
+                return InterruptionDecision(
+                    should_interrupt=False,
+                    pending_confirmation=True,
+                    confirm_after_ms=self._config.min_speech_ms - speech_duration_ms,
+                    awaiting_transcript=True,
+                    reason="nothing to classify yet",
                 )
 
             from roomkit.voice.pipeline.backchannel.base import BackchannelContext

@@ -48,6 +48,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `InterruptionStrategy.SEMANTIC` no longer judges an empty speech onset. With
+  the pipeline VAD, the detector was consulted at `SPEECH_START` with no
+  transcript and no duration: a keyword detector never found "uh-huh" in `""`,
+  so every utterance cut the bot off and SEMANTIC behaved like IMMEDIATE.
+  `InterruptionHandler.evaluate` now answers `pending_confirmation` with the new
+  `InterruptionDecision.awaiting_transcript` until it has words or
+  `min_speech_ms` of speech. In VAD mode with a streaming STT, the held segment
+  is transcribed during playback and each partial is classified: a backchannel
+  fires `ON_BACKCHANNEL` once and the bot keeps talking, a real interruption
+  cuts in and the segment becomes the user's turn from its first word. Without
+  a streaming STT, the second look at `min_speech_ms` classifies on duration
+  alone, as CONFIRMED does. The transport barge-in and the continuous-mode
+  energy barge-in wait the same way, leaving the partial transcript time to
+  decide (RFC §12.3.13, RMK-190).
 - Speech audio is labelled with the sample rate the audio pipeline hands out,
   not the transport's. With an `AudioPipelineContract` that resamples inbound
   audio (FastRTC at 48 kHz, internal format at 16 kHz), the batch STT fallback,

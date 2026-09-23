@@ -104,6 +104,26 @@ class TestSemanticStrategy:
         assert decision.should_interrupt
         assert not decision.is_backchannel
 
+    def test_empty_onset_waits_instead_of_classifying(self):
+        """RFC §12.3.13 — at speech onset there are no words and no duration:
+        the detector is not asked, the caller waits for a transcript or for
+        min_speech_ms."""
+        bc = MockBackchannelDetector(decisions=[BackchannelDecision(is_backchannel=False)])
+        config = InterruptionConfig(strategy=InterruptionStrategy.SEMANTIC, min_speech_ms=300)
+        handler = InterruptionHandler(config, backchannel_detector=bc)
+
+        decision = handler.evaluate(playback_position_ms=500, speech_duration_ms=0)
+
+        assert not decision.should_interrupt
+        assert decision.pending_confirmation and decision.awaiting_transcript
+        assert decision.confirm_after_ms == 300
+        assert bc.evaluations == []
+
+        # At min_speech_ms without words, the detector judges on duration alone.
+        decision = handler.evaluate(playback_position_ms=800, speech_duration_ms=300)
+        assert decision.should_interrupt
+        assert [c.transcript for c in bc.evaluations] == [""]
+
     def test_no_detector_falls_back_to_confirmed(self):
         config = InterruptionConfig(
             strategy=InterruptionStrategy.SEMANTIC,
