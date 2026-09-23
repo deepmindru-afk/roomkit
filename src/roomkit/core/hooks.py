@@ -41,6 +41,9 @@ class HookRegistration:
         channel_ids: Only run for events from these channel IDs (None = all)
         directions: Only run for events with these directions (None = all)
         event_types: Only run for events of these types (None = all)
+        fail_closed: SYNC only — a timeout, an exception or an unusable result
+            blocks instead of allowing (RFC §9.3). For a content check that
+            must never let an unchecked payload through.
     """
 
     trigger: HookTrigger
@@ -54,6 +57,7 @@ class HookRegistration:
     channel_ids: set[str] | None = None
     directions: set[ChannelDirection] | None = None
     event_types: set[EventType] | None = None
+    fail_closed: bool = False
 
 
 @dataclass
@@ -235,6 +239,35 @@ class HookEngine:
         {HookTrigger.BEFORE_TTS, HookTrigger.ON_TRANSCRIPTION}
     )
 
+    def _fails_closed(self, hook: HookRegistration, trigger: HookTrigger) -> bool:
+        """Whether an unusable outcome of *hook* blocks (RFC §9.3)."""
+        return hook.fail_closed or trigger in self.FAIL_CLOSED_TRIGGERS
+
+    def _close(
+        self,
+        result: SyncPipelineResult,
+        hook: HookRegistration,
+        trigger: HookTrigger,
+        outcome: str,
+        trigger_reason: str,
+    ) -> bool:
+        """Block *result* when *hook* fails closed; return whether it did.
+
+        A hook that declared ``fail_closed`` names itself and the outcome
+        (``hook_timeout:<name>``) so the sender can be told why the message
+        did not go out. A fail-closed *trigger* keeps its historical,
+        human-readable reason.
+        """
+        if not self._fails_closed(hook, trigger):
+            return False
+        result.allowed = False
+        if hook.fail_closed:
+            result.reason = f"{outcome}:{hook.name}"
+            result.blocked_by = hook.name
+        else:
+            result.reason = trigger_reason
+        return True
+
     async def run_sync_hooks(
         self,
         room_id: str,
@@ -298,21 +331,25 @@ class HookEngine:
                 result.hook_errors.append(
                     {"hook": hook.name, "error": f"timeout ({hook.timeout}s)"}
                 )
-                if trigger in self.FAIL_CLOSED_TRIGGERS:
-                    result.allowed = False
-                    result.reason = f"hook {hook.name} timed out after {hook.timeout}s"
-                    return result
                 if span_id is not None:
                     self._telemetry.end_span(span_id, status="error", error_message="timeout")
+                if self._close(
+                    result,
+                    hook,
+                    trigger,
+                    "hook_timeout",
+                    f"hook {hook.name} timed out after {hook.timeout}s",
+                ):
+                    return result
                 continue
             except Exception as exc:
                 logger.exception("Sync hook %s failed", hook.name, extra={"room_id": room_id})
                 result.hook_errors.append({"hook": hook.name, "error": str(exc)})
                 if span_id is not None:
                     self._telemetry.end_span(span_id, status="error", error_message=str(exc))
-                if trigger in self.FAIL_CLOSED_TRIGGERS:
-                    result.allowed = False
-                    result.reason = f"hook {hook.name} failed: {exc}"
+                if self._close(
+                    result, hook, trigger, "hook_error", f"hook {hook.name} failed: {exc}"
+                ):
                     return result
                 continue
 
@@ -333,12 +370,14 @@ class HookEngine:
                     self._telemetry.end_span(
                         span_id, status="error", error_message="invalid return type"
                     )
-                if trigger in self.FAIL_CLOSED_TRIGGERS:
-                    result.allowed = False
-                    result.reason = (
-                        f"hook {hook.name} returned {type(hook_result).__name__} "
-                        "instead of HookResult"
-                    )
+                if self._close(
+                    result,
+                    hook,
+                    trigger,
+                    "hook_invalid_result",
+                    f"hook {hook.name} returned {type(hook_result).__name__} "
+                    "instead of HookResult",
+                ):
                     return result
                 continue
 
@@ -361,7 +400,7 @@ class HookEngine:
                 return result
 
             if hook_result.action == "modify" and hook_result.event is not None:
-                if trigger in self.FAIL_CLOSED_TRIGGERS and not isinstance(
+                if self._fails_closed(hook, trigger) and not isinstance(
                     hook_result.event, type(current_event)
                 ):
                     # The consumer would silently ignore a payload it cannot use
@@ -383,8 +422,13 @@ class HookEngine:
                             ),
                         }
                     )
-                    result.allowed = False
-                    result.reason = f"hook {hook.name} returned an unusable payload"
+                    self._close(
+                        result,
+                        hook,
+                        trigger,
+                        "hook_invalid_result",
+                        f"hook {hook.name} returned an unusable payload",
+                    )
                     return result
                 result.event = hook_result.event
 

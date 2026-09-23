@@ -97,6 +97,7 @@ class HooksApiMixin(HelpersMixin):
         channel_ids: set[str] | None = None,
         directions: set[ChannelDirection] | None = None,
         event_types: set[EventType] | None = None,
+        fail_closed: bool = False,
     ) -> Callable[..., Any]:
         """Decorator to register a global hook.
 
@@ -117,6 +118,10 @@ class HooksApiMixin(HelpersMixin):
             channel_ids: Only run for events from these channel IDs (None = all)
             directions: Only run for events with these directions (None = all)
             event_types: Only run for events of these types (None = all)
+            fail_closed: SYNC only — a timeout, an exception or an unusable
+                result blocks the payload instead of letting it through, with
+                ``reason="hook_timeout:<name>"`` / ``hook_error:<name>`` /
+                ``hook_invalid_result:<name>`` (RFC §9.3). For content checks.
         """
 
         def decorator(fn: SyncHookFn | AsyncHookFn) -> SyncHookFn | AsyncHookFn:
@@ -132,6 +137,7 @@ class HooksApiMixin(HelpersMixin):
                     channel_ids=channel_ids,
                     directions=directions,
                     event_types=event_types,
+                    fail_closed=fail_closed,
                 )
             )
             return fn
@@ -319,8 +325,13 @@ class HooksApiMixin(HelpersMixin):
         fn: SyncHookFn | AsyncHookFn,
         priority: int = 0,
         name: str = "",
+        *,
+        fail_closed: bool = False,
     ) -> None:
-        """Add a hook for a specific room."""
+        """Add a hook for a specific room.
+
+        ``fail_closed`` has the meaning it has on :meth:`hook`.
+        """
         self._hook_engine.add_room_hook(
             room_id,
             HookRegistration(
@@ -329,6 +340,7 @@ class HooksApiMixin(HelpersMixin):
                 fn=fn,
                 priority=priority,
                 name=name,
+                fail_closed=fail_closed,
             ),
         )
 

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `fail_closed=True` on `kit.hook()` / `add_room_hook()`: when that hook times
+  out, raises or returns something unusable, the payload is blocked instead of
+  let through, on any trigger (RFC §9.3). Before this, a `BEFORE_BROADCAST`
+  content check (PII, moderation) that timed out delivered the message
+  unchecked, because only `BEFORE_TTS` and `ON_TRANSCRIPTION` fail closed.
+  The block names the hook (`blocked_by`) and the outcome
+  (`reason="hook_timeout:<name>"`, `hook_error:<name>`,
+  `hook_invalid_result:<name>`), so the sender can be told why the message
+  did not go out. Hooks without the flag keep failing open.
+
 ## [0.87.0] — 2026-09-22
 
 ### Added
