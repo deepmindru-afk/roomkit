@@ -91,6 +91,25 @@ class _ToolRunningAI(_HeldAI):
         self.ended.append("done")
 
 
+class _RoundAI(_HeldAI):
+    """One tool round over *ids*: every start, then execution, then the ends."""
+
+    def __init__(self, ids: list[str]) -> None:
+        super().__init__()
+        self.ids = ids
+
+    async def generate_stream(self, context: AIContext) -> AsyncIterator[Any]:
+        yield HEARD[0]
+        for tool_id in self.ids:
+            yield ToolCallStartMarker(tool_name="book_table", tool_id=tool_id, arguments={})
+        self.tool_reached = True  # the round executes here
+        for tool_id in self.ids:
+            yield ToolCallEndMarker(
+                tool_name="book_table", tool_id=tool_id, arguments={}, result="ok"
+            )
+        yield "Booked. "
+
+
 class _SentenceTTS(TTSProvider):
     """One audio chunk per sentence, synthesized as each sentence is read."""
 
@@ -335,3 +354,69 @@ class TestBargeInDuringStreamedResponse:
         bodies = [e.content.body for e in _ai_rows(events) if isinstance(e.content, TextContent)]
         assert bodies == [HEARD[0]]
         await kit.close()
+
+    async def _stop_while_committing(
+        self, ids: list[str], row_type: EventType
+    ) -> tuple[_RoundAI, list[RoomEvent]]:
+        """Barge in while the first *row_type* row of the round commits."""
+        ai = _RoundAI(ids)
+        kit, voice, _, _, room_id, (session,) = await _setup(ai=ai)
+        committing = asyncio.Event()
+
+        @kit.hook(HookTrigger.BEFORE_BROADCAST)
+        async def slow(event: RoomEvent, ctx: Any) -> HookResult:
+            first = not committing.is_set()
+            if event.source.channel_id == "ai-1" and event.type == row_type and first:
+                committing.set()
+                await asyncio.sleep(0.1)
+            return HookResult.allow()
+
+        turn = _turn(kit, room_id)
+        await asyncio.wait_for(committing.wait(), 2)
+        await voice.interrupt(session, reason="barge_in")
+        await asyncio.wait_for(turn, 2)
+        rows = _ai_rows(await _events(kit, room_id))
+        await kit.close()
+        return ai, rows
+
+    @staticmethod
+    def _shape(rows: list[RoomEvent]) -> list[tuple[str, str | None]]:
+        return [
+            (
+                r.type.value,
+                getattr(r.content, "tool_id", None) or getattr(r.content, "status", None),
+            )
+            for r in rows
+        ]
+
+    async def test_stop_during_the_start_row_never_runs_the_tool(self) -> None:
+        ai, rows = await self._stop_while_committing(["t1"], EventType.TOOL_CALL_START)
+
+        assert not ai.tool_reached
+        assert self._shape(rows) == [
+            ("message", None),
+            ("tool_call_start", "t1"),
+            ("tool_call_end", "t1"),
+        ]
+        assert getattr(rows[-1].content, "status", None) == "failed"
+
+    async def test_stop_during_the_text_before_a_tool_never_runs_it(self) -> None:
+        ai, rows = await self._stop_while_committing(["t1"], EventType.MESSAGE)
+
+        assert not ai.tool_reached
+        assert self._shape(rows) == [
+            ("message", None),
+            ("tool_call_start", "t1"),
+            ("tool_call_end", "t1"),
+        ]
+
+    async def test_stop_between_parallel_starts_leaves_no_call_pending(self) -> None:
+        ai, rows = await self._stop_while_committing(["a", "b"], EventType.TOOL_CALL_START)
+
+        assert not ai.tool_reached
+        starts = [r.content for r in rows if r.type == EventType.TOOL_CALL_START]
+        ends = [r.content for r in rows if r.type == EventType.TOOL_CALL_END]
+        assert {getattr(c, "tool_id", None) for c in starts} == {
+            getattr(c, "tool_id", None) for c in ends
+        }
+        assert all(getattr(c, "status", None) == "failed" for c in ends)

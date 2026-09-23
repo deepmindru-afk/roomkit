@@ -15,18 +15,23 @@ logger = logging.getLogger("roomkit.inbound")
 class ResponseReader:
     """Reads a response stream, keeping a running tool's read out of a stop.
 
-    While a tool call is open (its start marker read, not yet its end), the
-    next read is where the tool executes. A barge-in cancels whoever is
-    reading, and cancelling there would abort the tool halfway through a side
-    effect and leave its row pending forever. That read runs as its own task
-    instead: a cancelled reader leaves it running, and
-    :meth:`finish_running_tools` lets it end (RFC §12.2 step 13s). A turn
-    cancelled from outside still aborts it, through :meth:`abandon`.
+    A tool round yields every call's start marker, then executes the calls
+    inside the read that follows the last one, then yields one end marker per
+    read. So a read made while calls are open may be where they execute. A
+    barge-in cancels whoever is reading, and cancelling there would abort a
+    tool halfway through a side effect: that read runs as its own task
+    instead, which a cancelled reader leaves running.
+
+    :meth:`stop` then settles the round (RFC §12.2 step 13s): a round that was
+    executing is let finish, a round that had not started executing never
+    does, and every call it opened gets its end. A turn cancelled from outside
+    still aborts a running tool, through :meth:`abandon`.
     """
 
     def __init__(self, stream: AsyncIterator[Any]) -> None:
         self._stream = stream
-        self._open: set[str] = set()
+        self._open: dict[str, ToolCallStartMarker] = {}
+        self._starts: dict[str, ToolCallStartMarker] = {}
         self._pending: asyncio.Future[Any] | None = None
 
     async def next(self) -> Any:
@@ -40,26 +45,55 @@ class ResponseReader:
         self._track(item)
         return item
 
-    async def finish_running_tools(self) -> list[ToolCallEndMarker]:
-        """Let the tools already running end, without starting another round.
+    async def stop(self) -> list[tuple[ToolCallStartMarker, ToolCallEndMarker]]:
+        """Settle the open tool round without starting anything.
 
-        Returns their end markers. Reading stops as soon as no tool is open:
-        one more read would ask the model for its next round.
+        Returns each call it closed with its start marker, so a caller whose
+        start row was cut off can still write it before the end.
+
+        Only the read already in flight may still execute tools; this method
+        never issues one that could start them. Once that read yields its
+        first end marker, the round has executed and its other ends follow
+        read by read, with nothing further to execute. Stopping when no call
+        is open leaves the model's next round unrequested. A call that never
+        ran, or whose round failed, is closed as ``failed`` so its start row
+        does not stay pending.
         """
-        ends: list[ToolCallEndMarker] = []
-        while self._open:
-            pending, self._pending = self._pending, None
+        ends: list[tuple[ToolCallStartMarker, ToolCallEndMarker]] = []
+        pending, self._pending = self._pending, None
+        error = "cancelled"
+        if pending is not None:
             try:
-                item = await (pending if pending is not None else anext(self._stream))
+                item = await pending
+                while isinstance(item, ToolCallEndMarker):
+                    self._track(item)
+                    if (start := self._starts.get(item.tool_id)) is not None:
+                        ends.append((start, item))
+                    if not self._open:
+                        break
+                    item = await anext(self._stream)
+                else:
+                    # A start marker: the round had not begun executing.
+                    self._track(item)
             except StopAsyncIteration:
-                break
-            except Exception:
-                logger.exception("A running tool failed after the response was stopped")
-                break
-            self._track(item)
-            if not isinstance(item, ToolCallEndMarker):
-                break
-            ends.append(item)
+                pass
+            except Exception as exc:
+                logger.exception("A running tool round failed after the response was stopped")
+                error = f"{type(exc).__name__}: {exc}"
+        ends.extend(
+            (
+                start,
+                ToolCallEndMarker(
+                    tool_name=start.tool_name,
+                    tool_id=start.tool_id,
+                    arguments=start.arguments,
+                    status="failed",
+                    error=error,
+                ),
+            )
+            for start in self._open.values()
+        )
+        self._open.clear()
         return ends
 
     async def abandon(self) -> None:
@@ -71,6 +105,7 @@ class ResponseReader:
 
     def _track(self, item: Any) -> None:
         if isinstance(item, ToolCallStartMarker):
-            self._open.add(item.tool_id)
+            self._open[item.tool_id] = item
+            self._starts[item.tool_id] = item
         elif isinstance(item, ToolCallEndMarker):
-            self._open.discard(item.tool_id)
+            self._open.pop(item.tool_id, None)

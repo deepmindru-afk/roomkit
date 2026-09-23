@@ -31,11 +31,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the response stream as soon as the transport stops reading it, and stores the
   text already produced with `metadata.cancelled = true`, as it already did for
   a cancelled turn. No token is generated and no tool call starts past that
-  point; a tool already executing is let finish and its result stored, then
+  point: a tool already executing is let finish and its result stored, a call
+  announced but not yet executing never runs and is closed as `failed`, and
   the model's next round is not requested. A segment whose commit was under
-  way when the stop landed is no longer lost. One session stopping still leaves the others listening, and with
-  `flush_partial_tts=False` the response plays and is stored whole (RFC §12.2
-  step 13s, RMK-189).
+  way when the stop landed is no longer lost. One session stopping still
+  leaves the others listening, and with `flush_partial_tts=False` the response
+  plays and is stored whole (RFC §12.2 step 13s, RMK-189).
 - The interrupted utterance recorded on a barge-in (`metadata.interrupted`)
   carries the sentences already handed to TTS instead of the `(streaming)`
   placeholder (RFC §12.3.13, RMK-189).

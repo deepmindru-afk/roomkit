@@ -334,14 +334,17 @@ class InboundStreamingMixin(HelpersMixin):
     ) -> None:
         """Close a response its transport stopped reading, keep what it produced.
 
-        A tool already running is let finish and its result stored; then the
-        generation is closed, so no token is produced and no tool call starts
-        past this point (RFC §12.2 step 13s); then the text already produced is
-        stored, marked like any interrupted turn. A failure while closing is
+        The open tool round is settled first: a round already executing is let
+        finish and its results stored, one that had not started never does
+        (RFC §12.2 step 13s). Then the generation is closed, so no token is
+        produced and no tool call starts past this point, and the text already
+        produced is stored, marked like any interrupted turn. A failure while closing is
         the provider's finalizer, not the response's: it is logged and the
         text is still stored as cancelled.
         """
-        for end in await reader.finish_running_tools():
+        for start, end in await reader.stop():
+            if not writer.started(start.tool_id):
+                await writer.tool_start(start)
             await writer.tool_end(end)
         try:
             await segments.aclose()

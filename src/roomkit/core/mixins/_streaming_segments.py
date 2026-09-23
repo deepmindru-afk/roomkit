@@ -70,6 +70,7 @@ class SegmentWriter:
         self._response_events = response_events
         self._accumulated: list[str] = []
         self._writing: set[asyncio.Task[RoomEvent | None]] = set()
+        self._started: set[str] = set()
         self.persisted: list[RoomEvent] = []
 
     # -- what the stream hands in ------------------------------------------
@@ -98,7 +99,9 @@ class SegmentWriter:
         ``cancelled`` marks a segment cut short by an interrupted turn, so a
         reader can tell a finished answer from one the user stopped.
         """
-        await self.settle()
+        # Joined even with nothing to write: the caller's last flush is what
+        # lets a write cut off by a stop land before the turn returns.
+        await self._settle()
         if not self._accumulated:
             return None
         body = "".join(self._accumulated)
@@ -111,7 +114,12 @@ class SegmentWriter:
         # only the others get it as an event.
         return await self._write(event, exclude=set(self._streamed_to))
 
+    def started(self, tool_id: str) -> bool:
+        """Whether this call's start row was handed to the writer."""
+        return tool_id in self._started
+
     async def tool_start(self, marker: ToolCallStartMarker) -> RoomEvent | None:
+        self._started.add(marker.tool_id)
         event = self._build(
             EventType.TOOL_CALL_START,
             ToolCallContent(
@@ -167,10 +175,14 @@ class SegmentWriter:
             metadata=metadata or {},
         )
 
-    async def settle(self) -> None:
-        """Wait for every row whose write outlived the read that started it."""
+    async def _settle(self) -> None:
+        """Wait for every row whose write outlived the read that started it.
+
+        ``asyncio.wait`` rather than ``gather``: a waiter cancelled here must
+        not cancel the writes it was waiting on.
+        """
         while self._writing:
-            await asyncio.gather(*self._writing, return_exceptions=True)
+            await asyncio.wait(set(self._writing))
 
     async def _write(self, event: RoomEvent, *, exclude: set[str] | None) -> RoomEvent | None:
         """Gate and commit a row, even when the read that produced it is cancelled.
@@ -178,9 +190,10 @@ class SegmentWriter:
         A barge-in cancels the stream's in-flight read wherever it stands,
         possibly halfway through a commit. The row's text has already left
         the buffer, so a cancelled commit would lose it: the write finishes
-        on its own, and :meth:`settle` joins it before anything else is
-        written.
+        on its own. Every row first waits for the writes before it, so rows
+        commit in the order the stream produced them.
         """
+        await self._settle()
         task = asyncio.ensure_future(self._write_now(event, exclude=exclude))
         self._writing.add(task)
         task.add_done_callback(self._writing.discard)
