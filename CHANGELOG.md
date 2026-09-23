@@ -72,6 +72,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A TTS provider's audio stream is closed as soon as playback stops. A
+  backend leaving `send_audio()` on a barge-in did not close the iterator it
+  was given, so the provider's cleanup (an HTTP response, a GPU thread) waited
+  for garbage collection (RMK-194).
 - Hanging up a conference no longer takes a member out of the room. A
   participant another channel homes — someone who joined through a websocket,
   then walked into the room's call — kept the status the conference's roster

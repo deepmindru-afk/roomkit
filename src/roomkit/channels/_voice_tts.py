@@ -587,9 +587,12 @@ class VoiceTTSMixin:
         context_kwargs, recorder = self._begin_tts_turn(session, telemetry)
         if recorder is not None:
             playback.context_turn = (recorder, speaker_id)
+        tts_stream: AsyncIterator[AudioChunk] | None = None
         try:
-            audio = tts.synthesize_stream_input(relay_sentences(), voice=voice, **context_kwargs)
-            audio = _observe_audio(playback, recorder, audio)
+            tts_stream = tts.synthesize_stream_input(
+                relay_sentences(), voice=voice, **context_kwargs
+            )
+            audio = _observe_audio(playback, recorder, tts_stream)
             if self._pipeline is not None or getattr(self, "_outbound_audio_taps", []):
                 audio = self._wrap_outbound(session, audio)
             await backend.send_audio(session, audio)
@@ -600,6 +603,7 @@ class VoiceTTSMixin:
             raise
         finally:
             self._end_tts_turn(playback)
+            await _close_stream(tts_stream)
             duration_ms = (time.monotonic() - t0) * 1000
             if telemetry is not None and span_id is not None:
                 telemetry.end_span(
@@ -715,9 +719,10 @@ class VoiceTTSMixin:
         if recorder is not None:
             playback.context_turn = (recorder, speaker_id or self.channel_id)
         t0 = _time.monotonic()
+        tts_stream: AsyncIterator[AudioChunk] | None = None
         try:
-            audio_stream = self._tts.synthesize_stream(text, voice=voice, **context_kwargs)
-            audio_stream = _observe_audio(playback, recorder, audio_stream)
+            tts_stream = self._tts.synthesize_stream(text, voice=voice, **context_kwargs)
+            audio_stream = _observe_audio(playback, recorder, tts_stream)
             if self._pipeline is not None or getattr(self, "_outbound_audio_taps", []):
                 audio_stream = self._wrap_outbound(session, audio_stream)
             await self._backend.send_audio(session, audio_stream)
@@ -745,6 +750,7 @@ class VoiceTTSMixin:
             raise
         finally:
             self._end_tts_turn(playback)
+            await _close_stream(tts_stream)
             duration_ms = (_time.monotonic() - t0) * 1000
             if telemetry is not None and span_id is not None:
                 telemetry.end_span(
@@ -1057,6 +1063,22 @@ async def _observed_chunks(
         if recorder is not None:
             recorder.add(chunk)
         yield chunk
+
+
+async def _close_stream(stream: AsyncIterator[AudioChunk] | None) -> None:
+    """Close a provider's audio stream once the transport stops reading it.
+
+    A backend leaves ``send_audio()`` on a cancel without closing the iterator
+    it was given; the provider's cleanup (an HTTP response, a GPU thread)
+    would otherwise wait for the stream to be garbage collected.
+    """
+    aclose = getattr(stream, "aclose", None)
+    if aclose is None:
+        return
+    try:
+        await aclose()
+    except Exception:
+        logger.debug("Closing the TTS stream failed", exc_info=True)
 
 
 def _served_sessions(sessions: list[VoiceSession], results: list[Any]) -> list[VoiceSession]:
