@@ -2,10 +2,10 @@
 
 A ``BEFORE_BROADCAST`` check that reads only the event (a PII scan, a
 moderation call) runs before the room lock is taken, so the I/O of one
-message's check no longer holds every other event of the room. What the lock
-used to give for free — arrival order — comes from a per-room ticket instead:
-checks of successive events overlap, but each event waits for every earlier
-ticket of the room to be released before it takes the lock, so they still
+message's check does not hold the other events of the room. Arrival order,
+which holding the lock across the check would give, comes from a per-room
+ticket: checks of successive events overlap, but each event waits for every
+earlier ticket of the room to be released before it takes the lock, so they
 commit in arrival order.
 
 Neither existing ordering mechanism fits. The room lock (:class:`RoomLockManager`)
@@ -25,17 +25,20 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
+from roomkit.core.locks import _has_room_lock
 from roomkit.models.enums import HookTrigger
 
 if TYPE_CHECKING:
     from roomkit.core.hooks import HookEngine, SyncPipelineResult
+    from roomkit.core.locks import RoomLockManager
     from roomkit.models.context import RoomContext
     from roomkit.models.event import RoomEvent
 
 # Rooms whose off-lock check the current task is running. An event injected
 # from inside such a check (a hook calling ``send_event``) must not queue
 # behind the ticket its own caller holds — that is a deadlock — so it skips
-# admission and commits ahead of the event being checked.
+# admission and commits ahead of the event being checked. Tasks the check
+# spawns inherit the exemption.
 _checking_rooms: contextvars.ContextVar[frozenset[str]] = contextvars.ContextVar(
     "_checking_rooms", default=frozenset()
 )
@@ -66,9 +69,11 @@ class RoomAdmission:
     def __init__(
         self,
         hook_engine: HookEngine,
+        lock_manager: RoomLockManager,
         build_context: Callable[[str], Awaitable[RoomContext]],
     ) -> None:
         self._hook_engine = hook_engine
+        self._lock_manager = lock_manager
         self._build_context = build_context
         self._queues: dict[str, deque[_Ticket]] = {}
 
@@ -99,16 +104,22 @@ class RoomAdmission:
     ) -> AsyncIterator[SyncPipelineResult | None]:
         """Run *event*'s off-lock check, then hold its turn until exit.
 
-        Yields ``None`` when no off-lock hook matches the event, or when the
-        call comes from inside an off-lock check of the same room: nothing is
-        taken, and the locked pass runs every hook as before. Otherwise yields
-        the off-lock outcome once every earlier ticket of the room has been
-        released. The caller takes the room lock and commits inside the
+        Yields ``None`` — nothing taken, every hook left to the locked pass —
+        when no off-lock hook matches the event, or when the caller could
+        only wait on itself: it runs inside an off-lock check of the same
+        room, or already holds the room lock (a locked hook, or code under
+        the lock, injecting an event). Either way the ticket ahead of this
+        event is the caller's own, released only once the caller returns.
+
+        Otherwise yields the off-lock outcome once every earlier ticket of the
+        room has been released. The caller takes the room lock and commits inside the
         ``async with``; the ticket is released on exit, whatever the path —
         committed, blocked, refused, failed, timed out or cancelled.
         """
-        if room_id in _checking_rooms.get() or not self._hook_engine.has_off_lock_hooks(
-            room_id, event
+        if (
+            room_id in _checking_rooms.get()
+            or _has_room_lock(room_id, self._lock_manager)
+            or not self._hook_engine.has_off_lock_hooks(room_id, event)
         ):
             yield None
             return

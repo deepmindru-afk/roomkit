@@ -319,3 +319,34 @@ class TestPlacementRules:
         engine = HookEngine()
         engine.add_room_hook("r1", _reg("pii", priority=0, needs_lock=False))
         engine.add_room_hook("r2", _reg("router", priority=-100))
+
+
+class TestReentranceUnderTheLock:
+    async def test_event_injected_by_a_locked_hook_does_not_wait_on_its_caller(self) -> None:
+        """A locked hook holds the caller's ticket AND the lock: an event it
+        injects must not queue behind that ticket (RFC §9.5.1)."""
+        kit = RoomKit()
+        await _room(kit)
+        kit.hook(HookTrigger.BEFORE_BROADCAST, name="pii", priority=-10, needs_lock=False)(
+            _scan({})
+        )
+
+        async def notify(event: RoomEvent, ctx: RoomContext) -> HookResult:
+            if _body(event) == "A":
+                await kit.send_event("r1", "sms1", TextContent(body="notice"))
+            return HookResult.allow()
+
+        kit.hook(HookTrigger.BEFORE_BROADCAST, name="notify")(notify)
+
+        result = await asyncio.wait_for(kit.process_inbound(_msg("A"), room_id="r1"), 2)
+
+        assert not result.blocked
+        events = await kit.store.list_events("r1")
+        assert [_body(e) for e in events if e.type == EventType.MESSAGE] == ["notice", "A"]
+
+
+def test_fail_closed_is_refused_on_an_async_hook() -> None:
+    reg = _reg("audit", execution=HookExecution.ASYNC)
+    reg.fail_closed = True
+    with pytest.raises(ValueError, match="fail_closed"):
+        HookEngine().register(reg)

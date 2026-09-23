@@ -251,9 +251,9 @@ class RoomKit(
         # and are visible to every process sharing the store.
         self._closed = False
         self._hook_engine = HookEngine()
-        # Admission tickets for off-lock BEFORE_BROADCAST checks (RFC §9.5.1).
-        self._admission = RoomAdmission(self._hook_engine, self._build_context)
         self._lock_manager = lock_manager or InMemoryLockManager()
+        # Admission tickets for off-lock BEFORE_BROADCAST checks (RFC §9.5.1).
+        self._admission = RoomAdmission(self._hook_engine, self._lock_manager, self._build_context)
         # A persistent store paired with an in-process lock is unsafe if the
         # store is shared across processes: per-process locks do not coordinate
         # the full inbound pipeline or its idempotency decisions (RFC §13.5).
@@ -843,15 +843,18 @@ class RoomKit(
             cascade = DeliveryCascade(room_id, reentry_budget=self._max_chain_depth * 10)
             # The off-lock check (RFC §9.5.1) runs before the lock, when a
             # needs_lock=False hook applies; its ticket is held until the
-            # locked pass has committed.
+            # locked pass has committed. The check and the wait for the turn
+            # spend the same pre-commit budget as the locked gates (§13.6).
+            deadline = asyncio.get_running_loop().time() + self._process_timeout
             async with (
                 self._admission.admitted(room_id, event, None) as precheck,
                 self._lock_manager.locked(room_id),
             ):
-                # No pre-lock context to carry: this entry point takes the lock
-                # first, so the locked pass builds the one context of the call.
+                # No pre-lock context is carried: the off-lock check, when one
+                # ran, built its own, and the locked pass rebuilds one under
+                # the lock.
                 result = await self._process_locked(
-                    event, room_id, None, cascade, precheck=precheck
+                    event, room_id, None, cascade, precheck=precheck, deadline=deadline
                 )
             # A room that refuses events (RFC §5.1) is the one block this API
             # cannot report by returning: its contract is the committed event,

@@ -138,14 +138,21 @@ class HookEngine:
         )
 
     def _check_lock_placement(self, hook: HookRegistration, room_id: str | None) -> None:
-        """Enforce RFC §9.1's rules on ``needs_lock`` before *hook* is added.
+        """Enforce RFC §9.1's registration rules before *hook* is added.
 
+        ``fail_closed`` only exists on a SYNC hook: an ASYNC one cannot block,
+        and accepting the flag there would promise a guarantee nobody keeps.
         ``needs_lock=False`` only exists on a SYNC ``BEFORE_BROADCAST`` hook.
         And off-lock hooks run first, so a locked hook ordered before an
         off-lock one could not run in its declared place — a consent or
         budget gate meant to refuse a message before it is scanned would run
         after the scan. That is refused here, loudly, rather than reordered.
         """
+        if hook.fail_closed and hook.execution != HookExecution.SYNC:
+            raise ValueError(
+                f"Hook {hook.name!r}: fail_closed=True needs a SYNC hook; an ASYNC hook "
+                "cannot block"
+            )
         is_check = (
             hook.trigger == HookTrigger.BEFORE_BROADCAST and hook.execution == HookExecution.SYNC
         )
@@ -174,7 +181,7 @@ class HookEngine:
                     f"lock but is ordered before off-lock hook {off.name!r} (priority "
                     f"{off.priority}). Off-lock hooks run first (RFC §9.5.1): give "
                     f"{off.name!r} a priority at or below {locked.priority}, or keep "
-                    f"it needs_lock=True."
+                    f"it needs_lock=True. Channel and event filters are not considered."
                 )
 
     def has_off_lock_hooks(self, room_id: str, event: RoomEvent) -> bool:
@@ -311,8 +318,8 @@ class HookEngine:
 
         A hook that declared ``fail_closed`` names itself and the outcome
         (``hook_timeout:<name>``) so the sender can be told why the message
-        did not go out. A fail-closed *trigger* keeps its historical,
-        human-readable reason.
+        did not go out. A fail-closed *trigger* reports a human-readable
+        reason instead.
         """
         if not self._fails_closed(hook, trigger):
             return False

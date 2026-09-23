@@ -288,7 +288,7 @@ class InboundLockedMixin(HelpersMixin):
 
         *precheck* is the outcome of the off-lock check (RFC §9.5.1), when
         the caller ran one: step 9 applies it and runs only the hooks that
-        need the lock. ``None`` runs every hook here, as before.
+        need the lock. ``None`` runs every hook here.
         """
         # What is left of the caller's single pre-commit budget (RFC §13.6).
         # A deadline rather than the raw setting: the phase starts before this

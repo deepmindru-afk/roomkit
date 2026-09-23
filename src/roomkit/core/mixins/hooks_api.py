@@ -119,12 +119,13 @@ class HooksApiMixin(HelpersMixin):
             channel_ids: Only run for events from these channel IDs (None = all)
             directions: Only run for events with these directions (None = all)
             event_types: Only run for events of these types (None = all)
-            fail_closed: SYNC only — a timeout, an exception or an unusable
+            fail_closed: SYNC only (``ValueError`` on an ASYNC hook, which
+                cannot block) — a timeout, an exception or an unusable
                 result blocks the payload instead of letting it through, with
                 ``reason="hook_timeout:<name>"`` / ``hook_error:<name>`` /
                 ``hook_invalid_result:<name>`` (RFC §9.3). For content checks.
             needs_lock: SYNC ``BEFORE_BROADCAST`` only — ``False`` runs the
-                hook before the room lock is taken, so its I/O no longer holds
+                hook before the room lock is taken, so its I/O does not hold
                 the room; arrival order is kept by a per-room admission ticket
                 (RFC §9.5.1). Only for a hook that reads the event, not the
                 room's state. Raises ``ValueError`` on another trigger, or when
