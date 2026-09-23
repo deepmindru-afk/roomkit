@@ -103,3 +103,25 @@ class TestKeepPartialTranscript:
 
         assert await channel.interrupt(session, reason="barge_in") is False
         assert await _recorded(kit) == []
+
+
+class TestDrainedUtteranceIsNotInterrupted:
+    async def test_a_new_utterance_during_the_drain_records_nothing(self) -> None:
+        """Once ``send_audio()`` returned, the utterance was delivered whole:
+        a second ``say()`` inside the echo-decay window replaces the playback
+        state, it does not cut anything off (RFC §12.3.13 step 2)."""
+        from roomkit.voice.tts.mock import MockTTSProvider
+
+        backend = MockVoiceBackend(capabilities=VoiceCapability.INTERRUPTION)
+        channel = VoiceChannel("voice-1", tts=MockTTSProvider(), backend=backend)
+        kit = RoomKit(voice=backend)
+        kit.register_channel(channel)
+        await kit.create_room(room_id="r1")
+        await kit.attach_channel("r1", "voice-1")
+        session = await kit.connect_voice("r1", "user-1", "voice-1")
+
+        await channel.say(session, "Your appointment is confirmed.")
+        await channel.say(session, "Anything else?")
+
+        assert await _recorded(kit) == []
+        await kit.close()

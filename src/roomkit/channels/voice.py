@@ -1498,6 +1498,10 @@ class VoiceChannel(
             return False
 
         self._last_tts_ended_at[session.id] = _time.monotonic()
+        # send_audio() already returned: the utterance went out whole and only
+        # the echo-decay window was left, so nothing is cut off here.
+        done_ev = self._playback_done_events.get(session.id)
+        drained = done_ev is not None and done_ev.is_set()
 
         config = self._interruption_handler.config
         # ``flush_partial_tts`` decides what happens to audio already handed to
@@ -1509,8 +1513,9 @@ class VoiceChannel(
             and self._backend
             and VoiceCapability.INTERRUPTION in self._backend.capabilities
         ):
-            # What was heard ends here, whatever the stream still produces.
-            playback.stopped_at = _time.monotonic()
+            if not drained:
+                # What was heard ends here, whatever the stream still produces.
+                playback.stopped_at = _time.monotonic()
             await self._backend.cancel_audio(session)
 
         # Bypass AEC after TTS stops so user audio passes unchanged.  Keep the
@@ -1522,7 +1527,7 @@ class VoiceChannel(
             binding_info = self._session_bindings.get(session.id)
             if binding_info:
                 room_id, _ = binding_info
-                if config.keep_partial_transcript:
+                if config.keep_partial_transcript and not drained:
                     await self._store_interrupted_utterance(session, playback, room_id)
                 try:
                     from roomkit.voice.events import TTSCancelledEvent

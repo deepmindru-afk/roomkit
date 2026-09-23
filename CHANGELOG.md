@@ -36,6 +36,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A voice response that finished playing is no longer recorded as interrupted
+  when the next one starts during the echo-decay window. `say()` or a new
+  delivery within two seconds of the previous utterance cancelled it with
+  reason `new_tts`, and the timeline stored the whole utterance with
+  `metadata.interrupted = true` although the room had heard all of it
+  (RFC §12.3.13 step 2, RMK-187).
 - A speech segment classified as a backchannel while the bot is speaking
   (`InterruptionStrategy.SEMANTIC`, VAD mode) is now discarded instead of being
   transcribed and routed to the AI as a user message. The bot kept talking, yet
