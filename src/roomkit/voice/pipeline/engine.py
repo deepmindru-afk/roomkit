@@ -284,6 +284,17 @@ class AudioPipeline:
         """Register callback for recording stop."""
         self._recording_stopped_callbacks.append(callback)
 
+    def inbound_sample_rate(self, transport_rate: int) -> int:
+        """Sample rate of the audio this pipeline hands out for a transport rate.
+
+        Speech segments, VAD pre-roll and processed frames leave the pipeline
+        after the inbound resampler, so they are at the contract's internal
+        rate whenever resampling runs, and at the transport's rate otherwise.
+        """
+        if self._resampler is not None and self._config.contract is not None:
+            return self._config.contract.internal_format.sample_rate
+        return transport_rate
+
     # -----------------------------------------------------------------
     # Telemetry helpers
     # -----------------------------------------------------------------

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.models.enums import HookTrigger
 
@@ -63,6 +63,9 @@ class VoiceTurnMixin:
     _pending_turns: dict[str, list[TurnEntry]]
     _pending_audio: dict[str, bytearray]
 
+    # -- cross-mixin methods (annotated as Any to avoid MRO shadowing) --
+    _pipeline_audio_rate: Any  # VoicePipelineMixin
+
     async def _evaluate_turn(
         self,
         session: VoiceSession,
@@ -96,7 +99,7 @@ class VoiceTurnMixin:
                 del buf[:trim]
 
         accumulated_audio = bytes(self._pending_audio.get(session.id, b"")) or None
-        sample_rate = session.metadata.get("input_sample_rate", 16000)
+        sample_rate = self._pipeline_audio_rate(session)
 
         turn_ctx = TurnContext(
             conversation_history=list(entries),

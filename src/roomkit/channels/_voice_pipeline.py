@@ -168,6 +168,18 @@ class VoicePipelineMixin:
         else:
             offload.submit(session.id, pipeline.process_inbound, session, frame)
 
+    def _pipeline_audio_rate(self, session: VoiceSession) -> int:
+        """Sample rate of the audio the pipeline hands this channel.
+
+        The backend states its transport rate in ``input_sample_rate``; the
+        pipeline's inbound resampler may change it before VAD, so a speech
+        segment is labelled with what the pipeline says, never the transport.
+        """
+        transport_rate = int(session.metadata.get("input_sample_rate", 16000))
+        if self._pipeline is None:
+            return transport_rate
+        return self._pipeline.inbound_sample_rate(transport_rate)
+
     def _pipeline_session_active(self, session: VoiceSession) -> None:
         """Notify the pipeline that a session is active.
 

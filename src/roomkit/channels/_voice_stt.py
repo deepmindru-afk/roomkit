@@ -158,6 +158,7 @@ class VoiceSTTMixin:
     _resolve_session_backend: Any  # see STTHost — VoiceChannel._resolve_session_backend
     _broadcast_bridge_transcription: Any  # see STTHost — VoiceChannel
     _task_done: Any  # see STTHost — VoiceChannel._task_done
+    _pipeline_audio_rate: Any  # see STTHost — VoicePipelineMixin
 
     # -----------------------------------------------------------------
     # Per-session STT language
@@ -298,7 +299,7 @@ class VoiceSTTMixin:
         if pre_roll:
             from roomkit.voice.base import AudioChunk as OutChunk
 
-            sample_rate = session.metadata.get("input_sample_rate", 16000)
+            sample_rate = self._pipeline_audio_rate(session)
             logger.debug(
                 "STT stream pre-roll: %d bytes, sample_rate=%d",
                 len(pre_roll),
@@ -887,8 +888,8 @@ class VoiceSTTMixin:
 
             from roomkit.voice.audio_frame import AudioFrame
 
-            # Get audio parameters from session metadata (set by backend)
-            sample_rate = session.metadata.get("input_sample_rate", 16000)
+            # The segment left the pipeline after its inbound resampler.
+            sample_rate = self._pipeline_audio_rate(session)
 
             # Try to collect streaming STT result; fall back to batch
             text: str | None = None

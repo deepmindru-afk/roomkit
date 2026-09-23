@@ -39,6 +39,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Speech audio is labelled with the sample rate the audio pipeline hands out,
+  not the transport's. With an `AudioPipelineContract` that resamples inbound
+  audio (FastRTC at 48 kHz, internal format at 16 kHz), the batch STT fallback,
+  the streaming STT pre-roll, the turn detector and the user audio of the TTS
+  context received 16 kHz audio announced as 48 kHz. `AudioPipeline` now
+  states the rate with `inbound_sample_rate()` (RMK-191).
 - A voice response that finished playing is no longer recorded as interrupted
   when the next one starts during the echo-decay window. `say()` or a new
   delivery within two seconds of the previous utterance cancelled it with
