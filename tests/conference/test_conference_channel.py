@@ -586,6 +586,62 @@ class TestRosterAfterDeparture:
         assert participant.status is ParticipantStatus.ACTIVE
 
 
+class TestMembershipHomedElsewhere:
+    """A member who joined through another channel keeps that channel's status.
+
+    Joining a room and walking into its call are two things. The record is
+    one (RFC 5.5), so the conference's arrivals and departures landed on the
+    status the member's own channel gave it: hanging up left the room, and
+    walking in undid a leave taken deliberately.
+    """
+
+    async def _member(self, kit: RoomKit, status: ParticipantStatus) -> None:
+        await kit.add_member(ROOM, "ws", "p-alice", identity_id="alice")
+        if status is not ParticipantStatus.ACTIVE:
+            await kit.remove_member(ROOM, "p-alice", status=status)
+
+    @pytest.mark.parametrize(
+        "status", [ParticipantStatus.ACTIVE, ParticipantStatus.LEFT, ParticipantStatus.BANNED]
+    )
+    async def test_the_call_never_changes_the_status(self, status: ParticipantStatus) -> None:
+        kit, _, backend = await _kit_with_channel()
+        await self._member(kit, status)
+
+        await backend.simulate_participant_joined(ROOM, "p-alice")
+        joined = await kit.store.get_participant(ROOM, "p-alice")
+        await backend.simulate_participant_left(ROOM, "p-alice")
+        left = await kit.store.get_participant(ROOM, "p-alice")
+
+        assert joined is not None and left is not None
+        assert joined.status is status
+        assert left.status is status
+        assert left.channel_id == "ws"
+
+    async def test_the_conference_is_still_recorded_as_reached(self) -> None:
+        kit, _, backend = await _kit_with_channel()
+        await self._member(kit, ParticipantStatus.ACTIVE)
+
+        await backend.simulate_participant_joined(ROOM, "p-alice")
+
+        participant = await kit.store.get_participant(ROOM, "p-alice")
+        assert participant is not None
+        assert participant.connected_via == ["ws", "conf"]
+
+    async def test_the_departure_is_still_announced(self) -> None:
+        kit, _, backend = await _kit_with_channel()
+        await self._member(kit, ParticipantStatus.ACTIVE)
+        departures: list[str] = []
+
+        @kit.hook(HookTrigger.ON_CONFERENCE_PARTICIPANT_LEFT, execution=HookExecution.ASYNC)
+        async def on_left(event: object, ctx: object) -> None:
+            departures.append("left")
+
+        await backend.simulate_participant_joined(ROOM, "p-alice")
+        await backend.simulate_participant_left(ROOM, "p-alice")
+
+        assert departures == ["left"]
+
+
 class TestDetachedChannelStaysOut:
     async def test_a_participant_joining_after_detach_brings_no_bot_back(self) -> None:
         """Detaching leaves the conference running for the humans in it, so

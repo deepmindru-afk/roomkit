@@ -48,6 +48,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Hanging up a conference no longer takes a member out of the room. A
+  participant another channel homes — someone who joined through a websocket,
+  then walked into the room's call — kept the status the conference's roster
+  wrote: `LEFT` on every departure, and `ACTIVE` on an arrival, undoing a leave
+  they took deliberately. The roster now writes the status of the records it
+  homes only; on the others it records that the conference reached them
+  (`connected_via`) and fires its hooks as before (RFC §5.5).
 - `InterruptionStrategy.SEMANTIC` no longer judges an empty speech onset. With
   the pipeline VAD, the detector was consulted at `SPEECH_START` with no
   transcript and no duration: a keyword detector never found "uh-huh" in `""`,

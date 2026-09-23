@@ -78,6 +78,17 @@ class ConferenceRoster:
         self._locks = locks
         self._lease = lease if lease is not None else contextlib.nullcontext
 
+    def _homes(self, participant: Participant) -> bool:
+        """Whether this conference is the participant's primary channel.
+
+        Only then is the record's status the conference's to write. A record
+        homed elsewhere — a member who joined through a websocket, say — only
+        ever learns from the conference that it was reached here
+        (``connected_via``); its lifecycle is its own channel's, and a
+        departure observed here erasing it is the failure RFC 5.5 names.
+        """
+        return participant.channel_id == self._channel_id
+
     def _locked(self, room_id: str) -> AbstractAsyncContextManager[None]:
         """The queue this room's roster writes go through, if there is one."""
         if self._locks is None:
@@ -162,7 +173,9 @@ class ConferenceRoster:
         key and touches nothing else on the record.
 
         An arrival does not lift a ban either. Only a participant who *left*
-        comes back as ``ACTIVE``: ``BANNED`` is a decision the room made about
+        comes back as ``ACTIVE``, and only one this conference homes — a record
+        another channel homes left through that channel, and an arrival here is
+        not a join there (RFC 5.5): ``BANNED`` is a decision the room made about
         them, and the SFU reporting them connected is not the room changing its
         mind. The record still takes the attributes their provider attached —
         what is refused is admission, not the fact that this is who arrived.
@@ -214,7 +227,10 @@ class ConferenceRoster:
         channels = channels_reached(existing, self._channel_id)
         if channels is not None:
             update["connected_via"] = channels
-        if existing.status is ParticipantStatus.LEFT:
+        # Status belongs to the channel the record is homed on (RFC 5.5): a
+        # member who joined through another channel and left it has left the
+        # room, and walking into the conference is not joining it again.
+        if existing.status is ParticipantStatus.LEFT and self._homes(existing):
             update["status"] = ParticipantStatus.ACTIVE
         # Fill, never overwrite: a name the integrator set is theirs, and the
         # SFU's copy only stands in where the record has none (RFC 12.10.3).
@@ -241,6 +257,12 @@ class ConferenceRoster:
         by definition, on their way out — into the thing that lifts the ban.
         Leaving is a transition out of being present, so only a status that
         means present transitions.
+
+        And only on a record this conference homes. A participant another
+        channel homes — a member who joined the room and then walked into its
+        call — hangs up on the conference, not on the room: their status is
+        that channel's lifecycle, and ``ON_CONFERENCE_PARTICIPANT_LEFT`` is how
+        the departure is still told.
         """
         await self._transition(room_id, participant_id, ParticipantStatus.LEFT)
 
@@ -260,6 +282,10 @@ class ConferenceRoster:
             async with self._locked(room_id):
                 participant = await self._store.get_participant(room_id, participant_id)
                 if participant is None or participant.status not in PRESENT_STATUSES:
+                    return
+                # Hanging up is leaving the conference, not the room: a record
+                # another channel homes keeps the status that channel gave it.
+                if not self._homes(participant):
                     return
                 await self._store.update_participant(
                     participant.model_copy(update={"status": status})
