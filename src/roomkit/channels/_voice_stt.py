@@ -411,7 +411,6 @@ class VoiceSTTMixin:
         samples = struct.unpack(f"<{n_samples}h", frame.data)
         rms = (sum(s * s for s in samples) / n_samples) ** 0.5
 
-        burst_started = False
         with self._state_lock:
             if rms > self._BARGE_IN_RMS_THRESHOLD:
                 self._barge_in_energy_count[session.id] = (
@@ -419,9 +418,7 @@ class VoiceSTTMixin:
                 )
                 # Onset of this run of above-threshold frames: what a
                 # duration-based strategy measures against (RFC §12.6).
-                if session.id not in self._speech_started_at:
-                    self._speech_started_at[session.id] = time.monotonic()
-                    burst_started = True
+                self._speech_started_at.setdefault(session.id, time.monotonic())
             else:
                 self._barge_in_energy_count[session.id] = 0
                 self._speech_started_at.pop(session.id, None)
@@ -432,8 +429,6 @@ class VoiceSTTMixin:
             started_at = self._speech_started_at.get(session.id)
             binding_info = self._session_bindings.get(session.id)
 
-        if burst_started:
-            self._forget_burst_words(session.id)
         if not triggered:
             return
         if binding_info:
@@ -452,7 +447,7 @@ class VoiceSTTMixin:
             # acknowledgement is not cut for running long (RFC §12.3.13).
             with self._state_lock:
                 words = self._burst_words.get(session.id, "")
-                acknowledged = words and self._burst_backchannel.get(session.id) == words
+                acknowledged = bool(words) and self._burst_backchannel.get(session.id) == words
             if acknowledged:
                 return  # these words were judged already: nothing new to decide
             decision = handler.evaluate(
@@ -479,7 +474,12 @@ class VoiceSTTMixin:
             )
 
     def _note_burst_words(self, session_id: str, text: str) -> None:
-        """Keep the latest words of the speech burst under way (continuous mode)."""
+        """Keep the latest words of the utterance under way (continuous mode).
+
+        They belong to the STT's utterance, not to a run of loud frames: the
+        pauses between words end an energy run, never the utterance. They are
+        forgotten at its final result and when the session is unbound.
+        """
         with self._state_lock:
             self._burst_words[session_id] = text
 

@@ -20,7 +20,7 @@ from roomkit.models.channel import ChannelBinding
 from roomkit.models.enums import ChannelType
 from roomkit.voice.audio_frame import AudioFrame
 from roomkit.voice.backends.mock import MockVoiceBackend
-from roomkit.voice.base import AudioChunk, TranscriptionResult, VoiceSession
+from roomkit.voice.base import AudioChunk, TranscriptionResult, VoiceCapability, VoiceSession
 from roomkit.voice.interruption import InterruptionConfig, InterruptionStrategy
 from roomkit.voice.pipeline import AudioPipelineConfig
 from roomkit.voice.pipeline.backchannel.base import (
@@ -34,6 +34,7 @@ from roomkit.voice.stt.base import STTProvider
 
 _ONSET = VADEvent(type=VADEventType.SPEECH_START, audio_bytes=b"\x01\x00" * 320)
 _LOUD = AudioFrame(data=(1000).to_bytes(2, "little", signed=True) * 320)  # 20 ms
+_QUIET = AudioFrame(data=b"\x00\x00" * 320)
 
 
 class _KeywordDetector(BackchannelDetector):
@@ -78,10 +79,37 @@ class _SlowPartialSTT(STTProvider):
             pass
 
 
+class _RepeatingPartialSTT(STTProvider):
+    """Streaming STT that repeats one partial every 100 ms, as providers do."""
+
+    def __init__(self, partial: str) -> None:
+        self._partial = partial
+
+    @property
+    def supports_streaming(self) -> bool:
+        return True
+
+    async def transcribe(self, audio: Any, *, language: str | None = None) -> TranscriptionResult:
+        return TranscriptionResult(text=self._partial, is_final=True)
+
+    async def transcribe_stream(
+        self, audio_stream: AsyncIterator[AudioChunk], *, language: str | None = None
+    ) -> AsyncIterator[TranscriptionResult]:
+        async for _ in audio_stream:
+            break
+        while True:
+            await asyncio.sleep(0.1)
+            yield TranscriptionResult(text=self._partial, is_final=False)
+
+
 async def _room(
-    stt: STTProvider, *, vad: bool, transcript_wait_ms: int = 1000
+    stt: STTProvider,
+    *,
+    vad: bool,
+    transcript_wait_ms: int = 1000,
+    capabilities: VoiceCapability = VoiceCapability.NONE,
 ) -> tuple[RoomKit, VoiceChannel, VoiceSession, MockVoiceBackend, dict[str, list[Any]]]:
-    backend = MockVoiceBackend()
+    backend = MockVoiceBackend(capabilities=capabilities)
     channel = VoiceChannel(
         "voice-1",
         stt=stt,
@@ -124,9 +152,12 @@ async def _room(
     return kit, channel, session, backend, seen
 
 
-async def _talk(backend: MockVoiceBackend, session: VoiceSession, seconds: float) -> None:
-    for _ in range(int(seconds / 0.02)):
-        await backend.simulate_audio_received(session, _LOUD)
+async def _talk(
+    backend: MockVoiceBackend, session: VoiceSession, seconds: float, *, dip_every: int = 0
+) -> None:
+    for i in range(int(seconds / 0.02)):
+        dip = dip_every and i % dip_every == dip_every - 1
+        await backend.simulate_audio_received(session, _QUIET if dip else _LOUD)
         await asyncio.sleep(0.02)
 
 
@@ -146,14 +177,14 @@ class TestVadMode:
 
     async def test_no_words_by_the_cap_judges_on_duration(self) -> None:
         kit, channel, session, backend, seen = await _room(
-            _SlowPartialSTT(None, delay=0), vad=True, transcript_wait_ms=200
+            _SlowPartialSTT(None, delay=0), vad=True, transcript_wait_ms=400
         )
 
         channel._on_pipeline_vad_event(session, _ONSET)  # noqa: SLF001
         await asyncio.sleep(0.12)
         assert seen["barge_in"] == []  # past min_speech_ms, still waiting for words
 
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(0.45)
         assert len(seen["barge_in"]) == 1
         await kit.close()
 
@@ -183,12 +214,41 @@ class TestContinuousMode:
 
     async def test_energy_without_words_waits_for_the_cap(self) -> None:
         kit, channel, session, backend, seen = await _room(
-            _SlowPartialSTT(None, delay=0), vad=False, transcript_wait_ms=250
+            _SlowPartialSTT(None, delay=0), vad=False, transcript_wait_ms=450
         )
 
         await _talk(backend, session, 0.2)
         assert seen["barge_in"] == []  # energy fired and min_speech_ms passed, no words
 
-        await _talk(backend, session, 0.3)
+        await _talk(backend, session, 0.5)
         assert len(seen["barge_in"]) == 1
+        await kit.close()
+
+    async def test_pauses_between_words_do_not_split_the_utterance(self) -> None:
+        """A quiet frame ends an energy run, not the utterance: its words and
+        its verdict hold, ON_BACKCHANNEL fires once and nothing is cut."""
+        kit, channel, session, backend, seen = await _room(
+            _RepeatingPartialSTT("uh-huh"), vad=False, transcript_wait_ms=200
+        )
+
+        await _talk(backend, session, 0.8, dip_every=6)
+
+        assert len(seen["backchannel"]) == 1
+        assert seen["barge_in"] == []
+        await kit.close()
+
+    async def test_transport_barge_in_reads_the_words_heard(self) -> None:
+        kit, channel, session, backend, seen = await _room(
+            _RepeatingPartialSTT("uh-huh"),
+            vad=False,
+            capabilities=VoiceCapability.BARGE_IN,
+        )
+        await _talk(backend, session, 0.2)
+        assert len(seen["backchannel"]) == 1
+
+        await backend.simulate_barge_in(session)
+        await asyncio.sleep(0.4)
+
+        assert seen["barge_in"] == []
+        assert len(seen["backchannel"]) == 1
         await kit.close()

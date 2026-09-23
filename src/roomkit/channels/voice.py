@@ -1422,6 +1422,16 @@ class VoiceChannel(
         with self._state_lock:
             return session_id in self._held_for_transcript
 
+    def _barge_in_words(self, session_id: str) -> tuple[str, bool]:
+        """The words heard so far of the speech being judged, and whether a
+        streaming STT is producing them (RFC §12.3.13)."""
+        if self._continuous_stt:
+            with self._state_lock:
+                return self._burst_words.get(session_id, ""), True
+        if self._is_held_for_transcript(session_id):
+            return self._held_transcript(session_id), True
+        return "", False
+
     def _held_transcript(self, session_id: str) -> str:
         """Latest words of a held segment, empty when none arrived yet."""
         with self._state_lock:
@@ -1542,18 +1552,19 @@ class VoiceChannel(
                 playback = self._playback_to_confirm(session.id, from_vad=from_vad)
                 if playback is None:
                     return
-                with self._state_lock:
-                    held = session.id in self._held_for_transcript
-                words = self._held_transcript(session.id)
+                words, transcript_expected = self._barge_in_words(session.id)
                 speech_duration_ms = int((time.monotonic() - onset) * 1000)
                 decision = self._interruption_handler.evaluate(
                     playback_position_ms=playback.played_ms,
                     speech_duration_ms=speech_duration_ms,
                     speech_text=words,
-                    transcript_expected=held,
+                    transcript_expected=transcript_expected,
                 )
-                if decision.is_backchannel and from_vad:
-                    self._note_backchannel(session, words, room_id)
+                if decision.is_backchannel:
+                    if from_vad:
+                        self._note_backchannel(session, words, room_id)
+                    elif self._continuous_stt:
+                        self._report_burst_backchannel(session, words, room_id)
                 if decision.should_interrupt:
                     break
                 if not decision.pending_confirmation:
@@ -1801,11 +1812,16 @@ class VoiceChannel(
         # The transport reports detected speech, not a decision. It carries no
         # duration, so a duration-based strategy gets its second look the same
         # way the VAD path does.
+        words, transcript_expected = self._barge_in_words(session.id)
         decision = self._interruption_handler.evaluate(
             playback_position_ms=playback.played_ms,
             speech_duration_ms=0,
+            speech_text=words,
+            transcript_expected=transcript_expected,
         )
         if not decision.should_interrupt:
+            if decision.is_backchannel and self._continuous_stt:
+                self._report_burst_backchannel(session, words, room_id)
             if decision.pending_confirmation:
                 self._arm_barge_in_confirmation(
                     session, room_id, decision.confirm_after_ms, from_vad=False
