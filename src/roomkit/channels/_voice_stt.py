@@ -160,6 +160,7 @@ class VoiceSTTMixin:
     _task_done: Any  # see STTHost — VoiceChannel._task_done
     _pipeline_audio_rate: Any  # see STTHost — VoicePipelineMixin
     _on_held_transcript: Any  # see STTHost — VoiceChannel._on_held_transcript
+    _is_held_for_transcript: Any  # see STTHost — VoiceChannel
 
     # -----------------------------------------------------------------
     # Per-session STT language
@@ -330,10 +331,13 @@ class VoiceSTTMixin:
                     elif not result.is_final and result.text:
                         state.partial_text = result.text
                         state.partial_result = result
-                        self._schedule(
-                            self._fire_partial_transcription_hook(session, result, room_id),
-                            name=f"partial_stt:{session.id}",
-                        )
+                        # A held segment is not a turn yet: its words reach
+                        # no hook unless they cut in.
+                        if not self._is_held_for_transcript(session.id):
+                            self._schedule(
+                                self._fire_partial_transcription_hook(session, result, room_id),
+                                name=f"partial_stt:{session.id}",
+                            )
                     if result.text:
                         # A segment SEMANTIC holds during playback is judged
                         # on its words as they come (RFC §12.3.13).

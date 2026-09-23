@@ -187,14 +187,16 @@ class InterruptionHandler:
                     reason="speech too short (semantic fallback)",
                 )
 
-            if not speech_text and speech_duration_ms < self._config.min_speech_ms:
+            if not speech_text and (
+                speech_duration_ms <= 0 or speech_duration_ms < self._config.min_speech_ms
+            ):
                 # Speech onset: no words, no duration. Any detector answering
                 # here would judge an empty utterance (RFC §12.3.13 timing
                 # constraint), so wait for a transcript or min_speech_ms.
                 return InterruptionDecision(
                     should_interrupt=False,
                     pending_confirmation=True,
-                    confirm_after_ms=self._config.min_speech_ms - speech_duration_ms,
+                    confirm_after_ms=max(self._config.min_speech_ms - speech_duration_ms, 1),
                     awaiting_transcript=True,
                     reason="nothing to classify yet",
                 )

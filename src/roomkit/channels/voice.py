@@ -110,6 +110,9 @@ class TTSPlaybackState:
     """Monotonic time the first audio chunk was handed to the transport."""
     audio_ms: float | None = None
     """Audio handed to the transport so far; None while nothing is measured."""
+    measured: bool = False
+    """True once a synthesis stream is observed: before its first chunk the
+    user has heard nothing, whatever the elapsed time."""
     stopped_at: float | None = None
     """Monotonic time playback was interrupted."""
     context_turn: tuple[AssistantTurnRecorder, str] | None = None
@@ -127,8 +130,7 @@ class TTSPlaybackState:
 
     def start_measuring(self) -> None:
         """Mark the playback as measured by its audio, before any chunk left."""
-        if self.audio_ms is None:
-            self.audio_ms = 0.0
+        self.measured = True
 
     def note_audio(self, chunk: AudioChunk) -> None:
         """Account for an outbound chunk, so ``played_ms`` measures audio."""
@@ -150,7 +152,7 @@ class TTSPlaybackState:
         to ``position_ms`` for a state no stream went through.
         """
         if self.first_audio_at is None:
-            return 0 if self.audio_ms is not None else self.position_ms
+            return 0 if self.measured else self.position_ms
         end = self.stopped_at if self.stopped_at is not None else time.monotonic()
         heard = (end - self.first_audio_at) * 1000
         if self.audio_ms is not None:
@@ -1405,6 +1407,10 @@ class VoiceChannel(
             self._held_for_transcript[session.id] = False
         self._start_stt_stream(session, room_id, pre_roll=pre_roll)
 
+    def _is_held_for_transcript(self, session_id: str) -> bool:
+        with self._state_lock:
+            return session_id in self._held_for_transcript
+
     def _held_transcript(self, session_id: str) -> str:
         """Latest words of a held segment, empty when none arrived yet."""
         with self._state_lock:
@@ -1438,6 +1444,9 @@ class VoiceChannel(
                 # One partial cuts in; the ones behind it find nothing held.
                 if self._held_for_transcript.pop(session.id, None) is None:
                     return
+                # Now, not in the scheduled task: a speech end landing in
+                # between must see the user's turn, not echo to discard.
+                self._suppressed_sessions.discard(session.id)
             self._cancel_barge_in_confirmation(session.id)
             logger.info("Barge-in on held transcript %r (session %s)", text, session.id)
             self._schedule(

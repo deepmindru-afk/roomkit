@@ -60,8 +60,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cuts in and the segment becomes the user's turn from its first word. Without
   a streaming STT, the second look at `min_speech_ms` classifies on duration
   alone, as CONFIRMED does. The transport barge-in and the continuous-mode
-  energy barge-in wait the same way, leaving the partial transcript time to
-  decide (RFC §12.3.13, RMK-190).
+  energy barge-in, which have no words, also wait for `min_speech_ms` before
+  the detector is asked (RFC §12.3.13, RMK-190).
 - Speech audio is labelled with the sample rate the audio pipeline hands out,
   not the transport's. With an `AudioPipelineContract` that resamples inbound
   audio (FastRTC at 48 kHz, internal format at 16 kHz), the batch STT fallback,

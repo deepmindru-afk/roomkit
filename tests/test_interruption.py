@@ -124,6 +124,16 @@ class TestSemanticStrategy:
         assert decision.should_interrupt
         assert [c.transcript for c in bc.evaluations] == [""]
 
+    def test_zero_min_speech_still_never_judges_an_empty_onset(self):
+        bc = MockBackchannelDetector(decisions=[BackchannelDecision(is_backchannel=False)])
+        config = InterruptionConfig(strategy=InterruptionStrategy.SEMANTIC, min_speech_ms=0)
+        handler = InterruptionHandler(config, backchannel_detector=bc)
+
+        decision = handler.evaluate(playback_position_ms=500, speech_duration_ms=0)
+
+        assert decision.awaiting_transcript and decision.confirm_after_ms >= 1
+        assert bc.evaluations == []
+
     def test_no_detector_falls_back_to_confirmed(self):
         config = InterruptionConfig(
             strategy=InterruptionStrategy.SEMANTIC,

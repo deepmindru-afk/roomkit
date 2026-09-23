@@ -1,10 +1,10 @@
 """Barge-in hooks and the interruption policy measure the audio the user heard.
 
 ``TTSPlaybackState.position_ms`` counts from the state's creation, synthesis
-latency included, while the timeline and the TTS context record ``played_ms``,
-the audio that actually went out. The hooks reported the first, so one cut had
-two positions; and ``allow_during_first_ms`` measured latency too, leaving a
-slow-to-start response interruptible before it made a sound.
+latency included; ``played_ms`` counts the audio that actually went out. The
+hooks, the timeline, the TTS context and ``allow_during_first_ms`` all read
+``played_ms``, so one cut has one position and a response that has not made a
+sound yet is not past its grace period.
 """
 
 from __future__ import annotations
@@ -124,3 +124,14 @@ async def test_barge_in_threshold_ignores_synthesis_latency() -> None:
     assert barge_ins == []
     assert session.id in channel._playing_sessions  # noqa: SLF001
     await kit.close()
+
+
+async def test_encoded_audio_is_measured_by_time_since_its_first_chunk() -> None:
+    """A chunk whose duration is not counted (mp3, ulaw) does not cap the
+    measure at 0: the time since the first chunk stands."""
+    playback = TTSPlaybackState(session_id="s", text="mp3 answer")
+    playback.start_measuring()
+    playback.note_audio(AudioChunk(data=b"\xff\xfb" * 400, sample_rate=44100, format="mp3"))
+    await asyncio.sleep(0.1)
+
+    assert playback.played_ms >= 80

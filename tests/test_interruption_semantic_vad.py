@@ -1,11 +1,10 @@
 """SEMANTIC in VAD mode classifies words, not an empty speech onset (RFC §12.3.13).
 
-The pipeline VAD's SPEECH_START carries no transcript and no duration. SEMANTIC
-used to consult its detector right there, on ``""``: a keyword detector never
-finds "uh-huh" in an empty string, so every utterance cut the bot off and
-SEMANTIC behaved like IMMEDIATE. It now waits: with a streaming STT the held
-segment is transcribed and each partial is classified; without one, the second
-look at ``min_speech_ms`` judges on duration alone (the CONFIRMED fallback).
+The pipeline VAD's SPEECH_START carries no transcript and no duration, and a
+keyword detector cannot find "uh-huh" in ``""``. SEMANTIC therefore holds the
+speech: with a streaming STT the held segment is transcribed and each partial
+is classified; without one, the second look at ``min_speech_ms`` judges on
+duration alone (the CONFIRMED fallback).
 """
 
 from __future__ import annotations
@@ -217,4 +216,41 @@ async def test_without_streaming_stt_a_short_blip_does_not_cut() -> None:
     assert detector.seen == []
     assert seen["barge_in"] == []
     assert seen["transcription"] == []
+    await kit.close()
+
+
+async def test_a_held_segment_reaches_no_partial_hook() -> None:
+    kit, channel, session, detector, seen = await _room(_PartialsSTT(["uh-huh"]))
+    partials: list[Any] = []
+
+    @kit.hook(HookTrigger.ON_PARTIAL_TRANSCRIPTION, HookExecution.ASYNC)
+    async def on_partial(event: Any, context: Any) -> None:
+        partials.append(event)
+
+    channel._on_pipeline_vad_event(session, _ONSET)  # noqa: SLF001
+    await asyncio.sleep(0.05)
+
+    assert detector.seen == ["uh-huh"]
+    assert partials == []
+    await kit.close()
+
+
+async def test_a_speech_end_right_after_the_cut_in_keeps_the_turn() -> None:
+    """The cut-in decision lets the segment through at once: a speech end
+    landing before the scheduled barge-in runs is the user's turn, not echo."""
+    kit, channel, session, detector, seen = await _room(_PartialsSTT(["attends, stop"]))
+    processed: list[bytes] = []
+
+    async def capture(sess: Any, audio: bytes, room_id: str, stream_state: Any, **kw: Any) -> None:
+        processed.append(audio)
+
+    channel._on_pipeline_vad_event(session, VADEvent(type=VADEventType.SPEECH_START))  # noqa: SLF001
+    channel._process_speech_end = capture  # type: ignore[method-assign]  # noqa: SLF001
+    # The partial decides, and the speech ends before any task has run.
+    channel._on_held_transcript(session, "r1", "attends, stop")  # noqa: SLF001
+    channel._on_pipeline_speech_end(session, b"\x11\x22" * 160)  # noqa: SLF001
+    await asyncio.sleep(0.05)
+
+    assert processed == [b"\x11\x22" * 160]
+    assert len(seen["barge_in"]) == 1
     await kit.close()
