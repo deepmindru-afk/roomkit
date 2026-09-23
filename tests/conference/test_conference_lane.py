@@ -93,8 +93,9 @@ class _GatedTTS(TTSProvider):
     without leaning on timing.
     """
 
-    def __init__(self, chunks: int = 8) -> None:
+    def __init__(self, chunks: int = 8, *, latency: float = 0.0) -> None:
         self._chunks = chunks
+        self._latency = latency
         self.started = asyncio.Event()
         self.release = asyncio.Event()
         self.calls: list[str] = []
@@ -110,6 +111,7 @@ class _GatedTTS(TTSProvider):
         self, text: str, *, voice: str | None = None
     ) -> AsyncIterator[AudioChunk]:
         self.calls.append(text)
+        await asyncio.sleep(self._latency)
         for i in range(self._chunks):
             yield AudioChunk(
                 data=b"\x00\x00", sample_rate=SAMPLE_RATE, is_final=(i == self._chunks - 1)
@@ -407,6 +409,34 @@ class TestInterruption:
         spoken = [chunk for chunk in backend.published_audio if chunk.data]
         assert len(spoken) == 1, "the bot kept speaking after the interruption"
         assert [(b.participant_id, b.track_id) for b in seen] == [("p-alice", track.id)]
+
+    async def test_the_barge_in_position_leaves_out_synthesis_latency(self) -> None:
+        """``audio_position_ms`` counts from the first published chunk: the
+        300 ms the synthesizer took before it were heard by nobody."""
+        tts = _GatedTTS(latency=0.3)
+        kit, channel, backend = await _kit(
+            tts=tts,
+            interruption=ConferenceInterruptionConfig(scope=ConferenceInterruptionScope.ANY),
+        )
+        seen: list[ConferenceBargeIn] = []
+
+        @kit.hook(HookTrigger.ON_BARGE_IN)
+        async def _barge(payload: Any, ctx: Any) -> None:
+            seen.append(payload)
+
+        await backend.simulate_participant_joined(ROOM, "p-alice")
+        track = await backend.simulate_track_published(ROOM, "p-alice")
+
+        speaking = await self._speak(kit)
+        await tts.started.wait()
+
+        await say(backend, track, silence=0)
+        await drain(channel, track.id)
+        tts.release.set()
+        await speaking
+
+        [barge_in] = seen
+        assert barge_in.audio_position_ms < 250
 
     async def test_being_cut_off_still_ends_the_utterance_for_the_backend(self) -> None:
         """A barge-in used to leave the loop without publishing anything: no

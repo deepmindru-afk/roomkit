@@ -45,6 +45,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reads the same measure, so `InterruptionConfig.allow_during_first_ms` (and
   the legacy `barge_in_threshold_ms`) now counts played audio: a response that
   has not made a sound yet is not interruptible under a threshold (RMK-192).
+- `ConferenceBargeIn.audio_position_ms` on a `ConferenceChannel` counts from
+  the first chunk published on the bot track, not from the moment the
+  utterance took the floor: synthesis latency before the first chunk is no
+  longer reported as speech the room heard (RMK-192).
 
 ### Fixed
 

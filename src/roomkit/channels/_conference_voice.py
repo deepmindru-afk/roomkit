@@ -84,6 +84,13 @@ class ConferencePlayback:
     landing deep into speech nobody has heard yet.
     """
 
+    heard_from: float | None = None
+    """When the backend accepted the utterance's first chunk, or ``None``.
+
+    Where ``position_ms`` counts from: between taking the floor and the first
+    chunk, synthesis is still running and the room has heard nothing.
+    """
+
     interrupted: bool = False
     abandoned: bool = False
     """The channel left the room, or closed, mid-utterance.
@@ -158,6 +165,8 @@ class ConferencePlayback:
         self.publishing = None
         if not publishing.cancelled() and publishing.exception() is None:
             self.published = chunk
+            if self.heard_from is None and chunk.data:
+                self.heard_from = time.monotonic()
 
     @property
     def speaking(self) -> bool:
@@ -166,15 +175,16 @@ class ConferencePlayback:
 
     @property
     def position_ms(self) -> int:
-        """Milliseconds since the utterance started, or 0 before it did.
+        """Milliseconds since the first chunk was published, or 0 before it.
 
         Elapsed time rather than audio position: the bot publishes to an SFU
         that plays out on its own clock, so the framework never learns where
-        playback actually is.
+        playback actually is. Synthesis latency is not counted: nobody heard
+        anything before the first chunk went out.
         """
-        if self.started_at is None:
+        if self.heard_from is None:
             return 0
-        return int((time.monotonic() - self.started_at) * 1000)
+        return int((time.monotonic() - self.heard_from) * 1000)
 
 
 @dataclass
