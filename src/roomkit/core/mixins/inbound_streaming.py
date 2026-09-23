@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from uuid import uuid4
 
 from roomkit.core.lanes import DeliveryCascade
+from roomkit.core.mixins._response_reader import ResponseReader
 from roomkit.core.mixins._streaming_segments import SegmentWriter
 from roomkit.core.mixins.helpers import HelpersMixin
 from roomkit.core.mixins.lane_execution import DeliverySource
@@ -172,10 +173,13 @@ class InboundStreamingMixin(HelpersMixin):
             response_events=response_events,
         )
 
-        # Whether the transport read the response to its end. A transport can
-        # hand back early (every voice session barged in, RFC §12.2 step 13s):
-        # the final flush below then never runs, and the response is closed
-        # and stored cancelled after deliver_stream() returns.
+        reader = ResponseReader(sr.stream)
+
+        # Whether the transport read the response to its end. A transport that
+        # hands back early (every voice session barged in, RFC §12.2 step 13s;
+        # or one that never reads it at all) skips the final flush below, so
+        # the response is closed and stored cancelled once deliver_stream()
+        # returns.
         exhausted = False
 
         # Generator that yields text deltas and persisted events.
@@ -190,7 +194,11 @@ class InboundStreamingMixin(HelpersMixin):
             ``THINKING_END`` for out-of-band observers).
             """
             nonlocal exhausted
-            async for delta in sr.stream:
+            while True:
+                try:
+                    delta = await reader.next()
+                except StopAsyncIteration:
+                    break
                 if isinstance(delta, str):
                     writer.add_text(delta)
                     yield delta
@@ -230,13 +238,7 @@ class InboundStreamingMixin(HelpersMixin):
             try:
                 await channel.deliver_stream(segments, placeholder, binding, context)
                 if not exhausted:
-                    # The transport stopped reading: the user cut the response
-                    # off. Close the generation first, so no token is produced
-                    # and no tool call starts past this point, then keep what
-                    # was already produced, marked like any interrupted turn.
-                    await segments.aclose()
-                    await _aclose_stream(sr.stream)
-                    await writer.flush_text(cancelled=True)
+                    await self._stop_unread_stream(segments, sr, reader, writer, room_id)
             except asyncio.CancelledError:
                 # A turn interrupted on purpose (the console's Esc). What was
                 # already streamed is on the user's screen, so the timeline
@@ -245,6 +247,7 @@ class InboundStreamingMixin(HelpersMixin):
                 # context missing what it already said. Not an error — nobody
                 # failed — so ON_ERROR stays silent and the cancellation
                 # propagates untouched.
+                await reader.abandon()
                 await writer.flush_text(cancelled=True)
                 raise
             except Exception as exc:
@@ -256,6 +259,7 @@ class InboundStreamingMixin(HelpersMixin):
                 # gone, so this text never reached its channels — it goes out
                 # as an ordinary event, to everyone.
                 writer.stream_lost()
+                await reader.abandon()
                 await writer.flush_text()
                 await self._fire_error_hook(
                     room_id,
@@ -285,6 +289,7 @@ class InboundStreamingMixin(HelpersMixin):
                 async for _ in segment_stream():
                     pass
             except asyncio.CancelledError:
+                await reader.abandon()
                 await writer.flush_text(cancelled=True)
                 raise
             except Exception as exc:
@@ -292,6 +297,7 @@ class InboundStreamingMixin(HelpersMixin):
                 self._log_stream_failure(
                     exc, "stream consumption (no targets)", room_id, headless=True
                 )
+                await reader.abandon()
                 await writer.flush_text()
                 await self._fire_error_hook(
                     room_id,
@@ -317,6 +323,32 @@ class InboundStreamingMixin(HelpersMixin):
             return None
 
         return _StreamingResult(events=writer.persisted, error=stream_error)
+
+    @staticmethod
+    async def _stop_unread_stream(
+        segments: Any,
+        sr: StreamingResponse,
+        reader: ResponseReader,
+        writer: SegmentWriter,
+        room_id: str,
+    ) -> None:
+        """Close a response its transport stopped reading, keep what it produced.
+
+        A tool already running is let finish and its result stored; then the
+        generation is closed, so no token is produced and no tool call starts
+        past this point (RFC §12.2 step 13s); then the text already produced is
+        stored, marked like any interrupted turn. A failure while closing is
+        the provider's finalizer, not the response's: it is logged and the
+        text is still stored as cancelled.
+        """
+        for end in await reader.finish_running_tools():
+            await writer.tool_end(end)
+        try:
+            await segments.aclose()
+            await _aclose_stream(sr.stream)
+        except Exception:
+            logger.exception("Closing an unread response stream failed for room %s", room_id)
+        await writer.flush_text(cancelled=True)
 
     @staticmethod
     def _log_stream_failure(

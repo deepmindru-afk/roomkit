@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -68,6 +69,7 @@ class SegmentWriter:
         self._streamed_to = streamed_to
         self._response_events = response_events
         self._accumulated: list[str] = []
+        self._writing: set[asyncio.Task[RoomEvent | None]] = set()
         self.persisted: list[RoomEvent] = []
 
     # -- what the stream hands in ------------------------------------------
@@ -96,6 +98,7 @@ class SegmentWriter:
         ``cancelled`` marks a segment cut short by an interrupted turn, so a
         reader can tell a finished answer from one the user stopped.
         """
+        await self.settle()
         if not self._accumulated:
             return None
         body = "".join(self._accumulated)
@@ -164,7 +167,39 @@ class SegmentWriter:
             metadata=metadata or {},
         )
 
+    async def settle(self) -> None:
+        """Wait for every row whose write outlived the read that started it."""
+        while self._writing:
+            await asyncio.gather(*self._writing, return_exceptions=True)
+
     async def _write(self, event: RoomEvent, *, exclude: set[str] | None) -> RoomEvent | None:
+        """Gate and commit a row, even when the read that produced it is cancelled.
+
+        A barge-in cancels the stream's in-flight read wherever it stands,
+        possibly halfway through a commit. The row's text has already left
+        the buffer, so a cancelled commit would lose it: the write finishes
+        on its own, and :meth:`settle` joins it before anything else is
+        written.
+        """
+        task = asyncio.ensure_future(self._write_now(event, exclude=exclude))
+        self._writing.add(task)
+        task.add_done_callback(self._writing.discard)
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            # Nobody awaits the write any more: its failure is logged here.
+            task.add_done_callback(self._log_orphan_failure)
+            raise
+
+    def _log_orphan_failure(self, task: asyncio.Task[RoomEvent | None]) -> None:
+        if not task.cancelled() and (exc := task.exception()) is not None:
+            logger.error(
+                "Streamed row write failed after its read was cancelled (room %s)",
+                self._room_id,
+                exc_info=exc,
+            )
+
+    async def _write_now(self, event: RoomEvent, *, exclude: set[str] | None) -> RoomEvent | None:
         gated = await self._gate(event)
         if gated is None:
             return None

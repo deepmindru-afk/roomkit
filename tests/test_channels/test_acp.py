@@ -1074,8 +1074,8 @@ class TestACPChannel:
                 )
             )
             await asyncio.wait_for(first_update_sent.wait(), timeout=1)
-            for _ in range(10):
-                if "First chunk" in stdout.getvalue():
+            for _ in range(50):
+                if "🔧 Inspect files" in stdout.getvalue():
                     break
                 await asyncio.sleep(0)
 

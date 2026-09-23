@@ -379,7 +379,7 @@ class VoiceTTSMixin:
         # Apply TTS filter to the accumulated text for transcription/hooks
         if self._tts_filter is not None and full_text:
             full_text = self._tts_filter(full_text)
-        # Update playback state with the whole streamed text (was the relayed prefix)
+        # Replace the relayed prefix with the whole streamed text
         for session in delivered:
             with self._state_lock:
                 if session.id in self._playing_sessions:
@@ -511,7 +511,8 @@ class VoiceTTSMixin:
             async for sentence in sentences:
                 await backend.send_transcription(session, sentence, "assistant_interim")
                 relayed.append(sentence.strip())
-                playback.text = " ".join(relayed)
+                with self._state_lock:
+                    playback.text = " ".join(relayed)
                 yield sentence
 
         try:
