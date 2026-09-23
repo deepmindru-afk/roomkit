@@ -59,6 +59,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   they took deliberately. The roster now writes the status of the records it
   homes only; on the others it records that the conference reached them
   (`connected_via`) and fires its hooks as before (RFC §5.5).
+- `InterruptionStrategy.SEMANTIC` waits for the words of speech a streaming STT
+  is transcribing, up to the new `InterruptionConfig.transcript_wait_ms`
+  (default 1000), before judging it on duration alone. A first partial landing
+  after `min_speech_ms` (300 ms by default, often shorter than a streaming
+  STT's first words) used to lose the race: the detector judged `""` and an
+  "uh-huh" cut the bot off. In continuous-STT mode, the energy barge-in now
+  classifies the words of the burst under way instead of `""`, so a burst
+  already recognized as a backchannel is no longer cut for running long, and
+  that path fires `ON_BACKCHANNEL` once per burst, which it never did.
+  `InterruptionHandler.evaluate()` takes `transcript_expected=` for this
+  (RFC §12.3.13, RMK-196).
 - `InterruptionStrategy.SEMANTIC` no longer judges an empty speech onset. With
   the pipeline VAD, the detector was consulted at `SPEECH_START` with no
   transcript and no duration: a keyword detector never found "uh-huh" in `""`,

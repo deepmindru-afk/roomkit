@@ -54,6 +54,11 @@ class InterruptionConfig:
     backchannel_detector: BackchannelDetector | None = None
     """Optional backchannel detector for SEMANTIC strategy."""
 
+    transcript_wait_ms: int = 1000
+    """SEMANTIC: how long speech a streaming STT is transcribing may run
+    without words before it is judged on duration alone (RFC §12.3.13). The
+    wait is ``max(min_speech_ms, transcript_wait_ms)``."""
+
 
 @dataclass
 class InterruptionDecision:
@@ -120,6 +125,7 @@ class InterruptionHandler:
         playback_position_ms: int,
         speech_duration_ms: int = 0,
         speech_text: str = "",
+        transcript_expected: bool = False,
     ) -> InterruptionDecision:
         """Evaluate whether an interruption should proceed.
 
@@ -127,6 +133,8 @@ class InterruptionHandler:
             playback_position_ms: How far into TTS playback (ms).
             speech_duration_ms: How long the user has been speaking (ms).
             speech_text: Transcribed text of the speech (for SEMANTIC).
+            transcript_expected: A streaming STT is transcribing this speech,
+                so SEMANTIC waits up to ``transcript_wait_ms`` for its words.
 
         Returns:
             An InterruptionDecision.
@@ -187,16 +195,17 @@ class InterruptionHandler:
                     reason="speech too short (semantic fallback)",
                 )
 
-            if not speech_text and (
-                speech_duration_ms <= 0 or speech_duration_ms < self._config.min_speech_ms
-            ):
-                # Speech onset: no words, no duration. Any detector answering
-                # here would judge an empty utterance (RFC §12.3.13 timing
-                # constraint), so wait for a transcript or min_speech_ms.
+            wait_ms = self._config.min_speech_ms
+            if transcript_expected:
+                wait_ms = max(wait_ms, self._config.transcript_wait_ms)
+            if not speech_text and (speech_duration_ms <= 0 or speech_duration_ms < wait_ms):
+                # No words yet. Any detector answering here would judge an
+                # empty utterance (RFC §12.3.13 timing constraint), so wait for
+                # a transcript, or for long enough to judge on duration alone.
                 return InterruptionDecision(
                     should_interrupt=False,
                     pending_confirmation=True,
-                    confirm_after_ms=max(self._config.min_speech_ms - speech_duration_ms, 1),
+                    confirm_after_ms=max(wait_ms - speech_duration_ms, 1),
                     awaiting_transcript=True,
                     reason="nothing to classify yet",
                 )

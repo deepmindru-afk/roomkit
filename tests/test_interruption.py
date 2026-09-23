@@ -134,6 +134,25 @@ class TestSemanticStrategy:
         assert decision.awaiting_transcript and decision.confirm_after_ms >= 1
         assert bc.evaluations == []
 
+    def test_transcribed_speech_waits_up_to_transcript_wait_ms(self):
+        bc = MockBackchannelDetector(decisions=[BackchannelDecision(is_backchannel=False)])
+        config = InterruptionConfig(
+            strategy=InterruptionStrategy.SEMANTIC, min_speech_ms=300, transcript_wait_ms=1000
+        )
+        handler = InterruptionHandler(config, backchannel_detector=bc)
+
+        decision = handler.evaluate(
+            playback_position_ms=500, speech_duration_ms=400, transcript_expected=True
+        )
+        assert decision.awaiting_transcript and decision.confirm_after_ms == 600
+        assert bc.evaluations == []
+
+        decision = handler.evaluate(
+            playback_position_ms=500, speech_duration_ms=1000, transcript_expected=True
+        )
+        assert decision.should_interrupt
+        assert [c.transcript for c in bc.evaluations] == [""]
+
     def test_no_detector_falls_back_to_confirmed(self):
         config = InterruptionConfig(
             strategy=InterruptionStrategy.SEMANTIC,

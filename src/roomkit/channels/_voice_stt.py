@@ -109,6 +109,8 @@ class STTHost(Protocol):
     _debug_frame_count: int
     _barge_in_energy_count: dict[str, int]
     _speech_started_at: dict[str, float]
+    _burst_words: dict[str, str]
+    _burst_backchannel: dict[str, str]
     _scheduled_tasks: set[asyncio.Task[Any]]
     _state_lock: threading.Lock
     _interruption_handler: Any  # InterruptionHandler
@@ -144,6 +146,8 @@ class VoiceSTTMixin:
     _debug_frame_count: int
     _barge_in_energy_count: dict[str, int]
     _speech_started_at: dict[str, float]
+    _burst_words: dict[str, str]
+    _burst_backchannel: dict[str, str]
     _scheduled_tasks: set[asyncio.Task[Any]]
     _state_lock: Any  # threading.Lock — see STTHost
     _interruption_handler: Any  # InterruptionHandler — see STTHost
@@ -161,6 +165,7 @@ class VoiceSTTMixin:
     _pipeline_audio_rate: Any  # see STTHost — VoicePipelineMixin
     _on_held_transcript: Any  # see STTHost — VoiceChannel._on_held_transcript
     _is_held_for_transcript: Any  # see STTHost — VoiceChannel
+    _fire_backchannel_hook: Any  # see STTHost — VoiceHooksMixin
 
     # -----------------------------------------------------------------
     # Per-session STT language
@@ -406,6 +411,7 @@ class VoiceSTTMixin:
         samples = struct.unpack(f"<{n_samples}h", frame.data)
         rms = (sum(s * s for s in samples) / n_samples) ** 0.5
 
+        burst_started = False
         with self._state_lock:
             if rms > self._BARGE_IN_RMS_THRESHOLD:
                 self._barge_in_energy_count[session.id] = (
@@ -413,7 +419,9 @@ class VoiceSTTMixin:
                 )
                 # Onset of this run of above-threshold frames: what a
                 # duration-based strategy measures against (RFC §12.6).
-                self._speech_started_at.setdefault(session.id, time.monotonic())
+                if session.id not in self._speech_started_at:
+                    self._speech_started_at[session.id] = time.monotonic()
+                    burst_started = True
             else:
                 self._barge_in_energy_count[session.id] = 0
                 self._speech_started_at.pop(session.id, None)
@@ -424,6 +432,8 @@ class VoiceSTTMixin:
             started_at = self._speech_started_at.get(session.id)
             binding_info = self._session_bindings.get(session.id)
 
+        if burst_started:
+            self._forget_burst_words(session.id)
         if not triggered:
             return
         if binding_info:
@@ -438,10 +448,21 @@ class VoiceSTTMixin:
             speech_duration_ms = (
                 int((time.monotonic() - started_at) * 1000) if started_at is not None else 0
             )
+            # The words the STT heard in this burst decide under SEMANTIC; an
+            # acknowledgement is not cut for running long (RFC §12.3.13).
+            with self._state_lock:
+                words = self._burst_words.get(session.id, "")
+                acknowledged = words and self._burst_backchannel.get(session.id) == words
+            if acknowledged:
+                return  # these words were judged already: nothing new to decide
             decision = handler.evaluate(
                 playback_position_ms=playback.played_ms,
                 speech_duration_ms=speech_duration_ms,
+                speech_text=words,
+                transcript_expected=True,
             )
+            if decision.is_backchannel:
+                self._report_burst_backchannel(session, words, room_id)
             if not decision.should_interrupt:
                 return
             with self._state_lock:
@@ -456,6 +477,28 @@ class VoiceSTTMixin:
                 self._handle_barge_in(session, playback, room_id),
                 name=f"energy_barge_in:{session.id}",
             )
+
+    def _note_burst_words(self, session_id: str, text: str) -> None:
+        """Keep the latest words of the speech burst under way (continuous mode)."""
+        with self._state_lock:
+            self._burst_words[session_id] = text
+
+    def _forget_burst_words(self, session_id: str) -> None:
+        with self._state_lock:
+            self._burst_words.pop(session_id, None)
+            self._burst_backchannel.pop(session_id, None)
+
+    def _report_burst_backchannel(self, session: VoiceSession, text: str, room_id: str) -> None:
+        """Remember the words judged a backchannel; fire ON_BACKCHANNEL once per burst."""
+        with self._state_lock:
+            first = session.id not in self._burst_backchannel
+            self._burst_backchannel[session.id] = text
+        if not first:
+            return
+        self._schedule(
+            self._fire_backchannel_hook(session, text, room_id),
+            name=f"backchannel:{session.id}",
+        )
 
     def _on_processed_frame_for_stt(self, session: VoiceSession, frame: AudioFrame) -> None:
         """Feed every processed frame to the continuous STT stream.
@@ -609,6 +652,9 @@ class VoiceSTTMixin:
                             )
 
                         if result.is_final and result.text:
+                            # The utterance is over: its words and verdict
+                            # say nothing about the next one.
+                            self._forget_burst_words(session.id)
                             last_tts = self._last_tts_ended_at.get(session.id, 0.0)
                             since_tts_now = _time.monotonic() - last_tts if last_tts else -1.0
                             logger.info(
@@ -665,11 +711,16 @@ class VoiceSTTMixin:
                                     # The partial is what SEMANTIC classifies —
                                     # a detector given "" cannot tell "uh-huh"
                                     # from "wait, stop".
+                                    self._note_burst_words(session.id, result.text)
                                     decision = handler.evaluate(
                                         playback_position_ms=playback.played_ms,
                                         speech_duration_ms=0,
                                         speech_text=result.text,
                                     )
+                                    if decision.is_backchannel:
+                                        self._report_burst_backchannel(
+                                            session, result.text, room_id
+                                        )
                                     logger.info(
                                         "Barge-in eval: partial=%r pos=%dms interrupt=%s",
                                         result.text,

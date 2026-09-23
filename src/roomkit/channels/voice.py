@@ -272,6 +272,10 @@ class VoiceChannel(
         # SEMANTIC segments held during playback while their words are
         # transcribed (session_id -> whether ON_BACKCHANNEL already fired)
         self._held_for_transcript: dict[str, bool] = {}
+        # Continuous mode: latest words of the speech burst under way, and
+        # the words of it judged a backchannel (SEMANTIC, RFC §12.3.13)
+        self._burst_words: dict[str, str] = {}
+        self._burst_backchannel: dict[str, str] = {}
         # Speech segments captured while queueing, replayed once TTS finishes
         self._queued_speech: dict[str, list[bytes]] = {}
         # Monotonic timestamp of the current speech onset per session, used to
@@ -608,6 +612,7 @@ class VoiceChannel(
                     decision = self._interruption_handler.evaluate(
                         playback_position_ms=playback.played_ms,
                         speech_duration_ms=0,
+                        transcript_expected=self._can_transcribe_held_speech(),
                     )
                     if decision.should_interrupt:
                         self._schedule(
@@ -1143,6 +1148,8 @@ class VoiceChannel(
         with self._state_lock:
             self._session_ready_pending.discard(session.id)
             self._held_for_transcript.pop(session.id, None)
+            self._burst_words.pop(session.id, None)
+            self._burst_backchannel.pop(session.id, None)
             binding_info = self._session_bindings.pop(session.id, None)
         if binding_info is None:
             return  # Already unbound — prevent double pipeline/telemetry calls
@@ -1401,11 +1408,15 @@ class VoiceChannel(
         Without a streaming STT there are no words to wait for, and the second
         look armed alongside decides on duration alone (CONFIRMED fallback).
         """
-        if self._stt is None or not self._stt.supports_streaming or self._continuous_stt:
+        if not self._can_transcribe_held_speech():
             return
         with self._state_lock:
             self._held_for_transcript[session.id] = False
         self._start_stt_stream(session, room_id, pre_roll=pre_roll)
+
+    def _can_transcribe_held_speech(self) -> bool:
+        """A VAD segment held during playback can be streamed to the STT."""
+        return self._stt is not None and self._stt.supports_streaming and not self._continuous_stt
 
     def _is_held_for_transcript(self, session_id: str) -> bool:
         with self._state_lock:
@@ -1492,6 +1503,25 @@ class VoiceChannel(
         await self._fire_speech_start_hooks(session, room_id)
         await self._handle_barge_in(session, playback, room_id)
 
+    def _playback_to_confirm(self, session_id: str, *, from_vad: bool) -> TTSPlaybackState | None:
+        """The playback a pending interruption may still cut, or None."""
+        with self._state_lock:
+            playback = self._playing_sessions.get(session_id)
+            still_speaking = session_id in self._speech_started_at
+            still_suppressed = session_id in self._suppressed_sessions
+        # The bot finished on its own, or something else already resolved
+        # the turn: there is nothing left to interrupt.
+        if playback is None:
+            return None
+        done_ev = self._playback_done_events.get(session_id)
+        if done_ev is not None and done_ev.is_set():
+            return None
+        # The speech stopped before it could confirm: a blip, or echo the
+        # suppression correctly swallowed.
+        if from_vad and not (still_speaking and still_suppressed):
+            return None
+        return playback
+
     async def _confirm_barge_in(
         self,
         session: VoiceSession,
@@ -1507,34 +1537,29 @@ class VoiceChannel(
             with self._state_lock:
                 self._confirm_tasks[session.id] = task
         try:
-            await asyncio.sleep(max(delay_ms, 0) / 1000.0)
-
-            with self._state_lock:
-                playback = self._playing_sessions.get(session.id)
-                still_speaking = session.id in self._speech_started_at
-                still_suppressed = session.id in self._suppressed_sessions
-            # The bot finished on its own, or something else already resolved
-            # the turn — there is nothing left to interrupt.
-            if playback is None:
-                return
-            done_ev = self._playback_done_events.get(session.id)
-            if done_ev is not None and done_ev.is_set():
-                return
-            # The speech stopped before it could confirm: a blip, or echo the
-            # suppression correctly swallowed.
-            if from_vad and not (still_speaking and still_suppressed):
-                return
-
-            speech_duration_ms = int((time.monotonic() - onset) * 1000)
-            decision = self._interruption_handler.evaluate(
-                playback_position_ms=playback.played_ms,
-                speech_duration_ms=speech_duration_ms,
-                speech_text=self._held_transcript(session.id),
-            )
-            if decision.is_backchannel and from_vad:
-                self._note_backchannel(session, self._held_transcript(session.id), room_id)
-            if not decision.should_interrupt:
-                return
+            while True:
+                await asyncio.sleep(max(delay_ms, 0) / 1000.0)
+                playback = self._playback_to_confirm(session.id, from_vad=from_vad)
+                if playback is None:
+                    return
+                with self._state_lock:
+                    held = session.id in self._held_for_transcript
+                words = self._held_transcript(session.id)
+                speech_duration_ms = int((time.monotonic() - onset) * 1000)
+                decision = self._interruption_handler.evaluate(
+                    playback_position_ms=playback.played_ms,
+                    speech_duration_ms=speech_duration_ms,
+                    speech_text=words,
+                    transcript_expected=held,
+                )
+                if decision.is_backchannel and from_vad:
+                    self._note_backchannel(session, words, room_id)
+                if decision.should_interrupt:
+                    break
+                if not decision.pending_confirmation:
+                    return
+                # Still waiting for the words of a transcribed segment.
+                delay_ms = decision.confirm_after_ms
 
             logger.info(
                 "Barge-in confirmed after %dms of sustained speech (session %s)",
