@@ -36,6 +36,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   user heard: the time since the first chunk reached the transport, capped at
   the audio produced, frozen at the interruption. It used to count from the
   moment the playback state was created, TTS latency included (RMK-187).
+- `BargeInEvent.audio_position_ms` and `TTSCancelledEvent.audio_position_ms`
+  now carry the same measure as the timeline's `played_ms`: the audio the user
+  heard, synthesis latency excluded. For one cut they used to differ (a TTS
+  300 ms slow to start, cut at 600 ms, reported 601 in the hook and 300 in the
+  timeline). The field names are unchanged; hooks that compared this value
+  against wall-clock elapsed time see smaller numbers. The interruption policy
+  reads the same measure, so `InterruptionConfig.allow_during_first_ms` (and
+  the legacy `barge_in_threshold_ms`) now counts played audio: a response that
+  has not made a sound yet is not interruptible under a threshold (RMK-192).
 
 ### Fixed
 

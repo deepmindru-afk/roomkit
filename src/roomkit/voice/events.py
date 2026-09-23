@@ -34,7 +34,8 @@ class BargeInEvent:
     """The text that was being spoken when interrupted."""
 
     audio_position_ms: int
-    """How far into the TTS audio playback (in milliseconds)."""
+    """How much of the TTS audio the user heard (ms), synthesis latency
+    excluded: the ``played_ms`` the timeline records for the same cut."""
 
     timestamp: datetime = field(default_factory=_utcnow)
     """When the barge-in was detected."""
@@ -62,7 +63,8 @@ class TTSCancelledEvent:
     """The text that was being synthesized."""
 
     audio_position_ms: int
-    """How far into playback (0 if not started)."""
+    """How much of the audio the user heard (ms), 0 if none went out: the
+    ``played_ms`` the timeline records for the same cut."""
 
     timestamp: datetime = field(default_factory=_utcnow)
     """When the cancellation occurred."""

@@ -117,9 +117,18 @@ class TTSPlaybackState:
 
     @property
     def position_ms(self) -> int:
-        """Estimate current playback position based on elapsed time."""
+        """Time since this state was created, synthesis latency included.
+
+        Not what the user heard: hooks, logs and the interruption policy read
+        ``played_ms``.
+        """
         elapsed = datetime.now(UTC) - self.started_at
         return int(elapsed.total_seconds() * 1000)
+
+    def start_measuring(self) -> None:
+        """Mark the playback as measured by its audio, before any chunk left."""
+        if self.audio_ms is None:
+            self.audio_ms = 0.0
 
     def note_audio(self, chunk: AudioChunk) -> None:
         """Account for an outbound chunk, so ``played_ms`` measures audio."""
@@ -137,10 +146,11 @@ class TTSPlaybackState:
         at the audio produced when its duration is known, frozen when
         playback was cut off.
 
-        Falls back to ``position_ms`` for a state no stream went through.
+        A measured stream is at 0 until its first chunk goes out. Falls back
+        to ``position_ms`` for a state no stream went through.
         """
         if self.first_audio_at is None:
-            return self.position_ms
+            return 0 if self.audio_ms is not None else self.position_ms
         end = self.stopped_at if self.stopped_at is not None else time.monotonic()
         heard = (end - self.first_audio_at) * 1000
         if self.audio_ms is not None:
@@ -586,7 +596,7 @@ class VoiceChannel(
                         self._suppressed_sessions.add(session.id)
                 else:
                     decision = self._interruption_handler.evaluate(
-                        playback_position_ms=playback.position_ms,
+                        playback_position_ms=playback.played_ms,
                         speech_duration_ms=0,
                     )
                     if decision.should_interrupt:
@@ -1400,7 +1410,7 @@ class VoiceChannel(
 
             speech_duration_ms = int((time.monotonic() - onset) * 1000)
             decision = self._interruption_handler.evaluate(
-                playback_position_ms=playback.position_ms,
+                playback_position_ms=playback.played_ms,
                 speech_duration_ms=speech_duration_ms,
             )
             if not decision.should_interrupt:
@@ -1443,7 +1453,7 @@ class VoiceChannel(
             event = BargeInEvent(
                 session=session,
                 interrupted_text=playback.text,
-                audio_position_ms=playback.position_ms,
+                audio_position_ms=playback.played_ms,
             )
             await self._framework.hook_engine.run_async_hooks(
                 room_id,
@@ -1551,7 +1561,7 @@ class VoiceChannel(
                         session=session,
                         reason=reason,  # ty: ignore[invalid-argument-type]
                         text=playback.text,
-                        audio_position_ms=playback.position_ms,
+                        audio_position_ms=playback.played_ms,
                     )
                     await self._framework.hook_engine.run_async_hooks(
                         room_id,
@@ -1567,7 +1577,7 @@ class VoiceChannel(
             "TTS interrupted for session %s: reason=%s, position=%dms",
             session.id,
             reason,
-            playback.position_ms,
+            playback.played_ms,
         )
         return True
 
@@ -1648,7 +1658,7 @@ class VoiceChannel(
         # duration, so a duration-based strategy gets its second look the same
         # way the VAD path does.
         decision = self._interruption_handler.evaluate(
-            playback_position_ms=playback.position_ms,
+            playback_position_ms=playback.played_ms,
             speech_duration_ms=0,
         )
         if not decision.should_interrupt:

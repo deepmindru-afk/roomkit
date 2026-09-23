@@ -1031,7 +1031,7 @@ class VoiceTTSMixin:
             )
 
 
-async def _observe_audio(
+def _observe_audio(
     playback: TTSPlaybackState,
     recorder: AssistantTurnRecorder | None,
     chunks: AsyncIterator[AudioChunk],
@@ -1039,8 +1039,19 @@ async def _observe_audio(
     """Measure the audio a synthesis call hands to the transport.
 
     ``playback`` learns how much audio went out (its ``played_ms``), and the
-    turn recorder keeps a copy when the context keeps audio.
+    turn recorder keeps a copy when the context keeps audio. The measure
+    starts here, not at the first chunk: until one goes out, the user has
+    heard nothing, however long synthesis takes.
     """
+    playback.start_measuring()
+    return _observed_chunks(playback, recorder, chunks)
+
+
+async def _observed_chunks(
+    playback: TTSPlaybackState,
+    recorder: AssistantTurnRecorder | None,
+    chunks: AsyncIterator[AudioChunk],
+) -> AsyncIterator[AudioChunk]:
     async for chunk in chunks:
         playback.note_audio(chunk)
         if recorder is not None:

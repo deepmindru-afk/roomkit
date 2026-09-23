@@ -42,7 +42,8 @@ class InterruptionConfig:
     """Minimum speech duration (ms) before triggering (used by CONFIRMED)."""
 
     allow_during_first_ms: int = 0
-    """If > 0, only allow interruptions after this many ms of playback."""
+    """If > 0, only allow interruptions once this many ms of audio were played
+    (synthesis latency does not count)."""
 
     flush_partial_tts: bool = True
     """Whether to flush any buffered TTS audio on interruption."""

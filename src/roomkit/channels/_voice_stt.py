@@ -430,7 +430,7 @@ class VoiceSTTMixin:
                 int((time.monotonic() - started_at) * 1000) if started_at is not None else 0
             )
             decision = handler.evaluate(
-                playback_position_ms=playback.position_ms,
+                playback_position_ms=playback.played_ms,
                 speech_duration_ms=speech_duration_ms,
             )
             if not decision.should_interrupt:
@@ -441,7 +441,7 @@ class VoiceSTTMixin:
                 "Energy barge-in (post-denoiser): rms=%.0f, threshold=%.0f, pos=%dms",
                 rms,
                 self._BARGE_IN_RMS_THRESHOLD,
-                playback.position_ms,
+                playback.played_ms,
             )
             self._schedule(
                 self._handle_barge_in(session, playback, room_id),
@@ -657,14 +657,14 @@ class VoiceSTTMixin:
                                     # a detector given "" cannot tell "uh-huh"
                                     # from "wait, stop".
                                     decision = handler.evaluate(
-                                        playback_position_ms=(playback.position_ms),
+                                        playback_position_ms=playback.played_ms,
                                         speech_duration_ms=0,
                                         speech_text=result.text,
                                     )
                                     logger.info(
                                         "Barge-in eval: partial=%r pos=%dms interrupt=%s",
                                         result.text,
-                                        playback.position_ms,
+                                        playback.played_ms,
                                         decision.should_interrupt,
                                     )
                                     if decision.should_interrupt:
@@ -766,7 +766,7 @@ class VoiceSTTMixin:
                 logger.warning(
                     "Discarding echo during playback: %r (pos=%dms)",
                     text,
-                    playback.position_ms,
+                    playback.played_ms,
                 )
                 return
 
