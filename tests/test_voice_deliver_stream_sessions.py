@@ -95,10 +95,11 @@ async def _setup(
     kit.register_channel(channel)
     room = await kit.create_room()
     await kit.attach_channel(room.id, "voice-1")
-    sessions = [
-        await kit.connect_voice(room.id, "user-1", "voice-1"),
-        await kit.connect_voice(room.id, "user-2", "voice-1"),
-    ]
+    sessions: list[VoiceSession] = []
+    for participant_id in ("user-1", "user-2"):
+        session = await kit.join(room.id, "voice-1", participant_id=participant_id)
+        assert isinstance(session, VoiceSession)
+        sessions.append(session)
     event = RoomEvent(
         room_id=room.id,
         source=EventSource(channel_id="ai-1", channel_type=ChannelType.AI),
