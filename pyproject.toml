@@ -58,6 +58,7 @@ elevenlabs = ["elevenlabs>=2.40"]
 qwen-tts = ["qwen-tts>=0.1"]
 qwen-asr = ["qwen-asr>=0.0.4"]
 neutts = ["neutts>=0.1"]
+vui = ["vui-tts>=1.1.4,<1.2; python_version < '3.13'"]
 # WebRTC realtime transport. Vendored gradio-free under roomkit.webrtc
 # (src/roomkit/webrtc/), so this pulls the transport's own runtime deps instead
 # of the upstream fastrtc package — which forced gradio<6 (CVEs) and pillow<12.

@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Vui Nano TTS provider (`roomkit[vui]`, `VuiTTSProvider`). Vui generates each
+  reply inside the conversation: it declares `TTSContextLevel.AUDIO` and keeps
+  its KV cache in step with the voice session's context, writing each user
+  turn with its audio and cutting a reply back to what was heard after a
+  barge-in, so the next reply is generated in that thread. Voices are the
+  Hub presets (`maeve`, `abraham`, `rhian`, `harry`) or a clip and its
+  transcript. English only, Python 3.12 and a CUDA GPU for real-time
+  streaming, one active conversation per provider. Two private `vui-tts`
+  attributes are used (mid-turn rewind, preset speaker token), so the
+  dependency is pinned to `vui-tts>=1.1.4,<1.2`. See
+  `examples/voice_vui_context.py` (RMK-194).
 - ElevenLabs continues its voice from one response to the next. The provider
   declares `TTSContextLevel.SELF` and sends ElevenLabs the `request_id` of up
   to three previous responses the user heard to the end

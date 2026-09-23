@@ -448,6 +448,27 @@ def get_neutts_voice_config() -> type:
     return NeuTTSVoiceConfig
 
 
+def get_vui_tts_provider() -> type:
+    """Get VuiTTSProvider class (requires vui-tts, Python 3.12)."""
+    from roomkit.voice.tts.vui import VuiTTSProvider
+
+    return VuiTTSProvider
+
+
+def get_vui_tts_config() -> type:
+    """Get VuiTTSConfig class."""
+    from roomkit.voice.tts.vui import VuiTTSConfig
+
+    return VuiTTSConfig
+
+
+def get_vui_voice() -> type:
+    """Get VuiVoice class for Vui Nano."""
+    from roomkit.voice.tts.vui import VuiVoice
+
+    return VuiVoice
+
+
 def get_grok_tts_provider() -> type:
     """Get GrokTTSProvider class (requires httpx, websockets)."""
     from roomkit.voice.tts.grok import GrokTTSProvider
