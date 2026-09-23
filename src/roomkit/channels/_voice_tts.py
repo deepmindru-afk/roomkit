@@ -355,19 +355,23 @@ class VoiceTTSMixin:
                 ),
                 return_exceptions=True,
             )
-        finally:
-            # Every session stopped early (barge-in): leave the rest unread,
-            # as a single reader would.
+        except BaseException:
+            # Cancelled from outside (the turn was interrupted on purpose): the
+            # source goes down with the turn, as it did with a single reader.
             producer.cancel()
             await asyncio.gather(producer, return_exceptions=True)
-
-        delivered = [s for s, r in zip(target_sessions, results, strict=True) if r is None]
-        failures = [r for r in results if isinstance(r, BaseException)]
-        if failures and not delivered:
-            raise failures[0]
-        for session, result in zip(target_sessions, results, strict=True):
-            if isinstance(result, BaseException):
-                logger.error("Streaming TTS failed for session %s", session.id, exc_info=result)
+            raise
+        if not producer.done():
+            # Every session stopped early (barge-in) while the next item was
+            # being pulled.  Let that pull end off the turn instead of
+            # cancelling it inside the upstream stream; the closed branches
+            # make the producer stop right after.
+            self._schedule(_await_task(producer), name=f"tts_fan_out_drain:{event.id}")
+        # A source failure (the AI provider) is the response's failure, not
+        # one session's: it takes the caller's error path whoever was served.
+        if fan_out.error is not None:
+            raise fan_out.error
+        delivered = _served_sessions(target_sessions, results)
 
         full_text = "".join(accumulated)
         # Apply TTS filter to the accumulated text for transcription/hooks
@@ -415,16 +419,47 @@ class VoiceTTSMixin:
         tts_name: str,
         telemetry: TelemetryProvider | None,
         accumulated: list[str],
-    ) -> None:
-        """Play one session's copy of a streamed response through TTS."""
-        import time as _time
+    ) -> bool:
+        """Play one session's copy of a streamed response through TTS.
 
-        from .voice import TTSPlaybackState
-
+        Returns whether the session was served.  Its branch is closed on every
+        exit, so the producer stops once no session reads any more.
+        """
         if self._tts is None or self._backend is None:
             sentences.close()
-            return
-        backend = self._backend
+            return False
+        tts, backend = self._tts, self._backend
+        try:
+            await self._play_branch(
+                session,
+                sentences,
+                tts=tts,
+                backend=backend,
+                voice=voice,
+                room_id=room_id,
+                tts_name=tts_name,
+                telemetry=telemetry,
+                accumulated=accumulated,
+            )
+        finally:
+            sentences.close()
+        return True
+
+    async def _play_branch(
+        self,
+        session: VoiceSession,
+        sentences: StreamBranch[str],
+        *,
+        tts: TTSProvider,
+        backend: VoiceBackend,
+        voice: str | None,
+        room_id: str,
+        tts_name: str,
+        telemetry: TelemetryProvider | None,
+        accumulated: list[str],
+    ) -> None:
+        """Interrupt, play and drain one session's streamed response."""
+        from .voice import TTSPlaybackState
 
         # Cancel any existing TTS to prevent overlapping audio
         with self._state_lock:
@@ -450,7 +485,7 @@ class VoiceTTSMixin:
         # Activate AEC so echo cancellation runs during playback
         if self._pipeline is not None and self._pipeline._config.aec is not None:
             self._pipeline.set_aec_active(session.id, True)
-        t0 = _time.monotonic()
+        t0 = time.monotonic()
         logger.info("Streaming TTS playback started for session %s", session.id)
 
         span_id = None
@@ -473,7 +508,7 @@ class VoiceTTSMixin:
                 yield sentence
 
         try:
-            audio = self._tts.synthesize_stream_input(relay_sentences(), voice=voice)
+            audio = tts.synthesize_stream_input(relay_sentences(), voice=voice)
             if self._pipeline is not None or getattr(self, "_outbound_audio_taps", []):
                 audio = self._wrap_outbound(session, audio)
             await backend.send_audio(session, audio)
@@ -483,9 +518,7 @@ class VoiceTTSMixin:
                 span_id = None
             raise
         finally:
-            # This session is done reading, whatever the others still need.
-            sentences.close()
-            duration_ms = (_time.monotonic() - t0) * 1000
+            duration_ms = (time.monotonic() - t0) * 1000
             if telemetry is not None and span_id is not None:
                 telemetry.end_span(
                     span_id,
@@ -503,7 +536,7 @@ class VoiceTTSMixin:
             logger.debug(
                 "Streaming TTS send_audio returned for session %s (%.1fs), draining",
                 session.id,
-                _time.monotonic() - t0,
+                time.monotonic() - t0,
             )
             self._debug_frame_count = 0  # reset RMS debug counter
             # Signal that send_audio() has returned so
@@ -704,14 +737,12 @@ class VoiceTTSMixin:
 
             voice = self._resolve_voice(event.source.channel_id)
             # Sessions play side by side; a failed one does not hold the others
-            # back, and still takes the error path below once all have run.
+            # back, and only a delivery nobody received takes the error path.
             results = await asyncio.gather(
                 *(self._send_tts(s, final_text, voice=voice) for s in target_sessions),
                 return_exceptions=True,
             )
-            failures = [r for r in results if isinstance(r, BaseException)]
-            if failures:
-                raise failures[0]
+            _served_sessions(target_sessions, results)
 
             _tok = set_current_span(_parent) if _parent else None
             try:
@@ -904,6 +935,36 @@ class VoiceTTSMixin:
                 self._finish_playback(session.id),
                 name=f"finish_playback:{session.id}",
             )
+
+
+def _served_sessions(sessions: list[VoiceSession], results: list[Any]) -> list[VoiceSession]:
+    """Sessions a per-session delivery reached; raise when it reached none.
+
+    *results* are ``asyncio.gather(..., return_exceptions=True)`` outcomes:
+    an exception is a failed session, ``False`` a session skipped, anything
+    else a session served.  One session's transport failure must not take
+    the response away from the others, so failures are logged; when every
+    session failed, the first error takes the caller's error path, as a
+    single session's did.
+    """
+    served = [
+        s
+        for s, r in zip(sessions, results, strict=True)
+        if r is not False and not isinstance(r, BaseException)
+    ]
+    failures = [r for r in results if isinstance(r, BaseException)]
+    raised = failures[0] if failures and not served else None
+    for session, result in zip(sessions, results, strict=True):
+        if isinstance(result, BaseException) and result is not raised:
+            logger.error("Voice delivery failed for session %s", session.id, exc_info=result)
+    if raised is not None:
+        raise raised
+    return served
+
+
+async def _await_task(task: asyncio.Task[None]) -> None:
+    """Wait for *task* under the channel's scheduled tasks (cancelled on close)."""
+    await task
 
 
 async def _filter_sentences_plain(

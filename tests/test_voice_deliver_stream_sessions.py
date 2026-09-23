@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator
 import pytest
 
 from roomkit import RoomKit, VoiceChannel
-from roomkit.channels._stream_fanout import StreamFanOut
+from roomkit.channels._stream_fanout import StreamBranch, StreamFanOut
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import ChannelType
@@ -62,7 +62,7 @@ class _ScriptedBackend(MockVoiceBackend):
     def __init__(self) -> None:
         super().__init__()
         self.fail: set[str] = set()
-        self.stop_after_first_chunk: set[str] = set()
+        self.stop_after: dict[str, int] = {}  # session id -> chunks played
         self.started: dict[str, asyncio.Event] = {}
         self.wait_for: dict[str, str] = {}
 
@@ -75,10 +75,15 @@ class _ScriptedBackend(MockVoiceBackend):
             await self.started.setdefault(other, asyncio.Event()).wait()
         if session.id in self.fail:
             raise RuntimeError(f"transport down for {session.id}")
-        if session.id in self.stop_after_first_chunk and not isinstance(audio, bytes):
+        limit = self.stop_after.get(session.id)
+        if limit is not None and not isinstance(audio, bytes):
+            # Barge-in: the transport stops reading after *limit* chunks.
+            played = 0
             async for chunk in audio:
                 self.sent_audio.append((session.id, chunk.data))
-                return
+                played += 1
+                if played == limit:
+                    return
         await super().send_audio(session, audio)
 
 
@@ -144,7 +149,7 @@ class TestDeliverStreamSeveralSessions:
     async def test_session_stopping_early_does_not_cut_the_other(self) -> None:
         backend, tts = _ScriptedBackend(), _RecordingTTS()
         kit, channel, sessions, event, binding, context = await _setup(backend, tts)
-        backend.stop_after_first_chunk.add(sessions[0].id)
+        backend.stop_after[sessions[0].id] = 1
 
         await channel.deliver_stream(_text(), event, binding, context)
 
@@ -175,6 +180,51 @@ class TestDeliverStreamSeveralSessions:
         assert [r for _, _, r in backend.sent_transcriptions if r == "assistant"] == []
         await kit.close()
 
+    async def test_barge_in_leaves_the_rest_of_the_response_unread(self) -> None:
+        backend, tts = _ScriptedBackend(), _RecordingTTS()
+        kit, channel, sessions, event, binding, context = await _setup(backend, tts)
+        await kit.leave(sessions[1])
+        backend.stop_after[sessions[0].id] = 2
+        spoken = [f"Sentence number {i} is here." for i in range(8)]
+        pulled: list[str] = []
+        seen: list[str] = []
+
+        async def source() -> AsyncIterator[str]:
+            try:
+                for sentence in spoken:
+                    pulled.append(sentence)
+                    yield sentence + " "
+            except BaseException as exc:
+                seen.append(type(exc).__name__)
+                raise
+
+        await channel.deliver_stream(source(), event, binding, context)
+
+        # Pulled at the pace of playback, as a single reader did: not the
+        # whole response, and the final transcript is what was played.
+        assert len(pulled) <= 4
+        (final,) = _by_role(backend, sessions[0], "assistant")
+        assert spoken[-1] not in final
+        # The source is left where it is, never cancelled from inside.
+        assert seen == []
+        await kit.close()
+
+    async def test_source_error_raises_even_when_a_session_was_served(self) -> None:
+        backend, tts = _ScriptedBackend(), _RecordingTTS()
+        kit, channel, sessions, event, binding, context = await _setup(backend, tts)
+        backend.stop_after[sessions[0].id] = 1
+
+        async def broken() -> AsyncIterator[str]:
+            yield SENTENCES[0] + " "
+            yield SENTENCES[1] + " "
+            raise ValueError("llm down")
+
+        with pytest.raises(ValueError, match="llm down"):
+            await channel.deliver_stream(broken(), event, binding, context)
+
+        assert [r for _, _, r in backend.sent_transcriptions if r == "assistant"] == []
+        await kit.close()
+
 
 class TestDeliverSeveralSessions:
     async def test_sessions_are_served_in_parallel(self) -> None:
@@ -199,31 +249,51 @@ async def _items(items: list[str], pulled: list[str]) -> AsyncIterator[str]:
         yield item
 
 
+async def _drain(fan_out: StreamFanOut[str]) -> list[list[str]]:
+    """Run the producer while every branch reads to the end."""
+
+    async def read(branch: StreamBranch[str]) -> list[str]:
+        return [item async for item in branch]
+
+    producer = asyncio.create_task(fan_out.run())
+    results = await asyncio.gather(*(read(b) for b in fan_out.branches))
+    await producer
+    return list(results)
+
+
 class TestStreamFanOut:
     async def test_each_branch_gets_every_item(self) -> None:
         fan_out = StreamFanOut(_items(["a", "b"], []), 3)
-        await fan_out.run()
-        assert [[i async for i in b] for b in fan_out.branches] == [["a", "b"]] * 3
+        assert await _drain(fan_out) == [["a", "b"]] * 3
 
     async def test_no_branch_pulls_nothing(self) -> None:
         pulled: list[str] = []
         await StreamFanOut(_items(["a"], pulled), 0).run()
         assert pulled == []
 
+    async def test_pulls_only_on_demand(self) -> None:
+        pulled: list[str] = []
+        fan_out = StreamFanOut(_items(["a", "b", "c"], pulled), 1)
+        producer = asyncio.create_task(fan_out.run())
+        assert await anext(fan_out.branches[0]) == "a"
+        await asyncio.sleep(0)
+        assert pulled == ["a"]
+        fan_out.branches[0].close()
+        await asyncio.wait_for(producer, 1.0)
+        assert pulled == ["a"]
+
     async def test_stops_pulling_once_every_branch_is_closed(self) -> None:
         pulled: list[str] = []
         fan_out = StreamFanOut(_items(["a", "b", "c"], pulled), 2)
         for branch in fan_out.branches:
             branch.close()
-        await fan_out.run()
+        await asyncio.wait_for(fan_out.run(), 1.0)
         assert pulled == []
 
     async def test_closed_branch_leaves_the_others_running(self) -> None:
         fan_out = StreamFanOut(_items(["a", "b"], []), 2)
         fan_out.branches[0].close()
-        await fan_out.run()
-        assert [i async for i in fan_out.branches[0]] == []
-        assert [i async for i in fan_out.branches[1]] == ["a", "b"]
+        assert await _drain(fan_out) == [[], ["a", "b"]]
 
     async def test_source_error_reaches_every_branch(self) -> None:
         async def broken() -> AsyncIterator[str]:
@@ -231,8 +301,11 @@ class TestStreamFanOut:
             raise ValueError("llm down")
 
         fan_out = StreamFanOut(broken(), 2)
-        await fan_out.run()
+        producer = asyncio.create_task(fan_out.run())
         for branch in fan_out.branches:
             assert await anext(branch) == "a"
+        for branch in fan_out.branches:
             with pytest.raises(ValueError, match="llm down"):
                 await anext(branch)
+        await producer
+        assert isinstance(fan_out.error, ValueError)
