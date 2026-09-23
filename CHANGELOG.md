@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A speech segment classified as a backchannel while the bot is speaking
+  (`InterruptionStrategy.SEMANTIC`, VAD mode) is now discarded instead of being
+  transcribed and routed to the AI as a user message. The bot kept talking, yet
+  the "mm-hmm" still became a turn of its own, which the "not yet an
+  interruption" branch already avoided (RFC §12.6 step 5, RMK-187).
 - A streamed AI response now reaches every voice session of the room, not only
   the first. `VoiceChannel.deliver_stream()` handed the same text iterator to
   each session in turn: the first drained it, so a second session on the same

@@ -539,6 +539,11 @@ class VoiceChannel(
                             name=f"barge_in:{session.id}",
                         )
                     elif decision.is_backchannel:
+                        # The bot keeps talking and the acknowledgement is not
+                        # a turn: its segment is discarded (RFC §12.6 step 5).
+                        suppress_speech = True
+                        with self._state_lock:
+                            self._suppressed_sessions.add(session.id)
                         self._schedule(
                             self._fire_backchannel_hook(session, "", room_id),
                             name=f"backchannel:{session.id}",
