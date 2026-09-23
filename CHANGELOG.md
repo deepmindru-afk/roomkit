@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- TTS providers can hear the conversation (RFC §12.2.2). A provider declares
+  what it consumes with `TTSProvider.context_level` (`TTSContextLevel.NONE`,
+  `SELF`, `TEXT`, `AUDIO`) and then receives a `TTSContext` on
+  `synthesize_stream()` / `synthesize_stream_input()`: the dialogue of its
+  voice session, user turns as the transcription hooks left them and its own
+  turns cut to what was played (`played_ms`, `interrupted`), plus the
+  `next_turn_id` its current call will be recorded under.
+  `TTSProvider.release_context()` is called when the session is unbound or the
+  channel closed. `VoiceChannel(tts_context=TTSContextConfig(...))` bounds the
+  history (`max_turns`, `max_audio_seconds`) and turns audio on
+  (`include_audio`, off by default); audio stays in memory, and a turn whose
+  transcript a hook changed, or during which DTMF was detected with redaction
+  on, keeps none (RFC §17.6). A provider left at `NONE`, every built-in one
+  today, is called exactly as before, so a provider written against the older
+  signature keeps working. New metrics `pipeline.tts_context_turns` and
+  `pipeline.tts_context_audio_s`. See `examples/voice_tts_context.py`
+  (RMK-187).
+
+### Changed
+
+- `metadata.played_ms` on an interrupted utterance now measures the audio the
+  user heard: the time since the first chunk reached the transport, capped at
+  the audio produced, frozen when the buffer is flushed. It used to count from
+  the moment the playback state was created, TTS latency included (RMK-187).
+
 ### Fixed
 
 - A speech segment classified as a backchannel while the bot is speaking

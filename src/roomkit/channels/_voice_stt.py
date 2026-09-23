@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from roomkit.voice.pipeline.turn.base import TurnEntry
     from roomkit.voice.stt.base import STTProvider
     from roomkit.voice.stt.language import STTLanguageLock
+    from roomkit.voice.tts.context import TTSContextStore
 
     from .voice import TTSPlaybackState, _STTStreamState
 
@@ -71,6 +72,7 @@ class STTHost(Protocol):
         _stt_streams: Active STT stream states per session.
         _stt_languages: STT language chosen per session (absent = provider default).
         _stt_language_lock: Policy choosing the session language, or None.
+        _tts_context: Per-session dialogue for a context-aware TTS (None when unused).
         _continuous_stt: Whether continuous STT mode is enabled.
         _batch_mode: Whether batch STT mode is enabled.
         _batch_audio_buffers: Accumulated audio per session for batch transcription.
@@ -97,6 +99,7 @@ class STTHost(Protocol):
     _stt_streams: dict[str, _STTStreamState]
     _stt_languages: dict[str, str]
     _stt_language_lock: STTLanguageLock | None
+    _tts_context: TTSContextStore | None
     _continuous_stt: bool
     _batch_mode: bool
     _batch_audio_buffers: dict[str, bytearray]
@@ -131,6 +134,7 @@ class VoiceSTTMixin:
     _stt_streams: dict[str, _STTStreamState]
     _stt_languages: dict[str, str]
     _stt_language_lock: STTLanguageLock | None
+    _tts_context: TTSContextStore | None
     _continuous_stt: bool
     _batch_mode: bool
     _batch_audio_buffers: dict[str, bytearray]
@@ -706,6 +710,31 @@ class VoiceSTTMixin:
         """Stop continuous STT for a session."""
         self._cancel_stt_stream(session_id)
 
+    def _record_user_turn(
+        self,
+        session: VoiceSession,
+        transcript: str,
+        final_text: str,
+        *,
+        audio: bytes | None = None,
+        sample_rate: int = 16000,
+    ) -> None:
+        """Add the utterance to the session's TTS context (RFC §12.2.2).
+
+        Runs after ON_TRANSCRIPTION, with the text as the hooks left it; a
+        changed text means a redaction, and the audio is then not kept.
+        """
+        if self._tts_context is None or not final_text.strip():
+            return
+        self._tts_context.add_user_turn(
+            session.id,
+            session.participant_id,
+            final_text,
+            audio=audio,
+            sample_rate=sample_rate,
+            text_changed=final_text != transcript,
+        )
+
     async def _handle_continuous_transcription(
         self,
         session: VoiceSession,
@@ -776,6 +805,8 @@ class VoiceSTTMixin:
                 return
 
             final_text = _extract_transcription_text(transcription_result.event, text)
+            # Continuous STT keeps no utterance audio: the turn is text only.
+            self._record_user_turn(session, text, final_text)
 
             turn_detector = self._pipeline_config.turn_detector if self._pipeline_config else None
             if turn_detector is not None:
@@ -1003,6 +1034,7 @@ class VoiceSTTMixin:
 
             # Use potentially modified text
             final_text = _extract_transcription_text(transcription_result.event, text)
+            self._record_user_turn(session, text, final_text, audio=audio, sample_rate=sample_rate)
 
             # Turn detection: if configured, evaluate before routing
             turn_detector = self._pipeline_config.turn_detector if self._pipeline_config else None
@@ -1128,6 +1160,13 @@ class VoiceSTTMixin:
                 if transcription_result.allowed:
                     final_text = _extract_transcription_text(
                         transcription_result.event, result.text
+                    )
+                    self._record_user_turn(
+                        session,
+                        result.text,
+                        final_text,
+                        audio=audio_data,
+                        sample_rate=sample_rate,
                     )
                     await self._route_text(session, final_text, room_id)
 

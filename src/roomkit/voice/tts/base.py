@@ -6,9 +6,12 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
+from roomkit.voice.tts.context import TTSContextLevel
+
 if TYPE_CHECKING:
     from roomkit.models.event import AudioContent
     from roomkit.voice.base import AudioChunk
+    from roomkit.voice.tts.context import TTSContext
 
 
 class TTSProvider(ABC):
@@ -42,22 +45,47 @@ class TTSProvider(ABC):
         """Whether this TTS accepts streaming text input."""
         return False
 
+    @property
+    def context_level(self) -> TTSContextLevel:
+        """What conversation context this TTS consumes (RFC §12.2.2).
+
+        A provider left at NONE never receives a ``context``. Override to
+        receive the dialogue of the session on each streaming call.
+        """
+        return TTSContextLevel.NONE
+
+    def release_context(self, context_id: str) -> None:  # noqa: B027
+        """Drop any state held for *context_id* (its voice session ended).
+
+        Called by the Voice Channel when the session is unbound. A provider
+        that keeps per-context state (a dialogue KV cache, request handles)
+        overrides it; an unknown context is a no-op.
+        """
+
     async def synthesize_stream_input(
-        self, text_stream: AsyncIterator[str], *, voice: str | None = None
+        self,
+        text_stream: AsyncIterator[str],
+        *,
+        voice: str | None = None,
+        context: TTSContext | None = None,
     ) -> AsyncIterator[AudioChunk]:
         """Stream audio from streaming text chunks.
 
         Override for providers that accept an async text stream as input.
+        ``context`` is the session's dialogue so far, passed only when
+        ``context_level`` is not NONE.
         """
         raise NotImplementedError(f"{self.name} does not support streaming text input.")
         yield  # pragma: no cover
 
     async def synthesize_stream(
-        self, text: str, *, voice: str | None = None
+        self, text: str, *, voice: str | None = None, context: TTSContext | None = None
     ) -> AsyncIterator[AudioChunk]:
         """Stream audio chunks as they're generated.
 
-        Override for providers that support streaming.
+        Override for providers that support streaming. ``context`` is the
+        session's dialogue so far, passed only when ``context_level`` is not
+        NONE.
         Default: synthesizes full audio and yields single chunk.
         """
         raise NotImplementedError(

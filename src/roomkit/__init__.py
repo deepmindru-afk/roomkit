@@ -212,6 +212,12 @@ from roomkit.voice.realtime.reasoning import (
 )
 from roomkit.voice.stt.language import STTLanguageLock
 from roomkit.voice.testing import PCMAudio, ScenarioVoiceBackend, TraceEntry, VoiceTrace
+from roomkit.voice.tts.context import (
+    ConversationTurn,
+    TTSContext,
+    TTSContextConfig,
+    TTSContextLevel,
+)
 
 # Console (optional — requires `rich`)
 with contextlib.suppress(ImportError):
@@ -323,6 +329,10 @@ __all__ = [
     "SimpleAGCProvider",
     "WebRTCNoiseSuppressorProvider",
     "STTLanguageLock",
+    "ConversationTurn",
+    "TTSContext",
+    "TTSContextConfig",
+    "TTSContextLevel",
     "PCMAudio",
     "ScenarioVoiceBackend",
     "TraceEntry",

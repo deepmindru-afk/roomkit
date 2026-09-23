@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from roomkit.voice.pipeline.config import AudioPipelineConfig
     from roomkit.voice.pipeline.engine import AudioPipeline
     from roomkit.voice.tts.base import TTSProvider
+    from roomkit.voice.tts.context import AssistantTurnRecorder, TTSContextStore
 
     from .voice import TTSPlaybackState
 
@@ -65,6 +66,7 @@ class TTSHost(Protocol):
         _debug_frame_count: Counter for RMS debug logging.
         _voice_map: Per-channel TTS voice overrides.
         _tts_filter: Optional callable to filter/transform TTS text (Callable[[str], str] | None).
+        _tts_context: Per-session dialogue for a context-aware TTS (None when unused).
         _state_lock: Threading lock protecting shared mutable state.
 
     Methods provided by VoiceChannel or sibling mixins:
@@ -88,6 +90,7 @@ class TTSHost(Protocol):
     _debug_frame_count: int
     _voice_map: dict[str, str]
     _tts_filter: Any  # Callable[[str], str] | None
+    _tts_context: TTSContextStore | None
     _state_lock: threading.Lock
     _schedule: Any  # VoiceChannel._schedule
     _fire_audio_level_hook: Any  # VoiceHooksMixin._fire_audio_level_hook
@@ -116,6 +119,7 @@ class VoiceTTSMixin:
     _debug_frame_count: int
     _voice_map: dict[str, str]
     _tts_filter: Any  # Callable[[str], str] | None
+    _tts_context: TTSContextStore | None
     _state_lock: Any  # threading.Lock — see TTSHost
 
     # -- cross-mixin methods (annotated as Any to avoid MRO shadowing) --
@@ -148,6 +152,67 @@ class VoiceTTSMixin:
     def _resolve_voice(self, channel_id: str) -> str | None:
         """Look up TTS voice override for *channel_id* via voice_map."""
         return self._voice_map.get(channel_id) if self._voice_map else None
+
+    def _begin_tts_turn(
+        self, session: VoiceSession, telemetry: TelemetryProvider | None
+    ) -> tuple[dict[str, Any], AssistantTurnRecorder | None]:
+        """The ``context`` kwarg for one synthesis call, and its turn recorder.
+
+        Empty for a provider that consumes no context: it is called exactly as
+        before, so a provider written against the older signature still works
+        (RFC §12.2.2 passing rules).
+        """
+        store = self._tts_context
+        if store is None:
+            return {}, None
+        context, recorder = store.begin_assistant_turn(session.id)
+        if telemetry is not None:
+            attrs = {Attr.PROVIDER: self._tts.name if self._tts else "unknown"}
+            telemetry.record_metric(
+                "pipeline.tts_context_turns", float(len(context.turns)), attributes=attrs
+            )
+            telemetry.record_metric(
+                "pipeline.tts_context_audio_s",
+                store.audio_seconds(session.id),
+                unit="s",
+                attributes=attrs,
+            )
+        return {"context": context}, recorder
+
+    def _end_tts_turn(
+        self,
+        recorder: AssistantTurnRecorder | None,
+        playback: TTSPlaybackState,
+        speaker_id: str,
+    ) -> None:
+        """Record what the user heard of a synthesis call in its context."""
+        if recorder is None or self._tts_context is None:
+            return
+        interrupted = playback.stopped_at is not None
+        if playback.first_audio_at is None:
+            # No chunk reached the transport: the user heard nothing of it.
+            played_ms = 0
+        elif interrupted or playback.audio_ms is None:
+            played_ms = playback.played_ms
+        else:
+            # Not cut off: all of it plays, even when the transport returned
+            # before the last sample left the speaker.
+            played_ms = int(playback.audio_ms)
+        self._tts_context.commit_assistant_turn(
+            recorder, speaker_id, playback.text, played_ms=played_ms, interrupted=interrupted
+        )
+
+    def _release_tts_context(self, session_id: str) -> None:
+        """Drop a session's TTS context, here and in the provider."""
+        if self._tts_context is None:
+            return
+        self._tts_context.release(session_id)
+        if self._tts is None:
+            return
+        try:
+            self._tts.release_context(session_id)
+        except Exception:
+            logger.exception("TTS provider failed to release context %s", session_id)
 
     async def _wrap_outbound(
         self, session: VoiceSession, chunks: AsyncIterator[AudioChunk]
@@ -350,6 +415,7 @@ class VoiceTTSMixin:
                         tts_name=tts_name,
                         telemetry=telemetry,
                         accumulated=accumulated,
+                        speaker_id=event.source.channel_id,
                     )
                     for session, branch in zip(target_sessions, fan_out.branches, strict=True)
                 ),
@@ -421,6 +487,7 @@ class VoiceTTSMixin:
         tts_name: str,
         telemetry: TelemetryProvider | None,
         accumulated: list[str],
+        speaker_id: str,
     ) -> bool:
         """Play one session's copy of a streamed response through TTS.
 
@@ -442,6 +509,7 @@ class VoiceTTSMixin:
                 tts_name=tts_name,
                 telemetry=telemetry,
                 accumulated=accumulated,
+                speaker_id=speaker_id,
             )
         finally:
             sentences.close()
@@ -459,6 +527,7 @@ class VoiceTTSMixin:
         tts_name: str,
         telemetry: TelemetryProvider | None,
         accumulated: list[str],
+        speaker_id: str,
     ) -> None:
         """Interrupt, play and drain one session's streamed response."""
         from .voice import TTSPlaybackState
@@ -515,8 +584,10 @@ class VoiceTTSMixin:
                     playback.text = " ".join(relayed)
                 yield sentence
 
+        context_kwargs, recorder = self._begin_tts_turn(session, telemetry)
         try:
-            audio = tts.synthesize_stream_input(relay_sentences(), voice=voice)
+            audio = tts.synthesize_stream_input(relay_sentences(), voice=voice, **context_kwargs)
+            audio = _observe_audio(playback, recorder, audio)
             if self._pipeline is not None or getattr(self, "_outbound_audio_taps", []):
                 audio = self._wrap_outbound(session, audio)
             await backend.send_audio(session, audio)
@@ -526,6 +597,7 @@ class VoiceTTSMixin:
                 span_id = None
             raise
         finally:
+            self._end_tts_turn(recorder, playback, speaker_id)
             duration_ms = (time.monotonic() - t0) * 1000
             if telemetry is not None and span_id is not None:
                 telemetry.end_span(
@@ -561,7 +633,12 @@ class VoiceTTSMixin:
             )
 
     async def _send_tts(
-        self, session: VoiceSession, text: str, *, voice: str | None = None
+        self,
+        session: VoiceSession,
+        text: str,
+        *,
+        voice: str | None = None,
+        speaker_id: str | None = None,
     ) -> None:
         """Synthesize *text* and send audio to *session*.
 
@@ -591,11 +668,9 @@ class VoiceTTSMixin:
 
         await self._backend.send_transcription(session, text, "assistant")
 
+        playback = TTSPlaybackState(session_id=session.id, text=text)
         with self._state_lock:
-            self._playing_sessions[session.id] = TTSPlaybackState(
-                session_id=session.id,
-                text=text,
-            )
+            self._playing_sessions[session.id] = playback
             # Clear done event so wait_playback_done() blocks until send_audio returns
             done_ev = self._playback_done_events.get(session.id)
             if done_ev is None:
@@ -634,9 +709,11 @@ class VoiceTTSMixin:
             if voice:
                 telemetry.set_attribute(span_id, Attr.TTS_VOICE, voice)
 
+        context_kwargs, recorder = self._begin_tts_turn(session, telemetry)
         t0 = _time.monotonic()
         try:
-            audio_stream = self._tts.synthesize_stream(text, voice=voice)
+            audio_stream = self._tts.synthesize_stream(text, voice=voice, **context_kwargs)
+            audio_stream = _observe_audio(playback, recorder, audio_stream)
             if self._pipeline is not None or getattr(self, "_outbound_audio_taps", []):
                 audio_stream = self._wrap_outbound(session, audio_stream)
             await self._backend.send_audio(session, audio_stream)
@@ -663,6 +740,7 @@ class VoiceTTSMixin:
                 span_id = None  # prevent double-end
             raise
         finally:
+            self._end_tts_turn(recorder, playback, speaker_id or self.channel_id)
             duration_ms = (_time.monotonic() - t0) * 1000
             if telemetry is not None and span_id is not None:
                 telemetry.end_span(
@@ -746,8 +824,12 @@ class VoiceTTSMixin:
             voice = self._resolve_voice(event.source.channel_id)
             # Sessions play side by side; a failed one does not hold the others
             # back, and only a delivery nobody received takes the error path.
+            speaker_id = event.source.channel_id
             results = await asyncio.gather(
-                *(self._send_tts(s, final_text, voice=voice) for s in target_sessions),
+                *(
+                    self._send_tts(s, final_text, voice=voice, speaker_id=speaker_id)
+                    for s in target_sessions
+                ),
                 return_exceptions=True,
             )
             _served_sessions(target_sessions, results)
@@ -943,6 +1025,23 @@ class VoiceTTSMixin:
                 self._finish_playback(session.id),
                 name=f"finish_playback:{session.id}",
             )
+
+
+async def _observe_audio(
+    playback: TTSPlaybackState,
+    recorder: AssistantTurnRecorder | None,
+    chunks: AsyncIterator[AudioChunk],
+) -> AsyncIterator[AudioChunk]:
+    """Measure the audio a synthesis call hands to the transport.
+
+    ``playback`` learns how much audio went out (its ``played_ms``), and the
+    turn recorder keeps a copy when the context keeps audio.
+    """
+    async for chunk in chunks:
+        playback.note_audio(chunk)
+        if recorder is not None:
+            recorder.add(chunk)
+        yield chunk
 
 
 def _served_sessions(sessions: list[VoiceSession], results: list[Any]) -> list[VoiceSession]:

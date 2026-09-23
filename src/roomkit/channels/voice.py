@@ -32,6 +32,7 @@ from roomkit.models.enums import (
 from roomkit.voice.base import VoiceCapability
 from roomkit.voice.bridge import AudioBridge, AudioBridgeConfig, BridgeFrameFilter
 from roomkit.voice.interruption import InterruptionConfig
+from roomkit.voice.tts.context import TTSContextConfig, TTSContextLevel, TTSContextStore
 from roomkit.voice.utils import rms_db
 
 if TYPE_CHECKING:
@@ -43,7 +44,7 @@ if TYPE_CHECKING:
     from roomkit.recorder.base import ChannelRecordingConfig
     from roomkit.voice.audio_frame import AudioFrame
     from roomkit.voice.backends.base import VoiceBackend
-    from roomkit.voice.base import TranscriptionResult, VoiceSession
+    from roomkit.voice.base import AudioChunk, TranscriptionResult, VoiceSession
     from roomkit.voice.pipeline.config import AudioPipelineConfig
     from roomkit.voice.pipeline.diarization.base import DiarizationResult
     from roomkit.voice.pipeline.engine import AudioPipeline
@@ -104,12 +105,44 @@ class TTSPlaybackState:
     text: str
     started_at: datetime = field(default_factory=_utcnow)
     total_duration_ms: int | None = None
+    first_audio_at: float | None = None
+    """Monotonic time the first audio chunk was handed to the transport."""
+    audio_ms: float | None = None
+    """Audio handed to the transport so far; None while nothing is measured."""
+    stopped_at: float | None = None
+    """Monotonic time playback was cut off (barge-in with a flushed buffer)."""
 
     @property
     def position_ms(self) -> int:
         """Estimate current playback position based on elapsed time."""
         elapsed = datetime.now(UTC) - self.started_at
         return int(elapsed.total_seconds() * 1000)
+
+    def note_audio(self, chunk: AudioChunk) -> None:
+        """Account for an outbound chunk, so ``played_ms`` measures audio."""
+        if not chunk.data:
+            return
+        if self.first_audio_at is None:
+            self.first_audio_at = time.monotonic()
+        if chunk.format == "pcm_s16le":
+            duration = len(chunk.data) / (2 * chunk.channels * chunk.sample_rate) * 1000
+            self.audio_ms = (self.audio_ms or 0.0) + duration
+
+    @property
+    def played_ms(self) -> int:
+        """How much audio the user heard: time since the first chunk, capped
+        at the audio produced when its duration is known, frozen when
+        playback was cut off.
+
+        Falls back to ``position_ms`` for a state no stream went through.
+        """
+        if self.first_audio_at is None:
+            return self.position_ms
+        end = self.stopped_at if self.stopped_at is not None else time.monotonic()
+        heard = (end - self.first_audio_at) * 1000
+        if self.audio_ms is not None:
+            heard = min(heard, self.audio_ms)
+        return int(max(0.0, heard))
 
 
 class VoiceChannel(
@@ -151,6 +184,11 @@ class VoiceChannel(
     :class:`~roomkit.voice.stt.language.STTLanguageLock` that starts every
     session detecting (Deepgram ``multi``), pins it to the language the
     speaker uses, and releases it when the results stop fitting.
+
+    A TTS provider whose ``context_level`` is not NONE receives the dialogue
+    of the session on every streaming call (RFC §12.2.2): the channel keeps it
+    per session, as ``tts_context`` bounds it, and releases it when the
+    session is unbound.
     """
 
     channel_type = ChannelType.VOICE
@@ -177,10 +215,21 @@ class VoiceChannel(
         recording: ChannelRecordingConfig | None = None,
         close_providers: bool = True,
         stt_language_lock: STTLanguageLock | None = None,
+        tts_context: TTSContextConfig | None = None,
     ) -> None:
         super().__init__(channel_id)
         self._stt = stt
         self._tts = tts
+        # The dialogue a context-aware TTS hears (RFC §12.2.2); absent for a
+        # provider that consumes none, so nothing is kept on its behalf.
+        # A duck-typed provider without the attribute consumes none.
+        context_config = tts_context or TTSContextConfig()
+        context_level = getattr(tts, "context_level", TTSContextLevel.NONE)
+        self._tts_context: TTSContextStore | None = (
+            TTSContextStore(context_config, context_level)
+            if context_config.enabled and context_level != TTSContextLevel.NONE
+            else None
+        )
         self._backend = backend
         # When False, close() leaves the injected STT/TTS providers open —
         # the caller owns their lifecycle (e.g. reuses cached models across
@@ -799,6 +848,10 @@ class VoiceChannel(
 
     def _on_pipeline_dtmf(self, session: VoiceSession, dtmf_event: Any) -> None:
         """Handle DTMF event from pipeline — fire ON_DTMF hook."""
+        redaction = self._pipeline_config.dtmf_redaction if self._pipeline_config else None
+        if self._tts_context is not None and redaction is not None and redaction.enabled:
+            # In-band tones carry the digits: the turn keeps no audio (RFC §17.6).
+            self._tts_context.note_dtmf(session.id)
         with self._state_lock:
             binding_info = self._session_bindings.get(session.id)
         if not binding_info or not self._framework:
@@ -1080,6 +1133,7 @@ class VoiceChannel(
                     )
         # Notify pipeline of session end
         self._pipeline_session_ended(session)
+        self._release_tts_context(session.id)
         # Clear pending turns, audio, and interrupt cooldown
         self._pending_turns.pop(session.id, None)
         self._pending_audio.pop(session.id, None)
@@ -1410,14 +1464,15 @@ class VoiceChannel(
             return
         from roomkit.models.event import TextContent
 
+        played_ms = playback.played_ms
         metadata: dict[str, Any] = {
             "interrupted": True,
-            "played_ms": playback.position_ms,
+            "played_ms": played_ms,
             "voice_session_id": session.id,
         }
         if playback.total_duration_ms:
             metadata["played_percentage"] = round(
-                min(100.0, 100.0 * playback.position_ms / playback.total_duration_ms), 1
+                min(100.0, 100.0 * played_ms / playback.total_duration_ms), 1
             )
         try:
             await self._framework.send_event(
@@ -1454,6 +1509,8 @@ class VoiceChannel(
             and self._backend
             and VoiceCapability.INTERRUPTION in self._backend.capabilities
         ):
+            # What was heard ends here, whatever the stream still produces.
+            playback.stopped_at = _time.monotonic()
             await self._backend.cancel_audio(session)
 
         # Bypass AEC after TTS stops so user audio passes unchanged.  Keep the
@@ -1658,7 +1715,11 @@ class VoiceChannel(
         # 3b. Close audio bridge
         if self._bridge is not None:
             self._bridge.close()
-        # 4. Close STT/TTS providers (unless the caller owns their lifecycle)
+        # 4. Drop every TTS context, then close STT/TTS providers (unless the
+        #    caller owns their lifecycle)
+        if self._tts_context is not None:
+            for session_id in set(self._tts_context.sessions()) | set(self._session_bindings):
+                self._release_tts_context(session_id)
         if self._close_providers:
             if self._stt:
                 await self._stt.close()

@@ -13,6 +13,7 @@ from roomkit.voice.tts.base import TTSProvider
 
 if TYPE_CHECKING:
     from roomkit.models.event import AudioContent
+    from roomkit.voice.tts.context import TTSContext
 
 logger = logging.getLogger(__name__)
 
@@ -183,7 +184,7 @@ class GradiumTTSProvider(TTSProvider):
         yield AudioChunk(data=b"", sample_rate=sample_rate, format=audio_format, is_final=True)
 
     async def synthesize_stream(
-        self, text: str, *, voice: str | None = None
+        self, text: str, *, voice: str | None = None, context: TTSContext | None = None
     ) -> AsyncIterator[AudioChunk]:
         """Stream audio chunks as they're generated."""
         client = self._get_client()
@@ -192,7 +193,11 @@ class GradiumTTSProvider(TTSProvider):
             yield chunk
 
     async def synthesize_stream_input(
-        self, text_stream: AsyncIterator[str], *, voice: str | None = None
+        self,
+        text_stream: AsyncIterator[str],
+        *,
+        voice: str | None = None,
+        context: TTSContext | None = None,
     ) -> AsyncIterator[AudioChunk]:
         """Stream audio from streaming text input."""
         client = self._get_client()

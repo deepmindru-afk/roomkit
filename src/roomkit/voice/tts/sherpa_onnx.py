@@ -18,6 +18,7 @@ from roomkit.voice.tts.base import TTSProvider
 
 if TYPE_CHECKING:
     from roomkit.models.event import AudioContent
+    from roomkit.voice.tts.context import TTSContext
 
 logger = logging.getLogger(__name__)
 
@@ -238,7 +239,7 @@ class SherpaOnnxTTSProvider(TTSProvider):
         )
 
     async def synthesize_stream(
-        self, text: str, *, voice: str | None = None
+        self, text: str, *, voice: str | None = None, context: TTSContext | None = None
     ) -> AsyncIterator[AudioChunk]:
         """Stream audio chunks using a callback bridge.
 
