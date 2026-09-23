@@ -20,11 +20,17 @@ class _SlowRow:
 
     instances: list[_SlowRow] = []
 
+    capacity = 100_000
+    reply_positions = 375
+
     def __init__(self, config: VuiTTSConfig) -> None:
         self.offset = 0
         self.stopped_at: int | None = None
         self.closed = False
         _SlowRow.instances.append(self)
+
+    def reset(self) -> None:
+        self.offset = 0
 
     def restart(self, voice: str) -> None:
         self.offset = 100
@@ -83,6 +89,31 @@ async def test_synthesize_returns_a_wav(provider: VuiTTSProvider) -> None:
     assert content.duration_seconds == pytest.approx(20 * 1920 / 24000)
 
 
+async def test_a_second_cancel_while_waiting_keeps_the_lock_until_the_thread_stops(
+    provider: VuiTTSProvider,
+) -> None:
+    import asyncio
+    import contextlib
+
+    async def consume() -> None:
+        stream = provider.synthesize_stream("hello", context=_context())
+        async with contextlib.aclosing(stream) as chunks:
+            async for _ in chunks:
+                await asyncio.sleep(0)
+
+    task = asyncio.create_task(consume())
+    await asyncio.sleep(0.03)
+    task.cancel()  # the barge-in: the stream closes, waiting for the GPU thread
+    await asyncio.sleep(0.002)
+    task.cancel()  # cancelled again while it waits
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    [row] = _SlowRow.instances
+    assert row.stopped_at is not None  # the thread had stopped before the task ended
+    assert not provider._lock.locked()
+
+
 async def test_an_unknown_voice_is_refused(provider: VuiTTSProvider) -> None:
     with pytest.raises(ValueError, match="not found"):
         await anext(provider.synthesize_stream("hi", voice="nobody"))
@@ -106,6 +137,8 @@ def test_a_voice_is_a_preset_or_a_clip() -> None:
         VuiVoice(preset="maeve", ref_audio="x.wav", ref_text="x")
     with pytest.raises(ValueError):
         VuiVoice(ref_audio="x.wav")
+    with pytest.raises(ValueError, match="Unknown Vui preset"):
+        VuiVoice(preset="nobody")
 
 
 @pytest.mark.skipif(importlib.util.find_spec("vui") is not None, reason="vui-tts installed")

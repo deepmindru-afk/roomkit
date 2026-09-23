@@ -19,16 +19,26 @@ _AUDIO = AudioFrame(data=b"\x01\x00" * 1600, sample_rate=16000)
 
 
 class FakeCache:
-    """Records the operations; one KV position per text and per frame."""
+    """Records the operations; one KV position per text and per frame.
 
-    def __init__(self, frames_per_reply: int = 10) -> None:
+    Like Vui, a frame's codes enter the cache with the next decoding step:
+    after the k-th frame is yielded, ``offset`` covers frames 0..k-1.
+    """
+
+    def __init__(self, frames_per_reply: int = 10, capacity: int = 100_000) -> None:
         self.offset = 0
+        self.capacity = capacity
+        self.reply_positions = frames_per_reply
         self.frames_per_reply = frames_per_reply
         self.log: list[tuple[str, object]] = []
 
     def restart(self, voice: str) -> None:
         self.offset = 100  # the prompt
         self.log.append(("restart", voice))
+
+    def reset(self) -> None:
+        self.offset = 0
+        self.log.append(("reset", None))
 
     def truncate(self, offset: int) -> None:
         self.offset = offset
@@ -41,10 +51,11 @@ class FakeCache:
     def generate(self, text: str, cancel: threading.Event) -> Iterator[bytes]:
         self.offset += 3  # [spk] + text
         self.log.append(("generate", text))
-        for _ in range(self.frames_per_reply):
+        for i in range(self.frames_per_reply):
             if cancel.is_set():
                 return
-            self.offset += 1
+            if i:
+                self.offset += 1  # the previous frame's codes enter the cache
             yield b"\x00\x00"
 
 
@@ -191,6 +202,61 @@ class TestSwitching:
         _speak(conv, _ctx(_user("x"), _agent("y", 800), _user("z"), next_turn_id="a9"))
 
         assert [op for op, _ in cache.log].count("restart") == 2
+
+
+class TestRelease:
+    def test_release_empties_the_cache(self) -> None:
+        cache = FakeCache()
+        conv = VuiConversation(cache)
+        _speak(conv, _ctx(_user("u1"), next_turn_id="a1"))
+
+        conv.release("s1")
+
+        assert cache.log[-1] == ("reset", None)
+        assert cache.offset == 0
+
+    def test_release_during_a_reply_empties_the_cache_when_it_ends(self) -> None:
+        cache = FakeCache()
+        conv = VuiConversation(cache)
+        frames = conv.speak(_ctx(_user("u1"), next_turn_id="a1"), "maeve", "hi", threading.Event())
+        next(frames)
+
+        conv.release("s1")
+        assert ("reset", None) not in cache.log
+        list(frames)
+
+        assert cache.log[-1] == ("reset", None)
+
+    def test_releasing_another_context_leaves_the_cache(self) -> None:
+        cache = FakeCache()
+        conv = VuiConversation(cache)
+        _speak(conv, _ctx(_user("u1"), next_turn_id="a1"))
+
+        conv.release("s2")
+
+        assert ("reset", None) not in cache.log
+
+
+class TestCapacity:
+    def test_a_cache_about_to_overflow_restarts_before_the_reply(self) -> None:
+        cache = FakeCache(frames_per_reply=10, capacity=500)
+        conv = VuiConversation(cache)
+        _speak(conv, _ctx(_user("u1"), next_turn_id="a1"))
+        cache.offset = 400  # a long conversation
+
+        _speak(conv, _ctx(_user("u1"), _agent("a1", 800), _user("u2"), next_turn_id="a2"))
+
+        assert [op for op, _ in cache.log].count("restart") == 2
+        assert cache.offset < cache.capacity
+
+    def test_a_user_turn_longer_than_the_cache_keeps_its_words(self) -> None:
+        cache = FakeCache(capacity=400)
+        conv = VuiConversation(cache)
+        minute = AudioFrame(data=b"\x01\x00" * 16000 * 60, sample_rate=16000)
+
+        _speak(conv, _ctx(_user("u1", "long story", audio=minute), next_turn_id="a1"))
+
+        assert ("user", ("long story", False)) in cache.log
 
 
 class TestCancel:

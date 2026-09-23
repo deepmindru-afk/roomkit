@@ -27,6 +27,8 @@ import logging
 import os
 import wave
 
+import numpy as np
+import torch
 from shared import setup_logging
 
 from roomkit import RoomKit, TTSContextConfig, VoiceChannel
@@ -55,8 +57,6 @@ def pcm_of(data_url: str) -> bytes:
 
 def to_16k(pcm_24k: bytes) -> bytes:
     """Drop to the pipeline's 16 kHz, as a microphone path would deliver it."""
-    import numpy as np
-
     samples = np.frombuffer(pcm_24k, dtype=np.int16).astype(np.float32)
     positions = np.arange(0, len(samples), SAMPLE_RATE / 16000)
     return np.interp(positions, np.arange(len(samples)), samples).astype(np.int16).tobytes()
@@ -64,8 +64,6 @@ def to_16k(pcm_24k: bytes) -> bytes:
 
 async def main() -> None:
     if os.environ.get("VUI_DISABLE_CUDNN") == "1":
-        import torch
-
         torch.backends.cudnn.enabled = False
 
     tts = VuiTTSProvider(
