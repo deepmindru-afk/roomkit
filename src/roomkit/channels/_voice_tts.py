@@ -703,8 +703,15 @@ class VoiceTTSMixin:
             )
 
             voice = self._resolve_voice(event.source.channel_id)
-            for session in target_sessions:
-                await self._send_tts(session, final_text, voice=voice)
+            # Sessions play side by side; a failed one does not hold the others
+            # back, and still takes the error path below once all have run.
+            results = await asyncio.gather(
+                *(self._send_tts(s, final_text, voice=voice) for s in target_sessions),
+                return_exceptions=True,
+            )
+            failures = [r for r in results if isinstance(r, BaseException)]
+            if failures:
+                raise failures[0]
 
             _tok = set_current_span(_parent) if _parent else None
             try:

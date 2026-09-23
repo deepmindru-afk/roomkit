@@ -176,6 +176,23 @@ class TestDeliverStreamSeveralSessions:
         await kit.close()
 
 
+class TestDeliverSeveralSessions:
+    async def test_sessions_are_served_in_parallel(self) -> None:
+        backend, tts = _ScriptedBackend(), _RecordingTTS()
+        kit, channel, sessions, _, binding, context = await _setup(backend, tts)
+        backend.wait_for[sessions[0].id] = sessions[1].id
+        event = RoomEvent(
+            room_id=binding.room_id,
+            source=EventSource(channel_id="ai-1", channel_type=ChannelType.AI),
+            content=TextContent(body="Hello both."),
+        )
+
+        await asyncio.wait_for(channel.deliver(event, binding, context), 2.0)
+
+        assert tts.calls == [["Hello both."], ["Hello both."]]
+        await kit.close()
+
+
 async def _items(items: list[str], pulled: list[str]) -> AsyncIterator[str]:
     for item in items:
         pulled.append(item)

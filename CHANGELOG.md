@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   others. A session that stops early (barge-in, transport error) no longer
   affects the rest, and only a session that was served gets the final
   transcript (RMK-188).
+- Non-streamed voice responses (`deliver()`) are also played to every session
+  of the room in parallel instead of one after the other (RMK-188).
 
 ## [0.88.0] — 2026-09-22
 
