@@ -270,8 +270,12 @@ class ElevenLabsTTSProvider(TTSProvider):
                 if chunk:
                     yield self._chunk(chunk)
         else:
-            stitching = self._request_ids.stitching_params(context)
-            logger.debug("ElevenLabs stitching for %s: %s", context.context_id, stitching)
+            stitching = self._request_ids.stitching_params(context, voice_id)
+            logger.debug(
+                "ElevenLabs stitching for %s: %s",
+                context.context_id,
+                {k: len(v) if isinstance(v, list) else "text" for k, v in stitching.items()},
+            )
             async with client.text_to_speech.with_raw_response.stream(
                 **request, **stitching
             ) as response:
@@ -279,11 +283,13 @@ class ElevenLabsTTSProvider(TTSProvider):
                 async for chunk in response.data:
                     if chunk:
                         yield self._chunk(chunk)
-            # Reached only when the audio was read to the end: a stream cut
-            # off by a barge-in leaves no id ElevenLabs could continue from.
+            # Reached only when the audio was read to the end, the one case
+            # ElevenLabs can continue from; a stream closed early keeps no id.
             if request_id:
                 logger.debug("ElevenLabs request %s read to the end", request_id)
-                self._request_ids.record(context.context_id, context.next_turn_id, request_id)
+                self._request_ids.record(
+                    context.context_id, context.next_turn_id, request_id, voice_id
+                )
 
         # Send final chunk marker
         yield AudioChunk(

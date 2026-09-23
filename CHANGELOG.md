@@ -12,9 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ElevenLabs continues its voice from one response to the next. The provider
   declares `TTSContextLevel.SELF` and sends ElevenLabs the `request_id` of up
   to three previous responses the user heard to the end
-  (`previous_request_ids`, younger than two hours), or their text
-  (`previous_text`) when no id is usable. Nothing is sent after a response cut
-  off by a barge-in, and the user's words are never sent.
+  (`previous_request_ids`, younger than two hours, in the same voice), or the
+  last response's text (`previous_text`) when no id is usable. Nothing is sent
+  after a response cut off by a barge-in, and the user's words are never sent.
   `ElevenLabsConfig(use_context=False)` turns it off; v3 models, which
   ElevenLabs does not stitch, receive no context. See
   `examples/voice_elevenlabs_context.py` (RMK-193).
