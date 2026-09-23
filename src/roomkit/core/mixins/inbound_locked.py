@@ -39,7 +39,7 @@ from roomkit.models.task import Observation, Task
 if TYPE_CHECKING:
     from roomkit.channels.base import Channel
     from roomkit.core.event_router import EventRouter
-    from roomkit.core.hooks import HookEngine
+    from roomkit.core.hooks import HookEngine, SyncPipelineResult
     from roomkit.core.lanes import DeliveryCascade
     from roomkit.store.base import ConversationStore
 
@@ -265,6 +265,7 @@ class InboundLockedMixin(HelpersMixin):
         resolved_identity: Identity | None = None,
         pending_id_result: IdentityResult | None = None,
         deadline: float | None = None,
+        precheck: SyncPipelineResult | None = None,
     ) -> InboundResult:
         """Process an event under the room lock (RFC §10.1).
 
@@ -284,6 +285,10 @@ class InboundLockedMixin(HelpersMixin):
         (RFC §10.1 steps 3-5) — and it is carried into the locked rebuild
         (:meth:`_build_context`). A caller that already holds the lock has no
         such context and passes ``None``.
+
+        *precheck* is the outcome of the off-lock check (RFC §9.5.1), when
+        the caller ran one: step 9 applies it and runs only the hooks that
+        need the lock. ``None`` runs every hook here, as before.
         """
         # What is left of the caller's single pre-commit budget (RFC §13.6).
         # A deadline rather than the raw setting: the phase starts before this
@@ -306,6 +311,7 @@ class InboundLockedMixin(HelpersMixin):
                     cascade,
                     resolved_identity=resolved_identity,
                     pending_id_result=pending_id_result,
+                    precheck=precheck,
                 ),
                 timeout=remaining,
             )
@@ -359,6 +365,7 @@ class InboundLockedMixin(HelpersMixin):
         *,
         resolved_identity: Identity | None = None,
         pending_id_result: IdentityResult | None = None,
+        precheck: SyncPipelineResult | None = None,
     ) -> InboundResult | _Blocked | _Ready:
         """Pre-commit critical section (RFC §10.1 steps 6-11) — decides only.
 
@@ -477,10 +484,9 @@ class InboundLockedMixin(HelpersMixin):
 
             edit_delete_target = target_event
 
-        # Run sync hooks (before_broadcast)
-        sync_result = await self._hook_engine.run_sync_hooks(
-            room_id, HookTrigger.BEFORE_BROADCAST, event, context
-        )
+        # Run sync hooks (before_broadcast). After an off-lock check (RFC
+        # §9.5.1) its outcome comes first and only the locked hooks run here.
+        sync_result = await self._run_before_broadcast(room_id, event, context, precheck)
 
         # Emit framework events for any hook errors
         for hook_err in sync_result.hook_errors:
@@ -526,6 +532,39 @@ class InboundLockedMixin(HelpersMixin):
             )
 
         return _Ready(event, source_binding, sync_result, context, edit_delete_target)
+
+    async def _run_before_broadcast(
+        self,
+        room_id: str,
+        event: RoomEvent,
+        context: RoomContext,
+        precheck: SyncPipelineResult | None,
+    ) -> SyncPipelineResult:
+        """RFC §10.1 step 9, with the off-lock outcome folded in (§9.5.1).
+
+        Without *precheck* every hook runs here, the off-lock ones included —
+        ``needs_lock=False`` lets a hook run off the lock, never lets an
+        event skip it. With one, a block stands as decided; otherwise the
+        locked hooks see the (possibly modified) event, and the side effects
+        of both phases are collected together.
+        """
+        if precheck is None:
+            return await self._hook_engine.run_sync_hooks(
+                room_id, HookTrigger.BEFORE_BROADCAST, event, context
+            )
+        if not precheck.allowed:
+            return precheck
+        if isinstance(precheck.event, RoomEvent):
+            event = precheck.event
+        locked = await self._hook_engine.run_sync_hooks(
+            room_id, HookTrigger.BEFORE_BROADCAST, event, context, needs_lock=True
+        )
+        locked.injected_events[:0] = precheck.injected_events
+        locked.tasks[:0] = precheck.tasks
+        locked.observations[:0] = precheck.observations
+        locked.hook_errors[:0] = precheck.hook_errors
+        locked.metadata = {**precheck.metadata, **locked.metadata}
+        return locked
 
     async def _run_commit(self, ready: _Ready, room_id: str, cascade: DeliveryCascade) -> _Proceed:
         """Commit phase (RFC §10.1 step 12) — every durable timeline write.

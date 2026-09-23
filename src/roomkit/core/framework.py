@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 
 from roomkit.channels.base import Channel
 from roomkit.channels.websocket import SendFn, StreamSendFn, WebSocketChannel
+from roomkit.core.admission import RoomAdmission
 from roomkit.core.delivery import DeliveryStrategy
 from roomkit.core.event_router import EventRouter
 from roomkit.core.exceptions import (
@@ -250,6 +251,8 @@ class RoomKit(
         # and are visible to every process sharing the store.
         self._closed = False
         self._hook_engine = HookEngine()
+        # Admission tickets for off-lock BEFORE_BROADCAST checks (RFC §9.5.1).
+        self._admission = RoomAdmission(self._hook_engine, self._build_context)
         self._lock_manager = lock_manager or InMemoryLockManager()
         # A persistent store paired with an in-process lock is unsafe if the
         # store is shared across processes: per-process locks do not coordinate
@@ -838,10 +841,18 @@ class RoomKit(
             from roomkit.core.lanes import DeliveryCascade
 
             cascade = DeliveryCascade(room_id, reentry_budget=self._max_chain_depth * 10)
-            async with self._lock_manager.locked(room_id):
+            # The off-lock check (RFC §9.5.1) runs before the lock, when a
+            # needs_lock=False hook applies; its ticket is held until the
+            # locked pass has committed.
+            async with (
+                self._admission.admitted(room_id, event, None) as precheck,
+                self._lock_manager.locked(room_id),
+            ):
                 # No pre-lock context to carry: this entry point takes the lock
                 # first, so the locked pass builds the one context of the call.
-                result = await self._process_locked(event, room_id, None, cascade)
+                result = await self._process_locked(
+                    event, room_id, None, cascade, precheck=precheck
+                )
             # A room that refuses events (RFC §5.1) is the one block this API
             # cannot report by returning: its contract is the committed event,
             # and handing back one marked DELIVERED for a write that never

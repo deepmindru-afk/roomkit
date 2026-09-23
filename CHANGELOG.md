@@ -18,6 +18,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`reason="hook_timeout:<name>"`, `hook_error:<name>`,
   `hook_invalid_result:<name>`), so the sender can be told why the message
   did not go out. Hooks without the flag keep failing open.
+- `needs_lock=False` on a SYNC `BEFORE_BROADCAST` hook runs it before the room
+  lock is taken (RFC §9.5.1). A check that calls out (a PII scan over HTTP)
+  used to hold the whole room for its duration, so messages of one room
+  queued and each paid the scans of those ahead of it: two messages one second
+  apart with a 3 s scan each went out at 3 s and 6 s. Off the lock the scans
+  overlap and the second goes out at 4 s. A per-room admission ticket keeps
+  arrival order within a process: the second message still commits after the
+  first, and right after it when the first is blocked. The ticket is released
+  on every path (committed, blocked, timed out, failed, cancelled), and the
+  wait for it counts against `process_timeout` like the rest of the
+  pre-commit phase. An event sent from inside an off-lock check (a notice
+  saying the scan is running) takes no ticket and commits ahead of the
+  message being checked. Registration refuses `needs_lock=False` on any other
+  trigger, and refuses a locked hook ordered before an off-lock one by
+  priority: off-lock hooks run first, and a consent or budget gate placed
+  ahead of a scan must not silently end up behind it. RoomKit's orchestration
+  routers sit at priority -100, so an off-lock hook in an orchestrated room
+  goes at -100 or below. Reentry passes, streamed segments and regeneration
+  keep running every hook under the lock, so an off-lock check is never
+  skipped.
 
 ## [0.87.0] — 2026-09-22
 

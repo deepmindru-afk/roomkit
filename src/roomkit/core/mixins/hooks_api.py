@@ -98,6 +98,7 @@ class HooksApiMixin(HelpersMixin):
         directions: set[ChannelDirection] | None = None,
         event_types: set[EventType] | None = None,
         fail_closed: bool = False,
+        needs_lock: bool = True,
     ) -> Callable[..., Any]:
         """Decorator to register a global hook.
 
@@ -122,6 +123,12 @@ class HooksApiMixin(HelpersMixin):
                 result blocks the payload instead of letting it through, with
                 ``reason="hook_timeout:<name>"`` / ``hook_error:<name>`` /
                 ``hook_invalid_result:<name>`` (RFC §9.3). For content checks.
+            needs_lock: SYNC ``BEFORE_BROADCAST`` only — ``False`` runs the
+                hook before the room lock is taken, so its I/O no longer holds
+                the room; arrival order is kept by a per-room admission ticket
+                (RFC §9.5.1). Only for a hook that reads the event, not the
+                room's state. Raises ``ValueError`` on another trigger, or when
+                a locked hook would be ordered before it by priority.
         """
 
         def decorator(fn: SyncHookFn | AsyncHookFn) -> SyncHookFn | AsyncHookFn:
@@ -138,6 +145,7 @@ class HooksApiMixin(HelpersMixin):
                     directions=directions,
                     event_types=event_types,
                     fail_closed=fail_closed,
+                    needs_lock=needs_lock,
                 )
             )
             return fn
@@ -327,10 +335,12 @@ class HooksApiMixin(HelpersMixin):
         name: str = "",
         *,
         fail_closed: bool = False,
+        needs_lock: bool = True,
     ) -> None:
         """Add a hook for a specific room.
 
-        ``fail_closed`` has the meaning it has on :meth:`hook`.
+        ``fail_closed`` and ``needs_lock`` have the meaning they have on
+        :meth:`hook`.
         """
         self._hook_engine.add_room_hook(
             room_id,
@@ -341,6 +351,7 @@ class HooksApiMixin(HelpersMixin):
                 priority=priority,
                 name=name,
                 fail_closed=fail_closed,
+                needs_lock=needs_lock,
             ),
         )
 

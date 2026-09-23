@@ -20,6 +20,7 @@ from roomkit.models.enums import (
 
 if TYPE_CHECKING:
     from roomkit.channels.base import Channel
+    from roomkit.core.admission import RoomAdmission
     from roomkit.core.inbound_router import InboundRoomRouter
     from roomkit.core.lanes import DeliveryCascade
     from roomkit.core.locks import RoomLockManager
@@ -40,6 +41,7 @@ class InboundHost(Protocol):
         _store: Conversation persistence backend.
         _channels: Registry of channel-id to :class:`Channel` instances.
         _lock_manager: Per-room lock for serialised mutation.
+        _admission: Admission tickets for off-lock checks (RFC §9.5.1).
         _identity_resolver: Optional identity resolver for RFC 7 pipeline.
         _identity_channel_types: Channel types eligible for identity resolution.
         _identity_timeout: Timeout in seconds for identity resolution.
@@ -62,6 +64,7 @@ class InboundHost(Protocol):
     _store: ConversationStore
     _channels: dict[str, Channel]
     _lock_manager: RoomLockManager
+    _admission: RoomAdmission
     _identity_resolver: IdentityResolver | None
     _identity_channel_types: set[ChannelType] | None
     _identity_timeout: float
@@ -82,6 +85,7 @@ class InboundMixin(HelpersMixin):
     _store: ConversationStore
     _channels: dict[str, Channel]
     _lock_manager: RoomLockManager
+    _admission: RoomAdmission
     _identity_resolver: IdentityResolver | None
     _identity_channel_types: set[ChannelType] | None
     _identity_timeout: float
@@ -434,6 +438,13 @@ class InboundMixin(HelpersMixin):
         async with AsyncExitStack() as stack:
             try:
                 async with asyncio.timeout_at(deadline):
+                    # Off-lock check (RFC §9.5.1): runs before the lock under
+                    # the same pre-commit budget, and holds the room's
+                    # admission ticket until the stack unwinds — after the
+                    # lock is released, so after the commit.
+                    precheck = await stack.enter_async_context(
+                        self._admission.admitted(room_id, event, context)
+                    )
                     await stack.enter_async_context(self._lock_manager.locked(room_id))
             except TimeoutError:
                 return await self._refuse_on_timeout(room_id, message.channel_id)
@@ -445,6 +456,7 @@ class InboundMixin(HelpersMixin):
                 resolved_identity=resolved_identity,
                 pending_id_result=pending_id_result,
                 deadline=deadline,
+                precheck=precheck,
             )
 
         if defer_delivery:

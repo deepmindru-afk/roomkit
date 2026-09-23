@@ -44,6 +44,10 @@ class HookRegistration:
         fail_closed: SYNC only — a timeout, an exception or an unusable result
             blocks instead of allowing (RFC §9.3). For a content check that
             must never let an unchecked payload through.
+        needs_lock: BEFORE_BROADCAST SYNC only — ``False`` runs the hook off
+            the room lock, before it is taken, ordered by the room's
+            admission ticket (RFC §9.5.1). Only for a hook that reads the
+            event, not the room's state: its context is the pre-lock one.
     """
 
     trigger: HookTrigger
@@ -58,6 +62,7 @@ class HookRegistration:
     directions: set[ChannelDirection] | None = None
     event_types: set[EventType] | None = None
     fail_closed: bool = False
+    needs_lock: bool = True
 
 
 @dataclass
@@ -132,13 +137,64 @@ class HookEngine:
             },
         )
 
+    def _check_lock_placement(self, hook: HookRegistration, room_id: str | None) -> None:
+        """Enforce RFC §9.1's rules on ``needs_lock`` before *hook* is added.
+
+        ``needs_lock=False`` only exists on a SYNC ``BEFORE_BROADCAST`` hook.
+        And off-lock hooks run first, so a locked hook ordered before an
+        off-lock one could not run in its declared place — a consent or
+        budget gate meant to refuse a message before it is scanned would run
+        after the scan. That is refused here, loudly, rather than reordered.
+        """
+        is_check = (
+            hook.trigger == HookTrigger.BEFORE_BROADCAST and hook.execution == HookExecution.SYNC
+        )
+        if not hook.needs_lock and not is_check:
+            raise ValueError(
+                f"Hook {hook.name!r}: needs_lock=False is only supported on a SYNC "
+                f"BEFORE_BROADCAST hook, not {hook.execution} {hook.trigger}"
+            )
+        if not is_check:
+            return
+        # A global hook runs in every room, so it meets every registered hook;
+        # a room hook meets the global ones and its own room's.
+        peers = list(self._global_hooks)
+        if room_id is None:
+            for hooks in self._room_hooks.values():
+                peers.extend(hooks)
+        else:
+            peers.extend(self._room_hooks.get(room_id, []))
+        for peer in peers:
+            if peer.trigger != hook.trigger or peer.execution != HookExecution.SYNC:
+                continue
+            locked, off = (peer, hook) if not hook.needs_lock else (hook, peer)
+            if locked.needs_lock and not off.needs_lock and locked.priority < off.priority:
+                raise ValueError(
+                    f"Hook {locked.name!r} (priority {locked.priority}) needs the room "
+                    f"lock but is ordered before off-lock hook {off.name!r} (priority "
+                    f"{off.priority}). Off-lock hooks run first (RFC §9.5.1): give "
+                    f"{off.name!r} a priority at or below {locked.priority}, or keep "
+                    f"it needs_lock=True."
+                )
+
+    def has_off_lock_hooks(self, room_id: str, event: RoomEvent) -> bool:
+        """Whether a ``needs_lock=False`` check applies to *event* (RFC §9.5.1)."""
+        return any(
+            not h.needs_lock
+            for h in self._get_hooks(
+                room_id, HookTrigger.BEFORE_BROADCAST, HookExecution.SYNC, event=event
+            )
+        )
+
     def register(self, hook: HookRegistration) -> None:
         """Register a global hook."""
+        self._check_lock_placement(hook, None)
         self._global_hooks.append(hook)
         self._trigger_index.add(hook.trigger)
 
     def add_room_hook(self, room_id: str, hook: HookRegistration) -> None:
         """Register a hook for a specific room."""
+        self._check_lock_placement(hook, room_id)
         self._room_hooks.setdefault(room_id, []).append(hook)
         self._trigger_index.add(hook.trigger)
 
@@ -276,6 +332,7 @@ class HookEngine:
         context: RoomContext,
         *,
         skip_event_filter: bool = False,
+        needs_lock: bool | None = None,
     ) -> SyncPipelineResult:
         """Run sync hooks sequentially. Stops on block, passes modified events.
 
@@ -287,9 +344,15 @@ class HookEngine:
             context: The room context.
             skip_event_filter: If True, skip channel-based event filtering.
                 Use this for voice hooks where event is not a RoomEvent.
+            needs_lock: ``None`` runs every SYNC hook. ``False`` runs only the
+                off-lock ones (RFC §9.5.1) and fires no ASYNC observer — the
+                locked pass that follows fires them once, on the final event.
+                ``True`` runs only the hooks that need the lock.
         """
         filter_event = None if skip_event_filter else event
         hooks = self._get_hooks(room_id, trigger, HookExecution.SYNC, event=filter_event)
+        if needs_lock is not None:
+            hooks = [h for h in hooks if h.needs_lock == needs_lock]
         result = SyncPipelineResult(event=event)
 
         for hook in hooks:
@@ -437,6 +500,8 @@ class HookEngine:
         # are only invoked via run_sync_hooks (e.g. ON_TRANSCRIPTION,
         # ON_VISION_RESULT, ON_TOOL_CALL).  Only ASYNC hooks are fired
         # — SYNC hooks already ran above.
+        if needs_lock is False:
+            return result
         final_event = result.event if result.event is not None else event
         filter_ev = None if skip_event_filter else final_event
         async_hooks = self._get_hooks(
