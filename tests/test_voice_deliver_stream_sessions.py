@@ -206,7 +206,9 @@ class TestDeliverStreamSeveralSessions:
         assert len(pulled) <= 4
         (final,) = _by_role(backend, sessions[0], "assistant")
         assert spoken[-1] not in final
-        # The source is left where it is, never cancelled from inside.
+        # No pull was in flight when playback stopped, so nothing was
+        # cancelled inside the source: closing it is the caller's step
+        # (RFC §12.2 step 13s, tests/test_voice_stream_barge_in.py).
         assert seen == []
         await kit.close()
 

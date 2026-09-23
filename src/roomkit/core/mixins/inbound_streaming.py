@@ -172,6 +172,12 @@ class InboundStreamingMixin(HelpersMixin):
             response_events=response_events,
         )
 
+        # Whether the transport read the response to its end. A transport can
+        # hand back early (every voice session barged in, RFC §12.2 step 13s):
+        # the final flush below then never runs, and the response is closed
+        # and stored cancelled after deliver_stream() returns.
+        exhausted = False
+
         # Generator that yields text deltas and persisted events.
         # Text deltas drive the streaming bubble; RoomEvents are delivered
         # as regular events interleaved between stream chunks.
@@ -183,6 +189,7 @@ class InboundStreamingMixin(HelpersMixin):
             RoomEvents (the realtime bus still publishes a buffered
             ``THINKING_END`` for out-of-band observers).
             """
+            nonlocal exhausted
             async for delta in sr.stream:
                 if isinstance(delta, str):
                     writer.add_text(delta)
@@ -199,6 +206,7 @@ class InboundStreamingMixin(HelpersMixin):
                     if row is not None:
                         yield row
 
+            exhausted = True
             row = await writer.flush_text()
             if row is not None:
                 yield row
@@ -218,8 +226,17 @@ class InboundStreamingMixin(HelpersMixin):
                 correlation_id=correlation_id,
                 parent_event_id=parent_event_id,
             )
+            segments = segment_stream()
             try:
-                await channel.deliver_stream(segment_stream(), placeholder, binding, context)
+                await channel.deliver_stream(segments, placeholder, binding, context)
+                if not exhausted:
+                    # The transport stopped reading: the user cut the response
+                    # off. Close the generation first, so no token is produced
+                    # and no tool call starts past this point, then keep what
+                    # was already produced, marked like any interrupted turn.
+                    await segments.aclose()
+                    await _aclose_stream(sr.stream)
+                    await writer.flush_text(cancelled=True)
             except asyncio.CancelledError:
                 # A turn interrupted on purpose (the console's Esc). What was
                 # already streamed is on the user's screen, so the timeline

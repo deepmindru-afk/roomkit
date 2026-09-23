@@ -363,10 +363,12 @@ class VoiceTTSMixin:
             raise
         if not producer.done():
             # Every session stopped early (barge-in) while the next item was
-            # being pulled.  Let that pull end off the turn instead of
-            # cancelling it inside the upstream stream; the closed branches
-            # make the producer stop right after.
-            self._schedule(_await_task(producer), name=f"tts_fan_out_drain:{event.id}")
+            # being pulled.  The user said stop, so that pull is cancelled
+            # rather than left to finish: a token or a tool call arriving now
+            # would be generated for nobody (RFC §12.2 step 13s).  The caller
+            # sees the stream was not read to its end and closes it.
+            producer.cancel()
+            await asyncio.gather(producer, return_exceptions=True)
         # A source failure (the AI provider) is the response's failure, not
         # one session's: it takes the caller's error path whoever was served.
         if fan_out.error is not None:
@@ -377,7 +379,7 @@ class VoiceTTSMixin:
         # Apply TTS filter to the accumulated text for transcription/hooks
         if self._tts_filter is not None and full_text:
             full_text = self._tts_filter(full_text)
-        # Update playback state with actual streamed text (was "(streaming)")
+        # Update playback state with the whole streamed text (was the relayed prefix)
         for session in delivered:
             with self._state_lock:
                 if session.id in self._playing_sessions:
@@ -471,10 +473,9 @@ class VoiceTTSMixin:
             )
             await self.interrupt(session, reason="new_tts")
 
+        playback = TTSPlaybackState(session_id=session.id, text="")
         with self._state_lock:
-            self._playing_sessions[session.id] = TTSPlaybackState(
-                session_id=session.id, text="(streaming)"
-            )
+            self._playing_sessions[session.id] = playback
             # Clear done event so wait_playback_done() blocks until send_audio returns
             done_ev = self._playback_done_events.get(session.id)
             if done_ev is None:
@@ -501,10 +502,16 @@ class VoiceTTSMixin:
                 attributes={Attr.PROVIDER: tts_name},
             )
 
-        # Relay each sentence to the client before TTS synthesis.
+        # Relay each sentence to the client before TTS synthesis, and keep
+        # the text handed to TTS so far on the playback state: a barge-in
+        # records it as the interrupted utterance (RFC §12.3.13 step 2).
+        relayed: list[str] = []
+
         async def relay_sentences() -> AsyncIterator[str]:
             async for sentence in sentences:
                 await backend.send_transcription(session, sentence, "assistant_interim")
+                relayed.append(sentence.strip())
+                playback.text = " ".join(relayed)
                 yield sentence
 
         try:
@@ -960,11 +967,6 @@ def _served_sessions(sessions: list[VoiceSession], results: list[Any]) -> list[V
     if raised is not None:
         raise raised
     return served
-
-
-async def _await_task(task: asyncio.Task[None]) -> None:
-    """Wait for *task* under the channel's scheduled tasks (cancelled on close)."""
-    await task
 
 
 async def _filter_sentences_plain(

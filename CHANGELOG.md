@@ -23,6 +23,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   playback fails is logged and no longer keeps the others from their
   `AFTER_TTS` hooks; the `tts_error` path is taken when no session was
   served (RMK-188).
+- A barge-in during a streamed AI response no longer loses the response. When
+  every voice session cut the agent off, nothing of what it said reached the
+  timeline, so its next turn had no record of it, and a pull still in flight
+  could fail the turn with `aclose(): asynchronous generator is already
+  running` or let a tool call start after the stop. The framework now closes
+  the response stream as soon as the transport stops reading it, and stores the
+  text already produced with `metadata.cancelled = true`, as it already did for
+  a cancelled turn. No token is generated and no tool call starts past that
+  point. One session stopping still leaves the others listening, and with
+  `flush_partial_tts=False` the response plays and is stored whole (RFC §12.2
+  step 13s, RMK-189).
+- The interrupted utterance recorded on a barge-in (`metadata.interrupted`)
+  carries the sentences already handed to TTS instead of the `(streaming)`
+  placeholder (RFC §12.3.13, RMK-189).
 
 ## [0.88.0] — 2026-09-22
 
