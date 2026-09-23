@@ -152,7 +152,7 @@ class BeepTTS(TTSProvider):
         raise NotImplementedError("BeepTTS only streams")
 
     async def synthesize_stream(
-        self, text: str, *, voice: str | None = None
+        self, text: str, *, voice: str | None = None, context: Any = None
     ) -> AsyncIterator[AudioChunk]:
         frames = max(20, min(len(text) * 12, 1500))  # 200 ms to 15 s, in 10 ms steps
         per_frame = SAMPLE_RATE // 100

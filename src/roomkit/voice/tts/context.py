@@ -73,7 +73,7 @@ class TTSContext:
     """The ``turn_id`` the assistant turn of this call will get, if it is played."""
 
 
-@dataclass
+@dataclass(frozen=True)
 class TTSContextConfig:
     """How a Voice Channel keeps the TTS conversation context.
 
@@ -153,6 +153,9 @@ class TTSContextStore:
     """The dialogue of every voice session, as a TTS provider may see it.
 
     One history per session, never shared with another session or channel.
+    A session is tracked from :meth:`open` to :meth:`release`: a turn that
+    lands after the release (a synthesis call or a transcription still
+    finishing) is dropped, never kept for a session that is gone.
     """
 
     def __init__(self, config: TTSContextConfig, level: TTSContextLevel) -> None:
@@ -165,6 +168,11 @@ class TTSContextStore:
     @property
     def keeps_audio(self) -> bool:
         return self._level == TTSContextLevel.AUDIO and self._config.include_audio
+
+    def open(self, session_id: str) -> None:
+        """Start tracking a session (it was bound to the channel)."""
+        with self._lock:
+            self._turns.setdefault(session_id, [])
 
     def sessions(self) -> list[str]:
         with self._lock:
@@ -179,9 +187,20 @@ class TTSContextStore:
             return _audio_seconds(self._turns.get(session_id, ()))
 
     def note_dtmf(self, session_id: str) -> None:
-        """A DTMF tone was heard: the current user turn must not keep its audio."""
+        """A DTMF tone was heard in the speech segment under way."""
         with self._lock:
             self._dtmf_seen.add(session_id)
+
+    def take_dtmf(self, session_id: str) -> bool:
+        """Whether DTMF was heard since the last take; clears the mark.
+
+        Taken when a speech segment ends, in segment order, so the mark stays
+        with the segment the tones were in, however late its STT finishes.
+        """
+        with self._lock:
+            seen = session_id in self._dtmf_seen
+            self._dtmf_seen.discard(session_id)
+            return seen
 
     def add_user_turn(
         self,
@@ -192,16 +211,14 @@ class TTSContextStore:
         audio: bytes | None = None,
         sample_rate: int = 16000,
         text_changed: bool = False,
+        dtmf_seen: bool = False,
     ) -> None:
         """Record what the user said, as the transcription hooks left it.
 
         *audio* is the utterance as 16-bit mono PCM. It is dropped when a hook
         changed the text (it would still hold what the hook removed) and when
-        DTMF was heard with redaction on (the tones carry the digits).
+        DTMF was heard in it with redaction on (the tones carry the digits).
         """
-        with self._lock:
-            dtmf_seen = session_id in self._dtmf_seen
-            self._dtmf_seen.discard(session_id)
         keep_audio = bool(audio) and self.keeps_audio and not text_changed and not dtmf_seen
         frame = (
             AudioFrame(data=audio, sample_rate=sample_rate, sample_width=_PCM_SAMPLE_WIDTH)
@@ -228,9 +245,11 @@ class TTSContextStore:
             keep_audio=self.keeps_audio,
             max_seconds=self._config.max_audio_seconds,
         )
-        context = TTSContext(
-            context_id=session_id, turns=self.turns(session_id), next_turn_id=turn_id
-        )
+        turns = self.turns(session_id)
+        if self._level == TTSContextLevel.SELF:
+            # SELF only needs its own turns: the user's words are not sent.
+            turns = tuple(t for t in turns if t.role == "assistant")
+        context = TTSContext(context_id=session_id, turns=turns, next_turn_id=turn_id)
         return context, recorder
 
     def commit_assistant_turn(
@@ -266,7 +285,9 @@ class TTSContextStore:
 
     def _append(self, session_id: str, turn: ConversationTurn) -> None:
         with self._lock:
-            history = self._turns.setdefault(session_id, [])
+            history = self._turns.get(session_id)
+            if history is None:
+                return  # released, or never bound
             history.append(turn)
             del history[: max(0, len(history) - self._config.max_turns)]
             _trim_audio(history, self._config.max_audio_seconds)

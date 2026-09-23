@@ -91,8 +91,8 @@ class _PacedTTS(TTSProvider):
                 yield chunk
 
 
-class _LegacyTTS(TTSProvider):
-    """A provider written before RFC §12.2.2: its signature has no ``context``."""
+class _NoContextTTS(TTSProvider):
+    """A provider whose ``synthesize_stream`` takes no ``context`` argument."""
 
     def __init__(self) -> None:
         self.texts: list[str] = []
@@ -132,8 +132,8 @@ def _binding() -> ChannelBinding:
 
 
 class TestPassingRules:
-    async def test_a_provider_at_none_is_called_as_before(self) -> None:
-        tts = _LegacyTTS()
+    async def test_a_provider_at_none_is_called_without_context(self) -> None:
+        tts = _NoContextTTS()
         kit, channel, backend, [session] = await _room(tts)
 
         await channel.say(session, "hello there")
@@ -252,20 +252,25 @@ class TestUserTurns:
         assert turn.audio is None
         await kit.close()
 
-    async def test_dtmf_with_redaction_drops_the_turn_audio(self) -> None:
+    async def test_dtmf_drops_the_audio_of_the_segment_it_was_heard_in(self) -> None:
+        """The mark belongs to the segment the tones were in, not to whichever
+        transcription finishes first."""
         tts = _PacedTTS(TTSContextLevel.AUDIO)
-        stt = MockSTTProvider(transcripts=["one two"])
+        stt = MockSTTProvider(transcripts=["first", "second"])
         pipeline = AudioPipelineConfig(dtmf=MockDTMFDetector(), dtmf_redaction=DTMFRedaction())
         kit, channel, backend, [session] = await _room(
             tts, config=TTSContextConfig(include_audio=True), stt=stt, pipeline=pipeline
         )
+        before, during = b"\x02\x00" * 1600, b"\x04\x00" * 1600
 
+        channel._on_pipeline_speech_end(session, before)
         channel._on_pipeline_dtmf(session, object())
-        await channel._process_speech_end(session, b"\x02\x00" * 1600, "r1")
+        channel._on_pipeline_speech_end(session, during)
+        await asyncio.sleep(0.05)
 
-        [turn] = channel._tts_context.turns(session.id)  # type: ignore[union-attr]
-        assert turn.text == "one two"
-        assert turn.audio is None
+        first, second = channel._tts_context.turns(session.id)  # type: ignore[union-attr]
+        assert (first.text, first.audio is not None) == ("first", True)
+        assert (second.text, second.audio) == ("second", None)
         await kit.close()
 
     async def test_a_routed_batch_flush_is_recorded(self) -> None:
@@ -346,6 +351,51 @@ class TestBargeIn:
         assert channel._tts_context.turns(session.id) == ()  # type: ignore[union-attr]
         await kit.close()
 
+    async def test_a_replacing_call_hears_the_turn_it_cut(self) -> None:
+        tts = _PacedTTS(TTSContextLevel.TEXT, pace_s=0.05)
+        kit, channel, backend, [session] = await _room(tts)
+
+        speaking = asyncio.create_task(channel.say(session, "a b c d e f g h i j"))
+        await asyncio.sleep(0.2)
+        await channel.say(session, "sorry")
+        await speaking
+
+        replacing = tts.contexts[1]
+        assert replacing is not None
+        [cut] = replacing.turns
+        assert (cut.text, cut.interrupted) == ("a b c d e f g h i j", True)
+        stored = channel._tts_context.turns(session.id)  # type: ignore[union-attr]
+        assert [t.text for t in stored] == ["a b c d e f g h i j", "sorry"]
+        await kit.close()
+
+    async def test_without_flush_the_timeline_and_context_agree(self) -> None:
+        from roomkit.voice.interruption import InterruptionConfig
+
+        tts = _PacedTTS(TTSContextLevel.TEXT, pace_s=0.05)
+        backend = MockVoiceBackend(capabilities=VoiceCapability.INTERRUPTION)
+        channel = VoiceChannel(
+            "voice-1",
+            tts=tts,
+            backend=backend,
+            interruption=InterruptionConfig(flush_partial_tts=False),
+        )
+        kit = RoomKit(voice=backend)
+        kit.register_channel(channel)
+        await kit.create_room(room_id="r1")
+        await kit.attach_channel("r1", "voice-1")
+        session = await kit.connect_voice("r1", "user-0", "voice-1")
+
+        speaking = asyncio.create_task(channel.say(session, "a b c d e f g h"))
+        await asyncio.sleep(0.2)
+        await channel.interrupt(session, reason="barge_in")
+        await speaking
+
+        [stored] = [e for e in await kit.store.list_events("r1") if e.metadata.get("interrupted")]
+        [turn] = channel._tts_context.turns(session.id)  # type: ignore[union-attr]
+        assert turn.interrupted is True
+        assert stored.metadata["played_ms"] == turn.played_ms
+        await kit.close()
+
 
 class TestStreamedResponse:
     async def test_a_streamed_response_is_recorded_as_one_turn(self) -> None:
@@ -384,6 +434,21 @@ class TestLifecycle:
         assert channel._tts_context.turns(session.id) == ()  # type: ignore[union-attr]
         await kit.close()
 
+    async def test_a_turn_finishing_after_unbind_is_not_kept(self) -> None:
+        tts = _PacedTTS(TTSContextLevel.AUDIO, pace_s=0.05)
+        kit, channel, backend, [session] = await _room(
+            tts, config=TTSContextConfig(include_audio=True)
+        )
+
+        speaking = asyncio.create_task(channel.say(session, "a b c d e f"))
+        await asyncio.sleep(0.15)
+        channel.unbind_session(session)
+        await speaking
+
+        assert channel._tts_context.turns(session.id) == ()  # type: ignore[union-attr]
+        assert channel._tts_context.sessions() == []  # type: ignore[union-attr]
+        await kit.close()
+
     async def test_close_releases_every_context(self) -> None:
         tts = MockTTSProvider(context_level=TTSContextLevel.TEXT)
         kit, channel, backend, [session] = await _room(tts)
@@ -398,6 +463,7 @@ class TestLifecycle:
 class TestStoreBounds:
     def test_oldest_turns_go_past_max_turns(self) -> None:
         store = TTSContextStore(TTSContextConfig(max_turns=2), TTSContextLevel.TEXT)
+        store.open("s")
         for text in ("one", "two", "three"):
             store.add_user_turn("s", "u", text)
 
@@ -407,6 +473,7 @@ class TestStoreBounds:
         store = TTSContextStore(
             TTSContextConfig(include_audio=True, max_audio_seconds=1.5), TTSContextLevel.AUDIO
         )
+        store.open("s")
         one_second = b"\x00\x00" * _RATE
         store.add_user_turn("s", "u", "first", audio=one_second, sample_rate=_RATE)
         store.add_user_turn("s", "u", "second", audio=one_second, sample_rate=_RATE)
@@ -418,12 +485,24 @@ class TestStoreBounds:
 
     def test_release_forgets_the_session(self) -> None:
         store = TTSContextStore(TTSContextConfig(), TTSContextLevel.TEXT)
+        store.open("s")
         store.add_user_turn("s", "u", "hello")
 
         store.release("s")
 
         assert store.turns("s") == ()
         assert store.sessions() == []
+        store.add_user_turn("s", "u", "too late")
+        assert store.sessions() == []
+
+    def test_self_level_sees_only_its_own_turns(self) -> None:
+        store = TTSContextStore(TTSContextConfig(), TTSContextLevel.SELF)
+        store.open("s")
+        store.add_user_turn("s", "u", "private words")
+
+        context, _ = store.begin_assistant_turn("s")
+
+        assert context.turns == ()
 
     def test_invalid_bounds_are_refused(self) -> None:
         with pytest.raises(ValueError):

@@ -53,6 +53,7 @@ if TYPE_CHECKING:
     from roomkit.voice.stt.base import STTProvider
     from roomkit.voice.stt.language import STTLanguageLock
     from roomkit.voice.tts.base import TTSProvider
+    from roomkit.voice.tts.context import AssistantTurnRecorder
 
 logger = logging.getLogger("roomkit.voice")
 
@@ -110,7 +111,9 @@ class TTSPlaybackState:
     audio_ms: float | None = None
     """Audio handed to the transport so far; None while nothing is measured."""
     stopped_at: float | None = None
-    """Monotonic time playback was cut off (barge-in with a flushed buffer)."""
+    """Monotonic time playback was interrupted."""
+    context_turn: tuple[AssistantTurnRecorder, str] | None = None
+    """The TTS context turn this playback will record, and its speaker."""
 
     @property
     def position_ms(self) -> int:
@@ -517,8 +520,11 @@ class VoiceChannel(
                         session.id,
                     )
         if was_queueing:
+            # A DTMF mark stays for the queued segments (taken at their flush).
             logger.debug("Queued speech during playback for %s", session.id)
             return
+        # The segment that just ended owns any DTMF heard since the last one.
+        dtmf_seen = self._tts_context is not None and self._tts_context.take_dtmf(session.id)
         if was_suppressed:
             logger.debug("Suppressed echo speech end for %s", session.id)
             return
@@ -543,8 +549,9 @@ class VoiceChannel(
 
         room_id, _ = binding_info
 
+        dtmf_kwargs = {"dtmf_seen": True} if dtmf_seen else {}
         self._schedule(
-            self._process_speech_end(session, audio, room_id, stream_state),
+            self._process_speech_end(session, audio, room_id, stream_state, **dtmf_kwargs),
             name=f"speech_end:{session.id}",
         )
 
@@ -1001,6 +1008,8 @@ class VoiceChannel(
                 pass the session's own backend so the bridge sends audio
                 through the correct transport.
         """
+        if self._tts_context is not None:
+            self._tts_context.open(session.id)
         with self._state_lock:
             self._session_bindings[session.id] = (room_id, binding)
             # Dual-signal: atomically check and clear pending ready flag
@@ -1325,8 +1334,11 @@ class VoiceChannel(
             len(queued),
             session_id,
         )
+        # Any DTMF heard while speech was held goes with every held segment.
+        dtmf_seen = self._tts_context is not None and self._tts_context.take_dtmf(session_id)
+        dtmf_kwargs = {"dtmf_seen": True} if dtmf_seen else {}
         for audio in queued:
-            await self._process_speech_end(session, audio, room_id, None)
+            await self._process_speech_end(session, audio, room_id, None, **dtmf_kwargs)
 
     def _arm_barge_in_confirmation(
         self, session: VoiceSession, room_id: str, delay_ms: int, *, from_vad: bool = True
@@ -1508,14 +1520,16 @@ class VoiceChannel(
         # the backend (RFC §12.3.13 step 1). Left true, the buffer is dropped
         # and the bot stops mid-word; set false, the current utterance is
         # allowed to finish while the user's speech is processed alongside it.
+        if not drained:
+            # The cut the timeline and the TTS context both record: one
+            # played_ms, taken here (RFC §12.3.13 steps 2 and 3).
+            playback.stopped_at = _time.monotonic()
+            self._end_tts_turn(playback)
         if (
             config.flush_partial_tts
             and self._backend
             and VoiceCapability.INTERRUPTION in self._backend.capabilities
         ):
-            if not drained:
-                # What was heard ends here, whatever the stream still produces.
-                playback.stopped_at = _time.monotonic()
             await self._backend.cancel_audio(session)
 
         # Bypass AEC after TTS stops so user audio passes unchanged.  Keep the

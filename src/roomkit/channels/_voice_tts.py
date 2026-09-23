@@ -158,9 +158,8 @@ class VoiceTTSMixin:
     ) -> tuple[dict[str, Any], AssistantTurnRecorder | None]:
         """The ``context`` kwarg for one synthesis call, and its turn recorder.
 
-        Empty for a provider that consumes no context: it is called exactly as
-        before, so a provider written against the older signature still works
-        (RFC §12.2.2 passing rules).
+        Empty for a provider that consumes no context: a NONE provider is
+        called without ``context`` (RFC §12.2.2 passing rules).
         """
         store = self._tts_context
         if store is None:
@@ -179,15 +178,16 @@ class VoiceTTSMixin:
             )
         return {"context": context}, recorder
 
-    def _end_tts_turn(
-        self,
-        recorder: AssistantTurnRecorder | None,
-        playback: TTSPlaybackState,
-        speaker_id: str,
-    ) -> None:
-        """Record what the user heard of a synthesis call in its context."""
-        if recorder is None or self._tts_context is None:
+    def _end_tts_turn(self, playback: TTSPlaybackState) -> None:
+        """Record what the user heard of a synthesis call in its context.
+
+        Runs once per call: at the interruption, so the call that replaces it
+        already sees the cut turn, or when the call ends.
+        """
+        pending, playback.context_turn = playback.context_turn, None
+        if pending is None or self._tts_context is None:
             return
+        recorder, speaker_id = pending
         interrupted = playback.stopped_at is not None
         if playback.first_audio_at is None:
             # No chunk reached the transport: the user heard nothing of it.
@@ -585,6 +585,8 @@ class VoiceTTSMixin:
                 yield sentence
 
         context_kwargs, recorder = self._begin_tts_turn(session, telemetry)
+        if recorder is not None:
+            playback.context_turn = (recorder, speaker_id)
         try:
             audio = tts.synthesize_stream_input(relay_sentences(), voice=voice, **context_kwargs)
             audio = _observe_audio(playback, recorder, audio)
@@ -597,7 +599,7 @@ class VoiceTTSMixin:
                 span_id = None
             raise
         finally:
-            self._end_tts_turn(recorder, playback, speaker_id)
+            self._end_tts_turn(playback)
             duration_ms = (time.monotonic() - t0) * 1000
             if telemetry is not None and span_id is not None:
                 telemetry.end_span(
@@ -710,6 +712,8 @@ class VoiceTTSMixin:
                 telemetry.set_attribute(span_id, Attr.TTS_VOICE, voice)
 
         context_kwargs, recorder = self._begin_tts_turn(session, telemetry)
+        if recorder is not None:
+            playback.context_turn = (recorder, speaker_id or self.channel_id)
         t0 = _time.monotonic()
         try:
             audio_stream = self._tts.synthesize_stream(text, voice=voice, **context_kwargs)
@@ -740,7 +744,7 @@ class VoiceTTSMixin:
                 span_id = None  # prevent double-end
             raise
         finally:
-            self._end_tts_turn(recorder, playback, speaker_id or self.channel_id)
+            self._end_tts_turn(playback)
             duration_ms = (_time.monotonic() - t0) * 1000
             if telemetry is not None and span_id is not None:
                 telemetry.end_span(

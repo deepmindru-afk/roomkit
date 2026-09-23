@@ -15,7 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `synthesize_stream()` / `synthesize_stream_input()`: the dialogue of its
   voice session, user turns as the transcription hooks left them and its own
   turns cut to what was played (`played_ms`, `interrupted`), plus the
-  `next_turn_id` its current call will be recorded under.
+  `next_turn_id` its current call will be recorded under. At `SELF` it gets
+  its own turns only. A call that replaces an interrupted one already sees
+  the cut turn, and a turn that finishes after its session was unbound is
+  dropped.
   `TTSProvider.release_context()` is called when the session is unbound or the
   channel closed. `VoiceChannel(tts_context=TTSContextConfig(...))` bounds the
   history (`max_turns`, `max_audio_seconds`) and turns audio on
@@ -31,8 +34,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `metadata.played_ms` on an interrupted utterance now measures the audio the
   user heard: the time since the first chunk reached the transport, capped at
-  the audio produced, frozen when the buffer is flushed. It used to count from
-  the moment the playback state was created, TTS latency included (RMK-187).
+  the audio produced, frozen at the interruption. It used to count from the
+  moment the playback state was created, TTS latency included (RMK-187).
 
 ### Fixed
 

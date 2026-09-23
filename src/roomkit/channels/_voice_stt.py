@@ -718,6 +718,7 @@ class VoiceSTTMixin:
         *,
         audio: bytes | None = None,
         sample_rate: int = 16000,
+        dtmf_seen: bool = False,
     ) -> None:
         """Add the utterance to the session's TTS context (RFC §12.2.2).
 
@@ -733,6 +734,7 @@ class VoiceSTTMixin:
             audio=audio,
             sample_rate=sample_rate,
             text_changed=final_text != transcript,
+            dtmf_seen=dtmf_seen,
         )
 
     async def _handle_continuous_transcription(
@@ -845,6 +847,8 @@ class VoiceSTTMixin:
         audio: bytes,
         room_id: str,
         stream_state: _STTStreamState | None = None,
+        *,
+        dtmf_seen: bool = False,
     ) -> None:
         """Process speech end: fire hooks, transcribe, route inbound.
 
@@ -1034,7 +1038,14 @@ class VoiceSTTMixin:
 
             # Use potentially modified text
             final_text = _extract_transcription_text(transcription_result.event, text)
-            self._record_user_turn(session, text, final_text, audio=audio, sample_rate=sample_rate)
+            self._record_user_turn(
+                session,
+                text,
+                final_text,
+                audio=audio,
+                sample_rate=sample_rate,
+                dtmf_seen=dtmf_seen,
+            )
 
             # Turn detection: if configured, evaluate before routing
             turn_detector = self._pipeline_config.turn_detector if self._pipeline_config else None
@@ -1115,6 +1126,7 @@ class VoiceSTTMixin:
         # Snapshot and clear buffer
         audio_data = bytes(buf)
         buf.clear()
+        dtmf_seen = self._tts_context is not None and self._tts_context.take_dtmf(session.id)
 
         if self._stt is None:
             raise RuntimeError("STT provider not configured")
@@ -1167,6 +1179,7 @@ class VoiceSTTMixin:
                         final_text,
                         audio=audio_data,
                         sample_rate=sample_rate,
+                        dtmf_seen=dtmf_seen,
                     )
                     await self._route_text(session, final_text, room_id)
 
