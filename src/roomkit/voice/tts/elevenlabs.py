@@ -1,6 +1,8 @@
 """ElevenLabs text-to-speech provider.
 
-Supports expressive mode via the ``eleven_v3`` model.
+Supports expressive mode via the ``eleven_v3`` model, and request
+stitching from the TTS conversation context (RFC §12.2.2): each response
+continues the voice of the previous ones.
 When ``expressive=True``, synthesis uses v3 Conversational TTS which
 understands expressive tags such as ``[laughs]``, ``[whispers]``,
 ``[sighs]``, ``[slow]``, and ``[excited]`` embedded in the text.
@@ -20,7 +22,9 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from roomkit.voice.base import AudioChunk
+from roomkit.voice.tts._elevenlabs_stitching import RequestIdLedger, request_id_of
 from roomkit.voice.tts.base import TTSProvider
+from roomkit.voice.tts.context import TTSContextLevel
 
 if TYPE_CHECKING:
     from roomkit.models.event import AudioContent
@@ -59,6 +63,10 @@ class ElevenLabsConfig:
     optimize_streaming_latency: int = 3  # 0-4, higher = lower latency
     # Expressive mode — uses v3 Conversational TTS with emotion/tone tags
     expressive: bool = False
+    # Request stitching from the conversation context: the provider receives
+    # its own previous turns (SELF) and sends their request ids, or their text.
+    # Not available on v3 models.
+    use_context: bool = True
 
 
 @dataclass
@@ -86,6 +94,7 @@ class ElevenLabsTTSProvider(TTSProvider):
             self._config.model_id = MODEL_V3
         self._client: Any = None  # AsyncElevenLabs (lazy)
         self._voices_cache: dict[str, ElevenLabsVoice] | None = None
+        self._request_ids = RequestIdLedger()
 
     @property
     def name(self) -> str:
@@ -99,6 +108,20 @@ class ElevenLabsTTSProvider(TTSProvider):
     def supports_streaming_input(self) -> bool:
         # The official SDK does not expose WebSocket input streaming.
         return False
+
+    @property
+    def context_level(self) -> TTSContextLevel:
+        """SELF: its own previous turns drive request stitching.
+
+        NONE when ``use_context`` is off, and on v3 models, which ElevenLabs
+        does not stitch.
+        """
+        if not self._config.use_context or self._is_v3_model():
+            return TTSContextLevel.NONE
+        return TTSContextLevel.SELF
+
+    def release_context(self, context_id: str) -> None:
+        self._request_ids.forget(context_id)
 
     def _is_v3_model(self) -> bool:
         """Return True when the selected model is a v3 variant."""
@@ -219,34 +242,48 @@ class ElevenLabsTTSProvider(TTSProvider):
     ) -> AsyncIterator[AudioChunk]:
         """Stream audio chunks as they're generated.
 
-        Uses the ElevenLabs SDK streaming API for low-latency synthesis.
+        Uses the ElevenLabs SDK streaming API for low-latency synthesis. With
+        a ``context``, the request carries the stitching arguments of the
+        session's previous turns, and its own ``request-id`` is kept for the
+        next turns once the audio has been read to the end.
 
         Args:
             text: Text to synthesize.
             voice: Voice ID (uses default_voice if not specified).
+            context: The session's previous turns (passed at SELF level).
 
         Yields:
             AudioChunk with raw audio data.
         """
         voice_id = voice or self._config.voice_id
         client = self._get_client()
+        request = {
+            "voice_id": voice_id,
+            "text": text,
+            "model_id": self._config.model_id,
+            "voice_settings": self._make_voice_settings(),
+            "output_format": self._config.output_format,
+        }
 
-        chunk_index = 0
-        async for chunk in client.text_to_speech.stream(
-            voice_id=voice_id,
-            text=text,
-            model_id=self._config.model_id,
-            voice_settings=self._make_voice_settings(),
-            output_format=self._config.output_format,
-        ):
-            if chunk:
-                yield AudioChunk(
-                    data=chunk,
-                    sample_rate=self._get_sample_rate(),
-                    format=self._get_audio_format(),
-                    is_final=False,
-                )
-                chunk_index += 1
+        if context is None or self.context_level == TTSContextLevel.NONE:
+            async for chunk in client.text_to_speech.stream(**request):
+                if chunk:
+                    yield self._chunk(chunk)
+        else:
+            stitching = self._request_ids.stitching_params(context)
+            logger.debug("ElevenLabs stitching for %s: %s", context.context_id, stitching)
+            async with client.text_to_speech.with_raw_response.stream(
+                **request, **stitching
+            ) as response:
+                request_id = request_id_of(response.headers)
+                async for chunk in response.data:
+                    if chunk:
+                        yield self._chunk(chunk)
+            # Reached only when the audio was read to the end: a stream cut
+            # off by a barge-in leaves no id ElevenLabs could continue from.
+            if request_id:
+                logger.debug("ElevenLabs request %s read to the end", request_id)
+                self._request_ids.record(context.context_id, context.next_turn_id, request_id)
 
         # Send final chunk marker
         yield AudioChunk(
@@ -254,6 +291,14 @@ class ElevenLabsTTSProvider(TTSProvider):
             sample_rate=self._get_sample_rate(),
             format=self._get_audio_format(),
             is_final=True,
+        )
+
+    def _chunk(self, data: bytes) -> AudioChunk:
+        return AudioChunk(
+            data=data,
+            sample_rate=self._get_sample_rate(),
+            format=self._get_audio_format(),
+            is_final=False,
         )
 
     def _get_mime_type(self) -> str:

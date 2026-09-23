@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- ElevenLabs continues its voice from one response to the next. The provider
+  declares `TTSContextLevel.SELF` and sends ElevenLabs the `request_id` of up
+  to three previous responses the user heard to the end
+  (`previous_request_ids`, younger than two hours), or their text
+  (`previous_text`) when no id is usable. Nothing is sent after a response cut
+  off by a barge-in, and the user's words are never sent.
+  `ElevenLabsConfig(use_context=False)` turns it off; v3 models, which
+  ElevenLabs does not stitch, receive no context. See
+  `examples/voice_elevenlabs_context.py` (RMK-193).
 - TTS providers can hear the conversation (RFC §12.2.2). A provider declares
   what it consumes with `TTSProvider.context_level` (`TTSContextLevel.NONE`,
   `SELF`, `TEXT`, `AUDIO`) and then receives a `TTSContext` on
@@ -24,9 +33,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   history (`max_turns`, `max_audio_seconds`) and turns audio on
   (`include_audio`, off by default); audio stays in memory, and a turn whose
   transcript a hook changed, or during which DTMF was detected with redaction
-  on, keeps none (RFC §17.6). A provider left at `NONE`, every built-in one
-  today, is called exactly as before, so a provider written against the older
-  signature keeps working. New metrics `pipeline.tts_context_turns` and
+  on, keeps none (RFC §17.6). A provider left at `NONE` is called without
+  `context`, so a provider whose signature has no such argument keeps
+  working. New metrics `pipeline.tts_context_turns` and
   `pipeline.tts_context_audio_s`. See `examples/voice_tts_context.py`
   (RMK-187).
 
