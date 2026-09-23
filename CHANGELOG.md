@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.88.0] — 2026-09-22
+
 ### Added
 
 - `fail_closed=True` on `kit.hook()` / `add_room_hook()`: when that hook times
@@ -32,8 +34,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pre-commit phase, on `process_inbound` and `send_event` alike. An event
   sent from inside an off-lock check (a notice saying the scan is running),
   or from code holding the room lock (a locked hook), takes no ticket and
-  commits ahead of the message being processed. Registration refuses `needs_lock=False` on any other
-  trigger, and refuses a locked hook ordered before an off-lock one by
+  commits ahead of the message being processed. Registration refuses
+  `needs_lock=False` on any other trigger, and refuses a locked hook ordered before an off-lock one by
   priority: off-lock hooks run first, and a consent or budget gate placed
   ahead of a scan must not silently end up behind it. RoomKit's orchestration
   routers sit at priority -100, so an off-lock hook in an orchestrated room
@@ -8094,7 +8096,8 @@ See entries `0.7.0a1` through `0.7.0a18` below.
 - `STTProvider.transcribe()` returns `TranscriptionResult` (Phase 3.1)
 - Framework event names enriched with payloads (Phase 4)
 
-[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.87.0...HEAD
+[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.88.0...HEAD
+[0.88.0]: https://github.com/roomkit-live/roomkit/compare/v0.87.0...v0.88.0
 [0.87.0]: https://github.com/roomkit-live/roomkit/compare/v0.86.0...v0.87.0
 [0.86.0]: https://github.com/roomkit-live/roomkit/compare/v0.85.0...v0.86.0
 [0.85.0]: https://github.com/roomkit-live/roomkit/compare/v0.84.0...v0.85.0
