@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A streamed AI response now reaches every voice session of the room, not only
+  the first. `VoiceChannel.deliver_stream()` handed the same text iterator to
+  each session in turn: the first drained it, so a second session on the same
+  binding got an empty TTS input and no audio, yet still received the full
+  `assistant` transcript. The response is now read and split into sentences
+  once, then copied to each session, which plays it in parallel with the
+  others. A session that stops early (barge-in, transport error) no longer
+  affects the rest, and only a session that was served gets the final
+  transcript (RMK-188).
+
 ## [0.88.0] — 2026-09-22
 
 ### Added

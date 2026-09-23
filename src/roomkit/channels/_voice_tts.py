@@ -10,6 +10,7 @@ from collections import OrderedDict
 from collections.abc import AsyncGenerator, AsyncIterator
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from roomkit.channels._stream_fanout import StreamBranch, StreamFanOut
 from roomkit.models.enums import EventType, HookTrigger, Visibility
 from roomkit.telemetry.base import Attr, SpanKind, TelemetryProvider
 from roomkit.telemetry.noop import NoopTelemetryProvider
@@ -316,8 +317,6 @@ class VoiceTTSMixin:
                 accumulated.append(delta)
                 yield delta
 
-        import time as _time
-
         _t = getattr(self._framework, "_telemetry", None) if self._framework else None
         telemetry: TelemetryProvider | None = _t if isinstance(_t, TelemetryProvider) else None
 
@@ -326,127 +325,65 @@ class VoiceTTSMixin:
             target_sessions[0].id if target_sessions else ""
         )
 
-        for session in target_sessions:
-            # Cancel any existing TTS to prevent overlapping audio
-            with self._state_lock:
-                existing = self._playing_sessions.get(session.id)
-            if existing:
-                logger.info(
-                    "Cancelling previous TTS for session %s before starting new one",
-                    session.id,
-                )
-                await self.interrupt(session, reason="new_tts")
+        # The stream is read, filtered and split once, then every session gets
+        # its own copy of the sentences: reading it drives persistence upstream,
+        # and each session must hear the whole response.
+        token_source: AsyncIterator[str] = tracking_stream()
+        if self._tts_filter is not None:
+            from roomkit.voice.tts.filters import TTSStreamFilter, filtered_stream
 
-            with self._state_lock:
-                self._playing_sessions[session.id] = TTSPlaybackState(
-                    session_id=session.id, text="(streaming)"
-                )
-                # Clear done event so wait_playback_done() blocks until send_audio returns
-                done_ev = self._playback_done_events.get(session.id)
-                if done_ev is None:
-                    done_ev = asyncio.Event()
-                    self._playback_done_events[session.id] = done_ev
-                else:
-                    done_ev.clear()
-            # Activate AEC so echo cancellation runs during playback
-            if self._pipeline is not None and self._pipeline._config.aec is not None:
-                self._pipeline.set_aec_active(session.id, True)
-            t0 = _time.monotonic()
-            logger.info("Streaming TTS playback started for session %s", session.id)
-
-            span_id = None
-            if telemetry is not None:
-                parent = getattr(self, "_voice_session_spans", {}).get(session.id)
-                span_id = telemetry.start_span(
-                    SpanKind.TTS_SYNTHESIZE,
-                    "tts.stream",
-                    parent_id=parent,
-                    room_id=room_id,
-                    session_id=session.id,
-                    channel_id=self.channel_id,
-                    attributes={Attr.PROVIDER: tts_name},
-                )
-
-            try:
-                voice = self._resolve_voice(event.source.channel_id)
-                token_source: AsyncIterator[str] = tracking_stream()
-                if self._tts_filter is not None:
-                    from roomkit.voice.tts.filters import TTSStreamFilter, filtered_stream
-
-                    if isinstance(self._tts_filter, TTSStreamFilter):
-                        token_source = filtered_stream(token_source, self._tts_filter)
-                    else:
-                        token_source = _filter_sentences_plain(token_source, self._tts_filter)
-                sentences = split_sentences(token_source)
-
-                # Relay each sentence to the client before TTS synthesis.
-                async def relay_sentences(
-                    source: AsyncIterator[str],
-                    _session: VoiceSession = session,
-                ) -> AsyncIterator[str]:
-                    async for sentence in source:
-                        await self._backend.send_transcription(  # ty: ignore[unresolved-attribute]
-                            _session, sentence, "assistant_interim"
-                        )
-                        yield sentence
-
-                audio = self._tts.synthesize_stream_input(relay_sentences(sentences), voice=voice)
-                if self._pipeline is not None or getattr(self, "_outbound_audio_taps", []):
-                    audio = self._wrap_outbound(session, audio)
-                await self._backend.send_audio(session, audio)
-            except Exception:
-                if telemetry is not None and span_id is not None:
-                    telemetry.end_span(span_id, status="error", error_message="stream TTS failed")
-                    span_id = None
-                raise
-            finally:
-                duration_ms = (_time.monotonic() - t0) * 1000
-                if telemetry is not None and span_id is not None:
-                    telemetry.end_span(
-                        span_id,
-                        attributes={
-                            Attr.DURATION_MS: round(duration_ms, 1),
-                            Attr.TTS_CHAR_COUNT: len("".join(accumulated)),
-                        },
+            if isinstance(self._tts_filter, TTSStreamFilter):
+                token_source = filtered_stream(token_source, self._tts_filter)
+            else:
+                token_source = _filter_sentences_plain(token_source, self._tts_filter)
+        fan_out = StreamFanOut(split_sentences(token_source), len(target_sessions))
+        producer = asyncio.create_task(fan_out.run(), name=f"tts_fan_out:{event.id}")
+        voice = self._resolve_voice(event.source.channel_id)
+        try:
+            results = await asyncio.gather(
+                *(
+                    self._stream_to_session(
+                        session,
+                        branch,
+                        voice=voice,
+                        room_id=room_id,
+                        tts_name=tts_name,
+                        telemetry=telemetry,
+                        accumulated=accumulated,
                     )
-                    telemetry.record_metric(
-                        "roomkit.tts.duration_ms",
-                        duration_ms,
-                        unit="ms",
-                        attributes={Attr.PROVIDER: tts_name},
-                    )
-                logger.debug(
-                    "Streaming TTS send_audio returned for session %s (%.1fs), draining",
-                    session.id,
-                    _time.monotonic() - t0,
-                )
-                self._debug_frame_count = 0  # reset RMS debug counter
-                # Signal that send_audio() has returned so
-                # wait_playback_done() can unblock immediately.
-                done_ev = self._playback_done_events.get(session.id)
-                if done_ev is not None:
-                    done_ev.set()
-                # Keep _playing_sessions alive during post-drain echo decay.
-                # _finish_playback pops it after the delay (interrupt() pops
-                # immediately if barge-in fires first).
-                self._schedule(
-                    self._finish_playback(session.id),
-                    name=f"finish_playback:{session.id}",
-                )
+                    for session, branch in zip(target_sessions, fan_out.branches, strict=True)
+                ),
+                return_exceptions=True,
+            )
+        finally:
+            # Every session stopped early (barge-in): leave the rest unread,
+            # as a single reader would.
+            producer.cancel()
+            await asyncio.gather(producer, return_exceptions=True)
+
+        delivered = [s for s, r in zip(target_sessions, results, strict=True) if r is None]
+        failures = [r for r in results if isinstance(r, BaseException)]
+        if failures and not delivered:
+            raise failures[0]
+        for session, result in zip(target_sessions, results, strict=True):
+            if isinstance(result, BaseException):
+                logger.error("Streaming TTS failed for session %s", session.id, exc_info=result)
 
         full_text = "".join(accumulated)
         # Apply TTS filter to the accumulated text for transcription/hooks
         if self._tts_filter is not None and full_text:
             full_text = self._tts_filter(full_text)
         # Update playback state with actual streamed text (was "(streaming)")
-        for session in target_sessions:
+        for session in delivered:
             with self._state_lock:
                 if session.id in self._playing_sessions:
                     self._playing_sessions[session.id] = TTSPlaybackState(
                         session_id=session.id, text=full_text or "(empty)"
                     )
+        # Only a session that was served gets the final transcript: showing a
+        # response the user never heard would contradict the audio.
         if full_text:
-            for session in target_sessions:
+            for session in delivered:
                 await self._backend.send_transcription(session, full_text, "assistant")
 
         # Fire AFTER_TTS hooks (BEFORE_TTS skipped — can't block mid-stream)
@@ -467,6 +404,120 @@ class VoiceTTSMixin:
                     reset_span(_tok)
 
         return ChannelOutputModel.empty()
+
+    async def _stream_to_session(
+        self,
+        session: VoiceSession,
+        sentences: StreamBranch[str],
+        *,
+        voice: str | None,
+        room_id: str,
+        tts_name: str,
+        telemetry: TelemetryProvider | None,
+        accumulated: list[str],
+    ) -> None:
+        """Play one session's copy of a streamed response through TTS."""
+        import time as _time
+
+        from .voice import TTSPlaybackState
+
+        if self._tts is None or self._backend is None:
+            sentences.close()
+            return
+        backend = self._backend
+
+        # Cancel any existing TTS to prevent overlapping audio
+        with self._state_lock:
+            existing = self._playing_sessions.get(session.id)
+        if existing:
+            logger.info(
+                "Cancelling previous TTS for session %s before starting new one",
+                session.id,
+            )
+            await self.interrupt(session, reason="new_tts")
+
+        with self._state_lock:
+            self._playing_sessions[session.id] = TTSPlaybackState(
+                session_id=session.id, text="(streaming)"
+            )
+            # Clear done event so wait_playback_done() blocks until send_audio returns
+            done_ev = self._playback_done_events.get(session.id)
+            if done_ev is None:
+                done_ev = asyncio.Event()
+                self._playback_done_events[session.id] = done_ev
+            else:
+                done_ev.clear()
+        # Activate AEC so echo cancellation runs during playback
+        if self._pipeline is not None and self._pipeline._config.aec is not None:
+            self._pipeline.set_aec_active(session.id, True)
+        t0 = _time.monotonic()
+        logger.info("Streaming TTS playback started for session %s", session.id)
+
+        span_id = None
+        if telemetry is not None:
+            parent = getattr(self, "_voice_session_spans", {}).get(session.id)
+            span_id = telemetry.start_span(
+                SpanKind.TTS_SYNTHESIZE,
+                "tts.stream",
+                parent_id=parent,
+                room_id=room_id,
+                session_id=session.id,
+                channel_id=self.channel_id,
+                attributes={Attr.PROVIDER: tts_name},
+            )
+
+        # Relay each sentence to the client before TTS synthesis.
+        async def relay_sentences() -> AsyncIterator[str]:
+            async for sentence in sentences:
+                await backend.send_transcription(session, sentence, "assistant_interim")
+                yield sentence
+
+        try:
+            audio = self._tts.synthesize_stream_input(relay_sentences(), voice=voice)
+            if self._pipeline is not None or getattr(self, "_outbound_audio_taps", []):
+                audio = self._wrap_outbound(session, audio)
+            await backend.send_audio(session, audio)
+        except Exception:
+            if telemetry is not None and span_id is not None:
+                telemetry.end_span(span_id, status="error", error_message="stream TTS failed")
+                span_id = None
+            raise
+        finally:
+            # This session is done reading, whatever the others still need.
+            sentences.close()
+            duration_ms = (_time.monotonic() - t0) * 1000
+            if telemetry is not None and span_id is not None:
+                telemetry.end_span(
+                    span_id,
+                    attributes={
+                        Attr.DURATION_MS: round(duration_ms, 1),
+                        Attr.TTS_CHAR_COUNT: len("".join(accumulated)),
+                    },
+                )
+                telemetry.record_metric(
+                    "roomkit.tts.duration_ms",
+                    duration_ms,
+                    unit="ms",
+                    attributes={Attr.PROVIDER: tts_name},
+                )
+            logger.debug(
+                "Streaming TTS send_audio returned for session %s (%.1fs), draining",
+                session.id,
+                _time.monotonic() - t0,
+            )
+            self._debug_frame_count = 0  # reset RMS debug counter
+            # Signal that send_audio() has returned so
+            # wait_playback_done() can unblock immediately.
+            done_ev = self._playback_done_events.get(session.id)
+            if done_ev is not None:
+                done_ev.set()
+            # Keep _playing_sessions alive during post-drain echo decay.
+            # _finish_playback pops it after the delay (interrupt() pops
+            # immediately if barge-in fires first).
+            self._schedule(
+                self._finish_playback(session.id),
+                name=f"finish_playback:{session.id}",
+            )
 
     async def _send_tts(
         self, session: VoiceSession, text: str, *, voice: str | None = None
