@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 
 from roomkit.voice.tts.filters import (
     StripBrackets,
+    StripEmoji,
     StripInternalTags,
     filtered_stream,
 )
@@ -251,6 +252,42 @@ class TestStripBracketsStreaming:
         r2 = f.feed("text")
         r3 = f.flush()
         assert r1 + r2 + r3 == "Just text"
+
+
+# ---------------------------------------------------------------------------
+# StripEmoji
+# ---------------------------------------------------------------------------
+
+
+class TestStripEmojiCall:
+    def test_the_reply_that_prompted_it(self):
+        text = "C\u2019est rapide, facile et super bon ! \U0001f60a"
+        assert StripEmoji()(text) == "C\u2019est rapide, facile et super bon !"
+
+    def test_composed_emoji_leave_nothing_behind(self):
+        family = "\U0001f468\u200d\U0001f469\u200d\U0001f467"
+        flag, heart = "\U0001f1eb\U0001f1f7", "\u2764\ufe0f"
+        text = f"Salut \U0001f44b\U0001f3fd {family} {flag} {heart} \u2b50 \u2705 fin"
+        assert StripEmoji()(text) == "Salut fin"
+
+    def test_a_keycap_keeps_its_digit(self):
+        assert StripEmoji()("Option 1\ufe0f\u20e3 ou 2") == "Option 1 ou 2"
+
+    def test_speech_text_is_untouched(self):
+        text = "Rendez-vous à 14h30, 25 °C, 12,50 €, « d’accord » ? Ça va !"
+        assert StripEmoji()(text) == text
+
+
+class TestStripEmojiStreaming:
+    async def test_an_emoji_split_across_chunks_is_removed(self):
+        source = _async_iter("Bravo \U0001f468", "\u200d", "\U0001f373 et", " merci \U0001f64f")
+        chunks = [c async for c in filtered_stream(source, StripEmoji())]
+        assert "".join(chunks) == "Bravo  et merci "
+
+    async def test_an_emoji_only_chunk_yields_nothing(self):
+        source = _async_iter("Oui", "\U0001f60a", ".")
+        chunks = [c async for c in filtered_stream(source, StripEmoji())]
+        assert chunks == ["Oui", "."]
 
 
 # ---------------------------------------------------------------------------

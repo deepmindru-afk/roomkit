@@ -242,6 +242,46 @@ class StripBrackets(TTSStreamFilter):
 
 
 # ---------------------------------------------------------------------------
+# StripEmoji — removes emoji, which a TTS reads aloud or garbles
+# ---------------------------------------------------------------------------
+
+_EMOJI_RE = re.compile(
+    "["
+    "\U0001f000-\U0001faff"  # pictographs, emoticons, flags, supplemental symbols
+    "\U00002300-\U000023ff"  # technical symbols (⌚ ⏰)
+    "\U00002600-\U000027bf"  # miscellaneous symbols and dingbats (☀ ❤ ✅)
+    "\U00002b00-\U00002bff"  # arrows and stars (⬆ ⭐)
+    "\U0000fe0f"  # emoji presentation selector
+    "\U0000200d"  # zero-width joiner of composed emoji
+    "\U000020e3"  # keycap
+    "\U000e0020-\U000e007f"  # tag sequences (subdivision flags)
+    "]+"
+)
+
+
+class StripEmoji(TTSStreamFilter):
+    """Strip emoji from TTS text.
+
+    Language models add emoji to replies even when told not to; a TTS then
+    names them or produces a stray sound. Each code point is removed on its
+    own, so a streamed emoji is caught whichever chunks it spans. The text
+    stored in the conversation is left as the model wrote it.
+    """
+
+    def reset(self) -> None:
+        pass
+
+    def __call__(self, text: str) -> str:
+        return re.sub(r"  +", " ", _EMOJI_RE.sub("", text)).strip()
+
+    def feed(self, chunk: str) -> str:
+        return _EMOJI_RE.sub("", chunk)
+
+    def flush(self) -> str:
+        return ""
+
+
+# ---------------------------------------------------------------------------
 # filtered_stream — wrap an async token stream through a TTSStreamFilter
 # ---------------------------------------------------------------------------
 

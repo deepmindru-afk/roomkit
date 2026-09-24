@@ -11,7 +11,7 @@ from roomkit import (
 from roomkit.voice.backends.mock import MockVoiceBackend
 from roomkit.voice.base import AudioChunk, VoiceSession
 from roomkit.voice.tts.base import TTSProvider
-from roomkit.voice.tts.filters import StripBrackets, StripInternalTags
+from roomkit.voice.tts.filters import StripBrackets, StripEmoji, StripInternalTags
 from roomkit.voice.tts.mock import MockTTSProvider
 
 
@@ -100,6 +100,17 @@ class TestSayWithFilter:
 
         assert len(tts.calls) == 1
         assert tts.calls[0]["text"] == "That was funny!"
+
+    async def test_say_strips_emoji(self) -> None:
+        tts = MockTTSProvider()
+        backend = MockVoiceBackend()
+        channel = VoiceChannel("voice-1", tts=tts, backend=backend, tts_filter=StripEmoji())
+        session = await backend.connect("room-1", "user-1", "voice-1")
+
+        await channel.say(session, "Avec plaisir ! \U0001f60a")
+
+        assert len(tts.calls) == 1
+        assert tts.calls[0]["text"] == "Avec plaisir !"
 
     async def test_say_empty_after_filter_skips_tts(self) -> None:
         tts = MockTTSProvider()

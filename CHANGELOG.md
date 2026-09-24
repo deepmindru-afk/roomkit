@@ -15,7 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and speaks English, French, German, Portuguese, Italian and Spanish, with
   pre-made or cloned voices. A barge-in stops the generation thread before the
   next reply starts. `examples/voice_local_pocket_fr.py` runs a local French
-  voice assistant: Kroko French STT, Ollama, Pocket TTS.
+  voice assistant: Kroko French STT, Ollama, Pocket TTS (RMK-214).
+
+- `StripEmoji`, a TTS filter that removes emoji before synthesis
+  (`VoiceChannel(tts_filter=StripEmoji())`). Language models add them to
+  replies even when the prompt forbids it, and a TTS then names them or makes
+  a stray sound. It works on streamed replies, an emoji split across chunks
+  included; the stored response keeps the model's text. The Pocket TTS French
+  example enables it (RMK-214).
 
 ### Fixed
 

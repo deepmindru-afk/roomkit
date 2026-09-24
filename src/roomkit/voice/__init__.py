@@ -118,7 +118,12 @@ from roomkit.voice.tts.context import (
     TTSContextConfig,
     TTSContextLevel,
 )
-from roomkit.voice.tts.filters import StripBrackets, StripInternalTags, TTSStreamFilter
+from roomkit.voice.tts.filters import (
+    StripBrackets,
+    StripEmoji,
+    StripInternalTags,
+    TTSStreamFilter,
+)
 
 __all__ = [
     # Bridge
@@ -241,6 +246,7 @@ __all__ = [
     "TTSContextLevel",
     # TTS filters
     "StripBrackets",
+    "StripEmoji",
     "StripInternalTags",
     "TTSStreamFilter",
 ]

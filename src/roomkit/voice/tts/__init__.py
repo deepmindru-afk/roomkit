@@ -8,6 +8,7 @@ from roomkit.voice.tts.context import (
 )
 from roomkit.voice.tts.filters import (
     StripBrackets,
+    StripEmoji,
     StripInternalTags,
     TTSStreamFilter,
     filtered_stream,
@@ -16,6 +17,7 @@ from roomkit.voice.tts.filters import (
 __all__ = [
     "ConversationTurn",
     "StripBrackets",
+    "StripEmoji",
     "StripInternalTags",
     "TTSContext",
     "TTSContextConfig",
