@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `LlamaCppAIProvider` (`roomkit[llamacpp]`): a local GGUF model with nothing
+  to install or start beside the application (RMK-204). The first request, or
+  `await provider.start()`, downloads the llama.cpp build for the machine —
+  Linux CUDA 12/13, Vulkan, CPU and arm64, macOS Metal, Windows — pinned with
+  the SHA-256 of every archive and refused on mismatch, lets `llama-server -hf`
+  fetch the model into the Hugging Face cache, starts the server on a free
+  local port and stops it on `close()` (and at interpreter exit). Tool calls
+  use the model's own template (`--jinja`) and ride the OpenAI-compatible path
+  RoomKit already uses for vLLM, so `AIChannel` tools, streaming and
+  `enable_thinking` work unchanged. `binary=` runs your own `llama-server`; one
+  merely on the `PATH` is never picked up by itself. Only `model` is required.
+  `make update-llamacpp` pins a newer build. Examples:
+  `examples/llamacpp_tools.py`, and `examples/voice_local_vui.py` now runs its
+  LLM this way (Ollama stays available with `LLM_BACKEND=ollama`).
+
 - `PocketTTSProvider` (`roomkit[pocket-tts]`): Kyutai's Pocket TTS, a
   100M-parameter model run in-process on the CPU or a CUDA GPU
   (`PocketTTSConfig(device="cuda")`). It streams 24 kHz speech in 80 ms chunks

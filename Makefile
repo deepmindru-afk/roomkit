@@ -1,4 +1,4 @@
-.PHONY: audit install lint format typecheck security test coverage all clean docs deploy release check-models
+.PHONY: audit install lint format typecheck security test coverage all clean docs deploy release check-models update-llamacpp
 
 install:
 	uv sync --extra dev
@@ -47,6 +47,11 @@ llms-full:
 # self-consistent. `make release` runs this; run it by hand any time.
 check-models:
 	uv run python scripts/check_models.py
+
+# Pin the newest llama.cpp build the llamacpp provider downloads (archives and
+# SHA-256 from the GitHub release). Pass a tag to pin another: BUILD=b11160.
+update-llamacpp:
+	uv run python scripts/update_llamacpp_build.py $(BUILD)
 
 all: lint typecheck security test
 
