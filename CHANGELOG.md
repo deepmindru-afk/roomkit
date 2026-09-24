@@ -108,6 +108,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   greeting with that intent on a `RealtimeVoiceChannel` — it used `user` — and
   sends the room's language as a silent instruction before it rather than as
   a `[Respond in …]` prefix the model could voice.
+- `HandoffHandler.send_greeting` delivers through `RoomKit.send_greeting` on
+  every channel. Outside realtime it used to commit the greeting as an
+  inbound message from the voice channel, so the room stored it as the
+  caller's words and the agent was asked to answer it; it is now stored as
+  the agent's message and broadcast, which a `VoiceChannel` speaks. On a
+  `RealtimeVoiceChannel` the greeting is now stored too, as the kit's
+  greeting already was.
 
 - A TTS provider's audio stream is closed as soon as playback stops. A
   backend leaving `send_audio()` on a barge-in did not close the iterator it

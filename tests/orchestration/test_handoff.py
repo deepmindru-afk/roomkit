@@ -738,24 +738,20 @@ class TestOnHandoffComplete:
 
 class TestSendGreeting:
     async def test_send_greeting_realtime(self):
-        """send_greeting injects text into RealtimeVoiceChannel sessions."""
-        room = Room(id="r1")
-        room = set_conversation_state(
-            room, ConversationState(phase="intake", active_agent_id="agent-triage")
-        )
-        kit = _make_mock_kit(room, [])
-
-        # Mock a RealtimeVoiceChannel — use create_autospec=False
-        # so we can set _provider without spec restrictions
+        """Each realtime session gets the greeting as the agent's line, through the kit."""
         from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 
+        room = set_conversation_state(
+            Room(id="r1"), ConversationState(phase="intake", active_agent_id="agent-triage")
+        )
+        kit = _make_mock_kit(room, [])
+        kit.send_greeting = AsyncMock()
+        kit.process_inbound = AsyncMock()
         mock_session = MagicMock()
-        mock_provider = MagicMock()
-        mock_provider.inject_text = AsyncMock()
         mock_rtv = MagicMock()
         mock_rtv.__class__ = RealtimeVoiceChannel
         mock_rtv.get_room_sessions.return_value = [mock_session]
-        mock_rtv.provider = mock_provider
+        mock_rtv.provider.inject_text = AsyncMock()
         kit.channels = {"voice": mock_rtv}
 
         handler = HandoffHandler(kit=kit, router=MagicMock())
@@ -763,20 +759,24 @@ class TestSendGreeting:
 
         await handler.send_greeting("r1", channel_id="voice")
 
-        # The greeting is the agent's line: as a user message the model would
-        # answer its own greeting (RFC §12.4).
-        mock_rtv.provider.inject_text.assert_called_once_with(
-            mock_session, "Welcome! How can I help?", role="assistant"
+        kit.send_greeting.assert_awaited_once_with(
+            "r1",
+            agent_id="agent-triage",
+            greeting="Welcome! How can I help?",
+            session=mock_session,
+            channel_type=ChannelType.REALTIME_VOICE,
         )
+        mock_rtv.provider.inject_text.assert_not_called()
+        kit.process_inbound.assert_not_called()
 
     async def test_send_greeting_traditional_voice(self):
-        """send_greeting sends synthetic inbound for non-realtime channels."""
-        room = Room(id="r1")
+        """The greeting is the agent's line: never an inbound message it would answer."""
         room = set_conversation_state(
-            room, ConversationState(phase="intake", active_agent_id="agent-triage")
+            Room(id="r1"), ConversationState(phase="intake", active_agent_id="agent-triage")
         )
         kit = _make_mock_kit(room, [])
         kit.channels = {"voice": MagicMock()}  # not a RealtimeVoiceChannel
+        kit.send_greeting = AsyncMock()
         kit.process_inbound = AsyncMock()
 
         handler = HandoffHandler(kit=kit, router=MagicMock())
@@ -784,77 +784,76 @@ class TestSendGreeting:
 
         await handler.send_greeting("r1", channel_id="voice")
 
-        kit.process_inbound.assert_called_once()
-        msg = kit.process_inbound.call_args[0][0]
-        assert msg.channel_id == "voice"
-        assert msg.content.body == "Welcome!"
+        kit.send_greeting.assert_awaited_once_with(
+            "r1", agent_id="agent-triage", greeting="Welcome!"
+        )
+        kit.process_inbound.assert_not_called()
 
     async def test_send_greeting_no_greeting_configured(self):
         """send_greeting does nothing when agent has no greeting."""
-        room = Room(id="r1")
         room = set_conversation_state(
-            room, ConversationState(phase="intake", active_agent_id="agent-triage")
+            Room(id="r1"), ConversationState(phase="intake", active_agent_id="agent-triage")
         )
         kit = _make_mock_kit(room, [])
         kit.channels = {"voice": MagicMock()}
-        kit.process_inbound = AsyncMock()
+        kit.send_greeting = AsyncMock()
 
         handler = HandoffHandler(kit=kit, router=MagicMock())
         handler.greeting_map = {}  # no greetings
 
         await handler.send_greeting("r1", channel_id="voice")
 
-        kit.process_inbound.assert_not_called()
+        kit.send_greeting.assert_not_called()
 
     async def test_send_greeting_no_active_agent(self):
         """send_greeting does nothing when no agent is active."""
         room = Room(id="r1")
         kit = _make_mock_kit(room, [])
+        kit.send_greeting = AsyncMock()
 
         handler = HandoffHandler(kit=kit, router=MagicMock())
         handler.greeting_map = {"agent-triage": "Hello"}
 
         await handler.send_greeting("r1", channel_id="voice")
-        # No crash, no calls
 
-    async def test_send_greeting_with_language(self):
-        """send_greeting prepends language instruction when agent has language."""
-        room = Room(id="r1")
+        kit.send_greeting.assert_not_called()
+
+    async def test_send_greeting_traditional_voice_keeps_the_line_as_written(self):
+        """A language is no prefix on the line: the agent would say "[Respond in …]"."""
         room = set_conversation_state(
-            room, ConversationState(phase="intake", active_agent_id="agent-triage")
+            Room(id="r1"), ConversationState(phase="intake", active_agent_id="agent-triage")
         )
         kit = _make_mock_kit(room, [])
         kit.channels = {"voice": MagicMock()}
-        kit.process_inbound = AsyncMock()
-
-        # Mock agent with language
+        kit.send_greeting = AsyncMock()
         mock_agent = MagicMock()
         mock_agent.language = "French"
 
         handler = HandoffHandler(kit=kit, router=MagicMock())
-        handler.greeting_map = {"agent-triage": "Welcome!"}
+        handler.greeting_map = {"agent-triage": "Bienvenue !"}
         handler.agents = {"agent-triage": mock_agent}
 
         await handler.send_greeting("r1", channel_id="voice")
 
-        msg = kit.process_inbound.call_args[0][0]
-        assert msg.content.body == "[Respond in French] Welcome!"
+        assert kit.send_greeting.await_args.kwargs["greeting"] == "Bienvenue !"
 
     async def test_send_greeting_realtime_with_language(self):
-        """The language directs the model; the greeting stays the agent's line."""
-        from unittest.mock import call
-
+        """The language directs the model first; the greeting stays the agent's line."""
         from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 
         room = set_conversation_state(
             Room(id="r1"), ConversationState(phase="intake", active_agent_id="agent-triage")
         )
         kit = _make_mock_kit(room, [])
+        order: list[str] = []
+        kit.send_greeting = AsyncMock(side_effect=lambda *a, **k: order.append("greeting"))
         mock_session = MagicMock()
         mock_rtv = MagicMock()
         mock_rtv.__class__ = RealtimeVoiceChannel
         mock_rtv.get_room_sessions.return_value = [mock_session]
-        mock_rtv.provider.inject_text = AsyncMock()
+        mock_rtv.provider.inject_text = AsyncMock(
+            side_effect=lambda *a, **k: order.append(f"{k['role']}:{a[1]}")
+        )
         kit.channels = {"voice": mock_rtv}
         mock_agent = MagicMock()
         mock_agent.language = "French"
@@ -865,10 +864,8 @@ class TestSendGreeting:
 
         await handler.send_greeting("r1", channel_id="voice")
 
-        assert mock_rtv.provider.inject_text.await_args_list == [
-            call(mock_session, "Respond in French.", role="system", silent=True),
-            call(mock_session, "Welcome!", role="assistant"),
-        ]
+        assert order == ["system:Respond in French.", "greeting"]
+        assert mock_rtv.provider.inject_text.await_args.kwargs["silent"] is True
 
 
 class TestSetLanguage:
@@ -918,3 +915,62 @@ class TestSetLanguage:
         prompt = mock_rtv.reconfigure_session.call_args[1]["system_prompt"]
         assert "French" in prompt
         assert "English" not in prompt
+
+
+class TestSendGreetingOnARealKit:
+    async def test_the_greeting_is_the_agents_line_in_the_room(self):
+        """Stored and delivered as the agent's message, never committed as an inbound one."""
+        from roomkit import RoomKit
+        from roomkit.channels.agent import Agent
+        from roomkit.channels.base import Channel
+        from roomkit.models.channel import ChannelOutput
+        from roomkit.models.delivery import InboundMessage
+        from roomkit.models.event import EventSource, RoomEvent
+
+        class Speaker(Channel):
+            channel_type = ChannelType.VOICE
+
+            def __init__(self, channel_id: str) -> None:
+                super().__init__(channel_id)
+                self.spoken: list[str] = []
+
+            async def handle_inbound(
+                self, message: InboundMessage, context: RoomContext
+            ) -> RoomEvent:
+                return RoomEvent(
+                    room_id=context.room.id,
+                    source=EventSource(channel_id=self.channel_id, channel_type=self.channel_type),
+                    content=message.content,
+                )
+
+            async def deliver(
+                self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+            ) -> ChannelOutput:
+                self.spoken.append(getattr(event.content, "body", ""))
+                return ChannelOutput.empty()
+
+        kit = RoomKit()
+        speaker = Speaker("voice")
+        kit.register_channel(speaker)
+        kit.register_channel(Agent("agent-triage", greeting="Welcome!"))
+        await kit.create_room(room_id="r1")
+        await kit.attach_channel("r1", "voice", category=ChannelCategory.TRANSPORT)
+        await kit.attach_channel("r1", "agent-triage", category=ChannelCategory.INTELLIGENCE)
+        room = await kit.get_room("r1")
+        await kit.store.update_room(
+            set_conversation_state(
+                room, ConversationState(phase="intake", active_agent_id="agent-triage")
+            )
+        )
+
+        handler = HandoffHandler(kit=kit, router=MagicMock())
+        handler.greeting_map = {"agent-triage": "Welcome!"}
+        await handler.send_greeting("r1", channel_id="voice")
+
+        events = await kit.store.list_events("r1")
+        messages = [e for e in events if e.type == EventType.MESSAGE]
+        assert [(e.source.channel_id, e.content.body) for e in messages] == [
+            ("agent-triage", "Welcome!")
+        ]
+        assert speaker.spoken == ["Welcome!"]
+        await kit.close()

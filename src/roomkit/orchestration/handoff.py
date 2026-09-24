@@ -494,10 +494,14 @@ class HandoffHandler:
     ) -> None:
         """Send the initial agent greeting for a room.
 
-        Looks up the current active agent from conversation state and
-        sends its ``greeting``.  For :class:`RealtimeVoiceChannel`,
-        injects text directly into the provider session.  For traditional
-        voice, sends a synthetic inbound message to trigger an AI response.
+        Looks up the current active agent from conversation state and has it
+        say its ``greeting`` through :meth:`RoomKit.send_greeting`, which
+        stores it as the agent's line and delivers it as one: injected with
+        the ``assistant`` intent into each :class:`RealtimeVoiceChannel`
+        session (RFC §12.4), otherwise broadcast to the room so a voice
+        channel speaks it. A greeting is never sent as something the user
+        said, which the agent would answer. The room's language, when set,
+        reaches a realtime session first as a silent instruction.
 
         Call this after setting the initial conversation state::
 
@@ -517,44 +521,31 @@ class HandoffHandler:
         if not greeting:
             return
 
-        lang = self._get_room_language(room, agent_id)
-
         ch_id = channel_id or self._event_channel_id
         if not ch_id:
             return
 
         channel = self._kit.channels.get(ch_id)
 
-        # RealtimeVoiceChannel: the greeting is the agent's line, so it goes
-        # in with the assistant intent (RFC §12.4) — as a user message the
-        # model would answer its own greeting. The room's language directs
-        # the model and precedes it as a silent instruction.
         from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 
         if isinstance(channel, RealtimeVoiceChannel):
+            lang = self._get_room_language(room, agent_id)
             for session in channel.get_room_sessions(room_id):
                 if lang:
                     await channel.provider.inject_text(
                         session, f"Respond in {lang}.", role="system", silent=True
                     )
-                await channel.provider.inject_text(session, greeting, role="assistant")
+                await self._kit.send_greeting(
+                    room_id,
+                    agent_id=agent_id,
+                    greeting=greeting,
+                    session=session,
+                    channel_type=ChannelType.REALTIME_VOICE,
+                )
             return
 
-        # Prepend language instruction if set
-        if lang:
-            greeting = f"[Respond in {lang}] {greeting}"
-
-        # Traditional voice: send synthetic inbound message
-        from roomkit.models.delivery import InboundMessage
-
-        await self._kit.process_inbound(
-            InboundMessage(
-                channel_id=ch_id,
-                sender_id="system",
-                content=TextContent(body=greeting),
-            ),
-            room_id=room_id,
-        )
+        await self._kit.send_greeting(room_id, agent_id=agent_id, greeting=greeting)
 
     async def set_language(
         self,
