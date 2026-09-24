@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A reply the user starts the moment the agent stops speaking is heard when
+  the pipeline runs an AEC. Once `send_audio()` returned, the channel kept a
+  2 s echo-decay window that discarded every segment starting in it as echo —
+  while it had already bypassed the AEC to protect the user's voice — so an
+  immediate answer was thrown away and had to be repeated. With the pipeline's
+  AEC the playback now ends as soon as its audio is delivered, and the AEC
+  keeps cancelling the room's echo tail for 0.5 s before it is bypassed. A
+  pipeline without AEC keeps the 2 s window. New: `AudioPipeline.runs_aec`
+  (RMK-211).
+
 - `SherpaOnnxSTTProvider` no longer cuts the last words of an utterance
   (RMK-210). In transducer mode, `transcribe()` and `transcribe_stream()`
   ended the input straight after the speech, and a streaming transducer

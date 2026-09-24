@@ -769,6 +769,14 @@ class AudioPipeline:
                 stream,
             )
 
+    @property
+    def runs_aec(self) -> bool:
+        """Whether this pipeline cancels echo itself (an AEC the backend does not replace)."""
+        return (
+            self._config.aec is not None
+            and VoiceCapability.NATIVE_AEC not in self._backend_capabilities
+        )
+
     def set_aec_active(
         self,
         stream: str,
@@ -784,7 +792,7 @@ class AudioPipeline:
         the destructive reset.
         """
         aec = self._config.aec
-        if aec is None or VoiceCapability.NATIVE_AEC in self._backend_capabilities:
+        if aec is None or not self.runs_aec:
             return
         with self._aec_active_sources_lock:
             was_globally_active = any(self._aec_active_sources.values())

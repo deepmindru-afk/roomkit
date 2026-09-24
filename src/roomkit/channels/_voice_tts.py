@@ -37,11 +37,15 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("roomkit.voice")
 
-# Time to keep _playing_sessions alive after send_audio() returns.
-# Accounts for residual room echo/reverb after the speaker physically
-# finishes playing.  During this period, continuous STT discards any
-# transcription as echo.
+# Time to keep _playing_sessions alive after send_audio() returns when nothing
+# cancels echo.  Accounts for residual room echo/reverb after the speaker
+# physically finishes playing.  During this period, speech is discarded as echo.
 _PLAYBACK_DRAIN_S = 2.0
+
+# Time the pipeline's AEC keeps cancelling after send_audio() returns: the
+# room's echo tail, which a converged filter removes instead of the drain
+# window discarding everything said over it.
+_AEC_ECHO_TAIL_S = 0.5
 
 
 @runtime_checkable
@@ -286,42 +290,74 @@ class VoiceTTSMixin:
             total_out_bytes / total_in_bytes if total_in_bytes else 0,
         )
 
+    def _playback_sent(self, session_id: str) -> None:
+        """End a playback whose audio ``send_audio()`` has delivered.
+
+        The room may still carry residual echo.  How it is kept out of the STT
+        depends on whether the pipeline cancels it:
+
+        - **Pipeline AEC**: the playback ends here, at once — speech from now
+          on is the user's, even a reply started the moment the agent stops.
+          The AEC stays active for ``_AEC_ECHO_TAIL_S`` to cancel the echo
+          tail, then is bypassed so user audio passes unchanged; its converged
+          filter is preserved for the next playback turn.
+        - **No AEC**: :meth:`_finish_playback` keeps ``_playing_sessions``
+          alive for ``_PLAYBACK_DRAIN_S`` so the echo transcribed in that
+          window is discarded — along with any speech, which cannot be told
+          apart from it.
+        """
+        if self._pipeline is None or not self._pipeline.runs_aec:
+            self._schedule(
+                self._finish_playback(session_id),
+                name=f"finish_playback:{session_id}",
+            )
+            return
+        self._end_playback(session_id, drain_s=0.0)
+        self._schedule(
+            self._bypass_aec_after_echo_tail(session_id),
+            name=f"aec_echo_tail:{session_id}",
+        )
+        # The bot has finished — anything the DISABLED strategy queued while it
+        # spoke gets its turn now (RFC §12.6).
+        self._schedule(
+            self._flush_queued_speech(session_id),
+            name=f"flush_queued_speech:{session_id}",
+        )
+
     async def _finish_playback(self, session_id: str) -> None:
-        """Clear playback state after a post-drain delay for echo decay.
-
-        After ``send_audio()`` returns (speaker buffer drained), the room
-        may still have residual echo for 1-2 seconds.  This delay keeps
-        ``_playing_sessions`` alive so continuous STT discards any echo
-        transcribed during that window.
-
-        AEC is bypassed immediately (before the drain delay) so it cannot
-        suppress user speech.  Its converged adaptive filter is preserved for
-        the next playback turn.  The ``_playing_sessions`` flag stays alive
-        during the delay to gate echo transcriptions on the STT side.
+        """Clear playback state after the echo-decay window (no AEC).
 
         If ``interrupt()`` fires during the delay, it pops
         ``_playing_sessions`` immediately — the delayed pop becomes a no-op.
         """
-        import time as _time
-
-        # Bypass AEC immediately — don't wait for drain delay.  Bypass protects
-        # user speech while retaining the echo path learned from this hardware.
-        if self._pipeline is not None and self._pipeline._config.aec is not None:
-            self._pipeline.set_aec_active(session_id, False)
-
         await asyncio.sleep(_PLAYBACK_DRAIN_S)
-        with self._state_lock:
-            playback = self._playing_sessions.pop(session_id, None)
-        if playback:
-            self._last_tts_ended_at[session_id] = _time.monotonic()
-            logger.debug(
-                "Playback drain complete for session %s (delay=%.1fs)",
-                session_id,
-                _PLAYBACK_DRAIN_S,
-            )
+        self._end_playback(session_id, drain_s=_PLAYBACK_DRAIN_S)
         # The bot has finished — anything the DISABLED strategy queued while it
         # spoke gets its turn now (RFC §12.6).
         await self._flush_queued_speech(session_id)
+
+    def _end_playback(self, session_id: str, *, drain_s: float) -> None:
+        """Drop the playback state and stamp when the agent stopped speaking."""
+        with self._state_lock:
+            playback = self._playing_sessions.pop(session_id, None)
+        if playback:
+            self._last_tts_ended_at[session_id] = time.monotonic()
+            logger.debug(
+                "Playback drain complete for session %s (delay=%.1fs)",
+                session_id,
+                drain_s,
+            )
+
+    async def _bypass_aec_after_echo_tail(self, session_id: str) -> None:
+        """Bypass the AEC once the echo tail has decayed, unless a new playback started."""
+        await asyncio.sleep(_AEC_ECHO_TAIL_S)
+        if self._pipeline is None:
+            return
+        with self._state_lock:
+            # A playback started meanwhile owns the AEC again: leave it on.
+            if session_id in self._playing_sessions:
+                return
+            self._pipeline.set_aec_active(session_id, False)
 
     def _find_sessions(self, room_id: str, binding: ChannelBinding) -> list[VoiceSession]:
         """Find voice sessions for a room/binding pair."""
@@ -634,13 +670,7 @@ class VoiceTTSMixin:
             done_ev = self._playback_done_events.get(session.id)
             if done_ev is not None:
                 done_ev.set()
-            # Keep _playing_sessions alive during post-drain echo decay.
-            # _finish_playback pops it after the delay (interrupt() pops
-            # immediately if barge-in fires first).
-            self._schedule(
-                self._finish_playback(session.id),
-                name=f"finish_playback:{session.id}",
-            )
+            self._playback_sent(session.id)
 
     async def _send_tts(
         self,
@@ -772,10 +802,7 @@ class VoiceTTSMixin:
             done_ev = self._playback_done_events.get(session.id)
             if done_ev is not None:
                 done_ev.set()
-            self._schedule(
-                self._finish_playback(session.id),
-                name=f"finish_playback:{session.id}",
-            )
+            self._playback_sent(session.id)
 
     async def _deliver_voice(
         self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
@@ -1035,10 +1062,7 @@ class VoiceTTSMixin:
                 audio_stream = self._wrap_outbound(session, audio_stream)
             await self._backend.send_audio(session, audio_stream)
         finally:
-            self._schedule(
-                self._finish_playback(session.id),
-                name=f"finish_playback:{session.id}",
-            )
+            self._playback_sent(session.id)
 
 
 def _observe_audio(
