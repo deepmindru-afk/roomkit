@@ -2,18 +2,20 @@
 
 Everything runs on this machine, microphone included:
   - sherpa-onnx neural VAD and French speech-to-text (CPU)
-  - a local LLM served by Ollama
+  - a local LLM that RoomKit runs itself through llama.cpp (or Ollama)
+  - optional tools from an MCP server started as a command (stdio)
   - Kyutai's Pocket TTS, French model, on the CPU (default) or a CUDA GPU
 
-    Mic → [AEC] → VAD → sherpa-onnx STT (fr) → local LLM → [StripEmoji] → Pocket TTS (fr) → Speaker
+    Mic → [AEC] → VAD → sherpa-onnx STT (fr) → local LLM (+ MCP tools) → [StripEmoji] → Pocket TTS (fr) → Speaker
 
 Pocket TTS is a 100M-parameter model that streams faster than real time on
 two CPU cores: no GPU is needed for the voice. Measured on a desktop CPU, the
 ``french`` model starts speaking ~80 ms after it gets a sentence.
 
 Requirements:
-    Ollama running locally, with a model that answers without reasoning first:
-        ollama pull qwen3:4b-instruct
+    Nothing to run beside it: the LLM, Qwen3-4B-Instruct (Q4_K_M), is downloaded
+    on first run with the llama.cpp build for this machine, and RoomKit starts
+    and stops llama-server itself (~4 GB of VRAM on a GPU, or the CPU, slower).
     Headphones are recommended: echo cancellation is never perfect on
     speakers, and the assistant hearing itself reads as a barge-in.
 
@@ -31,8 +33,12 @@ Models (download once, into examples/models/):
     first run (licences per voice: huggingface.co/kyutai/tts-voices).
 
 Run (from the repository root):
-    uv run --extra local-audio --extra webrtc-aec --extra ollama \\
+    uv run --extra local-audio --extra webrtc-aec --extra llamacpp \\
         --extra sherpa-onnx --extra pocket-tts \\
+        python examples/voice_local_pocket_fr.py
+
+    With tools from an MCP server started as a command (add --extra mcp):
+    MCP_COMMAND="uvx mcp-server-time" uv run ... --extra mcp \\
         python examples/voice_local_pocket_fr.py
 
     On Linux this installs the CUDA build of PyTorch (~3 GB). For CPU only,
@@ -40,11 +46,20 @@ Run (from the repository root):
     Pocket TTS guide).
 
 Environment variables:
-    --- LLM (Ollama) ---
-    LLM_MODEL           Ollama model (default: qwen3:4b-instruct)
+    --- LLM ---
+    LLM_BACKEND         llamacpp | ollama (default: llamacpp)
+    LLM_MODEL           llamacpp: GGUF "repo:quant" or .gguf path
+                        (default: unsloth/Qwen3-4B-Instruct-2507-GGUF:Q4_K_M);
+                        ollama: model name (default: qwen3:4b-instruct; add
+                        --extra ollama to the run command)
     OLLAMA_HOST         Ollama server (default: http://localhost:11434)
     LLM_MAX_TOKENS      Max response tokens (default: 200)
     SYSTEM_PROMPT       Custom system prompt
+
+    --- Tools (MCP, stdio) ---
+    MCP_COMMAND         Command line of an MCP server whose tools the assistant
+                        may use (default: none). Started with the assistant,
+                        stopped with it; it gets a minimal environment.
 
     --- STT and VAD (sherpa-onnx, CPU) ---
     MODELS_DIR          Where the models were downloaded (default: examples/models)
@@ -76,7 +91,9 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shlex
 import sys
+from contextlib import AsyncExitStack
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -91,7 +108,10 @@ from roomkit import (
     VoiceChannel,
 )
 from roomkit.channels.ai import AIChannel
+from roomkit.providers.ai.base import AIProvider
+from roomkit.providers.llamacpp import LlamaCppAIProvider, LlamaCppConfig
 from roomkit.providers.ollama import OllamaAIProvider, OllamaConfig
+from roomkit.tools import MCPToolProvider
 from roomkit.voice.backends.local import LocalAudioBackend
 from roomkit.voice.pipeline import AudioPipelineConfig
 from roomkit.voice.pipeline.vad.sherpa_onnx import SherpaOnnxVADConfig, SherpaOnnxVADProvider
@@ -119,6 +139,39 @@ SYSTEM_PROMPT = (
     "Always answer in French, in one or two short, natural sentences, the way people talk. "
     "Never use lists, markdown or emojis."
 )
+TOOLS_PROMPT = (
+    " When a question needs them, use the tools, then say what they returned in a few"
+    " spoken words, never as raw data."
+)
+
+
+def build_llm() -> AIProvider:
+    """The local LLM: llama.cpp run by RoomKit, or an Ollama server."""
+    max_tokens = int(os.environ.get("LLM_MAX_TOKENS", "200"))
+    if os.environ.get("LLM_BACKEND", "llamacpp") == "ollama":
+        return OllamaAIProvider(
+            OllamaConfig(
+                host=os.environ.get("OLLAMA_HOST", "http://localhost:11434"),
+                model=os.environ.get("LLM_MODEL", "qwen3:4b-instruct"),
+                max_tokens=max_tokens,
+                think=False,
+            )
+        )
+    return LlamaCppAIProvider(
+        LlamaCppConfig(
+            model=os.environ.get("LLM_MODEL", "unsloth/Qwen3-4B-Instruct-2507-GGUF:Q4_K_M"),
+            max_tokens=max_tokens,
+            enable_thinking=False,
+            # Tool definitions and results take room: MCP servers are verbose.
+            context_size=16384,
+        )
+    )
+
+
+async def start_llm(provider: AIProvider) -> None:
+    """Load a llama.cpp model before the first word; an Ollama server is already up."""
+    if isinstance(provider, LlamaCppAIProvider):
+        await provider.start()
 
 
 def model_paths() -> dict[str, str]:
@@ -151,6 +204,12 @@ def build_aec() -> object | None:
 
 
 async def main() -> None:
+    # The MCP server, when there is one, lives as long as the assistant.
+    async with AsyncExitStack() as stack:
+        await run(stack)
+
+
+async def run(stack: AsyncExitStack) -> None:
     env = model_paths()
     if os.environ.get("POCKET_DISABLE_CUDNN") == "1":
         import torch
@@ -213,18 +272,24 @@ async def main() -> None:
         )
     )
 
-    # --- LLM (Ollama's native API: thinking off, a spoken reply cannot wait) ------
-    llm_model = os.environ.get("LLM_MODEL", "qwen3:4b-instruct")
-    ollama_host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
-    ai_provider = OllamaAIProvider(
-        OllamaConfig(
-            host=ollama_host,
-            model=llm_model,
-            max_tokens=int(os.environ.get("LLM_MAX_TOKENS", "200")),
-            think=False,
-        )
+    # --- LLM: thinking off, a spoken reply cannot wait ----------------------------
+    ai_provider = build_llm()
+    stack.push_async_callback(ai_provider.close)  # stops llama-server on any exit
+    logger.info(
+        "LLM: %s (%s), Pocket TTS voice: %s", ai_provider.model_name, ai_provider.name, voice_name
     )
-    logger.info("LLM: %s (%s), Pocket TTS voice: %s", llm_model, ollama_host, voice_name)
+
+    # --- Tools from an MCP server (optional) -------------------------------------
+    system_prompt = os.environ.get("SYSTEM_PROMPT", SYSTEM_PROMPT)
+    tool_kwargs: dict = {}
+    mcp_command = shlex.split(os.environ.get("MCP_COMMAND", ""))
+    if mcp_command:
+        mcp = await stack.enter_async_context(
+            MCPToolProvider.from_command(mcp_command[0], mcp_command[1:])
+        )
+        logger.info("MCP tools: %s", ", ".join(mcp.tool_names))
+        tool_kwargs = {"tools": mcp.get_tools(), "tool_handler": mcp.as_tool_handler()}
+        system_prompt += TOOLS_PROMPT
 
     # --- Channels and room -------------------------------------------------------
     voice = VoiceChannel(
@@ -238,11 +303,7 @@ async def main() -> None:
     )
     kit.register_channel(voice)
     kit.register_channel(
-        AIChannel(
-            "ai",
-            provider=ai_provider,
-            system_prompt=os.environ.get("SYSTEM_PROMPT", SYSTEM_PROMPT),
-        )
+        AIChannel("ai", provider=ai_provider, system_prompt=system_prompt, **tool_kwargs)
     )
     await kit.create_room(room_id="local-pocket-fr")
     await kit.attach_channel("local-pocket-fr", "ai", category=ChannelCategory.INTELLIGENCE)
@@ -262,8 +323,8 @@ async def main() -> None:
         logger.info("Barge-in: the assistant stops speaking")
 
     # --- Load everything before the first word -----------------------------------
-    logger.info("Loading Pocket TTS, STT and VAD models...")
-    await asyncio.gather(stt.warmup(), tts.warmup())
+    logger.info("Loading the LLM, Pocket TTS, STT and VAD models...")
+    await asyncio.gather(stt.warmup(), tts.warmup(), start_llm(ai_provider))
     await kit.attach_channel("local-pocket-fr", "voice")  # opens the mic
     logger.info("Ready: speak French into the microphone. Ctrl+C to stop.")
 
