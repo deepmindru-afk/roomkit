@@ -53,7 +53,15 @@ gemini = ["google-genai>=2.24.0"]
 mistral = ["mistralai>=2.0,<3"]
 polargrid = ["polargrid-sdk>=0.10.0"]
 deepgram = ["deepgram-sdk>=6.0.0"]
-sherpa-onnx = ["sherpa-onnx>=1.10"]
+# `sherpa-onnx-core` holds the native libraries (onnxruntime included) that
+# `sherpa-onnx` requires since 1.12.26. Every sherpa-onnx wheel declares it
+# except `linux_armv7l`, which bundles them; uv locks one wheel's metadata for
+# all platforms, reads that one, and the lock would install no core anywhere.
+# Upgrade both together: sherpa-onnx pins the core to its own version.
+sherpa-onnx = [
+    "sherpa-onnx>=1.12.26",
+    "sherpa-onnx-core>=1.12.26; platform_machine != 'armv7l'",
+]
 elevenlabs = ["elevenlabs>=2.40"]
 qwen-tts = ["qwen-tts>=0.1"]
 qwen-asr = ["qwen-asr>=0.0.4"]

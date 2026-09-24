@@ -15,6 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   previous `<0.13` bound still allowed an install to resolve it. The bound
   widens again once the channel supports the new transport.
 
+- `roomkit[sherpa-onnx]` installs `sherpa-onnx-core` again. Since 1.12.26 the
+  native libraries live in that package, and the lock left it out on every
+  platform — `sherpa-onnx`'s `linux_armv7l` wheel is the only one not to
+  declare it, and uv locks one wheel's metadata for all — so `import
+  sherpa_onnx` failed on `libonnxruntime.so` in any environment synced from
+  `uv.lock`. The extra now declares it (outside armv7l, whose wheel bundles
+  it), and requires `sherpa-onnx>=1.12.26`.
+
 ## [0.89.0] — 2026-09-24
 
 ### Added
