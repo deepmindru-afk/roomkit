@@ -117,6 +117,11 @@ class TTSPlaybackState:
     """Monotonic time playback was interrupted."""
     context_turn: tuple[AssistantTurnRecorder, str] | None = None
     """The TTS context turn this playback will record, and its speaker."""
+    barge_in_claimed: bool = False
+    """Set by the first barge-in on this playback; every later trigger finds
+    it taken. The playback leaves ``_playing_sessions`` only once that barge-in
+    reaches :meth:`VoiceChannel.interrupt`, and the user is still talking in
+    between."""
 
     @property
     def position_ms(self) -> int:
@@ -1592,10 +1597,26 @@ class VoiceChannel(
                 if self._confirm_tasks.get(session.id) is task:
                     self._confirm_tasks.pop(session.id, None)
 
+    def _claim_barge_in(self, playback: TTSPlaybackState) -> bool:
+        """Take *playback* for one barge-in; False when one already owns it."""
+        with self._state_lock:
+            if playback.barge_in_claimed:
+                return False
+            playback.barge_in_claimed = True
+            return True
+
     async def _handle_barge_in(
         self, session: VoiceSession, playback: TTSPlaybackState, room_id: str
     ) -> None:
         if not self._framework:
+            return
+        # One interruption per playback. Building the context and running the
+        # hooks takes as long as the store does, and until interrupt() pops the
+        # playback every trigger path still sees it playing: without the claim
+        # the energy check re-fires every 100 ms of continued speech, and two
+        # paths deciding on the same speech both fire. Claimed before any
+        # await, so the tasks scheduled behind this one return here.
+        if not self._claim_barge_in(playback):
             return
         # NOTE: do NOT cancel STT here.  _on_pipeline_vad_event already
         # called _start_stt_stream (which cancels + replaces the old one)

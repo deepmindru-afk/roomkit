@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A barge-in interrupts a playback once. Until `interrupt()` removed the
+  playback, every trigger path still saw the bot talking, and building the
+  barge-in's context waits on the store: in continuous mode the energy check
+  fired again every 100 ms of continued speech, so a store answering in 150 ms
+  ran ON_BARGE_IN and `interrupt()` three times for one interruption, and two
+  paths deciding on the same speech (a partial and the energy check) each
+  fired. The first barge-in now claims the playback before any await, and the
+  energy check stops evaluating a claimed one. The next playback is
+  interruptible as before (RMK-206).
+
 - `ACPChannel` supports `agent-client-protocol` 0.12.1 (RMK-206). That
   release removed `acp.task.InMemoryMessageQueue`, which the channel opened its
   connection with, so every ACP session failed at connect under it. The channel
