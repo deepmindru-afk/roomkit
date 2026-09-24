@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A tool call's log says what happened (RMK-219). INFO names the tool, the
   call and its argument keys, then the size of the result and how long the
-  handler took (`Tool luge_card returned 191951 chars in 487 ms`), where it
+  handler took (`Tool list_cards returned 191951 chars in 487 ms`), where it
   showed only the call id. The argument values and a bounded preview of the
   result go to DEBUG, through the same redaction as the rest of RoomKit's
   content: visible with `ROOMKIT_LOG_CONTENT=1` only. The shared example helper
