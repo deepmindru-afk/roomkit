@@ -119,6 +119,7 @@ pip install roomkit[sip]               # SIP voice + video
 pip install roomkit[deepgram]          # Deepgram STT
 pip install roomkit[elevenlabs]        # ElevenLabs TTS
 pip install roomkit[sherpa-onnx]       # Local STT/TTS/VAD/Denoiser (ONNX)
+pip install roomkit[vui]               # Vui Nano TTS (Python 3.12, CUDA)
 pip install roomkit[realtime-gemini]   # Gemini Live (speech-to-speech)
 pip install roomkit[realtime-openai]   # OpenAI Realtime (speech-to-speech)
 
@@ -262,7 +263,7 @@ All stages are optional. AEC and AGC are automatically skipped when the backend 
 | Denoiser | Noise reduction | RNNoise, SherpaOnnx |
 | AEC | Acoustic echo cancellation | Speex |
 | STT | Speech-to-text | Deepgram, SherpaOnnx, Qwen, Gradium |
-| TTS | Text-to-speech | ElevenLabs, Gemini, SherpaOnnx, Qwen, Gradium, Grok |
+| TTS | Text-to-speech | ElevenLabs, Gemini, SherpaOnnx, Qwen, Gradium, Grok, Vui |
 | Diarization | Speaker identification | Pluggable |
 | DTMF | Tone detection (parallel) | Pluggable |
 

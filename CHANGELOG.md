@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.89.0] — 2026-09-24
+
 ### Added
 
 - `EventType.INSTRUCTION` (RFC §10.1.1): the application directs an agent
@@ -32,7 +34,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   streaming, one active conversation per provider. Two private `vui-tts`
   attributes are used (mid-turn rewind, preset speaker token), so the
   dependency is pinned to `vui-tts>=1.1.4,<1.2`. See
-  `examples/voice_vui_context.py` (RMK-194).
+  `examples/voice_vui_context.py`, and `examples/voice_local_vui.py` for a
+  local assistant with sherpa-onnx STT and Ollama (RMK-194).
 - ElevenLabs continues its voice from one response to the next. The provider
   declares `TTSContextLevel.SELF` and sends ElevenLabs the `request_id` of up
   to three previous responses the user heard to the end
@@ -8320,7 +8323,8 @@ See entries `0.7.0a1` through `0.7.0a18` below.
 - `STTProvider.transcribe()` returns `TranscriptionResult` (Phase 3.1)
 - Framework event names enriched with payloads (Phase 4)
 
-[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.88.0...HEAD
+[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.89.0...HEAD
+[0.89.0]: https://github.com/roomkit-live/roomkit/compare/v0.88.0...v0.89.0
 [0.88.0]: https://github.com/roomkit-live/roomkit/compare/v0.87.0...v0.88.0
 [0.87.0]: https://github.com/roomkit-live/roomkit/compare/v0.86.0...v0.87.0
 [0.86.0]: https://github.com/roomkit-live/roomkit/compare/v0.85.0...v0.86.0
