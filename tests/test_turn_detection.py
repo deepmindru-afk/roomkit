@@ -265,3 +265,111 @@ class TestTurnDetection:
             if c.args[1] in (HookTrigger.ON_TURN_COMPLETE, HookTrigger.ON_TURN_INCOMPLETE)
         ]
         assert len(turn_calls) == 0
+
+
+def _wired_channel(detector, vad_events, transcripts, **config_kwargs):
+    """A VoiceChannel on mocks, bound to one session, with a recording framework."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from roomkit.models.channel import ChannelBinding
+    from roomkit.models.enums import ChannelType
+    from roomkit.voice.base import VoiceSession
+
+    vad = MockVADProvider(events=vad_events)
+    config = AudioPipelineConfig(vad=vad, turn_detector=detector, **config_kwargs)
+    backend = _MockBackend()
+    backend._audio_cbs = []
+    channel = VoiceChannel("ch1", stt=_MockSTT(transcripts), backend=backend, pipeline=config)
+    fw = AsyncMock()
+    fw._build_context = AsyncMock(return_value=AsyncMock())
+    fw.hook_engine.has_hooks = MagicMock(return_value=True)
+    fw.hook_engine.run_async_hooks = AsyncMock()
+    fw.hook_engine.run_sync_hooks = AsyncMock(
+        side_effect=[AsyncMock(allowed=True, event=t) for t in transcripts]
+    )
+    fw.process_inbound = AsyncMock()
+    channel.set_framework(fw)
+    session = VoiceSession(id="s1", room_id="r1", participant_id="p1", channel_id="ch1")
+    binding = ChannelBinding(room_id="r1", channel_id="ch1", channel_type=ChannelType.VOICE)
+    channel.bind_session(session, "r1", binding)
+    return channel, backend, session, fw
+
+
+def _routed_texts(fw) -> list[str]:
+    return [c.args[0].content.body for c in fw.process_inbound.call_args_list]
+
+
+_INCOMPLETE = TurnDecision(is_complete=False, confidence=0.3, reason="trailing")
+
+
+class TestIncompleteTurnWait:
+    """RFC §12: an incomplete turn is routed once its wait ends in silence (RMK-218)."""
+
+    async def test_silence_after_an_incomplete_turn_routes_it(self):
+        channel, backend, session, fw = _wired_channel(
+            MockTurnDetector(decisions=[_INCOMPLETE]),
+            [VADEvent(type=VADEventType.SPEECH_END, audio_bytes=b"audio1")],
+            ["Combien de boards je vois,"],
+            turn_incomplete_wait_ms=100,
+        )
+        await backend.simulate_audio(session, AudioFrame(data=b"\x00\x00"))
+        await asyncio.sleep(0.05)
+        assert _routed_texts(fw) == []  # still waiting
+
+        await asyncio.sleep(0.2)
+        assert _routed_texts(fw) == ["Combien de boards je vois,"]
+        complete = [
+            c
+            for c in fw.hook_engine.run_async_hooks.call_args_list
+            if c.args[1] == HookTrigger.ON_TURN_COMPLETE
+        ]
+        assert len(complete) == 1
+
+    async def test_speech_during_the_wait_cancels_it_and_joins_the_turn(self):
+        channel, backend, session, fw = _wired_channel(
+            MockTurnDetector(
+                decisions=[_INCOMPLETE, TurnDecision(is_complete=True, confidence=0.9)]
+            ),
+            [
+                VADEvent(type=VADEventType.SPEECH_END, audio_bytes=b"audio1"),
+                VADEvent(type=VADEventType.SPEECH_START),
+                VADEvent(type=VADEventType.SPEECH_END, audio_bytes=b"audio2"),
+            ],
+            ["Combien de boards je vois,", "et lequel a le plus de cartes ?"],
+            turn_incomplete_wait_ms=150,
+        )
+        await backend.simulate_audio(session, AudioFrame(data=b"\x00\x00"))
+        await asyncio.sleep(0.05)
+        await backend.simulate_audio(session, AudioFrame(data=b"\x01\x00"))  # speech starts
+        await asyncio.sleep(0.2)  # the wait would have elapsed by now
+        assert _routed_texts(fw) == []
+
+        await backend.simulate_audio(session, AudioFrame(data=b"\x02\x00"))  # speech ends
+        await asyncio.sleep(0.3)
+        assert _routed_texts(fw) == ["Combien de boards je vois, et lequel a le plus de cartes ?"]
+
+    async def test_the_detectors_suggested_wait_wins_over_the_default(self):
+        channel, backend, session, fw = _wired_channel(
+            MockTurnDetector(
+                decisions=[TurnDecision(is_complete=False, confidence=0.3, suggested_wait_ms=50)]
+            ),
+            [VADEvent(type=VADEventType.SPEECH_END, audio_bytes=b"audio1")],
+            ["Et donc"],
+            turn_incomplete_wait_ms=5000,
+        )
+        await backend.simulate_audio(session, AudioFrame(data=b"\x00\x00"))
+        await asyncio.sleep(0.25)
+        assert _routed_texts(fw) == ["Et donc"]
+
+    async def test_a_session_that_ends_during_the_wait_routes_nothing(self):
+        channel, backend, session, fw = _wired_channel(
+            MockTurnDetector(decisions=[_INCOMPLETE]),
+            [VADEvent(type=VADEventType.SPEECH_END, audio_bytes=b"audio1")],
+            ["Au revoir"],
+            turn_incomplete_wait_ms=100,
+        )
+        await backend.simulate_audio(session, AudioFrame(data=b"\x00\x00"))
+        await asyncio.sleep(0.05)
+        channel.unbind_session(session)
+        await asyncio.sleep(0.2)
+        assert _routed_texts(fw) == []

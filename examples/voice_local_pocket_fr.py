@@ -27,6 +27,8 @@ Models (download once, into examples/models/):
     # (model license: huggingface.co/Banafo/Kroko-ASR)
     wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-fr-kroko-2025-08-06.tar.bz2
     tar xf sherpa-onnx-streaming-zipformer-fr-kroko-2025-08-06.tar.bz2
+    # Turn detection (optional, multilingual): a pause no longer splits a sentence
+    wget https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/main/smart-turn-v3.2-cpu.onnx
     cd ../..
 
     Pocket TTS weights and its pre-made voices download from Hugging Face on
@@ -34,7 +36,7 @@ Models (download once, into examples/models/):
 
 Run (from the repository root):
     uv run --extra local-audio --extra webrtc-aec --extra llamacpp \\
-        --extra sherpa-onnx --extra pocket-tts \\
+        --extra sherpa-onnx --extra pocket-tts --extra smart-turn \\
         python examples/voice_local_pocket_fr.py
 
     With tools from an MCP server started as a command (add --extra mcp):
@@ -59,6 +61,11 @@ Environment variables:
     --- Debugging ---
     VOICE_DEBUG         1 to log turn-taking decisions (speech start/end,
                         suppressed segments, barge-in evaluation, AI turns)
+
+    --- Turn detection ---
+    SMART_TURN_MODEL    Smart Turn v3 .onnx (default: MODELS_DIR/smart-turn-v3.2-cpu.onnx,
+                        used when present; add --extra smart-turn). Without it,
+                        every pause of 0.6 s ends the turn.
 
     --- Tools (MCP, stdio) ---
     MCP_COMMAND         Command line of an MCP server whose tools the assistant
@@ -120,6 +127,7 @@ from roomkit.telemetry.redaction import set_content_logging
 from roomkit.tools import MCPToolProvider
 from roomkit.voice.backends.local import LocalAudioBackend
 from roomkit.voice.pipeline import AudioPipelineConfig
+from roomkit.voice.pipeline.turn import SmartTurnConfig, SmartTurnDetector
 from roomkit.voice.pipeline.vad.sherpa_onnx import SherpaOnnxVADConfig, SherpaOnnxVADProvider
 from roomkit.voice.stt.sherpa_onnx import SherpaOnnxSTTConfig, SherpaOnnxSTTProvider
 from roomkit.voice.tts.filters import StripEmoji
@@ -224,6 +232,23 @@ def enable_voice_debug(kit: RoomKit) -> None:
     @kit.hook(HookTrigger.ON_SPEECH_END, execution=HookExecution.ASYNC)
     async def on_speech_end(event, ctx):
         logger.info("[debug] speech end")
+
+
+def build_turn_detector() -> SmartTurnDetector | None:
+    """Smart Turn v3 when its model was downloaded: it hears whether a sentence is over.
+
+    The VAD alone ends a turn at every 0.6 s pause, so "how many boards do I
+    see, [pause] and which has the most cards?" became two turns and two
+    stacked answers. A turn Smart Turn judges unfinished waits for more speech,
+    and is still answered after 1.5 s of silence (turn_incomplete_wait_ms).
+    """
+    models_dir = Path(os.environ.get("MODELS_DIR", DEFAULT_MODELS_DIR))
+    model = os.environ.get("SMART_TURN_MODEL") or str(models_dir / "smart-turn-v3.2-cpu.onnx")
+    if not Path(model).is_file():
+        logger.info("No Smart Turn model at %s: turns end at every VAD pause", model)
+        return None
+    logger.info("Turn detection: Smart Turn v3 (%s)", Path(model).name)
+    return SmartTurnDetector(SmartTurnConfig(model_path=model))
 
 
 def build_aec() -> object | None:
@@ -334,7 +359,7 @@ async def run(stack: AsyncExitStack) -> None:
         stt=stt,
         tts=tts,
         backend=backend,
-        pipeline=AudioPipelineConfig(vad=vad, aec=aec),
+        pipeline=AudioPipelineConfig(vad=vad, aec=aec, turn_detector=build_turn_detector()),
         # The LLM adds emoji despite the prompt; spoken, they sound wrong.
         tts_filter=StripEmoji(),
     )

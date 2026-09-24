@@ -122,6 +122,12 @@ class AudioPipelineConfig:
     turn_detector: TurnDetector | None = None
     """Optional post-STT turn completion detector."""
 
+    turn_incomplete_wait_ms: float = 1500.0
+    """How long a turn the detector judged incomplete waits for more speech
+    when the decision gives no ``suggested_wait_ms`` (RFC §12). If none starts,
+    the accumulated turn is routed as complete, so a user who pauses on a
+    sentence judged unfinished is still answered."""
+
     backchannel_detector: BackchannelDetector | None = None
     """Optional backchannel detector for semantic interruption strategy."""
 

@@ -68,6 +68,22 @@ class TestSentenceSplitter:
         assert "Third?" in combined
         assert "Partial end" in combined
 
+    async def test_a_list_is_split_at_its_line_breaks(self) -> None:
+        """A list has no sentence ending: without line breaks as boundaries the
+        TTS got all twenty items as one block (RMK-218)."""
+        items = "".join(f"- Board number {i}\n" for i in range(1, 21))
+        tokens = ["Here are your boards:\n", *[items[i : i + 7] for i in range(0, len(items), 7)]]
+        result = [s async for s in split_sentences(_aiter(tokens), min_chunk_chars=20)]
+        assert len(result) >= 10
+        assert all(len(chunk) < 60 for chunk in result)
+        assert "- Board number 20" in result[-1]
+
+    async def test_short_lines_gather_up_to_the_minimum(self) -> None:
+        tokens = ["- a\n", "- b\n", "- c\n", "- a longer item here\n", "end"]
+        result = [s async for s in split_sentences(_aiter(tokens), min_chunk_chars=20)]
+        assert result[0].startswith("- a\n- b\n- c")
+        assert result[-1] == "end"
+
 
 # ---------------------------------------------------------------------------
 # Mock providers for streaming AI → TTS tests

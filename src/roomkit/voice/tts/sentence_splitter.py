@@ -5,8 +5,9 @@ from __future__ import annotations
 import re
 from collections.abc import AsyncIterator
 
-# Sentence-ending punctuation followed by whitespace or end-of-stream.
-_SENTENCE_END = re.compile(r"[.!?][\s]")
+# Sentence-ending punctuation followed by whitespace, or a line break: a list
+# (one item per line, no final punctuation) is otherwise one block for the TTS.
+_SENTENCE_END = re.compile(r"[.!?][\s]|\n")
 
 
 async def split_sentences(
@@ -17,8 +18,9 @@ async def split_sentences(
 
     Accumulates tokens into a buffer.  When the buffer contains a
     sentence-ending punctuation mark (``.``, ``!``, ``?``) followed by
-    whitespace **and** the accumulated text is at least *min_chunk_chars*
-    long, the sentence is yielded and the buffer is reset.
+    whitespace, or a line break, **and** the accumulated text is at least
+    *min_chunk_chars* long, the sentence is yielded and the buffer is reset.
+    Short lines (list items) gather until the chunk reaches that length.
 
     On stream end any remaining buffered text is yielded as-is (the final
     partial sentence).
@@ -39,8 +41,9 @@ async def split_sentences(
             match = _SENTENCE_END.search(buf, min_chunk_chars)
             if match is None:
                 break
-            # Split right after the punctuation (before the trailing space)
-            split_pos = match.start() + 1
+            # Split right after the punctuation (before the trailing space),
+            # or at the line break itself
+            split_pos = match.start() if match.group() == "\n" else match.start() + 1
             sentence = buf[:split_pos].strip()
             buf = buf[split_pos:].lstrip()
             if sentence:
