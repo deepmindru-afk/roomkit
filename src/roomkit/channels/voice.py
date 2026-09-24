@@ -1207,7 +1207,7 @@ class VoiceChannel(
             # without this, BatchSpanProcessor may not export it before shutdown.
             telemetry.flush()
         # Emit voice_session_ended framework event
-        if binding_info and self._framework:
+        if self._framework:
             room_id, _ = binding_info
             self._schedule(
                 self._emit_session_ended(session, room_id),

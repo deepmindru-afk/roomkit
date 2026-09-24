@@ -12,7 +12,10 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from prompt_toolkit.formatted_text import StyleAndTextTuples
 
 Choice = tuple[str, str]
 """One option: ``(value, label)``. The value is returned, the label is shown."""
@@ -125,8 +128,8 @@ def _build_picker(
 
     cursor = [start]
 
-    def render() -> list[tuple[str, str]]:
-        fragments: list[tuple[str, str]] = []
+    def render() -> StyleAndTextTuples:
+        fragments: StyleAndTextTuples = []
         if title:
             fragments.append(("class:select-title", f"{title}\n"))
         for index, (_value, label) in enumerate(choices):

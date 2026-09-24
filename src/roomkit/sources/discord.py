@@ -31,7 +31,7 @@ try:
 
     HAS_DISCORD = True
 except ImportError:
-    discord = None  # ty: ignore[invalid-assignment]
+    discord = None
     HAS_DISCORD = False
 
 logger = logging.getLogger("roomkit.sources.discord")
@@ -168,7 +168,7 @@ class DiscordGatewaySource(BaseSourceProvider):
         return f"discord:{self._channel_id}"
 
     async def start(self, emit: EmitCallback) -> None:
-        if not HAS_DISCORD:
+        if discord is None:
             raise ImportError(
                 "discord.py is required for DiscordGatewaySource. "
                 "Install it with: pip install roomkit[discord]"
