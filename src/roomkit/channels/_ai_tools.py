@@ -464,6 +464,10 @@ class AIToolsMixin:
             )
             structured_content: dict[str, Any] | None = None
             tool_failed = False
+            # What the tool actually returned, before eviction swaps an
+            # oversized body for a placeholder: the usage memory keeps the head
+            # of the data, which is what a later turn asks about.
+            recorded_result: Any = None
             if executed_arguments is not None:
                 # Snapshot the post-hook payload before handing it to user
                 # code. Streaming persistence can then distinguish what the
@@ -483,6 +487,7 @@ class AIToolsMixin:
                     result = await handler(tc.name, arguments)
                 finally:
                     _current_tool_call.reset(_tc_tok)
+                recorded_result = result
                 logger.info(
                     "Tool %s returned %d chars in %.0f ms",
                     tc.name,
@@ -517,6 +522,7 @@ class AIToolsMixin:
                     override = await self._tool_call_hook(event)
                     if override is not None:
                         result = override
+                        recorded_result = override
 
                 telemetry.end_span(tool_span_id)
             except asyncio.CancelledError:
@@ -544,7 +550,12 @@ class AIToolsMixin:
             # Remember this call (final result, success or error) so later turns
             # can show "tools you've already used" and re-reveal it under Tool
             # Search. Infra/discovery tools are filtered inside record().
-            self._tool_usage.record(room_id, tc.name, arguments, result)
+            self._tool_usage.record(
+                room_id,
+                tc.name,
+                arguments,
+                recorded_result if recorded_result is not None else result,
+            )
             # Annotate an answer this tool already gave this turn. Runs on the
             # recorded result, so the memory above keeps the tool's own output
             # and only the model's copy carries the note — and the hash stays

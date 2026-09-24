@@ -8,9 +8,12 @@ and — under Tool Search — it can't re-call a tool it already used because th
 catalogue is re-hidden every turn. This in-memory, per-room record closes both
 gaps, which have DIFFERENT shapes and costs, so each is bounded on its own axis:
 
-* a compact **digest** (tool name + arguments + a short result preview) is added
-  to the system prompt so the model knows what it did — bounded by recent
-  *calls* (``_DIGEST_MAX_CALLS``): a short, readable "what you did" block;
+* a **digest** is added to the system prompt so the model knows what it did and
+  what it got — bounded by recent *calls* (``_DIGEST_MAX_CALLS``). The most
+  recent ``_RESULTS_SHOWN`` calls carry their result, up to
+  ``_RESULT_KEEP_CHARS``: the data a follow-up question is about ("and the
+  fifteenth board?") has to be there, or the model invents it. Older calls
+  shrink to one line with a short preview;
 * the set of distinct **tool names** it called — or that ``find_tools`` already
   revealed (``record_revealed``) — is re-revealed each turn (see
   ``_build_context``) so a tool used or found once stays callable while Tool
@@ -52,6 +55,11 @@ _REVEAL_MAX_TOOLS = 12
 _MAX_ROOMS = 100  # FIFO cap across rooms a shared channel serves
 _RESULT_PREVIEW_CHARS = 120
 _ARG_VALUE_CHARS = 48
+# The most recent calls keep their result in the digest, up to this many
+# characters each (~1.5k tokens): enough for a list of boards or cards, bounded
+# so three of them cannot crowd out a small model's context.
+_RESULTS_SHOWN = 3
+_RESULT_KEEP_CHARS = 6000
 
 
 @dataclass
@@ -59,6 +67,9 @@ class _Call:
     name: str
     arguments: dict[str, Any]
     result_preview: str
+    # The head of the result, for the calls the digest shows whole.
+    result_excerpt: str = ""
+    result_chars: int = 0
 
 
 @dataclass
@@ -96,7 +107,14 @@ class ToolUsageMemory:
         mem = self._by_room.setdefault(room_id, _RoomMemory())
         self._by_room.move_to_end(room_id)
 
-        entry = _Call(name, dict(arguments), self._preview(result))
+        text = str(result)
+        entry = _Call(
+            name,
+            dict(arguments),
+            self._preview(result),
+            result_excerpt=text[:_RESULT_KEEP_CHARS],
+            result_chars=len(text),
+        )
         # Collapse an immediately-preceding identical call (same name + args) so a
         # repeated poll (e.g. a playback "get") doesn't crowd out the digest.
         if mem.calls and mem.calls[-1].name == name and mem.calls[-1].arguments == entry.arguments:
@@ -192,9 +210,28 @@ class ToolUsageMemory:
             "don't re-search for them. This is NOT your full toolset, only what "
             "you happened to use: many more tools stay hidden behind find_tools, so "
             "never conclude you can't do something without searching for it first.",
+            "The most recent calls show what they returned: answer follow-up "
+            "questions from it, and never state a detail it does not contain — "
+            "call the tool again instead.",
         ]
-        lines.extend(f"- {self._format_call(c)}" for c in mem.calls)
+        shown_from = len(mem.calls) - _RESULTS_SHOWN
+        for index, call in enumerate(mem.calls):
+            if index < shown_from:
+                lines.append(f"- {self._format_call(call)}")
+            else:
+                lines.append(self._format_call_with_result(call))
         return "\n".join(lines)
+
+    @classmethod
+    def _format_call_with_result(cls, call: _Call) -> str:
+        head = f"- {call.name}({cls._format_args(call.arguments)}) returned:"
+        body = call.result_excerpt or "(no result)"
+        if call.result_chars > len(call.result_excerpt):
+            body += (
+                f"\n  [first {len(call.result_excerpt)} of {call.result_chars} characters; "
+                "call the tool again for the rest]"
+            )
+        return f"{head}\n{body}"
 
     @classmethod
     def _format_call(cls, call: _Call) -> str:

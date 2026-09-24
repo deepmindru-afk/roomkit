@@ -60,6 +60,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An agent answers a follow-up question from the data its tools returned, not
+  from a guess (RMK-217). The context rebuilt for each turn holds messages
+  only, and the "tools you've already used" digest carried just 120
+  characters of each result: one turn after listing twenty boards, the model
+  saw the first one and named the others from nothing. The three most recent
+  calls now keep their result in the digest, up to 6,000 characters each, with
+  a marked cut and an instruction to call the tool again rather than guess when
+  it is longer; and the result kept is the tool's own, not the eviction
+  placeholder an oversized one was replaced by.
+
 - `MCPToolProvider` closes what it opened when connecting fails half-way
   (RMK-215). A server that exits or an `initialize` that errors left the
   transport, and for stdio the server process, open; everything now enters one

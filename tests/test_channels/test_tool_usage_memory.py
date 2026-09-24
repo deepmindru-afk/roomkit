@@ -131,13 +131,36 @@ class TestToolUsageMemory:
         # Shared recency window: the reveal burst ages the older used tool out.
         assert mem.tool_names("r1") == {"tool_0", "tool_1", "tool_2"}
 
-    def test_long_result_is_truncated(self) -> None:
+    def test_a_recent_result_is_kept_whole_for_follow_up_questions(self) -> None:
+        """The data itself, not a 120-character glimpse (RMK-217): asked for
+        the twentieth board one turn after listing them, a model that sees
+        only the first one invents the rest."""
+        boards = ", ".join(f"Board {i}" for i in range(1, 21))
         mem = ToolUsageMemory()
-        mem.record("r1", "dump", {}, "x" * 500)
-        digest = mem.render_digest("r1")
-        assert digest is not None
-        assert "…" in digest
-        assert "x" * 500 not in digest
+        mem.record("r1", "list_boards", {}, boards)
+        digest = mem.render_digest("r1") or ""
+        assert "Board 20" in digest
+        assert "never state a detail" in digest
+
+    def test_an_oversized_result_is_cut_and_says_so(self) -> None:
+        mem = ToolUsageMemory()
+        mem.record("r1", "dump", {}, "x" * 9000)
+        digest = mem.render_digest("r1") or ""
+        assert "x" * 9000 not in digest
+        assert "x" * 6000 in digest
+        assert "first 6000 of 9000 characters" in digest
+        assert "call the tool again" in digest
+
+    def test_only_the_most_recent_calls_keep_their_result(self) -> None:
+        mem = ToolUsageMemory()
+        for i in range(5):
+            mem.record("r1", f"tool{i}", {}, f"result-{i} " + "y" * 500)
+        digest = mem.render_digest("r1") or ""
+        # tool2..tool4 keep their result; tool0 and tool1 are one line again.
+        assert "result-4 " + "y" * 500 in digest
+        assert "result-2 " + "y" * 500 in digest
+        assert "result-1 " + "y" * 500 not in digest
+        assert "tool1()" in digest and "…" in digest
 
     def test_hydration_lifecycle(self) -> None:
         """A fresh room needs hydration; seeding fills digest + reveal set and
@@ -225,6 +248,40 @@ class TestToolUsageInContext:
             _current_loop_ctx.set(None)
         assert "Tools you've already used here" in (ctx.system_prompt or "")
         assert "SpotifyPlayback" in (ctx.system_prompt or "")
+
+    async def test_the_next_turn_sees_the_data_a_tool_returned(self) -> None:
+        """A call executed through the tool loop reaches the next turn whole,
+        not as the eviction placeholder its oversized result was given."""
+        from roomkit.providers.ai.base import AIContext, AIMessage, AIToolCall
+
+        boards = '{"boards": [' + ", ".join(f'"Board {i}"' for i in range(1, 21)) + "]}"
+        handler = AsyncMock(return_value=boards + " " * 30000)  # above the eviction threshold
+        ch = AIChannel(
+            "ai1",
+            provider=MockAIProvider(
+                ai_responses=[
+                    AIResponse(
+                        content="",
+                        finish_reason="tool_calls",
+                        tool_calls=[AIToolCall(id="t1", name="list_boards", arguments={})],
+                    ),
+                    AIResponse(content="Twenty boards.", finish_reason="stop"),
+                ],
+                streaming=True,
+            ),
+            tool_handler=handler,
+            evict_threshold_tokens=1000,
+        )
+        _current_loop_ctx.set(_ToolLoopContext(room_id="r1"))
+        try:
+            turn = AIContext(messages=[AIMessage(role="user", content="my boards?")])
+            [d async for d in ch._run_streaming_tool_loop(turn)]
+            ctx = await ch._build_context(_event(), _binding(_CATALOGUE), _context())
+        finally:
+            _current_loop_ctx.set(None)
+        prompt = ctx.system_prompt or ""
+        assert "Board 20" in prompt
+        assert "Result too large" not in prompt
 
     async def test_called_tool_is_revealed_under_tool_search(self) -> None:
         """With Tool Search ON, a tool the agent already used stays callable,
