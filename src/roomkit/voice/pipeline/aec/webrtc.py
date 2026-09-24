@@ -61,6 +61,26 @@ def _import_numpy() -> Any:
 
 
 @dataclass
+class _Levels:
+    """Energy in and out of the AEC over a run of 10 ms blocks."""
+
+    in_energy: int = 0
+    out_energy: int = 0
+    blocks: int = 0
+
+    def add(self, in_energy: int, out_energy: int, blocks: int) -> None:
+        self.in_energy += in_energy
+        self.out_energy += out_energy
+        self.blocks += blocks
+
+    def take(self) -> _Levels:
+        """Return the totals so far and start again from zero."""
+        taken = _Levels(self.in_energy, self.out_energy, self.blocks)
+        self.in_energy = self.out_energy = self.blocks = 0
+        return taken
+
+
+@dataclass
 class _StreamState:
     """One stream's WebRTC processor and its chunking buffers.
 
@@ -78,20 +98,15 @@ class _StreamState:
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     # Diagnostics. ``process_count`` and ``ref_fed_count`` are cumulative;
-    # the window (``total_*``, ``window_count``) feeds the periodic
-    # ``AEC stats`` line and the turn (``turn_*``) the ``AEC turn`` line at
-    # bypass. Both cover one playback only, so a line never mixes a turn cut
-    # by a barge-in, the user's voice included, with the next one.
+    # ``window`` feeds the periodic ``AEC stats`` line and ``turn`` the
+    # ``AEC turn`` line at bypass. Both cover one playback only, so a line
+    # never mixes a turn cut by a barge-in, the user's voice included, with
+    # the next one. Read and written under ``lock``.
     process_count: int = 0
     ref_fed_count: int = 0
-    total_in_energy: int = 0
-    total_out_energy: int = 0
-    window_count: int = 0
-    turn_count: int = 0
-    turn_in_energy: int = 0
-    turn_out_energy: int = 0
-    # Set by an activation change, applied by the audio thread before its next
-    # accumulation, so the reset never races the sums made outside the lock.
+    window: _Levels = field(default_factory=_Levels)
+    turn: _Levels = field(default_factory=_Levels)
+    # Set at an activation change: the next accumulation starts both from zero.
     stats_reset_pending: bool = False
 
 
@@ -276,27 +291,26 @@ class WebRTCAECProvider(AECProvider):
             self._clear_io_buffers(st)
             return frame
 
-        # Energy diagnostics OUTSIDE the lock: the PortAudio speaker callback
-        # blocks on this lock in feed_reference(), and the previous per-sample
-        # Python loop held it for the whole diagnostic — long enough to delay
-        # the realtime audio thread. The lock now covers process_stream only.
+        # Energy is computed OUTSIDE the lock: the PortAudio speaker callback
+        # blocks on this lock in feed_reference(), and computing it inside
+        # delayed the realtime audio thread. Only the integer sums take it.
         if in_processed:
-            if st.stats_reset_pending:
-                st.stats_reset_pending = False
-                self._reset_window(st)
-                st.turn_count = st.turn_in_energy = st.turn_out_energy = 0
             np = self._np
             in_s = np.frombuffer(b"".join(in_processed), dtype="<i2").astype(np.int64)
             out_s = np.frombuffer(b"".join(out_processed), dtype="<i2").astype(np.int64)
             in_energy, out_energy = int(in_s @ in_s), int(out_s @ out_s)
-            st.total_in_energy += in_energy
-            st.total_out_energy += out_energy
-            st.window_count += len(in_processed)
-            st.turn_in_energy += in_energy
-            st.turn_out_energy += out_energy
-            st.turn_count += len(in_processed)
-            if st.window_count >= _LOG_INTERVAL:
-                self._log_stats(stream, st)
+            window: _Levels | None = None
+            with st.lock:
+                if st.stats_reset_pending:
+                    st.stats_reset_pending = False
+                    st.window.take()
+                    st.turn.take()
+                st.window.add(in_energy, out_energy, len(in_processed))
+                st.turn.add(in_energy, out_energy, len(in_processed))
+                if st.window.blocks >= _LOG_INTERVAL:
+                    window = st.window.take()
+            if window is not None:
+                self._log_stats(stream, st, window)
 
         metadata = dict(frame.metadata)
         if active:
@@ -536,22 +550,20 @@ class WebRTCAECProvider(AECProvider):
     # Internals
     # ------------------------------------------------------------------
 
-    def _levels(self, in_energy: int, out_energy: int, blocks: int) -> tuple[int, int, float]:
-        """RMS in and out of *blocks* 10 ms blocks, and the attenuation between them."""
-        n = self._frame_samples * self._channels * blocks or 1
-        in_rms = math.isqrt(in_energy // n)
-        out_rms = math.isqrt(out_energy // n)
+    def _levels(self, levels: _Levels) -> tuple[int, int, float]:
+        """RMS in and out of the AEC over *levels*, and the attenuation between them."""
+        n = self._frame_samples * self._channels * levels.blocks or 1
+        in_rms = math.isqrt(levels.in_energy // n)
+        out_rms = math.isqrt(levels.out_energy // n)
         if in_rms > 0:
             attenuation_db = 20 * math.log10(out_rms / in_rms) if out_rms > 0 else -99
         else:
             attenuation_db = 0.0
         return in_rms, out_rms, attenuation_db
 
-    def _log_stats(self, stream: str, st: _StreamState) -> None:
+    def _log_stats(self, stream: str, st: _StreamState, window: _Levels) -> None:
         """Log the periodic AEC diagnostics of one stream's current playback."""
-        in_rms, out_rms, attenuation_db = self._levels(
-            st.total_in_energy, st.total_out_energy, st.window_count
-        )
+        in_rms, out_rms, attenuation_db = self._levels(window)
         logger.info(
             "AEC stats: stream=%s processed=%d refs_fed=%d bypass=%s | "
             "in_rms=%d out_rms=%d attenuation=%.1fdB",
@@ -563,32 +575,26 @@ class WebRTCAECProvider(AECProvider):
             out_rms,
             attenuation_db,
         )
-        self._reset_window(st)
-
-    @staticmethod
-    def _reset_window(st: _StreamState) -> None:
-        st.total_in_energy = 0
-        st.total_out_energy = 0
-        st.window_count = 0
 
     def _end_stats_turn(self, stream: str, st: _StreamState, *, closing: bool) -> None:
         """Close the diagnostics of one playback at an activation change.
 
         At bypass, the playback just ended is summarised in one ``AEC turn``
         line. Either way the window and the turn restart with the next
-        playback; the audio thread applies the reset (``stats_reset_pending``).
+        playback: the next accumulation applies ``stats_reset_pending``.
         """
-        if closing and st.turn_count > 0 and not st.stats_reset_pending:
-            in_rms, out_rms, attenuation_db = self._levels(
-                st.turn_in_energy, st.turn_out_energy, st.turn_count
-            )
-            logger.info(
-                "AEC turn: stream=%s frames=%d (%.1fs) in_rms=%d out_rms=%d attenuation=%.1fdB",
-                stream,
-                st.turn_count,
-                st.turn_count * _WEBRTC_FRAME_MS / 1000,
-                in_rms,
-                out_rms,
-                attenuation_db,
-            )
-        st.stats_reset_pending = True
+        with st.lock:
+            ended = st.turn.take() if closing and not st.stats_reset_pending else None
+            st.stats_reset_pending = True
+        if ended is None or ended.blocks == 0:
+            return
+        in_rms, out_rms, attenuation_db = self._levels(ended)
+        logger.info(
+            "AEC turn: stream=%s frames=%d (%.1fs) in_rms=%d out_rms=%d attenuation=%.1fdB",
+            stream,
+            ended.blocks,
+            ended.blocks * _WEBRTC_FRAME_MS / 1000,
+            in_rms,
+            out_rms,
+            attenuation_db,
+        )

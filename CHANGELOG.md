@@ -26,7 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   failing at the start of each turn (`attenuation=-0.3dB`) when a fine
   measurement showed −14 to −33 dB from the echo's arrival. The window now
   restarts at each activation, and each playback ends with one `AEC turn`
-  line at bypass: its length, `in_rms`, `out_rms` and attenuation.
+  line at bypass: its length, `in_rms`, `out_rms` and attenuation. The RMS
+  now divides by the samples actually summed: a stereo stream read √2 too
+  high, and a window could hold more than the 100 blocks it divided by.
 
 - A reply the user starts the moment the agent stops speaking is heard when
   the pipeline runs an AEC. Once `send_audio()` returned, the channel kept a

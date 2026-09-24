@@ -159,9 +159,9 @@ class TestWebRTCAECProviderProcess:
         provider.process(frame, "s1")
 
         st = provider._streams["s1"]
-        assert st.total_in_energy == 160 * 1000**2
+        assert st.window.in_energy == 160 * 1000**2
         # Mock AP is passthrough, so output energy matches input exactly.
-        assert st.total_out_energy == st.total_in_energy
+        assert st.window.out_energy == st.window.in_energy
 
     def test_irregular_chunks_preserve_stream_length_without_duplication(self):
         """Transparent chunking never returns more audio than it consumed."""
@@ -453,3 +453,44 @@ class TestWebRTCAECStatsPerTurn:
         provider.set_stream_active("s1", False)
 
         assert self._stats_lines(caplog, "AEC turn") == []
+
+    def test_irregular_frames_count_every_block_once(self, caplog):
+        # 15 ms frames go through the chunking path: 1.5 blocks per call.
+        mock_mod, _, _ = _make_mock_aec_module()
+        provider, _ = _make_provider(mock_mod)
+        caplog.set_level("INFO", logger=_AEC_LOGGER)
+        frame = AudioFrame(
+            data=(1000).to_bytes(2, "little", signed=True) * 240,
+            sample_rate=16000,
+            channels=1,
+            sample_width=2,
+        )
+
+        provider.set_stream_active("s1", True)
+        for _ in range(40):  # 600 ms: 60 whole blocks
+            provider.process(frame, "s1")
+        provider.set_stream_active("s1", False)
+
+        turns = self._stats_lines(caplog, "AEC turn")
+        assert len(turns) == 1 and "frames=60 (0.6s)" in turns[0]
+        assert "in_rms=1000 " in turns[0]
+
+    def test_stereo_rms_counts_both_channels(self, caplog):
+        mock_mod, _, _ = _make_mock_aec_module()
+        provider, _ = _make_provider(mock_mod, channels=2)
+        caplog.set_level("INFO", logger=_AEC_LOGGER)
+        frame = AudioFrame(  # 10 ms of stereo: 160 frames x 2 channels
+            data=(1000).to_bytes(2, "little", signed=True) * 320,
+            sample_rate=16000,
+            channels=2,
+            sample_width=2,
+        )
+
+        provider.set_stream_active("s1", True)
+        for _ in range(10):
+            provider.process(frame, "s1")
+        provider.set_stream_active("s1", False)
+
+        # Every sample is 1000: the RMS is 1000, not 1000 x sqrt(2).
+        turns = self._stats_lines(caplog, "AEC turn")
+        assert len(turns) == 1 and "in_rms=1000 " in turns[0]

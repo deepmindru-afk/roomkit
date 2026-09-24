@@ -126,8 +126,8 @@ from roomkit.voice.backends.local import LocalAudioBackend
 logger = setup_logging("screen_assistant_ai")
 
 # Drop the AEC stats/reference logs (emitted every ~1s) but keep
-# one-shot init/activated/reset lines so the user can still see the
-# AEC actually started.
+# one-shot init/activated/reset lines, and the one AEC turn line per
+# reply, so the user can still see the AEC started and how well it did.
 import logging  # noqa: E402
 
 
