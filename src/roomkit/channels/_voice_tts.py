@@ -7,10 +7,12 @@ import logging
 import os
 import time
 from collections import OrderedDict
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
+from functools import partial
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.channels._stream_fanout import StreamBranch, StreamFanOut
+from roomkit.channels._voice_unheard import UnheardTurns
 from roomkit.models.enums import EventType, HookTrigger, Visibility
 from roomkit.telemetry.base import Attr, SpanKind, TelemetryProvider
 from roomkit.telemetry.noop import NoopTelemetryProvider
@@ -72,6 +74,7 @@ class TTSHost(Protocol):
         _voice_map: Per-channel TTS voice overrides.
         _tts_filter: Optional callable to filter/transform TTS text (Callable[[str], str] | None).
         _tts_context: Per-session dialogue for a context-aware TTS (None when unused).
+        _unheard_turns: The routed turn per session whose response is not heard yet.
         _state_lock: Threading lock protecting shared mutable state.
 
     Methods provided by VoiceChannel or sibling mixins:
@@ -96,6 +99,7 @@ class TTSHost(Protocol):
     _voice_map: dict[str, str]
     _tts_filter: Any  # Callable[[str], str] | None
     _tts_context: TTSContextStore | None
+    _unheard_turns: UnheardTurns
     _state_lock: threading.Lock
     _schedule: Any  # VoiceChannel._schedule
     _fire_audio_level_hook: Any  # VoiceHooksMixin._fire_audio_level_hook
@@ -125,6 +129,7 @@ class VoiceTTSMixin:
     _voice_map: dict[str, str]
     _tts_filter: Any  # Callable[[str], str] | None
     _tts_context: TTSContextStore | None
+    _unheard_turns: UnheardTurns
     _state_lock: Any  # threading.Lock — see TTSHost
 
     # -- cross-mixin methods (annotated as Any to avoid MRO shadowing) --
@@ -640,7 +645,13 @@ class VoiceTTSMixin:
             tts_stream = tts.synthesize_stream_input(
                 relay_sentences(), voice=voice, **context_kwargs
             )
-            audio = _observe_audio(playback, recorder, tts_stream)
+            # A response the user resumes speaking over waits for them (RFC §12.3.12).
+            audio = _observe_audio(
+                playback,
+                recorder,
+                tts_stream,
+                gate=partial(self._unheard_turns.wait_to_play, session.id),
+            )
             if self._pipeline is not None or getattr(self, "_outbound_audio_taps", []):
                 audio = self._wrap_outbound(session, audio)
             await backend.send_audio(session, audio)
@@ -687,11 +698,14 @@ class VoiceTTSMixin:
         *,
         voice: str | None = None,
         speaker_id: str | None = None,
+        response: bool = False,
     ) -> None:
         """Synthesize *text* and send audio to *session*.
 
         Handles transcription, playback state tracking, streaming synthesis
-        with pipeline wrapping, and fallback to batch synthesis.
+        with pipeline wrapping, and fallback to batch synthesis. A *response*
+        to a routed turn waits while the user resumes speaking (RFC §12.3.12);
+        ``say()`` does not.
         """
         import time as _time
 
@@ -764,7 +778,8 @@ class VoiceTTSMixin:
         tts_stream: AsyncIterator[AudioChunk] | None = None
         try:
             tts_stream = self._tts.synthesize_stream(text, voice=voice, **context_kwargs)
-            audio_stream = _observe_audio(playback, recorder, tts_stream)
+            gate = partial(self._unheard_turns.wait_to_play, session.id) if response else None
+            audio_stream = _observe_audio(playback, recorder, tts_stream, gate=gate)
             if self._pipeline is not None or getattr(self, "_outbound_audio_taps", []):
                 audio_stream = self._wrap_outbound(session, audio_stream)
             await self._backend.send_audio(session, audio_stream)
@@ -876,7 +891,9 @@ class VoiceTTSMixin:
             speaker_id = event.source.channel_id
             results = await asyncio.gather(
                 *(
-                    self._send_tts(s, final_text, voice=voice, speaker_id=speaker_id)
+                    self._send_tts(
+                        s, final_text, voice=voice, speaker_id=speaker_id, response=True
+                    )
                     for s in target_sessions
                 ),
                 return_exceptions=True,
@@ -1077,24 +1094,31 @@ def _observe_audio(
     playback: TTSPlaybackState,
     recorder: AssistantTurnRecorder | None,
     chunks: AsyncIterator[AudioChunk],
+    *,
+    gate: Callable[[], Awaitable[None]] | None = None,
 ) -> AsyncIterator[AudioChunk]:
     """Measure the audio a synthesis call hands to the transport.
 
     ``playback`` learns how much audio went out (its ``played_ms``), and the
     turn recorder keeps a copy when the context keeps audio. The measure
     starts here, not at the first chunk: until one goes out, the user has
-    heard nothing, however long synthesis takes.
+    heard nothing, however long synthesis takes. ``gate``, when given, is
+    awaited before the first chunk goes out.
     """
     playback.start_measuring()
-    return _observed_chunks(playback, recorder, chunks)
+    return _observed_chunks(playback, recorder, chunks, gate)
 
 
 async def _observed_chunks(
     playback: TTSPlaybackState,
     recorder: AssistantTurnRecorder | None,
     chunks: AsyncIterator[AudioChunk],
+    gate: Callable[[], Awaitable[None]] | None,
 ) -> AsyncIterator[AudioChunk]:
     async for chunk in chunks:
+        if gate is not None:
+            await gate()
+            gate = None
         playback.note_audio(chunk)
         if recorder is not None:
             recorder.add(chunk)

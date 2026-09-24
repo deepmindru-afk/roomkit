@@ -102,6 +102,11 @@ class InboundMessage(BaseModel):
     response_visibility: str | None = None
 
 
+SUPERSEDED = "superseded"
+"""Cancellation reason of a turn its user continued before hearing its response
+(RFC §12.3.12). What it produced is stored ``cancelled`` and is not history."""
+
+
 class DeliveryHandle:
     """A deferred caller's grip on its in-flight delivery (RFC §10.1 step 18).
 

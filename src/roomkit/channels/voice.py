@@ -17,6 +17,7 @@ from roomkit.channels._voice_pipeline import VoicePipelineMixin
 from roomkit.channels._voice_stt import VoiceSTTMixin
 from roomkit.channels._voice_tts import VoiceTTSMixin
 from roomkit.channels._voice_turn import VoiceTurnMixin
+from roomkit.channels._voice_unheard import UnheardTurns
 from roomkit.channels.base import Channel, FrameworkAwareChannel
 from roomkit.models.channel import ChannelCapabilities
 from roomkit.models.enums import (
@@ -298,6 +299,8 @@ class VoiceChannel(
         self._pending_audio: dict[str, bytearray] = {}
         self._turn_speech_state: dict[str, tuple[bool, float]] = {}
         self._turn_wait_tasks: dict[str, asyncio.Task[None]] = {}
+        # The routed turn per session whose response is not heard yet (RFC §12.3.12)
+        self._unheard_turns = UnheardTurns()
         # Active streaming STT sessions (session_id -> state)
         self._stt_streams: dict[str, _STTStreamState] = {}
         # STT language chosen per session (session_id -> language); absent
@@ -529,6 +532,7 @@ class VoiceChannel(
         """Handle speech end from pipeline — fire hooks and transcribe."""
         # Before the segment is judged, so speech seen then is new speech.
         self._note_turn_speech(session.id, speaking=False)
+        self._unheard_turns.note_speech_end(session.id)
         # If this speech segment was suppressed (echo during TTS), discard it —
         # unless the strategy is DISABLED, which queues it for after playback
         # (RFC §12.6) rather than throwing it away.
@@ -578,6 +582,7 @@ class VoiceChannel(
         with self._state_lock:
             binding_info = self._session_bindings.get(session.id)
         if not binding_info or not self._framework:
+            self._unheard_turns.release(session.id)
             return
 
         room_id, _ = binding_info
@@ -609,6 +614,12 @@ class VoiceChannel(
                 # Speech onset: the clock the CONFIRMED strategy measures
                 # sustained speech against (RFC §12.6).
                 self._speech_started_at[session.id] = time.monotonic()
+            if self._unheard_turns.hold(session.id):
+                # The routed turn's response is not heard yet: it waits, and
+                # this speech is a user turn, not a barge-in. Nothing played,
+                # so there is no echo to suppress (RFC §12.3.12).
+                logger.debug("Speech resumed before the response was heard: holding it")
+                playback = None
             if playback:
                 # During drain period (send_audio returned, waiting for echo
                 # decay), skip barge-in — nothing is actually playing.
@@ -1188,6 +1199,7 @@ class VoiceChannel(
         self._pending_turns.pop(session.id, None)
         self._pending_audio.pop(session.id, None)
         self._cancel_turn_wait(session.id)
+        self._unheard_turns.release(session.id)
         self._last_tts_ended_at.pop(session.id, None)
         # Clear the session's STT language and what the lock knew about it
         with self._state_lock:

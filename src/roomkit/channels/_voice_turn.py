@@ -8,7 +8,9 @@ import threading
 import time
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from roomkit.models.enums import HookTrigger
+from roomkit.channels._voice_unheard import UnheardTurns
+from roomkit.models.delivery import SUPERSEDED
+from roomkit.models.enums import EventType, HookTrigger
 
 if TYPE_CHECKING:
     from roomkit.core.framework import RoomKit
@@ -45,6 +47,8 @@ class TurnHost(Protocol):
             events, so a wait for an incomplete turn measures silence, not time.
         _turn_wait_tasks: The pending wait per session, cancelled when replaced.
         _scheduled_tasks: Background tasks that ``close()`` cancels.
+        _unheard_turns: The routed turn per session whose response is not heard yet.
+        _barge_in_threshold_ms: Speech that lasts this long supersedes an unheard turn.
         _state_lock: Guards state touched from the audio thread.
     """
 
@@ -58,6 +62,8 @@ class TurnHost(Protocol):
     _turn_speech_state: dict[str, tuple[bool, float]]
     _turn_wait_tasks: dict[str, asyncio.Task[None]]
     _scheduled_tasks: set[asyncio.Task[Any]]
+    _unheard_turns: UnheardTurns
+    _barge_in_threshold_ms: int
     _state_lock: threading.Lock
 
 
@@ -78,6 +84,8 @@ class VoiceTurnMixin:
     _turn_speech_state: dict[str, tuple[bool, float]]
     _turn_wait_tasks: dict[str, asyncio.Task[None]]
     _scheduled_tasks: set[asyncio.Task[Any]]
+    _unheard_turns: UnheardTurns
+    _barge_in_threshold_ms: int
     _state_lock: threading.Lock
 
     # -- cross-mixin methods (annotated as Any to avoid MRO shadowing) --
@@ -284,7 +292,59 @@ class VoiceTurnMixin:
         session_span = getattr(self, "_voice_session_spans", {}).get(session.id)
         token = set_current_span(session_span) if session_span else None
         try:
-            await self._framework.process_inbound(inbound, room_id=room_id)
+            # Deferred, so the user's message is committed before the turn can be
+            # superseded: resuming speech cancels the delivery, never the commit.
+            result = await self._framework.process_inbound(
+                inbound, room_id=room_id, defer_delivery=True
+            )
         finally:
             if token is not None:
                 reset_span(token)
+        handle = result.delivery
+        if handle is None:
+            return
+        self._unheard_turns.register(
+            session.id, handle, speaking=self._user_speaking_again(session.id)
+        )
+        try:
+            await handle.wait()
+        except asyncio.CancelledError:
+            # The caller gave up on the turn: its delivery goes with it, as it
+            # did when this call awaited the whole turn.
+            await handle.cancel(reason="caller_cancelled")
+            raise
+        finally:
+            self._unheard_turns.discard(session.id, handle)
+
+    def _release_unheard_turn(self, session_id: str) -> None:
+        """Let the held response play, unless the user is already speaking again.
+
+        Speech that started since holds it in turn, and its own end decides.
+        """
+        if not self._user_speaking_again(session_id):
+            self._unheard_turns.release(session_id)
+
+    async def _supersede_unheard_turn(self, session: VoiceSession) -> bool:
+        """Cancel the turn the user's ended speech continues, before routing it (RFC §12.3.12).
+
+        True when a turn was superseded. Its response was never heard: it is
+        marked so no intelligence channel replays it, and the new transcript
+        is routed on its own.
+        """
+        handle = self._unheard_turns.take_superseded(session.id, self._barge_in_threshold_ms)
+        if handle is None:
+            return False
+        logger.info("User resumed before the response was heard: superseding the routed turn")
+        try:
+            result = await handle.cancel(reason=SUPERSEDED)
+        except TimeoutError:
+            logger.warning("Superseded turn still draining for session %s", session.id)
+            return True
+        # A response already fully generated was stored as finished, though
+        # nobody heard it: the mark is the voice channel's to add.
+        for event in result.response_events:
+            if event.type != EventType.MESSAGE or self._framework is None:
+                continue
+            metadata = {**event.metadata, "cancelled": True, "cancellation_reason": SUPERSEDED}
+            await self._framework.update_event(event.room_id, event.id, metadata=metadata)
+        return True

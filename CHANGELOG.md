@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A voice answer the user has not heard yet waits for them, and is dropped when
+  they add to their question (RMK-221, RFC §12.3.12). "Combien j'ai de bord",
+  pause, "et de cartes" was answered twice: the first half had been routed and
+  its answer was said anyway. Now speech that starts before the answer's first
+  audio holds it; at least `min_speech_ms` of speech with a transcript cancels
+  the routed turn as `superseded` and routes the new transcript on its own, so
+  the model answers both messages once. The unheard answer is marked
+  `metadata.cancellation_reason = "superseded"` and `AIChannel` leaves it out
+  of its context; a cough releases it. VoiceChannel now routes a turn with
+  `process_inbound(defer_delivery=True)` and awaits its `DeliveryHandle`.
+
 - A tool call's log says what happened (RMK-219). INFO names the tool, the
   call and its argument keys, then the size of the result and how long the
   handler took (`Tool luge_card returned 191951 chars in 487 ms`), where it

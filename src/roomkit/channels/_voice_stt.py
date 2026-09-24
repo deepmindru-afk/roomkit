@@ -158,6 +158,8 @@ class VoiceSTTMixin:
     _handle_barge_in: Any  # see STTHost — VoiceChannel._handle_barge_in
     _evaluate_turn: Any  # see STTHost — VoiceTurnMixin._evaluate_turn
     _route_text: Any  # see STTHost — VoiceTurnMixin._route_text
+    _supersede_unheard_turn: Any  # VoiceTurnMixin._supersede_unheard_turn
+    _release_unheard_turn: Any  # VoiceTurnMixin._release_unheard_turn
     _fire_speech_start_hooks: Any  # see STTHost — VoiceHooksMixin
     _resolve_session_backend: Any  # see STTHost — VoiceChannel._resolve_session_backend
     _broadcast_bridge_transcription: Any  # see STTHost — VoiceChannel
@@ -932,6 +934,8 @@ class VoiceSTTMixin:
 
         _vs_parent = getattr(self, "_voice_session_spans", {}).get(session.id)
         _vs_token = set_current_span(_vs_parent) if _vs_parent else None
+        # Whether this segment settled the response it held (RFC §12.3.12).
+        settled = False
         try:
             context = await self._framework._build_context(room_id)
 
@@ -1111,6 +1115,12 @@ class VoiceSTTMixin:
                 dtmf_seen=dtmf_seen,
             )
 
+            # The user continued a turn whose response they have not heard:
+            # that response goes, and this transcript is routed on its own.
+            settled = True
+            if not await self._supersede_unheard_turn(session):
+                self._release_unheard_turn(session.id)
+
             # Turn detection: if configured, evaluate before routing
             turn_detector = self._pipeline_config.turn_detector if self._pipeline_config else None
             if turn_detector is not None:
@@ -1135,6 +1145,9 @@ class VoiceSTTMixin:
                 except Exception:
                     logger.exception("Error emitting stt_error")
         finally:
+            if not settled:
+                # No transcript, blocked or failed: the held response plays.
+                self._release_unheard_turn(session.id)
             if _vs_token is not None:
                 reset_span(_vs_token)
 

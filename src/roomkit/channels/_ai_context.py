@@ -18,6 +18,7 @@ from roomkit.channels._tool_search import search_tool_defs, should_activate_tool
 from roomkit.channels._tool_search_constants import TOOL_SEARCH_PREAMBLE
 from roomkit.core.visibility import visible_events
 from roomkit.models.channel import ChannelCapabilities
+from roomkit.models.delivery import SUPERSEDED
 from roomkit.models.enums import ChannelCategory, EventType
 from roomkit.models.event import CompositeContent, MediaContent, TextContent
 from roomkit.providers.ai.base import (
@@ -432,6 +433,10 @@ class AIContextMixin:
         # speaker's name. A single-speaker room (a 1:1 DM) is left untouched.
         past_turns: list[tuple[str, str | list[_ContentPart], str | None]] = []
         for past_event in memory_result.events:
+            if past_event.metadata.get("cancellation_reason") == SUPERSEDED:
+                # A response nobody heard: the user continued the turn first,
+                # and replaying it would answer what they never heard (§12.3.12).
+                continue
             role = self._determine_role(past_event)
             content = self._extract_content(past_event)
             if content:
