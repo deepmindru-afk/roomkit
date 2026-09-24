@@ -69,8 +69,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the first chunk published on the bot track, not from the moment the
   utterance took the floor: synthesis latency before the first chunk is no
   longer reported as speech the room heard (RMK-192).
+- `inject_text`'s `role` is now specified as an intent (RFC §12.4):
+  `"system"` is an instruction from the application, `"user"` is content — a
+  user turn on a turn-based provider, words the model says aloud on a
+  full-duplex one — and the provider maps the intent onto its wire. Anything
+  that directs the model, an opening greeting included, is `"system"`. The
+  base docstring, the GPT-Live and Gemini Live docstrings and the realtime
+  providers guide state each provider's mapping; no provider's wire behaviour
+  changes.
 
 ### Fixed
+
+- The speech-to-speech pipeline's cue for the next agent to introduce itself
+  after a handoff (`greet_on_handoff`) is injected with `role="system"`. As a
+  `user` injection, GPT-Live voiced the cue ("Handoff complete. You are now
+  the…") as its own words instead of following it. The two GPT-Live examples
+  greet the same way now.
 
 - A TTS provider's audio stream is closed as soon as playback stops. A
   backend leaving `send_audio()` on a barge-in did not close the iterator it

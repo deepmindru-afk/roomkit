@@ -448,13 +448,16 @@ class ConversationPipeline:
                 if greet_on_handoff:
                     # Session resumption doesn't preserve pending function-
                     # call state, so the tool result alone won't trigger a
-                    # response.  Inject a language-aware message to give
-                    # the new agent a turn to speak in its new role.
+                    # response.  Inject a language-aware instruction to give
+                    # the new agent a turn to speak in its new role. It
+                    # directs the model, so it carries the system intent: a
+                    # full-duplex provider voices a user injection instead
+                    # of following it (RFC §12.4).
                     msg = _build_greet(new_id, language=lang)
                     await rtv.provider.inject_text(
                         session,
                         msg,
-                        role="user",
+                        role="system",
                     )
 
         handler.on_handoff_complete = _on_complete

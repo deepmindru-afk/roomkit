@@ -121,6 +121,16 @@ class GeminiLiveInputMixin(RealtimeVoiceProvider):
         role: str = "user",
         silent: bool = False,
     ) -> VoiceInjectionResult:
+        """Inject text as a turn (RFC §12.4).
+
+        Gemini Live takes ``user`` and ``model`` turns and has no system role
+        in them — instructions are fixed at setup — so a ``system``
+        instruction is delivered as a ``user`` turn, which the model follows
+        and answers. Before any audio is sent the turn goes through
+        ``clientContent`` (``silent`` leaves it incomplete); once audio flows
+        it goes through ``realtimeInput``, which carries no role, and
+        ``silent`` becomes a best-effort "do not respond" marker.
+        """
         if (state := self._get_active_state(session)) is None:
             return VoiceInjectionResult(
                 status="not_sent", reason="voice_not_connected", retryable=True

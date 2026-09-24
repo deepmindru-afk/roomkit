@@ -167,7 +167,7 @@ async def send_opening_greeting(
 
     Realtime providers (Gemini Live, OpenAI Realtime) don't speak first
     on their own — they wait for input. This helper injects a brief
-    user-side prompt that tells the model to produce its opening turn;
+    instruction that tells the model to produce its opening turn;
     the system prompt's ``## Greeting`` section dictates what it says.
 
     Equivalent in spirit to ``Agent(auto_greet=True, greeting=...)``,
@@ -175,4 +175,4 @@ async def send_opening_greeting(
     pipeline required).
     """
     for session in voice_channel.get_room_sessions(room_id):
-        await voice_channel.inject_text(session, instruction, role="user")
+        await voice_channel.inject_text(session, instruction, role="system")

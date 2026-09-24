@@ -781,7 +781,10 @@ class RealtimeVoiceChannel(
         Args:
             session: The active voice session.
             text: Text to inject.
-            role: Role for the text ('user' or 'system').
+            role: The intent (RFC §12.4) — ``"system"`` for an
+                instruction, ``"user"`` for content. Anything that directs
+                the model, an opening greeting included, is ``"system"``:
+                a full-duplex provider voices ``"user"`` text as its own.
             silent: If True, add to conversation context without
                 requesting a response.  The agent sees the text on
                 its next turn but does not react immediately.

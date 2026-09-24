@@ -187,9 +187,9 @@ async def main() -> None:
     # --- Start session (connection=None for local transport) ---
     session = await channel.start_session("live-demo", "local-user", connection=None)
 
-    # Spoken context is how GPT-Live is asked to open the conversation; the
-    # model paraphrases it rather than reading it out.
-    await channel.inject_text(session, "Greet the user and ask how you can help.")
+    # An instruction append is how GPT-Live is asked to open the conversation;
+    # a user-role injection would be voiced as the model's own words instead.
+    await channel.inject_text(session, "Greet the user and ask how you can help.", role="system")
 
     logger.info("GPT-Live session started (hosted backend)")
     logger.info('Try: "What is the weather in Montreal?" — talk over it, it listens.\n')

@@ -100,7 +100,11 @@ class OpenAILiveProvider(
     **Text injection is paraphrased.** ``inject_text`` maps a ``system`` role
     to an instructions append and a ``user`` role to a spoken-context append
     (or a silent one with ``silent=True``); the model relays the text in its
-    own words rather than reading it. An append is measured with the model's
+    own words rather than reading it. The session takes no user text once
+    started, so ``user`` is what the model will say, never a turn it answers:
+    an instruction, the opening greeting included, is ``role="system"``
+    (OpenAI's documented way to have the model speak first). An append is
+    measured with the model's
     tokenizer (``tiktoken``, installed with the extra; UTF-8 bytes bound it
     when that is missing) and split on sentence boundaries only where it
     exceeds the API's per-append bound — the model voices each piece of a

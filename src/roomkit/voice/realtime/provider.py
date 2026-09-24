@@ -310,10 +310,20 @@ class RealtimeVoiceProvider(ABC):
         a guaranteed non-submission or uncertain acceptance. Returning ``None``
         is supported, but proactive delivery reports its outcome as unknown.
 
+        The role is an intent, mapped by each provider onto what its wire
+        offers (RFC §12.4): ``"system"`` is an instruction from the
+        application — how to behave, or what to do now — and ``"user"`` is
+        content for the conversation: a user turn the model answers on a
+        turn-based provider, words the model says aloud on a full-duplex one.
+        Text that directs the model, an opening greeting included, is always
+        ``"system"``; sent as ``"user"`` it would be voiced by a full-duplex
+        model instead of followed.
+
         Args:
             session: The active session.
             text: Text to inject.
-            role: Role for the injected text ('user' or 'system').
+            role: The intent — ``"system"`` (instruction) or ``"user"``
+                (content). A provider may document further ones.
             silent: If True, add to conversation context without
                 requesting a response.  The agent sees the text on
                 its next turn but does not react immediately.

@@ -237,7 +237,7 @@ async def main() -> None:
     await kit.attach_channel("rebooking-demo", "voice")
 
     session = await channel.start_session("rebooking-demo", "local-user", connection=None)
-    await channel.inject_text(session, "Greet the user and ask how you can help.")
+    await channel.inject_text(session, "Greet the user and ask how you can help.", role="system")
 
     logger.info("GPT-Live session started (Claude backend)")
     logger.info('Try: "My flight UA482 this morning — can you check it and rebook me?"\n')

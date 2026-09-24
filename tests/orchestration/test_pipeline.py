@@ -1209,6 +1209,53 @@ class TestRealtimeInstall:
         parsed = json.loads(result)
         assert "introduce yourself" in parsed["message"].lower()
 
+    async def test_wire_realtime_handoff_greeting_is_an_instruction(self):
+        """The new agent's cue to introduce itself travels with the system intent.
+
+        It directs the model; as a ``user`` injection a full-duplex provider
+        would voice the cue instead of following it (RFC §12.4).
+        """
+        from roomkit.orchestration.state import ConversationState
+
+        pipeline = ConversationPipeline(
+            stages=[
+                PipelineStage(phase="triage", agent_id="agent-triage", next="handling"),
+                PipelineStage(phase="handling", agent_id="agent-advisor", next=None),
+            ],
+        )
+        kit, rtv = _mock_kit_with_rtv()
+        triage = Agent("agent-triage", role="Triage", voice="v-t", system_prompt="Hi.")
+        advisor = Agent("agent-advisor", role="Advisor", voice="v-a", system_prompt="Help.")
+
+        room = set_conversation_state(
+            Room(id="r1"), ConversationState(active_agent_id="agent-triage", phase="triage")
+        )
+        kit.get_room = AsyncMock(return_value=room)
+        kit.store.list_bindings = AsyncMock(return_value=[])
+        kit.store.update_room = AsyncMock()
+        kit.send_event = AsyncMock()
+        kit.hook_engine.run_async_hooks = AsyncMock()
+        kit.lock_manager = MagicMock()
+        kit.lock_manager.locked = MagicMock(return_value=_NoopLock())
+
+        pipeline.install(kit, [triage, advisor], voice_channel_id="rtv", greet_on_handoff=True)
+        session = await rtv.start_session("r1", "user1", object())
+
+        token = _current_voice_session.set(session)
+        try:
+            await rtv.tool_handler(
+                "handoff_conversation",
+                {"target": "agent-advisor", "reason": "help", "summary": "ctx"},
+            )
+            injected = list(rtv.provider.injected_texts)
+        finally:
+            _current_voice_session.reset(token)
+            await rtv.close()
+
+        cues = [(text, role) for _, text, role in injected if "introduce yourself" in text]
+        assert cues, injected
+        assert all(role == "system" for _, role in cues)
+
     async def test_wire_realtime_non_handoff_tool_delegates(self):
         """Non-handoff tools are delegated to the original handler."""
         pipeline = ConversationPipeline(
