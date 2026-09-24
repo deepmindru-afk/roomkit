@@ -152,7 +152,8 @@ TOOLS_PROMPT = (
     " When a question needs a tool, call it at once: never say you are going to look"
     " something up without calling the tool in the same reply. Only state facts a tool"
     " returned; if you do not have them, call the tool again or say you do not know."
-    " Then say what it returned in a few spoken words, never as raw data."
+    " Then say what it returned in a few spoken words, never as raw data. For more"
+    " than five items, say how many there are, name the first three, and offer the rest."
 )
 
 
@@ -174,7 +175,8 @@ def build_llm() -> AIProvider:
             max_tokens=max_tokens,
             enable_thinking=False,
             # Tool definitions and results take room: MCP servers are verbose.
-            context_size=16384,
+            # 24k tokens of Qwen3-4B take ~6 GB of VRAM.
+            context_size=24576,
         )
     )
 
@@ -338,7 +340,15 @@ async def run(stack: AsyncExitStack) -> None:
     )
     kit.register_channel(voice)
     kit.register_channel(
-        AIChannel("ai", provider=ai_provider, system_prompt=system_prompt, **tool_kwargs)
+        AIChannel(
+            "ai",
+            provider=ai_provider,
+            system_prompt=system_prompt,
+            # A result above this is set aside behind a preview that a small
+            # model does not page through; keep a whole list of boards in view.
+            evict_threshold_tokens=12000,
+            **tool_kwargs,
+        )
     )
     await kit.create_room(room_id="local-pocket-fr")
     await kit.attach_channel("local-pocket-fr", "ai", category=ChannelCategory.INTELLIGENCE)
