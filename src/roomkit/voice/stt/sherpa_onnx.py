@@ -49,6 +49,10 @@ class SherpaOnnxSTTConfig:
             silence (seconds) after speech with decoded text.
         rule3_min_utterance_length: Endpoint rule 3 — minimum utterance
             length (seconds) to trigger endpoint regardless of silence.
+        tail_padding_s: Silence (seconds) fed to a streaming transducer
+            before ``input_finished()``.  The model holds its last frames in
+            its lookahead and decodes them only with audio behind them, so
+            without it the last word is cut ("Hello" -> "Hell").
     """
 
     mode: str = "transducer"
@@ -66,6 +70,7 @@ class SherpaOnnxSTTConfig:
     rule1_min_trailing_silence: float = 2.4
     rule2_min_trailing_silence: float = 1.2
     rule3_min_utterance_length: float = 20.0
+    tail_padding_s: float = 0.66
 
 
 def _pcm_s16le_to_float32(data: bytes) -> list[float]:
@@ -98,6 +103,13 @@ class SherpaOnnxSTTProvider(STTProvider):
     @property
     def name(self) -> str:
         return "SherpaOnnxSTT"
+
+    def _finish(self, stream: Any, sample_rate: int) -> None:
+        """End a streaming transducer's input, tail padding first."""
+        n = int(self._config.tail_padding_s * sample_rate)
+        if n > 0:
+            stream.accept_waveform(sample_rate, [0.0] * n)
+        stream.input_finished()
 
     @property
     def supports_streaming(self) -> bool:
@@ -196,7 +208,7 @@ class SherpaOnnxSTTProvider(STTProvider):
             def _run() -> str:
                 stream = recognizer.create_stream()
                 stream.accept_waveform(sample_rate, samples)
-                stream.input_finished()
+                self._finish(stream, sample_rate)
                 n = 0
                 while recognizer.is_ready(stream):
                     recognizer.decode_stream(stream)
@@ -252,6 +264,7 @@ class SherpaOnnxSTTProvider(STTProvider):
         recognizer = self._get_online_recognizer()
         stream = recognizer.create_stream()
         last_text = ""
+        sample_rate = self._config.sample_rate
 
         async for chunk in audio_stream:
             if chunk.data:
@@ -288,8 +301,8 @@ class SherpaOnnxSTTProvider(STTProvider):
         # Finalize: signal end-of-audio so the recognizer flushes any
         # buffered results (critical for short utterances where
         # is_endpoint never fired during streaming).
-        def _finalize(s: Any = stream) -> str:
-            s.input_finished()
+        def _finalize(s: Any = stream, sr: int = sample_rate) -> str:
+            self._finish(s, sr)
             while recognizer.is_ready(s):
                 recognizer.decode_stream(s)
             return str(recognizer.get_result(s)).strip()

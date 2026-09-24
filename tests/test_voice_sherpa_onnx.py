@@ -186,6 +186,72 @@ class TestSherpaOnnxSTTProvider:
         assert len(finals) == 1
         assert finals[0].text == "hello"
 
+    def _lookahead_recognizer(self, sherpa: MagicMock) -> MagicMock:
+        """A recognizer that decodes the last word only with silence behind it.
+
+        A streaming transducer keeps its last frames in its lookahead: fed
+        ``input_finished()`` straight after the speech, it drops them.
+        """
+
+        class _Stream:
+            def __init__(self) -> None:
+                self.trailing_silence = 0
+
+            def accept_waveform(self, sample_rate: int, samples: list[float]) -> None:
+                if any(samples):
+                    self.trailing_silence = 0
+                else:
+                    self.trailing_silence += len(samples)
+
+            def input_finished(self) -> None:
+                pass
+
+        recognizer = MagicMock()
+        recognizer.create_stream.side_effect = _Stream
+        recognizer.is_ready.return_value = False
+        recognizer.is_endpoint.return_value = False
+        recognizer.get_result.side_effect = lambda s: (
+            "hello" if s.trailing_silence >= 0.5 * 16000 else "hell"
+        )
+        sherpa.OnlineRecognizer.from_transducer.return_value = recognizer
+        return recognizer
+
+    @pytest.mark.asyncio
+    async def test_batch_transcribe_keeps_last_word(self) -> None:
+        """RMK-210: the tail padding lets the model decode the last word."""
+        sherpa = _mock_sherpa_module()
+        self._lookahead_recognizer(sherpa)
+        provider = self._make_provider(sherpa, mode="transducer")
+
+        audio = AudioChunk(data=_make_pcm_s16le([0.5] * 1600), sample_rate=16000)
+        result = await provider.transcribe(audio)
+
+        assert result.text == "hello"
+
+    @pytest.mark.asyncio
+    async def test_streaming_finalize_keeps_last_word(self) -> None:
+        """RMK-210: a VAD-closed stream still decodes its last word."""
+        sherpa = _mock_sherpa_module()
+        self._lookahead_recognizer(sherpa)
+        provider = self._make_provider(sherpa, mode="transducer")
+
+        async def audio() -> Any:
+            yield AudioChunk(data=_make_pcm_s16le([0.5] * 1600), sample_rate=16000)
+
+        finals = [r for r in [r async for r in provider.transcribe_stream(audio())] if r.is_final]
+
+        assert finals[-1].text == "hello"
+
+    @pytest.mark.asyncio
+    async def test_tail_padding_can_be_disabled(self) -> None:
+        sherpa = _mock_sherpa_module()
+        self._lookahead_recognizer(sherpa)
+        provider = self._make_provider(sherpa, mode="transducer", tail_padding_s=0.0)
+
+        audio = AudioChunk(data=_make_pcm_s16le([0.5] * 1600), sample_rate=16000)
+
+        assert (await provider.transcribe(audio)).text == "hell"
+
     @pytest.mark.asyncio
     async def test_whisper_streaming_raises(self) -> None:
         sherpa = _mock_sherpa_module()

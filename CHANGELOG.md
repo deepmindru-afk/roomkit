@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `SherpaOnnxSTTProvider` no longer cuts the last word of an utterance
+  (RMK-210). In transducer mode, `transcribe()` and `transcribe_stream()`
+  ended the input straight after the speech, and a streaming transducer
+  decodes its last frames only with audio behind them: a microphone's "Hello"
+  came out "Hell", "What do you mean?" came out "What". Both paths now feed
+  `SherpaOnnxSTTConfig.tail_padding_s` (0.66 s) of silence first, as the
+  sherpa-onnx examples do; `0` restores the old behaviour.
+  `examples/voice_local_vui.py` also moves to the Kroko English model, which
+  transcribes the same microphone segments the 20M Zipformer rendered as
+  "O HALLO" or "U".
+
 - A barge-in interrupts a playback once. Until `interrupt()` removed the
   playback, every trigger path still saw the bot talking, and building the
   barge-in's context waits on the store: in continuous mode the energy check
