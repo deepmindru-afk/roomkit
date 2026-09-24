@@ -90,6 +90,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A Vui conversation restarts its cache before it holds more than the 6
+  minutes of audio (prompt included) the model was trained on. The cache was
+  only bounded by its KV positions, which leave room for about three times
+  that, so a long dialogue went past anything the model had learned from
+  before it restarted (RMK-194).
 - The speech-to-speech pipeline's cue for the next agent to introduce itself
   after a handoff (`greet_on_handoff`) is injected with `role="system"`. As a
   `user` injection, GPT-Live voiced the cue ("Handoff complete. You are now

@@ -240,6 +240,10 @@ class _VuiRow:
         self._encoder = QwenCodecEncoder.from_pretrained().cuda().float().eval()
         self._gen = GenConfig(temperature=config.temperature, max_secs=config.max_secs)
         self._reply_positions = math.ceil(config.max_secs * 1000 / FRAME_MS)
+        # The longest audio one training sequence held (360 s for vui-nano-1.1).
+        trained_secs = float(self._engine.model.config.data.max_secs)
+        self._audio_capacity = math.floor(trained_secs * 1000 / FRAME_MS)
+        self._prompt_frames = 0
         self._prompts: dict[str, _Prompt] = {}
         for name, voice in config.voices.items():
             if voice.preset is not None:
@@ -278,8 +282,17 @@ class _VuiRow:
     def reply_positions(self) -> int:
         return self._reply_positions
 
+    @property
+    def audio_capacity(self) -> int:
+        return self._audio_capacity
+
+    @property
+    def prompt_frames(self) -> int:
+        return self._prompt_frames
+
     def restart(self, voice: str) -> None:
         prompt = self._prompts[voice]
+        self._prompt_frames = int(prompt.codes.shape[0])
         self._row.reset()
         self._row.prefill([self._segment(prompt.text, prompt.codes)], spk_emb=prompt.spk_emb)
         if prompt.spk_token is not None:

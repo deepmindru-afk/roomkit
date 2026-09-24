@@ -23,6 +23,8 @@ class _SlowRow:
 
     capacity = 100_000
     reply_positions = 375
+    audio_capacity = 4500
+    prompt_frames = 0
 
     def __init__(self, config: VuiTTSConfig) -> None:
         self.offset = 0

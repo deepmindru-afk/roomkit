@@ -56,6 +56,16 @@ class VuiCache(Protocol):
         """Positions the longest reply may take (its ``max_secs`` in frames)."""
         ...
 
+    @property
+    def audio_capacity(self) -> int:
+        """Audio frames the model was trained to hold in one sequence (6 min)."""
+        ...
+
+    @property
+    def prompt_frames(self) -> int:
+        """Audio frames of the voice prompt the last ``restart`` wrote."""
+        ...
+
     def restart(self, voice: str) -> None:
         """Empty the cache and prefill it with *voice*'s prompt."""
         ...
@@ -108,6 +118,7 @@ class VuiConversation:
         self._state = threading.Lock()
         self._speaking = False
         self._release_after: set[str] = set()
+        self._audio = 0  # audio frames in the cache: prompt, user turns, replies
 
     @property
     def context_id(self) -> str | None:
@@ -124,16 +135,19 @@ class VuiConversation:
                 self._restart(None, voice)
             else:
                 self._catch_up(context, voice)
-            if self._cache.offset + self._reply_room(text) > self._cache.capacity:
+            if not self._fits(self._reply_room(text), self._cache.reply_positions):
                 self._restart(context, voice)
             generation = _Generation(
                 turn_id=context.next_turn_id if context else "",
                 start_offset=self._cache.offset,
             )
             self._pending = generation if context is not None else None
-            for pcm in self._cache.generate(text, cancel):
-                generation.frame_offsets.append(self._cache.offset)
-                yield pcm
+            try:
+                for pcm in self._cache.generate(text, cancel):
+                    generation.frame_offsets.append(self._cache.offset)
+                    yield pcm
+            finally:
+                self._audio += len(generation.frame_offsets)
         finally:
             with self._state:
                 self._speaking = False
@@ -157,18 +171,29 @@ class VuiConversation:
             self._voice = None
             self._applied = []
             self._pending = None
+            self._audio = 0
             # Under the state lock: a reply cannot start while the cache empties.
             self._cache.reset()
         logger.debug("Vui cache: context %s released, cache emptied", context_id)
 
     def _reply_room(self, text: str) -> int:
-        return text_positions(text) + self._cache.reply_positions + _HEADROOM
+        return text_positions(text) + self._cache.reply_positions
 
-    def _fits(self, positions: int) -> bool:
-        return self._cache.offset + positions <= self._cache.capacity - _HEADROOM
+    def _fits(self, positions: int, frames: int) -> bool:
+        """Room for *positions* more KV positions, *frames* of them audio.
+
+        Two budgets: the KV capacity, and the audio the model saw in training
+        (``max_secs`` of audio per sequence, 6 min): past it, the KV still has
+        room but the dialogue is longer than anything the model learned from.
+        """
+        return (
+            self._cache.offset + positions <= self._cache.capacity - _HEADROOM
+            and self._audio + frames <= self._cache.audio_capacity
+        )
 
     def _restart(self, context: TTSContext | None, voice: str) -> None:
         self._cache.restart(voice)
+        self._audio = self._cache.prompt_frames
         self._context_id = context.context_id if context else None
         self._voice = voice
         self._pending = None
@@ -184,9 +209,11 @@ class VuiConversation:
         self._applied = [t.turn_id for t in context.turns]
 
     def _add_user(self, text: str, audio: AudioFrame | None) -> None:
-        if not self._fits(text_positions(text) + audio_positions(audio)):
-            audio = None  # a turn longer than the cache keeps its words only
+        frames = audio_positions(audio)
+        if not self._fits(text_positions(text) + frames, frames):
+            audio, frames = None, 0  # a turn longer than the cache keeps its words only
         self._cache.add_user(text, audio)
+        self._audio += frames
         logger.debug("Vui cache: user turn added, now at %d", self._cache.offset)
 
     def _catch_up(self, context: TTSContext, voice: str) -> None:
@@ -203,12 +230,10 @@ class VuiConversation:
             self._restart(context, voice)
             return
         new_turns = context.turns[(last + 1) if last is not None else 0 :]
-        needed = sum(
-            text_positions(t.text) + audio_positions(t.audio)
-            for t in new_turns
-            if t.role == "user"
-        )
-        if not self._fits(needed):
+        users = [t for t in new_turns if t.role == "user"]
+        frames = sum(audio_positions(t.audio) for t in users)
+        positions = sum(text_positions(t.text) for t in users) + frames
+        if not self._fits(positions, frames):
             self._restart(context, voice)
             return
         for turn in new_turns:
@@ -225,6 +250,7 @@ class VuiConversation:
         if turn is None:
             # Nothing of it was heard: it leaves no trace in the dialogue.
             self._cache.truncate(pending.start_offset)
+            self._audio -= len(pending.frame_offsets)
             logger.debug("Vui cache: unheard reply dropped, back to %d", pending.start_offset)
             return
         heard = math.ceil((turn.played_ms or 0) / FRAME_MS)
@@ -232,6 +258,7 @@ class VuiConversation:
             # frame_offsets[k] covers frames 0..k-1; frame heard-1 ends one later.
             offset = pending.frame_offsets[heard - 1] + 1 if heard > 0 else pending.start_offset
             self._cache.truncate(offset)
+            self._audio -= len(pending.frame_offsets) - heard
             logger.debug(
                 "Vui cache: reply cut to %d of %d frames heard, back to %d",
                 heard,

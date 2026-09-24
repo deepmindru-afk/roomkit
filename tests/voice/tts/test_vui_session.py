@@ -25,9 +25,13 @@ class FakeCache:
     after the k-th frame is yielded, ``offset`` covers frames 0..k-1.
     """
 
-    def __init__(self, frames_per_reply: int = 10, capacity: int = 100_000) -> None:
+    def __init__(
+        self, frames_per_reply: int = 10, capacity: int = 100_000, audio_capacity: int = 100_000
+    ) -> None:
         self.offset = 0
         self.capacity = capacity
+        self.audio_capacity = audio_capacity
+        self.prompt_frames = 50
         self.reply_positions = frames_per_reply
         self.frames_per_reply = frames_per_reply
         self.log: list[tuple[str, object]] = []
@@ -257,6 +261,49 @@ class TestCapacity:
         _speak(conv, _ctx(_user("u1", "long story", audio=minute), next_turn_id="a1"))
 
         assert ("user", ("long story", False)) in cache.log
+
+
+class TestAudioBudget:
+    def test_six_minutes_of_audio_restart_the_cache_before_the_kv_is_full(self) -> None:
+        """The KV could hold more, but past the trained audio length the model is
+        outside anything it learned from: the cache restarts."""
+        cache = FakeCache(frames_per_reply=10, audio_capacity=100)
+        conv = VuiConversation(cache)
+        second = AudioFrame(data=b"\x01\x00" * 16000, sample_rate=16000)  # 12.5 frames
+        _speak(conv, _ctx(_user("u1", audio=second), next_turn_id="a1"))  # 50 + 13 + 10
+
+        _speak(
+            conv,
+            _ctx(
+                _user("u1", audio=second),
+                _agent("a1", 800),
+                _user("u2", audio=second),
+                _agent("a2", 800),  # not ours: ignored
+                _user("u3", audio=second),
+                next_turn_id="a3",
+            ),
+        )
+
+        assert [op for op, _ in cache.log].count("restart") == 2
+        assert cache.offset < cache.capacity
+
+    def test_a_cut_reply_gives_back_the_frames_nobody_heard(self) -> None:
+        cache = FakeCache(frames_per_reply=40, audio_capacity=130)
+        conv = VuiConversation(cache)
+        _speak(conv, _ctx(_user("u1", audio=None), next_turn_id="a1"))  # 50 + 40 = 90
+
+        # Only 5 frames heard: 90 - 35 = 55, room for the next 40-frame reply.
+        _speak(
+            conv,
+            _ctx(
+                _user("u1", audio=None),
+                _agent("a1", int(5 * FRAME_MS), interrupted=True),
+                _user("u2", audio=None),
+                next_turn_id="a2",
+            ),
+        )
+
+        assert [op for op, _ in cache.log].count("restart") == 1
 
 
 class TestCancel:
