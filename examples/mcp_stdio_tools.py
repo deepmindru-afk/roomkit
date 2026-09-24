@@ -54,49 +54,52 @@ async def main() -> None:
             model=os.environ.get("LLAMACPP_MODEL", "unsloth/Qwen3-4B-Instruct-2507-GGUF:Q4_K_M")
         )
     )
-    await provider.start()
+    try:
+        await provider.start()
 
-    async with MCPToolProvider.from_command(command[0], command[1:]) as mcp:
-        logger.info("MCP tools: %s", mcp.tool_names)
+        async with MCPToolProvider.from_command(command[0], command[1:]) as mcp:
+            logger.info("MCP tools: %s", mcp.tool_names)
 
-        kit = RoomKit()
-        user = WebSocketChannel("user")
-        kit.register_channel(user)
-        kit.register_channel(
-            AIChannel(
-                "ai",
-                provider=provider,
-                system_prompt="You are a helpful assistant. Use the tools when they help.",
-                tools=mcp.get_tools(),
-                tool_handler=mcp.as_tool_handler(),
-            )
-        )
-
-        replies: asyncio.Queue[str] = asyncio.Queue()
-
-        async def on_event(_conn: str, event: RoomEvent) -> None:
-            if event.source.channel_id == "ai" and isinstance(event.content, TextContent):
-                await replies.put(event.content.body)
-
-        user.register_connection("me", on_event, room_id="notes")
-        await kit.create_room(room_id="notes")
-        await kit.attach_channel("notes", "user")
-        await kit.attach_channel("notes", "ai", category=ChannelCategory.INTELLIGENCE)
-
-        for question in (
-            "Note that the team meeting moved to Thursday at 3pm.",
-            "Also note: buy coffee.",
-            "What notes do I have?",
-        ):
-            logger.info("You: %s", question)
-            await kit.process_inbound(
-                InboundMessage(
-                    channel_id="user", sender_id="me", content=TextContent(body=question)
+            kit = RoomKit()
+            user = WebSocketChannel("user")
+            kit.register_channel(user)
+            kit.register_channel(
+                AIChannel(
+                    "ai",
+                    provider=provider,
+                    system_prompt="You are a helpful assistant. Use the tools when they help.",
+                    tools=mcp.get_tools(),
+                    tool_handler=mcp.as_tool_handler(),
                 )
             )
-            logger.info("AI:  %s", await asyncio.wait_for(replies.get(), timeout=120))
 
-        await kit.close()  # stops llama-server; leaving the block stops the MCP server
+            replies: asyncio.Queue[str] = asyncio.Queue()
+
+            async def on_event(_conn: str, event: RoomEvent) -> None:
+                if event.source.channel_id == "ai" and isinstance(event.content, TextContent):
+                    await replies.put(event.content.body)
+
+            user.register_connection("me", on_event, room_id="notes")
+            await kit.create_room(room_id="notes")
+            await kit.attach_channel("notes", "user")
+            await kit.attach_channel("notes", "ai", category=ChannelCategory.INTELLIGENCE)
+
+            for question in (
+                "Note that the team meeting moved to Thursday at 3pm.",
+                "Also note: buy coffee.",
+                "What notes do I have?",
+            ):
+                logger.info("You: %s", question)
+                await kit.process_inbound(
+                    InboundMessage(
+                        channel_id="user", sender_id="me", content=TextContent(body=question)
+                    )
+                )
+                logger.info("AI:  %s", await asyncio.wait_for(replies.get(), timeout=120))
+
+            await kit.close()  # leaving the block then stops the MCP server
+    finally:
+        await provider.close()  # stops llama-server, even when a step above fails
 
 
 if __name__ == "__main__":

@@ -86,41 +86,46 @@ async def main() -> None:
             gpu_layers=int(gpu_layers) if gpu_layers else None,
         )
     )
-    logger.info("Starting the local model (the first run downloads it)...")
-    await provider.start()
+    try:
+        logger.info("Starting the local model (the first run downloads it)...")
+        await provider.start()
 
-    kit = RoomKit()
-    user = WebSocketChannel("user")
-    kit.register_channel(user)
-    kit.register_channel(
-        AIChannel(
-            "ai",
-            provider=provider,
-            system_prompt="You are a helpful assistant. Use the tools when they help.",
-            tools=TOOLS,
-            tool_handler=run_tool,
+        kit = RoomKit()
+        user = WebSocketChannel("user")
+        kit.register_channel(user)
+        kit.register_channel(
+            AIChannel(
+                "ai",
+                provider=provider,
+                system_prompt="You are a helpful assistant. Use the tools when they help.",
+                tools=TOOLS,
+                tool_handler=run_tool,
+            )
         )
-    )
 
-    replies: asyncio.Queue[str] = asyncio.Queue()
+        replies: asyncio.Queue[str] = asyncio.Queue()
 
-    async def on_event(_conn: str, event: RoomEvent) -> None:
-        if event.source.channel_id == "ai" and isinstance(event.content, TextContent):
-            await replies.put(event.content.body)
+        async def on_event(_conn: str, event: RoomEvent) -> None:
+            if event.source.channel_id == "ai" and isinstance(event.content, TextContent):
+                await replies.put(event.content.body)
 
-    user.register_connection("me", on_event, room_id="local")
-    await kit.create_room(room_id="local")
-    await kit.attach_channel("local", "user")
-    await kit.attach_channel("local", "ai", category=ChannelCategory.INTELLIGENCE)
+        user.register_connection("me", on_event, room_id="local")
+        await kit.create_room(room_id="local")
+        await kit.attach_channel("local", "user")
+        await kit.attach_channel("local", "ai", category=ChannelCategory.INTELLIGENCE)
 
-    for question in ("What time is it?", "Roll three six-sided dice for me.", "Hi there!"):
-        logger.info("You: %s", question)
-        await kit.process_inbound(
-            InboundMessage(channel_id="user", sender_id="me", content=TextContent(body=question))
-        )
-        logger.info("AI:  %s", await asyncio.wait_for(replies.get(), timeout=120))
+        for question in ("What time is it?", "Roll three six-sided dice for me.", "Hi there!"):
+            logger.info("You: %s", question)
+            await kit.process_inbound(
+                InboundMessage(
+                    channel_id="user", sender_id="me", content=TextContent(body=question)
+                )
+            )
+            logger.info("AI:  %s", await asyncio.wait_for(replies.get(), timeout=120))
 
-    await kit.close()  # stops llama-server
+        await kit.close()
+    finally:
+        await provider.close()  # stops llama-server, even when a step above fails
 
 
 if __name__ == "__main__":

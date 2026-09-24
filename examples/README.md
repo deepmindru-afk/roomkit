@@ -127,6 +127,7 @@ CONSOLE=1 uv run python examples/<example>.py
 | `acp_claude_code.py` | ACP / Claude Code | Interactive Claude Code with live Markdown, reasoning, tools, and permissions |
 | `gemini_vertex_ai.py` | Gemini / Vertex | Gemini on Vertex AI — regional endpoint, data residency, ADC auth |
 | `ollama_ai.py` | Ollama | AI-powered assistant using Ollama's native API (proper thinking support) |
+| `llamacpp_tools.py` | llama.cpp | A local model RoomKit downloads and runs itself, calling tools (nothing to install beside it) |
 | `ollama_cli.py` | Ollama | Interactive CLI test bed — `--think`/`--no-think`, `--stream`/`--no-stream`, `--mcp <url>` |
 | `azure_ai.py` | Azure | Azure AI Foundry with OpenAI-compatible API |
 | `multichannel_bridge.py` | Multi-channel | WebSocket + SMS + Email + HTTP + AI bridged together |
@@ -156,6 +157,7 @@ CONSOLE=1 uv run python examples/<example>.py
 | `ai_knowledge_scoring.py` | Retrieval | Knowledge retrieval and response scoring with RetrievalMemory |
 | `memory_provider.py` | Memory | Custom MemoryProvider for AI context construction |
 | `mcp_tool_provider.py` | MCP | Model Context Protocol tool provider integration |
+| `mcp_stdio_tools.py` | MCP | An MCP server started as a command (stdio), its tools used by a local llama.cpp model |
 | `agent_skills.py` | Skills | Agent skills discovery and registration |
 | `skill_active_manifest.py` | Skills | A host manifest that marks what the room already loaded, via `active_skill_names` (mock provider, no API key) |
 | `streaming_tools.py` | Streaming | Streaming text delivery with interleaved tool calls |
