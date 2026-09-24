@@ -20,7 +20,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
@@ -136,9 +136,12 @@ class MuseTalkAvatarProvider(AvatarProvider):
         # Temporarily allow weights_only=False for legacy MuseTalk checkpoints.
         # Scoped: restored immediately after loading to avoid process-wide side effects.
         _original_load = torch.load
-        torch.load = lambda *a, **kw: _original_load(  # ty: ignore[invalid-assignment]
-            *a,
-            **{**kw, "weights_only": False},
+        # Typed as Any: whether ty knows torch.load's signature depends on torch
+        # being installed, and a checker-specific ignore is then unused on half
+        # the environments (CI installs no torch).
+        torch.load = cast(
+            Any,
+            lambda *a, **kw: _original_load(*a, **{**kw, "weights_only": False}),
         )
 
         try:
