@@ -16,9 +16,8 @@ from roomkit.providers.ai.base import AITool
 logger = logging.getLogger("roomkit.tools.mcp")
 
 _DEFAULT_CALL_TIMEOUT = 30.0
-"""Seconds a tool call waits. One default for both entry points below:
-the handler used to inherit it by routing through :meth:`call_tool`, and
-the two would otherwise drift apart without anything noticing."""
+"""Seconds a tool call waits: one default shared by :meth:`MCPToolProvider.call_tool`
+and the tool handler, so the two cannot drift apart."""
 
 ToolHandler = Callable[[str, dict[str, Any]], Awaitable[str]]
 
@@ -90,10 +89,16 @@ class MCPToolProvider:
     ) -> None:
         if transport not in ("streamable_http", "sse", "stdio"):
             raise ValueError(f"Unsupported transport: {transport!r}")
-        if transport == "stdio" and not command:
-            raise ValueError("the stdio transport needs a command to start the server")
-        if transport != "stdio" and not url:
-            raise ValueError(f"the {transport} transport needs a url")
+        if transport == "stdio":
+            if not command:
+                raise ValueError("the stdio transport needs a command to start the server")
+            if url or headers:
+                raise ValueError("url and headers are for the HTTP transports, not stdio")
+        else:
+            if not url:
+                raise ValueError(f"the {transport} transport needs a url")
+            if command or args or env is not None or cwd is not None:
+                raise ValueError(f"command, args, env and cwd are for stdio, not {transport}")
         self._url = url
         self._transport = transport
         self._tool_filter = tool_filter
@@ -170,9 +175,9 @@ class MCPToolProvider:
 
     @property
     def _target(self) -> str:
-        """The server, as logs name it."""
+        """The server, as logs name it: the command alone, as its args may hold secrets."""
         if self._transport == "stdio":
-            return " ".join([self._command or "", *self._args])
+            return self._command or ""
         return self._url or ""
 
     async def __aenter__(self) -> MCPToolProvider:
@@ -183,6 +188,8 @@ class MCPToolProvider:
                 "MCPToolProvider requires the 'mcp' package. "
                 "Install it with: pip install roomkit[mcp]"
             ) from None
+        if self._stack is not None:
+            raise RuntimeError("MCPToolProvider is already connected; exit it before re-entering")
 
         # Everything entered goes on one stack, so a failure half-way (a server
         # that exits, an initialize that errors) still closes what was opened:

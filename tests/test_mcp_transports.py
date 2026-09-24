@@ -44,6 +44,11 @@ _SERVER = textwrap.dedent(
         \"\"\"The server's process id.\"\"\"
         return os.getpid()
 
+    @server.tool()
+    def cwd() -> str:
+        \"\"\"The server's working directory.\"\"\"
+        return os.getcwd()
+
     server.run()
     """
 )
@@ -66,7 +71,7 @@ def _alive(pid: int) -> bool:
 
 async def test_discovers_and_calls_the_tools_of_a_stdio_server(server_script: str) -> None:
     async with MCPToolProvider.from_command(sys.executable, [server_script]) as mcp:
-        assert sorted(mcp.tool_names) == ["add", "pid", "read_env", "refuse"]
+        assert sorted(mcp.tool_names) == ["add", "cwd", "pid", "read_env", "refuse"]
         add = next(t for t in mcp.get_tools() if t.name == "add")
         assert add.parameters["required"] == ["a", "b"]
 
@@ -131,6 +136,21 @@ async def test_a_command_that_does_not_exist_says_so() -> None:
     assert provider._stack is None
 
 
+async def test_cwd_is_the_server_working_directory(server_script: str, tmp_path: Path) -> None:
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    provider = MCPToolProvider.from_command(sys.executable, [server_script], cwd=str(workdir))
+    async with provider as mcp:
+        assert Path(await mcp.call_tool("cwd", {})).resolve() == workdir.resolve()
+
+
+async def test_entering_a_connected_provider_again_is_refused(server_script: str) -> None:
+    provider = MCPToolProvider.from_command(sys.executable, [server_script])
+    async with provider:
+        with pytest.raises(RuntimeError, match="already connected"):
+            await provider.__aenter__()
+
+
 async def test_reconnecting_does_not_duplicate_the_tools(server_script: str) -> None:
     provider = MCPToolProvider.from_command(sys.executable, [server_script])
     async with provider as mcp:
@@ -148,6 +168,14 @@ class TestConstruction:
         with pytest.raises(ValueError, match="needs a url"):
             MCPToolProvider(transport="sse")
 
+    def test_stdio_options_are_refused_on_http(self) -> None:
+        with pytest.raises(ValueError, match="for stdio"):
+            MCPToolProvider("http://localhost/mcp", env={"A": "1"})
+
+    def test_http_options_are_refused_on_stdio(self) -> None:
+        with pytest.raises(ValueError, match="HTTP transports"):
+            MCPToolProvider(transport="stdio", command="srv", headers={"A": "1"})
+
     def test_unknown_transport_is_refused_at_construction(self) -> None:
         with pytest.raises(ValueError, match="Unsupported transport"):
             MCPToolProvider("http://localhost/mcp", transport="grpc")
@@ -158,12 +186,19 @@ _HTTP_SERVER = textwrap.dedent(
     import sys
     from mcp.server.fastmcp import FastMCP
 
+    from mcp.server.fastmcp import Context
+
     server = FastMCP("roomkit-http-test", port=int(sys.argv[1]))
 
     @server.tool()
     def add(a: int, b: int) -> int:
         \"\"\"Add two integers.\"\"\"
         return a + b
+
+    @server.tool()
+    def header(name: str, ctx: Context) -> str:
+        \"\"\"A header of the HTTP request that called this tool.\"\"\"
+        return ctx.request_context.request.headers.get(name, "<missing>")
 
     server.run(transport=sys.argv[2])
     """
@@ -179,14 +214,11 @@ async def test_http_transports_against_a_real_server(
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
-    process = await asyncio.create_subprocess_exec(
-        sys.executable,
-        str(script),
-        str(port),
-        transport,
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.DEVNULL,
-    )
+    log = tmp_path / "server.log"
+    with log.open("wb") as out:
+        process = await asyncio.create_subprocess_exec(
+            sys.executable, str(script), str(port), transport, stdout=out, stderr=out
+        )
     try:
         for _ in range(100):
             try:
@@ -195,14 +227,17 @@ async def test_http_transports_against_a_real_server(
                 break
             except OSError:
                 await asyncio.sleep(0.1)
+        else:
+            pytest.fail(f"MCP {transport} server never listened:\n{log.read_text()}")
         provider = MCPToolProvider.from_url(
             f"http://127.0.0.1:{port}{path}",
             transport="streamable_http" if transport == "streamable-http" else "sse",
             headers={"X-Test": "1"},
         )
         async with provider as mcp:
-            assert mcp.tool_names == ["add"]
+            assert sorted(mcp.tool_names) == ["add", "header"]
             assert await mcp.call_tool("add", {"a": 20, "b": 22}) == "42"
+            assert await mcp.call_tool("header", {"name": "x-test"}) == "1"
     finally:
         process.terminate()
         await process.wait()

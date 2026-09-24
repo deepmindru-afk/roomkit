@@ -52,8 +52,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (RMK-215). A server that exits or an `initialize` that errors left the
   transport, and for stdio the server process, open; everything now enters one
   `AsyncExitStack` that is unwound on failure. Reconnecting the same provider
-  no longer lists every tool twice, an unknown `transport` or a missing
-  `url`/`command` is refused at construction instead of at connect, and the
+  no longer lists every tool twice, and entering one that is still connected
+  is refused instead of leaking the first connection. An unknown `transport`,
+  a missing `url`/`command`, or an option of the other transport (`headers`
+  on stdio, `env` on HTTP) is refused at construction instead of at connect or
+  silently dropped. The connect log names a stdio server by its command alone,
+  as its arguments may carry secrets. The
   streamable HTTP transport uses `streamable_http_client` in place of the
   deprecated `streamablehttp_client` (`mcp>=1.24`). The MCP tests now run
   against real FastMCP servers on all three transports.
