@@ -66,7 +66,8 @@ class SherpaOnnxVADConfig:
         speech_pad_ms: Pre-roll buffer duration in ms: audio kept from
             before ``is_speech_detected()`` flips.  TEN-VAD flips 0.4-0.9 s
             after the voice starts, so a shorter pre-roll cuts the first word
-            before the STT hears it.
+            before the STT hears it.  The pre-roll also reaches the STT during
+            TTS playback (barge-in), where without AEC it can carry TTS echo.
         max_speech_duration: Maximum speech segment length in seconds before
             forcing a segment break inside sherpa.
         sample_rate: Expected audio sample rate.
