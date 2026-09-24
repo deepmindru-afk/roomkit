@@ -295,4 +295,6 @@ class TestVuiPrivateApi:
         assert "_spk_token" in inspect.getsource(engine_mod.Row.__init__)
         assert "_codec_ctx" in inspect.getsource(engine_mod.Row.__init__)
         assert hasattr(codec_mod.CodecCtx, "prefill")
+        # our seed survives only if Vui seeds when the state is closed
+        assert "_stack is None" in inspect.getsource(engine_mod.Engine._stream_row)
         assert "_buf" in inspect.getsource(codec_mod.CodecCtx.__init__)

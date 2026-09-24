@@ -301,9 +301,11 @@ class _VuiRow:
         # The audio decoder restarts cold every 10 s of decoded audio, counted
         # from its last (re)seed. Left running across turns, that restart lands
         # mid-reply one time in four (an audible jump). Re-seeding it at the
-        # turn change from the last second of audio keeps the reply's start
-        # continuous and pushes the next restart about 9 s into it (RMK-199).
-        _reseed_decoder(self._row, _RESEED_FRAMES)
+        # turn change from the last second of the codec buffer (the user's
+        # turn when it carried audio, else the tail of the previous reply)
+        # keeps the reply's start continuous and puts the next restart about
+        # 9 s into it, then every 10 s (RMK-199).
+        _reseed_decoder(self._row, _RESEED_FRAMES, self._gen.n_codebooks)
         for frame in self._row.stream(text, self._gen, cancel, final_turn=True):
             # The yielded tensor is a reused graph buffer: convert it now.
             samples = frame.detach().float().reshape(-1).clamp(-1.0, 1.0)
@@ -345,12 +347,15 @@ def _set_speaker_token(row: Any, token: Any) -> None:
     row._spk_token = token
 
 
-def _reseed_decoder(row: Any, frames: int) -> None:
+def _reseed_decoder(row: Any, frames: int, n_codebooks: int) -> None:
     """Re-seed the codec's streaming decoder from the last *frames* of its buffer.
 
-    ``CodecCtx.prefill`` seeds from ``len(buffer) % 10 s``, which can leave the
-    next restart a few frames away; seeding from a short tail fixes it at
-    ``10 s - frames`` instead.
+    ``CodecCtx.prefill`` seeds from ``len(buffer) % 10 s`` so restarts land on
+    absolute 10 s boundaries, as the codec was trained. That alignment does
+    not hold in a dialogue: user codes enter the buffer through ``add()``,
+    which the decoder clock never counts, and the buffer is trimmed. Seeding
+    from a short tail instead puts the next restart at ``10 s - frames``,
+    never at the start of a reply.
     """
     ctx = row._codec_ctx
     buffer = ctx._buf
@@ -358,6 +363,6 @@ def _reseed_decoder(row: Any, frames: int) -> None:
         return
     ctx._buf = buffer[:, :, -frames:]
     try:
-        ctx.prefill(n_codebooks=0, device="cuda")
+        ctx.prefill(n_codebooks=n_codebooks, device="cuda")
     finally:
         ctx._buf = buffer

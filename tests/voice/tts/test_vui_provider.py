@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import threading
 import time
+import types
 from collections.abc import Iterator
 
 import pytest
@@ -157,8 +158,6 @@ def test_lazy_getters() -> None:
 
 def test_each_reply_reseeds_the_audio_decoder_from_a_short_tail() -> None:
     """RMK-199: before streaming, the decoder is seeded from the last second only."""
-    import types
-
     order: list[object] = []
 
     class _Ctx:
@@ -166,6 +165,7 @@ def test_each_reply_reseeds_the_audio_decoder_from_a_short_tail() -> None:
 
         def prefill(self, n_codebooks: int = 0, device: str = "cuda") -> None:
             order.append(("prefill", self._buf))
+            assert n_codebooks == 0
 
     class _Buf:
         shape = (1, 16, 300)
@@ -179,16 +179,26 @@ def test_each_reply_reseeds_the_audio_decoder_from_a_short_tail() -> None:
     class _Row:
         _codec_ctx = ctx
 
-        def stream(self, text, cfg, cancel, final_turn):  # noqa: ANN001
+        def stream(self, text, cfg, cancel, final_turn):
             order.append("stream")
             yield from ()
 
     row = object.__new__(vui_module._VuiRow)
     row._row = _Row()
-    row._gen = None
+    row._gen = types.SimpleNamespace(n_codebooks=0)
     row._torch = types.SimpleNamespace()
 
     list(row.generate("hi", threading.Event()))
 
     assert order == [("prefill", "tail-12"), "stream"]
     assert isinstance(ctx._buf, _Buf)  # the full buffer is back
+
+
+def test_an_empty_codec_buffer_is_left_to_vui() -> None:
+    """Right after a reset there is nothing to seed from: Vui starts cold itself."""
+    seeded: list[bool] = []
+    ctx = types.SimpleNamespace(_buf=None, prefill=lambda **kw: seeded.append(True))
+
+    vui_module._reseed_decoder(types.SimpleNamespace(_codec_ctx=ctx), 12, 0)
+
+    assert seeded == []

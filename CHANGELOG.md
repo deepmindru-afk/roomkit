@@ -120,8 +120,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dialogue between two replies did not count toward that clock, so the
   restart landed in the middle of one reply in four, often about 0.8 s in,
   as an audible jump. The decoder is now re-seeded from the last second of
-  audio at the start of each reply: measured over 40 replies of a three-turn
-  dialogue, mid-reply restarts drop from 10 to 0, with the same time to first
+  audio at the start of each reply, so the next restart falls about 9 s into
+  it (then every 10 s): over 40 replies of a three-turn dialogue, all shorter
+  than that, mid-reply restarts drop from 10 to 0, with the same time to first
   frame (RMK-199).
 - A TTS provider's audio stream is closed as soon as playback stops. A
   backend leaving `send_audio()` on a barge-in did not close the iterator it
