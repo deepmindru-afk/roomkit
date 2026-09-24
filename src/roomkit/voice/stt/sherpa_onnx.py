@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import struct
 import time
 from collections.abc import AsyncIterator
@@ -52,7 +53,8 @@ class SherpaOnnxSTTConfig:
         tail_padding_s: Silence (seconds) fed to a streaming transducer
             before ``input_finished()``.  The model holds its last frames in
             its lookahead and decodes them only with audio behind them, so
-            without it the last word is cut ("Hello" -> "Hell").
+            without it the last words are cut ("Hello" -> "Hell").  Must be
+            a finite number >= 0; ``0`` disables it.
     """
 
     mode: str = "transducer"
@@ -95,6 +97,10 @@ class SherpaOnnxSTTProvider(STTProvider):
                 "sherpa-onnx is required for SherpaOnnxSTTProvider. "
                 "Install it with: pip install roomkit[sherpa-onnx]"
             ) from exc
+        if not math.isfinite(config.tail_padding_s) or config.tail_padding_s < 0:
+            raise ValueError(
+                f"tail_padding_s must be a finite number >= 0, got {config.tail_padding_s!r}"
+            )
         self._config = config
         self._sherpa = __import__("sherpa_onnx")
         self._online_recognizer: Any = None
@@ -104,19 +110,19 @@ class SherpaOnnxSTTProvider(STTProvider):
     def name(self) -> str:
         return "SherpaOnnxSTT"
 
-    def _finish(self, stream: Any, sample_rate: int) -> None:
-        """End a streaming transducer's input, tail padding first."""
-        n = int(self._config.tail_padding_s * sample_rate)
-        if n > 0:
-            stream.accept_waveform(sample_rate, [0.0] * n)
-        stream.input_finished()
-
     @property
     def supports_streaming(self) -> bool:
         # NeMo TDT models are offline-only (no streaming support).
         if self._config.model_type:
             return False
         return self._config.mode == "transducer"
+
+    def _finish(self, stream: Any, sample_rate: int) -> None:
+        """End a streaming transducer's input, tail padding first."""
+        n = int(self._config.tail_padding_s * sample_rate)
+        if n > 0:
+            stream.accept_waveform(sample_rate, [0.0] * n)
+        stream.input_finished()
 
     def _get_online_recognizer(self) -> Any:
         """Lazily create an OnlineRecognizer for streaming (transducer only)."""

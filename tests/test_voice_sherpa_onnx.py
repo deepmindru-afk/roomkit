@@ -252,6 +252,11 @@ class TestSherpaOnnxSTTProvider:
 
         assert (await provider.transcribe(audio)).text == "hell"
 
+    @pytest.mark.parametrize("bad", [-0.1, float("nan"), float("inf")])
+    def test_invalid_tail_padding_rejected_at_construction(self, bad: float) -> None:
+        with pytest.raises(ValueError, match="tail_padding_s must be a finite number"):
+            self._make_provider(_mock_sherpa_module(), tail_padding_s=bad)
+
     @pytest.mark.asyncio
     async def test_whisper_streaming_raises(self) -> None:
         sherpa = _mock_sherpa_module()

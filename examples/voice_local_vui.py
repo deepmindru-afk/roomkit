@@ -27,8 +27,8 @@ Models (download once, into examples/models/):
     mkdir -p examples/models && cd examples/models
     # VAD: TEN-VAD
     wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/ten-vad.onnx
-    # STT: Kroko, a Zipformer transducer, English, streaming (the 20M model
-    # renders a microphone's "hello hello" as "O HALLO")
+    # STT: Kroko, a Zipformer transducer, English, streaming; it holds up on
+    # microphone speech (model license: huggingface.co/Banafo/Kroko-ASR)
     wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06.tar.bz2
     tar xf sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06.tar.bz2
     cd ../..

@@ -9,13 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `SherpaOnnxSTTProvider` no longer cuts the last word of an utterance
+- `SherpaOnnxSTTProvider` no longer cuts the last words of an utterance
   (RMK-210). In transducer mode, `transcribe()` and `transcribe_stream()`
   ended the input straight after the speech, and a streaming transducer
   decodes its last frames only with audio behind them: a microphone's "Hello"
   came out "Hell", "What do you mean?" came out "What". Both paths now feed
   `SherpaOnnxSTTConfig.tail_padding_s` (0.66 s) of silence first, as the
-  sherpa-onnx examples do; `0` restores the old behaviour.
+  sherpa-onnx examples do; `0` restores the old behaviour, and a negative or
+  non-finite value raises `ValueError` at construction.
   `examples/voice_local_vui.py` also moves to the Kroko English model, which
   transcribes the same microphone segments the 20M Zipformer rendered as
   "O HALLO" or "U".
