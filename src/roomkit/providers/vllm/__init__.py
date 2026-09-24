@@ -115,6 +115,16 @@ def create_vllm_provider(config: VLLMConfig) -> OpenAIAIProvider:
     Returns:
         A provider configured for the local vLLM server.
     """
+    return _VLLMProvider(_openai_config(config))
+
+
+def _openai_config(config: VLLMConfig) -> OpenAIConfig:
+    """The OpenAI connection settings a :class:`VLLMConfig` stands for.
+
+    Shared with every provider that speaks to a vLLM-style server — the
+    llama.cpp provider runs one — so the sampling and reasoning fields reach
+    the body the same way everywhere.
+    """
     template_kwargs = config.chat_template_kwargs()
     sampling = config.sampling_body()
     explicit_body = dict(config.extra_body) if config.extra_body else {}
@@ -143,4 +153,4 @@ def create_vllm_provider(config: VLLMConfig) -> OpenAIAIProvider:
         default_headers=config.headers,
         extra_body=extra_body,
     )
-    return _VLLMProvider(openai_config)
+    return openai_config
