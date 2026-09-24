@@ -104,6 +104,9 @@ _ContentPart = AITextPart | AIImagePart | AIToolCallPart | AIToolResultPart | AI
 
 logger = logging.getLogger("roomkit.channels.ai")
 
+# Largest tool result the usage memory keeps for later turns, in characters.
+_TOOL_MEMORY_RESULT_CHARS = 6000
+
 
 @dataclass
 class _ToolLoopContext:
@@ -337,7 +340,11 @@ class AIChannel(
         # Per-conversation record of tools the agent has called — feeds the
         # "tools you've already used" digest and re-reveals used tools each turn
         # so a tool used once stays callable under Tool Search. See _tool_usage.
-        self._tool_usage = ToolUsageMemory()
+        # A result kept for later turns never exceeds what the eviction
+        # threshold lets the model see in the turn itself (~4 chars a token).
+        self._tool_usage = ToolUsageMemory(
+            result_keep_chars=min(_TOOL_MEMORY_RESULT_CHARS, 4 * evict_threshold_tokens)
+        )
         # Per-conversation record of the skills the model activated. Their bodies
         # ride the system prompt from the next turn on, so ``activate_skill``
         # answers with a short ACK instead of re-sending a multi-KB body every

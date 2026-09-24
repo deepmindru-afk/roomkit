@@ -536,12 +536,16 @@ class AIToolsMixin:
                 telemetry.end_span(tool_span_id, status="error", error_message=refusal.message)
                 logger.info("Tool %s refused: %s", tc.name, refusal.message)
                 result = refusal.message
+                recorded_result = None
                 tool_failed = True
                 await self._fire_tool_refusal(tc, arguments, result, room_id)
             except Exception as exc:
                 telemetry.end_span(tool_span_id, status="error", error_message=str(exc))
                 logger.warning("Tool %s raised %s: %s", tc.name, type(exc).__name__, exc)
                 result = f"Error executing tool '{tc.name}': {exc}"
+                # The model saw the error, so the memory records it, not a
+                # success the handler returned before a hook raised.
+                recorded_result = None
                 tool_failed = True
                 # Fired here, on the raw sentence: the hook sees what the
                 # handler produced, before the repeated-result note annotates

@@ -19,6 +19,16 @@ _MAX_EVICTED = 50
 # under the re-eviction bound (4 * threshold_tokens chars). See handle_read.
 _PAGE_ENVELOPE_CHARS = 512
 
+# How every eviction placeholder starts. The usage memory recognises one by it:
+# a placeholder is what TOOL_CALL_END persists for an evicted result, and its
+# ``evicted_…`` id dies with the process, so it must not be replayed as data.
+EVICTION_PLACEHOLDER_PREFIX = "Result too large ("
+
+
+def is_eviction_placeholder(text: str) -> bool:
+    """Whether *text* is the stand-in :class:`ToolEviction` gave an oversized result."""
+    return text.startswith(EVICTION_PLACEHOLDER_PREFIX)
+
 
 class ToolEviction:
     """Stores large tool results and provides paginated re-reading.
@@ -74,7 +84,7 @@ class ToolEviction:
             preview = f"{head}\n\n[... {omitted} lines omitted ...]\n\n{tail}"
 
         return (
-            f"Result too large ({estimated} tokens). Full output saved as "
+            f"{EVICTION_PLACEHOLDER_PREFIX}{estimated} tokens). Full output saved as "
             f"'{result_id}'. Use read_stored_result to read it with pagination.\n\n"
             f"Preview:\n{preview}"
         )

@@ -68,7 +68,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   calls now keep their result in the digest, up to 6,000 characters each, with
   a marked cut and an instruction to call the tool again rather than guess when
   it is longer; and the result kept is the tool's own, not the eviction
-  placeholder an oversized one was replaced by.
+  placeholder an oversized one was replaced by. Each result sits in a
+  `<tool_result>` block the model is told to treat as data, never as
+  instructions, and none exceeds what `evict_threshold_tokens` lets through; a
+  placeholder rebuilt from persisted history after a restart stays one line.
 
 - `MCPToolProvider` closes what it opened when connecting fails half-way
   (RMK-215). A server that exits or an `initialize` that errors left the
