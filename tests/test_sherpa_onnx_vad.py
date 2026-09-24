@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from roomkit.voice.audio_frame import AudioFrame
-from roomkit.voice.pipeline.vad.base import VADEventType
+from roomkit.voice.pipeline.vad.base import VADConfig, VADEventType
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -493,6 +493,35 @@ class TestLazyInit:
 # ---------------------------------------------------------------------------
 # Model type configuration
 # ---------------------------------------------------------------------------
+
+
+class TestConfigure:
+    """``AudioPipelineConfig.vad_config`` over the provider's config (RMK-209)."""
+
+    def _provider(self) -> tuple[Any, MagicMock]:
+        sherpa = _mock_sherpa_module()
+        detector = MagicMock()
+        detector.empty.return_value = True
+        detector.is_speech_detected.return_value = False
+        return _make_provider(sherpa, detector, model="/m.onnx"), sherpa
+
+    def test_set_fields_replace_unset_keep(self) -> None:
+        vad, _ = self._provider()
+        vad.configure(VADConfig(silence_threshold_ms=200))
+        assert vad._config.silence_threshold_ms == 200
+        assert vad._config.speech_pad_ms == 1000  # the provider's default holds
+        assert vad._config.model == "/m.onnx"
+
+    def test_extra_reaches_the_detector(self) -> None:
+        vad, sherpa = self._provider()
+        vad.configure(VADConfig(extra={"threshold": 0.6}))
+        vad.process(_silence(), "s1")
+        assert sherpa.VadModelConfig.return_value.ten_vad.threshold == 0.6
+
+    def test_unknown_extra_rejected(self) -> None:
+        vad, _ = self._provider()
+        with pytest.raises(ValueError, match="SherpaOnnxVAD has no VAD setting sensitivity"):
+            vad.configure(VADConfig(extra={"sensitivity": 0.5}))
 
 
 class TestModelType:

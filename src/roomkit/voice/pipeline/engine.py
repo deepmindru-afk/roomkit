@@ -178,6 +178,11 @@ class AudioPipeline:
             from roomkit.voice.pipeline.agc.simple import SimpleAGCProvider
 
             self._agc = SimpleAGCProvider(config.agc_config)
+        if config.vad_config is not None:
+            if config.vad is None:
+                logger.warning("vad_config is set without a vad provider; nothing to tune")
+            else:
+                config.vad.configure(config.vad_config)
         self._backend_capabilities = backend_capabilities
         self._backend_feeds_aec_ref = backend_feeds_aec_reference
         self._speech_end_callbacks: list[SpeechEndPipelineCallback] = []

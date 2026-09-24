@@ -1,5 +1,10 @@
 """Tests for the AudioPipeline engine, provider ABCs, mock providers, and config."""
 
+import logging
+import struct
+
+import pytest
+
 from roomkit.voice.audio_frame import AudioFrame
 from roomkit.voice.base import VoiceSession, VoiceSessionState
 from roomkit.voice.pipeline import (
@@ -17,6 +22,7 @@ from roomkit.voice.pipeline import (
     VADEventType,
     VADProvider,
 )
+from roomkit.voice.pipeline.vad.energy import EnergyVADProvider
 
 
 def _session(sid: str = "sess-1") -> VoiceSession:
@@ -77,11 +83,26 @@ class TestVADEvent:
 
 class TestVADConfig:
     def test_defaults(self) -> None:
+        # Unset fields leave the provider's own values alone (RFC §12.3.1).
         config = VADConfig()
-        assert config.silence_threshold_ms == 500
-        assert config.speech_pad_ms == 300
-        assert config.min_speech_duration_ms == 250
+        assert config.silence_threshold_ms is None
+        assert config.speech_pad_ms is None
+        assert config.min_speech_duration_ms is None
         assert config.extra == {}
+        assert config.settings("P", []) == {}
+
+    def test_settings_keep_only_set_fields_and_extra(self) -> None:
+        config = VADConfig(speech_pad_ms=600, extra={"threshold": 0.4, "speech_pad_ms": 1})
+        # A named field wins over the same key in extra.
+        assert config.settings("P", ["threshold", "speech_pad_ms"]) == {
+            "threshold": 0.4,
+            "speech_pad_ms": 600,
+        }
+
+    def test_settings_reject_unknown_extra(self) -> None:
+        config = VADConfig(extra={"sensitivity": 0.5})
+        with pytest.raises(ValueError, match="P has no VAD setting sensitivity"):
+            config.settings("P", ["threshold"])
 
     def test_custom_values(self) -> None:
         config = VADConfig(
@@ -272,6 +293,60 @@ class TestAudioPipelineConfig:
 # ---------------------------------------------------------------------------
 # AudioPipeline engine
 # ---------------------------------------------------------------------------
+
+
+class TestAudioPipelineVADConfig:
+    def test_pipeline_configures_vad(self) -> None:
+        vad = MockVADProvider()
+        vad_config = VADConfig(silence_threshold_ms=200)
+        AudioPipeline(AudioPipelineConfig(vad=vad, vad_config=vad_config))
+        assert vad.configured == [vad_config]
+
+    def test_no_vad_config_leaves_vad_alone(self) -> None:
+        vad = MockVADProvider()
+        AudioPipeline(AudioPipelineConfig(vad=vad))
+        assert vad.configured == []
+
+    def test_provider_without_configure_warns(self, caplog: pytest.LogCaptureFixture) -> None:
+        class ThirdPartyVAD(VADProvider):
+            @property
+            def name(self) -> str:
+                return "ThirdPartyVAD"
+
+            def process(self, frame: AudioFrame, stream: str) -> VADEvent | None:
+                return None
+
+        with caplog.at_level(logging.WARNING):
+            AudioPipeline(
+                AudioPipelineConfig(vad=ThirdPartyVAD(), vad_config=VADConfig(speech_pad_ms=1))
+            )
+        assert "ThirdPartyVAD does not support VADConfig" in caplog.text
+
+    def test_vad_config_without_vad_warns(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level(logging.WARNING):
+            AudioPipeline(AudioPipelineConfig(vad_config=VADConfig(speech_pad_ms=1)))
+        assert "vad_config is set without a vad provider" in caplog.text
+
+    def test_unknown_extra_fails_at_build(self) -> None:
+        vad = EnergyVADProvider()
+        with pytest.raises(ValueError, match="EnergyVADProvider has no VAD setting bogus"):
+            AudioPipeline(AudioPipelineConfig(vad=vad, vad_config=VADConfig(extra={"bogus": 1})))
+
+    def test_silence_threshold_reaches_the_vad(self) -> None:
+        """RMK-209: 200 ms of silence ends the utterance, not the provider's 500."""
+        vad = EnergyVADProvider(energy_threshold=300, min_speech_duration_ms=0)
+        pipeline = AudioPipeline(
+            AudioPipelineConfig(vad=vad, vad_config=VADConfig(silence_threshold_ms=200))
+        )
+        ends: list[object] = []
+        pipeline.on_speech_end(lambda session, audio: ends.append(audio))
+        session = _session()
+        speech = AudioFrame(data=struct.pack("<320h", *([1000] * 320)), sample_rate=16000)
+        silence = AudioFrame(data=bytes(640), sample_rate=16000)
+        pipeline.process_frame(session, speech)
+        for _ in range(10):  # 200 ms at 20 ms/frame
+            pipeline.process_frame(session, silence)
+        assert len(ends) == 1
 
 
 class TestAudioPipelineVADOnly:

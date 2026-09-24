@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import struct
 
+import pytest
+
 from roomkit.voice.audio_frame import AudioFrame
-from roomkit.voice.pipeline.vad.base import VADEventType
+from roomkit.voice.pipeline.vad.base import VADConfig, VADEventType
 from roomkit.voice.pipeline.vad.energy import EnergyVADProvider, _rms_int16
 
 # ---------------------------------------------------------------------------
@@ -302,3 +304,26 @@ class TestMultipleUtterances:
             VADEventType.SPEECH_START,
             VADEventType.SPEECH_END,
         ]
+
+
+# ---------------------------------------------------------------------------
+# vad_config (RMK-209)
+# ---------------------------------------------------------------------------
+
+
+class TestConfigure:
+    def test_set_fields_replace_unset_keep(self) -> None:
+        vad = EnergyVADProvider(energy_threshold=300, speech_pad_ms=100)
+        vad.configure(VADConfig(silence_threshold_ms=60, extra={"energy_threshold": 500}))
+        assert vad._silence_threshold_ms == 60
+        assert vad._energy_threshold == 500
+        assert vad._speech_pad_ms == 100
+
+    def test_threshold_from_extra_changes_detection(self) -> None:
+        vad = EnergyVADProvider(energy_threshold=300)
+        vad.configure(VADConfig(extra={"energy_threshold": 2000}))
+        assert vad.process(_speech(1000), "s1") is None
+
+    def test_unknown_extra_rejected(self) -> None:
+        with pytest.raises(ValueError, match="EnergyVADProvider has no VAD setting threshold"):
+            EnergyVADProvider().configure(VADConfig(extra={"threshold": 0.5}))

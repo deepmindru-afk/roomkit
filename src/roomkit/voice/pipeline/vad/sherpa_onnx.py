@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import logging
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, replace
 from typing import TYPE_CHECKING, Any
 
-from roomkit.voice.pipeline.vad.base import VADEvent, VADEventType, VADProvider
+from roomkit.voice.pipeline.vad.base import VADConfig, VADEvent, VADEventType, VADProvider
 from roomkit.voice.utils import _get_np
 
 if TYPE_CHECKING:
@@ -145,6 +145,16 @@ class SherpaOnnxVADProvider(VADProvider):
     @property
     def name(self) -> str:
         return "SherpaOnnxVAD"
+
+    def configure(self, config: VADConfig) -> None:
+        """Apply ``vad_config`` over this provider's :class:`SherpaOnnxVADConfig`.
+
+        ``extra`` takes any :class:`SherpaOnnxVADConfig` field (``threshold``,
+        ``energy_silence_rms``...). Model settings reach a stream's detector
+        when it is created, so they apply to streams that start afterwards.
+        """
+        known = [f.name for f in fields(SherpaOnnxVADConfig)]
+        self._config = replace(self._config, **config.settings(self.name, known))
 
     def _state_for(self, stream: str) -> _StreamState:
         """Get or create this stream's detection state."""

@@ -13,7 +13,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from roomkit.voice.pipeline.vad.base import VADEvent, VADEventType, VADProvider
+from roomkit.voice.pipeline.vad.base import VADConfig, VADEvent, VADEventType, VADProvider
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +54,16 @@ class _StreamState:
     debug_speech_count: int = 0
 
 
+# Constructor argument -> attribute, for VADConfig overrides.
+_SETTINGS = {
+    "energy_threshold": "_energy_threshold",
+    "silence_threshold_ms": "_silence_threshold_ms",
+    "min_speech_duration_ms": "_min_speech_duration_ms",
+    "speech_pad_ms": "_speech_pad_ms",
+    "max_speech_duration_ms": "_max_speech_duration_ms",
+}
+
+
 class EnergyVADProvider(VADProvider):
     """VAD provider that detects speech by RMS energy thresholding.
 
@@ -86,6 +96,11 @@ class EnergyVADProvider(VADProvider):
     @property
     def name(self) -> str:
         return "EnergyVADProvider"
+
+    def configure(self, config: VADConfig) -> None:
+        """Apply ``vad_config``; ``extra`` takes any constructor argument name."""
+        for key, value in config.settings(self.name, _SETTINGS).items():
+            setattr(self, _SETTINGS[key], value)
 
     def _frame_duration_ms(self, frame: AudioFrame) -> float:
         """Duration of a single frame in milliseconds."""

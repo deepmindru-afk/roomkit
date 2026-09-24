@@ -97,7 +97,8 @@ class AudioPipelineConfig:
     """Optional postprocessors applied on the outbound path."""
 
     vad_config: VADConfig | None = None
-    """Optional VAD-specific configuration override."""
+    """Optional tuning applied to ``vad`` when the pipeline is built: its set
+    fields replace the provider's own values (RFC §12.3.1)."""
 
     # --- Additional stages (all optional, backwards compatible) ---
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from roomkit.voice.pipeline.vad.base import VADEvent, VADProvider
+from roomkit.voice.pipeline.vad.base import VADConfig, VADEvent, VADProvider
 
 if TYPE_CHECKING:
     from roomkit.voice.audio_frame import AudioFrame
@@ -30,6 +30,7 @@ class MockVADProvider(VADProvider):
         self.frames: list[AudioFrame] = []
         self.reset_count = 0
         self.closed = False
+        self.configured: list[VADConfig] = []
 
     @property
     def name(self) -> str:
@@ -44,6 +45,9 @@ class MockVADProvider(VADProvider):
             self._indexes[stream] = index
             return event
         return None
+
+    def configure(self, config: VADConfig) -> None:
+        self.configured.append(config)
 
     def reset(self, stream: str) -> None:
         self.reset_count += 1

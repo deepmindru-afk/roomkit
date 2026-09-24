@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from enum import StrEnum, unique
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from roomkit.voice.audio_frame import AudioFrame
+
+logger = logging.getLogger("roomkit.voice.pipeline.vad")
 
 
 @unique
@@ -44,19 +48,42 @@ class VADEvent:
 
 @dataclass
 class VADConfig:
-    """Configuration for VAD processing."""
+    """Tuning applied to the pipeline's VAD provider (RFC §12.3.1).
 
-    silence_threshold_ms: int = 500
+    Every field defaults to ``None``: a field that is set replaces the
+    provider's own value, a field left ``None`` keeps it, so the provider's
+    defaults hold for everything not set here.
+    """
+
+    silence_threshold_ms: int | None = None
     """Milliseconds of silence before triggering SPEECH_END."""
 
-    speech_pad_ms: int = 300
-    """Padding added around detected speech segments."""
+    speech_pad_ms: int | None = None
+    """Milliseconds of audio kept from before speech is detected."""
 
-    min_speech_duration_ms: int = 250
+    min_speech_duration_ms: int | None = None
     """Minimum speech duration to trigger events."""
 
     extra: dict[str, object] = field(default_factory=dict)
-    """Provider-specific configuration."""
+    """Provider-specific settings, by the provider's own setting name."""
+
+    def settings(self, provider: str, known: Collection[str]) -> dict[str, object]:
+        """The settings to apply, ``extra`` included, checked against *known*.
+
+        A named field that is set wins over the same key in ``extra``.
+
+        Raises:
+            ValueError: ``extra`` names a setting *provider* does not have.
+        """
+        unknown = sorted(set(self.extra) - set(known))
+        if unknown:
+            raise ValueError(f"{provider} has no VAD setting {', '.join(unknown)}")
+        named = {
+            "silence_threshold_ms": self.silence_threshold_ms,
+            "speech_pad_ms": self.speech_pad_ms,
+            "min_speech_duration_ms": self.min_speech_duration_ms,
+        }
+        return {**self.extra, **{k: v for k, v in named.items() if v is not None}}
 
 
 class VADProvider(ABC):
@@ -84,6 +111,14 @@ class VADProvider(ABC):
             A VADEvent if a state transition occurred, else None.
         """
         ...
+
+    def configure(self, config: VADConfig) -> None:
+        """Apply the pipeline's ``vad_config`` (RFC §12.3.1).
+
+        Called when the pipeline is built, before audio flows. The default
+        cannot apply anything and says so rather than ignoring it silently.
+        """
+        logger.warning("%s does not support VADConfig; vad_config is ignored", self.name)
 
     def reset(self, stream: str) -> None:  # noqa: B027
         """Drop a stream's state.
