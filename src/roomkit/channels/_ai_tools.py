@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import time
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.channels._sandbox_handlers import handle_sandbox_command
@@ -48,6 +49,7 @@ from roomkit.providers.ai.base import (
 )
 from roomkit.sandbox.tools import SANDBOX_TOOL_PREFIX
 from roomkit.telemetry.base import SpanKind
+from roomkit.telemetry.redaction import redact
 from roomkit.tools.context import ToolCallContext, _current_tool_call
 from roomkit.tools.policy import matches_any_pattern
 from roomkit.tools.validation import fold_hoisted_arguments, validate_tool_arguments
@@ -307,7 +309,15 @@ class AIToolsMixin:
         room_id = self._get_loop_ctx().room_id
 
         async def _run_one(tc: Any) -> AIToolResultPart:
-            logger.info("Executing tool: %s(%s)", tc.name, tc.id)
+            # INFO names the call and its argument keys; the values can carry
+            # personal data: DEBUG shows them only with content logging on.
+            logger.info(
+                "Executing tool %s (call %s) with %s",
+                tc.name,
+                tc.id,
+                ", ".join(sorted(tc.arguments)) or "no arguments",
+            )
+            logger.debug("Tool %s arguments: %s", tc.name, redact(_preview(tc.arguments)))
 
             async def rejected(error: dict[str, Any]) -> AIToolResultPart:
                 # Refusals never reach the handler's guard. Count their raw
@@ -468,10 +478,18 @@ class AIToolsMixin:
                     channel_id=self.channel_id,
                 )
                 _tc_tok = _current_tool_call.set(_tc_ctx)
+                started = time.monotonic()
                 try:
                     result = await handler(tc.name, arguments)
                 finally:
                     _current_tool_call.reset(_tc_tok)
+                logger.info(
+                    "Tool %s returned %d chars in %.0f ms",
+                    tc.name,
+                    len(result) if isinstance(result, str) else -1,
+                    (time.monotonic() - started) * 1000,
+                )
+                logger.debug("Tool %s result: %s", tc.name, redact(_preview(result)))
                 # Capture the handler's structured result (MCP structuredContent)
                 # BEFORE eviction — the string below may become a placeholder,
                 # but UI surfaces need the structured payload verbatim.
@@ -847,3 +865,15 @@ class AIToolsMixin:
             # ephemeral event carries to live UIs.
             on_plan_updated=self._plan_updated_hook,
         )
+
+
+_PREVIEW_CHARS = 500
+
+
+def _preview(value: Any) -> str:
+    """A bounded one-line rendering of a tool payload for DEBUG logs."""
+    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
+    text = text.replace("\n", " ")
+    if len(text) <= _PREVIEW_CHARS:
+        return text
+    return f"{text[:_PREVIEW_CHARS]}… ({len(text)} chars)"
