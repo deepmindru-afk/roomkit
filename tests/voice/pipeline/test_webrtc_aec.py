@@ -365,3 +365,91 @@ class TestWebRTCAECProviderClose:
         frame = _make_frame()
         assert provider.process(frame, "s1") is frame
         assert provider._streams == {}
+
+
+def _tone_frame(amplitude: int) -> AudioFrame:
+    """One 10 ms block at 16 kHz whose every sample is *amplitude*."""
+    return AudioFrame(
+        data=amplitude.to_bytes(2, "little", signed=True) * 160,
+        sample_rate=16000,
+        channels=1,
+        sample_width=2,
+    )
+
+
+_AEC_LOGGER = "roomkit.voice.pipeline.aec.webrtc"
+
+
+class TestWebRTCAECStatsPerTurn:
+    """``AEC stats`` never mixes two playback turns (RMK-213)."""
+
+    def _stats_lines(self, caplog, prefix: str) -> list[str]:
+        return [r.getMessage() for r in caplog.records if r.getMessage().startswith(prefix)]
+
+    def test_periodic_window_restarts_with_each_playback(self, caplog):
+        mock_mod, _, _ = _make_mock_aec_module()
+        provider, _ = _make_provider(mock_mod)
+        caplog.set_level("INFO", logger=_AEC_LOGGER)
+
+        # A loud first turn cut short (a barge-in), then a quiet second one.
+        provider.set_stream_active("s1", True)
+        for _ in range(60):
+            provider.process(_tone_frame(1000), "s1")
+        provider.set_stream_active("s1", False)
+        provider.set_stream_active("s1", True)
+        for _ in range(100):
+            provider.process(_tone_frame(100), "s1")
+
+        stats = self._stats_lines(caplog, "AEC stats")
+        assert len(stats) == 1
+        # Only the second turn: the first turn's 60 loud blocks are not in it.
+        assert "in_rms=100 " in stats[0]
+        assert "processed=160" in stats[0]
+
+    def test_each_turn_is_summarised_when_the_aec_is_bypassed(self, caplog):
+        mock_mod, _, _ = _make_mock_aec_module()
+        provider, _ = _make_provider(mock_mod)
+        caplog.set_level("INFO", logger=_AEC_LOGGER)
+
+        provider.set_stream_active("s1", True)
+        for _ in range(60):
+            provider.process(_tone_frame(1000), "s1")
+        provider.set_stream_active("s1", False)
+        provider.set_stream_active("s1", True)
+        for _ in range(30):
+            provider.process(_tone_frame(100), "s1")
+        provider.set_stream_active("s1", False)
+
+        turns = self._stats_lines(caplog, "AEC turn")
+        assert len(turns) == 2
+        assert "frames=60 (0.6s)" in turns[0] and "in_rms=1000 " in turns[0]
+        assert "frames=30 (0.3s)" in turns[1] and "in_rms=100 " in turns[1]
+        # The mock AP is passthrough: nothing cancelled.
+        assert "attenuation=0.0dB" in turns[0]
+
+    def test_global_toggle_also_splits_turns(self, caplog):
+        mock_mod, _, _ = _make_mock_aec_module()
+        provider, _ = _make_provider(mock_mod)
+        caplog.set_level("INFO", logger=_AEC_LOGGER)
+
+        provider.set_active(True)
+        for _ in range(60):
+            provider.process(_tone_frame(1000), "s1")
+        provider.set_active(False)
+        provider.set_active(True)
+        for _ in range(100):
+            provider.process(_tone_frame(100), "s1")
+
+        assert len(self._stats_lines(caplog, "AEC turn")) == 1
+        stats = self._stats_lines(caplog, "AEC stats")
+        assert len(stats) == 1 and "in_rms=100 " in stats[0]
+
+    def test_a_bypass_with_no_audio_logs_no_turn(self, caplog):
+        mock_mod, _, _ = _make_mock_aec_module()
+        provider, _ = _make_provider(mock_mod)
+        caplog.set_level("INFO", logger=_AEC_LOGGER)
+
+        provider.set_stream_active("s1", True)
+        provider.set_stream_active("s1", False)
+
+        assert self._stats_lines(caplog, "AEC turn") == []

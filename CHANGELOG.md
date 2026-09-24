@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `WebRTCAECProvider`'s `AEC stats` line covers one playback at a time
+  (RMK-213). Its 1 s window counted active blocks across bypasses, so a line
+  mixed the end of a turn cut by a barge-in — the user's voice, which the AEC
+  must not cancel — with the start of the next reply, and read as an AEC
+  failing at the start of each turn (`attenuation=-0.3dB`) when a fine
+  measurement showed −14 to −33 dB from the echo's arrival. The window now
+  restarts at each activation, and each playback ends with one `AEC turn`
+  line at bypass: its length, `in_rms`, `out_rms` and attenuation.
+
 - A reply the user starts the moment the agent stops speaking is heard when
   the pipeline runs an AEC. Once `send_audio()` returned, the channel kept a
   2 s echo-decay window that discarded every segment starting in it as echo —
