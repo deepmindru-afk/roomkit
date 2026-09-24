@@ -132,7 +132,10 @@ redis = ["redis>=5.0.1"]
 # `streamablehttp_client`, which `roomkit.tools.mcp` imports lazily — so a 2.x
 # install fails at connect time, not at import. Porting to v2's `Client` is its
 # own piece of work; the SDK's own advice for anyone not ready is this cap.
-mcp = ["mcp>=1.23.0,<2"]
+# 1.24 brought streamable_http_client (streamablehttp_client is deprecated).
+# Below 2: mcp 2 renames its model fields and moves to httpx2, which roomkit
+# caps (see httpx above).
+mcp = ["mcp>=1.24.0,<2"]
 acp = ["agent-client-protocol>=0.11.0,<0.13"]
 console = ["rich>=13.0", "prompt-toolkit>=3.0.36"]
 sources = [
@@ -184,6 +187,7 @@ dev = [
     "roomkit[postgres]",
     "roomkit[opentelemetry]",
     "roomkit[acp]",
+    "roomkit[mcp]",
 ]
 all = [
     "roomkit[providers]",

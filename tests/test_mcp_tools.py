@@ -35,8 +35,13 @@ def _build_mock_mcp() -> MagicMock:
     mock_client_cm.__aenter__ = AsyncMock(return_value=mock_streams)
     mock_client_cm.__aexit__ = AsyncMock(return_value=None)
 
+    mock_http_cm = AsyncMock()
+    mock_http_cm.__aenter__ = AsyncMock(return_value=MagicMock())
+    mock_http_cm.__aexit__ = AsyncMock(return_value=None)
+
     mock_streamable = MagicMock()
-    mock_streamable.streamablehttp_client = MagicMock(return_value=mock_client_cm)
+    mock_streamable.create_mcp_http_client = MagicMock(return_value=mock_http_cm)
+    mock_streamable.streamable_http_client = MagicMock(return_value=mock_client_cm)
 
     mock_sse = MagicMock()
 

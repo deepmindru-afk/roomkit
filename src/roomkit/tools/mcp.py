@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
+from contextlib import AsyncExitStack
 from types import TracebackType
 from typing import Any
 
@@ -58,29 +59,51 @@ def _publish_structured_content(result: Any) -> None:
 class MCPToolProvider:
     """Discover and invoke tools from an MCP server.
 
-    Supports both ``streamable_http`` (default) and ``sse`` transports.
+    Three transports: ``streamable_http`` (default) and ``sse`` for a server
+    reached by URL, and ``stdio`` for a server RoomKit starts as a subprocess
+    and talks to over its stdin/stdout — the way most MCP servers are run.
 
     Usage::
 
         async with MCPToolProvider.from_url("http://localhost:8000/mcp") as mcp:
             tools = mcp.get_tools()          # list[AITool]
             handler = mcp.as_tool_handler()   # ToolHandler for AIChannel
+
+        async with MCPToolProvider.from_command("uvx", ["mcp-server-time"]) as mcp:
+            ...
+
+    Enter and exit it in the same task (``async with``): the MCP SDK's
+    transports hold anyio cancel scopes that must close where they opened.
     """
 
     def __init__(
         self,
-        url: str,
+        url: str | None = None,
         *,
         transport: str = "streamable_http",
         tool_filter: Callable[[str], bool] | None = None,
         headers: dict[str, str] | None = None,
+        command: str | None = None,
+        args: Sequence[str] = (),
+        env: dict[str, str] | None = None,
+        cwd: str | None = None,
     ) -> None:
+        if transport not in ("streamable_http", "sse", "stdio"):
+            raise ValueError(f"Unsupported transport: {transport!r}")
+        if transport == "stdio" and not command:
+            raise ValueError("the stdio transport needs a command to start the server")
+        if transport != "stdio" and not url:
+            raise ValueError(f"the {transport} transport needs a url")
         self._url = url
         self._transport = transport
         self._tool_filter = tool_filter
         self._headers = headers or {}
+        self._command = command
+        self._args = list(args)
+        self._env = env
+        self._cwd = cwd
         self._session: Any = None
-        self._context: Any = None  # async context manager from client
+        self._stack: AsyncExitStack | None = None
         self._tools: list[AITool] = []
         self._tool_set: set[str] = set()
         self._connected = False
@@ -109,42 +132,76 @@ class MCPToolProvider:
         """
         return cls(url, transport=transport, tool_filter=tool_filter, headers=headers)
 
+    @classmethod
+    def from_command(
+        cls,
+        command: str,
+        args: Sequence[str] = (),
+        *,
+        env: dict[str, str] | None = None,
+        cwd: str | None = None,
+        tool_filter: Callable[[str], bool] | None = None,
+    ) -> MCPToolProvider:
+        """Create an MCPToolProvider for a server started as a subprocess (stdio).
+
+        Entering the provider starts ``command`` with ``args``; exiting stops it.
+
+        Args:
+            command: Executable of the MCP server (``"uvx"``, ``"npx"``, a path).
+            args: Its arguments, passed as a list: no shell is involved.
+            env: Extra environment variables for the server. The MCP SDK starts
+                it with a minimal environment (``HOME``, ``PATH``, ``USER``…),
+                not the whole of this process's: pass what the server needs,
+                an API key say, here.
+            cwd: Working directory of the server.
+            tool_filter: Optional predicate to include only matching tool names.
+
+        Returns:
+            An MCPToolProvider instance (not yet connected).
+        """
+        return cls(
+            transport="stdio",
+            command=command,
+            args=args,
+            env=env,
+            cwd=cwd,
+            tool_filter=tool_filter,
+        )
+
+    @property
+    def _target(self) -> str:
+        """The server, as logs name it."""
+        if self._transport == "stdio":
+            return " ".join([self._command or "", *self._args])
+        return self._url or ""
+
     async def __aenter__(self) -> MCPToolProvider:
         try:
             from mcp import ClientSession
-            from mcp.client.streamable_http import streamablehttp_client
         except ImportError:
             raise ImportError(
                 "MCPToolProvider requires the 'mcp' package. "
                 "Install it with: pip install roomkit[mcp]"
             ) from None
 
-        if self._transport == "sse":
-            from mcp.client.sse import sse_client
+        # Everything entered goes on one stack, so a failure half-way (a server
+        # that exits, an initialize that errors) still closes what was opened:
+        # for stdio, that is the server process.
+        stack = AsyncExitStack()
+        try:
+            read_stream, write_stream = await self._open_transport(stack)
+            session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
+            await session.initialize()
+            listed = await session.list_tools()
+        except BaseException:
+            await stack.aclose()
+            raise
 
-            client_cm = sse_client(self._url, headers=self._headers)
-        elif self._transport == "streamable_http":
-            client_cm = streamablehttp_client(self._url, headers=self._headers)
-        else:
-            raise ValueError(f"Unsupported transport: {self._transport!r}")
-
-        # Enter the transport context manager to get read/write streams
-        self._context = client_cm
-        streams = await self._context.__aenter__()
-
-        # streamable_http returns (read, write, session_id); sse returns (read, write)
-        if len(streams) == 3:
-            read_stream, write_stream, _ = streams
-        else:
-            read_stream, write_stream = streams
-
-        self._session = ClientSession(read_stream, write_stream)
-        await self._session.__aenter__()
-        await self._session.initialize()
-
-        # Discover tools
-        result = await self._session.list_tools()
-        for tool in result.tools:
+        self._stack = stack
+        self._session = session
+        self._tools = []
+        self._tool_set = set()
+        for tool in listed.tools:
             if self._tool_filter and not self._tool_filter(tool.name):
                 continue
             # FastMCP serializes a tool's tags into `_meta["fastmcp"]["tags"]`;
@@ -162,11 +219,39 @@ class MCPToolProvider:
 
         self._connected = True
         logger.info(
-            "Connected to MCP server at %s — discovered %d tools",
-            self._url,
+            "Connected to MCP server %s (%s) — discovered %d tools",
+            self._target,
+            self._transport,
             len(self._tools),
         )
         return self
+
+    async def _open_transport(self, stack: AsyncExitStack) -> tuple[Any, Any]:
+        """Open this provider's MCP transport on *stack*; return its two streams."""
+        if self._transport == "stdio":
+            from mcp.client.stdio import StdioServerParameters, stdio_client
+
+            params = StdioServerParameters(
+                command=self._command or "",
+                args=self._args,
+                env=self._env,
+                cwd=self._cwd,
+            )
+            read, write = await stack.enter_async_context(stdio_client(params))
+            return read, write
+        if self._transport == "sse":
+            from mcp.client.sse import sse_client
+
+            client = sse_client(self._url or "", headers=self._headers)
+            read, write = await stack.enter_async_context(client)
+            return read, write
+        from mcp.client.streamable_http import create_mcp_http_client, streamable_http_client
+
+        # The SDK leaves a client it is handed open: the stack closes it.
+        http = await stack.enter_async_context(create_mcp_http_client(headers=self._headers))
+        client = streamable_http_client(self._url or "", http_client=http)
+        read, write, _session_id = await stack.enter_async_context(client)
+        return read, write
 
     async def __aexit__(
         self,
@@ -175,12 +260,10 @@ class MCPToolProvider:
         exc_tb: TracebackType | None,
     ) -> None:
         self._connected = False
-        if self._session is not None:
-            await self._session.__aexit__(exc_type, exc_val, exc_tb)
-            self._session = None
-        if self._context is not None:
-            await self._context.__aexit__(exc_type, exc_val, exc_tb)
-            self._context = None
+        self._session = None
+        stack, self._stack = self._stack, None
+        if stack is not None:
+            await stack.__aexit__(exc_type, exc_val, exc_tb)
 
     def _ensure_connected(self) -> None:
         if not self._connected:

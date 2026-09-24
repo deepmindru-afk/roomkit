@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `MCPToolProvider.from_command()`: MCP servers started as a command, over
+  stdio (RMK-215). Entering the provider starts the server, exiting stops it;
+  arguments go as a list, never through a shell, and `env=` adds what the
+  server needs to the minimal environment the MCP SDK gives it. Example:
+  `examples/mcp_stdio_tools.py`, a local llama.cpp model using a small notes
+  server.
+
 - `LlamaCppAIProvider` (`roomkit[llamacpp]`): a local GGUF model with nothing
   to install or start beside the application (RMK-204). The first request, or
   `await provider.start()`, downloads the llama.cpp build for the machine —
@@ -40,6 +47,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   example enables it (RMK-214).
 
 ### Fixed
+
+- `MCPToolProvider` closes what it opened when connecting fails half-way
+  (RMK-215). A server that exits or an `initialize` that errors left the
+  transport, and for stdio the server process, open; everything now enters one
+  `AsyncExitStack` that is unwound on failure. Reconnecting the same provider
+  no longer lists every tool twice, an unknown `transport` or a missing
+  `url`/`command` is refused at construction instead of at connect, and the
+  streamable HTTP transport uses `streamable_http_client` in place of the
+  deprecated `streamablehttp_client` (`mcp>=1.24`). The MCP tests now run
+  against real FastMCP servers on all three transports.
 
 - `WebRTCAECProvider`'s `AEC stats` line covers one playback at a time
   (RMK-213). Its 1 s window counted active blocks across bypasses, so a line
