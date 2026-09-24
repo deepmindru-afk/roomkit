@@ -136,7 +136,7 @@ class MuseTalkAvatarProvider(AvatarProvider):
         # Temporarily allow weights_only=False for legacy MuseTalk checkpoints.
         # Scoped: restored immediately after loading to avoid process-wide side effects.
         _original_load = torch.load
-        torch.load = lambda *a, **kw: _original_load(
+        torch.load = lambda *a, **kw: _original_load(  # ty: ignore[invalid-assignment]
             *a,
             **{**kw, "weights_only": False},
         )
