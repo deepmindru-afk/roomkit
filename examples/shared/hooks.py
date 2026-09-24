@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from roomkit import HookResult
 
 _MAGENTA = "\033[35m"
+_RESULT_PREVIEW = 300
 _RESET = "\033[0m"
 
 
@@ -15,6 +16,7 @@ def log_tool_call(
     *,
     tool_names: Sequence[str] | None = None,
     label: str = "tool",
+    show_result: bool = False,
 ) -> HookResult:
     """Format and print a tool call event, then return ``HookResult.allow()``.
 
@@ -24,6 +26,8 @@ def log_tool_call(
         event: The ``ToolCallEvent`` passed to the hook.
         tool_names: If provided, only log calls matching these names.
         label: Display label shown in brackets (default ``"tool"``).
+        show_result: Also print the start of what the tool returned, so a
+            reply can be checked against it.
 
     Usage::
 
@@ -36,5 +40,14 @@ def log_tool_call(
     if tool_names is not None and event.name not in set(tool_names):
         return HookResult.allow()
     args = ", ".join(f"{k}={v!r}" for k, v in event.arguments.items())
-    print(f"\n{_MAGENTA}  [{label}] {event.name}({args}){_RESET}\n")
+    print(f"\n{_MAGENTA}  [{label}] {event.name}({args}){_RESET}")
+    if show_result and event.result is not None:
+        text = str(event.result).replace("\n", " ")
+        cut = (
+            f"{text[:_RESULT_PREVIEW]}… ({len(text)} chars)"
+            if len(text) > _RESULT_PREVIEW
+            else text
+        )
+        print(f"{_MAGENTA}  [{label}] → {cut}{_RESET}")
+    print()
     return HookResult.allow()
