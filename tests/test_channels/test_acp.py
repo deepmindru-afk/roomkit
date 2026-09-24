@@ -42,6 +42,7 @@ from roomkit import (
 from roomkit.channels._acp_client import (
     _config_labels,
     _config_values,
+    _new_message_queue,
 )
 from roomkit.channels.acp_transport import _resolve_spawn_env
 from roomkit.models.channel import ChannelBinding
@@ -143,7 +144,8 @@ class _SocketPairTransport(ACPTransport):
         return "socketpair"
 
     async def open(self, client: Any, *, queue: Any) -> Any:
-        return acp.connect_to_agent(client, self._writer, self._reader, queue=queue)
+        kwargs = {} if queue is None else {"queue": queue}
+        return acp.connect_to_agent(client, self._writer, self._reader, **kwargs)
 
     async def close(self) -> None:
         self._writer.close()
@@ -475,6 +477,41 @@ class TestACPChannel:
             "SSH_AUTH_SOCK": "/run/agent.sock",
             "MAX_THINKING_TOKENS": "1024",
         }
+
+    @pytest.mark.parametrize("queue", [None, "sdk-queue"])
+    async def test_spawn_forwards_queue_only_when_set(self, tmp_path: Any, queue: Any) -> None:
+        # SDK 0.12.1 removed the message queue and rejects the keyword, so the
+        # channel hands None and the transport must not forward it.
+        channel = ACPChannel("acp", ["agent"], cwd=tmp_path)
+        captured: dict[str, Any] = {}
+
+        class _Context:
+            async def __aenter__(self) -> tuple[Any, Any]:
+                return SimpleNamespace(), SimpleNamespace(returncode=None, stderr=None)
+
+            async def __aexit__(self, *exc: object) -> None:
+                return None
+
+        def spawn(client: Any, *args: Any, **kwargs: Any) -> Any:
+            captured.update(kwargs)
+            return _Context()
+
+        sdk = SimpleNamespace(acp=SimpleNamespace(spawn_agent_process=spawn))
+        with patch("roomkit.channels.acp_transport._load_sdk", return_value=sdk):
+            await channel._transport.open(channel._client, queue=queue)
+        await channel._transport.close()
+
+        if queue is None:
+            assert "queue" not in captured
+        else:
+            assert captured["queue"] == queue
+
+    def test_message_queue_follows_the_sdk(self) -> None:
+        # Present before 0.12.1, gone from it: the channel adapts to either.
+        with_queue = SimpleNamespace(task=SimpleNamespace(InMemoryMessageQueue=list))
+        without_queue = SimpleNamespace(task=SimpleNamespace())
+        assert _new_message_queue(with_queue) == []
+        assert _new_message_queue(without_queue) is None
 
     def test_command_and_transport_are_mutually_exclusive(self, tmp_path: Any) -> None:
         # Two distinct mistakes, two distinct messages: "both" and "neither"

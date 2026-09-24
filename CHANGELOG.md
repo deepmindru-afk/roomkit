@@ -9,11 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- The `acp` extra now requires `agent-client-protocol<0.12.1`. Release 0.12.1
-  removed `acp.task.InMemoryMessageQueue`, which `ACPChannel` opens its
-  connection with, so every ACP session failed at connect under it while the
-  previous `<0.13` bound still allowed an install to resolve it. The bound
-  widens again once the channel supports the new transport.
+- `ACPChannel` supports `agent-client-protocol` 0.12.1 (RMK-206). That
+  release removed `acp.task.InMemoryMessageQueue`, which the channel opened its
+  connection with, so every ACP session failed at connect under it. The channel
+  now creates the queue only when the SDK still has one, and hands
+  `ACPTransport.open` `queue=None` otherwise: 0.12.1 creates each notification's
+  task in wire order before resolving the prompt response, so every
+  `session_update` is still delivered before the turn ends. The `acp` extra
+  requires `agent-client-protocol>=0.11.0,<0.13` again. A custom transport that
+  forwards `queue` to `acp.connect_to_agent` must drop the keyword when it is
+  `None`, which 0.12.1 rejects; the signature of `open` is unchanged.
 
 - `roomkit[sherpa-onnx]` installs `sherpa-onnx-core` again. Since 1.12.26 the
   native libraries live in that package, and the lock left it out on every

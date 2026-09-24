@@ -108,6 +108,18 @@ def _load_sdk() -> _SDK:
     return _SDK(acp=acp, schema=acp.schema, task=acp.task, version=sdk_version)
 
 
+def _new_message_queue(sdk: _SDK) -> Any:
+    """Return the SDK notification queue, or ``None`` when the SDK has none.
+
+    SDK releases before 0.12.1 route notifications through a message queue
+    the channel joins before draining a turn. 0.12.1 removed it: the receive
+    loop now creates each notification's task itself, in wire order, before
+    it resolves the response that follows.
+    """
+    queue_type = getattr(sdk.task, "InMemoryMessageQueue", None)
+    return queue_type() if queue_type is not None else None
+
+
 def _absolute_path(value: str | Path, *, field_name: str) -> str:
     path = Path(value).expanduser()
     if not path.is_absolute():
@@ -311,9 +323,10 @@ class ACPConnectionMixin:
         return self._loaded_sdk
 
     async def _drain_session_updates(self, session_id: str) -> None:
-        # A prompt response is resolved directly by the SDK receive loop, while
-        # preceding notifications are dispatched through this queue. Joining it
-        # first guarantees those handlers exist before the client awaits them.
+        # Before SDK 0.12.1 a prompt response is resolved directly by the
+        # receive loop, while preceding notifications are dispatched through
+        # this queue. Joining it first guarantees those handlers exist before
+        # the client awaits them. Without a queue they already do.
         if self._message_queue is not None:
             await self._message_queue.join()
         await self._client.drain_session_updates(session_id)
@@ -348,7 +361,7 @@ class ACPConnectionMixin:
                     f"{sdk.acp.PROTOCOL_VERSION}; RoomKit supports stable ACP v1"
                 )
 
-            self._message_queue = sdk.task.InMemoryMessageQueue()
+            self._message_queue = _new_message_queue(sdk)
             try:
                 connection = await self._transport.open(self._client, queue=self._message_queue)
                 response = await connection.initialize(

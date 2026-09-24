@@ -106,8 +106,10 @@ class ACPTransport(ABC):
         *client* is the object the agent calls back into (permission
         requests, session updates) and *queue* the SDK message queue the
         channel drains notifications through; both are handed straight to
-        the SDK connection. Raising is fine — the channel surfaces the
-        failure and does not treat the transport as connected.
+        the SDK connection. *queue* is ``None`` under SDK 0.12.1 and later,
+        which removed the queue and rejects the keyword: forward it only
+        when it is set. Raising is fine — the channel surfaces the failure
+        and does not treat the transport as connected.
         """
         ...
 
@@ -199,7 +201,7 @@ class StdioACPTransport(ACPTransport):
             *self._command[1:],
             env=_resolve_spawn_env(self._inherit_env, self._env, os.environ),
             cwd=self._cwd,
-            queue=queue,
+            **({} if queue is None else {"queue": queue}),
         )
         # Nothing of ours exists to undo if entering fails: the SDK's own
         # context manager unwinds the half-started process, so record the
