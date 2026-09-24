@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `EventType.INSTRUCTION` (RFC §10.1.1): the application directs an agent
+  without putting words in a participant's mouth. Sent through
+  `process_inbound` (or `send_event`) with `addressed_to`, it runs the same
+  hooks and keeps the room's order, but is never stored — blocked or not — and
+  consumes no index; it reaches only the agents it addresses and never a
+  transport; the agent takes it as its input for one turn, marked as the
+  application's, never ingested into memory nor rebuilt into a later turn's
+  history; and every reply it produces carries `metadata["instruction"]`. An
+  unaddressed instruction is refused (`instruction_unaddressed`), as is one
+  with an idempotency key (`instruction_not_idempotent`); `send_event`, whose
+  contract is the committed event, raises `ValueError` for both. Example:
+  `examples/instruction_event.py`.
+
 - Vui Nano TTS provider (`roomkit[vui]`, `VuiTTSProvider`). Vui generates each
   reply inside the conversation: it declares `TTSContextLevel.AUDIO` and keeps
   its KV cache in step with the voice session's context, writing each user
@@ -100,6 +113,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `user` injection, GPT-Live voiced the cue ("Handoff complete. You are now
   the…") as its own words instead of following it. The two GPT-Live examples
   greet the same way now.
+- `greet_on_handoff` outside realtime sends its cue as an `INSTRUCTION`
+  addressed to the new agent. It used to commit "Handoff complete… introduce
+  yourself" as an inbound message on the voice channel: the room stored the
+  application's direction as the caller's words and every agent was asked.
 - A configured greeting reaches a realtime session as the agent's line, not
   as the user's words. `inject_text(role="assistant")` is specified (RFC
   §12.4): OpenAI Realtime, xAI, Gemini Live and ElevenLabs used to turn it

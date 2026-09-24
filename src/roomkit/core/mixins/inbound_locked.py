@@ -30,6 +30,7 @@ from roomkit.models.enums import (
     EventType,
     HookTrigger,
     ParticipantRole,
+    Visibility,
 )
 from roomkit.models.event import DeleteContent, EditContent, RoomEvent
 from roomkit.models.hook import InjectedEvent
@@ -387,6 +388,19 @@ class InboundLockedMixin(HelpersMixin):
         # lock (step 12). The pre-lock context comes along: its history is the
         # expensive half of a context, and it is carried whenever the room's
         # counter proves nothing committed since it was read.
+        # RFC §10.1.1 — an instruction is refused before anything is written
+        # when it could only land as something else: unaddressed, it would
+        # make every agent in the room speak; with an idempotency key, it
+        # asks for a check that runs on the stored event it will never be.
+        if event.type == EventType.INSTRUCTION:
+            if not event.addressed_to:
+                return InboundResult(blocked=True, reason="instruction_unaddressed")
+            if event.idempotency_key:
+                return InboundResult(blocked=True, reason="instruction_not_idempotent")
+            # Intelligence channels only, whatever the caller asked: no
+            # transport delivers it, no voice channel speaks it.
+            event = event.model_copy(update={"visibility": Visibility.INTELLIGENCE})
+
         context = await self._build_context(room_id, carrying=context)
 
         # RFC §5.1 / §10.1 step 6 — a room whose status refuses new events
@@ -612,14 +626,20 @@ class InboundLockedMixin(HelpersMixin):
                     fire_after_broadcast=False,
                 )
             # Refresh context locally by appending the committed event, so
-            # the delivery set (and the AI's on_event) sees the trigger.
-            broadcast_ctx = context.model_copy(
-                update={
-                    "recent_events": [
-                        *context.recent_events[-(_RECENT_EVENTS_LIMIT - 1) :],
-                        committed,
-                    ]
-                }
+            # the delivery set (and the AI's on_event) sees the trigger. An
+            # instruction is not part of the room's history (RFC §10.1.1):
+            # the agent it directs receives it as the event, not as a turn.
+            broadcast_ctx = (
+                context
+                if committed.type == EventType.INSTRUCTION
+                else context.model_copy(
+                    update={
+                        "recent_events": [
+                            *context.recent_events[-(_RECENT_EVENTS_LIMIT - 1) :],
+                            committed,
+                        ]
+                    }
+                )
             )
             plan = router.plan(committed, source_binding, broadcast_ctx)
             reachable = {
@@ -674,7 +694,10 @@ class InboundLockedMixin(HelpersMixin):
                 "blocked_by": blocked_by or reason,
             }
         )
-        blocked_event = await self._commit_indexed(room_id, blocked_event)
+        # An instruction is never stored, blocked or not (RFC §10.1.1): the
+        # timeline holds what was said in the room, and nobody said this.
+        if event.type != EventType.INSTRUCTION:
+            blocked_event = await self._commit_indexed(room_id, blocked_event)
         await self._emit_framework_event(
             "event_blocked",
             room_id=room_id,

@@ -793,6 +793,15 @@ class RoomKit(
         from roomkit.telemetry.base import SpanKind
         from roomkit.telemetry.context import get_current_span, reset_span, set_current_span
 
+        # An instruction the pipeline would refuse (RFC §10.1.1) is refused
+        # here, loudly: this API's contract is the committed event, and an
+        # instruction that was never going to be delivered has none to return.
+        if event_type == EventType.INSTRUCTION:
+            if not addressed_to:
+                raise ValueError("An INSTRUCTION must name the agents it directs (addressed_to)")
+            if idempotency_key is not None:
+                raise ValueError("An INSTRUCTION is never stored and takes no idempotency_key")
+
         await self._ensure_status_bus_subscribed()
         await self.get_room(room_id, organization_id=organization_id)
         binding = await self._get_binding(room_id, channel_id)

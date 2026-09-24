@@ -60,6 +60,9 @@ class ChannelMediaType(StrEnum):
 class EventType(StrEnum):
     MESSAGE = "message"
     SYSTEM = "system"
+    # The application directs an agent (RFC §10.1.1): delivered to the
+    # intelligence channels it addresses, never stored.
+    INSTRUCTION = "instruction"
     TYPING = "typing"
     READ_RECEIPT = "read_receipt"
     DELIVERY_RECEIPT = "delivery_receipt"

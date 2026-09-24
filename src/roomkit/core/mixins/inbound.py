@@ -14,6 +14,7 @@ from roomkit.core.mixins.inbound_identity import _IdentityBlockedError
 from roomkit.models.delivery import DeliveryHandle, InboundMessage, InboundResult
 from roomkit.models.enums import (
     ChannelType,
+    EventType,
     HookTrigger,
     Visibility,
 )
@@ -334,6 +335,12 @@ class InboundMixin(HelpersMixin):
 
         # Let channel process inbound
         event = await channel.handle_inbound(message, context)
+
+        # An instruction is the caller's decision, not the wire's (RFC
+        # §10.1.1): a channel parses content and need not know the type, so
+        # the pipeline applies it, as it does the address below.
+        if message.event_type == EventType.INSTRUCTION and event.type != EventType.INSTRUCTION:
+            event = event.model_copy(update={"type": EventType.INSTRUCTION})
 
         # Caller-requested visibility (e.g. ``"transport"`` for a proactive
         # notification that must not wake the room's intelligence channel).

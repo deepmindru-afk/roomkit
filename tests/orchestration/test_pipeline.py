@@ -12,7 +12,13 @@ from roomkit.channels.agent import Agent
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel, _current_voice_session
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.context import RoomContext
-from roomkit.models.enums import ChannelCategory, ChannelType, HookExecution, HookTrigger
+from roomkit.models.enums import (
+    ChannelCategory,
+    ChannelType,
+    EventType,
+    HookExecution,
+    HookTrigger,
+)
 from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.models.hook import HookResult
 from roomkit.models.room import Room
@@ -595,8 +601,8 @@ class TestGreetOnHandoff:
         result = await before_tts_fn("Follow-up", ctx)
         assert result.action == "allow"
 
-    async def test_greet_triggers_process_inbound(self):
-        """ON_HANDOFF should trigger kit.process_inbound with voice_channel_id."""
+    async def test_greet_triggers_an_instruction_to_the_new_agent(self):
+        """ON_HANDOFF directs the new agent: an instruction, never the caller's words."""
         pipeline = ConversationPipeline(
             stages=[
                 PipelineStage(phase="a", agent_id="agent-a", next="b"),
@@ -628,6 +634,8 @@ class TestGreetOnHandoff:
         msg = call_args[0][0]
         assert msg.channel_id == "voice"
         assert msg.sender_id == "system"
+        assert msg.event_type == EventType.INSTRUCTION
+        assert msg.addressed_to == ["agent-b"]
         assert call_args[1]["room_id"] == "room-1"
 
     def test_greet_on_handoff_false_no_extra_hooks(self):

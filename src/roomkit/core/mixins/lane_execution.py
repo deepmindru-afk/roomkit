@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.core.mixins.helpers import _RECENT_EVENTS_LIMIT, HelpersMixin, _refuses_writes
 from roomkit.models.delivery import DeliveryError, DeliveryResult
-from roomkit.models.enums import ChannelCategory, EventStatus, HookTrigger
+from roomkit.models.enums import ChannelCategory, EventStatus, EventType, HookTrigger
 from roomkit.models.event import EventSource, RoomEvent
 from roomkit.telemetry.base import SpanKind
 from roomkit.telemetry.context import get_current_span, restored_span
@@ -159,7 +159,10 @@ class LaneExecutionMixin(HelpersMixin):
         Runs under the room lock (planning reads binding state consistent
         with the committed timeline, RFC §10.1 step 12).
         """
-        if (
+        # An instruction takes the same index-less path whatever the policy:
+        # it is delivered to the agent it directs and never stored (RFC
+        # §10.1.1).
+        if event.type == EventType.INSTRUCTION or (
             policy_aware
             and self._persistence_policy is not None
             and not self._persistence_policy.should_persist(event.type)

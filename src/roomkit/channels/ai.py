@@ -570,8 +570,10 @@ class AIChannel(
 
         # Ingest event into memory provider (enables stateful providers
         # like vector stores to index content as it arrives).
+        # An instruction is the application's, not the conversation's (RFC
+        # §10.1.1): a memory provider never learns it as something said.
         _ingest_room_id = context.room.id if context.room else event.room_id
-        if _ingest_room_id:
+        if _ingest_room_id and event.type != EventType.INSTRUCTION:
             try:
                 await self._memory.ingest(_ingest_room_id, event, channel_id=self.channel_id)
             except Exception:

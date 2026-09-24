@@ -69,7 +69,7 @@ class TestEventType:
         assert EventType.MESSAGE == "message"
 
     def test_count(self) -> None:
-        assert len(EventType) == 27
+        assert len(EventType) == 28
 
     def test_invalid_raises(self) -> None:
         with pytest.raises(ValueError):

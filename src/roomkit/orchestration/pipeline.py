@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
-from roomkit.models.enums import HookExecution, HookTrigger
+from roomkit.models.enums import EventType, HookExecution, HookTrigger
 from roomkit.orchestration.handoff import HandoffHandler, build_handoff_tool, setup_handoff
 from roomkit.orchestration.router import ConversationRouter, RoutingConditions, RoutingRule
 
@@ -145,8 +145,9 @@ class ConversationPipeline:
         registered:
 
         - **ON_HANDOFF** (async): blocks the old agent's farewell via
-          a ``BEFORE_TTS`` flag, then sends a synthetic inbound message
-          on *voice_channel_id* to prompt the new agent to greet.
+          a ``BEFORE_TTS`` flag, then sends an ``INSTRUCTION`` addressed
+          to the new agent on *voice_channel_id* to prompt it to greet —
+          never stored as the caller's words (RFC §10.1.1).
         - **BEFORE_TTS** (sync): blocks TTS while a handoff is pending.
 
         Returns ``(router, handler)`` for further customisation.
@@ -557,11 +558,16 @@ class ConversationPipeline:
 
                 try:
                     await asyncio.wait_for(
+                        # The cue directs the new agent: an instruction, so
+                        # the room never stores it as the caller's words and
+                        # only that agent is asked (RFC §10.1.1).
                         kit.process_inbound(
                             InboundMessage(
                                 channel_id=voice_channel_id,
                                 sender_id="system",
+                                event_type=EventType.INSTRUCTION,
                                 content=TextContent(body=prompt),
+                                addressed_to=[to_agent] if to_agent else None,
                             ),
                             room_id=event.room_id,
                         ),

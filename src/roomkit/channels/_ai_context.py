@@ -18,7 +18,7 @@ from roomkit.channels._tool_search import search_tool_defs, should_activate_tool
 from roomkit.channels._tool_search_constants import TOOL_SEARCH_PREAMBLE
 from roomkit.core.visibility import visible_events
 from roomkit.models.channel import ChannelCapabilities
-from roomkit.models.enums import ChannelCategory
+from roomkit.models.enums import ChannelCategory, EventType
 from roomkit.models.event import CompositeContent, MediaContent, TextContent
 from roomkit.providers.ai.base import (
     AIContext,
@@ -45,6 +45,12 @@ if TYPE_CHECKING:
     from roomkit.tools.human_input import HumanInputToolHandler
 
 logger = logging.getLogger("roomkit.channels.ai")
+
+# Prefix of an instruction's text in the model's input (RFC §10.1.1).
+_INSTRUCTION_MARKER = (
+    "[Instruction from the application: nobody in this conversation said it. "
+    "Act on it now, in your own words, without quoting it.]"
+)
 
 # Injected once per turn when the history window holds several speakers: the
 # model must read the "Name:" prefixes as transcript metadata, and not start
@@ -434,6 +440,16 @@ class AIContextMixin:
 
         current_content = self._extract_content(event)
         current_speaker = _event_speaker(event, context)
+        if event.type == EventType.INSTRUCTION:
+            # The application's direction for this one turn (RFC §10.1.1). It
+            # is the turn's input — a system-role message after the history is
+            # refused or silently re-roled by several model APIs — marked so the
+            # model never reads it as a participant's words, and recorded on the
+            # turn so every reply it produces says why the agent spoke.
+            instruction = event.content.body if isinstance(event.content, TextContent) else ""
+            current_content = f"{_INSTRUCTION_MARKER}\n{instruction}" if instruction else None
+            current_speaker = None
+            loop_ctx.response_metadata["instruction"] = instruction
 
         speakers = {speaker for _, _, speaker in past_turns if speaker}
         if current_content and current_speaker:
