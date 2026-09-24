@@ -61,6 +61,9 @@ Environment variables:
     --- Debugging ---
     VOICE_DEBUG         1 to log turn-taking decisions (speech start/end,
                         suppressed segments, barge-in evaluation, AI turns)
+    DEBUG_AUDIO_DIR     Directory to record the mic audio as WAV: the raw input,
+                        after echo cancellation, and each speech segment as the
+                        STT receives it (one file per segment)
 
     --- Turn detection ---
     SMART_TURN_THRESHOLD
@@ -132,7 +135,7 @@ from roomkit.providers.ollama import OllamaAIProvider, OllamaConfig
 from roomkit.telemetry.redaction import set_content_logging
 from roomkit.tools import MCPToolProvider
 from roomkit.voice.backends.local import LocalAudioBackend
-from roomkit.voice.pipeline import AudioPipelineConfig
+from roomkit.voice.pipeline import AudioPipelineConfig, PipelineDebugTaps
 from roomkit.voice.pipeline.turn import SmartTurnConfig, SmartTurnDetector
 from roomkit.voice.pipeline.vad.sherpa_onnx import SherpaOnnxVADConfig, SherpaOnnxVADProvider
 from roomkit.voice.stt.sherpa_onnx import SherpaOnnxSTTConfig, SherpaOnnxSTTProvider
@@ -263,6 +266,15 @@ def build_turn_detector() -> SmartTurnDetector | None:
     return detector
 
 
+def build_debug_taps() -> PipelineDebugTaps | None:
+    """Record what the mic heard and what the STT received, to replay it offline."""
+    out = os.environ.get("DEBUG_AUDIO_DIR")
+    if not out:
+        return None
+    logger.info("Recording the mic audio to %s", out)
+    return PipelineDebugTaps(output_dir=out, stages=["raw", "post_aec", "post_vad_speech"])
+
+
 def build_aec() -> object | None:
     mode = os.environ.get("AEC", "webrtc").lower()
     if mode in ("1", "webrtc"):
@@ -377,6 +389,7 @@ async def run(stack: AsyncExitStack) -> None:
             aec=aec,
             turn_detector=turn_detector,
             turn_incomplete_wait_ms=float(os.environ.get("TURN_WAIT_MS", "1500")),
+            debug_taps=build_debug_taps(),
         ),
         # The LLM adds emoji despite the prompt; spoken, they sound wrong.
         tts_filter=StripEmoji(),
