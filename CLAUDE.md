@@ -263,6 +263,7 @@ there.
 - Break backward compatibility of public API
 - Commit without running tests
 - Add secrets or credentials to code
+- Name a downstream application or its tickets in a commit message (`Luge`, `LUG-…`) — the repository is public; reference `RMK-…` ids. The `no-downstream-names` commit-msg hook and CI enforce it
 
 ## Reference
 
