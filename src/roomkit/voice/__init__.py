@@ -469,6 +469,20 @@ def get_vui_voice() -> type:
     return VuiVoice
 
 
+def get_pocket_tts_provider() -> type:
+    """Get PocketTTSProvider class (requires pocket-tts)."""
+    from roomkit.voice.tts.pocket import PocketTTSProvider
+
+    return PocketTTSProvider
+
+
+def get_pocket_tts_config() -> type:
+    """Get PocketTTSConfig class."""
+    from roomkit.voice.tts.pocket import PocketTTSConfig
+
+    return PocketTTSConfig
+
+
 def get_grok_tts_provider() -> type:
     """Get GrokTTSProvider class (requires httpx, websockets)."""
     from roomkit.voice.tts.grok import GrokTTSProvider

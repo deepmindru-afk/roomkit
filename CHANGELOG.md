@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `PocketTTSProvider` (`roomkit[pocket-tts]`): Kyutai's Pocket TTS, a
+  100M-parameter model run in-process on the CPU or a CUDA GPU
+  (`PocketTTSConfig(device="cuda")`). It streams 24 kHz speech in 80 ms chunks
+  and speaks English, French, German, Portuguese, Italian and Spanish, with
+  pre-made or cloned voices. A barge-in stops the generation thread before the
+  next reply starts. `examples/voice_local_pocket_fr.py` runs a local French
+  voice assistant: Kroko French STT, Ollama, Pocket TTS.
+
 ### Fixed
 
 - `WebRTCAECProvider`'s `AEC stats` line covers one playback at a time
