@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The `acp` extra now requires `agent-client-protocol<0.12.1`. Release 0.12.1
+  removed `acp.task.InMemoryMessageQueue`, which `ACPChannel` opens its
+  connection with, so every ACP session failed at connect under it while the
+  previous `<0.13` bound still allowed an install to resolve it. The bound
+  widens again once the channel supports the new transport.
+
 ## [0.89.0] — 2026-09-24
 
 ### Added

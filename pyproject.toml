@@ -119,7 +119,7 @@ redis = ["redis>=5.0.1"]
 # install fails at connect time, not at import. Porting to v2's `Client` is its
 # own piece of work; the SDK's own advice for anyone not ready is this cap.
 mcp = ["mcp>=1.23.0,<2"]
-acp = ["agent-client-protocol>=0.11.0,<0.13"]
+acp = ["agent-client-protocol>=0.11.0,<0.12.1"]
 console = ["rich>=13.0", "prompt-toolkit>=3.0.36"]
 sources = [
     "roomkit[websocket]",
@@ -372,5 +372,5 @@ precision = 0
 
 [dependency-groups]
 dev = [
-    "setuptools<84",
+    "setuptools<85",
 ]
