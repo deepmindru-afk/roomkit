@@ -527,6 +527,8 @@ class VoiceChannel(
 
     def _on_pipeline_speech_end(self, session: VoiceSession, audio: bytes) -> None:
         """Handle speech end from pipeline — fire hooks and transcribe."""
+        # Before the segment is judged, so speech seen then is new speech.
+        self._note_turn_speech(session.id, speaking=False)
         # If this speech segment was suppressed (echo during TTS), discard it —
         # unless the strategy is DISABLED, which queues it for after playback
         # (RFC §12.6) rather than throwing it away.

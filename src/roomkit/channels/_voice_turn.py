@@ -137,7 +137,12 @@ class VoiceTurnMixin:
             decision.reason,
         )
 
-        if decision.is_complete:
+        if decision.is_complete and self._user_speaking_again(session.id):
+            # The user resumed while the turn was judged: it goes on, and the new
+            # speech joins it (RFC §12). The wait still routes it after silence.
+            logger.debug("Turn judged complete, but the user is speaking again: holding it")
+            self._arm_turn_wait(session, room_id, context, None)
+        elif decision.is_complete:
             await self._complete_turn(session, room_id, context, decision.confidence)
         else:
             # Fire ON_TURN_INCOMPLETE hook
@@ -241,6 +246,12 @@ class VoiceTurnMixin:
             await self._complete_turn(session, room_id, context, confidence=0.0)
         except Exception:
             logger.exception("Error routing the turn after its wait")
+
+    def _user_speaking_again(self, session_id: str) -> bool:
+        """Whether the VAD hears speech that started after the segment being judged."""
+        with self._state_lock:
+            speaking, _ = self._turn_speech_state.get(session_id, (False, 0.0))
+        return speaking
 
     def _note_turn_speech(self, session_id: str, speaking: bool) -> None:
         """Record a VAD speech onset or end for the turn wait. Safe from the audio thread."""

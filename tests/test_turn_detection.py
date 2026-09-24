@@ -438,3 +438,42 @@ class TestIncompleteTurnWait:
         await channel.close()
         await asyncio.sleep(0.2)
         assert _routed_texts(fw) == []
+
+    async def test_a_turn_judged_complete_while_the_user_speaks_again_is_held(self):
+        # Smart Turn said 0.502 "complete", but the user had resumed 130 ms after
+        # the VAD's end of speech: the two fragments are one question.
+        channel, backend, session, fw = _wired_channel(
+            _SlowTurnDetector(
+                decisions=[
+                    TurnDecision(is_complete=True, confidence=0.5),
+                    TurnDecision(is_complete=True, confidence=0.9),
+                ]
+            ),
+            [
+                VADEvent(type=VADEventType.SPEECH_END, audio_bytes=b"audio1"),
+                VADEvent(type=VADEventType.SPEECH_START),
+                VADEvent(type=VADEventType.SPEECH_END, audio_bytes=b"audio2"),
+            ],
+            ["J'aimerais bien voir le board", "et les cartes aussi"],
+            turn_incomplete_wait_ms=150,
+        )
+        await backend.simulate_audio(session, AudioFrame(data=b"\x00\x00"))
+        await asyncio.sleep(0.02)  # the detector is still deciding
+        await backend.simulate_audio(session, AudioFrame(data=b"\x01\x00"))  # speech resumes
+        await asyncio.sleep(0.3)
+        assert _routed_texts(fw) == []
+
+        await backend.simulate_audio(session, AudioFrame(data=b"\x02\x00"))  # speech ends
+        await asyncio.sleep(0.3)
+        assert _routed_texts(fw) == ["J'aimerais bien voir le board et les cartes aussi"]
+
+    async def test_a_turn_judged_complete_in_silence_is_routed_at_once(self):
+        channel, backend, session, fw = _wired_channel(
+            MockTurnDetector(decisions=[TurnDecision(is_complete=True, confidence=0.9)]),
+            [VADEvent(type=VADEventType.SPEECH_END, audio_bytes=b"audio1")],
+            ["Combien de boards je vois ?"],
+            turn_incomplete_wait_ms=5000,
+        )
+        await backend.simulate_audio(session, AudioFrame(data=b"\x00\x00"))
+        await asyncio.sleep(0.05)
+        assert _routed_texts(fw) == ["Combien de boards je vois ?"]

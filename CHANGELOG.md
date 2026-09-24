@@ -67,7 +67,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   channel now waits `suggested_wait_ms`, or the new
   `AudioPipelineConfig.turn_incomplete_wait_ms` (1.5 s) when the detector gives
   none. The wait counts silence: speech keeps the turn open and joins it, and
-  once the user stays silent the accumulated turn is routed (`long_pause`).
+  once the user stays silent the accumulated turn is routed (`long_pause`). A
+  turn judged complete is held too when the user is already speaking again by
+  the time the detector decides, so a sentence resumed after a short pause is
+  answered once, whole.
   Text streamed to TTS is also cut at line breaks, so a list no longer reaches
   the synthesiser as one block. `examples/voice_local_pocket_fr.py` turns on
   Smart Turn v3 when its model is downloaded, and loads it at startup.
