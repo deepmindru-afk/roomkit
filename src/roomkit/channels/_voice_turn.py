@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import time
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.models.enums import HookTrigger
@@ -39,9 +40,11 @@ class TurnHost(Protocol):
         _session_bindings: Map of session ID to (room_id, binding) pairs.
         _pending_turns: Accumulated turn entries per session, awaiting turn completion.
         _pending_audio: Accumulated raw audio per session for audio-native turn detectors.
-        _turn_wait_generation: Per session, bumped by every new speech onset, so a
-            wait for an incomplete turn knows on waking whether it still stands.
-        _turn_wait_tasks: The pending wait per session, held so it is not collected.
+        _turn_speech_state: Per session, whether the user is speaking and the
+            ``time.monotonic()`` of the last speech onset or end, written from VAD
+            events, so a wait for an incomplete turn measures silence, not time.
+        _turn_wait_tasks: The pending wait per session, cancelled when replaced.
+        _scheduled_tasks: Background tasks that ``close()`` cancels.
         _state_lock: Guards state touched from the audio thread.
     """
 
@@ -52,8 +55,9 @@ class TurnHost(Protocol):
     _session_bindings: dict[str, tuple[str, ChannelBinding]]
     _pending_turns: dict[str, list[TurnEntry]]
     _pending_audio: dict[str, bytearray]
-    _turn_wait_generation: dict[str, int]
+    _turn_speech_state: dict[str, tuple[bool, float]]
     _turn_wait_tasks: dict[str, asyncio.Task[None]]
+    _scheduled_tasks: set[asyncio.Task[Any]]
     _state_lock: threading.Lock
 
 
@@ -71,11 +75,13 @@ class VoiceTurnMixin:
     _session_bindings: dict[str, tuple[str, ChannelBinding]]
     _pending_turns: dict[str, list[TurnEntry]]
     _pending_audio: dict[str, bytearray]
-    _turn_wait_generation: dict[str, int]
+    _turn_speech_state: dict[str, tuple[bool, float]]
     _turn_wait_tasks: dict[str, asyncio.Task[None]]
+    _scheduled_tasks: set[asyncio.Task[Any]]
     _state_lock: threading.Lock
 
     # -- cross-mixin methods (annotated as Any to avoid MRO shadowing) --
+    _task_done: Any  # VoiceChannel._task_done
     _pipeline_audio_rate: Any  # VoicePipelineMixin
 
     async def _evaluate_turn(
@@ -182,42 +188,65 @@ class VoiceTurnMixin:
         context: RoomContext,
         suggested_wait_ms: float | None,
     ) -> None:
-        """Wait for more speech on an incomplete turn, then route it (RFC §12)."""
+        """Wait for more speech on an incomplete turn, then route it (RFC §12).
+
+        A later evaluation of the same turn replaces the wait: it either completes
+        the turn or arms a new one.
+        """
         default_ms = self._pipeline_config.turn_incomplete_wait_ms if self._pipeline_config else 0
         wait_ms = suggested_wait_ms if suggested_wait_ms is not None else default_ms
-        with self._state_lock:
-            generation = self._turn_wait_generation.get(session.id, 0) + 1
-            self._turn_wait_generation[session.id] = generation
-        self._turn_wait_tasks[session.id] = asyncio.create_task(
-            self._route_turn_after_wait(session, room_id, context, generation, wait_ms),
+        previous = self._turn_wait_tasks.pop(session.id, None)
+        if previous is not None:
+            previous.cancel()
+        task = asyncio.get_running_loop().create_task(
+            self._route_turn_after_wait(session, room_id, context, wait_ms),
             name=f"turn_wait:{session.id}",
         )
+        task.add_done_callback(self._task_done)
+        self._scheduled_tasks.add(task)
+        self._turn_wait_tasks[session.id] = task
 
     async def _route_turn_after_wait(
-        self,
-        session: VoiceSession,
-        room_id: str,
-        context: RoomContext,
-        generation: int,
-        wait_ms: float,
+        self, session: VoiceSession, room_id: str, context: RoomContext, wait_ms: float
     ) -> None:
-        await asyncio.sleep(max(wait_ms, 0) / 1000)
-        with self._state_lock:
-            if self._turn_wait_generation.get(session.id) != generation:
-                return  # speech started meanwhile: the turn goes on
-            bound = session.id in self._session_bindings
-        if not bound or session.id not in self._pending_turns:
+        wait_s = max(wait_ms, 0) / 1000
+        silence_since = time.monotonic()
+        while True:
+            with self._state_lock:
+                speaking, changed_at = self._turn_speech_state.get(session.id, (False, 0.0))
+            if speaking:
+                # The user is talking: the turn goes on, and silence restarts when they stop.
+                await asyncio.sleep(wait_s)
+                continue
+            silence_since = max(silence_since, changed_at)
+            remaining = silence_since + wait_s - time.monotonic()
+            if remaining <= 0:
+                break
+            await asyncio.sleep(remaining)
+        if self._turn_wait_tasks.get(session.id) is asyncio.current_task():
+            self._turn_wait_tasks.pop(session.id, None)
+        if session.id not in self._session_bindings or session.id not in self._pending_turns:
             return
         logger.info(
             "Turn judged incomplete, then %.0f ms of silence: routing it (long_pause)", wait_ms
         )
-        await self._complete_turn(session, room_id, context, confidence=0.0)
+        try:
+            await self._complete_turn(session, room_id, context, confidence=0.0)
+        except Exception:
+            logger.exception("Error routing the turn after its wait")
+
+    def _note_turn_speech(self, session_id: str, speaking: bool) -> None:
+        """Record a VAD speech onset or end for the turn wait. Safe from the audio thread."""
+        with self._state_lock:
+            self._turn_speech_state[session_id] = (speaking, time.monotonic())
 
     def _cancel_turn_wait(self, session_id: str) -> None:
-        """Speech started: a pending wait no longer stands. Safe from the audio thread."""
+        """Drop the session's wait and speech state (session unbound)."""
+        task = self._turn_wait_tasks.pop(session_id, None)
+        if task is not None:
+            task.cancel()
         with self._state_lock:
-            if session_id in self._turn_wait_generation:
-                self._turn_wait_generation[session_id] += 1
+            self._turn_speech_state.pop(session_id, None)
 
     async def _route_text(self, session: VoiceSession, text: str, room_id: str) -> None:
         """Route transcribed text through the inbound pipeline."""

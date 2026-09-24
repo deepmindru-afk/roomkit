@@ -296,7 +296,7 @@ class VoiceChannel(
         self._pending_turns: dict[str, list[TurnEntry]] = {}
         # Pending audio for audio-native turn detectors (session_id -> accumulated PCM)
         self._pending_audio: dict[str, bytearray] = {}
-        self._turn_wait_generation: dict[str, int] = {}
+        self._turn_speech_state: dict[str, tuple[bool, float]] = {}
         self._turn_wait_tasks: dict[str, asyncio.Task[None]] = {}
         # Active streaming STT sessions (session_id -> state)
         self._stt_streams: dict[str, _STTStreamState] = {}
@@ -599,7 +599,7 @@ class VoiceChannel(
 
         if vad_event.type == VADEventType.SPEECH_START:
             # More speech: a turn waiting to be judged over now goes on (RFC §12).
-            self._cancel_turn_wait(session.id)
+            self._note_turn_speech(session.id, speaking=True)
             # Check for barge-in using InterruptionHandler
             suppress_speech = False
             with self._state_lock:
@@ -673,7 +673,7 @@ class VoiceChannel(
             # ON_SPEECH_END hooks are fired by _process_speech_end() to
             # guarantee ordering (ON_SPEECH_END before ON_TRANSCRIPTION).
             # Do NOT fire them here to avoid duplicate invocations.
-            pass
+            self._note_turn_speech(session.id, speaking=False)
         elif vad_event.type == VADEventType.SILENCE:
             self._schedule(
                 self._fire_vad_silence_hook(session, int(vad_event.duration_ms or 0), room_id),
@@ -1186,9 +1186,6 @@ class VoiceChannel(
         self._pending_turns.pop(session.id, None)
         self._pending_audio.pop(session.id, None)
         self._cancel_turn_wait(session.id)
-        wait_task = self._turn_wait_tasks.pop(session.id, None)
-        if wait_task is not None:
-            wait_task.cancel()
         self._last_tts_ended_at.pop(session.id, None)
         # Clear the session's STT language and what the lock knew about it
         with self._state_lock:

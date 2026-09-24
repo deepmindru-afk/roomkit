@@ -247,8 +247,13 @@ def build_turn_detector() -> SmartTurnDetector | None:
     if not Path(model).is_file():
         logger.info("No Smart Turn model at %s: turns end at every VAD pause", model)
         return None
+    try:
+        detector = SmartTurnDetector(SmartTurnConfig(model_path=model))
+    except ImportError as exc:
+        logger.warning("Smart Turn needs its extra (--extra smart-turn): %s", exc)
+        return None
     logger.info("Turn detection: Smart Turn v3 (%s)", Path(model).name)
-    return SmartTurnDetector(SmartTurnConfig(model_path=model))
+    return detector
 
 
 def build_aec() -> object | None:

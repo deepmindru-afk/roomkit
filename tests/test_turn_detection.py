@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 from roomkit.channels.voice import VoiceChannel
 from roomkit.models.enums import HookTrigger
@@ -18,6 +19,7 @@ class _MockSTT:
     """Minimal mock STT that returns preconfigured transcripts."""
 
     name = "mock_stt"
+    supports_streaming = False
 
     def __init__(self, transcripts: list[str]) -> None:
         self._transcripts = transcripts
@@ -302,6 +304,14 @@ def _routed_texts(fw) -> list[str]:
 _INCOMPLETE = TurnDecision(is_complete=False, confidence=0.3, reason="trailing")
 
 
+class _SlowTurnDetector(MockTurnDetector):
+    """A detector that takes as long to decide as Smart Turn on a CPU."""
+
+    def evaluate(self, context):
+        time.sleep(0.1)
+        return super().evaluate(context)
+
+
 class TestIncompleteTurnWait:
     """RFC §12: an incomplete turn is routed once its wait ends in silence (RMK-218)."""
 
@@ -371,5 +381,60 @@ class TestIncompleteTurnWait:
         await backend.simulate_audio(session, AudioFrame(data=b"\x00\x00"))
         await asyncio.sleep(0.05)
         channel.unbind_session(session)
+        await asyncio.sleep(0.2)
+        assert _routed_texts(fw) == []
+
+    async def test_a_segment_that_yields_no_text_does_not_hold_the_turn(self):
+        # A cough during the wait: speech starts and ends, the STT hears nothing.
+        channel, backend, session, fw = _wired_channel(
+            MockTurnDetector(decisions=[_INCOMPLETE]),
+            [
+                VADEvent(type=VADEventType.SPEECH_END, audio_bytes=b"audio1"),
+                VADEvent(type=VADEventType.SPEECH_START),
+                VADEvent(type=VADEventType.SPEECH_END, audio_bytes=b"cough"),
+            ],
+            ["Combien de boards je vois,", ""],
+            turn_incomplete_wait_ms=100,
+        )
+        await backend.simulate_audio(session, AudioFrame(data=b"\x00\x00"))
+        await asyncio.sleep(0.05)
+        await backend.simulate_audio(session, AudioFrame(data=b"\x01\x00"))
+        await backend.simulate_audio(session, AudioFrame(data=b"\x02\x00"))
+        await asyncio.sleep(0.3)
+        assert _routed_texts(fw) == ["Combien de boards je vois,"]
+
+    async def test_speech_that_starts_while_the_turn_is_judged_keeps_it_open(self):
+        channel, backend, session, fw = _wired_channel(
+            _SlowTurnDetector(
+                decisions=[_INCOMPLETE, TurnDecision(is_complete=True, confidence=0.9)]
+            ),
+            [
+                VADEvent(type=VADEventType.SPEECH_END, audio_bytes=b"audio1"),
+                VADEvent(type=VADEventType.SPEECH_START),
+                VADEvent(type=VADEventType.SPEECH_END, audio_bytes=b"audio2"),
+            ],
+            ["Combien de boards je vois,", "et lequel a le plus de cartes ?"],
+            turn_incomplete_wait_ms=150,
+        )
+        await backend.simulate_audio(session, AudioFrame(data=b"\x00\x00"))
+        await asyncio.sleep(0.02)  # the detector is still deciding
+        await backend.simulate_audio(session, AudioFrame(data=b"\x01\x00"))  # speech starts
+        await asyncio.sleep(0.4)  # well past the wait: the user is still talking
+        assert _routed_texts(fw) == []
+
+        await backend.simulate_audio(session, AudioFrame(data=b"\x02\x00"))  # speech ends
+        await asyncio.sleep(0.3)
+        assert _routed_texts(fw) == ["Combien de boards je vois, et lequel a le plus de cartes ?"]
+
+    async def test_closing_the_channel_during_the_wait_routes_nothing(self):
+        channel, backend, session, fw = _wired_channel(
+            MockTurnDetector(decisions=[_INCOMPLETE]),
+            [VADEvent(type=VADEventType.SPEECH_END, audio_bytes=b"audio1")],
+            ["Au revoir"],
+            turn_incomplete_wait_ms=100,
+        )
+        await backend.simulate_audio(session, AudioFrame(data=b"\x00\x00"))
+        await asyncio.sleep(0.05)
+        await channel.close()
         await asyncio.sleep(0.2)
         assert _routed_texts(fw) == []
