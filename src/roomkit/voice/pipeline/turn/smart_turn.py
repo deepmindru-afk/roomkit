@@ -57,6 +57,7 @@ See ``examples/voice_smart_turn.py`` for a full working example.
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass
 from typing import Any
 
@@ -130,6 +131,8 @@ class SmartTurnDetector(TurnDetector):
         self._session = None  # lazy-init ONNX InferenceSession
         self._feature_extractor: Any = None  # lazy-init WhisperFeatureExtractor
         self._consecutive_failures = 0
+        # evaluate() runs in worker threads: two turns can reach the lazy init at once.
+        self._init_lock = threading.Lock()
 
     @property
     def name(self) -> str:
@@ -139,11 +142,23 @@ class SmartTurnDetector(TurnDetector):
     # Lazy initialisation (defers transformers import to first use)
     # ------------------------------------------------------------------
 
+    def warmup(self) -> None:
+        """Load the ONNX model and ``transformers`` now, not on the first turn.
+
+        Importing ``transformers`` alone takes seconds, which the first turn
+        would otherwise wait for.
+        """
+        self._ensure_initialized()
+
     def _ensure_initialized(self) -> None:
         """Lazily create the ONNX session and Whisper feature extractor."""
         if self._session is not None:
             return
+        with self._init_lock:
+            if self._session is None:
+                self._initialize()
 
+    def _initialize(self) -> None:
         import onnxruntime as ort
 
         providers = ["CPUExecutionProvider"]
@@ -154,7 +169,7 @@ class SmartTurnDetector(TurnDetector):
         opts.inter_op_num_threads = self._config.num_threads
         opts.intra_op_num_threads = self._config.num_threads
 
-        self._session = ort.InferenceSession(
+        session = ort.InferenceSession(
             self._config.model_path,
             sess_options=opts,
             providers=providers,
@@ -163,6 +178,8 @@ class SmartTurnDetector(TurnDetector):
         from transformers import WhisperFeatureExtractor
 
         self._feature_extractor = WhisperFeatureExtractor(chunk_length=_CHUNK_SECONDS)
+        # Published last: a set session is what tells other threads init is done.
+        self._session = session
 
     # ------------------------------------------------------------------
     # Audio helpers

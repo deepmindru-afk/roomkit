@@ -66,11 +66,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   who paused on a sentence Smart Turn judged unfinished was never answered. The
   channel now waits `suggested_wait_ms`, or the new
   `AudioPipelineConfig.turn_incomplete_wait_ms` (1.5 s) when the detector gives
-  none; speech that starts cancels the wait and joins the turn, and silence
-  routes the accumulated turn (`long_pause`). Text streamed to TTS is also cut
-  at line breaks, so a list no longer reaches the synthesiser as one block.
-  `examples/voice_local_pocket_fr.py` turns on Smart Turn v3 when its model is
-  downloaded.
+  none. The wait counts silence: speech keeps the turn open and joins it, and
+  once the user stays silent the accumulated turn is routed (`long_pause`).
+  Text streamed to TTS is also cut at line breaks, so a list no longer reaches
+  the synthesiser as one block. `examples/voice_local_pocket_fr.py` turns on
+  Smart Turn v3 when its model is downloaded, and loads it at startup.
+
+- `SmartTurnDetector` no longer fails open on the second turn of a session
+  (RMK-218). Its first evaluation loads `transformers`, which takes seconds; a
+  second turn evaluated meanwhile saw the ONNX session set, the feature
+  extractor not yet, and raised "failed to initialize". The lazy load is now
+  locked and publishes the session last. `TurnDetector.warmup()` (a no-op by
+  default) lets an application load the model at startup instead of on the
+  first turn; `SmartTurnDetector` implements it.
 
 - An agent answers a follow-up question from the data its tools returned, not
   from a guess (RMK-217). The context rebuilt for each turn holds messages

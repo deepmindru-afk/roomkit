@@ -366,3 +366,66 @@ class TestAudioThreading:
 
         assert "s1" not in channel._pending_audio
         assert "s1" not in channel._pending_turns
+
+
+class TestConcurrentInitialization:
+    """evaluate() runs in worker threads: two turns may reach the lazy init at once."""
+
+    def _fake_backends(self, monkeypatch):
+        import sys
+        import time
+        import types
+
+        class _Input:
+            name = "input_features"
+
+        class _Session:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def get_inputs(self):
+                return [_Input()]
+
+            def run(self, _outputs, _feeds):
+                return [np.array([[4.0]], dtype=np.float32)]
+
+        class _Extractor:
+            def __init__(self, **kwargs):
+                time.sleep(0.2)  # importing and building it takes seconds for real
+
+            def __call__(self, samples, **kwargs):
+                return {"input_features": np.zeros((1, 80, 800), dtype=np.float32)}
+
+        monkeypatch.setattr(ort, "InferenceSession", _Session)
+        monkeypatch.setitem(
+            sys.modules, "transformers", types.SimpleNamespace(WhisperFeatureExtractor=_Extractor)
+        )
+
+    async def test_two_turns_during_the_first_load_both_get_a_real_decision(self, monkeypatch):
+        from roomkit.voice.pipeline.turn.smart_turn import SmartTurnConfig, SmartTurnDetector
+
+        self._fake_backends(monkeypatch)
+        det = SmartTurnDetector(SmartTurnConfig(model_path="/tmp/model.onnx"))
+        ctx = TurnContext(
+            conversation_history=[],
+            silence_duration_ms=0.0,
+            transcript="Combien de cartes",
+            is_final=True,
+            audio_bytes=b"\x01\x00" * 1600,
+            audio_sample_rate=16000,
+        )
+        first, second = await asyncio.gather(
+            asyncio.to_thread(det.evaluate, ctx), asyncio.to_thread(det.evaluate, ctx)
+        )
+        # Neither failed open (confidence 0.1): both ran the model.
+        assert first.confidence > 0.9
+        assert second.confidence > 0.9
+
+    def test_warmup_loads_the_model_before_the_first_turn(self, monkeypatch):
+        from roomkit.voice.pipeline.turn.smart_turn import SmartTurnConfig, SmartTurnDetector
+
+        self._fake_backends(monkeypatch)
+        det = SmartTurnDetector(SmartTurnConfig(model_path="/tmp/model.onnx"))
+        det.warmup()
+        assert det._session is not None
+        assert det._feature_extractor is not None

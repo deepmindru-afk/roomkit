@@ -359,12 +359,13 @@ async def run(stack: AsyncExitStack) -> None:
         system_prompt += TOOLS_PROMPT
 
     # --- Channels and room -------------------------------------------------------
+    turn_detector = build_turn_detector()
     voice = VoiceChannel(
         "voice",
         stt=stt,
         tts=tts,
         backend=backend,
-        pipeline=AudioPipelineConfig(vad=vad, aec=aec, turn_detector=build_turn_detector()),
+        pipeline=AudioPipelineConfig(vad=vad, aec=aec, turn_detector=turn_detector),
         # The LLM adds emoji despite the prompt; spoken, they sound wrong.
         tts_filter=StripEmoji(),
     )
@@ -405,8 +406,11 @@ async def run(stack: AsyncExitStack) -> None:
         enable_voice_debug(kit)
 
     # --- Load everything before the first word -----------------------------------
-    logger.info("Loading the LLM, Pocket TTS, STT and VAD models...")
-    await asyncio.gather(stt.warmup(), tts.warmup(), start_llm(ai_provider))
+    logger.info("Loading the LLM, Pocket TTS, STT, VAD and turn models...")
+    warmups = [stt.warmup(), tts.warmup(), start_llm(ai_provider)]
+    if turn_detector is not None:
+        warmups.append(asyncio.to_thread(turn_detector.warmup))
+    await asyncio.gather(*warmups)
     await kit.attach_channel("local-pocket-fr", "voice")  # opens the mic
     logger.info("Ready: speak French into the microphone. Ctrl+C to stop.")
 

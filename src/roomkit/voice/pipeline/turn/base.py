@@ -96,6 +96,9 @@ class TurnDetector(ABC):
         """
         ...
 
+    def warmup(self) -> None:  # noqa: B027
+        """Load models now so the first turn is not slowed. Override in subclasses."""
+
     def reset(self) -> None:  # noqa: B027
         """Reset internal state."""
 
