@@ -284,11 +284,15 @@ class TestCancel:
 
 
 class TestVuiPrivateApi:
-    def test_the_two_private_accesses_still_exist(self) -> None:
+    def test_the_private_accesses_still_exist(self) -> None:
         """Fails when vui-tts drops what the provider relies on (RMK-197)."""
         import inspect
 
         engine_mod = pytest.importorskip("vui.engine")
+        codec_mod = pytest.importorskip("vui.qwen_codec")
 
         assert hasattr(engine_mod.Engine, "_rewind_row")
         assert "_spk_token" in inspect.getsource(engine_mod.Row.__init__)
+        assert "_codec_ctx" in inspect.getsource(engine_mod.Row.__init__)
+        assert hasattr(codec_mod.CodecCtx, "prefill")
+        assert "_buf" in inspect.getsource(codec_mod.CodecCtx.__init__)

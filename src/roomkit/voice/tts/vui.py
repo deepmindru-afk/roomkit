@@ -10,10 +10,11 @@ Constraints of the model and of ``vui-tts``: English only, Python 3.12, a CUDA
 GPU for real-time streaming, and one active conversation per provider (a
 single KV cache). Install with ``pip install roomkit[vui]``.
 
-Two operations use private ``vui-tts`` attributes, the ones Vui's own server
-uses: cutting the cache back to the middle of a turn after a barge-in, and
-setting a preset voice's speaker token. The dependency is pinned
-(``vui-tts>=1.1.4,<1.2``) until Vui exposes them.
+Three operations use private ``vui-tts`` attributes: cutting the cache back to
+the middle of a turn after a barge-in, setting a preset voice's speaker token
+(both as Vui's own server does), and re-seeding the audio decoder at the start
+of each reply. The dependency is pinned (``vui-tts>=1.1.4,<1.2``) until Vui exposes
+them.
 """
 
 from __future__ import annotations
@@ -42,6 +43,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("roomkit.voice.tts.vui")
 
 SAMPLE_RATE = 24000
+_RESEED_FRAMES = 12  # ~1 s of decoder context at the start of a reply
 PRESET_VOICES = ("maeve", "abraham", "rhian", "harry")
 
 
@@ -296,6 +298,12 @@ class _VuiRow:
 
     def generate(self, text: str, cancel: threading.Event) -> Iterator[bytes]:
         torch = self._torch
+        # The audio decoder restarts cold every 10 s of decoded audio, counted
+        # from its last (re)seed. Left running across turns, that restart lands
+        # mid-reply one time in four (an audible jump). Re-seeding it at the
+        # turn change from the last second of audio keeps the reply's start
+        # continuous and pushes the next restart about 9 s into it (RMK-199).
+        _reseed_decoder(self._row, _RESEED_FRAMES)
         for frame in self._row.stream(text, self._gen, cancel, final_turn=True):
             # The yielded tensor is a reused graph buffer: convert it now.
             samples = frame.detach().float().reshape(-1).clamp(-1.0, 1.0)
@@ -324,7 +332,7 @@ class _Prompt:
     spk_token: Any = None
 
 
-# The two private vui-tts accesses (see the module docstring, and RMK-197).
+# The private vui-tts accesses (see the module docstring, and RMK-197).
 
 
 def _truncate_kv(engine: Any, row: Any, offset: int) -> None:
@@ -335,3 +343,21 @@ def _truncate_kv(engine: Any, row: Any, offset: int) -> None:
 def _set_speaker_token(row: Any, token: Any) -> None:
     """Condition *row*'s agent turns on a preset's projected speaker token."""
     row._spk_token = token
+
+
+def _reseed_decoder(row: Any, frames: int) -> None:
+    """Re-seed the codec's streaming decoder from the last *frames* of its buffer.
+
+    ``CodecCtx.prefill`` seeds from ``len(buffer) % 10 s``, which can leave the
+    next restart a few frames away; seeding from a short tail fixes it at
+    ``10 s - frames`` instead.
+    """
+    ctx = row._codec_ctx
+    buffer = ctx._buf
+    if buffer is None or buffer.shape[2] == 0:
+        return
+    ctx._buf = buffer[:, :, -frames:]
+    try:
+        ctx.prefill(n_codebooks=0, device="cuda")
+    finally:
+        ctx._buf = buffer

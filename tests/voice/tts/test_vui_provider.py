@@ -153,3 +153,42 @@ def test_lazy_getters() -> None:
     assert get_vui_tts_provider() is VuiTTSProvider
     assert get_vui_tts_config() is VuiTTSConfig
     assert get_vui_voice() is VuiVoice
+
+
+def test_each_reply_reseeds_the_audio_decoder_from_a_short_tail() -> None:
+    """RMK-199: before streaming, the decoder is seeded from the last second only."""
+    import types
+
+    order: list[object] = []
+
+    class _Ctx:
+        _buf: object = None
+
+        def prefill(self, n_codebooks: int = 0, device: str = "cuda") -> None:
+            order.append(("prefill", self._buf))
+
+    class _Buf:
+        shape = (1, 16, 300)
+
+        def __getitem__(self, key: object) -> str:
+            return f"tail{key[2].start}"
+
+    ctx = _Ctx()
+    ctx._buf = _Buf()
+
+    class _Row:
+        _codec_ctx = ctx
+
+        def stream(self, text, cfg, cancel, final_turn):  # noqa: ANN001
+            order.append("stream")
+            yield from ()
+
+    row = object.__new__(vui_module._VuiRow)
+    row._row = _Row()
+    row._gen = None
+    row._torch = types.SimpleNamespace()
+
+    list(row.generate("hi", threading.Event()))
+
+    assert order == [("prefill", "tail-12"), "stream"]
+    assert isinstance(ctx._buf, _Buf)  # the full buffer is back
