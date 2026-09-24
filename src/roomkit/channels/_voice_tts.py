@@ -15,6 +15,7 @@ from roomkit.models.enums import EventType, HookTrigger, Visibility
 from roomkit.telemetry.base import Attr, SpanKind, TelemetryProvider
 from roomkit.telemetry.noop import NoopTelemetryProvider
 from roomkit.telemetry.redaction import redact
+from roomkit.voice.base import VoiceCapability
 from roomkit.voice.utils import rms_db
 
 _NOOP = NoopTelemetryProvider()
@@ -294,29 +295,36 @@ class VoiceTTSMixin:
         """End a playback whose audio ``send_audio()`` has delivered.
 
         The room may still carry residual echo.  How it is kept out of the STT
-        depends on whether the pipeline cancels it:
+        depends on whether something cancels it:
 
-        - **Pipeline AEC**: the playback ends here, at once — speech from now
-          on is the user's, even a reply started the moment the agent stops.
-          The AEC stays active for ``_AEC_ECHO_TAIL_S`` to cancel the echo
-          tail, then is bypassed so user audio passes unchanged; its converged
-          filter is preserved for the next playback turn.
+        - **An AEC** — the pipeline's, or the backend's own (``NATIVE_AEC``,
+          e.g. ``LocalAudioBackend(aec=...)``): the playback ends here, at
+          once — speech from now on is the user's, even a reply started the
+          moment the agent stops.  The pipeline's AEC stays active for
+          ``_AEC_ECHO_TAIL_S`` to cancel the echo tail, then is bypassed so
+          user audio passes unchanged; its converged filter is preserved for
+          the next playback turn.  A backend's AEC is the backend's to manage.
         - **No AEC**: :meth:`_finish_playback` keeps ``_playing_sessions``
           alive for ``_PLAYBACK_DRAIN_S`` so the echo transcribed in that
           window is discarded — along with any speech, which cannot be told
           apart from it.
         """
-        if self._pipeline is None or not self._pipeline.runs_aec:
+        pipeline_aec = self._pipeline is not None and self._pipeline.runs_aec
+        backend_aec = (
+            self._backend is not None and VoiceCapability.NATIVE_AEC in self._backend.capabilities
+        )
+        if not pipeline_aec and not backend_aec:
             self._schedule(
                 self._finish_playback(session_id),
                 name=f"finish_playback:{session_id}",
             )
             return
         self._end_playback(session_id, drain_s=0.0)
-        self._schedule(
-            self._bypass_aec_after_echo_tail(session_id),
-            name=f"aec_echo_tail:{session_id}",
-        )
+        if pipeline_aec:
+            self._schedule(
+                self._bypass_aec_after_echo_tail(session_id),
+                name=f"aec_echo_tail:{session_id}",
+            )
         # The bot has finished — anything the DISABLED strategy queued while it
         # spoke gets its turn now (RFC §12.6).
         self._schedule(

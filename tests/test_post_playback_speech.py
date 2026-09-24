@@ -1,9 +1,9 @@
 """Speech that starts right after the agent stops speaking (RMK-211).
 
 Once ``send_audio()`` returns, a playback keeps an echo-decay window. Without
-echo cancellation the window discards speech as echo; with the pipeline's AEC
-the AEC cancels the echo tail, so a reply the user starts as soon as the agent
-is done is heard.
+echo cancellation the window discards speech as echo; with an AEC — the
+pipeline's, or the backend's own (``NATIVE_AEC``) — the echo is cancelled, so
+a reply the user starts as soon as the agent is done is heard.
 """
 
 from __future__ import annotations
@@ -25,9 +25,11 @@ from roomkit.voice.tts.mock import MockTTSProvider
 
 async def _reply_right_after_playback(
     aec: MockAECProvider | None,
+    *,
+    capabilities: VoiceCapability = VoiceCapability.INTERRUPTION,
 ) -> tuple[list[str], VoiceChannel, str, RoomKit]:
     """The agent says a line; the user answers the moment it is done."""
-    backend = MockVoiceBackend(capabilities=VoiceCapability.INTERRUPTION)
+    backend = MockVoiceBackend(capabilities=capabilities)
     vad = MockVADProvider(
         events=[
             VADEvent(type=VADEventType.SPEECH_START),
@@ -70,6 +72,16 @@ async def _reply_right_after_playback(
 class TestSpeechRightAfterPlayback:
     async def test_with_aec_the_reply_is_transcribed(self) -> None:
         heard, _, _, kit = await _reply_right_after_playback(MockAECProvider())
+
+        assert heard == ["Yes, that works"]
+        await kit.close()
+
+    async def test_with_the_backends_own_aec_the_reply_is_transcribed(self) -> None:
+        # LocalAudioBackend(aec=...) cancels echo at the transport and says so
+        # with NATIVE_AEC; the pipeline then runs no AEC of its own.
+        heard, _, _, kit = await _reply_right_after_playback(
+            None, capabilities=VoiceCapability.INTERRUPTION | VoiceCapability.NATIVE_AEC
+        )
 
         assert heard == ["Yes, that works"]
         await kit.close()

@@ -16,8 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   immediate answer was thrown away and had to be repeated. With the pipeline's
   AEC the playback now ends as soon as its audio is delivered, and the AEC
   keeps cancelling the room's echo tail for 0.5 s before it is bypassed. A
-  pipeline without AEC keeps the 2 s window. New: `AudioPipeline.runs_aec`
-  (RMK-211).
+  backend that cancels echo itself (`NATIVE_AEC`, as `LocalAudioBackend(aec=...)`
+  declares) ends the playback the same way — the pipeline then runs no AEC of
+  its own, and the first cut of this fix left such a backend in the 2 s window.
+  Without any AEC the window stays. New: `AudioPipeline.runs_aec` (RMK-211).
 
 - `SherpaOnnxSTTProvider` no longer cuts the last words of an utterance
   (RMK-210). In transducer mode, `transcribe()` and `transcribe_stream()`
