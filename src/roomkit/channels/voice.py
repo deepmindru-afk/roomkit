@@ -1638,9 +1638,14 @@ class VoiceChannel(
                 context,
                 skip_event_filter=True,
             )
+        except Exception:
+            logger.exception("Error firing ON_BARGE_IN for session %s", session.id)
+        # The playback is claimed: it is cut even when the hooks could not
+        # run, or nothing would ever interrupt it again.
+        try:
             await self.interrupt(session, reason="barge_in")
         except Exception:
-            logger.exception("Error handling barge-in for session %s", session.id)
+            logger.exception("Error interrupting playback for session %s", session.id)
 
     async def _store_interrupted_utterance(
         self, session: VoiceSession, playback: TTSPlaybackState, room_id: str

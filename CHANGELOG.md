@@ -16,8 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ran ON_BARGE_IN and `interrupt()` three times for one interruption, and two
   paths deciding on the same speech (a partial and the energy check) each
   fired. The first barge-in now claims the playback before any await, and the
-  energy check stops evaluating a claimed one. The next playback is
-  interruptible as before (RMK-206).
+  energy check stops evaluating a claimed one. A barge-in whose context or
+  hooks fail still cuts the playback, where it used to leave it playing. The
+  next playback is interruptible as before (found under RMK-206).
 
 - `ACPChannel` supports `agent-client-protocol` 0.12.1 (RMK-206). That
   release removed `acp.task.InMemoryMessageQueue`, which the channel opened its

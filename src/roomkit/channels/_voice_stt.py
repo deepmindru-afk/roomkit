@@ -404,6 +404,9 @@ class VoiceSTTMixin:
         """
         import struct
 
+        # A barge-in already owns this playback: nothing is left to decide.
+        if playback.barge_in_claimed:
+            return
         n_samples = len(frame.data) // 2
         if n_samples == 0:
             return
@@ -428,10 +431,8 @@ class VoiceSTTMixin:
             )
             started_at = self._speech_started_at.get(session.id)
             binding_info = self._session_bindings.get(session.id)
-            claimed = playback.barge_in_claimed
 
-        # A barge-in already owns this playback: nothing is left to decide.
-        if not triggered or claimed:
+        if not triggered:
             return
         if binding_info:
             room_id, _ = binding_info

@@ -448,9 +448,13 @@ class VoiceTTSMixin:
         # Replace the relayed prefix with the whole streamed text
         for session in delivered:
             with self._state_lock:
-                if session.id in self._playing_sessions:
+                previous = self._playing_sessions.get(session.id)
+                if previous is not None:
+                    # A barge-in that claimed the prefix owns the whole text.
                     self._playing_sessions[session.id] = TTSPlaybackState(
-                        session_id=session.id, text=full_text or "(empty)"
+                        session_id=session.id,
+                        text=full_text or "(empty)",
+                        barge_in_claimed=previous.barge_in_claimed,
                     )
         # Only a session that was served gets the final transcript: showing a
         # response the user never heard would contradict the audio.

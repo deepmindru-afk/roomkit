@@ -40,6 +40,13 @@ def _count_interrupts(channel: Any) -> list[str]:
     return calls
 
 
+async def _until(condition: Any, timeout: float = 5.0) -> None:
+    """Wait for ``condition()`` rather than a fixed sleep a slow runner outlasts."""
+    async with asyncio.timeout(timeout):
+        while not condition():
+            await asyncio.sleep(0.01)
+
+
 class TestBargeInOnce:
     async def test_continued_speech_during_a_slow_barge_in_fires_it_once(self) -> None:
         kit, channel, session, backend, seen = await _room(
@@ -51,7 +58,8 @@ class TestBargeInOnce:
         # 600 ms of speech: five more energy runs land while the first
         # barge-in is still building its context.
         await _talk(backend, session, 0.6)
-        await asyncio.sleep(0.4)
+        await _until(lambda: interrupts)
+        await asyncio.sleep(0.1)  # room for a duplicate to show up
 
         assert len(seen["barge_in"]) == 1
         assert interrupts == ["barge_in"]
@@ -90,5 +98,21 @@ class TestBargeInOnce:
         await asyncio.sleep(0.05)
 
         assert len(seen["barge_in"]) == 2
+        assert session.id not in channel._playing_sessions  # noqa: SLF001
+        await kit.close()
+
+    async def test_a_barge_in_whose_hooks_fail_still_cuts_the_playback(self) -> None:
+        kit, channel, session, backend, seen = await _room(
+            _SlowPartialSTT(None, delay=0), vad=False
+        )
+        playback = channel._playing_sessions[session.id]  # noqa: SLF001
+
+        async def broken(room_id: str, *args: Any, **kwargs: Any) -> Any:
+            raise RuntimeError("store unavailable")
+
+        kit._build_context = broken  # noqa: SLF001
+        await channel._handle_barge_in(session, playback, "r1")  # noqa: SLF001
+
+        # Claimed and then abandoned, the playback would never be cut again.
         assert session.id not in channel._playing_sessions  # noqa: SLF001
         await kit.close()
