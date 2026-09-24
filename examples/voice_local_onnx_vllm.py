@@ -50,8 +50,8 @@ Models (download once):
     wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/ten-vad.onnx
 
     # STT — Zipformer transducer (streaming)
-    wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17.tar.bz2
-    tar xf sherpa-onnx-streaming-zipformer-en-20M-2023-02-17.tar.bz2
+    wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06.tar.bz2
+    tar xf sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06.tar.bz2
 
     # TTS — VITS (Piper voices)
     wget https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-en_US-amy-low.tar.bz2
@@ -66,10 +66,10 @@ Run with Ollama (recommended):
     LLM_MODEL=qwen3:8b \\
     LLM_BASE_URL=http://localhost:11434/v1 \\
     VAD_MODEL=ten-vad.onnx \\
-    STT_ENCODER=sherpa-onnx-streaming-zipformer-en-20M-2023-02-17/encoder-epoch-99-avg-1.onnx \\
-    STT_DECODER=sherpa-onnx-streaming-zipformer-en-20M-2023-02-17/decoder-epoch-99-avg-1.onnx \\
-    STT_JOINER=sherpa-onnx-streaming-zipformer-en-20M-2023-02-17/joiner-epoch-99-avg-1.onnx \\
-    STT_TOKENS=sherpa-onnx-streaming-zipformer-en-20M-2023-02-17/tokens.txt \\
+    STT_ENCODER=sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06/encoder.onnx \\
+    STT_DECODER=sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06/decoder.onnx \\
+    STT_JOINER=sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06/joiner.onnx \\
+    STT_TOKENS=sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06/tokens.txt \\
     TTS_MODEL=vits-piper-en_US-amy-low/en_US-amy-low.onnx \\
     TTS_TOKENS=vits-piper-en_US-amy-low/tokens.txt \\
     TTS_DATA_DIR=vits-piper-en_US-amy-low/espeak-ng-data \\

@@ -18,8 +18,8 @@ Requirements:
       Ollama: ollama pull qwen3:8b && ollama serve
 
     STT models (sherpa-onnx):
-      wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17.tar.bz2
-      tar xf sherpa-onnx-streaming-zipformer-en-20M-2023-02-17.tar.bz2
+      wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06.tar.bz2
+      tar xf sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06.tar.bz2
 
     VAD model:
       wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/ten-vad.onnx
@@ -34,10 +34,10 @@ Run:
     LLM_MODEL=qwen3:8b \\
     LLM_BASE_URL=http://localhost:11434/v1 \\
     VAD_MODEL=ten-vad.onnx \\
-    STT_ENCODER=sherpa-onnx-streaming-zipformer-en-20M-2023-02-17/encoder-epoch-99-avg-1.onnx \\
-    STT_DECODER=sherpa-onnx-streaming-zipformer-en-20M-2023-02-17/decoder-epoch-99-avg-1.onnx \\
-    STT_JOINER=sherpa-onnx-streaming-zipformer-en-20M-2023-02-17/joiner-epoch-99-avg-1.onnx \\
-    STT_TOKENS=sherpa-onnx-streaming-zipformer-en-20M-2023-02-17/tokens.txt \\
+    STT_ENCODER=sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06/encoder.onnx \\
+    STT_DECODER=sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06/decoder.onnx \\
+    STT_JOINER=sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06/joiner.onnx \\
+    STT_TOKENS=sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06/tokens.txt \\
     uv run python examples/voice_qwen3_tts.py
 
 Environment variables:
