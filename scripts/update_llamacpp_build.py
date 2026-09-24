@@ -74,6 +74,11 @@ def _pick_cudart(assets: dict[str, str], tag: str, pattern: str) -> tuple[str, s
 def main() -> None:
     release = _release(sys.argv[1] if len(sys.argv) > 1 else None)
     tag = release["tag_name"]
+    missing = [
+        a["name"] for a in release["assets"] if not (a.get("digest") or "").startswith("sha256:")
+    ]
+    if missing:
+        raise SystemExit(f"{tag}: no SHA-256 digest published for {missing}")
     assets = {a["name"]: a["digest"].removeprefix("sha256:") for a in release["assets"]}
     rows = []
     for variant, (pattern, cudart) in VARIANTS.items():

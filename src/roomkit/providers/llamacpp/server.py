@@ -62,6 +62,8 @@ class LlamaServer:
                 cache_dir=config.cache_dir,
             )
             args = self._arguments(binary)
+            if self._config.port is not None:
+                _check_port_free(self._port)
             logger.info("Starting llama-server for %s on port %d", config.model, self._port)
             self._tail.clear()
             self._process = await asyncio.create_subprocess_exec(
@@ -69,7 +71,6 @@ class LlamaServer:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
                 env=_environment(binary),
-                start_new_session=sys.platform != "win32",
             )
             _live.add(self)
             self._reader = asyncio.create_task(self._read_output(self._process))
@@ -88,7 +89,9 @@ class LlamaServer:
     def _arguments(self, binary: LlamaBinary) -> list[str]:
         config = self._config
         model = config.model
-        is_file = model.endswith(".gguf") and Path(model).expanduser().is_file()
+        is_file = model.endswith(".gguf")
+        if is_file and not Path(model).expanduser().is_file():
+            raise ProviderError(f"model file not found: {model}", provider="llamacpp")
         args = [
             str(binary.executable),
             *(["-m", str(Path(model).expanduser())] if is_file else ["-hf", model]),
@@ -167,6 +170,18 @@ class LlamaServer:
     def _kill_now(self) -> None:
         if self._process is not None and self._process.returncode is None:
             self._process.kill()
+
+
+def _check_port_free(port: int) -> None:
+    """Refuse a configured port already taken: its ``/health`` would pass for ours."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        try:
+            sock.bind((_HOST, port))
+        except OSError as exc:
+            raise ProviderError(
+                f"port {port} is already in use on {_HOST}; pick another or leave port unset",
+                provider="llamacpp",
+            ) from exc
 
 
 def _free_port() -> int:

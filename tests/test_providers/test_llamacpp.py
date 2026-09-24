@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import socket
 import stat
 import sys
 import tarfile
@@ -19,7 +20,7 @@ from roomkit.providers.llamacpp import LlamaCppAIProvider, LlamaCppConfig
 from roomkit.providers.llamacpp import binary as binary_mod
 
 pytest.importorskip("openai")
-pytest.importorskip("httpx")
+httpx = pytest.importorskip("httpx")
 
 # ---------------------------------------------------------------------------
 # A stand-in llama-server: /health, then one chat completion that calls a tool
@@ -40,6 +41,9 @@ _FAKE_SERVER = textwrap.dedent(
     if os.environ.get("FAKE_FAIL"):
         print("error: failed to load model 'nope'", flush=True)
         sys.exit(3)
+    if os.environ.get("FAKE_HANG"):
+        import time
+        time.sleep(3600)
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *a):
@@ -205,8 +209,6 @@ class _FakeStream:
 
 
 def _serve(monkeypatch: pytest.MonkeyPatch, payloads: dict[str, bytes], urls: list[str]) -> None:
-    import httpx
-
     def stream(method: str, url: str, **kwargs: object) -> _FakeStream:
         urls.append(url)
         return _FakeStream(payloads[url.rsplit("/", 1)[1]])
@@ -284,6 +286,25 @@ class TestResolveBinary:
 
         assert not (cache / binary_mod.BUILD / "linux-x64-cpu").exists()
 
+    def test_a_build_installed_concurrently_is_used(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # Two providers starting on a fresh cache: the second finds the first's
+        # install in place when it renames its own, and keeps it.
+        payload = _tar_with_server()
+        name = "llama-b0-bin-test.tar.gz"
+        monkeypatch.setitem(
+            binary_mod.ASSETS, "linux-x64-cpu", ((name, hashlib.sha256(payload).hexdigest()),)
+        )
+        _serve(monkeypatch, {name: payload}, [])
+        target = tmp_path / "cache" / binary_mod.BUILD / "linux-x64-cpu"
+        binary_mod._download_build(target, "linux-x64-cpu")
+        first = binary_mod._locate(target)
+
+        binary_mod._download_build(target, "linux-x64-cpu")  # loses the race
+
+        assert binary_mod._locate(target) == first
+
     def test_a_zip_member_escaping_the_archive_is_refused(self, tmp_path: Path) -> None:
         archive = tmp_path / "evil.zip"
         with zipfile.ZipFile(archive, "w") as zf:
@@ -342,6 +363,49 @@ class TestLlamaCppAIProvider:
         launch = starts.read_text()
         assert f"-m {gguf}" in launch
         assert "-ngl 0" in launch
+
+    async def test_a_streamed_reply_starts_the_server_too(self, fake_server: Path) -> None:
+        ai = LlamaCppAIProvider(LlamaCppConfig(model="m:Q4", binary=str(fake_server)))
+        try:
+            events = [e async for e in ai.generate_structured_stream(_ask())]
+        finally:
+            await ai.close()
+
+        assert events
+        assert not ai._server.running
+
+    async def test_a_server_that_never_answers_times_out_and_is_stopped(
+        self, monkeypatch: pytest.MonkeyPatch, fake_server: Path
+    ) -> None:
+        monkeypatch.setenv("FAKE_HANG", "1")
+        ai = LlamaCppAIProvider(
+            LlamaCppConfig(model="m:Q4", binary=str(fake_server), startup_timeout=1)
+        )
+        with pytest.raises(ProviderError, match="not ready after 1s"):
+            await ai.start()
+
+        assert not ai._server.running
+        await ai.close()
+
+    async def test_a_missing_gguf_file_says_so(self, fake_server: Path, tmp_path: Path) -> None:
+        ai = LlamaCppAIProvider(
+            LlamaCppConfig(model=str(tmp_path / "absent.gguf"), binary=str(fake_server))
+        )
+        with pytest.raises(ProviderError, match="model file not found"):
+            await ai.start()
+        await ai.close()
+
+    async def test_a_configured_port_already_taken_is_refused(self, fake_server: Path) -> None:
+        with socket.socket() as busy:
+            busy.bind(("127.0.0.1", 0))
+            busy.listen()
+            port = busy.getsockname()[1]
+            ai = LlamaCppAIProvider(
+                LlamaCppConfig(model="m:Q4", binary=str(fake_server), port=port)
+            )
+            with pytest.raises(ProviderError, match="already in use"):
+                await ai.start()
+            await ai.close()
 
     async def test_close_stops_the_server(self, fake_server: Path) -> None:
         ai = LlamaCppAIProvider(LlamaCppConfig(model="m:Q4", binary=str(fake_server)))

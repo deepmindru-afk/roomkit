@@ -52,6 +52,7 @@ check-models:
 # SHA-256 from the GitHub release). Pass a tag to pin another: BUILD=b11160.
 update-llamacpp:
 	uv run python scripts/update_llamacpp_build.py $(BUILD)
+	uv run ruff format src/roomkit/providers/llamacpp/_builds.py
 
 all: lint typecheck security test
 

@@ -97,6 +97,7 @@ from roomkit import (
 from roomkit.channels.ai import AIChannel
 from roomkit.providers.ai.base import AIProvider
 from roomkit.providers.llamacpp import LlamaCppAIProvider, LlamaCppConfig
+from roomkit.providers.ollama import OllamaAIProvider, OllamaConfig
 from roomkit.voice.backends.local import LocalAudioBackend
 from roomkit.voice.pipeline import AudioPipelineConfig
 from roomkit.voice.pipeline.vad.sherpa_onnx import SherpaOnnxVADConfig, SherpaOnnxVADProvider
@@ -145,8 +146,6 @@ def build_llm() -> AIProvider:
     """The local LLM: llama.cpp run by RoomKit, or an Ollama server."""
     max_tokens = int(os.environ.get("LLM_MAX_TOKENS", "200"))
     if os.environ.get("LLM_BACKEND", "llamacpp") == "ollama":
-        from roomkit.providers.ollama import OllamaAIProvider, OllamaConfig
-
         return OllamaAIProvider(
             OllamaConfig(
                 host=os.environ.get("OLLAMA_HOST", "http://localhost:11434"),

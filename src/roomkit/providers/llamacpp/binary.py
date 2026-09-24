@@ -56,6 +56,7 @@ def resolve_binary(
         return LlamaBinary(found)
     chosen = variant or detect_variant()
     root = Path(cache_dir).expanduser() if cache_dir else _default_cache_dir()
+    logger.info("llama.cpp %s, variant %s%s", BUILD, chosen, "" if variant else " (detected)")
     return _cached_build(root / BUILD / chosen, chosen)
 
 
@@ -67,7 +68,7 @@ def detect_variant() -> str:
     if arch is None:
         raise _error(f"no llama.cpp build for CPU {machine!r}; set binary= to your own")
     if system == "Darwin":
-        return f"macos-{arch}"  # Metal is built in
+        return f"macos-{arch}"  # the arm64 build runs on Metal
     os_name = {"Linux": "linux", "Windows": "windows"}.get(system)
     if os_name is None:
         raise _error(f"no llama.cpp build for {system!r}; set binary= to your own")
@@ -88,10 +89,14 @@ def cuda_driver_major() -> int | None:
         out = subprocess.run(  # nosec B603 - fixed argument list
             [smi], capture_output=True, text=True, timeout=10, check=False
         ).stdout
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.info("nvidia-smi failed (%s): using a build without CUDA", exc)
         return None
     match = re.search(r"CUDA Version:\s*(\d+)", out)
-    return int(match.group(1)) if match else None
+    if match is None:
+        logger.info("nvidia-smi reports no CUDA version: using a build without CUDA")
+        return None
+    return int(match.group(1))
 
 
 def _which(name: str) -> Path | None:
@@ -120,9 +125,14 @@ def _download_build(target: Path, variant: str) -> None:
             _download(_RELEASE_URL.format(build=BUILD, name=name), archive, sha256)
             _extract(archive, staging)
         (staging / _COMPLETE_MARKER).write_text(f"{BUILD} {variant}\n")
-        if target.exists():  # an interrupted earlier attempt
-            shutil.rmtree(target)
-        staging.rename(target)
+        try:
+            staging.rename(target)  # atomic: target only ever appears complete
+        except OSError as exc:
+            # Another process installed the same build meanwhile: use it.
+            if not (target / _COMPLETE_MARKER).is_file():
+                raise _error(f"cannot install llama.cpp into {target}: {exc}") from exc
+            logger.info("llama.cpp %s (%s) was installed concurrently", BUILD, variant)
+            return
     logger.info("llama.cpp %s (%s) installed in %s", BUILD, variant, target)
 
 

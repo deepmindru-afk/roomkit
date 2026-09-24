@@ -121,9 +121,8 @@ def create_vllm_provider(config: VLLMConfig) -> OpenAIAIProvider:
 def _openai_config(config: VLLMConfig) -> OpenAIConfig:
     """The OpenAI connection settings a :class:`VLLMConfig` stands for.
 
-    Shared with every provider that speaks to a vLLM-style server — the
-    llama.cpp provider runs one — so the sampling and reasoning fields reach
-    the body the same way everywhere.
+    Shared by every provider that speaks to a vLLM-style server, so the
+    sampling and reasoning fields reach the body the same way everywhere.
     """
     template_kwargs = config.chat_template_kwargs()
     sampling = config.sampling_body()

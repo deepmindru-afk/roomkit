@@ -34,7 +34,6 @@ class LlamaCppAIProvider(_VLLMProvider):
 
     def __init__(self, config: LlamaCppConfig) -> None:
         self._server = LlamaServer(config)
-        self._llama_config = config
         super().__init__(
             _openai_config(
                 VLLMConfig(

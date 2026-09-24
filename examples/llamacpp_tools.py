@@ -73,7 +73,7 @@ async def run_tool(name: str, arguments: dict[str, Any]) -> str:
     if name == "get_time":
         return json.dumps({"now": datetime.now().isoformat(timespec="minutes")})
     if name == "roll_dice":
-        rolls = [random.randint(1, arguments["sides"]) for _ in range(arguments["count"])]  # noqa: S311
+        rolls = [random.randint(1, arguments["sides"]) for _ in range(arguments["count"])]
         return json.dumps({"rolls": rolls, "total": sum(rolls)})
     return json.dumps({"error": f"unknown tool {name}"})
 
