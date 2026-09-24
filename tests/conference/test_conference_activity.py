@@ -94,14 +94,16 @@ class TestDraining:
             async with activity.track(ROOM):
                 await gate.wait()
 
-        working = [asyncio.create_task(wedged()) for _ in range(5)]
+        # Twenty items: a per-item budget would take a full second, so the
+        # bound sits well clear of both that and a slow CI runner.
+        working = [asyncio.create_task(wedged()) for _ in range(20)]
         await asyncio.sleep(0)
 
         started = time.monotonic()
         await activity.drain(ROOM, timeout=0.05)
         elapsed = time.monotonic() - started
 
-        assert elapsed < 0.2, f"five wedged activities took {elapsed:.3f}s on a 0.05s budget"
+        assert elapsed < 0.5, f"twenty wedged activities took {elapsed:.3f}s on a 0.05s budget"
 
         gate.set()
         await asyncio.gather(*working)
