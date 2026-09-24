@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import threading
 import time
+from collections.abc import Awaitable
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.channels._voice_unheard import UnheardTurns
-from roomkit.models.delivery import SUPERSEDED
+from roomkit.models.delivery import SUPERSEDED, InboundResult
 from roomkit.models.enums import EventType, HookTrigger
 
 if TYPE_CHECKING:
@@ -303,15 +305,17 @@ class VoiceTurnMixin:
         handle = result.delivery
         if handle is None:
             return
+        with self._state_lock:
+            speaking, since = self._turn_speech_state.get(session.id, (False, 0.0))
         self._unheard_turns.register(
-            session.id, handle, speaking=self._user_speaking_again(session.id)
+            session.id, handle, speaking_since=since if speaking else None
         )
         try:
             await handle.wait()
         except asyncio.CancelledError:
-            # The caller gave up on the turn: its delivery goes with it, as it
-            # did when this call awaited the whole turn.
-            await handle.cancel(reason="caller_cancelled")
+            # A caller that gives up on the turn takes its delivery with it.
+            with contextlib.suppress(TimeoutError):
+                await handle.cancel(reason="caller_cancelled")
             raise
         finally:
             self._unheard_turns.discard(session.id, handle)
@@ -338,13 +342,31 @@ class VoiceTurnMixin:
         try:
             result = await handle.cancel(reason=SUPERSEDED)
         except TimeoutError:
+            # Still draining: its events are marked once it has.
             logger.warning("Superseded turn still draining for session %s", session.id)
+            task = asyncio.get_running_loop().create_task(
+                self._mark_superseded(handle.wait()), name=f"superseded:{session.id}"
+            )
+            task.add_done_callback(self._task_done)
+            self._scheduled_tasks.add(task)
             return True
-        # A response already fully generated was stored as finished, though
-        # nobody heard it: the mark is the voice channel's to add.
+        await self._mark_superseded(result)
+        return True
+
+    async def _mark_superseded(self, result: InboundResult | Awaitable[InboundResult]) -> None:
+        """Mark a superseded turn's responses so no intelligence channel replays them.
+
+        A response already fully generated was stored as finished, though nobody
+        heard it: the mark is the voice channel's to add. Best effort, per event:
+        a failed mark must not keep the user's new words from being routed.
+        """
+        if not isinstance(result, InboundResult):
+            result = await result
         for event in result.response_events:
             if event.type != EventType.MESSAGE or self._framework is None:
                 continue
             metadata = {**event.metadata, "cancelled": True, "cancellation_reason": SUPERSEDED}
-            await self._framework.update_event(event.room_id, event.id, metadata=metadata)
-        return True
+            try:
+                await self._framework.update_event(event.room_id, event.id, metadata=metadata)
+            except Exception:
+                logger.exception("Could not mark superseded response %s", event.id)

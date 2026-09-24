@@ -555,6 +555,7 @@ class VoiceChannel(
         if was_queueing:
             # A DTMF mark stays for the queued segments (taken at their flush).
             logger.debug("Queued speech during playback for %s", session.id)
+            self._release_unheard_turn(session.id)
             return
         # The segment that just ended owns any DTMF heard since the last one.
         dtmf_seen = self._tts_context is not None and self._tts_context.take_dtmf(session.id)
@@ -564,6 +565,7 @@ class VoiceChannel(
                 # in: the words go nowhere (RFC §12.6 step 5).
                 self._cancel_stt_stream(session.id)
             logger.debug("Suppressed echo speech end for %s", session.id)
+            self._release_unheard_turn(session.id)
             return
 
         # Pop the stream state now so a rapid SPEECH_START can't steal it.
@@ -582,7 +584,7 @@ class VoiceChannel(
         with self._state_lock:
             binding_info = self._session_bindings.get(session.id)
         if not binding_info or not self._framework:
-            self._unheard_turns.release(session.id)
+            self._release_unheard_turn(session.id)
             return
 
         room_id, _ = binding_info
@@ -614,9 +616,14 @@ class VoiceChannel(
                 # Speech onset: the clock the CONFIRMED strategy measures
                 # sustained speech against (RFC §12.6).
                 self._speech_started_at[session.id] = time.monotonic()
-            if self._unheard_turns.hold(session.id):
+            # A measured playback with no chunk out yet has said nothing; any
+            # other one may be audible, and its echo is guarded as usual.
+            nothing_played = playback is None or (
+                playback.measured and playback.first_audio_at is None
+            )
+            if nothing_played and self._unheard_turns.hold(session.id):
                 # The routed turn's response is not heard yet: it waits, and
-                # this speech is a user turn, not a barge-in. Nothing played,
+                # this speech is a user turn, not a barge-in. Nothing plays,
                 # so there is no echo to suppress (RFC §12.3.12).
                 logger.debug("Speech resumed before the response was heard: holding it")
                 playback = None

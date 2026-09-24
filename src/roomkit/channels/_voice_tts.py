@@ -1095,7 +1095,7 @@ def _observe_audio(
     recorder: AssistantTurnRecorder | None,
     chunks: AsyncIterator[AudioChunk],
     *,
-    gate: Callable[[], Awaitable[None]] | None = None,
+    gate: Callable[[], Awaitable[bool]] | None = None,
 ) -> AsyncIterator[AudioChunk]:
     """Measure the audio a synthesis call hands to the transport.
 
@@ -1103,7 +1103,7 @@ def _observe_audio(
     turn recorder keeps a copy when the context keeps audio. The measure
     starts here, not at the first chunk: until one goes out, the user has
     heard nothing, however long synthesis takes. ``gate``, when given, is
-    awaited before the first chunk goes out.
+    awaited before the first chunk goes out; False ends the stream unsaid.
     """
     playback.start_measuring()
     return _observed_chunks(playback, recorder, chunks, gate)
@@ -1113,11 +1113,12 @@ async def _observed_chunks(
     playback: TTSPlaybackState,
     recorder: AssistantTurnRecorder | None,
     chunks: AsyncIterator[AudioChunk],
-    gate: Callable[[], Awaitable[None]] | None,
+    gate: Callable[[], Awaitable[bool]] | None,
 ) -> AsyncIterator[AudioChunk]:
     async for chunk in chunks:
         if gate is not None:
-            await gate()
+            if not await gate():
+                return  # superseded before a word of it was heard
             gate = None
         playback.note_audio(chunk)
         if recorder is not None:

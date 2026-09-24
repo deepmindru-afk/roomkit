@@ -106,6 +106,7 @@ from roomkit.memory import MemoryProvider
 from roomkit.models.channel import ChannelBinding, ChannelCapabilities, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import (
+    SUPERSEDED,
     DeliveryError,
     DeliveryHandle,
     DeliveryOutcome,
@@ -446,6 +447,7 @@ __all__ = [
     "DeclaredTool",
     "DeliveryError",
     "DeliveryHandle",
+    "SUPERSEDED",
     "DeliveryOutcome",
     "DeliveryResult",
     "DeliveryStatus",

@@ -8,11 +8,13 @@ at all once they add to the question, and the model answers the two once.
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import AsyncIterator
 from typing import Any
 
 from roomkit import AIChannel, RoomKit, VoiceChannel
 from roomkit.channels._voice_unheard import UnheardTurns
+from roomkit.channels.voice import TTSPlaybackState
 from roomkit.models.delivery import SUPERSEDED
 from roomkit.models.event import RoomEvent, TextContent
 from roomkit.providers.ai.base import AIContext, AIProvider, AIResponse
@@ -197,6 +199,40 @@ class TestResumingBeforeTheResponseIsHeard:
         assert all(r.metadata.get("cancellation_reason") != SUPERSEDED for r in rows)
         await kit.close()
 
+    async def test_a_segment_suppressed_as_echo_releases_the_response(self) -> None:
+        # The turn is routed while a segment that started during other audio
+        # is still on: that segment ends suppressed, and must not strand it.
+        kit, backend, ai, room_id, session = await _setup([FIRST, MORE])
+        voice = kit.get_channel("voice-1")
+        assert isinstance(voice, VoiceChannel)
+        await _frame(backend, session)  # speech 1 starts
+        voice._playing_sessions[session.id] = TTSPlaybackState(session_id=session.id, text="x")
+        await _frame(backend, session)  # speech 1 ends: FIRST is routed
+        await _frame(backend, session)  # speech 2 starts over the audio: suppressed
+        await _until(lambda: len(ai.contexts) == 1)
+        voice._playing_sessions.pop(session.id, None)
+        ai.release.set()
+        await _frame(backend, session)  # speech 2 ends, discarded as echo
+
+        await _until(lambda: len(_said(backend)) == 1)
+        assert _said(backend) == [_audio("Tu as 3 boards.")]
+        await kit.close()
+
+    async def test_speech_over_audible_playback_is_still_guarded_as_echo(self) -> None:
+        kit, backend, ai, room_id, session = await _setup([FIRST, MORE])
+        voice = kit.get_channel("voice-1")
+        assert isinstance(voice, VoiceChannel)
+        await _route_first_turn(backend, ai, session)
+        # Something else is playing (a filler, another participant's message).
+        voice._playing_sessions[session.id] = TTSPlaybackState(
+            session_id=session.id, text="un instant"
+        )
+        await _frame(backend, session)
+        assert session.id in voice._suppressed_sessions
+        voice._playing_sessions.pop(session.id, None)
+        ai.release.set()
+        await kit.close()
+
 
 class TestUnheardTurns:
     def _handle(self) -> Any:
@@ -204,13 +240,13 @@ class TestUnheardTurns:
 
     async def test_a_heard_response_is_not_held(self) -> None:
         turns, handle = UnheardTurns(), self._handle()
-        turns.register("s", handle, speaking=False)
+        turns.register("s", handle, speaking_since=None)
         await turns.wait_to_play("s")  # first audio goes out
         assert turns.hold("s") is False  # speech now is a barge-in
 
     async def test_held_response_plays_once_released(self) -> None:
         turns, handle = UnheardTurns(), self._handle()
-        turns.register("s", handle, speaking=False)
+        turns.register("s", handle, speaking_since=None)
         assert turns.hold("s") is True
         waiter = asyncio.create_task(turns.wait_to_play("s"))
         await asyncio.sleep(0.01)
@@ -220,24 +256,32 @@ class TestUnheardTurns:
 
     async def test_speech_already_started_at_routing_holds_it(self) -> None:
         turns, handle = UnheardTurns(), self._handle()
-        turns.register("s", handle, speaking=True)
+        turns.register("s", handle, speaking_since=time.monotonic() - 0.4)
         waiter = asyncio.create_task(turns.wait_to_play("s"))
         await asyncio.sleep(0.01)
         assert not waiter.done()
+        turns.note_speech_end("s")  # measured from the speech's own onset
+        assert turns.take_superseded("s", min_speech_ms=300) is handle
+        # The gate lets go, and says the audio must not go out.
+        assert await asyncio.wait_for(waiter, 1) is False
+
+    async def test_each_segment_is_measured_on_its_own(self) -> None:
+        turns, handle = UnheardTurns(), self._handle()
+        turns.register("s", handle, speaking_since=time.monotonic() - 1.0)
+        turns.hold("s")  # a second short segment starts: the clock restarts
         turns.note_speech_end("s")
-        assert turns.take_superseded("s", min_speech_ms=0) is handle
-        await asyncio.wait_for(waiter, 1)  # the superseded turn lets its gate go
+        assert turns.take_superseded("s", min_speech_ms=300) is None
 
     async def test_short_speech_supersedes_nothing(self) -> None:
         turns, handle = UnheardTurns(), self._handle()
-        turns.register("s", handle, speaking=False)
+        turns.register("s", handle, speaking_since=None)
         turns.hold("s")
         turns.note_speech_end("s")
         assert turns.take_superseded("s", min_speech_ms=300) is None
 
     async def test_discard_only_forgets_its_own_turn(self) -> None:
         turns, first, second = UnheardTurns(), self._handle(), self._handle()
-        turns.register("s", first, speaking=False)
-        turns.register("s", second, speaking=False)
+        turns.register("s", first, speaking_since=None)
+        turns.register("s", second, speaking_since=None)
         turns.discard("s", first)
         assert turns.hold("s") is True  # the second turn is still tracked
