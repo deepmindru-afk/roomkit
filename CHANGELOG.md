@@ -13,9 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   release removed `acp.task.InMemoryMessageQueue`, which the channel opened its
   connection with, so every ACP session failed at connect under it. The channel
   now creates the queue only when the SDK still has one, and hands
-  `ACPTransport.open` `queue=None` otherwise: 0.12.1 creates each notification's
-  task in wire order before resolving the prompt response, so every
-  `session_update` is still delivered before the turn ends. The `acp` extra
+  `ACPTransport.open` `queue=None` otherwise: under 0.12.1 the SDK's `prompt`
+  itself waits for the session's in-flight updates, so every `session_update`
+  is still delivered before the turn ends. The `acp` extra
   requires `agent-client-protocol>=0.11.0,<0.13` again. A custom transport that
   forwards `queue` to `acp.connect_to_agent` must drop the keyword when it is
   `None`, which 0.12.1 rejects; the signature of `open` is unchanged.
