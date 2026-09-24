@@ -2,7 +2,7 @@
 
 Everything runs on this machine, microphone included:
   - sherpa-onnx neural VAD and speech-to-text (CPU)
-  - a local LLM served by Ollama
+  - a local LLM that RoomKit runs itself through llama.cpp (or Ollama)
   - Vui Nano text-to-speech (CUDA GPU), which generates each reply inside the
     dialogue: the TTS conversation context (RFC §12.2.2) hands it every turn,
     the audio of what you said included, and a barge-in cuts its reply back to
@@ -14,11 +14,13 @@ Vui speaks English only: the STT model, the LLM prompt and the voice are
 English here.
 
 Requirements:
-    Python 3.12 (a vui-tts requirement), a CUDA GPU (Vui takes ~3.5 GB of VRAM)
-    Ollama running locally, with a model that answers without reasoning first:
-        ollama pull qwen3:4b-instruct   # ~3 GB of VRAM, fits beside Vui on 12 GB
-    (Ollama's qwen3:4b is the Thinking-2507 build: it reasons whatever `think`
-    says, and Vui would read its reasoning aloud.)
+    Python 3.12 (a vui-tts requirement), a CUDA GPU: Vui takes ~3.5 GB of VRAM
+    and the default LLM ~4 GB, which fit together on a 12 GB card.
+
+    Nothing to run beside it: the LLM, Qwen3-4B-Instruct (Q4_K_M), is downloaded
+    on first run with the llama.cpp build for this machine, and RoomKit starts
+    and stops llama-server itself. Pick an instruct model, not a thinking one:
+    Vui would read the reasoning aloud.
 
     Headphones are recommended: echo cancellation is never perfect on
     speakers, and the assistant hearing itself reads as a barge-in.
@@ -38,14 +40,17 @@ Models (download once, into examples/models/):
 Run (from the repository root; .venv-vui keeps the Python 3.12 environment
 apart from the project's .venv):
     UV_PROJECT_ENVIRONMENT=.venv-vui uv run --python 3.12 \\
-        --extra local-audio --extra webrtc-aec --extra ollama \\
+        --extra local-audio --extra webrtc-aec --extra llamacpp \\
         --extra sherpa-onnx --extra vui \\
         python examples/voice_local_vui.py
 
 Environment variables:
-    --- LLM (Ollama) ---
-    LLM_MODEL           Ollama model (default: qwen3:4b-instruct; thinking is
-                        turned off for models that can switch it)
+    --- LLM ---
+    LLM_BACKEND         llamacpp | ollama (default: llamacpp)
+    LLM_MODEL           llamacpp: GGUF "repo:quant" or .gguf path
+                        (default: unsloth/Qwen3-4B-Instruct-2507-GGUF:Q4_K_M);
+                        ollama: model name (default: qwen3:4b-instruct; add
+                        --extra ollama to the run command)
     OLLAMA_HOST         Ollama server (default: http://localhost:11434)
     LLM_MAX_TOKENS      Max response tokens (default: 200)
     SYSTEM_PROMPT       Custom system prompt
@@ -90,7 +95,8 @@ from roomkit import (
     VoiceChannel,
 )
 from roomkit.channels.ai import AIChannel
-from roomkit.providers.ollama import OllamaAIProvider, OllamaConfig
+from roomkit.providers.ai.base import AIProvider
+from roomkit.providers.llamacpp import LlamaCppAIProvider, LlamaCppConfig
 from roomkit.voice.backends.local import LocalAudioBackend
 from roomkit.voice.pipeline import AudioPipelineConfig
 from roomkit.voice.pipeline.vad.sherpa_onnx import SherpaOnnxVADConfig, SherpaOnnxVADProvider
@@ -133,6 +139,35 @@ def model_paths() -> dict[str, str]:
             logger.error("  %s", path)
         sys.exit(1)
     return paths
+
+
+def build_llm() -> AIProvider:
+    """The local LLM: llama.cpp run by RoomKit, or an Ollama server."""
+    max_tokens = int(os.environ.get("LLM_MAX_TOKENS", "200"))
+    if os.environ.get("LLM_BACKEND", "llamacpp") == "ollama":
+        from roomkit.providers.ollama import OllamaAIProvider, OllamaConfig
+
+        return OllamaAIProvider(
+            OllamaConfig(
+                host=os.environ.get("OLLAMA_HOST", "http://localhost:11434"),
+                model=os.environ.get("LLM_MODEL", "qwen3:4b-instruct"),
+                max_tokens=max_tokens,
+                think=False,
+            )
+        )
+    return LlamaCppAIProvider(
+        LlamaCppConfig(
+            model=os.environ.get("LLM_MODEL", "unsloth/Qwen3-4B-Instruct-2507-GGUF:Q4_K_M"),
+            max_tokens=max_tokens,
+            enable_thinking=False,
+        )
+    )
+
+
+async def start_llm(provider: AIProvider) -> None:
+    """Load a llama.cpp model before the first word; an Ollama server is already up."""
+    if isinstance(provider, LlamaCppAIProvider):
+        await provider.start()
 
 
 def build_aec() -> object | None:
@@ -203,18 +238,11 @@ async def main() -> None:
     tts = VuiTTSProvider(VuiTTSConfig(voices={voice_name: VuiVoice(voice_name)}))
     include_audio = os.environ.get("VUI_INCLUDE_AUDIO", "1") == "1"
 
-    # --- LLM (Ollama's native API: thinking off, a spoken reply cannot wait) ------
-    llm_model = os.environ.get("LLM_MODEL", "qwen3:4b-instruct")
-    ollama_host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
-    ai_provider = OllamaAIProvider(
-        OllamaConfig(
-            host=ollama_host,
-            model=llm_model,
-            max_tokens=int(os.environ.get("LLM_MAX_TOKENS", "200")),
-            think=False,
-        )
+    # --- LLM: thinking off, a spoken reply cannot wait ----------------------------
+    ai_provider = build_llm()
+    logger.info(
+        "LLM: %s (%s), Vui voice: %s", ai_provider.model_name, ai_provider.name, voice_name
     )
-    logger.info("LLM: %s (%s), Vui voice: %s", llm_model, ollama_host, voice_name)
 
     # --- Channels and room -------------------------------------------------------
     voice = VoiceChannel(
@@ -252,8 +280,8 @@ async def main() -> None:
         logger.info("Barge-in: Vui stops and keeps only what you heard")
 
     # --- Load everything before the first word -----------------------------------
-    logger.info("Loading Vui, STT and VAD models...")
-    await asyncio.gather(stt.warmup(), tts.warmup())
+    logger.info("Loading the LLM, Vui, STT and VAD models...")
+    await asyncio.gather(stt.warmup(), tts.warmup(), start_llm(ai_provider))
     await kit.attach_channel("local-vui", "voice")  # opens the mic
     logger.info("Ready: speak English into the microphone. Ctrl+C to stop.")
 
