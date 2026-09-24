@@ -5,7 +5,7 @@ Everything runs on this machine, microphone included:
   - a local LLM served by Ollama
   - Kyutai's Pocket TTS, French model, on the CPU (default) or a CUDA GPU
 
-    Mic → [AEC] → VAD → sherpa-onnx STT (fr) → local LLM → Pocket TTS (fr) → Speaker
+    Mic → [AEC] → VAD → sherpa-onnx STT (fr) → local LLM → [StripEmoji] → Pocket TTS (fr) → Speaker
 
 Pocket TTS is a 100M-parameter model that streams faster than real time on
 two CPU cores: no GPU is needed for the voice. Measured on a desktop CPU, the
@@ -96,6 +96,7 @@ from roomkit.voice.backends.local import LocalAudioBackend
 from roomkit.voice.pipeline import AudioPipelineConfig
 from roomkit.voice.pipeline.vad.sherpa_onnx import SherpaOnnxVADConfig, SherpaOnnxVADProvider
 from roomkit.voice.stt.sherpa_onnx import SherpaOnnxSTTConfig, SherpaOnnxSTTProvider
+from roomkit.voice.tts.filters import StripEmoji
 from roomkit.voice.tts.pocket import SAMPLE_RATE, PocketTTSConfig, PocketTTSProvider
 
 logger = setup_logging("voice_local_pocket_fr")
@@ -232,6 +233,8 @@ async def main() -> None:
         tts=tts,
         backend=backend,
         pipeline=AudioPipelineConfig(vad=vad, aec=aec),
+        # The LLM adds emoji despite the prompt; spoken, they sound wrong.
+        tts_filter=StripEmoji(),
     )
     kit.register_channel(voice)
     kit.register_channel(
