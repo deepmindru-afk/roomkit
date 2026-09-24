@@ -191,8 +191,10 @@ class MuseTalkAvatarProvider(AvatarProvider):
             self._audio_processor = AudioProcessor(
                 feature_extractor_path=whisper_path,
             )
-            self._whisper = WhisperModel.from_pretrained(whisper_path)  # nosec B615
-            self._whisper = self._whisper.to(
+            # Typed as Any: transformers' stubs wrap from_pretrained so ty can
+            # not call .to() on its result, and only where torch is installed.
+            whisper: Any = WhisperModel.from_pretrained(whisper_path)  # nosec B615
+            self._whisper = whisper.to(
                 device=self._device,
                 dtype=self._weight_dtype,
             ).eval()

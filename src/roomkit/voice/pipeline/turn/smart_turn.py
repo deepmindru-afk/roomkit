@@ -240,7 +240,9 @@ class SmartTurnDetector(TurnDetector):
             # ONNX inference
             input_name = self._session.get_inputs()[0].name
             output = self._session.run(None, {input_name: input_features})
-            logit = float(output[0][0][0])
+            # The single logit, whatever container onnxruntime's stubs type the
+            # output as (they allow a SparseTensor, which is not subscriptable).
+            logit = float(np.asarray(output[0]).reshape(-1)[0])
 
             # Sigmoid
             prob = 1.0 / (1.0 + np.exp(-logit))
