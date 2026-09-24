@@ -27,9 +27,10 @@ Models (download once, into examples/models/):
     mkdir -p examples/models && cd examples/models
     # VAD: TEN-VAD
     wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/ten-vad.onnx
-    # STT: Zipformer transducer, English, streaming
-    wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17.tar.bz2
-    tar xf sherpa-onnx-streaming-zipformer-en-20M-2023-02-17.tar.bz2
+    # STT: Kroko, a Zipformer transducer, English, streaming (the 20M model
+    # renders a microphone's "hello hello" as "O HALLO")
+    wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06.tar.bz2
+    tar xf sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06.tar.bz2
     cd ../..
 
     Vui's weights and voice presets download from Hugging Face on first run.
@@ -102,12 +103,12 @@ MIC_RATE = 16000
 BLOCK_MS = 20
 
 DEFAULT_MODELS_DIR = Path(__file__).resolve().parent / "models"
-STT_DIR = "sherpa-onnx-streaming-zipformer-en-20M-2023-02-17"
+STT_DIR = "sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06"
 MODEL_FILES = {
     "VAD_MODEL": "ten-vad.onnx",
-    "STT_ENCODER": f"{STT_DIR}/encoder-epoch-99-avg-1.onnx",
-    "STT_DECODER": f"{STT_DIR}/decoder-epoch-99-avg-1.onnx",
-    "STT_JOINER": f"{STT_DIR}/joiner-epoch-99-avg-1.onnx",
+    "STT_ENCODER": f"{STT_DIR}/encoder.onnx",
+    "STT_DECODER": f"{STT_DIR}/decoder.onnx",
+    "STT_JOINER": f"{STT_DIR}/joiner.onnx",
     "STT_TOKENS": f"{STT_DIR}/tokens.txt",
 }
 
