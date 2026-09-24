@@ -7,6 +7,7 @@ import struct
 
 import pytest
 
+from roomkit.voice.backends.mock import MockVoiceBackend
 from roomkit.voice.pipeline.turn.base import TurnContext, TurnDecision
 
 np = pytest.importorskip("numpy")
@@ -169,60 +170,11 @@ class _MockSTT:
         pass
 
 
-class _MockBackend:
-    """Minimal mock backend for wiring."""
-
-    name = "mock_backend"
-
-    from roomkit.voice.base import VoiceCapability
-
-    _caps = VoiceCapability.NONE
-    _sessions: dict = {}
-    _audio_cbs: list = []
-
-    @property
-    def capabilities(self):
-        return self._caps
-
-    @property
-    def feeds_aec_reference(self):
-        return False
-
-    @property
-    def supports_playback_callback(self):
-        return False
-
-    def on_audio_received(self, cb):
-        self._audio_cbs.append(cb)
-
-    def on_barge_in(self, cb):
-        pass
-
-    async def send_transcription(self, session, text, role):
-        pass
-
-    def get_session(self, sid):
-        return None
-
-    def list_sessions(self, room_id):
-        return []
-
-    async def cancel_audio(self, session):
-        pass
-
-    async def close(self):
-        pass
-
-    async def simulate_audio(self, session, frame):
-        for cb in self._audio_cbs:
-            cb(session, frame)
-
-
 class TestAudioThreading:
     """Verify that audio_bytes from SPEECH_END reaches TurnContext."""
 
     async def test_audio_bytes_reaches_turn_context(self):
-        from unittest.mock import AsyncMock
+        from unittest.mock import AsyncMock, MagicMock
 
         from roomkit.channels.voice import VoiceChannel
         from roomkit.models.channel import ChannelBinding
@@ -242,13 +194,14 @@ class TestAudioThreading:
         )
         config = AudioPipelineConfig(vad=vad, turn_detector=detector)
         stt = _MockSTT(transcripts=["hello"])
-        backend = _MockBackend()
+        backend = MockVoiceBackend()
 
         channel = VoiceChannel("ch1", stt=stt, backend=backend, pipeline=config)
 
         mock_fw = AsyncMock()
         mock_fw._build_context = AsyncMock(return_value=AsyncMock())
         mock_fw.hook_engine.run_async_hooks = AsyncMock()
+        mock_fw.hook_engine.has_hooks = MagicMock(return_value=True)
         mock_fw.hook_engine.run_sync_hooks = AsyncMock(
             return_value=AsyncMock(allowed=True, event="hello")
         )
@@ -259,7 +212,7 @@ class TestAudioThreading:
         binding = ChannelBinding(room_id="r1", channel_id="ch1", channel_type=ChannelType.VOICE)
         channel.bind_session(session, "r1", binding)
 
-        await backend.simulate_audio(session, AudioFrame(data=b"\x00\x00"))
+        await backend.simulate_audio_received(session, AudioFrame(data=b"\x00\x00"))
         await asyncio.sleep(0.15)
 
         # The MockTurnDetector records evaluations — check audio_bytes was set
@@ -269,7 +222,7 @@ class TestAudioThreading:
         assert len(ctx.audio_bytes) > 0
 
     async def test_audio_accumulates_across_incomplete_turns(self):
-        from unittest.mock import AsyncMock
+        from unittest.mock import AsyncMock, MagicMock
 
         from roomkit.channels.voice import VoiceChannel
         from roomkit.models.channel import ChannelBinding
@@ -298,13 +251,14 @@ class TestAudioThreading:
         )
         config = AudioPipelineConfig(vad=vad, turn_detector=detector)
         stt = _MockSTT(transcripts=["hello", "world"])
-        backend = _MockBackend()
+        backend = MockVoiceBackend()
 
         channel = VoiceChannel("ch1", stt=stt, backend=backend, pipeline=config)
 
         mock_fw = AsyncMock()
         mock_fw._build_context = AsyncMock(return_value=AsyncMock())
         mock_fw.hook_engine.run_async_hooks = AsyncMock()
+        mock_fw.hook_engine.has_hooks = MagicMock(return_value=True)
         mock_fw.hook_engine.run_sync_hooks = AsyncMock(
             side_effect=[
                 AsyncMock(allowed=True, event="hello"),
@@ -319,7 +273,7 @@ class TestAudioThreading:
         channel.bind_session(session, "r1", binding)
 
         # First utterance — incomplete
-        await backend.simulate_audio(session, AudioFrame(data=b"\x00\x00"))
+        await backend.simulate_audio_received(session, AudioFrame(data=b"\x00\x00"))
         await asyncio.sleep(0.15)
 
         assert len(detector.evaluations) == 1
@@ -328,7 +282,7 @@ class TestAudioThreading:
         assert first_audio_len > 0
 
         # Second utterance — complete, audio should be accumulated
-        await backend.simulate_audio(session, AudioFrame(data=b"\x01\x00"))
+        await backend.simulate_audio_received(session, AudioFrame(data=b"\x01\x00"))
         await asyncio.sleep(0.15)
 
         assert len(detector.evaluations) == 2
@@ -338,7 +292,7 @@ class TestAudioThreading:
         assert len(ctx2.audio_bytes) > first_audio_len
 
     async def test_pending_audio_cleared_on_completion(self):
-        from unittest.mock import AsyncMock
+        from unittest.mock import AsyncMock, MagicMock
 
         from roomkit.channels.voice import VoiceChannel
         from roomkit.models.channel import ChannelBinding
@@ -356,13 +310,14 @@ class TestAudioThreading:
         )
         config = AudioPipelineConfig(vad=vad, turn_detector=detector)
         stt = _MockSTT(transcripts=["hello"])
-        backend = _MockBackend()
+        backend = MockVoiceBackend()
 
         channel = VoiceChannel("ch1", stt=stt, backend=backend, pipeline=config)
 
         mock_fw = AsyncMock()
         mock_fw._build_context = AsyncMock(return_value=AsyncMock())
         mock_fw.hook_engine.run_async_hooks = AsyncMock()
+        mock_fw.hook_engine.has_hooks = MagicMock(return_value=True)
         mock_fw.hook_engine.run_sync_hooks = AsyncMock(
             return_value=AsyncMock(allowed=True, event="hello")
         )
@@ -373,7 +328,7 @@ class TestAudioThreading:
         binding = ChannelBinding(room_id="r1", channel_id="ch1", channel_type=ChannelType.VOICE)
         channel.bind_session(session, "r1", binding)
 
-        await backend.simulate_audio(session, AudioFrame(data=b"\x00\x00"))
+        await backend.simulate_audio_received(session, AudioFrame(data=b"\x00\x00"))
         await asyncio.sleep(0.15)
 
         # After a complete turn, _pending_audio should be cleared
@@ -393,7 +348,7 @@ class TestAudioThreading:
         detector = MockTurnDetector(decisions=[])
         vad = MockVADProvider(events=[])
         config = AudioPipelineConfig(vad=vad, turn_detector=detector)
-        backend = _MockBackend()
+        backend = MockVoiceBackend()
 
         channel = VoiceChannel("ch1", backend=backend, pipeline=config)
 
