@@ -63,6 +63,12 @@ Environment variables:
                         suppressed segments, barge-in evaluation, AI turns)
 
     --- Turn detection ---
+    SMART_TURN_THRESHOLD
+                        Probability from which a turn is complete (default: 0.5);
+                        raise it (0.7-0.8) if a pause mid-sentence still gets answered,
+                        at the cost of waiting TURN_WAIT_MS on more sentences.
+    TURN_WAIT_MS        Silence after a turn judged unfinished before it is answered
+                        (default: 1500)
     SMART_TURN_MODEL    Smart Turn v3 .onnx (default: MODELS_DIR/smart-turn-v3.2-cpu.onnx,
                         used when present; add --extra smart-turn). Without it,
                         every pause of 0.6 s ends the turn.
@@ -248,11 +254,12 @@ def build_turn_detector() -> SmartTurnDetector | None:
         logger.info("No Smart Turn model at %s: turns end at every VAD pause", model)
         return None
     try:
-        detector = SmartTurnDetector(SmartTurnConfig(model_path=model))
+        threshold = float(os.environ.get("SMART_TURN_THRESHOLD", "0.5"))
+        detector = SmartTurnDetector(SmartTurnConfig(model_path=model, threshold=threshold))
     except ImportError as exc:
         logger.warning("Smart Turn needs its extra (--extra smart-turn): %s", exc)
         return None
-    logger.info("Turn detection: Smart Turn v3 (%s)", Path(model).name)
+    logger.info("Turn detection: Smart Turn v3 (%s, threshold %.2f)", Path(model).name, threshold)
     return detector
 
 
@@ -365,7 +372,12 @@ async def run(stack: AsyncExitStack) -> None:
         stt=stt,
         tts=tts,
         backend=backend,
-        pipeline=AudioPipelineConfig(vad=vad, aec=aec, turn_detector=turn_detector),
+        pipeline=AudioPipelineConfig(
+            vad=vad,
+            aec=aec,
+            turn_detector=turn_detector,
+            turn_incomplete_wait_ms=float(os.environ.get("TURN_WAIT_MS", "1500")),
+        ),
         # The LLM adds emoji despite the prompt; spoken, they sound wrong.
         tts_filter=StripEmoji(),
     )

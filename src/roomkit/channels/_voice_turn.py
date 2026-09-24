@@ -129,6 +129,13 @@ class VoiceTurnMixin:
             audio_sample_rate=sample_rate,
         )
         decision = await asyncio.to_thread(turn_detector.evaluate, turn_ctx)
+        logger.debug(
+            "Turn %s by %s (confidence %.2f, %s)",
+            "complete" if decision.is_complete else "incomplete",
+            turn_detector.name,
+            decision.confidence,
+            decision.reason,
+        )
 
         if decision.is_complete:
             await self._complete_turn(session, room_id, context, decision.confidence)
