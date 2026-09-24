@@ -763,8 +763,10 @@ class TestSendGreeting:
 
         await handler.send_greeting("r1", channel_id="voice")
 
+        # The greeting is the agent's line: as a user message the model would
+        # answer its own greeting (RFC §12.4).
         mock_rtv.provider.inject_text.assert_called_once_with(
-            mock_session, "Welcome! How can I help?", role="user"
+            mock_session, "Welcome! How can I help?", role="assistant"
         )
 
     async def test_send_greeting_traditional_voice(self):
@@ -837,6 +839,36 @@ class TestSendGreeting:
 
         msg = kit.process_inbound.call_args[0][0]
         assert msg.content.body == "[Respond in French] Welcome!"
+
+    async def test_send_greeting_realtime_with_language(self):
+        """The language directs the model; the greeting stays the agent's line."""
+        from unittest.mock import call
+
+        from roomkit.channels.realtime_voice import RealtimeVoiceChannel
+
+        room = set_conversation_state(
+            Room(id="r1"), ConversationState(phase="intake", active_agent_id="agent-triage")
+        )
+        kit = _make_mock_kit(room, [])
+        mock_session = MagicMock()
+        mock_rtv = MagicMock()
+        mock_rtv.__class__ = RealtimeVoiceChannel
+        mock_rtv.get_room_sessions.return_value = [mock_session]
+        mock_rtv.provider.inject_text = AsyncMock()
+        kit.channels = {"voice": mock_rtv}
+        mock_agent = MagicMock()
+        mock_agent.language = "French"
+
+        handler = HandoffHandler(kit=kit, router=MagicMock())
+        handler.greeting_map = {"agent-triage": "Welcome!"}
+        handler.agents = {"agent-triage": mock_agent}
+
+        await handler.send_greeting("r1", channel_id="voice")
+
+        assert mock_rtv.provider.inject_text.await_args_list == [
+            call(mock_session, "Respond in French.", role="system", silent=True),
+            call(mock_session, "Welcome!", role="assistant"),
+        ]
 
 
 class TestSetLanguage:

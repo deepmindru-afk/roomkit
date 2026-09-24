@@ -387,6 +387,18 @@ class TestDisconnect:
         assert session.id not in provider._sessions
         assert session.id not in provider._conversations
 
+    async def test_an_assistant_line_is_asked_for_not_heard_from_the_user(
+        self, provider: ElevenLabsRealtimeProvider, session: VoiceSession
+    ) -> None:
+        """No client event makes the agent speak a text: the line becomes an instruction."""
+        mock_conversation = AsyncMock()
+        provider._conversations[session.id] = mock_conversation
+
+        await provider.inject_text(session, "Bienvenue !", role="assistant")
+
+        (text,) = mock_conversation.send_user_message.await_args.args
+        assert text.startswith("Say this to the user now") and '"Bienvenue !"' in text
+
     async def test_close_disconnects_all(
         self, provider: ElevenLabsRealtimeProvider, session: VoiceSession
     ) -> None:

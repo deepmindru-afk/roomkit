@@ -20,3 +20,13 @@ class VoiceInjectionResult(BaseModel):
     status: Literal["sent", "not_sent", "unknown"]
     reason: str | None = None
     retryable: bool = False
+
+
+def say_line_instruction(line: str) -> str:
+    """Phrase an ``assistant`` line as an instruction to say it (RFC §12.4).
+
+    For a provider with no primitive that makes the agent speak a given text:
+    the line reaches the model as a direction, never as something the user
+    said, which the model would answer.
+    """
+    return f'Say this to the user now, as your next words, then listen: "{line}"'

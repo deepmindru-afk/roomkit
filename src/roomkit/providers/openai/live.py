@@ -103,7 +103,9 @@ class OpenAILiveProvider(
     own words rather than reading it. The session takes no user text once
     started, so ``user`` is what the model will say, never a turn it answers:
     an instruction, the opening greeting included, is ``role="system"``
-    (OpenAI's documented way to have the model speak first). An append is
+    (OpenAI's documented way to have the model speak first), and a line the
+    application wrote (``role="assistant"``) becomes an instructions append
+    asking the model to say it — as commentary, the model improvised its own. An append is
     measured with the model's
     tokenizer (``tiktoken``, installed with the extra; UTF-8 bytes bound it
     when that is missing) and split on sentence boundaries only where it

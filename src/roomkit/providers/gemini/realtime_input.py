@@ -15,7 +15,7 @@ from typing import Any
 from roomkit.providers.gemini.realtime_config import genai_types
 from roomkit.providers.gemini.realtime_state import _GeminiSessionState
 from roomkit.voice.base import VoiceSession, VoiceSessionState
-from roomkit.voice.realtime.injection import VoiceInjectionResult
+from roomkit.voice.realtime.injection import VoiceInjectionResult, say_line_instruction
 from roomkit.voice.realtime.provider import RealtimeVoiceProvider
 
 logger = logging.getLogger("roomkit.providers.gemini.realtime")
@@ -126,7 +126,8 @@ class GeminiLiveInputMixin(RealtimeVoiceProvider):
         Gemini Live takes ``user`` and ``model`` turns and has no system role
         in them — instructions are fixed at setup — so a ``system``
         instruction is delivered as a ``user`` turn, which the model follows
-        and answers. Before any audio is sent the turn goes through
+        and answers, and an ``assistant`` line as a ``user`` turn asking the
+        model to say it. Before any audio is sent the turn goes through
         ``clientContent`` (``silent`` leaves it incomplete); once audio flows
         it goes through ``realtimeInput``, which carries no role, and
         ``silent`` becomes a best-effort "do not respond" marker.
@@ -170,6 +171,10 @@ class GeminiLiveInputMixin(RealtimeVoiceProvider):
     ) -> None:
         types = genai_types()
 
+        if role == "assistant":
+            # No turn makes the model speak a given text (a ``model`` turn
+            # records it as already said), so the line becomes an instruction.
+            role, text = "system", say_line_instruction(text)
         effective_role = role if role in ("user", "model") else "user"
         if effective_role != role:
             logger.debug(

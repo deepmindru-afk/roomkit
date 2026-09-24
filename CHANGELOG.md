@@ -52,6 +52,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING — Deepgram acts on a non-silent `system` instruction at once.**
+  `DeepgramAgentProvider.inject_text(..., role="system")` used to append the
+  text to the prompt through `UpdatePrompt`, which never starts a turn, so
+  `silent=False` was ignored: "greet the user now" waited for the caller to
+  speak. It now travels as `InjectUserMessage` and the agent answers it; it
+  joins the conversation, not the prompt. A standing instruction ("speak more
+  slowly from now on") keeps the old behaviour with `silent=True`. This
+  includes room text a `RealtimeVoiceChannel` delivers to a Deepgram session
+  with the default `inject_role` of `system`: the agent now answers it
+  (RFC §12.4).
 - `metadata.played_ms` on an interrupted utterance now measures the audio the
   user heard: the time since the first chunk reached the transport, capped at
   the audio produced, frozen at the interruption. It used to count from the
@@ -85,6 +95,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `user` injection, GPT-Live voiced the cue ("Handoff complete. You are now
   the…") as its own words instead of following it. The two GPT-Live examples
   greet the same way now.
+- A configured greeting reaches a realtime session as the agent's line, not
+  as the user's words. `inject_text(role="assistant")` is specified (RFC
+  §12.4): OpenAI Realtime, xAI, Gemini Live and ElevenLabs used to turn it
+  into a user message, so the model answered its own greeting; they now ask
+  the model to say the line (`say_line_instruction`), Anam speaks it through
+  `talk()` and Deepgram through `InjectAgentMessage`. GPT-Live used a
+  commentary append, which it paraphrases: given a written greeting that way it
+  improvised another, twice with a name nobody supplied; it now gets an
+  instructions append asking it to say the line, and said it as written in
+  five sessions of six. `HandoffHandler.send_greeting` injects the
+  greeting with that intent on a `RealtimeVoiceChannel` — it used `user` — and
+  sends the room's language as a silent instruction before it rather than as
+  a `[Respond in …]` prefix the model could voice.
 
 - A TTS provider's audio stream is closed as soon as playback stops. A
   backend leaving `send_audio()` on a barge-in did not close the iterator it

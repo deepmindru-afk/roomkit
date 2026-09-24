@@ -24,7 +24,7 @@ from roomkit.providers.openai.realtime_events import (
 )
 from roomkit.voice._g711 import _G711Codec, _get_codec
 from roomkit.voice.base import VoiceSession, VoiceSessionState
-from roomkit.voice.realtime.injection import VoiceInjectionResult
+from roomkit.voice.realtime.injection import VoiceInjectionResult, say_line_instruction
 
 logger = logging.getLogger("roomkit.providers.openai.realtime_base")
 
@@ -255,11 +255,20 @@ class OpenAIRealtimeBase(OpenAIRealtimeEventHandlersMixin):
         role: str = "user",
         silent: bool = False,
     ) -> VoiceInjectionResult:
+        """Add a message item, then request a response unless ``silent``.
+
+        ``system`` and ``user`` are message roles here. The API has no item
+        that makes the model speak a given text, so an ``assistant`` line
+        becomes a ``system`` instruction to say it (RFC §12.4): as a user
+        message, the model would answer its own line.
+        """
         ws = self._connections.get(session.id)
         if ws is None:
             return VoiceInjectionResult(
                 status="not_sent", reason="voice_not_connected", retryable=True
             )
+        if role == "assistant":
+            role, text = "system", say_line_instruction(text)
 
         logger.debug(
             "[%s →] conversation.item.create (input_text, role=%s, silent=%s)",

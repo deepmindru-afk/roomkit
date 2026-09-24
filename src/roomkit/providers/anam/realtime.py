@@ -223,6 +223,14 @@ class AnamRealtimeProvider(RealtimeAudioVideoProvider):
     async def inject_text(
         self, session: VoiceSession, text: str, *, role: str = "user", silent: bool = False
     ) -> VoiceInjectionResult:
+        """Send text as the user, or have the avatar say an ``assistant`` line.
+
+        ``send_message`` simulates user speech, which the LLM answers, so
+        ``system`` and ``user`` both travel through it. An ``assistant`` line
+        goes to ``talk``, which speaks the text verbatim and bypasses the LLM
+        (RFC §12.4). Nothing adds context without output, so ``silent`` is
+        refused.
+        """
         if silent:
             # send_message simulates user speech and can trigger avatar output.
             return VoiceInjectionResult(
@@ -234,8 +242,10 @@ class AnamRealtimeProvider(RealtimeAudioVideoProvider):
                 status="not_sent", reason="voice_not_connected", retryable=True
             )
         try:
-            # send_message goes through the LLM; talk() bypasses it
-            await state.anam_session.send_message(text)
+            if role == "assistant":
+                await state.anam_session.talk(text)
+            else:
+                await state.anam_session.send_message(text)
         except Exception:
             logger.debug("inject_text failed (session %s)", session.id, exc_info=True)
             return VoiceInjectionResult(status="unknown", reason="voice_submission_unknown")

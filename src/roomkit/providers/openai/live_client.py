@@ -25,7 +25,7 @@ from roomkit.providers.openai.live_events import (
 from roomkit.voice.audio_frame import AudioFrame
 from roomkit.voice.base import VoiceSession
 from roomkit.voice.pipeline.resampler.linear import LinearResamplerProvider
-from roomkit.voice.realtime.injection import VoiceInjectionResult
+from roomkit.voice.realtime.injection import VoiceInjectionResult, say_line_instruction
 from roomkit.voice.realtime.provider import RealtimeVoiceProvider
 
 logger = logging.getLogger("roomkit.providers.openai.live")
@@ -78,6 +78,11 @@ class OpenAILiveClientMixin(RealtimeVoiceProvider):
             )
         if not text.strip():
             return VoiceInjectionResult(status="not_sent", reason="voice_empty_input")
+        if role == "assistant" and not silent:
+            # A commentary append is information the model relays in its own
+            # words; given a written greeting that way, it improvised one.
+            # OpenAI documents instructions as how to have it speak first.
+            role, text = "system", say_line_instruction(text)
         if role == "system":
             event_type = EVT_INSTRUCTIONS_APPEND
         elif silent:

@@ -540,14 +540,27 @@ class TestOpenAIRealtimeProvider:
         first_msg = json.loads(ws.send.call_args_list[0][0][0])
         assert first_msg["item"]["role"] == "system"
 
-    async def test_inject_text_invalid_role_defaults_to_user(self):
+    async def test_inject_text_unknown_role_defaults_to_user(self):
         mod = _load_provider()
         provider, ws, session = _make_connected_provider(mod)
 
-        await provider.inject_text(session, "Test", role="assistant")
+        await provider.inject_text(session, "Test", role="tool")
 
         first_msg = json.loads(ws.send.call_args_list[0][0][0])
         assert first_msg["item"]["role"] == "user"
+
+    async def test_an_assistant_line_is_asked_for_not_heard_from_the_user(self):
+        """As a user message the model would answer its own line (RFC §12.4)."""
+        mod = _load_provider()
+        provider, ws, session = _make_connected_provider(mod)
+
+        await provider.inject_text(session, "Bienvenue !", role="assistant")
+
+        item = json.loads(ws.send.call_args_list[0][0][0])["item"]
+        assert item["role"] == "system"
+        text = item["content"][0]["text"]
+        assert text.startswith("Say this to the user now") and '"Bienvenue !"' in text
+        assert json.loads(ws.send.call_args_list[1][0][0])["type"] == "response.create"
 
     async def test_inject_text_silent(self):
         mod = _load_provider()

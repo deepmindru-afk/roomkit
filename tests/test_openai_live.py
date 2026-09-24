@@ -36,6 +36,7 @@ from roomkit.providers.openai.live_events import (
     tokenizer,
 )
 from roomkit.voice.base import VoiceSession, VoiceSessionState
+from roomkit.voice.realtime.injection import say_line_instruction
 from tests.test_proactive_delivery_voice import voice_room
 
 _EOF = object()
@@ -613,7 +614,8 @@ class TestInjectText:
 
         for text, role, silent in (
             ("Be formal.", "system", False),
-            ("Greet the user.", "user", False),
+            ("Your order has shipped.", "user", False),
+            ("Bienvenue !", "assistant", False),
             ("The user is a VIP.", "user", True),
         ):
             result = await provider.inject_text(session, text, role=role, silent=silent)
@@ -628,7 +630,12 @@ class TestInjectText:
             {
                 "type": "session.commentary.append",
                 "delegation_id": None,
-                "content": "Greet the user.",
+                "content": "Your order has shipped.",
+            },
+            {
+                "type": "session.instructions.append",
+                "delegation_id": None,
+                "content": say_line_instruction("Bienvenue !"),
             },
             {
                 "type": "session.thinking.append",

@@ -863,6 +863,25 @@ class TestOutbound:
         assert "content" not in message
         await provider.disconnect(session)
 
+    async def test_a_system_instruction_is_acted_on_at_once(
+        self, provider: DeepgramAgentProvider, session: VoiceSession
+    ) -> None:
+        """UpdatePrompt never starts a turn, so a non-silent instruction is a user message."""
+        ws = await _connect(provider, session, system_prompt="Tu es concis.")
+        await provider.inject_text(session, "Salue l'utilisateur.", role="system")
+        assert ws.last_of_type("InjectUserMessage")["content"] == "Salue l'utilisateur."
+        assert not [m for m in ws.json_sent if m.get("type") == "UpdatePrompt"]
+        await provider.disconnect(session)
+
+    async def test_a_silent_system_instruction_stands_in_the_prompt(
+        self, provider: DeepgramAgentProvider, session: VoiceSession
+    ) -> None:
+        ws = await _connect(provider, session, system_prompt="Tu es concis.")
+        await provider.inject_text(session, "Parle lentement.", role="system", silent=True)
+        assert ws.last_of_type("UpdatePrompt")["prompt"] == "Tu es concis.\n\nParle lentement."
+        assert not [m for m in ws.json_sent if m.get("type") == "InjectUserMessage"]
+        await provider.disconnect(session)
+
     async def test_silent_injection_appends_to_prompt(
         self, provider: DeepgramAgentProvider, session: VoiceSession
     ) -> None:

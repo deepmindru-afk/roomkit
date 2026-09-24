@@ -38,6 +38,7 @@ class _MockAnamSession:
         self.interrupted = False
         self.sent_audio: list[tuple[bytes, int, int]] = []
         self.sent_messages: list[str] = []
+        self.spoken: list[str] = []
         self._audio_frames: list[Any] = []
         self._video_frames: list[Any] = []
 
@@ -52,8 +53,8 @@ class _MockAnamSession:
     async def send_message(self, content: str) -> None:
         self.sent_messages.append(content)
 
-    def talk(self, content: str) -> None:
-        self.sent_messages.append(content)
+    async def talk(self, content: str) -> None:
+        self.spoken.append(content)
 
     def interrupt(self) -> None:
         self.interrupted = True
@@ -262,6 +263,28 @@ class TestAnamRealtimeProviderConnect:
             state = provider._states[session.id]
             await provider.inject_text(session, "Hello")
             assert state.anam_session.sent_messages == ["Hello"]
+
+            await provider.disconnect(session)
+
+    async def test_an_assistant_line_is_spoken_not_sent_as_the_user(
+        self,
+        anam_module: ModuleType,
+        config: AnamConfig,
+        session: VoiceSession,
+    ) -> None:
+        with patch.dict(sys.modules, {"anam": anam_module}):
+            import roomkit.providers.anam.realtime as _mod
+
+            _mod._anam_mod = None
+            _mod._np = None
+
+            provider = _mod.AnamRealtimeProvider(config)
+            await provider.connect(session)
+
+            state = provider._states[session.id]
+            await provider.inject_text(session, "Bienvenue !", role="assistant")
+            assert state.anam_session.spoken == ["Bienvenue !"]
+            assert state.anam_session.sent_messages == []
 
             await provider.disconnect(session)
 

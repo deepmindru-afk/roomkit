@@ -720,7 +720,7 @@ class TestGeminiLiveProvider:
         call_kwargs = mock_live_session.send_client_content.call_args[1]
         assert call_kwargs["turns"].role == "model"
 
-    async def test_inject_text_invalid_role_defaults_to_user(self):
+    async def test_inject_text_unknown_role_defaults_to_user(self):
         mod = _load_provider()
         provider = mod.GeminiLiveProvider(api_key="test-key")
         session = _make_session()
@@ -732,10 +732,30 @@ class TestGeminiLiveProvider:
         )
         provider._sessions[session.id] = state
 
-        await provider.inject_text(session, "Test", role="assistant")
+        await provider.inject_text(session, "Test", role="tool")
 
         call_kwargs = mock_live_session.send_client_content.call_args[1]
         assert call_kwargs["turns"].role == "user"
+
+    async def test_an_assistant_line_is_asked_for_not_heard_from_the_user(self):
+        """No turn makes the model speak a text: the line is an instruction to say it."""
+        mod = _load_provider()
+        provider = mod.GeminiLiveProvider(api_key="test-key")
+        session = _make_session()
+
+        mock_live_session = _make_mock_live_session()
+        state = mod._GeminiSessionState(
+            session=session,
+            live_session=mock_live_session,
+        )
+        provider._sessions[session.id] = state
+
+        await provider.inject_text(session, "Bienvenue !", role="assistant")
+
+        turns = mock_live_session.send_client_content.call_args[1]["turns"]
+        text = turns.parts[0].text
+        assert text.startswith("Say this to the user now")
+        assert '"Bienvenue !"' in text
 
     async def test_inject_text_no_session(self):
         mod = _load_provider()

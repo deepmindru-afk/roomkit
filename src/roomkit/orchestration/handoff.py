@@ -517,10 +517,7 @@ class HandoffHandler:
         if not greeting:
             return
 
-        # Prepend language instruction if set
         lang = self._get_room_language(room, agent_id)
-        if lang:
-            greeting = f"[Respond in {lang}] {greeting}"
 
         ch_id = channel_id or self._event_channel_id
         if not ch_id:
@@ -528,13 +525,24 @@ class HandoffHandler:
 
         channel = self._kit.channels.get(ch_id)
 
-        # RealtimeVoiceChannel: inject text directly into provider session
+        # RealtimeVoiceChannel: the greeting is the agent's line, so it goes
+        # in with the assistant intent (RFC §12.4) — as a user message the
+        # model would answer its own greeting. The room's language directs
+        # the model and precedes it as a silent instruction.
         from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 
         if isinstance(channel, RealtimeVoiceChannel):
             for session in channel.get_room_sessions(room_id):
-                await channel.provider.inject_text(session, greeting, role="user")
+                if lang:
+                    await channel.provider.inject_text(
+                        session, f"Respond in {lang}.", role="system", silent=True
+                    )
+                await channel.provider.inject_text(session, greeting, role="assistant")
             return
+
+        # Prepend language instruction if set
+        if lang:
+            greeting = f"[Respond in {lang}] {greeting}"
 
         # Traditional voice: send synthetic inbound message
         from roomkit.models.delivery import InboundMessage

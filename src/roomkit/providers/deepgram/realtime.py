@@ -663,16 +663,19 @@ class DeepgramAgentProvider(RealtimeVoiceProvider):
         role: str = "user",
         silent: bool = False,
     ) -> VoiceInjectionResult:
-        """Inject text into the conversation.
+        """Inject text into the conversation (RFC §12.4).
 
         ``role="assistant"`` puts the words in the agent's mouth
         (``InjectAgentMessage``); ``role="user"`` makes the agent hear them and
         answer (``InjectUserMessage``).
 
         Deepgram has no message that adds to the conversation silently, so a
-        silent injection — and any system-role text — is appended to the system
-        prompt via ``UpdatePrompt`` instead: the agent takes it into account on
-        its next turn without reacting to it now.
+        silent injection is appended to the system prompt via ``UpdatePrompt``
+        instead: the agent takes it into account on its next turn without
+        reacting to it now. ``UpdatePrompt`` never starts a turn, so a
+        non-silent ``system`` instruction travels as ``InjectUserMessage``,
+        which the agent acts on at once; a standing instruction ("speak more
+        slowly from now on") is ``silent=True``.
         """
         state = self._states.get(session.id)
         if state is None:
@@ -680,7 +683,7 @@ class DeepgramAgentProvider(RealtimeVoiceProvider):
                 status="not_sent", reason="voice_not_connected", retryable=True
             )
 
-        if silent or role == "system":
+        if silent:
             await self._append_to_prompt(state, text)
             return VoiceInjectionResult(status="sent")
 

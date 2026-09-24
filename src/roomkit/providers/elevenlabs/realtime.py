@@ -31,7 +31,7 @@ from typing import Any, cast
 from roomkit.providers.elevenlabs.config import ElevenLabsRealtimeConfig
 from roomkit.providers.elevenlabs.voices import VOICES as _VOICES
 from roomkit.voice.base import VoiceSession, VoiceSessionState
-from roomkit.voice.realtime.injection import VoiceInjectionResult
+from roomkit.voice.realtime.injection import VoiceInjectionResult, say_line_instruction
 from roomkit.voice.realtime.provider import RealtimeVoiceProvider, VoiceInfo
 
 logger = logging.getLogger("roomkit.providers.elevenlabs.realtime")
@@ -329,11 +329,19 @@ class ElevenLabsRealtimeProvider(RealtimeVoiceProvider):
         role: str = "user",
         silent: bool = False,
     ) -> VoiceInjectionResult:
+        """Send a user message, or a contextual update when ``silent``.
+
+        The agent answers a user message, so ``system`` and ``user`` both
+        travel as one. No client event makes the agent speak a given text, so
+        an ``assistant`` line is sent as an instruction to say it (RFC §12.4).
+        """
         conversation = self._conversations.get(session.id)
         if conversation is None:
             return VoiceInjectionResult(
                 status="not_sent", reason="voice_not_connected", retryable=True
             )
+        if role == "assistant" and not silent:
+            text = say_line_instruction(text)
         if silent:
             logger.debug("[ElevenLabs →] contextual_update (silent inject)")
             await conversation.send_contextual_update(text)
