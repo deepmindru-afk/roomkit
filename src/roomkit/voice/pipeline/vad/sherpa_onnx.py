@@ -63,7 +63,10 @@ class SherpaOnnxVADConfig:
         silence_threshold_ms: Consecutive silence in ms to trigger SPEECH_END.
         min_speech_duration_ms: Minimum speech duration to emit; shorter
             segments are silently discarded.
-        speech_pad_ms: Pre-roll buffer duration in ms.
+        speech_pad_ms: Pre-roll buffer duration in ms: audio kept from
+            before ``is_speech_detected()`` flips.  TEN-VAD flips 0.4-0.9 s
+            after the voice starts, so a shorter pre-roll cuts the first word
+            before the STT hears it.
         max_speech_duration: Maximum speech segment length in seconds before
             forcing a segment break inside sherpa.
         sample_rate: Expected audio sample rate.
@@ -76,7 +79,7 @@ class SherpaOnnxVADConfig:
     threshold: float = 0.35
     silence_threshold_ms: float = 500
     min_speech_duration_ms: float = 250
-    speech_pad_ms: float = 300
+    speech_pad_ms: float = 1000
     max_speech_duration: float = 20.0
     # Energy-based fast exit: if RMS drops below this threshold for
     # silence_threshold_ms, force SPEECH_END even if the model still

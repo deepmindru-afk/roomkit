@@ -181,7 +181,6 @@ async def main() -> None:
             threshold=float(os.environ.get("VAD_THRESHOLD", "0.5")),
             silence_threshold_ms=600,
             min_speech_duration_ms=200,
-            speech_pad_ms=300,
             sample_rate=MIC_RATE,
             provider="cpu",
         )

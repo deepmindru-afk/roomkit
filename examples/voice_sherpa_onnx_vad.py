@@ -87,7 +87,6 @@ async def main() -> None:
             threshold=threshold,
             silence_threshold_ms=500,
             min_speech_duration_ms=250,
-            speech_pad_ms=300,
             sample_rate=sample_rate,
         )
     )

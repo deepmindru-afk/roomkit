@@ -28,6 +28,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `uv.lock`. The extra now declares it (outside armv7l, whose wheel bundles
   it), and requires `sherpa-onnx>=1.12.26`.
 
+- `SherpaOnnxVADProvider` no longer cuts the first word of an utterance
+  (RMK-208). TEN-VAD flips `is_speech_detected()` 0.4 to 0.9 s after the voice
+  starts, and the provider kept only 300 ms of audio from before that moment,
+  so the STT got segments starting mid-word. `SherpaOnnxVADConfig.speech_pad_ms`
+  now defaults to 1000, and the examples no longer pin it to 300. A config that
+  passes `speech_pad_ms` explicitly keeps its value. The segment `start`
+  sherpa-onnx reports does not help: it sits only about 0.13 s before the
+  detection.
+
 ## [0.89.0] — 2026-09-24
 
 ### Added

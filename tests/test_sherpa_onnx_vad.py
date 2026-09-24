@@ -293,6 +293,38 @@ class TestPreRoll:
         # Audio should include pre-roll + speech + some silence
         assert len(end_event.audio_bytes) > 320 * 2  # more than just speech frame
 
+    def test_default_pre_roll_covers_late_detection(self) -> None:
+        """TEN-VAD flips ``is_speech_detected()`` 0.4-0.9 s after the voice starts.
+
+        The default pre-roll must reach back past the voice onset, or the STT
+        gets the first word cut (RMK-208).
+        """
+        sherpa = _mock_sherpa_module()
+        detector = MagicMock()
+        detector.empty.return_value = True
+
+        noise_frames, late_frames, detected_frames = 50, 30, 10  # 1 s, 0.6 s, 0.2 s
+        speech_flags = (
+            [False] * (noise_frames + late_frames) + [True] * detected_frames + [False] * 40
+        )
+        detector.is_speech_detected.side_effect = speech_flags
+
+        vad = _make_provider(sherpa, detector, silence_threshold_ms=200)
+
+        noise, voice = _speech(amplitude=120), _speech(amplitude=3000)
+        for _ in range(noise_frames):
+            vad.process(noise, "s1")
+        events = [vad.process(voice, "s1") for _ in range(late_frames + detected_frames)]
+        events += [vad.process(_silence(), "s1") for _ in range(40)]
+
+        end = next(e for e in events if e is not None and e.type == VADEventType.SPEECH_END)
+        frames = [end.audio_bytes[i : i + 640] for i in range(0, len(end.audio_bytes), 640)]
+        assert frames.count(voice.data) == late_frames + detected_frames
+        first_voice = frames.index(voice.data)
+        # The voice onset plus at least 200 ms of what came before it.
+        assert first_voice >= 10
+        assert all(f == noise.data for f in frames[:first_voice])
+
 
 # ---------------------------------------------------------------------------
 # Reset

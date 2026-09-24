@@ -262,7 +262,6 @@ async def main() -> None:
             threshold=vad_threshold,
             silence_threshold_ms=600,
             min_speech_duration_ms=200,
-            speech_pad_ms=300,
             sample_rate=sample_rate,
             provider="cpu",
         )
