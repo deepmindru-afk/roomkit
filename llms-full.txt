@@ -3300,19 +3300,26 @@ await realtime.inject_text(session, "Let me check that for you...")
 
 ## VAD Configuration
 
-Configure voice activity detection for realtime providers:
+The provider's own turn detection is tuned per session through
+`provider_config` in the session metadata (keys as the provider reads them, here
+OpenAI's `server_vad`):
 
 ```python
-realtime = RealtimeVoiceChannel(
+session = await kit.join(
+    "room",
     "realtime-voice",
-    provider=provider,
-    system_prompt="...",
-    vad_config={
-        "threshold": 0.5,
-        "silence_duration_ms": 500,
+    participant_id="user",
+    metadata={
+        "provider_config": {
+            "turn_detection_type": "server_vad",
+            "threshold": 0.5,
+            "silence_duration_ms": 500,
+        }
     },
 )
 ```
+
+A local VAD instead goes in `pipeline=AudioPipelineConfig(vad=..., vad_config=...)`.
 
 ## Session Resumption
 
