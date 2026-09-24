@@ -120,10 +120,11 @@ discord = ["discord.py>=2.4"]
 # build it. Install explicitly with `pip install roomkit[buzz]`.
 buzz = ["buzzkit>=0.3.0", "soxr>=0.4"]
 # LiveKit SFU (ConferenceBackend). `livekit` is the realtime SDK — a compiled
-# wheel carrying LiveKit's Rust client — and `livekit-api` the server API. Kept
-# OUT of the aggregate `providers`/`dev`/`all` groups so RoomKit's own CI does
-# not pull it: the translation and conformance tests are written to run without
-# it. Install explicitly with `pip install roomkit[livekit]`.
+# wheel carrying LiveKit's Rust client — and `livekit-api` the server API. It
+# ships prebuilt `py3-none` wheels for Linux, macOS and Windows, so `dev` pulls
+# it without building anything: without it the backend tests skip whole and
+# nothing gates an SDK bump. Kept OUT of `providers`/`all`; install explicitly
+# with `pip install roomkit[livekit]`.
 livekit = ["livekit>=1.1", "livekit-api>=1.2"]
 whatsapp-personal = ["neonize>=0.3.14"]
 postgres = ["asyncpg>=0.29"]
@@ -188,6 +189,7 @@ dev = [
     "roomkit[opentelemetry]",
     "roomkit[acp]",
     "roomkit[mcp]",
+    "roomkit[livekit]",
 ]
 all = [
     "roomkit[providers]",
