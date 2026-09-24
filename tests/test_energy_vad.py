@@ -327,3 +327,7 @@ class TestConfigure:
     def test_unknown_extra_rejected(self) -> None:
         with pytest.raises(ValueError, match="EnergyVADProvider has no VAD setting threshold"):
             EnergyVADProvider().configure(VADConfig(extra={"threshold": 0.5}))
+
+    def test_non_number_extra_rejected_before_audio(self) -> None:
+        with pytest.raises(ValueError, match="energy_threshold must be a number"):
+            EnergyVADProvider().configure(VADConfig(extra={"energy_threshold": "loud"}))

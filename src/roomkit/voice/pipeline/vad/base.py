@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Collection
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from enum import StrEnum, unique
 from typing import TYPE_CHECKING
 
@@ -73,17 +73,24 @@ class VADConfig:
         A named field that is set wins over the same key in ``extra``.
 
         Raises:
-            ValueError: ``extra`` names a setting *provider* does not have.
+            ValueError: ``extra`` names a setting *provider* does not have, or
+                sets one to ``None``, or a named field is not a number.
         """
         unknown = sorted(set(self.extra) - set(known))
         if unknown:
             raise ValueError(f"{provider} has no VAD setting {', '.join(unknown)}")
+        unset = sorted(k for k, v in self.extra.items() if v is None)
+        if unset:
+            raise ValueError(f"VADConfig.extra sets {', '.join(unset)} to None")
         named = {
-            "silence_threshold_ms": self.silence_threshold_ms,
-            "speech_pad_ms": self.speech_pad_ms,
-            "min_speech_duration_ms": self.min_speech_duration_ms,
+            f.name: getattr(self, f.name)
+            for f in fields(self)
+            if f.name != "extra" and getattr(self, f.name) is not None
         }
-        return {**self.extra, **{k: v for k, v in named.items() if v is not None}}
+        for key, value in named.items():
+            if isinstance(value, bool) or not isinstance(value, int | float):
+                raise ValueError(f"VADConfig.{key} must be a number, got {value!r}")
+        return {**self.extra, **named}
 
 
 class VADProvider(ABC):
@@ -115,8 +122,10 @@ class VADProvider(ABC):
     def configure(self, config: VADConfig) -> None:
         """Apply the pipeline's ``vad_config`` (RFC §12.3.1).
 
-        Called when the pipeline is built, before audio flows. The default
-        cannot apply anything and says so rather than ignoring it silently.
+        Called when the pipeline is built, before audio flows. It changes the
+        provider itself, so a provider shared by two pipelines ends up with the
+        ``vad_config`` of the last one built. The default cannot apply anything
+        and says so rather than ignoring it silently.
         """
         logger.warning("%s does not support VADConfig; vad_config is ignored", self.name)
 

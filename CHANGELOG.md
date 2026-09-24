@@ -39,14 +39,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `AudioPipelineConfig.vad_config` tunes the VAD provider (RMK-209, RFC
   §12.3.1). It was accepted and never read, so `VADConfig(silence_threshold_ms=
-  200)` changed nothing. The pipeline now hands it to the new
-  `VADProvider.configure()` when it is built: a field that is set replaces the
-  provider's own value, a field left out keeps it, and `extra` takes the
-  provider's own setting names (`threshold` for `SherpaOnnxVADProvider`,
-  `energy_threshold` for `EnergyVADProvider`), an unknown name raising
-  `ValueError`. `VADConfig` fields therefore default to `None` instead of
-  500 / 300 / 250 ms. A third-party provider that does not override
-  `configure()` logs a warning, as does `vad_config` without a `vad`.
+  200)` changed nothing. The pipeline now hands it to the provider when it is
+  built: a field that is set replaces the provider's own value, a field left
+  out keeps it. A `RealtimeVoiceChannel` builds its pipeline at its first
+  session, so a bad `vad_config` surfaces there.
+
+### Added
+
+- `VADProvider.configure(config)` (RMK-209, RFC §12.3.8), implemented by
+  `SherpaOnnxVADProvider`, `EnergyVADProvider` and `MockVADProvider`.
+  `VADConfig.extra` takes the provider's own setting names (`threshold` for
+  Sherpa, `energy_threshold` for Energy); an unknown name, a `None` or a value
+  of the wrong type raises `ValueError` when the pipeline is built. A
+  third-party provider that does not override `configure()` logs a warning, as
+  does `vad_config` without a `vad`. `configure()` changes the provider itself:
+  a provider shared by two pipelines keeps the `vad_config` of the last one.
+
+### Changed
+
+- `VADConfig` fields default to `None` instead of 500 / 300 / 250 ms
+  (RMK-209): an unset field must leave the provider's value alone, which a
+  concrete default cannot express. Nothing read those defaults.
 
 ## [0.89.0] — 2026-09-24
 

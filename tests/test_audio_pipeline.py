@@ -99,6 +99,14 @@ class TestVADConfig:
             "speech_pad_ms": 600,
         }
 
+    def test_settings_reject_none_in_extra(self) -> None:
+        with pytest.raises(ValueError, match="sets threshold to None"):
+            VADConfig(extra={"threshold": None}).settings("P", ["threshold"])
+
+    def test_settings_reject_non_number_field(self) -> None:
+        with pytest.raises(ValueError, match="silence_threshold_ms must be a number"):
+            VADConfig(silence_threshold_ms="200").settings("P", [])  # ty: ignore[invalid-argument-type]
+
     def test_settings_reject_unknown_extra(self) -> None:
         config = VADConfig(extra={"sensitivity": 0.5})
         with pytest.raises(ValueError, match="P has no VAD setting sensitivity"):

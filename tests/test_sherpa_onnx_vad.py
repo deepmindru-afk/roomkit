@@ -518,6 +518,16 @@ class TestConfigure:
         vad.process(_silence(), "s1")
         assert sherpa.VadModelConfig.return_value.ten_vad.threshold == 0.6
 
+    def test_wrong_type_extra_rejected(self) -> None:
+        vad, _ = self._provider()
+        with pytest.raises(ValueError, match="threshold must be float"):
+            vad.configure(VADConfig(extra={"threshold": "0.6"}))
+
+    def test_int_accepted_for_float_setting(self) -> None:
+        vad, _ = self._provider()
+        vad.configure(VADConfig(silence_threshold_ms=200))
+        assert vad._config.silence_threshold_ms == 200
+
     def test_unknown_extra_rejected(self) -> None:
         vad, _ = self._provider()
         with pytest.raises(ValueError, match="SherpaOnnxVAD has no VAD setting sensitivity"):

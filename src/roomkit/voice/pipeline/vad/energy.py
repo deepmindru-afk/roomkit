@@ -54,6 +54,13 @@ class _StreamState:
     debug_speech_count: int = 0
 
 
+def _as_float(key: str, value: object) -> float:
+    """A VADConfig value as the float this provider compares against."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise ValueError(f"EnergyVADProvider setting {key} must be a number, got {value!r}")
+    return float(value)
+
+
 # Constructor argument -> attribute, for VADConfig overrides.
 _SETTINGS = {
     "energy_threshold": "_energy_threshold",
@@ -100,7 +107,7 @@ class EnergyVADProvider(VADProvider):
     def configure(self, config: VADConfig) -> None:
         """Apply ``vad_config``; ``extra`` takes any constructor argument name."""
         for key, value in config.settings(self.name, _SETTINGS).items():
-            setattr(self, _SETTINGS[key], value)
+            setattr(self, _SETTINGS[key], _as_float(key, value))
 
     def _frame_duration_ms(self, frame: AudioFrame) -> float:
         """Duration of a single frame in milliseconds."""

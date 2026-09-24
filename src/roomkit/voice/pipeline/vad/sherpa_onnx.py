@@ -154,7 +154,16 @@ class SherpaOnnxVADProvider(VADProvider):
         when it is created, so they apply to streams that start afterwards.
         """
         known = [f.name for f in fields(SherpaOnnxVADConfig)]
-        self._config = replace(self._config, **config.settings(self.name, known))
+        settings = config.settings(self.name, known)
+        for key, value in settings.items():
+            expected = type(getattr(self._config, key))
+            if expected is float and isinstance(value, int) and not isinstance(value, bool):
+                continue  # an int is a valid float setting
+            if not isinstance(value, expected):
+                raise ValueError(
+                    f"SherpaOnnxVAD setting {key} must be {expected.__name__}, got {value!r}"
+                )
+        self._config = replace(self._config, **settings)
 
     def _state_for(self, stream: str) -> _StreamState:
         """Get or create this stream's detection state."""
