@@ -11,8 +11,9 @@ A ``standalone`` instruction goes further: the turn it opens reads nothing of
 the room, for a pass that must start from a blank page (a summary re-run that
 would otherwise copy its previous answer).
 
-The example directs the agent twice and prints what the room kept and what the
-model was sent each time.
+The example directs the agent three times (a greeting, then the same summary
+request without and with ``standalone``) and prints what the model was sent
+each time and what the room kept.
 
 Run with:
     uv run python examples/instruction_event.py
@@ -34,7 +35,9 @@ ROOM = "support"
 async def main() -> None:
     kit = RoomKit()
     kit.register_channel(WebSocketChannel("ws"))
-    provider = MockAIProvider(["Hello, I'm the advisor. How can I help?", "Summary: greeting."])
+    provider = MockAIProvider(
+        ["Hello, I'm the advisor. How can I help?", "Summary: greeting.", "Summary: greeting."]
+    )
     kit.register_channel(AIChannel("advisor", provider=provider))
     await kit.create_room(room_id=ROOM)
     await kit.attach_channel(ROOM, "ws", category=ChannelCategory.TRANSPORT)
@@ -52,22 +55,25 @@ async def main() -> None:
         room_id=ROOM,
     )
 
-    # A pass that must not read the room: no history, no memory provider call.
-    await kit.process_inbound(
-        InboundMessage(
-            channel_id="ws",
-            sender_id="system",
-            event_type=EventType.INSTRUCTION,
-            content=TextContent(body="Summarize the call so far in one line."),
-            addressed_to=["advisor"],
-            standalone=True,
-        ),
-        room_id=ROOM,
-    )
+    # The same request twice: the second must not read the room (no history,
+    # no memory provider call), so it cannot copy an earlier answer.
+    for standalone in (False, True):
+        await kit.process_inbound(
+            InboundMessage(
+                channel_id="ws",
+                sender_id="system",
+                event_type=EventType.INSTRUCTION,
+                content=TextContent(body="Summarize the call so far in one line."),
+                addressed_to=["advisor"],
+                standalone=standalone,
+            ),
+            room_id=ROOM,
+        )
 
     print("What the model was sent:")
-    for number, call in enumerate(provider.calls, start=1):
-        print(f"  turn {number}: {len(call.messages)} message(s)")
+    labels = ["greeting", "summary", "summary, standalone"]
+    for label, call in zip(labels, provider.calls, strict=True):
+        print(f"  {label}: {len(call.messages)} message(s)")
 
     print("What the room holds:")
     for event in await kit.store.list_events(ROOM):

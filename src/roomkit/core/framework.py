@@ -806,10 +806,13 @@ class RoomKit(
                 raise ValueError("An INSTRUCTION must name the agents it directs (addressed_to)")
             if idempotency_key is not None:
                 raise ValueError("An INSTRUCTION is never stored and takes no idempotency_key")
+            # The parameter's word alone: a metadata key of the same name is
+            # dropped, never honoured (the instruction is never stored).
+            metadata = {k: v for k, v in (metadata or {}).items() if k != STANDALONE}
+            if standalone:
+                metadata[STANDALONE] = True
         elif standalone:
             raise ValueError("standalone applies to an INSTRUCTION only")
-        if standalone:
-            metadata = {**(metadata or {}), STANDALONE: True}
 
         await self._ensure_status_bus_subscribed()
         await self.get_room(room_id, organization_id=organization_id)

@@ -339,10 +339,16 @@ class InboundMixin(HelpersMixin):
         # An instruction is the caller's decision, not the wire's (RFC
         # §10.1.1): a channel parses content and need not know the type, so
         # the pipeline applies it, as it does the address below.
-        if message.event_type == EventType.INSTRUCTION and event.type != EventType.INSTRUCTION:
-            event = event.model_copy(update={"type": EventType.INSTRUCTION})
-        if message.standalone:
-            event = event.model_copy(update={"metadata": {**event.metadata, STANDALONE: True}})
+        if message.event_type == EventType.INSTRUCTION:
+            if event.type != EventType.INSTRUCTION:
+                event = event.model_copy(update={"type": EventType.INSTRUCTION})
+            # Standalone is the typed field's word alone (RFC §10.1.1 step 7):
+            # a caller's metadata key of the same name is dropped, never
+            # honoured. The instruction is never stored, so nothing is lost.
+            metadata = {k: v for k, v in event.metadata.items() if k != STANDALONE}
+            if message.standalone:
+                metadata[STANDALONE] = True
+            event = event.model_copy(update={"metadata": metadata})
 
         # Caller-requested visibility (e.g. ``"transport"`` for a proactive
         # notification that must not wake the room's intelligence channel).

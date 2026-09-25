@@ -12,16 +12,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A standalone `INSTRUCTION` (RMK-223, RFC §10.1.1 step 7):
   `InboundMessage(event_type=EventType.INSTRUCTION, standalone=True)`, or
   `send_event(..., standalone=True)`, opens a turn that reads nothing of the
-  room. Its input is the instruction alone and the memory provider is not
-  called, so a pass that must start from a blank page (a summary re-run) no
-  longer reads, and copies, the replies of earlier passes. `standalone` on any
-  other event type is refused (`ValidationError` / `ValueError`).
+  room. Its input is the instruction alone, the memory provider is not
+  called, and the room's working memories (active skill bodies, plan,
+  tool-usage digest, sticky tools) stay out of the system prompt, so a pass
+  that must start from a blank page (a summary re-run) no longer reads, and
+  copies, the replies of earlier passes. Only the typed field sets it: a
+  `metadata["standalone"]` key on an instruction is dropped. `standalone` on
+  any other event type is refused (`ValidationError` / `ValueError`).
 
 ### Changed
 
 - A reply to an `INSTRUCTION` records its fingerprint, not its text (RMK-223,
   RFC §10.1.1 step 6): `metadata["instruction"]` is now
-  `{"sha256": <hex>, "length": <chars>}` instead of the instruction string. The
+  `{"sha256": <hex>, "length": <code points>}` instead of the instruction string. The
   metadata rides on every reply and segment, so a long instruction (a prompt
   carrying a transcript) was stored and delivered to every transport once per
   reply. A reader of the old string keeps the text on its side and matches it

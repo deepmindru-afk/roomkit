@@ -283,6 +283,13 @@ class AIContextMixin:
         loop_ctx = self._get_loop_ctx()
         activation_room = loop_ctx.room_id
 
+        # A standalone instruction reads nothing of the room (RFC §10.1.1 step
+        # 7): no history below, and none of the room's working memories either
+        # — active skill bodies, the plan, the tool-usage digest (which quotes
+        # earlier tool results) and sticky tools are the room's past in
+        # another form. The channel's own prompt, tools and catalogue stay.
+        standalone = event.type == EventType.INSTRUCTION and bool(event.metadata.get(STANDALONE))
+
         # Rebuild the room-scoped working memories from persisted history the
         # first time this process serves the room (see _hydrate_room_memories).
         # Runs BEFORE the skills block: the active-skill bodies it may restore
@@ -310,7 +317,11 @@ class AIContextMixin:
             # why it belongs here rather than in the host's cache-stable prefix.
             # This is what makes ``activate_skill``'s later ACKs safe: the rules
             # are in front of the model without the body being re-sent.
-            active_skills = self._skill_activation.render_prompt(activation_room, self._skills)
+            active_skills = (
+                None
+                if standalone
+                else self._skill_activation.render_prompt(activation_room, self._skills)
+            )
             if active_skills:
                 system_prompt = (system_prompt or "") + f"\n\n{active_skills}"
 
@@ -345,7 +356,7 @@ class AIContextMixin:
         if self._planner is not None:
             tools.append(TaskPlanner.tool_definition())
             room_id = context.room.id if context.room else event.room_id
-            current_plan = self._planner.plan_for(room_id)
+            current_plan = None if standalone else self._planner.plan_for(room_id)
             if current_plan:
                 system_prompt = (system_prompt or "") + TaskPlanner.format_plan_prompt(
                     current_plan
@@ -355,7 +366,7 @@ class AIContextMixin:
         # tool-call events, so without this the model forgets, across turns,
         # which tools/source it used (it would re-ask the user). Injected for
         # every model, not just small ones — the loss is provider-agnostic.
-        usage_digest = self._tool_usage.render_digest(event.room_id)
+        usage_digest = None if standalone else self._tool_usage.render_digest(event.room_id)
         if usage_digest:
             system_prompt = (system_prompt or "") + f"\n\n{usage_digest}"
 
@@ -395,7 +406,10 @@ class AIContextMixin:
             # latter here would be dropped at round 0. Intersected with the live
             # catalogue so a tool that has since disappeared (e.g. an edge device
             # unbound) is never surfaced as a phantom.
-            loop_ctx.sticky_tools |= self._tool_usage.tool_names(event.room_id) & catalogue_names
+            if not standalone:
+                loop_ctx.sticky_tools |= (
+                    self._tool_usage.tool_names(event.room_id) & catalogue_names
+                )
 
         # Store unfiltered tool list for re-application after skill activation
         loop_ctx.all_context_tools = list(tools)
@@ -420,11 +434,10 @@ class AIContextMixin:
         # the way *in* is what stops a summarizing provider from re-emitting
         # hidden content as a summary.
         #
-        # A standalone instruction reads nothing of the room (RFC §10.1.1 step
-        # 7), and the provider is not asked at all: an empty view is not a
-        # blank page, since a provider may return messages of its own (a
-        # summary, a minimum it always keeps).
-        if event.type == EventType.INSTRUCTION and event.metadata.get(STANDALONE):
+        # A standalone instruction's provider is not asked at all: an empty
+        # view is not a blank page, since a provider may return messages of
+        # its own (a summary, a minimum it always keeps).
+        if standalone:
             memory_result = MemoryResult()
         else:
             memory_result = await self._memory.retrieve(

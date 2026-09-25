@@ -229,10 +229,15 @@ class _CountingMemory(BudgetAwareMemory):
         return await super().retrieve(*args, **kwargs)  # type: ignore[arg-type]
 
 
-async def _talking_room() -> tuple[RoomKit, MockAIProvider, _CountingMemory]:
-    """A room where the caller and the agent already exchanged a line."""
+async def _talking_room(
+    *, streaming: bool = False
+) -> tuple[RoomKit, MockAIProvider, _CountingMemory]:
+    """A room where the caller and the agent already exchanged a line, and the
+    agent used a tool whose result its working memory quotes."""
     memory = _CountingMemory()
-    kit, _speaker, provider = await _kit(memory=memory)
+    kit, _speaker, provider = await _kit(streaming=streaming, memory=memory)
+    agent = kit.get_channel("agent")
+    agent._tool_usage.record(ROOM, "lookup_customer", {"id": 7}, "PREVIOUS-TOOL-RESULT")  # type: ignore[union-attr]
     await kit.process_inbound(
         InboundMessage(channel_id="voice", sender_id="caller", content=TextContent(body="Allô")),
         room_id=ROOM,
@@ -241,9 +246,9 @@ async def _talking_room() -> tuple[RoomKit, MockAIProvider, _CountingMemory]:
     return kit, provider, memory
 
 
-async def _send_standalone(kit: RoomKit, via: str) -> None:
+async def _send_instruction(kit: RoomKit, via: str, **fields: object) -> None:
     if via == "process_inbound":
-        await kit.process_inbound(_instruction(standalone=True), room_id=ROOM)
+        await kit.process_inbound(_instruction(**fields), room_id=ROOM)
         return
     await kit.send_event(
         ROOM,
@@ -251,35 +256,41 @@ async def _send_standalone(kit: RoomKit, via: str) -> None:
         TextContent(body=INSTRUCTION),
         event_type=EventType.INSTRUCTION,
         addressed_to=["agent"],
-        standalone=True,
+        **fields,  # type: ignore[arg-type]
     )
 
 
+@pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("via", ["process_inbound", "send_event"])
-async def test_a_standalone_instruction_reads_nothing_of_the_room(via: str):
-    """RFC §10.1.1 step 7: no history, and the memory provider is not called."""
-    kit, provider, memory = await _talking_room()
+async def test_a_standalone_instruction_reads_nothing_of_the_room(via: str, streaming: bool):
+    """RFC §10.1.1 step 7: no history, no memory provider call, and none of the
+    room's working memories (here the tool-usage digest) in the system prompt."""
+    kit, provider, memory = await _talking_room(streaming=streaming)
 
-    await _send_standalone(kit, via)
+    await _send_instruction(kit, via, standalone=True)
 
     assert memory.retrieved == 1
     [only] = provider.calls[-1].messages
     assert only.role == "user" and INSTRUCTION in str(only.content)
     assert "Allô" not in str(only.content)
+    assert "PREVIOUS-TOOL-RESULT" not in (provider.calls[-1].system_prompt or "")
     stored = await _messages(kit)
     assert stored[-1].metadata["instruction"] == FINGERPRINT
     assert all("standalone" not in e.metadata for e in stored)
     await kit.close()
 
 
-async def test_an_instruction_without_standalone_reads_the_history():
+@pytest.mark.parametrize("via", ["process_inbound", "send_event"])
+async def test_an_instruction_without_standalone_reads_the_room(via: str):
+    """A metadata key of the same name is not the flag: only the typed field is."""
     kit, provider, memory = await _talking_room()
 
-    await kit.process_inbound(_instruction(), room_id=ROOM)
+    await _send_instruction(kit, via, metadata={"standalone": True})
 
     assert memory.retrieved == 2
     contents = [str(m.content) for m in provider.calls[-1].messages]
     assert any("Allô" in c for c in contents) and INSTRUCTION in contents[-1]
+    assert "PREVIOUS-TOOL-RESULT" in (provider.calls[-1].system_prompt or "")
     await kit.close()
 
 
