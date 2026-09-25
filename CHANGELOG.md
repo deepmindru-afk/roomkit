@@ -7,28 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-
-- A voice answer the user has not heard yet waits for them, and is dropped when
-  they add to their question (RMK-221, RFC §12.3.12). "Combien j'ai de bord",
-  pause, "et de cartes" was answered twice: the first half had been routed and
-  its answer was said anyway. Now speech that starts before the answer's first
-  audio holds it; at least `min_speech_ms` of speech with a transcript cancels
-  the routed turn as `superseded` and routes the new transcript on its own, so
-  the model answers both messages once. The unheard answer is marked
-  `metadata.cancellation_reason = "superseded"` and `AIChannel` leaves it out
-  of its context; a cough releases it. VoiceChannel now routes a turn with
-  `process_inbound(defer_delivery=True)` and awaits its `DeliveryHandle`.
-
-- A tool call's log says what happened (RMK-219). INFO names the tool, the
-  call and its argument keys, then the size of the result and how long the
-  handler took (`Tool list_cards returned 191951 chars in 487 ms`), where it
-  showed only the call id. The argument values and a bounded preview of the
-  result go to DEBUG, through the same redaction as the rest of RoomKit's
-  content: visible with `ROOMKIT_LOG_CONTENT=1` only. The shared example helper
-  `log_tool_call` takes `show_result=True`, and
-  `examples/voice_local_pocket_fr.py` shows each tool call with its result and
-  has a `VOICE_DEBUG=1` mode for turn-taking diagnostics.
+## [0.90.0] — 2026-09-24
 
 ### Added
 
@@ -60,7 +39,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and speaks English, French, German, Portuguese, Italian and Spanish, with
   pre-made or cloned voices. A barge-in stops the generation thread before the
   next reply starts. `examples/voice_local_pocket_fr.py` runs a local French
-  voice assistant: Kroko French STT, Ollama, Pocket TTS (RMK-214).
+  voice assistant: Kroko French STT, a llama.cpp model (Ollama with
+  `LLM_BACKEND=ollama`) that can take MCP tools, and Pocket TTS (RMK-214).
 
 - `StripEmoji`, a TTS filter that removes emoji before synthesis
   (`VoiceChannel(tts_filter=StripEmoji())`). Language models add them to
@@ -68,6 +48,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a stray sound. It works on streamed replies, an emoji split across chunks
   included; the stored response keeps the model's text. The Pocket TTS French
   example enables it (RMK-214).
+
+- `VADProvider.configure(config)` (RMK-209, RFC §12.3.8), implemented by
+  `SherpaOnnxVADProvider`, `EnergyVADProvider` and `MockVADProvider`.
+  `VADConfig.extra` takes the provider's own setting names (`threshold` for
+  Sherpa, `energy_threshold` for Energy); an unknown name, a `None` or a value
+  of the wrong type raises `ValueError` when the pipeline is built. A
+  third-party provider that does not override `configure()` logs a warning, as
+  does `vad_config` without a `vad`. `configure()` changes the provider itself:
+  a provider shared by two pipelines keeps the `vad_config` of the last one.
+
+### Changed
+
+- A voice answer the user has not heard yet waits for them, and is dropped when
+  they add to their question (RMK-221, RFC §12.3.12). "Combien j'ai de bord",
+  pause, "et de cartes" was answered twice: the first half had been routed and
+  its answer was said anyway. Now speech that starts before the answer's first
+  audio holds it; at least `min_speech_ms` of speech with a transcript cancels
+  the routed turn as `superseded` and routes the new transcript on its own, so
+  the model answers both messages once. The unheard answer is marked
+  `metadata.cancellation_reason = "superseded"` and `AIChannel` leaves it out
+  of its context; a cough releases it, as does speech the pipeline then drops
+  as echo. An answer any of whose audio may already have played is never
+  held: speech over it is a barge-in, as before. The reason is exported as
+  `roomkit.SUPERSEDED`. VoiceChannel now routes a turn with
+  `process_inbound(defer_delivery=True)` and awaits its `DeliveryHandle`.
+
+- A tool call's log says what happened (RMK-219). INFO names the tool, the
+  call and its argument keys, then the size of the result and how long the
+  handler took (`Tool list_cards returned 191951 chars in 487 ms`), where it
+  showed only the call id. The argument values and a bounded preview of the
+  result go to DEBUG, through the same redaction as the rest of RoomKit's
+  content: visible with `ROOMKIT_LOG_CONTENT=1` only. The shared example helper
+  `log_tool_call` takes `show_result=True`, and
+  `examples/voice_local_pocket_fr.py` shows each tool call with its result and
+  has a `VOICE_DEBUG=1` mode for turn-taking diagnostics.
+
+- `VADConfig` fields default to `None` instead of 500 / 300 / 250 ms
+  (RMK-209): an unset field must leave the provider's value alone, which a
+  concrete default cannot express. Nothing read those defaults.
+
+- The `mcp` extra requires `mcp>=1.24.0` (was 1.23.0): the streamable HTTP
+  transport now uses `streamable_http_client`, which 1.24 introduced, in place
+  of the deprecated `streamablehttp_client` (RMK-215).
 
 ### Fixed
 
@@ -84,7 +107,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   answered once, whole.
   Text streamed to TTS is also cut at line breaks, so a list no longer reaches
   the synthesiser as one block. `examples/voice_local_pocket_fr.py` turns on
-  Smart Turn v3 when its model is downloaded, and loads it at startup.
+  Smart Turn v3 when its model is downloaded, and loads it at startup. Each
+  turn decision is logged at DEBUG: complete or not, the detector, its
+  confidence and its reason.
 
 - `SmartTurnDetector` no longer fails open on the second turn of a session
   (RMK-218). Its first evaluation loads `transformers`, which takes seconds; a
@@ -201,23 +226,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   built: a field that is set replaces the provider's own value, a field left
   out keeps it. A `RealtimeVoiceChannel` builds its pipeline at its first
   session, so a bad `vad_config` surfaces there.
-
-### Added
-
-- `VADProvider.configure(config)` (RMK-209, RFC §12.3.8), implemented by
-  `SherpaOnnxVADProvider`, `EnergyVADProvider` and `MockVADProvider`.
-  `VADConfig.extra` takes the provider's own setting names (`threshold` for
-  Sherpa, `energy_threshold` for Energy); an unknown name, a `None` or a value
-  of the wrong type raises `ValueError` when the pipeline is built. A
-  third-party provider that does not override `configure()` logs a warning, as
-  does `vad_config` without a `vad`. `configure()` changes the provider itself:
-  a provider shared by two pipelines keeps the `vad_config` of the last one.
-
-### Changed
-
-- `VADConfig` fields default to `None` instead of 500 / 300 / 250 ms
-  (RMK-209): an unset field must leave the provider's value alone, which a
-  concrete default cannot express. Nothing read those defaults.
 
 ## [0.89.0] — 2026-09-24
 
@@ -8535,7 +8543,8 @@ See entries `0.7.0a1` through `0.7.0a18` below.
 - `STTProvider.transcribe()` returns `TranscriptionResult` (Phase 3.1)
 - Framework event names enriched with payloads (Phase 4)
 
-[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.89.0...HEAD
+[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.90.0...HEAD
+[0.90.0]: https://github.com/roomkit-live/roomkit/compare/v0.89.0...v0.90.0
 [0.89.0]: https://github.com/roomkit-live/roomkit/compare/v0.88.0...v0.89.0
 [0.88.0]: https://github.com/roomkit-live/roomkit/compare/v0.87.0...v0.88.0
 [0.87.0]: https://github.com/roomkit-live/roomkit/compare/v0.86.0...v0.87.0
