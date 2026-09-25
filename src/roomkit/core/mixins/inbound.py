@@ -11,7 +11,7 @@ from roomkit.core.exceptions import ChannelNotRegisteredError, RoomNotFoundError
 from roomkit.core.mixins.channel_ops import is_channel_detached
 from roomkit.core.mixins.helpers import HelpersMixin
 from roomkit.core.mixins.inbound_identity import _IdentityBlockedError
-from roomkit.models.delivery import DeliveryHandle, InboundMessage, InboundResult
+from roomkit.models.delivery import STANDALONE, DeliveryHandle, InboundMessage, InboundResult
 from roomkit.models.enums import (
     ChannelType,
     EventType,
@@ -341,6 +341,8 @@ class InboundMixin(HelpersMixin):
         # the pipeline applies it, as it does the address below.
         if message.event_type == EventType.INSTRUCTION and event.type != EventType.INSTRUCTION:
             event = event.model_copy(update={"type": EventType.INSTRUCTION})
+        if message.standalone:
+            event = event.model_copy(update={"metadata": {**event.metadata, STANDALONE: True}})
 
         # Caller-requested visibility (e.g. ``"transport"`` for a proactive
         # notification that must not wake the room's intelligence channel).

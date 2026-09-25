@@ -69,6 +69,7 @@ from roomkit.core.mixins import (
 from roomkit.core.transcoder import DefaultContentTranscoder
 from roomkit.identity.base import IdentityResolver
 from roomkit.models.channel import RateLimit
+from roomkit.models.delivery import STANDALONE
 from roomkit.models.enums import (
     AgentResponsePolicy,
     ChannelType,
@@ -756,6 +757,7 @@ class RoomKit(
         idempotency_key: str | None = None,
         addressed_to: list[str] | None = None,
         organization_id: str | None = None,
+        standalone: bool = False,
     ) -> RoomEvent:
         """Send an event directly into a room from a channel.
 
@@ -789,6 +791,9 @@ class RoomKit(
                 outbox dispatcher redelivering after a crash) gets at-most-once
                 persistence for a given key. None keeps the prior behaviour (no
                 de-duplication), matching inbound events that carry no key.
+            standalone: For an ``INSTRUCTION`` only: the turn it opens reads
+                nothing of the room — no history, no memory provider call
+                (RFC §10.1.1 step 7). Raises on any other event type.
         """
         from roomkit.telemetry.base import SpanKind
         from roomkit.telemetry.context import get_current_span, reset_span, set_current_span
@@ -801,6 +806,10 @@ class RoomKit(
                 raise ValueError("An INSTRUCTION must name the agents it directs (addressed_to)")
             if idempotency_key is not None:
                 raise ValueError("An INSTRUCTION is never stored and takes no idempotency_key")
+        elif standalone:
+            raise ValueError("standalone applies to an INSTRUCTION only")
+        if standalone:
+            metadata = {**(metadata or {}), STANDALONE: True}
 
         await self._ensure_status_bus_subscribed()
         await self.get_room(room_id, organization_id=organization_id)

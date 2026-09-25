@@ -6,7 +6,7 @@ import asyncio
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from roomkit.models.enums import EventType, Visibility
 from roomkit.models.event import EventContent, RoomEvent
@@ -100,6 +100,23 @@ class InboundMessage(BaseModel):
     # would hide what you asked and publish what you were told. Covers the
     # whole turn — text segments and tool activity alike.
     response_visibility: str | None = None
+    # An instruction whose turn reads nothing of the room (RFC §10.1.1 step
+    # 7): no rebuilt history, and the memory provider is not called. For a
+    # pass that must start from a blank page — a summary re-run that would
+    # otherwise read, and copy, its previous answer. Instructions only.
+    standalone: bool = False
+
+    @model_validator(mode="after")
+    def _standalone_is_an_instruction(self) -> InboundMessage:
+        if self.standalone and self.event_type != EventType.INSTRUCTION:
+            raise ValueError("standalone applies to an INSTRUCTION only")
+        return self
+
+
+STANDALONE = "standalone"
+"""Metadata key the pipeline stamps on a standalone instruction (RFC §10.1.1
+step 7). The instruction is never stored, so the key never reaches the
+timeline; the intelligence channel reads it to skip the room's history."""
 
 
 SUPERSEDED = "superseded"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -17,8 +18,9 @@ from roomkit.channels._tool_eviction import ToolEviction
 from roomkit.channels._tool_search import search_tool_defs, should_activate_tool_search
 from roomkit.channels._tool_search_constants import TOOL_SEARCH_PREAMBLE
 from roomkit.core.visibility import visible_events
+from roomkit.memory.base import MemoryResult
 from roomkit.models.channel import ChannelCapabilities
-from roomkit.models.delivery import SUPERSEDED
+from roomkit.models.delivery import STANDALONE, SUPERSEDED
 from roomkit.models.enums import ChannelCategory, EventType
 from roomkit.models.event import CompositeContent, MediaContent, TextContent
 from roomkit.providers.ai.base import (
@@ -46,6 +48,12 @@ if TYPE_CHECKING:
     from roomkit.tools.human_input import HumanInputToolHandler
 
 logger = logging.getLogger("roomkit.channels.ai")
+
+
+def instruction_fingerprint(text: str) -> dict[str, Any]:
+    """What a reply records of the instruction that produced it (RFC §10.1.1 step 6)."""
+    return {"sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(), "length": len(text)}
+
 
 # Prefix of an instruction's text in the model's input (RFC §10.1.1).
 _INSTRUCTION_MARKER = (
@@ -411,12 +419,22 @@ class AIContextMixin:
         # the filter can only run where the reader is known, and running it on
         # the way *in* is what stops a summarizing provider from re-emitting
         # hidden content as a summary.
-        memory_result = await self._memory.retrieve(
-            event.room_id,
-            event,
-            context.model_copy(update={"recent_events": visible_events(context, self.channel_id)}),
-            channel_id=self.channel_id,
-        )
+        #
+        # A standalone instruction reads nothing of the room (RFC §10.1.1 step
+        # 7), and the provider is not asked at all: an empty view is not a
+        # blank page, since a provider may return messages of its own (a
+        # summary, a minimum it always keeps).
+        if event.type == EventType.INSTRUCTION and event.metadata.get(STANDALONE):
+            memory_result = MemoryResult()
+        else:
+            memory_result = await self._memory.retrieve(
+                event.room_id,
+                event,
+                context.model_copy(
+                    update={"recent_events": visible_events(context, self.channel_id)}
+                ),
+                channel_id=self.channel_id,
+            )
 
         messages: list[AIMessage] = []
 
@@ -450,11 +468,14 @@ class AIContextMixin:
             # is the turn's input — a system-role message after the history is
             # refused or silently re-roled by several model APIs — marked so the
             # model never reads it as a participant's words, and recorded on the
-            # turn so every reply it produces says why the agent spoke.
+            # turn so every reply it produces says why the agent spoke — as a
+            # fingerprint, never the text: the metadata rides on every reply
+            # and segment, and a copy would store (and deliver to every
+            # transport) what the room never stores.
             instruction = event.content.body if isinstance(event.content, TextContent) else ""
             current_content = f"{_INSTRUCTION_MARKER}\n{instruction}" if instruction else None
             current_speaker = None
-            loop_ctx.response_metadata["instruction"] = instruction
+            loop_ctx.response_metadata["instruction"] = instruction_fingerprint(instruction)
 
         speakers = {speaker for _, _, speaker in past_turns if speaker}
         if current_content and current_speaker:

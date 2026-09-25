@@ -8,10 +8,14 @@ direction for one turn, not as something someone in the room said.
 
 from __future__ import annotations
 
+import hashlib
+
 import pytest
+from pydantic import ValidationError
 
 from roomkit import AIChannel, HookResult, HookTrigger, RoomKit
 from roomkit.channels.base import Channel
+from roomkit.memory import BudgetAwareMemory, MemoryProvider, MemoryResult, SlidingWindowMemory
 from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
@@ -22,6 +26,7 @@ from roomkit.providers.ai.mock import MockAIProvider
 
 ROOM = "r-instruction"
 INSTRUCTION = "Handoff complete. Introduce yourself to the caller."
+FINGERPRINT = {"sha256": hashlib.sha256(INSTRUCTION.encode()).hexdigest(), "length": 51}
 
 
 class Speaker(Channel):
@@ -47,7 +52,9 @@ class Speaker(Channel):
         return ChannelOutput.empty()
 
 
-async def _kit(*, streaming: bool = False) -> tuple[RoomKit, Speaker, MockAIProvider]:
+async def _kit(
+    *, streaming: bool = False, memory: MemoryProvider | None = None
+) -> tuple[RoomKit, Speaker, MockAIProvider]:
     """A room where the instruction enters on ``voice`` and ``speaker`` is another transport.
 
     The source channel never receives its own event, so what a transport is
@@ -58,7 +65,7 @@ async def _kit(*, streaming: bool = False) -> tuple[RoomKit, Speaker, MockAIProv
     provider = MockAIProvider(["Bonjour, je suis Paul."], streaming=streaming)
     kit.register_channel(Speaker("voice"))
     kit.register_channel(speaker)
-    kit.register_channel(AIChannel("agent", provider=provider))
+    kit.register_channel(AIChannel("agent", provider=provider, memory=memory))
     await kit.create_room(room_id=ROOM)
     await kit.attach_channel(ROOM, "voice", category=ChannelCategory.TRANSPORT)
     await kit.attach_channel(ROOM, "speaker", category=ChannelCategory.TRANSPORT)
@@ -100,7 +107,9 @@ async def test_the_room_holds_the_agents_reply_and_never_the_instruction(streami
     assert [(e.type, e.source.channel_id, e.content.body) for e in stored] == [
         (EventType.MESSAGE, "agent", "Bonjour, je suis Paul.")
     ]
-    assert stored[0].metadata["instruction"] == INSTRUCTION
+    # A fingerprint, never the text: the reply is stored and fanned out.
+    assert stored[0].metadata["instruction"] == FINGERPRINT
+    assert all(INSTRUCTION not in e.model_dump_json() for e in stored)
     assert speaker.delivered == ["Bonjour, je suis Paul."]
     room = await kit.get_room(ROOM)
     assert room.event_count == len(await kit.store.list_events(ROOM))
@@ -180,7 +189,7 @@ async def test_send_event_directs_an_agent_the_same_way():
 
     stored = await _messages(kit)
     assert [(e.source.channel_id, e.metadata.get("instruction")) for e in stored] == [
-        ("agent", INSTRUCTION)
+        ("agent", FINGERPRINT)
     ]
     assert speaker.delivered == ["Bonjour, je suis Paul."]
     await kit.close()
@@ -201,6 +210,89 @@ async def test_send_event_raises_for_an_instruction_it_would_refuse(overrides):
             event_type=EventType.INSTRUCTION,
             **overrides,
         )
+
+    assert await _messages(kit) == []
+    assert provider.calls == [] and speaker.delivered == []
+    await kit.close()
+
+
+class _CountingMemory(BudgetAwareMemory):
+    """A budget with a floor that keeps events whatever the view: an empty view
+    is not a blank page, only not calling it is."""
+
+    def __init__(self) -> None:
+        super().__init__(SlidingWindowMemory(), max_context_tokens=100_000, min_events=3)
+        self.retrieved = 0
+
+    async def retrieve(self, *args: object, **kwargs: object) -> MemoryResult:
+        self.retrieved += 1
+        return await super().retrieve(*args, **kwargs)  # type: ignore[arg-type]
+
+
+async def _talking_room() -> tuple[RoomKit, MockAIProvider, _CountingMemory]:
+    """A room where the caller and the agent already exchanged a line."""
+    memory = _CountingMemory()
+    kit, _speaker, provider = await _kit(memory=memory)
+    await kit.process_inbound(
+        InboundMessage(channel_id="voice", sender_id="caller", content=TextContent(body="Allô")),
+        room_id=ROOM,
+    )
+    assert memory.retrieved == 1
+    return kit, provider, memory
+
+
+async def _send_standalone(kit: RoomKit, via: str) -> None:
+    if via == "process_inbound":
+        await kit.process_inbound(_instruction(standalone=True), room_id=ROOM)
+        return
+    await kit.send_event(
+        ROOM,
+        "voice",
+        TextContent(body=INSTRUCTION),
+        event_type=EventType.INSTRUCTION,
+        addressed_to=["agent"],
+        standalone=True,
+    )
+
+
+@pytest.mark.parametrize("via", ["process_inbound", "send_event"])
+async def test_a_standalone_instruction_reads_nothing_of_the_room(via: str):
+    """RFC §10.1.1 step 7: no history, and the memory provider is not called."""
+    kit, provider, memory = await _talking_room()
+
+    await _send_standalone(kit, via)
+
+    assert memory.retrieved == 1
+    [only] = provider.calls[-1].messages
+    assert only.role == "user" and INSTRUCTION in str(only.content)
+    assert "Allô" not in str(only.content)
+    stored = await _messages(kit)
+    assert stored[-1].metadata["instruction"] == FINGERPRINT
+    assert all("standalone" not in e.metadata for e in stored)
+    await kit.close()
+
+
+async def test_an_instruction_without_standalone_reads_the_history():
+    kit, provider, memory = await _talking_room()
+
+    await kit.process_inbound(_instruction(), room_id=ROOM)
+
+    assert memory.retrieved == 2
+    contents = [str(m.content) for m in provider.calls[-1].messages]
+    assert any("Allô" in c for c in contents) and INSTRUCTION in contents[-1]
+    await kit.close()
+
+
+async def test_standalone_is_refused_on_anything_but_an_instruction():
+    """Set on a message, it would land as a participant's line without the isolation asked."""
+    kit, speaker, provider = await _kit()
+
+    with pytest.raises(ValidationError):
+        InboundMessage(
+            channel_id="voice", sender_id="caller", content=TextContent(body="x"), standalone=True
+        )
+    with pytest.raises(ValueError):
+        await kit.send_event(ROOM, "voice", TextContent(body="x"), standalone=True)
 
     assert await _messages(kit) == []
     assert provider.calls == [] and speaker.delivered == []
