@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.91.0] — 2026-09-26
+
 ### Added
 
 - A standalone `INSTRUCTION` (RMK-223, RFC §10.1.1 step 7):
@@ -29,13 +31,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- A reply to an `INSTRUCTION` records its fingerprint, not its text (RMK-223,
-  RFC §10.1.1 step 6): `metadata["instruction"]` is now
-  `{"sha256": <hex>, "length": <code points>}` instead of the instruction string. The
-  metadata rides on every reply and segment, so a long instruction (a prompt
-  carrying a transcript) was stored and delivered to every transport once per
-  reply. A reader of the old string keeps the text on its side and matches it
-  by the digest.
+- **BREAKING — a reply to an `INSTRUCTION` records its fingerprint, not its
+  text** (RMK-223, RFC §10.1.1 step 6). `metadata["instruction"]` is now
+  `{"sha256": <hex>, "length": <code points>}` instead of the instruction
+  string. The metadata rides on every reply and every segment of it, so a long
+  instruction (a summary prompt carrying a whole transcript) was stored, and
+  delivered to every transport, once per reply. Migration: a reader that
+  displayed the string keeps the instruction text on its side when it sends it,
+  and matches a reply to it by the SHA-256 of its UTF-8 text.
 
 ### Fixed
 
@@ -45,10 +48,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   truncation there. The tail's oldest index now tells when events between the
   session's cursor and the tail were not loaded, and the header gives that gap
   as an upper bound, without loading more, even when nothing loaded is new to
-  the agent. The
-  `context_contributor` docstring and guide state what `context.recent_events`
-  holds: the framework's tail, the triggering event alone with
-  `room_history=0` on a room with no hook.
+  the agent. The `context_contributor` docstring and guide state what
+  `context.recent_events` holds: the framework's tail, the triggering event
+  alone with `room_history=0` on a room with no hook.
 
 - `ACPChannel` no longer replays the same catch-up after an `INSTRUCTION`
   (RMK-223): the instruction carries index 0, and the catch-up cursor stayed
@@ -8590,7 +8592,8 @@ See entries `0.7.0a1` through `0.7.0a18` below.
 - `STTProvider.transcribe()` returns `TranscriptionResult` (Phase 3.1)
 - Framework event names enriched with payloads (Phase 4)
 
-[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.90.0...HEAD
+[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.91.0...HEAD
+[0.91.0]: https://github.com/roomkit-live/roomkit/compare/v0.90.0...v0.91.0
 [0.90.0]: https://github.com/roomkit-live/roomkit/compare/v0.89.0...v0.90.0
 [0.89.0]: https://github.com/roomkit-live/roomkit/compare/v0.88.0...v0.89.0
 [0.88.0]: https://github.com/roomkit-live/roomkit/compare/v0.87.0...v0.88.0
