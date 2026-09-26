@@ -41,7 +41,7 @@ from roomkit.channels._acp_context import (
     room_context_block,
 )
 from roomkit.channels._acp_events import ACPEventsMixin
-from roomkit.channels._acp_turn_session import ACPTurnSessionMixin
+from roomkit.channels._acp_sessions import ACPSessionsMixin
 from roomkit.channels._acp_usage import (
     _apply_transport_usage,
     _report_context,
@@ -88,7 +88,7 @@ _UNSEEN = -1
 """No prompt has left for this room yet — event indices start at 0."""
 
 
-class ACPChannel(ACPConnectionMixin, ACPTurnSessionMixin, ACPEventsMixin, Channel):
+class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPEventsMixin, Channel):
     """Connect a RoomKit Room to an external ACP coding agent.
 
     One connection to the agent is opened lazily for the channel and one ACP
@@ -284,12 +284,6 @@ class ACPChannel(ACPConnectionMixin, ACPTurnSessionMixin, ACPEventsMixin, Channe
         """
         return [dict(option) for option in self._options_for(room_id)]
 
-    def _options_for(self, room_id: str) -> list[Any]:
-        session_id = self._sessions.get(room_id)
-        if session_id is None:
-            return []
-        return self._session_options.get(session_id, [])
-
     async def set_config_option(
         self,
         room_id: str,
@@ -437,29 +431,6 @@ class ACPChannel(ACPConnectionMixin, ACPTurnSessionMixin, ACPEventsMixin, Channe
         await connection.cancel(session_id)
         return True
 
-    @contextlib.asynccontextmanager
-    async def _room_turn_lock(self, room_id: str) -> AsyncIterator[None]:
-        """Hold the room's turn lock, tolerating its retirement.
-
-        ``close_session`` drops the entry while still holding the lock, so
-        the map does not keep one lock per room the channel ever served. A
-        coroutine that was queued on the retired lock therefore wakes owning
-        an object nobody else can reach: it releases and retries on the
-        current one. Without that re-check a fresh caller would take a
-        brand-new lock and run the critical section alongside the waiter —
-        which is how a room ends up with two sessions.
-        """
-        while True:
-            lock = self._room_locks.setdefault(room_id, asyncio.Lock())
-            await lock.acquire()
-            if self._room_locks.get(room_id) is lock:
-                break
-            lock.release()
-        try:
-            yield
-        finally:
-            lock.release()
-
     async def close_session(self, room_id: str) -> bool:
         """Close and forget one Room's ACP session.
 
@@ -544,23 +515,6 @@ class ACPChannel(ACPConnectionMixin, ACPTurnSessionMixin, ACPEventsMixin, Channe
         self._session_rooms.clear()
         self._session_options.clear()
         self._prompted_index.clear()
-
-    async def _session_for(self, room_id: str, connection: Any) -> str:
-        session_id = self._sessions.get(room_id)
-        if session_id is not None:
-            return session_id
-        response = await self._new_session(room_id, connection)
-        session_id = response.session_id
-        self._sessions[room_id] = session_id
-        self._session_rooms[session_id] = room_id
-        options = _model_dump(getattr(response, "config_options", None))
-        self._session_options[session_id] = options if isinstance(options, list) else []
-        await self._publish_config_options(
-            session_id,
-            self._session_options[session_id],
-            _config_values(self._session_options[session_id]),
-        )
-        return session_id
 
     async def _prompt_stream(
         self,

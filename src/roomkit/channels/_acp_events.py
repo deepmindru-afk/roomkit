@@ -48,12 +48,11 @@ class ACPEventsMixin:
     _turns: dict[str, _TurnState]
     _session_rooms: dict[str, str]
     _session_options: dict[str, list[Any]]
+    # Implemented by ACPSessionsMixin; an annotation, so it shadows nothing.
+    _is_room_session: Callable[[str], bool]
     _transport: ACPTransport
     _external_tool_handler: ExternalToolHandler | None
     _realtime: RealtimeBackend | None
-
-    def _is_room_session(self, session_id: str) -> bool:
-        raise NotImplementedError
 
     def _sdk(self) -> _SDK:
         raise NotImplementedError
