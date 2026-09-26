@@ -48,6 +48,7 @@ from roomkit.channels._acp_usage import (
     _usage_report,
     _usage_tokens,
 )
+from roomkit.channels._instruction import instruction_fingerprint, is_standalone, mark_instruction
 from roomkit.channels.acp_transport import ACPTransport, StdioACPTransport
 from roomkit.channels.base import Channel
 from roomkit.models.channel import ChannelBinding, ChannelCapabilities, ChannelOutput
@@ -225,6 +226,9 @@ class ACPChannel(ACPConnectionMixin, ACPEventsMixin, Channel):
         self._connect_lock = asyncio.Lock()
         self._room_locks: dict[str, asyncio.Lock] = {}
         self._sessions: dict[str, str] = {}
+        # Room -> the session a standalone turn is running in (RFC §10.1.1
+        # step 7): opened for that turn, closed after it, never the room's.
+        self._turn_sessions: dict[str, str] = {}
         self._session_rooms: dict[str, str] = {}
         self._session_options: dict[str, list[Any]] = {}
         self._prompted_index: dict[str, int] = {}
@@ -372,12 +376,20 @@ class ACPChannel(ACPConnectionMixin, ACPEventsMixin, Channel):
         )
         if not text.strip() and not blocks:
             return ChannelOutput.empty()
+        instruction = text if event.type == EventType.INSTRUCTION and text.strip() else None
+        if instruction is not None:
+            # The application's direction, never a participant's line (RFC
+            # §10.1.1 step 6). The session keeps it once prompted, so the mark
+            # is what makes later turns read it for what it was.
+            text = mark_instruction(instruction)
         # One live record for the turn, handed to the stream and to the output
         # alike: the stop reason is only known when the prompt returns, and
         # every MESSAGE segment reads this mapping as it stands when it is
         # persisted. A dict literal here would be a snapshot taken now, before
         # the turn has an outcome to report.
         metadata = ResponseMetadata({"acp": {"protocol_version": _STABLE_PROTOCOL_VERSION}})
+        if instruction is not None:
+            metadata["instruction"] = instruction_fingerprint(instruction)
         # The catch-up this turn sends covers the room up to its latest event,
         # and the cursor must say so. The trigger's own index is not that
         # bound: an instruction is never committed and carries index 0
@@ -394,6 +406,7 @@ class ACPChannel(ACPConnectionMixin, ACPEventsMixin, Channel):
                 text,
                 max(seen_index, event.index),
                 metadata,
+                standalone=is_standalone(event),
             ),
             response_metadata=metadata,
         )
@@ -404,7 +417,8 @@ class ACPChannel(ACPConnectionMixin, ACPEventsMixin, Channel):
 
     async def cancel(self, room_id: str) -> bool:
         """Request cancellation of the active ACP turn for a Room."""
-        session_id = self._sessions.get(room_id)
+        # A standalone turn runs in its own session: that is the one to stop.
+        session_id = self._turn_sessions.get(room_id) or self._sessions.get(room_id)
         connection = self._connection
         if session_id is None or connection is None:
             return False
@@ -514,6 +528,7 @@ class ACPChannel(ACPConnectionMixin, ACPEventsMixin, Channel):
 
         self._turns.clear()
         self._sessions.clear()
+        self._turn_sessions.clear()
         self._session_rooms.clear()
         self._session_options.clear()
         self._prompted_index.clear()
@@ -540,6 +555,55 @@ class ACPChannel(ACPConnectionMixin, ACPEventsMixin, Channel):
         )
         return session_id
 
+    async def _open_turn_session(self, room_id: str, connection: Any) -> str:
+        """Open the session a standalone turn runs in (RFC §10.1.1 step 7).
+
+        The room's session holds the conversation in the agent's process and
+        cannot be emptied, so a turn that must start from a blank page gets a
+        session of its own. It takes the room session's current configuration
+        (a model the host chose, a mode) where the agent accepts it: the turn
+        is blank on history, not on how the channel was set up. Its options are
+        not published — they describe a session that lives for one turn.
+        """
+        response = await connection.new_session(
+            cwd=self._cwd,
+            additional_directories=self._additional_directories or None,
+            mcp_servers=self._mcp_servers,
+            **{"roomkit.live/roomId": room_id},
+        )
+        session_id = response.session_id
+        self._turn_sessions[room_id] = session_id
+        self._session_rooms[session_id] = room_id
+        fresh = _config_values(getattr(response, "config_options", None))
+        for config_id, value in self.session_config(room_id).items():
+            if fresh.get(config_id) == value:
+                continue
+            try:
+                await connection.set_config_option(
+                    config_id=config_id, session_id=session_id, value=value
+                )
+            except Exception:
+                logger.warning(
+                    "ACP standalone turn could not take %r=%r from the room's session (%s)",
+                    config_id,
+                    value,
+                    self.channel_id,
+                    exc_info=True,
+                )
+        return session_id
+
+    async def _close_turn_session(self, room_id: str, session_id: str, connection: Any) -> None:
+        """Close and forget a standalone turn's session. Never raises: the turn is over."""
+        if self._turn_sessions.get(room_id) == session_id:
+            self._turn_sessions.pop(room_id, None)
+        self._session_rooms.pop(session_id, None)
+        try:
+            await connection.close_session(session_id)
+        except Exception:
+            logger.debug(
+                "ACP standalone session close failed (%s)", self.channel_id, exc_info=True
+            )
+
     async def _prompt_stream(
         self,
         room_id: str,
@@ -550,10 +614,15 @@ class ACPChannel(ACPConnectionMixin, ACPEventsMixin, Channel):
         text: str,
         seen_index: int,
         metadata: ResponseMetadata,
+        *,
+        standalone: bool = False,
     ) -> AsyncIterator[StreamDelta]:
         async with self._room_turn_lock(room_id):
             connection = await self._ensure_connection()
-            session_id = await self._session_for(room_id, connection)
+            if standalone:
+                session_id = await self._open_turn_session(room_id, connection)
+            else:
+                session_id = await self._session_for(room_id, connection)
             prompt_source: dict[str, Any] = {"source": "session/prompt", "scope": "unspecified"}
             model = self.session_config(room_id).get("model")
             if isinstance(model, str):
@@ -571,12 +640,18 @@ class ACPChannel(ACPConnectionMixin, ACPEventsMixin, Channel):
             if self._agent_info is not None:
                 turn.usage_metadata["adapter_info"] = deepcopy(self._agent_info)
             self._turns[session_id] = turn
-            catch_up = room_context_block(
-                context,
-                self.channel_id,
-                after_index=self._prompted_index.get(room_id, _UNSEEN),
-                trigger=trigger,
-                limit=self._room_history,
+            # A standalone turn reads nothing of the room: no catch-up, and
+            # its session was born empty.
+            catch_up = (
+                ""
+                if standalone
+                else room_context_block(
+                    context,
+                    self.channel_id,
+                    after_index=self._prompted_index.get(room_id, _UNSEEN),
+                    trigger=trigger,
+                    limit=self._room_history,
+                )
             )
             prompt_text = compose_prompt(blocks, catch_up, text)
             prompt = [self._sdk().acp.text_block(prompt_text)]
@@ -592,7 +667,7 @@ class ACPChannel(ACPConnectionMixin, ACPEventsMixin, Channel):
                     prompt,
                     turn,
                     room_id,
-                    seen_index,
+                    None if standalone else seen_index,
                     metadata,
                 )
             )
@@ -645,6 +720,8 @@ class ACPChannel(ACPConnectionMixin, ACPEventsMixin, Channel):
                     self._turns.pop(session_id, None)
                 if turn.completed:
                     await self._report_response(turn)
+                if standalone:
+                    await self._close_turn_session(room_id, session_id, connection)
 
     async def _report_response(self, turn: _TurnState) -> None:
         """Announce a finished turn to whatever observes agent responses.
@@ -682,7 +759,7 @@ class ACPChannel(ACPConnectionMixin, ACPEventsMixin, Channel):
         prompt: list[Any],
         turn: _TurnState,
         room_id: str,
-        seen_index: int,
+        seen_index: int | None,
         metadata: ResponseMetadata,
     ) -> None:
         """Run one prompt to its end, recording how that end came about.
@@ -701,9 +778,11 @@ class ACPChannel(ACPConnectionMixin, ACPEventsMixin, Channel):
                 prompt,
                 **{"roomkit.live/eventId": event_id},
             )
-            self._prompted_index[room_id] = max(
-                seen_index, self._prompted_index.get(room_id, _UNSEEN)
-            )
+            # A standalone turn told the room's session nothing: its cursor stays.
+            if seen_index is not None:
+                self._prompted_index[room_id] = max(
+                    seen_index, self._prompted_index.get(room_id, _UNSEEN)
+                )
             # The turn's own accounting, and the only place it is offered:
             # the usage notifications describe the context window, not what
             # answering cost.

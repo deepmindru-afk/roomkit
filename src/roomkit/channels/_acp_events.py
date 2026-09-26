@@ -47,6 +47,7 @@ class ACPEventsMixin:
     channel_id: str
     _turns: dict[str, _TurnState]
     _session_rooms: dict[str, str]
+    _turn_sessions: dict[str, str]
     _session_options: dict[str, list[Any]]
     _transport: ACPTransport
     _external_tool_handler: ExternalToolHandler | None
@@ -162,6 +163,10 @@ class ACPEventsMixin:
         :meth:`ACPChannel.session_config` truthful; the ephemeral event lets
         UI surfaces follow along live.
         """
+        # A standalone turn's session lives for one turn: its tunables are not
+        # the room's, and announcing them would read as the room's changing.
+        if session_id in self._turn_sessions.values():
+            return
         options = _model_dump(getattr(update, "config_options", None))
         if isinstance(options, list):
             self._session_options[session_id] = options

@@ -312,6 +312,7 @@ class ACPConnectionMixin:
     _connect_lock: asyncio.Lock
     _sessions: dict[str, str]
     _session_rooms: dict[str, str]
+    _turn_sessions: dict[str, str]
     _session_options: dict[str, list[Any]]
     _prompted_index: dict[str, int]
     _agent_info: dict[str, Any] | None
@@ -349,6 +350,7 @@ class ACPConnectionMixin:
                 # sessions with it — a reconnect never resumes them.
                 await self._close_transport()
                 self._sessions.clear()
+                self._turn_sessions.clear()
                 self._session_rooms.clear()
                 self._session_options.clear()
                 # Catch-up state belongs to the sessions that just died. The

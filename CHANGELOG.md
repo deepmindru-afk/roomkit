@@ -20,6 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `metadata["standalone"]` key on an instruction is dropped. `standalone` on
   any other event type is refused (`ValidationError` / `ValueError`).
 
+- `ACPChannel` takes an `INSTRUCTION` as the application's direction
+  (RMK-223, RFC §10.1.1): the prompt is marked, the reply records the
+  fingerprint, and a standalone instruction runs in a session opened for that
+  turn and closed after it. The room's session is neither prompted nor told,
+  and the turn session takes its configuration (`model`, `mode`).
+
 ### Changed
 
 - A reply to an `INSTRUCTION` records its fingerprint, not its text (RMK-223,
@@ -29,6 +35,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   carrying a transcript) was stored and delivered to every transport once per
   reply. A reader of the old string keeps the text on its side and matches it
   by the digest.
+
+### Fixed
+
+- `ACPChannel` no longer replays the same catch-up after an `INSTRUCTION`
+  (RMK-223): the instruction carries index 0, and the catch-up cursor stayed
+  behind what the prompt had just carried.
 
 ## [0.90.0] — 2026-09-24
 

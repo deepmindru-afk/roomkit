@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import hashlib
 import logging
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.channels._dangling_recovery import patch_dangling_tool_calls
+from roomkit.channels._instruction import instruction_fingerprint, is_standalone, mark_instruction
 from roomkit.channels._skill_constants import (
     SKILLS_NO_SCRIPTS_NOTE as _SKILLS_NO_SCRIPTS_NOTE,
 )
@@ -20,7 +20,7 @@ from roomkit.channels._tool_search_constants import TOOL_SEARCH_PREAMBLE
 from roomkit.core.visibility import visible_events
 from roomkit.memory.base import MemoryResult
 from roomkit.models.channel import ChannelCapabilities
-from roomkit.models.delivery import STANDALONE, SUPERSEDED
+from roomkit.models.delivery import SUPERSEDED
 from roomkit.models.enums import ChannelCategory, EventType
 from roomkit.models.event import CompositeContent, MediaContent, TextContent
 from roomkit.providers.ai.base import (
@@ -49,17 +49,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("roomkit.channels.ai")
 
-
-def instruction_fingerprint(text: str) -> dict[str, Any]:
-    """What a reply records of the instruction that produced it (RFC §10.1.1 step 6)."""
-    return {"sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(), "length": len(text)}
-
-
-# Prefix of an instruction's text in the model's input (RFC §10.1.1).
-_INSTRUCTION_MARKER = (
-    "[Instruction from the application: nobody in this conversation said it. "
-    "Act on it now, in your own words, without quoting it.]"
-)
 
 # Injected once per turn when the history window holds several speakers: the
 # model must read the "Name:" prefixes as transcript metadata, and not start
@@ -288,7 +277,7 @@ class AIContextMixin:
         # — active skill bodies, the plan, the tool-usage digest (which quotes
         # earlier tool results) and sticky tools are the room's past in
         # another form. The channel's own prompt, tools and catalogue stay.
-        standalone = event.type == EventType.INSTRUCTION and bool(event.metadata.get(STANDALONE))
+        standalone = is_standalone(event)
 
         # Rebuild the room-scoped working memories from persisted history the
         # first time this process serves the room (see _hydrate_room_memories).
@@ -486,7 +475,7 @@ class AIContextMixin:
             # and segment, and a copy would store (and deliver to every
             # transport) what the room never stores.
             instruction = event.content.body if isinstance(event.content, TextContent) else ""
-            current_content = f"{_INSTRUCTION_MARKER}\n{instruction}" if instruction else None
+            current_content = mark_instruction(instruction) if instruction else None
             current_speaker = None
             loop_ctx.response_metadata["instruction"] = instruction_fingerprint(instruction)
 
