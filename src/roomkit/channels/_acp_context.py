@@ -88,8 +88,12 @@ def room_context_block(
     §19.3.2 requires the reader be told its history is partial, because an
     agent that knows it was truncated can ask for the rest while one that
     believes it holds the whole room cannot. The count is taken over the tail
-    the framework loaded (``recent_events``), so a gap longer than that tail
-    is reported as the part of it we can see.
+    the framework loaded (``recent_events``), which may stop short of the
+    cursor: on a room with no hook the framework loads exactly the window the
+    channels declare (RMK-103). The indices say so without loading more — a
+    tail whose oldest event sits past ``after_index + 1`` left events of the
+    room unread, and the header reports that gap as an upper bound (it counts
+    room events, some of which the agent would not have been shown).
     """
     if limit <= 0:
         return ""
@@ -107,11 +111,14 @@ def room_context_block(
         return ""
 
     shown = missed[-limit:]
+    oldest = min((event.index for event in context.recent_events), default=after_index + 1)
+    unloaded = max(0, oldest - after_index - 1)
     lines = [
         f"[{position}] {_label(event, context, channel_id)}: {event_text(event).strip()}"
         for position, event in enumerate(shown, start=1)
     ]
-    return "\n".join([_header(len(shown), len(missed)), *lines, "[End of room context]"])
+    header = _header(len(shown), len(missed), unloaded)
+    return "\n".join([header, *lines, "[End of room context]"])
 
 
 def _from_standalone_turn(event: RoomEvent) -> bool:
@@ -126,18 +133,27 @@ def _label(event: RoomEvent, context: RoomContext, channel_id: str) -> str:
     return speaker_label(event, context)
 
 
-def _header(shown: int, total: int) -> str:
-    """Name the block and, when it is cut, say so and by how much."""
+def _header(shown: int, total: int, unloaded: int = 0) -> str:
+    """Name the block and, when it is cut, say so and by how much.
+
+    Two cuts can apply: ``room_history`` trims what the loaded tail holds
+    (*total* counted), and the tail itself may not reach back to the cursor
+    (*unloaded*, an upper bound in room events).
+    """
+    closing = " Context only; the request follows.]"
+    if unloaded:
+        counted = f" of {total} loaded" if shown < total else ""
+        return (
+            f"[Room context — the {shown} most recent{counted} messages you did not "
+            f"receive; up to {unloaded} earlier room events were not loaded.{closing}"
+        )
     if shown < total:
         return (
             f"[Room context — the {shown} most recent of {total} messages you did not "
-            f"receive; the earlier ones are not shown. Context only; the request follows.]"
+            f"receive; the earlier ones are not shown.{closing}"
         )
     plural = "message" if shown == 1 else "messages"
-    return (
-        f"[Room context — {shown} {plural} you did not receive. "
-        f"Context only; the request follows.]"
-    )
+    return f"[Room context — {shown} {plural} you did not receive.{closing}"
 
 
 async def contributed_blocks(
