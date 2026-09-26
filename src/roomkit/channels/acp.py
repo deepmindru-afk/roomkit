@@ -17,7 +17,7 @@ import asyncio
 import contextlib
 import logging
 import time
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Mapping, Sequence
 from copy import deepcopy
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -41,6 +41,7 @@ from roomkit.channels._acp_context import (
     room_context_block,
 )
 from roomkit.channels._acp_events import ACPEventsMixin
+from roomkit.channels._acp_turn_session import ACPTurnSessionMixin
 from roomkit.channels._acp_usage import (
     _apply_transport_usage,
     _report_context,
@@ -87,7 +88,7 @@ _UNSEEN = -1
 """No prompt has left for this room yet — event indices start at 0."""
 
 
-class ACPChannel(ACPConnectionMixin, ACPEventsMixin, Channel):
+class ACPChannel(ACPConnectionMixin, ACPTurnSessionMixin, ACPEventsMixin, Channel):
     """Connect a RoomKit Room to an external ACP coding agent.
 
     One connection to the agent is opened lazily for the channel and one ACP
@@ -304,7 +305,13 @@ class ACPChannel(ACPConnectionMixin, ACPEventsMixin, Channel):
         """
         connection = await self._ensure_connection()
         session_id = self._sessions.get(room_id)
-        if session_id is None:
+        if session_id is None and room_id in self._turn_sessions:
+            # A standalone turn is in flight and holds the room's lock, so this
+            # caller may be running inside it (a tool handler): waiting would
+            # deadlock. That turn never opens the room's session, so nothing
+            # races this one. The setting is the room's, not the turn's.
+            session_id = await self._session_for(room_id, connection)
+        elif session_id is None:
             # Session creation is serialized on the room's turn lock so a
             # concurrent first prompt cannot open a second session. An
             # existing session skips the lock deliberately: an in-flight turn
@@ -376,12 +383,13 @@ class ACPChannel(ACPConnectionMixin, ACPEventsMixin, Channel):
         )
         if not text.strip() and not blocks:
             return ChannelOutput.empty()
-        instruction = text if event.type == EventType.INSTRUCTION and text.strip() else None
-        if instruction is not None:
+        instruction = text if event.type == EventType.INSTRUCTION else None
+        if instruction is not None and instruction.strip():
             # The application's direction, never a participant's line (RFC
             # §10.1.1 step 6). The session keeps it once prompted, so the mark
             # is what makes later turns read it for what it was.
             text = mark_instruction(instruction)
+        standalone = is_standalone(event)
         # One live record for the turn, handed to the stream and to the output
         # alike: the stop reason is only known when the prompt returns, and
         # every MESSAGE segment reads this mapping as it stands when it is
@@ -390,6 +398,10 @@ class ACPChannel(ACPConnectionMixin, ACPEventsMixin, Channel):
         metadata = ResponseMetadata({"acp": {"protocol_version": _STABLE_PROTOCOL_VERSION}})
         if instruction is not None:
             metadata["instruction"] = instruction_fingerprint(instruction)
+        if standalone:
+            # The room's session did not produce this reply: its next catch-up
+            # carries it (RFC §10.1.1 step 7), and this mark is how it knows.
+            metadata["acp"]["standalone"] = True
         # The catch-up this turn sends covers the room up to its latest event,
         # and the cursor must say so. The trigger's own index is not that
         # bound: an instruction is never committed and carries index 0
@@ -406,7 +418,7 @@ class ACPChannel(ACPConnectionMixin, ACPEventsMixin, Channel):
                 text,
                 max(seen_index, event.index),
                 metadata,
-                standalone=is_standalone(event),
+                standalone=standalone,
             ),
             response_metadata=metadata,
         )
@@ -537,12 +549,7 @@ class ACPChannel(ACPConnectionMixin, ACPEventsMixin, Channel):
         session_id = self._sessions.get(room_id)
         if session_id is not None:
             return session_id
-        response = await connection.new_session(
-            cwd=self._cwd,
-            additional_directories=self._additional_directories or None,
-            mcp_servers=self._mcp_servers,
-            **{"roomkit.live/roomId": room_id},
-        )
+        response = await self._new_session(room_id, connection)
         session_id = response.session_id
         self._sessions[room_id] = session_id
         self._session_rooms[session_id] = room_id
@@ -554,55 +561,6 @@ class ACPChannel(ACPConnectionMixin, ACPEventsMixin, Channel):
             _config_values(self._session_options[session_id]),
         )
         return session_id
-
-    async def _open_turn_session(self, room_id: str, connection: Any) -> str:
-        """Open the session a standalone turn runs in (RFC §10.1.1 step 7).
-
-        The room's session holds the conversation in the agent's process and
-        cannot be emptied, so a turn that must start from a blank page gets a
-        session of its own. It takes the room session's current configuration
-        (a model the host chose, a mode) where the agent accepts it: the turn
-        is blank on history, not on how the channel was set up. Its options are
-        not published — they describe a session that lives for one turn.
-        """
-        response = await connection.new_session(
-            cwd=self._cwd,
-            additional_directories=self._additional_directories or None,
-            mcp_servers=self._mcp_servers,
-            **{"roomkit.live/roomId": room_id},
-        )
-        session_id = response.session_id
-        self._turn_sessions[room_id] = session_id
-        self._session_rooms[session_id] = room_id
-        fresh = _config_values(getattr(response, "config_options", None))
-        for config_id, value in self.session_config(room_id).items():
-            if fresh.get(config_id) == value:
-                continue
-            try:
-                await connection.set_config_option(
-                    config_id=config_id, session_id=session_id, value=value
-                )
-            except Exception:
-                logger.warning(
-                    "ACP standalone turn could not take %r=%r from the room's session (%s)",
-                    config_id,
-                    value,
-                    self.channel_id,
-                    exc_info=True,
-                )
-        return session_id
-
-    async def _close_turn_session(self, room_id: str, session_id: str, connection: Any) -> None:
-        """Close and forget a standalone turn's session. Never raises: the turn is over."""
-        if self._turn_sessions.get(room_id) == session_id:
-            self._turn_sessions.pop(room_id, None)
-        self._session_rooms.pop(session_id, None)
-        try:
-            await connection.close_session(session_id)
-        except Exception:
-            logger.debug(
-                "ACP standalone session close failed (%s)", self.channel_id, exc_info=True
-            )
 
     async def _prompt_stream(
         self,
@@ -623,105 +581,143 @@ class ACPChannel(ACPConnectionMixin, ACPEventsMixin, Channel):
                 session_id = await self._open_turn_session(room_id, connection)
             else:
                 session_id = await self._session_for(room_id, connection)
-            prompt_source: dict[str, Any] = {"source": "session/prompt", "scope": "unspecified"}
-            model = self.session_config(room_id).get("model")
-            if isinstance(model, str):
-                prompt_source["model_at_start"] = model
-            turn = _TurnState(
-                room_id=room_id,
-                usage_metadata={
-                    "protocol": "acp",
-                    "transport": self._transport.name,
-                    "session_id": session_id,
-                    "event_id": event_id,
-                    "prompt": prompt_source,
-                },
+            # The turn session is closed whatever ends the turn: a failure, a
+            # consumer that stops reading, a cancellation mid-setup. The inner
+            # stream is closed explicitly so its own cleanup runs first.
+            turn_stream = self._turn_stream(
+                room_id,
+                session_id,
+                connection,
+                event_id,
+                blocks,
+                context,
+                trigger,
+                text,
+                seen_index,
+                metadata,
+                standalone=standalone,
             )
-            if self._agent_info is not None:
-                turn.usage_metadata["adapter_info"] = deepcopy(self._agent_info)
-            self._turns[session_id] = turn
-            # A standalone turn reads nothing of the room: no catch-up, and
-            # its session was born empty.
-            catch_up = (
-                ""
-                if standalone
-                else room_context_block(
-                    context,
-                    self.channel_id,
-                    after_index=self._prompted_index.get(room_id, _UNSEEN),
-                    trigger=trigger,
-                    limit=self._room_history,
-                )
-            )
-            prompt_text = compose_prompt(blocks, catch_up, text)
-            prompt = [self._sdk().acp.text_block(prompt_text)]
-            # The cursor commits only after the agent accepts the prompt. A
-            # generator body that never runs, or a prompt rejected before
-            # delivery, leaves the mark untouched so the next turn can replay
-            # the missing room context instead of silently losing it.
-            turn.runner = asyncio.create_task(
-                self._run_prompt(
-                    connection,
-                    session_id,
-                    event_id,
-                    prompt,
-                    turn,
-                    room_id,
-                    None if standalone else seen_index,
-                    metadata,
-                )
-            )
-
             try:
-                while True:
-                    item = await turn.queue.get()
-                    if isinstance(item, _TurnDone):
-                        # Whatever the turn left open closes here, in the
-                        # stream, because the stored TOOL_CALL_END is
-                        # persisted from the marker — and the finally below
-                        # runs too late to yield one. The closing markers go
-                        # through the same queue, so the terminal item is put
-                        # back to be read after them; the second pass finds
-                        # nothing open and falls through.
-                        if await self._close_open_tools(turn, room_id, stream=True):
-                            turn.queue.put_nowait(item)
-                            continue
-                        if item.error is not None:
-                            if isinstance(item.error, asyncio.CancelledError):
-                                return
-                            if isinstance(item.error, ProviderError):
-                                raise item.error
-                            raise ProviderError(
-                                f"ACP agent prompt failed: {item.error}",
-                                provider="acp",
-                            ) from item.error
-                        turn.completed = True
-                        return
+                async for item in turn_stream:
                     yield item
             finally:
-                if turn.runner is not None and not turn.runner.done():
-                    with contextlib.suppress(Exception):
-                        await connection.cancel(session_id)
-                    turn.runner.cancel()
-                    await asyncio.gather(turn.runner, return_exceptions=True)
-                if turn.thinking_open:
-                    await self._publish(
-                        room_id,
-                        EphemeralEventType.THINKING_END,
-                        {"thinking": "", "round": 0},
-                    )
-                # A stream closed from the outside — the consumer was
-                # cancelled, a muted binding dropped it — never reaches the
-                # terminal item above. Its tools still have to stop spinning
-                # for live surfaces; the stored row is beyond reach from here,
-                # nothing can be yielded into a generator already closing.
-                await self._close_open_tools(turn, room_id, stream=False)
-                if self._turns.get(session_id) is turn:
-                    self._turns.pop(session_id, None)
-                if turn.completed:
-                    await self._report_response(turn)
+                await turn_stream.aclose()
                 if standalone:
                     await self._close_turn_session(room_id, session_id, connection)
+
+    async def _turn_stream(
+        self,
+        room_id: str,
+        session_id: str,
+        connection: Any,
+        event_id: str,
+        blocks: Sequence[str],
+        context: RoomContext,
+        trigger: RoomEvent,
+        text: str,
+        seen_index: int,
+        metadata: ResponseMetadata,
+        *,
+        standalone: bool,
+    ) -> AsyncGenerator[StreamDelta]:
+        """One prompt in *session_id*, streamed until the agent ends it."""
+        prompt_source: dict[str, Any] = {"source": "session/prompt", "scope": "unspecified"}
+        model = self.session_config(room_id).get("model")
+        if isinstance(model, str):
+            prompt_source["model_at_start"] = model
+        turn = _TurnState(
+            room_id=room_id,
+            usage_metadata={
+                "protocol": "acp",
+                "transport": self._transport.name,
+                "session_id": session_id,
+                "event_id": event_id,
+                "prompt": prompt_source,
+            },
+        )
+        if self._agent_info is not None:
+            turn.usage_metadata["adapter_info"] = deepcopy(self._agent_info)
+        self._turns[session_id] = turn
+        # A standalone turn reads nothing of the room: no catch-up, and
+        # its session was born empty.
+        catch_up = (
+            ""
+            if standalone
+            else room_context_block(
+                context,
+                self.channel_id,
+                after_index=self._prompted_index.get(room_id, _UNSEEN),
+                trigger=trigger,
+                limit=self._room_history,
+            )
+        )
+        prompt_text = compose_prompt(blocks, catch_up, text)
+        prompt = [self._sdk().acp.text_block(prompt_text)]
+        # The cursor commits only after the agent accepts the prompt. A
+        # generator body that never runs, or a prompt rejected before
+        # delivery, leaves the mark untouched so the next turn can replay
+        # the missing room context instead of silently losing it.
+        turn.runner = asyncio.create_task(
+            self._run_prompt(
+                connection,
+                session_id,
+                event_id,
+                prompt,
+                turn,
+                room_id,
+                None if standalone else seen_index,
+                metadata,
+            )
+        )
+
+        try:
+            while True:
+                item = await turn.queue.get()
+                if isinstance(item, _TurnDone):
+                    # Whatever the turn left open closes here, in the
+                    # stream, because the stored TOOL_CALL_END is
+                    # persisted from the marker — and the finally below
+                    # runs too late to yield one. The closing markers go
+                    # through the same queue, so the terminal item is put
+                    # back to be read after them; the second pass finds
+                    # nothing open and falls through.
+                    if await self._close_open_tools(turn, room_id, stream=True):
+                        turn.queue.put_nowait(item)
+                        continue
+                    if item.error is not None:
+                        if isinstance(item.error, asyncio.CancelledError):
+                            return
+                        if isinstance(item.error, ProviderError):
+                            raise item.error
+                        raise ProviderError(
+                            f"ACP agent prompt failed: {item.error}",
+                            provider="acp",
+                        ) from item.error
+                    turn.completed = True
+                    return
+                yield item
+        finally:
+            if turn.runner is not None and not turn.runner.done():
+                with contextlib.suppress(Exception):
+                    await connection.cancel(session_id)
+                turn.runner.cancel()
+                await asyncio.gather(turn.runner, return_exceptions=True)
+            if turn.thinking_open:
+                await self._publish(
+                    room_id,
+                    EphemeralEventType.THINKING_END,
+                    {"thinking": "", "round": 0},
+                )
+            # A stream closed from the outside — the consumer was
+            # cancelled, a muted binding dropped it — never reaches the
+            # terminal item above. Its tools still have to stop spinning
+            # for live surfaces; the stored row is beyond reach from here,
+            # nothing can be yielded into a generator already closing.
+            await self._close_open_tools(turn, room_id, stream=False)
+            if self._turns.get(session_id) is turn:
+                self._turns.pop(session_id, None)
+            if turn.completed:
+                await self._report_response(turn)
 
     async def _report_response(self, turn: _TurnState) -> None:
         """Announce a finished turn to whatever observes agent responses.

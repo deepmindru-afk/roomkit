@@ -47,11 +47,13 @@ class ACPEventsMixin:
     channel_id: str
     _turns: dict[str, _TurnState]
     _session_rooms: dict[str, str]
-    _turn_sessions: dict[str, str]
     _session_options: dict[str, list[Any]]
     _transport: ACPTransport
     _external_tool_handler: ExternalToolHandler | None
     _realtime: RealtimeBackend | None
+
+    def _is_room_session(self, session_id: str) -> bool:
+        raise NotImplementedError
 
     def _sdk(self) -> _SDK:
         raise NotImplementedError
@@ -135,7 +137,9 @@ class ACPEventsMixin:
             else:
                 turn.usage_metadata["usage_report"] = deepcopy(report)
         room_id = self._session_rooms.get(session_id)
-        if room_id is None:
+        # The turn keeps its own accounting above; the room's gauge follows
+        # the room's session only, never a standalone turn's empty one.
+        if room_id is None or not self._is_room_session(session_id):
             return
         await self._publish(
             room_id,
@@ -163,9 +167,9 @@ class ACPEventsMixin:
         :meth:`ACPChannel.session_config` truthful; the ephemeral event lets
         UI surfaces follow along live.
         """
-        # A standalone turn's session lives for one turn: its tunables are not
-        # the room's, and announcing them would read as the room's changing.
-        if session_id in self._turn_sessions.values():
+        # Only a room's session describes the room: a standalone turn's, open
+        # or already closed, would read as the room's tunables changing.
+        if not self._is_room_session(session_id):
             return
         options = _model_dump(getattr(update, "config_options", None))
         if isinstance(options, list):

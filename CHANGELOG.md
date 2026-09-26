@@ -24,7 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (RMK-223, RFC §10.1.1): the prompt is marked, the reply records the
   fingerprint, and a standalone instruction runs in a session opened for that
   turn and closed after it. The room's session is neither prompted nor told,
-  and the turn session takes its configuration (`model`, `mode`).
+  its next catch-up carries the standalone reply as the agent's own words, and
+  the turn session takes its configuration (`model`, `mode`).
 
 ### Changed
 

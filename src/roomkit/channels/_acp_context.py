@@ -80,7 +80,9 @@ def room_context_block(
     - **The triggering event.** It follows the block as the actual request.
     - **The agent's own past events.** Its session already holds what it said,
       and a block headed "messages you did not receive" is the wrong place to
-      quote it back to itself.
+      quote it back to itself. The exception is a reply from a standalone
+      turn (RFC §10.1.1 step 7): another session produced it, so this one
+      never held it, and it is shown as the agent's own words.
 
     ``limit`` bounds what is shown, and the header says so when it bites —
     §19.3.2 requires the reader be told its history is partial, because an
@@ -97,7 +99,7 @@ def room_context_block(
         for event in visible_events(context, channel_id)
         if event.index > after_index
         and event.id != trigger.id
-        and event.source.channel_id != channel_id
+        and (event.source.channel_id != channel_id or _from_standalone_turn(event))
         and event.type not in _SKIPPED_TYPES
         and event_text(event).strip()
     ]
@@ -106,10 +108,22 @@ def room_context_block(
 
     shown = missed[-limit:]
     lines = [
-        f"[{position}] {speaker_label(event, context)}: {event_text(event).strip()}"
+        f"[{position}] {_label(event, context, channel_id)}: {event_text(event).strip()}"
         for position, event in enumerate(shown, start=1)
     ]
     return "\n".join([_header(len(shown), len(missed)), *lines, "[End of room context]"])
+
+
+def _from_standalone_turn(event: RoomEvent) -> bool:
+    """Whether *event* is a reply the channel produced in a standalone turn's session."""
+    acp_meta = event.metadata.get("acp")
+    return isinstance(acp_meta, dict) and acp_meta.get("standalone") is True
+
+
+def _label(event: RoomEvent, context: RoomContext, channel_id: str) -> str:
+    if event.source.channel_id == channel_id:
+        return "you (in a separate session)"
+    return speaker_label(event, context)
 
 
 def _header(shown: int, total: int) -> str:
