@@ -9,6 +9,17 @@ intentionally out of scope.
 
 The optional ``agent-client-protocol`` dependency is imported lazily so that
 ``import roomkit`` continues to work when the ``acp`` extra is not installed.
+
+This module holds the channel's construction and its public surface. The
+mechanics live in mixins, one responsibility each:
+
+- ``_acp_client.ACPConnectionMixin``: the connection to the agent and the SDK;
+- ``_acp_sessions.ACPSessionsMixin``: room and standalone-turn sessions;
+- ``_acp_turn.ACPTurnMixin``: one prompt, from sending it to the end of the turn;
+- ``_acp_events.ACPEventsMixin``: the agent's updates, tools and permissions.
+
+Public methods stay defined here: the API reference renders this class without
+inherited members.
 """
 
 from __future__ import annotations
