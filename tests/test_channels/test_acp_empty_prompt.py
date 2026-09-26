@@ -14,7 +14,7 @@ from tests.test_channels.test_acp import _binding, _channel, _context, _prompt, 
 async def test_host_content_supplies_a_prompt_without_mutating_the_event(
     tmp_path: Any, body: str
 ) -> None:
-    trigger = make_event(room_id="room-1", body=body, index=1)
+    trigger = make_event(room_id="room-1", body=body, index=0)
     before = trigger.model_dump()
     seen = []
 
@@ -42,7 +42,7 @@ async def test_no_turn_without_text_or_host_content(tmp_path: Any, body: str, bl
     channel, connection, _ = _channel(
         tmp_path, context_contributor=contribute if blocks is not None else None
     )
-    trigger = make_event(room_id="room-1", body=body, index=1)
+    trigger = make_event(room_id="room-1", body=body, index=0)
     missed = make_event(room_id="room-1", body="Earlier text", index=0)
     try:
         output = await channel.on_event(trigger, _binding(), _context(missed, trigger))

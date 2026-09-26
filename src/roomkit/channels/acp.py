@@ -128,9 +128,10 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
             visibility would have delivered to it (RFC §7.5 rule 8). It is
             also the window this channel declares to the framework, which
             loads the largest window any bound channel declares (floored at
-            50 events while a hook is registered): on a room with no hook, the
-            tail can stop short of what the agent missed, and the catch-up
-            header then says that earlier events were not loaded.
+            50 events while a hook or an identity hook is registered, capped
+            at 2000). When that tail stops short of what the agent missed, as
+            it does on a room with no hook, the catch-up header says that
+            earlier events were not loaded.
         context_contributor: What the host adds to a turn's prompt that the
             agent cannot go and fetch — member memories, a document corpus, an
             organisation's rules. Awaited once per solicited turn with the
@@ -158,7 +159,8 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
 
             ``context.recent_events`` is the framework's tail, not a window
             this channel guarantees: sized by the largest window a bound
-            channel declares, floored at 50 events while a hook is registered.
+            channel declares, floored at 50 events while a hook or an identity
+            hook is registered, capped at 2000.
             With ``room_history=0`` on a room with no hook and no other
             history reader, it holds the triggering event alone. A contributor
             that needs the room's history reads it from the store.

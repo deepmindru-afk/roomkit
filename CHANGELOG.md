@@ -39,11 +39,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- The `ACPChannel` catch-up says it is partial again on a room with no hook
-  (RMK-159). Since RMK-103 such a room loads exactly the declared window, so
-  the header could never report a truncation. The tail's oldest index now
-  tells when events between the session's cursor and the tail were not loaded,
-  and the header gives that gap as an upper bound, without loading more. The
+- The `ACPChannel` catch-up says it is partial whenever the loaded tail stops
+  short of what the agent missed (RMK-159). Since RMK-103 a room with no hook
+  loads exactly the declared window, so the header could never report a
+  truncation there. The tail's oldest index now tells when events between the
+  session's cursor and the tail were not loaded, and the header gives that gap
+  as an upper bound, without loading more, even when nothing loaded is new to
+  the agent. The
   `context_contributor` docstring and guide state what `context.recent_events`
   holds: the framework's tail, the triggering event alone with
   `room_history=0` on a room with no hook.

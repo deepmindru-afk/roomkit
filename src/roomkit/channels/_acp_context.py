@@ -107,12 +107,20 @@ def room_context_block(
         and event.type not in _SKIPPED_TYPES
         and event_text(event).strip()
     ]
-    if not missed:
-        return ""
-
-    shown = missed[-limit:]
     oldest = min((event.index for event in context.recent_events), default=after_index + 1)
     unloaded = max(0, oldest - after_index - 1)
+    if not missed:
+        # Nothing loaded is new to the agent (its own turn's tool calls and
+        # replies can fill the tail), yet the gap may reach past the tail:
+        # that is still partial, and silence would say otherwise.
+        if not unloaded:
+            return ""
+        return (
+            f"[Room context — none of the loaded messages are new to you; "
+            f"{_not_loaded(unloaded)}.{_CLOSING}"
+        )
+
+    shown = missed[-limit:]
     lines = [
         f"[{position}] {_label(event, context, channel_id)}: {event_text(event).strip()}"
         for position, event in enumerate(shown, start=1)
@@ -133,27 +141,38 @@ def _label(event: RoomEvent, context: RoomContext, channel_id: str) -> str:
     return speaker_label(event, context)
 
 
-def _header(shown: int, total: int, unloaded: int = 0) -> str:
+_CLOSING = " Context only; the request follows.]"
+
+
+def _count(number: int, noun: str) -> str:
+    return f"{number} {noun}" if number == 1 else f"{number} {noun}s"
+
+
+def _not_loaded(unloaded: int) -> str:
+    verb = "was" if unloaded == 1 else "were"
+    return f"up to {_count(unloaded, 'earlier room event')} {verb} not loaded"
+
+
+def _header(shown: int, total: int, unloaded: int) -> str:
     """Name the block and, when it is cut, say so and by how much.
 
     Two cuts can apply: ``room_history`` trims what the loaded tail holds
     (*total* counted), and the tail itself may not reach back to the cursor
     (*unloaded*, an upper bound in room events).
     """
-    closing = " Context only; the request follows.]"
     if unloaded:
-        counted = f" of {total} loaded" if shown < total else ""
-        return (
-            f"[Room context — the {shown} most recent{counted} messages you did not "
-            f"receive; up to {unloaded} earlier room events were not loaded.{closing}"
+        lead = (
+            f"the {shown} most recent of {total} loaded messages"
+            if shown < total
+            else f"the {_count(shown, 'most recent message')}"
         )
+        return f"[Room context — {lead} you did not receive; {_not_loaded(unloaded)}.{_CLOSING}"
     if shown < total:
         return (
             f"[Room context — the {shown} most recent of {total} messages you did not "
-            f"receive; the earlier ones are not shown.{closing}"
+            f"receive; the earlier ones are not shown.{_CLOSING}"
         )
-    plural = "message" if shown == 1 else "messages"
-    return f"[Room context — {shown} {plural} you did not receive.{closing}"
+    return f"[Room context — {_count(shown, 'message')} you did not receive.{_CLOSING}"
 
 
 async def contributed_blocks(

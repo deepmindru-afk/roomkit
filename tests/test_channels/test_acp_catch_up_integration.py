@@ -1,9 +1,10 @@
-"""The ACP catch-up on a real RoomKit room with no hook (RFC §19.3.2).
+"""The ACP catch-up when the loaded tail stops short of the gap (RFC §19.3.2).
 
 With no hook registered, the framework loads exactly the window the room's
 channels declare (RMK-103), so the tail the catch-up reads can stop short of
-what the agent missed. These tests go through the framework rather than a
-hand-built ``RoomContext``: that loading is the behaviour under test.
+what the agent missed. The first tests go through the framework rather than a
+hand-built ``RoomContext``: that loading is the behaviour under test. The last
+ones pin the header's wording on hand-built tails.
 """
 
 from __future__ import annotations
@@ -12,11 +13,13 @@ import asyncio
 from typing import Any
 
 from roomkit import RoomKit
+from roomkit.channels._acp_context import room_context_block
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
-from roomkit.models.enums import ChannelCategory
+from roomkit.models.enums import ChannelCategory, EventType
 from roomkit.models.event import RoomEvent, TextContent
-from tests.test_channels.test_acp import _channel, _sent
+from tests.conftest import make_event
+from tests.test_channels.test_acp import _channel, _context, _sent
 from tests.test_framework import SimpleChannel
 
 ROOM = "room-1"
@@ -80,3 +83,48 @@ async def test_a_contributor_sees_the_frameworks_tail_not_a_floor(tmp_path: Any)
     assert [[event.content.body for event in tail] for tail in seen] == [["go"]]
     assert _sent(connection) == "Policy: be brief\n\ngo"
     await kit.close()
+
+
+def _header(*tail: RoomEvent, after_index: int, limit: int = 5) -> str:
+    """The first line of the block for a tail whose last event is the trigger."""
+    block = room_context_block(
+        _context(*tail), "acp-agent", after_index=after_index, trigger=tail[-1], limit=limit
+    )
+    return block.split("\n")[0]
+
+
+def _message(index: int, **fields: Any) -> RoomEvent:
+    return make_event(room_id=ROOM, body=f"line {index}", index=index, **fields)
+
+
+def test_a_tail_of_nothing_new_still_says_the_gap_was_not_loaded() -> None:
+    """The agent's own turn can fill the tail with tool calls: silence would
+    read as a complete catch-up."""
+    tools = [_message(i, type=EventType.TOOL_CALL_START) for i in range(20, 25)]
+
+    header = _header(*tools, _message(25), after_index=3)
+
+    assert header == (
+        "[Room context — none of the loaded messages are new to you; up to 16 earlier "
+        "room events were not loaded. Context only; the request follows.]"
+    )
+
+
+def test_both_cuts_are_named_when_both_apply() -> None:
+    loaded = [_message(i) for i in range(20, 30)]
+
+    header = _header(*loaded, _message(30), after_index=3)
+
+    assert header == (
+        "[Room context — the 5 most recent of 10 loaded messages you did not receive; "
+        "up to 16 earlier room events were not loaded. Context only; the request follows.]"
+    )
+
+
+def test_one_of_each_reads_in_the_singular() -> None:
+    header = _header(_message(5), _message(6), after_index=3)
+
+    assert header == (
+        "[Room context — the 1 most recent message you did not receive; up to 1 earlier "
+        "room event was not loaded. Context only; the request follows.]"
+    )
