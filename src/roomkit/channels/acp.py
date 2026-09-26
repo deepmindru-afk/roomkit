@@ -378,6 +378,11 @@ class ACPChannel(ACPConnectionMixin, ACPEventsMixin, Channel):
         # persisted. A dict literal here would be a snapshot taken now, before
         # the turn has an outcome to report.
         metadata = ResponseMetadata({"acp": {"protocol_version": _STABLE_PROTOCOL_VERSION}})
+        # The catch-up this turn sends covers the room up to its latest event,
+        # and the cursor must say so. The trigger's own index is not that
+        # bound: an instruction is never committed and carries index 0
+        # (RFC §10.1.1), so marking it would replay the same catch-up next turn.
+        seen_index = max((e.index for e in context.recent_events), default=event.index)
         return ChannelOutput(
             responded=True,
             response_stream=self._prompt_stream(
@@ -387,7 +392,7 @@ class ACPChannel(ACPConnectionMixin, ACPEventsMixin, Channel):
                 context,
                 event,
                 text,
-                event.index,
+                max(seen_index, event.index),
                 metadata,
             ),
             response_metadata=metadata,
@@ -543,7 +548,7 @@ class ACPChannel(ACPConnectionMixin, ACPEventsMixin, Channel):
         context: RoomContext,
         trigger: RoomEvent,
         text: str,
-        event_index: int,
+        seen_index: int,
         metadata: ResponseMetadata,
     ) -> AsyncIterator[StreamDelta]:
         async with self._room_turn_lock(room_id):
@@ -587,7 +592,7 @@ class ACPChannel(ACPConnectionMixin, ACPEventsMixin, Channel):
                     prompt,
                     turn,
                     room_id,
-                    event_index,
+                    seen_index,
                     metadata,
                 )
             )
@@ -677,7 +682,7 @@ class ACPChannel(ACPConnectionMixin, ACPEventsMixin, Channel):
         prompt: list[Any],
         turn: _TurnState,
         room_id: str,
-        event_index: int,
+        seen_index: int,
         metadata: ResponseMetadata,
     ) -> None:
         """Run one prompt to its end, recording how that end came about.
@@ -697,7 +702,7 @@ class ACPChannel(ACPConnectionMixin, ACPEventsMixin, Channel):
                 **{"roomkit.live/eventId": event_id},
             )
             self._prompted_index[room_id] = max(
-                event_index, self._prompted_index.get(room_id, _UNSEEN)
+                seen_index, self._prompted_index.get(room_id, _UNSEEN)
             )
             # The turn's own accounting, and the only place it is offered:
             # the usage notifications describe the context window, not what
