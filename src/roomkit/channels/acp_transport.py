@@ -61,6 +61,15 @@ class ACPTransport(ABC):
     Implement this to reach an agent the channel cannot spawn itself — one
     running on another machine, or behind a relay that carries its stdio.
 
+    Every ``session/new`` names the room it serves in its ``_meta``
+    (``field_meta`` in Python, extra keyword arguments to ``new_session``):
+    ``roomkit.live/roomId``, and ``roomkit.live/sessionScope``, which is
+    ``"room"`` for the room's session, kept for the room's life, or ``"turn"``
+    for a standalone turn's, closed after that one turn. A transport that files
+    sessions by room must file a ``"turn"`` session under a key of its own and
+    close only that one: the turn must neither reach nor close the room's
+    session (RFC §10.1.1 step 7).
+
     Usage provenance is an opt-in extension of the connection's SDK models
     (see :attr:`provides_usage_metadata`):
     ``PromptResponse._meta["roomkit.live/usage"]`` (``field_meta`` in Python)

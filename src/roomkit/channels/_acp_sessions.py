@@ -4,8 +4,10 @@ A room gets one session, opened lazily on its first prompt and kept for the
 room's life: the agent holds the room's conversation inside its own process.
 A standalone turn (RFC §10.1.1 step 7) cannot empty that session, so it gets
 one of its own, opened for the turn and closed after it, never the room's.
-Both are declared the same way, serialized on the room's turn lock, and told
-apart by :meth:`ACPSessionsMixin._is_room_session`.
+Both name their room to ``session/new`` and say which of the two they are (RFC
+§10.1.1 step 7): a transport that files sessions by room would otherwise take
+the turn's for the room's, and close it. They are serialized on the room's turn
+lock, and told apart here by :meth:`ACPSessionsMixin._is_room_session`.
 """
 
 from __future__ import annotations
@@ -15,7 +17,7 @@ import contextlib
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from roomkit.channels._acp_client import _config_values, _model_dump
 
@@ -41,20 +43,22 @@ class ACPSessionsMixin:
     session_config: Callable[[str], dict[str, str | bool]]
     _publish_config_options: Callable[[str, Any, dict[str, str | bool]], Awaitable[None]]
 
-    async def _new_session(self, room_id: str, connection: Any) -> Any:
+    async def _new_session(
+        self, room_id: str, connection: Any, scope: Literal["room", "turn"]
+    ) -> Any:
         """``session/new`` as this channel declares every session, room or turn."""
         return await connection.new_session(
             cwd=self._cwd,
             additional_directories=self._additional_directories or None,
             mcp_servers=self._mcp_servers,
-            **{"roomkit.live/roomId": room_id},
+            **{"roomkit.live/roomId": room_id, "roomkit.live/sessionScope": scope},
         )
 
     async def _session_for(self, room_id: str, connection: Any) -> str:
         session_id = self._sessions.get(room_id)
         if session_id is not None:
             return session_id
-        response = await self._new_session(room_id, connection)
+        response = await self._new_session(room_id, connection, "room")
         session_id = response.session_id
         self._sessions[room_id] = session_id
         self._session_rooms[session_id] = room_id
@@ -114,7 +118,7 @@ class ACPSessionsMixin:
         closed here if anything interrupts the setup, cancellation included,
         so no half-open session outlives it.
         """
-        response = await self._new_session(room_id, connection)
+        response = await self._new_session(room_id, connection, "turn")
         session_id = response.session_id
         self._turn_sessions[room_id] = session_id
         self._session_rooms[session_id] = room_id

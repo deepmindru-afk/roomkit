@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `ACPChannel` declares a standalone turn's session as the turn's (RMK-225,
+  RFC §10.1.1 step 7). Every `session/new` carried the same `_meta`,
+  `roomkit.live/roomId`, for the room's session and for a standalone turn's,
+  so a transport that files sessions by room (a relay to a remote agent)
+  answered the turn from the room's session and then closed that one, and the
+  room's next prompt failed. `session/new` now also carries
+  `roomkit.live/sessionScope`, `"room"` or `"turn"`; a transport that files by
+  room files a `"turn"` session under a key of its own and closes only that
+  one (see `ACPTransport`).
+
 ## [0.91.0] — 2026-09-26
 
 ### Added

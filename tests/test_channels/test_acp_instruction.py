@@ -104,6 +104,23 @@ async def test_a_standalone_turn_runs_in_a_session_of_its_own(tmp_path: Any) -> 
     await channel.close()
 
 
+async def test_a_standalone_turn_declares_its_session_as_the_turns(tmp_path: Any) -> None:
+    """Step 7: a transport that files sessions by room can tell the two apart.
+
+    Both name the room, so a turn session filed under the room would be
+    prompted in place of the turn's, then closed as the room's.
+    """
+    channel, connection, history = await _talked(tmp_path)
+
+    await _prompt(channel, _instruction(standalone=True), _context(*history))
+
+    room, turn = connection.new_session_calls
+    assert room["roomkit.live/roomId"] == turn["roomkit.live/roomId"] == ROOM
+    assert room["roomkit.live/sessionScope"] == "room"
+    assert turn["roomkit.live/sessionScope"] == "turn"
+    await channel.close()
+
+
 async def test_a_standalone_turn_takes_the_rooms_configuration(tmp_path: Any) -> None:
     channel, connection, history = await _talked(tmp_path)
     await channel.set_config_option(ROOM, "model", "sonnet")
