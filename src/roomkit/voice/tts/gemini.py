@@ -281,6 +281,22 @@ class GeminiTTSProvider(TTSProvider):
             raise RuntimeError("Gemini TTS returned a truncated PCM frame")
         return pcm, effective_rate, effective_channels
 
+    @classmethod
+    def _as_wav(cls, audio: Any) -> tuple[bytes, float]:
+        """Return a non-streamed answer as a WAV file, with its duration in seconds.
+
+        A WAV file the service answered (3.8 on) is kept as it came, provenance
+        chunk included; bare PCM (up to 3.1) is wrapped in a header.
+        """
+        raw = cls._decode_base64(audio.data)
+        if not _is_wav(getattr(audio, "mime_type", None), raw):
+            pcm, sample_rate, channels = cls._check_pcm(raw, audio.sample_rate, audio.channels)
+            return wrap_wav(pcm, sample_rate, channels), len(pcm) / 2 / channels / sample_rate
+        try:
+            return raw, wav_duration_seconds(raw)
+        except ValueError as exc:
+            raise RuntimeError(f"Gemini TTS returned an unreadable WAV file: {exc}") from exc
+
     async def _create(self, text: str, voice: str | None, *, stream: bool) -> Any:
         return await self._get_client().aio.interactions.create(
             model=self._config.model,
@@ -328,18 +344,7 @@ class GeminiTTSProvider(TTSProvider):
                 f"Gemini TTS returned no audio (status={getattr(interaction, 'status', None)})"
             )
 
-        raw = self._decode_base64(audio.data)
-        if _is_wav(getattr(audio, "mime_type", None), raw):
-            wav = raw
-            try:
-                duration = wav_duration_seconds(wav)
-            except ValueError as exc:
-                raise RuntimeError(f"Gemini TTS returned an unreadable WAV file: {exc}") from exc
-        else:
-            pcm, sample_rate, channels = self._check_pcm(raw, audio.sample_rate, audio.channels)
-            wav = wrap_wav(pcm, sample_rate, channels)
-            duration = len(pcm) / 2 / channels / sample_rate
-
+        wav, duration = self._as_wav(audio)
         return AudioContentModel(
             url=f"data:audio/wav;base64,{base64.b64encode(wav).decode()}",
             mime_type="audio/wav",
