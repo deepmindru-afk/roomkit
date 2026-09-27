@@ -144,6 +144,24 @@ def _model_dump(value: Any) -> Any:
     return value
 
 
+def _closes_sessions(response: Any) -> bool:
+    """Whether the agent that sent this ``initialize`` response takes ``session/close``.
+
+    ``session/close`` is not stable ACP: an agent announces it in
+    ``agent_capabilities.session_capabilities.close``, and one that does not
+    answers it with ``method_not_found``. A response that does not report the
+    field at all (a transport answering ``initialize`` itself, an SDK older
+    than the field) keeps the channel asking, since nothing says it cannot.
+    """
+    capabilities = getattr(response, "agent_capabilities", None)
+    if not hasattr(capabilities, "session_capabilities"):
+        return True
+    sessions = capabilities.session_capabilities
+    if sessions is not None and not hasattr(sessions, "close"):
+        return True
+    return getattr(sessions, "close", None) is not None
+
+
 def _config_values(options: Any) -> dict[str, str | bool]:
     """Map ACP session config options onto ``{config_id: current value}``.
 
@@ -302,6 +320,7 @@ class _ACPClient:
 class ACPConnectionMixin:
     """Own the initialized ACP connection, whatever transport carries it."""
 
+    channel_id: str
     _client: _ACPClient
     _transport: ACPTransport
     _authentication_method: str | None
@@ -316,6 +335,7 @@ class ACPConnectionMixin:
     _session_options: dict[str, list[Any]]
     _prompted_index: dict[str, int]
     _agent_info: dict[str, Any] | None
+    _agent_closes_sessions: bool
     _handler_started: bool
     _closed: bool
 
@@ -403,6 +423,13 @@ class ACPConnectionMixin:
             self._connection = connection
             agent_info = getattr(response, "agent_info", None)
             self._agent_info = _model_dump(agent_info) if agent_info is not None else None
+            self._agent_closes_sessions = _closes_sessions(response)
+            if not self._agent_closes_sessions:
+                logger.warning(
+                    "ACP agent does not take session/close: every session it opens, a "
+                    "standalone turn's included, stays open until the connection closes (%s)",
+                    self.channel_id,
+                )
             return connection
 
     async def _close_transport(self) -> None:

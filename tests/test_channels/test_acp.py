@@ -16,6 +16,7 @@ from uuid import uuid4
 import acp
 import pytest
 from acp.schema import (
+    AgentCapabilities,
     ConfigOptionUpdate,
     Cost,
     Implementation,
@@ -23,6 +24,8 @@ from acp.schema import (
     NewSessionResponse,
     PermissionOption,
     PromptResponse,
+    SessionCapabilities,
+    SessionCloseCapabilities,
     SessionConfigOptionSelect,
     SessionConfigSelectOption,
     SetSessionConfigOptionResponse,
@@ -40,6 +43,7 @@ from roomkit import (
     StdioACPTransport,
 )
 from roomkit.channels._acp_client import (
+    _closes_sessions,
     _config_labels,
     _config_values,
     _new_message_queue,
@@ -211,6 +215,9 @@ class _FakeACPConnection:
         self.cancelled_sessions: list[str] = []
         self.permission_responses: list[Any] = []
         self.authenticated_with: str | None = None
+        # Claude's and Codex's agents take session/close; this one does too
+        # unless a test says otherwise.
+        self.takes_session_close = True
         self._session_counter = 0
         # Session totals the agent reports back, one entry consumed per
         # prompt — the shape a real agent uses, cumulative and monotonic.
@@ -231,8 +238,12 @@ class _FakeACPConnection:
                 "client_info": client_info,
             }
         )
+        close = SessionCloseCapabilities() if self.takes_session_close else None
         return InitializeResponse(
             protocol_version=protocol_version,
+            agent_capabilities=AgentCapabilities(
+                session_capabilities=SessionCapabilities(close=close)
+            ),
             agent_info=Implementation(
                 name="fake-agent",
                 title="Fake Agent",
@@ -952,6 +963,52 @@ class TestACPChannel:
         assert channel._session_options == {}
         assert channel._room_locks == {}
         await channel.close()
+
+    async def test_an_agent_without_session_close_is_never_asked_to_close(
+        self, tmp_path: Any, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """``session/close`` is not stable ACP: an agent that does not announce it is not sent it.
+
+        It would answer ``method_not_found``, which ``close_session`` raised
+        after it had already forgotten the room's session.
+        """
+        channel, connection, _ = _channel(tmp_path, emit_updates=False)
+        connection.takes_session_close = False
+        output = await channel.on_event(
+            make_event(room_id="room-1", body="hi"),
+            _binding("room-1"),
+            RoomContext(room=Room(id="room-1")),
+        )
+        _ = [chunk async for chunk in output.response_stream]
+
+        assert await channel.close_session("room-1") is True
+        await channel.close()
+
+        assert connection.closed_sessions == []
+        assert "does not take session/close" in caplog.text
+
+    async def test_a_refused_session_close_still_forgets_the_room(self, tmp_path: Any) -> None:
+        channel, connection, _ = _channel(tmp_path, emit_updates=False)
+        output = await channel.on_event(
+            make_event(room_id="room-1", body="hi"),
+            _binding("room-1"),
+            RoomContext(room=Room(id="room-1")),
+        )
+        _ = [chunk async for chunk in output.response_stream]
+
+        async def refuses(session_id: str) -> None:
+            raise acp.RequestError.method_not_found("session/close")
+
+        connection.close_session = refuses  # type: ignore[method-assign]
+
+        assert await channel.close_session("room-1") is True
+        assert channel.session_id("room-1") is None
+        assert channel._room_locks == {}
+        await channel.close()
+
+    def test_a_transport_that_reports_no_capabilities_keeps_closing_sessions(self) -> None:
+        """A transport answering ``initialize`` itself says nothing about ``session/close``."""
+        assert _closes_sessions(SimpleNamespace(protocol_version=1, agent_info=None)) is True
 
     async def test_a_waiter_on_a_retired_room_lock_does_not_race_a_new_caller(
         self, tmp_path: Any

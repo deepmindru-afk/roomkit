@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ACPChannel.close_session(room_id)` no longer raises on an agent that does
+  not take `session/close` (RMK-225). The method is not stable ACP, and such
+  an agent answers `method_not_found`: `close_session` raised `RequestError`
+  after it had already forgotten the room's session, and left the room's turn
+  lock behind. The channel now reads
+  `agent_capabilities.session_capabilities.close` at `initialize` and sends
+  `session/close` only to an agent that announces it (the Claude and Codex
+  agents do), logs a warning on connecting to one that does not (its
+  sessions, a standalone turn's included, stay open until the connection
+  closes), and never raises when a close fails. A transport that answers
+  `initialize` without reporting capabilities keeps being asked.
+
 - `ACPChannel` declares a standalone turn's session as the turn's (RMK-225,
   RFC §10.1.1 step 7). Every `session/new` carried the same `_meta`,
   `roomkit.live/roomId`, for the room's session and for a standalone turn's,

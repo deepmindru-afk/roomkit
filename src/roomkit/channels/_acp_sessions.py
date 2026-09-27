@@ -36,6 +36,7 @@ class ACPSessionsMixin:
     _turn_sessions: dict[str, str]
     _session_rooms: dict[str, str]
     _session_options: dict[str, list[Any]]
+    _agent_closes_sessions: bool
 
     # Implemented elsewhere on the channel. Declared as annotations, never as
     # stub methods: a stub here would shadow the implementation of any mixin
@@ -165,9 +166,18 @@ class ACPSessionsMixin:
         if self._turn_sessions.get(room_id) == session_id:
             self._turn_sessions.pop(room_id, None)
         self._session_rooms.pop(session_id, None)
+        await self._release_session(connection, session_id)
+
+    async def _release_session(self, connection: Any, session_id: str) -> None:
+        """Ask the agent to close *session_id*, if it takes ``session/close``. Never raises.
+
+        The channel has already forgotten the session: an agent that refuses,
+        or cannot be asked, keeps it until the connection closes, and no
+        caller is better served by an exception than by that.
+        """
+        if not self._agent_closes_sessions:
+            return
         try:
             await connection.close_session(session_id)
         except Exception:
-            logger.debug(
-                "ACP standalone session close failed (%s)", self.channel_id, exc_info=True
-            )
+            logger.debug("ACP session close failed (%s)", self.channel_id, exc_info=True)

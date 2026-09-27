@@ -240,6 +240,7 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
         self._prompted_index: dict[str, int] = {}
         self._turns: dict[str, _TurnState] = {}
         self._agent_info: dict[str, Any] | None = None
+        self._agent_closes_sessions = True
         self._handler_started = False
         self._closed = False
         self._realtime: RealtimeBackend | None = None
@@ -456,7 +457,7 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
             # has missed everything.
             self._prompted_index.pop(room_id, None)
             if self._connection is not None:
-                await self._connection.close_session(session_id)
+                await self._release_session(self._connection, session_id)
             self._room_locks.pop(room_id, None)
             return True
 
@@ -497,8 +498,10 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
 
         if connection is not None:
             await asyncio.gather(
-                *(connection.close_session(session_id) for session_id in self._sessions.values()),
-                return_exceptions=True,
+                *(
+                    self._release_session(connection, session_id)
+                    for session_id in self._sessions.values()
+                )
             )
 
     async def _teardown(self) -> None:
