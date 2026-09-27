@@ -183,6 +183,10 @@ def build_gen_config(types: Any, config: GeminiConfig, context: AIContext) -> An
     gen_config = types.GenerateContentConfig(
         temperature=context.temperature,
         max_output_tokens=context.max_tokens or config.max_tokens,
+        # RoomKit runs its own tool loop from the declarations it sends; the
+        # SDK's automatic function calling only executes Python callables,
+        # which RoomKit never passes, and logs a warning on every call.
+        automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
     )
 
     # Thinking config. ``include_thoughts=True`` is required for Gemini to
@@ -196,10 +200,13 @@ def build_gen_config(types: Any, config: GeminiConfig, context: AIContext) -> An
             thinking_level=thinking_level,
             include_thoughts=True,
         )
-    elif thinking_budget:
+    elif thinking_budget is not None:
+        # ``0`` turns reasoning off, as it does on every other provider. The
+        # models that cannot run without it answer 400 — measured 2026-09-27:
+        # ``gemini-3.1-pro-preview`` and ``gemini-3.5-flash-lite``.
         gen_config.thinking_config = types.ThinkingConfig(
             thinking_budget=thinking_budget,
-            include_thoughts=True,
+            include_thoughts=thinking_budget != 0,
         )
 
     if context.system_prompt:

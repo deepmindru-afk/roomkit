@@ -78,6 +78,27 @@ class TestGeminiVisionProvider:
 
         mock_client.aio.models.generate_content.assert_called_once()
 
+    async def test_automatic_function_calling_is_off(self) -> None:
+        """No tools here; left on, the SDK logs a warning on every frame."""
+        provider = GeminiVisionProvider(GeminiVisionConfig(api_key="test-key"))
+        mock_response = MagicMock()
+        mock_response.text = "A desk"
+        mock_client = MagicMock()
+        mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
+        provider._client = mock_client
+        mock_types = MagicMock()
+        provider._types = mock_types
+
+        await provider.analyze_frame(
+            VideoFrame(data=b"\x00" * (64 * 48 * 3), codec="raw_rgb24", width=64, height=48)
+        )
+
+        mock_types.AutomaticFunctionCallingConfig.assert_called_once_with(disable=True)
+        sent = mock_types.GenerateContentConfig.call_args.kwargs
+        assert sent["automatic_function_calling"] is (
+            mock_types.AutomaticFunctionCallingConfig.return_value
+        )
+
     async def test_analyze_frame_empty_response(self) -> None:
         provider = GeminiVisionProvider(GeminiVisionConfig(api_key="test"))
 

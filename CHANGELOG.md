@@ -53,6 +53,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `thinking_budget=0` turns reasoning off on `GeminiAIProvider`, as it does on
+  every other provider (RMK-232). Gemini read `0` as "not set" and sent no
+  thinking config, so the model reasoned anyway. The models that cannot run
+  without reasoning now answer 400 instead of ignoring the request: measured
+  on 2026-09-27, `gemini-3.1-pro-preview` and `gemini-3.5-flash-lite`;
+  `gemini-3.7-flash` accepts `0` and reasons regardless. A configured
+  `thinking_level` still wins over a turn's budget.
+- `GeminiAIProvider` and `GeminiVisionProvider` turn off the SDK's automatic
+  function calling (RMK-232). RoomKit runs its own tool loop from the
+  declarations it sends, and the SDK logged "AFC is enabled" and a warning on
+  every call. A `GeminiVisionConfig.extra_config` that sets
+  `automatic_function_calling` keeps its own.
 - A `VoiceChannel` on `GeminiTranscribeProvider` keeps transcribing after the
   bot's first answer (RMK-230). The mic is muted while the bot speaks, so the
   channel's continuous stream closes its input on silence, and

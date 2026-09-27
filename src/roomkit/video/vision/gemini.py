@@ -125,6 +125,11 @@ class GeminiVisionProvider(VisionProvider):
             gen_config["thinking_config"] = types.ThinkingConfig(
                 thinking_budget=0,
             )
+        # No tools here, and the SDK's automatic function calling otherwise
+        # logs a warning on every frame analysed.
+        gen_config.setdefault(
+            "automatic_function_calling", types.AutomaticFunctionCallingConfig(disable=True)
+        )
 
         effective_prompt = prompt or self._config.prompt
         response = await client.aio.models.generate_content(

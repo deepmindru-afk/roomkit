@@ -315,6 +315,9 @@ def _genai_answering(text: str = "ok") -> MagicMock:
     MagicMock."""
     mod = _mock_genai_module()
     mod.types.GenerateContentConfig = MagicMock(side_effect=lambda **kw: SimpleNamespace(**kw))
+    mod.types.AutomaticFunctionCallingConfig = MagicMock(
+        side_effect=lambda **kw: SimpleNamespace(**kw)
+    )
     mod.types.Content = MagicMock(side_effect=lambda **kw: SimpleNamespace(**kw))
     mod.types.Part.from_text = MagicMock(side_effect=lambda text: SimpleNamespace(text=text))
     mod.Client.return_value.aio.models.generate_content_stream = AsyncMock(
