@@ -67,7 +67,7 @@ class ACPTransport(ABC):
     for a standalone turn's, closed after that one turn. A transport, or the
     relay behind it, that keeps one remote session per room must file a
     ``"turn"`` session under a key of its own and close only that one (RFC
-    §10.1.1 step 7). The key is absent before 0.92.0, where 0.91.0 opened turn
+    §10.1.1 step 7). The key is absent before 0.91.1, where 0.91.0 opened turn
     sessions indistinguishable from the room's. A transport that answers a
     turn's ``session/new`` with a session already open fails the turn rather
     than hand it the room's.
