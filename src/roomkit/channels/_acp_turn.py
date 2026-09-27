@@ -61,8 +61,8 @@ class ACPTurnMixin:
     # methods: a stub would shadow an implementation later in the MRO. An
     # ``async def`` is declared as returning a ``Coroutine``, not an
     # ``Awaitable``: mypy requires a name two bases define to be compatible in
-    # MRO order, and ``Awaitable`` is not a ``Coroutine``, so an application's
-    # ``class X(Mixin, ACPChannel)`` failed whenever the annotation came first.
+    # MRO order, so it rejects an application's ``class X(Mixin, ACPChannel)``
+    # when an ``Awaitable`` annotation precedes the implementation.
     _sdk: Callable[[], _SDK]
     _ensure_connection: Callable[[], Coroutine[Any, Any, Any]]
     _drain_session_updates: Callable[[str], Coroutine[Any, Any, None]]

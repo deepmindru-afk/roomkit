@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable, Coroutine
 from typing import Any
 
 from roomkit.providers.gemini.realtime_config import enum_value, genai_types, warn_unsupported
@@ -36,14 +36,16 @@ class GeminiLiveToolsMixin(RealtimeVoiceProvider):
     connection that issued the id.
     """
 
-    # Owned by GeminiLiveProvider / its other mixins; declared for typing.
+    # Owned by GeminiLiveProvider / its other mixins; declared for typing. An
+    # ``async def`` is declared as returning a ``Coroutine``: mypy rejects an
+    # ``Awaitable`` annotation that precedes the implementation in the MRO.
     _model: str
     _sessions: dict[str, _GeminiSessionState]
     _get_active_state: Callable[[VoiceSession], _GeminiSessionState | None]
     _log_event: Callable[..., None]
-    _send_text: Callable[[_GeminiSessionState, str, str, bool], Awaitable[None]]
-    _send_image: Callable[[_GeminiSessionState, bytes, str, str, bool], Awaitable[None]]
-    _flush_transcription_buffer: Callable[[VoiceSession, str], Awaitable[None]]
+    _send_text: Callable[[_GeminiSessionState, str, str, bool], Coroutine[Any, Any, None]]
+    _send_image: Callable[[_GeminiSessionState, bytes, str, str, bool], Coroutine[Any, Any, None]]
+    _flush_transcription_buffer: Callable[[VoiceSession, str], Coroutine[Any, Any, None]]
 
     async def submit_tool_result(self, session: VoiceSession, call_id: str, result: str) -> None:
         types = genai_types()

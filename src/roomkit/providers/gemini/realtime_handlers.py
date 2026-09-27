@@ -10,7 +10,7 @@ tool-call messages are handled by
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable, Coroutine
 from typing import Any
 
 from roomkit.providers.gemini.realtime_state import _GeminiSessionState, _GoAwayError
@@ -99,11 +99,15 @@ class GeminiLiveEventHandlersMixin(RealtimeVoiceProvider):
     where a GoAway becomes a reconnect.
     """
 
-    # Owned by GeminiLiveProvider / its other mixins; declared for typing.
+    # Owned by GeminiLiveProvider / its other mixins; declared for typing. An
+    # ``async def`` is declared as returning a ``Coroutine``: mypy rejects an
+    # ``Awaitable`` annotation that precedes the implementation in the MRO.
     _sessions: dict[str, _GeminiSessionState]
     _log_event: Callable[..., None]
-    _flush_transcription_buffer: Callable[[VoiceSession, str], Awaitable[None]]
-    _handle_transcription_chunk: Callable[[VoiceSession, str, str, bool], Awaitable[None]]
+    _flush_transcription_buffer: Callable[[VoiceSession, str], Coroutine[Any, Any, None]]
+    _handle_transcription_chunk: Callable[
+        [VoiceSession, str, str, bool], Coroutine[Any, Any, None]
+    ]
 
     # Ordered dispatch table for server response handling.  Each entry is
     # (response_attribute, handler_method).  Order matters: go_away is

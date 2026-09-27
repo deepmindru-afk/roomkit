@@ -14,7 +14,7 @@ import asyncio
 import contextlib
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable, Coroutine
 from typing import Any
 
 from roomkit.core.task_utils import _finish_cleanup
@@ -35,14 +35,18 @@ class GeminiLiveConnectionMixin(RealtimeVoiceProvider):
     that must keep its whole context stops rather than resume.
     """
 
-    # Owned by GeminiLiveProvider / its other mixins; declared for typing.
+    # Owned by GeminiLiveProvider / its other mixins; declared for typing. An
+    # ``async def`` is declared as returning a ``Coroutine``: mypy rejects an
+    # ``Awaitable`` annotation that precedes the implementation in the MRO.
     _sessions: dict[str, _GeminiSessionState]
     _client: Any
     _model: str
     _clear_transcription_buffers: Callable[[str], None]
     _make_audio_blob: Callable[[bytes, int], Any]
-    _release_calls_lost_with_the_connection: Callable[[_GeminiSessionState], Awaitable[None]]
-    _handle_server_response: Callable[[VoiceSession, Any], Awaitable[None]]
+    _release_calls_lost_with_the_connection: Callable[
+        [_GeminiSessionState], Coroutine[Any, Any, None]
+    ]
+    _handle_server_response: Callable[[VoiceSession, Any], Coroutine[Any, Any, None]]
 
     async def _open_live_session(self, live_config: Any) -> tuple[Any, Any]:
         """Open one Live connection for *live_config*: the context manager and its session.
