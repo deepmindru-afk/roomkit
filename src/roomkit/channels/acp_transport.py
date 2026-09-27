@@ -72,6 +72,12 @@ class ACPTransport(ABC):
     turn's ``session/new`` with a session already open fails the turn rather
     than hand it the room's.
 
+    ``session/close`` reaches the connection only when its ``initialize``
+    response announces ``agentCapabilities.sessionCapabilities.close``, or
+    carries no ``agent_capabilities`` attribute at all (a connection that
+    answers ``initialize`` itself). A relay that relies on it to drop a
+    ``"turn"`` session must announce it.
+
     Usage provenance is an opt-in extension of the connection's SDK models
     (see :attr:`provides_usage_metadata`):
     ``PromptResponse._meta["roomkit.live/usage"]`` (``field_meta`` in Python)

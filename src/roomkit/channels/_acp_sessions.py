@@ -3,7 +3,9 @@
 A room gets one session, opened lazily on its first prompt and kept for the
 room's life: the agent holds the room's conversation inside its own process.
 A standalone turn (RFC §10.1.1 step 7) cannot empty that session, so it gets
-one of its own, opened for the turn and closed after it, never the room's.
+one of its own, opened for the turn and never prompted again after it: closed
+where the agent announces ``session/close``, kept by the agent until the
+connection closes where it does not.
 Both name their room to ``session/new`` and say which of the two they are: a
 relay that files sessions by room would otherwise take the turn's for the
 room's, and close it. They are serialized on the room's turn lock, and told
@@ -162,10 +164,17 @@ class ACPSessionsMixin:
             )
 
     async def _close_turn_session(self, room_id: str, session_id: str, connection: Any) -> None:
-        """Close and forget a standalone turn's session. Never raises: the turn is over."""
+        """Forget a standalone turn's session and close it where the agent can. Never raises."""
         if self._turn_sessions.get(room_id) == session_id:
             self._turn_sessions.pop(room_id, None)
         self._session_rooms.pop(session_id, None)
+        if not self._agent_closes_sessions:
+            logger.warning(
+                "ACP standalone turn session %s stays open in the agent until the connection "
+                "closes: the agent does not announce session/close (%s)",
+                session_id,
+                self.channel_id,
+            )
         await self._release_session(connection, session_id)
 
     async def _release_session(self, connection: Any, session_id: str) -> None:
@@ -179,5 +188,16 @@ class ACPSessionsMixin:
             return
         try:
             await connection.close_session(session_id)
+        except ConnectionError:
+            # The connection is going away, and the session with it.
+            logger.debug(
+                "ACP session %s close: connection closed (%s)", session_id, self.channel_id
+            )
         except Exception:
-            logger.debug("ACP session close failed (%s)", self.channel_id, exc_info=True)
+            # The agent announced session/close and still refused this one.
+            logger.warning(
+                "ACP session %s close failed; it stays open in the agent (%s)",
+                session_id,
+                self.channel_id,
+                exc_info=True,
+            )

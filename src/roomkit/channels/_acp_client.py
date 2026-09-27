@@ -147,18 +147,15 @@ def _model_dump(value: Any) -> Any:
 def _closes_sessions(response: Any) -> bool:
     """Whether the agent that sent this ``initialize`` response takes ``session/close``.
 
-    ``session/close`` is not stable ACP: an agent announces it in
-    ``agent_capabilities.session_capabilities.close``, and one that does not
-    answers it with ``method_not_found``. A response that does not report the
-    field at all (a transport answering ``initialize`` itself, an SDK older
-    than the field) keeps the channel asking, since nothing says it cannot.
+    ``session/close`` is optional in ACP: an agent announces it in
+    ``agentCapabilities.sessionCapabilities.close``, and an absent or null
+    field means it does not. A response object with no ``agent_capabilities``
+    attribute at all is a transport answering ``initialize`` itself rather
+    than an agent's reply: it keeps being asked, as it always was.
     """
-    capabilities = getattr(response, "agent_capabilities", None)
-    if not hasattr(capabilities, "session_capabilities"):
+    if not hasattr(response, "agent_capabilities"):
         return True
-    sessions = capabilities.session_capabilities
-    if sessions is not None and not hasattr(sessions, "close"):
-        return True
+    sessions = getattr(response.agent_capabilities, "session_capabilities", None)
     return getattr(sessions, "close", None) is not None
 
 
@@ -425,9 +422,10 @@ class ACPConnectionMixin:
             self._agent_info = _model_dump(agent_info) if agent_info is not None else None
             self._agent_closes_sessions = _closes_sessions(response)
             if not self._agent_closes_sessions:
-                logger.warning(
-                    "ACP agent does not take session/close: every session it opens, a "
-                    "standalone turn's included, stays open until the connection closes (%s)",
+                logger.info(
+                    "ACP agent %s does not announce session/close: the sessions it opens stay "
+                    "open until the connection closes (%s)",
+                    (self._agent_info or {}).get("name", "?"),
                     self.channel_id,
                 )
             return connection

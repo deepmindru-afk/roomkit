@@ -233,7 +233,7 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
         self._room_locks: dict[str, asyncio.Lock] = {}
         self._sessions: dict[str, str] = {}
         # Room -> the session a standalone turn is running in (RFC §10.1.1
-        # step 7): opened for that turn, closed after it, never the room's.
+        # step 7): opened for that turn, never prompted after it, never the room's.
         self._turn_sessions: dict[str, str] = {}
         self._session_rooms: dict[str, str] = {}
         self._session_options: dict[str, list[Any]] = {}
@@ -438,13 +438,16 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
         return True
 
     async def close_session(self, room_id: str) -> bool:
-        """Close and forget one Room's ACP session.
+        """Forget one Room's ACP session, and close it where the agent can.
 
         *Forget* is the whole of it: every map keyed by the session, and the
         room's turn lock once no session is left behind it, is dropped here.
         A long-lived channel cycling sessions (one per conversation, one per
         reconnect) would otherwise carry every dead session's config options
-        until the channel itself closed.
+        until the channel itself closed. ``session/close`` goes only to an
+        agent that announces it; one that does not keeps the session until the
+        connection closes. Never raises for a close the agent refuses: returns
+        ``True`` once the session is forgotten, ``False`` when there was none.
         """
         async with self._room_turn_lock(room_id):
             session_id = self._sessions.pop(room_id, None)
@@ -462,7 +465,7 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
             return True
 
     async def close(self) -> None:
-        """Cancel turns, close sessions, and close the transport.
+        """Cancel turns, close sessions where the agent can, and close the transport.
 
         Shutdown is bounded: the graceful ACP round trips share
         ``_SHUTDOWN_TIMEOUT``, and the transport teardown runs even when

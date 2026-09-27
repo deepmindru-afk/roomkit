@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import socket
 import sys
 from importlib import metadata
@@ -967,11 +968,12 @@ class TestACPChannel:
     async def test_an_agent_without_session_close_is_never_asked_to_close(
         self, tmp_path: Any, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """``session/close`` is not stable ACP: an agent that does not announce it is not sent it.
+        """``session/close`` is optional in ACP: an agent that does not announce it is not sent it.
 
-        It would answer ``method_not_found``, which ``close_session`` raised
-        after it had already forgotten the room's session.
+        It would answer ``method_not_found``. The room's session is forgotten
+        all the same, and the agent keeps it until the connection closes.
         """
+        caplog.set_level(logging.INFO, logger="roomkit.channels.acp")
         channel, connection, _ = _channel(tmp_path, emit_updates=False)
         connection.takes_session_close = False
         output = await channel.on_event(
@@ -985,7 +987,7 @@ class TestACPChannel:
         await channel.close()
 
         assert connection.closed_sessions == []
-        assert "does not take session/close" in caplog.text
+        assert "does not announce session/close" in caplog.text
 
     async def test_a_refused_session_close_still_forgets_the_room(self, tmp_path: Any) -> None:
         channel, connection, _ = _channel(tmp_path, emit_updates=False)
@@ -1007,8 +1009,12 @@ class TestACPChannel:
         await channel.close()
 
     def test_a_transport_that_reports_no_capabilities_keeps_closing_sessions(self) -> None:
-        """A transport answering ``initialize`` itself says nothing about ``session/close``."""
+        """A connection answering ``initialize`` itself has no capabilities attribute at all."""
         assert _closes_sessions(SimpleNamespace(protocol_version=1, agent_info=None)) is True
+
+    def test_null_agent_capabilities_announce_no_session_close(self) -> None:
+        """ACP: an omitted or null capability is not announced."""
+        assert _closes_sessions(SimpleNamespace(agent_capabilities=None)) is False
 
     async def test_a_waiter_on_a_retired_room_lock_does_not_race_a_new_caller(
         self, tmp_path: Any

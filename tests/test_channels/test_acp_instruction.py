@@ -146,6 +146,29 @@ async def test_a_relay_answering_the_turn_with_the_rooms_session_fails_the_turn(
     await channel.close()
 
 
+async def test_a_standalone_turn_on_an_agent_without_session_close_is_never_prompted_again(
+    tmp_path: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Step 7: the agent keeps the turn's session, and the channel says so, once per turn."""
+    channel, connection, _ = _channel(tmp_path, emit_updates=False)
+    connection.takes_session_close = False  # read at initialize, before the first prompt
+    first = make_event(room_id=ROOM, body="first request", index=0)
+    await _prompt(channel, first, _context(first))
+
+    await _prompt(channel, _instruction(standalone=True), _context(first))
+    following = make_event(room_id=ROOM, body="next request", index=1)
+    await _prompt(channel, following, _context(first, following))
+
+    assert connection.closed_sessions == []
+    assert [call["session_id"] for call in connection.prompt_calls] == [
+        "session-1",
+        "session-2",
+        "session-1",
+    ]
+    assert "standalone turn session session-2 stays open" in caplog.text
+    await channel.close()
+
+
 async def test_a_standalone_turn_takes_the_rooms_configuration(tmp_path: Any) -> None:
     channel, connection, history = await _talked(tmp_path)
     await channel.set_config_option(ROOM, "model", "sonnet")
