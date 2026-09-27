@@ -7,7 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.91.1] — 2026-09-27
+
 ### Fixed
+
+- `ACPChannel` declares a standalone turn's session as the turn's (RMK-225,
+  RFC §10.1.1 step 7). Every `session/new` carried the same `_meta`,
+  `roomkit.live/roomId`, for the room's session and for a standalone turn's,
+  so a relay that keeps one remote session per room answered the turn from
+  the room's session and then closed that one, and the room's next prompt
+  failed. `session/new` now also carries `roomkit.live/sessionScope`, `"room"`
+  or `"turn"`. **Action required for such a relay**: file a `"turn"` session
+  under a key of its own and close only that one (see `ACPTransport`); the
+  key is absent from older clients. Upgrading alone does not fix it: a relay
+  that still answers the turn with the room's session now fails the turn
+  with a `RuntimeError` instead of breaking the room.
 
 - `ACPChannel.close_session(room_id)` no longer raises on an agent that does
   not take `session/close` (RMK-225). The method is optional in ACP, and such
@@ -22,18 +36,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `initialize` itself, with no `agent_capabilities` attribute, keeps being
   asked; a relay that needs `session/close` to drop a turn session announces
   it (see `ACPTransport`).
-
-- `ACPChannel` declares a standalone turn's session as the turn's (RMK-225,
-  RFC §10.1.1 step 7). Every `session/new` carried the same `_meta`,
-  `roomkit.live/roomId`, for the room's session and for a standalone turn's,
-  so a relay that keeps one remote session per room answered the turn from
-  the room's session and then closed that one, and the room's next prompt
-  failed. `session/new` now also carries `roomkit.live/sessionScope`, `"room"`
-  or `"turn"`. **Action required for such a relay**: file a `"turn"` session
-  under a key of its own and close only that one (see `ACPTransport`); the
-  key is absent from older clients. Upgrading alone does not fix it: a relay
-  that still answers the turn with the room's session now fails the turn
-  with a `RuntimeError` instead of breaking the room.
 
 - An application class that combines `ACPChannel` or `GeminiLiveProvider`
   with another base (`class App(Mixin, ACPChannel)`) passes mypy again
@@ -8633,7 +8635,8 @@ See entries `0.7.0a1` through `0.7.0a18` below.
 - `STTProvider.transcribe()` returns `TranscriptionResult` (Phase 3.1)
 - Framework event names enriched with payloads (Phase 4)
 
-[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.91.0...HEAD
+[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.91.1...HEAD
+[0.91.1]: https://github.com/roomkit-live/roomkit/compare/v0.91.0...v0.91.1
 [0.91.0]: https://github.com/roomkit-live/roomkit/compare/v0.90.0...v0.91.0
 [0.90.0]: https://github.com/roomkit-live/roomkit/compare/v0.89.0...v0.90.0
 [0.89.0]: https://github.com/roomkit-live/roomkit/compare/v0.88.0...v0.89.0
