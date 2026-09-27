@@ -216,3 +216,72 @@ class TestCapture:
         assert backend.name == "ScenarioVoiceBackend"
         assert VoiceCapability.NATIVE_AEC in backend.capabilities
         assert VoiceCapability.BARGE_IN not in backend.capabilities
+
+
+class TestHalfDuplexMic:
+    """``mute_mic_during_playback``: what a local mic does while the bot speaks.
+
+    Lower bounds only (the bot's audio lasts a second, the caller's frames go
+    out back to back), so a loaded runner cannot turn a pass into a fail.
+    """
+
+    @staticmethod
+    def _one_second_of_bot_audio() -> bytes:
+        return b"\x00\x00" * 16000  # captured at the default 16 kHz
+
+    async def test_frames_are_dropped_while_the_bot_speaks(self) -> None:
+        backend = ScenarioVoiceBackend(mute_mic_during_playback=True)
+        session = await _session(backend)
+        received: list[AudioFrame] = []
+        backend.on_audio_received(lambda _s, f: received.append(f))
+
+        await backend.send_audio(session, self._one_second_of_bot_audio())
+        delivered = await backend.play(session, tone(100), realtime=False)
+
+        assert backend.is_speaking(session) is True
+        assert delivered == 0
+        assert received == []
+
+    async def test_frames_flow_again_once_the_bot_has_played_out(self) -> None:
+        backend = ScenarioVoiceBackend(mute_mic_during_playback=True)
+        session = await _session(backend)
+        received: list[AudioFrame] = []
+        backend.on_audio_received(lambda _s, f: received.append(f))
+
+        await backend.send_audio(session, b"\x00\x00" * 800)  # 50 ms
+        await asyncio.sleep(0.1)
+        delivered = await backend.play(session, tone(100), realtime=False)
+
+        assert backend.is_speaking(session) is False
+        assert delivered == 5 == len(received)
+
+    async def test_a_send_in_flight_already_mutes(self) -> None:
+        backend = ScenarioVoiceBackend(mute_mic_during_playback=True)
+        session = await _session(backend)
+        received: list[AudioFrame] = []
+        backend.on_audio_received(lambda _s, f: received.append(f))
+        release = asyncio.Event()
+
+        async def streaming_tts():
+            await release.wait()
+            yield AudioChunk(data=b"\x00\x00")
+
+        sending = asyncio.ensure_future(backend.send_audio(session, streaming_tts()))
+        await asyncio.sleep(0)
+        delivered = await backend.play(session, tone(100), realtime=False)
+        release.set()
+        await sending
+
+        assert delivered == 0
+
+    async def test_by_default_the_mic_is_full_duplex(self) -> None:
+        backend = ScenarioVoiceBackend()
+        session = await _session(backend)
+        received: list[AudioFrame] = []
+        backend.on_audio_received(lambda _s, f: received.append(f))
+
+        await backend.send_audio(session, self._one_second_of_bot_audio())
+        delivered = await backend.play(session, tone(100), realtime=False)
+
+        assert backend.is_speaking(session) is True
+        assert delivered == 5 == len(received)

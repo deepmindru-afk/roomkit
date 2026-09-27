@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ScenarioVoiceBackend(mute_mic_during_playback=True)` makes the bench's
+  caller half-duplex, as `LocalAudioBackend` is by default (RMK-232):
+  `play()` drops the frames that fall while the bot is speaking, and the new
+  `is_speaking(session)` holds for as long as the audio the bot sent lasts,
+  played out at a speaker's pace. Off by default. A bench that delivered
+  every frame never showed a continuous STT stream the silence a local mic
+  gives it while the bot answers; on this setting a two-turn scenario stalls
+  without the RMK-230 fix and passes with it.
+
 - `examples/voice_gemini.py`, a voice assistant that is Gemini end to end
   (RMK-229): `gemini-3.5-transcribe-live` hears the microphone,
   `gemini-3.8-flash` answers, `gemini-3.8-flash-lite-tts` speaks, on one API

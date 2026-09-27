@@ -5076,6 +5076,11 @@ trace.sequence()                                         # the hooks, in order
 backend.write_capture(session, "reports/bot.wav")        # what the bot said
 ```
 
+`ScenarioVoiceBackend(mute_mic_during_playback=True)` drops the caller's frames
+while the bot is speaking, as `LocalAudioBackend` does by default;
+`is_speaking(session)` holds for as long as the bot's audio lasts. Use it to
+test what a continuous STT stream does when the audio stops mid-session.
+
 `read_wav`, `write_wav`, `pcm_frames`, `silence` and `tone` are the stdlib WAV
 and PCM helpers around `PCMAudio`. Example: `examples/voice_scenario_backend.py`.
 

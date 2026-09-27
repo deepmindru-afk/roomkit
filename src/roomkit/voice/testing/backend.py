@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -51,7 +52,18 @@ class ScenarioVoiceBackend(MockVoiceBackend):
     ``is_playing`` is true while a ``send_audio`` is in flight, on top of the
     mock's ``start_playing`` / ``stop_playing``; a mock TTS sends in
     microseconds, so a scenario waits on the TTS hooks for "the bot is
-    speaking", not on this flag. ``capture_sample_rate`` is the format a raw
+    speaking", not on this flag. :meth:`is_speaking` is the speaker's view
+    instead: the bot is heard for as long as the audio it sent lasts, each
+    captured chunk playing out at its own duration after the one before.
+
+    ``mute_mic_during_playback`` makes the caller's side half-duplex, as
+    :class:`~roomkit.voice.backends.local.LocalAudioBackend` is by default:
+    :meth:`play` drops the frames that fall while the bot is speaking, so the
+    channel receives no audio at all for that time. Off by default. A
+    continuous STT stream meets exactly that silence on a local mic, which a
+    bench playing every frame never reproduced (RMK-230).
+
+    ``capture_sample_rate`` is the format a raw
     ``bytes`` send is captured at (a chunk carries its own): the realtime
     channels send raw bytes, typically at 24 kHz. Still a pure transport
     (RFC §12): no VAD, no speech intelligence, whatever ``capabilities`` it
@@ -64,14 +76,17 @@ class ScenarioVoiceBackend(MockVoiceBackend):
         capabilities: VoiceCapability = VoiceCapability.NONE,
         frame_ms: int = 20,
         capture_sample_rate: int = DEFAULT_SAMPLE_RATE,
+        mute_mic_during_playback: bool = False,
     ) -> None:
         super().__init__(capabilities=capabilities)
         if frame_ms <= 0:
             raise ValueError(f"frame_ms must be positive, got {frame_ms}")
         self._frame_ms = frame_ms
         self._capture_sample_rate = capture_sample_rate
+        self._mute_mic_during_playback = mute_mic_during_playback
         self._captures: dict[str, _Capture] = {}
         self._in_flight: dict[str, int] = {}
+        self._speaking_until: dict[str, float] = {}
 
     @property
     def name(self) -> str:
@@ -103,7 +118,9 @@ class ScenarioVoiceBackend(MockVoiceBackend):
         two so a streaming STT or a barge-in can interleave, and the call
         returns once the last frame has been handed to the channel. Neither is
         when the channel has finished with the audio — wait on the hooks
-        (``VoiceTrace``) for that. Returns the number of frames sent.
+        (``VoiceTrace``) for that. Returns the number of frames delivered:
+        with ``mute_mic_during_playback``, the frames that fell while the bot
+        was speaking are dropped and not counted.
         """
         audio = (
             source if isinstance(source, PCMAudio) else await asyncio.to_thread(read_wav, source)
@@ -111,8 +128,11 @@ class ScenarioVoiceBackend(MockVoiceBackend):
         frames = pcm_frames(audio, frame_ms=self._frame_ms)
         loop = asyncio.get_running_loop()
         started = loop.time()
+        delivered = 0
         for i, frame in enumerate(frames):
-            await self.simulate_audio_received(session, frame)
+            if not (self._mute_mic_during_playback and self.is_speaking(session)):
+                await self.simulate_audio_received(session, frame)
+                delivered += 1
             if not realtime:
                 await asyncio.sleep(0)
                 continue
@@ -120,7 +140,7 @@ class ScenarioVoiceBackend(MockVoiceBackend):
             delay = due - loop.time()
             if delay > 0:
                 await asyncio.sleep(delay)
-        return len(frames)
+        return delivered
 
     # -------------------------------------------------------------------------
     # Capturing the bot's side
@@ -143,6 +163,13 @@ class ScenarioVoiceBackend(MockVoiceBackend):
 
     def is_playing(self, session: VoiceSession) -> bool:
         return self._in_flight.get(session.id, 0) > 0 or super().is_playing(session)
+
+    def is_speaking(self, session: VoiceSession) -> bool:
+        """Whether the bot is still heard: a send in flight, or captured audio
+        not yet played out at the pace a speaker would play it."""
+        return self.is_playing(session) or time.monotonic() < self._speaking_until.get(
+            session.id, 0.0
+        )
 
     async def _tee(
         self, session: VoiceSession, chunks: AsyncIterator[AudioChunk]
@@ -171,6 +198,12 @@ class ScenarioVoiceBackend(MockVoiceBackend):
             )
             raise capture.error
         capture.chunks.append(data)
+        # The speaker plays each chunk after the one before it, for as long as
+        # the chunk lasts (16-bit samples).
+        now = time.monotonic()
+        seconds = len(data) / (2 * channels * sample_rate)
+        start = max(now, self._speaking_until.get(session.id, now))
+        self._speaking_until[session.id] = start + seconds
 
     def captured(self, session: VoiceSession) -> PCMAudio:
         """Everything the bot sent to *session* so far, as one clip.
