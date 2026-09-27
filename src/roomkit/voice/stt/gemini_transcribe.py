@@ -59,6 +59,41 @@ MAX_SESSION_SECONDS = 600
 recording longer than this up front: the socket would close on it part-way
 through, and a partial transcript reads like a complete one."""
 
+_QUIET_AFTER_INPUT_S = 2.0
+"""How long the server may stay silent, once the audio is over, before the
+stream ends. After ``audio_stream_end`` it answers the last final and
+``generation_complete`` within about 0.3 s when it heard speech, and nothing at
+all when it heard none, leaving the socket open for good (both measured
+2026-09-27). A voice channel mutes the mic while the bot speaks, so a stream of
+silence is every other turn; this bound is what ends it."""
+
+
+async def _server_messages(session: Any, sender: asyncio.Task[None]) -> AsyncIterator[Any]:
+    """The session's messages, until the server has said all it will.
+
+    While the audio flows, a quiet server is only a quiet speaker, so nothing
+    is timed. Once *sender* has closed the input, the server has
+    :data:`_QUIET_AFTER_INPUT_S` to speak again, and each message it sends
+    restarts that clock.
+    """
+    messages = session.receive().__aiter__()
+    while True:
+        receiving = asyncio.ensure_future(messages.__anext__())
+        try:
+            if not sender.done():
+                await asyncio.wait({receiving, sender}, return_when=asyncio.FIRST_COMPLETED)
+            if not receiving.done():
+                await asyncio.wait({receiving}, timeout=_QUIET_AFTER_INPUT_S)
+            if not receiving.done():
+                return
+            message = receiving.result()
+        except StopAsyncIteration:
+            return
+        finally:
+            if not receiving.done():
+                receiving.cancel()
+        yield message
+
 
 @dataclass
 class GeminiTranscribeConfig:
@@ -207,7 +242,7 @@ class GeminiTranscribeProvider(STTProvider):
                 self._send_audio(session, types, audio_stream), name="gemini-transcribe-send"
             )
             try:
-                async for response in session.receive():
+                async for response in _server_messages(session, sender):
                     content = getattr(response, "server_content", None)
                     if content is None:
                         continue

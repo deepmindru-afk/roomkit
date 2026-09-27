@@ -35,6 +35,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A `VoiceChannel` on `GeminiTranscribeProvider` keeps transcribing after the
+  bot's first answer (RMK-230). The mic is muted while the bot speaks, so the
+  channel's continuous stream closes its input on silence, and
+  `transcribe_stream` then waited for the server to close its turn. Having
+  heard no speech, the server never does: it answers nothing after
+  `audio_stream_end` and keeps the socket open (measured 2026-09-27), so the
+  stream never ended, the channel never reconnected, and every later
+  sentence was lost. Once the input is over, a server quiet for 2 s now ends
+  the stream; with speech, the last final and `generation_complete` arrive
+  within about 0.3 s. Reproduced end to end with `examples/voice_gemini.py`'s
+  channels: the second question went untranscribed before the fix and is
+  answered after it.
 - `GeminiSTTProvider` sends raw PCM (`AudioChunk`, `AudioFrame`) as WAV, and
   uploads a large recording with its normalised mime type (RMK-228). The
   dedicated recogniser refuses bare `audio/l16` however its rate is spelled,

@@ -14,7 +14,8 @@ from typing import Any
 
 import pytest
 
-from roomkit.voice.base import AudioChunk
+from roomkit.voice.base import AudioChunk, TranscriptionResult
+from roomkit.voice.stt import gemini_transcribe
 from roomkit.voice.stt.gemini_transcribe import (
     MAX_SESSION_SECONDS,
     GeminiTranscribeConfig,
@@ -95,6 +96,10 @@ def _provider(session: _FakeSession, **kwargs: Any) -> tuple[Any, _FakeConnect]:
 async def _chunks(*payloads: bytes, sample_rate: int = 16000) -> AsyncIterator[AudioChunk]:
     for payload in payloads:
         yield AudioChunk(data=payload, sample_rate=sample_rate)
+
+
+async def _collect(stream: AsyncIterator[TranscriptionResult]) -> list[TranscriptionResult]:
+    return [result async for result in stream]
 
 
 # --- configuration --------------------------------------------------------
@@ -241,6 +246,55 @@ class TestStream:
 
         results = [r async for r in provider.transcribe_stream(_chunks(b"\x01"))]
         assert results == []
+
+    async def test_a_stream_of_silence_ends_once_the_server_stays_quiet(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Heard no speech, the server answers nothing after ``audio_stream_end``
+        and keeps the socket open (verified 2026-09-27). A voice channel mutes
+        the mic while the bot speaks, so such a stream is every other turn; one
+        that never ended stalled the channel's transcription for good."""
+        monkeypatch.setattr(gemini_transcribe, "_QUIET_AFTER_INPUT_S", 0.05)
+        session = _FakeSession([])
+        provider, _ = _provider(session)
+
+        results = await asyncio.wait_for(
+            _collect(provider.transcribe_stream(_chunks(b"\x00\x00" * 160))), timeout=2
+        )
+
+        assert results == []
+        assert session.stream_ended
+
+    async def test_a_final_after_the_input_still_arrives_before_the_quiet_ends_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(gemini_transcribe, "_QUIET_AFTER_INPUT_S", 0.05)
+        session = _FakeSession([_content(input_transcription=_text("bonjour"))])
+        provider, _ = _provider(session)
+
+        results = await asyncio.wait_for(
+            _collect(provider.transcribe_stream(_chunks(b"\x01\x02"))), timeout=2
+        )
+
+        assert [(r.text, r.is_final) for r in results] == [("bonjour", True)]
+
+    async def test_the_quiet_is_not_counted_while_the_audio_still_flows(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A long pause in someone's speech is not the end of their input."""
+        monkeypatch.setattr(gemini_transcribe, "_QUIET_AFTER_INPUT_S", 0.05)
+        session = _FakeSession([])
+        provider, _ = _provider(session)
+
+        async def slow_speaker() -> AsyncIterator[AudioChunk]:
+            yield AudioChunk(data=b"\x01\x02", sample_rate=16000)
+            await asyncio.sleep(0.2)  # four times the quiet bound
+            yield AudioChunk(data=b"\x03\x04", sample_rate=16000)
+
+        await asyncio.wait_for(_collect(provider.transcribe_stream(slow_speaker())), timeout=2)
+
+        assert len(session.sent_audio) == 2
+        assert session.stream_ended
 
     async def test_a_send_failure_is_raised_not_swallowed(self) -> None:
         """Ending clean would tell the caller it has the whole transcript."""
