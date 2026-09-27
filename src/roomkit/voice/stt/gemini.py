@@ -112,7 +112,7 @@ class GeminiSTTConfig:
     """
 
     api_key: str = field(repr=False)
-    model: str = "gemini-3.6-flash"
+    model: str = "gemini-3.8-flash"
     language: str | None = None
     diarize: bool = True
     prompt: str | None = None

@@ -159,7 +159,7 @@ class TestRequestShape:
         await provider.transcribe_recording(_wav(tmp_path))
 
         call = client.interactions.calls[0]
-        assert call["model"] == "gemini-3.6-flash"
+        assert call["model"] == "gemini-3.8-flash"
         # The split lives on the SDK's httpx client: a per-request timeout
         # would be flattened by google-genai to one float (RMK-149).
         assert "timeout" not in call

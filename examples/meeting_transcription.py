@@ -103,7 +103,7 @@ async def main() -> None:
     ws = WebSocketChannel("ws-user")
     ai = AIChannel(
         "scribe",
-        provider=GeminiAIProvider(GeminiConfig(api_key=api_key, model="gemini-3.6-flash")),
+        provider=GeminiAIProvider(GeminiConfig(api_key=api_key, model="gemini-3.8-flash")),
         system_prompt=MINUTES_PROMPT,
     )
     kit.register_channel(ws)

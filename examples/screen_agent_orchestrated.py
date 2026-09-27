@@ -215,7 +215,7 @@ def _build_exec_provider() -> object:
     return GeminiAIProvider(
         GeminiConfig(
             api_key=os.environ["GEMINI_API_KEY"],
-            model=os.environ.get("EXEC_MODEL", "gemini-2.0-flash"),
+            model=os.environ.get("EXEC_MODEL", "gemini-3.8-flash"),
             max_tokens=2048,
         )
     )
@@ -379,7 +379,7 @@ async def main() -> None:
         gemini_vision = GeminiVisionProvider(
             GeminiVisionConfig(
                 api_key=gemini_api_key,
-                model="gemini-3.1-flash-image-preview",
+                model="gemini-3.8-flash",
                 max_tokens=4096,
             )
         )

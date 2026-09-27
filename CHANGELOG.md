@@ -28,6 +28,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The `gemini` and `realtime-gemini` extras require `google-genai>=2.25.0`
   (was `>=2.24.0`): 2.24.0 sends the 3.8 `speech_metadata` annotation as
   `UNKNOWN`, which the API refuses (RMK-227).
+- Every Gemini default is a 3.8 model where Google serves one (RMK-227):
+  `GeminiConfig.model` (and so `GeminiVertexConfig.model`) and
+  `GeminiVisionConfig.model` move from `gemini-3.1-flash-lite` to
+  `gemini-3.8-flash`, and `GeminiSTTConfig.model` from `gemini-3.6-flash`.
+  There is no 3.8 Flash-Lite, so the chat and vision defaults change tier
+  too: set `model="gemini-3.1-flash-lite"` to keep the previous cost.
+  `gemini-3.8-flash` refuses `thinking_level="minimal"` with a 400; `low` is
+  its lowest level. On Vertex, check that your region serves it. The image
+  default (`gemini-3.1-flash-image`) and `GeminiTranscribeConfig`
+  (`gemini-3.5-transcribe-live`) are unchanged: Google has no 3.8 model for
+  either. Examples and docs follow.
 
 ## [0.91.1] — 2026-09-27
 

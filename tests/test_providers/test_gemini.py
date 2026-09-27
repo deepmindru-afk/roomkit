@@ -203,7 +203,7 @@ class TestGeminiAIProvider:
             result = await provider.generate(_context())
 
             assert result.content == "Hi there!"
-            assert result.metadata["model"] == "gemini-3.1-flash-lite"
+            assert result.metadata["model"] == "gemini-3.8-flash"
 
     @pytest.mark.asyncio
     async def test_data_uri_image_decoded_to_inline_bytes(self) -> None:
@@ -456,7 +456,7 @@ class TestGeminiAIProvider:
 
     def test_config_defaults(self) -> None:
         cfg = _config()
-        assert cfg.model == "gemini-3.1-flash-lite"
+        assert cfg.model == "gemini-3.8-flash"
         assert cfg.max_tokens == 1024
         assert cfg.temperature == 1.0
 
@@ -520,7 +520,7 @@ class TestGeminiAIProvider:
             assert events[1].text == " world"
             assert isinstance(events[2], StreamDone)
             assert events[2].usage == {"input_tokens": 5, "output_tokens": 10}
-            assert events[2].metadata["model"] == "gemini-3.1-flash-lite"
+            assert events[2].metadata["model"] == "gemini-3.8-flash"
 
     @pytest.mark.asyncio
     async def test_structured_stream_surfaces_thought_parts(self) -> None:

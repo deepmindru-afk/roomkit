@@ -74,7 +74,7 @@ provider = OpenAIAIProvider(OpenAIConfig(api_key="sk-...", model="gpt-4o"))
 from roomkit.providers.gemini.ai import GeminiAIProvider
 from roomkit.providers.gemini.config import GeminiConfig
 
-provider = GeminiAIProvider(GeminiConfig(api_key="...", model="gemini-2.0-flash"))
+provider = GeminiAIProvider(GeminiConfig(api_key="...", model="gemini-3.8-flash"))
 
 # Mock (for testing)
 from roomkit.providers.ai.mock import MockAIProvider

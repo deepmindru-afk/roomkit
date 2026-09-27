@@ -13,7 +13,7 @@ from roomkit.video.vision.gemini import GeminiVisionConfig, GeminiVisionProvider
 class TestGeminiVisionConfig:
     def test_defaults(self) -> None:
         config = GeminiVisionConfig()
-        assert config.model == "gemini-3.1-flash-lite"
+        assert config.model == "gemini-3.8-flash"
         assert config.api_key == ""
         assert config.max_tokens == 1024
 
@@ -30,7 +30,7 @@ class TestGeminiVisionConfig:
 class TestGeminiVisionProvider:
     def test_name(self) -> None:
         provider = GeminiVisionProvider(GeminiVisionConfig(api_key="test"))
-        assert provider.name == "gemini-vision:gemini-3.1-flash-lite"
+        assert provider.name == "gemini-vision:gemini-3.8-flash"
 
     def test_custom_model_name(self) -> None:
         config = GeminiVisionConfig(api_key="test", model="gemini-2.5-flash")

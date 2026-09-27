@@ -9,11 +9,13 @@ class GeminiConfig(BaseModel):
     """Google Gemini AI provider configuration."""
 
     api_key: SecretStr
-    model: str = "gemini-3.1-flash-lite"
+    model: str = "gemini-3.8-flash"
     max_tokens: int = 1024
     temperature: float = 1.0  # Gemini default
     thinking_level: str | None = None
-    """Thinking level for Gemini 3.1 models: minimal, low, medium, high."""
+    """Thinking level for Gemini 3 models: minimal, low, medium, high.
+    ``gemini-3.8-flash``, the default, refuses ``minimal`` with a 400:
+    ``low`` is its lowest level."""
     timeout: float = 60.0
     """Read budget in seconds: how long the first chunk, and each one after
     it, may take. Generation streams, so a stalled answer fails here instead

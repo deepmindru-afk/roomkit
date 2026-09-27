@@ -161,9 +161,9 @@ async def main() -> None:
 
     gemini_config = GeminiConfig(
         api_key=env["GEMINI_API_KEY"],
-        model=os.environ.get("GEMINI_MODEL", "gemini-3.1-flash-lite"),
+        model=os.environ.get("GEMINI_MODEL", "gemini-3.8-flash"),
         max_tokens=150,
-        thinking_level="minimal",
+        thinking_level="low",
     )
 
     triage = Agent(

@@ -13,7 +13,7 @@ Requires:
 Environment variables:
     GOOGLE_CLOUD_PROJECT     — Google Cloud project id (required)
     GEMINI_VERTEX_LOCATION   — Vertex region (default: northamerica-northeast1 / Montréal)
-    GEMINI_VERTEX_MODEL      — model id (default: gemini-3.1-flash-lite)
+    GEMINI_VERTEX_MODEL      — model id (default: gemini-3.8-flash)
     GEMINI_VERTEX_LABELS     — billing labels as ``key=value,key=value`` (optional,
                                e.g. ``tenant=acme``); Cloud Billing groups the
                                project's charges by them, 24 to 48 h later
@@ -68,7 +68,7 @@ async def main() -> None:
             project=env["GOOGLE_CLOUD_PROJECT"],
             # Pin the region for data residency — defaults to Montréal.
             location=os.environ.get("GEMINI_VERTEX_LOCATION", "northamerica-northeast1"),
-            model=os.environ.get("GEMINI_VERTEX_MODEL", "gemini-3.1-flash-lite"),
+            model=os.environ.get("GEMINI_VERTEX_MODEL", "gemini-3.8-flash"),
             # Billing labels: metadata Cloud Billing groups the charges by.
             # Validated here, so a bad label fails now rather than on the call.
             labels=labels,

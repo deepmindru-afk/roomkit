@@ -100,7 +100,7 @@ def show_what_a_turn_costs() -> None:
     }
     print(f"\nWhat one turn costs — usage {usage}")
     for provider_cls, model_id in (
-        (GeminiAIProvider, "gemini-3.6-flash"),
+        (GeminiAIProvider, "gemini-3.8-flash"),
         (AnthropicAIProvider, "claude-opus-5"),
         (OpenAIAIProvider, "gpt-5.6-sol"),
     ):

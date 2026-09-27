@@ -58,7 +58,7 @@ class TestGeminiVertexConfig:
 
     def test_inherits_gemini_defaults(self) -> None:
         cfg = _vconfig()
-        assert cfg.model == "gemini-3.1-flash-lite"
+        assert cfg.model == "gemini-3.8-flash"
         assert cfg.max_tokens == 1024
         assert cfg.temperature == 1.0
 

@@ -31,7 +31,7 @@ def build_vision_provider(
                 api_key=gemini_api_key,
                 model=os.environ.get(
                     "GEMINI_VISION_MODEL",
-                    "gemini-3.1-flash-image-preview",
+                    "gemini-3.8-flash",
                 ),
                 max_tokens=4096,
                 prompt=(
