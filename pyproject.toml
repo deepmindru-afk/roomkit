@@ -27,7 +27,7 @@ dependencies = ["pydantic>=2.9"]
 
 [project.optional-dependencies]
 httpx = ["httpx>=0.27"]
-anthropic = ["anthropic>=0.30"]
+anthropic = ["anthropic>=0.77"]
 # Capped below 3.0: that major makes HTTPX2 the default client and stops
 # installing `httpx` at all, which five providers here reach through — directly
 # (`openrouter`'s live model list, Grok TTS) or by way of the SDK's own client.

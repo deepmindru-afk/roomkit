@@ -27,6 +27,11 @@ from roomkit.providers.ai.base import (
     StreamThinkingDelta,
     StreamToolCall,
 )
+from roomkit.providers.ai.response_schema import (
+    check_schema_answer,
+    refuse_streamed_schema,
+    schema_for_generate,
+)
 from roomkit.providers.gemini.config import GeminiConfig
 from roomkit.providers.gemini.errors import wrap_gemini_error
 from roomkit.providers.gemini.models import MODELS
@@ -36,8 +41,15 @@ from roomkit.providers.gemini.request import (
     reject_model_turn_tail,
 )
 from roomkit.providers.gemini.sdk import build_genai_client, close_genai_client
+from roomkit.providers.utils import _aclose_stream
 
 logger = logging.getLogger(__name__)
+
+# Finish reasons that mean the model withheld the answer rather than wrote it:
+# a constrained answer ending on one of these is a refusal, not bad JSON.
+_REFUSAL_FINISH_REASONS = frozenset(
+    {"SAFETY", "RECITATION", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII"}
+)
 
 
 def _parts_layout(parts: list[Any]) -> str:
@@ -149,8 +161,27 @@ class GeminiAIProvider(AIProvider):
         config carries a field this API refuses (Vertex's billing labels)."""
         return build_gen_config(self._types, self._config, context)
 
+    @property
+    def supports_response_schema(self) -> bool:
+        """Controlled generation, through ``response_json_schema``."""
+        return True
+
     async def generate_structured_stream(self, context: AIContext) -> AsyncIterator[StreamEvent]:
-        """Yield structured events from the Gemini streaming API."""
+        """Yield structured events from the Gemini streaming API.
+
+        A response schema is refused here: only :meth:`generate` honours one
+        (RFC §6.7).
+        """
+        refuse_streamed_schema(context, provider="gemini")
+        events = self._events(context)
+        try:
+            async for event in events:
+                yield event
+        finally:
+            await _aclose_stream(events)
+
+    async def _events(self, context: AIContext) -> AsyncIterator[StreamEvent]:
+        """The streamed call itself, shared by :meth:`generate`."""
         gen_config = self._build_gen_config(context)
         contents = format_messages(self._types, context.messages)
         # Before the try below, whose ``_wrap_error`` is for SDK exceptions and
@@ -313,13 +344,14 @@ class GeminiAIProvider(AIProvider):
             raise self._wrap_error(exc) from exc
 
     async def generate(self, context: AIContext) -> AIResponse:
-        """Generate by consuming the structured stream."""
+        """Generate by consuming the streamed call."""
+        schema_for_generate(context, supported=self.supports_response_schema, provider="gemini")
         text_parts: list[str] = []
         thinking_parts: list[str] = []
         tool_calls: list[AIToolCall] = []
         done_event: StreamDone | None = None
 
-        async for event in self.generate_structured_stream(context):
+        async for event in self._events(context):
             if isinstance(event, StreamThinkingDelta):
                 thinking_parts.append(event.thinking)
             elif isinstance(event, StreamTextDelta):
@@ -336,12 +368,20 @@ class GeminiAIProvider(AIProvider):
             elif isinstance(event, StreamDone):
                 done_event = event
 
+        finish_reason = done_event.finish_reason if done_event else None
+        if context.response_schema is not None:
+            check_schema_answer(
+                "".join(text_parts),
+                provider="gemini",
+                refusal=finish_reason if finish_reason in _REFUSAL_FINISH_REASONS else None,
+                truncated=finish_reason == "MAX_TOKENS",
+            )
         return AIResponse(
             content="".join(text_parts),
             thinking="".join(thinking_parts) if thinking_parts else None,
             usage=done_event.usage if done_event else {},
             tool_calls=tool_calls,
-            finish_reason=done_event.finish_reason if done_event else None,
+            finish_reason=finish_reason,
             metadata=done_event.metadata if done_event else {},
         )
 

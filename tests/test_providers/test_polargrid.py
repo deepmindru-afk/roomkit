@@ -26,6 +26,7 @@ from roomkit.providers.ai.base import (
     StreamToolCall,
     StreamToolCallDelta,
 )
+from roomkit.providers.ai.response_schema import ResponseSchemaError
 from roomkit.providers.polargrid.config import PolarGridConfig
 
 # ---------------------------------------------------------------------------
@@ -1080,3 +1081,69 @@ class TestPolarGridImageDataURIs:
         assert messages[-1]["content"] == [
             {"type": "image_url", "image_url": {"url": "data:image/png;base64,QUJDMTIz"}}
         ]
+
+
+_VERDICT: dict[str, Any] = {
+    "type": "object",
+    "properties": {"label": {"type": "string", "enum": ["yes", "no"]}},
+    "required": ["label"],
+    "additionalProperties": False,
+}
+
+
+class TestPolarGridResponseSchema:
+    """RFC §6.7: the schema rides a ``json_schema`` response format."""
+
+    async def test_the_schema_rides_the_response_format(self) -> None:
+        provider, mod = _provider()
+        mod._client.chat_completion.return_value = _response_obj(content='{"label": "yes"}')
+
+        result = await provider.generate(_context(response_schema=_VERDICT))
+
+        assert result.content == '{"label": "yes"}'
+        request = mod._client.chat_completion.await_args.args[0]
+        assert request["response_format"] == {
+            "type": "json_schema",
+            "json_schema": {"name": "response", "schema": _VERDICT, "strict": True},
+        }
+
+    @pytest.mark.parametrize(
+        ("content", "finish_reason", "reason"),
+        [
+            ("", "content_filter", "refusal"),
+            ('{"label": "y', "length", "truncated"),
+            ("Yes.", "stop", "invalid_json"),
+        ],
+    )
+    async def test_an_answer_without_its_document_raises(
+        self, content: str, finish_reason: str, reason: str
+    ) -> None:
+        provider, mod = _provider()
+        mod._client.chat_completion.return_value = _response_obj(
+            content=content, finish_reason=finish_reason
+        )
+
+        with pytest.raises(ResponseSchemaError) as exc:
+            await provider.generate(_context(response_schema=_VERDICT))
+
+        assert exc.value.reason == reason
+
+    async def test_no_choice_at_all_is_not_a_document(self) -> None:
+        provider, mod = _provider()
+        mod._client.chat_completion.return_value = SimpleNamespace(
+            model="qwen-3.5-27b", choices=[], usage=None
+        )
+
+        with pytest.raises(ResponseSchemaError) as exc:
+            await provider.generate(_context(response_schema=_VERDICT))
+
+        assert exc.value.reason == "invalid_json"
+
+    async def test_a_streaming_call_is_refused_before_the_call(self) -> None:
+        provider, mod = _provider()
+
+        with pytest.raises(ResponseSchemaError):
+            async for _ in provider.generate_stream(_context(response_schema=_VERDICT)):
+                pass
+
+        mod._client.chat_completion_stream.assert_not_called()

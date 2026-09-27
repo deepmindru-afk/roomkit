@@ -20,6 +20,7 @@ from roomkit.providers.ai.base import (
     StreamTextDelta,
     StreamToolCall,
 )
+from roomkit.providers.ai.response_schema import ResponseSchemaError
 from roomkit.providers.gemini.config import GeminiConfig
 from roomkit.providers.gemini.request import format_content, format_messages
 
@@ -917,3 +918,80 @@ class TestGeminiImageDataURIs:
             assert excinfo.value.retryable is False
             assert excinfo.value.provider == "gemini"
             mock_genai.types.Part.from_bytes.assert_not_called()
+
+
+_VERDICT: dict[str, Any] = {
+    "type": "object",
+    "properties": {"label": {"type": "string", "enum": ["yes", "no"]}},
+    "required": ["label"],
+    "additionalProperties": False,
+}
+
+
+def _chunks_ending(text: str, finish_reason: str) -> _FakeStreamIterator:
+    """One text chunk whose candidate reports ``finish_reason``."""
+    return _FakeStreamIterator(
+        [
+            SimpleNamespace(
+                candidates=[
+                    SimpleNamespace(
+                        content=SimpleNamespace(
+                            parts=[SimpleNamespace(text=text, function_call=None)]
+                        ),
+                        finish_reason=finish_reason,
+                    )
+                ],
+                usage_metadata=None,
+            )
+        ]
+    )
+
+
+class TestGeminiResponseSchema:
+    """RFC §6.7: a constrained answer ending on a safety or length stop raises."""
+
+    @staticmethod
+    def _provider(stream: _FakeStreamIterator) -> Any:
+        mock_genai = _mock_genai_module()
+        with patch.dict("sys.modules", _genai_modules(mock_genai)):
+            from roomkit.providers.gemini.ai import GeminiAIProvider
+
+            provider = GeminiAIProvider(_config())
+        provider._client.aio.models.generate_content_stream.return_value = stream
+        return provider
+
+    async def test_generate_returns_the_document(self) -> None:
+        provider = self._provider(_chunks_ending('{"label": "no"}', "STOP"))
+
+        result = await provider.generate(_context(response_schema=_VERDICT))
+
+        assert result.content == '{"label": "no"}'
+        assert result.finish_reason == "STOP"
+
+    @pytest.mark.parametrize(
+        ("text", "finish_reason", "reason"),
+        [
+            ("", "SAFETY", "refusal"),
+            ("", "PROHIBITED_CONTENT", "refusal"),
+            ('{"label": "n', "MAX_TOKENS", "truncated"),
+            ("No.", "STOP", "invalid_json"),
+        ],
+    )
+    async def test_an_answer_without_its_document_raises(
+        self, text: str, finish_reason: str, reason: str
+    ) -> None:
+        provider = self._provider(_chunks_ending(text, finish_reason))
+
+        with pytest.raises(ResponseSchemaError) as exc:
+            await provider.generate(_context(response_schema=_VERDICT))
+
+        assert exc.value.reason == reason
+
+    async def test_a_streaming_call_is_refused_before_the_call(self) -> None:
+        provider = self._provider(_chunks_ending("{}", "STOP"))
+
+        with pytest.raises(ResponseSchemaError):
+            async for _ in provider.generate_structured_stream(_context(response_schema=_VERDICT)):
+                pass
+
+        provider._client.aio.models.generate_content_stream.assert_not_called()

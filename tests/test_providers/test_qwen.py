@@ -334,3 +334,11 @@ class TestQwenThinking:
 
             extra_body = provider._client.chat.completions.create.call_args[1]["extra_body"]
             assert extra_body == {"top_k": 20, "enable_thinking": True}
+
+
+class TestResponseSchemaDefault:
+    """Only free-form JSON mode is documented, so a response schema is off by default."""
+
+    def test_off_unless_the_config_turns_it_on(self) -> None:
+        assert _provider().supports_response_schema is False
+        assert _provider(supports_response_schema=True).supports_response_schema is True

@@ -58,3 +58,30 @@ class TestThinkingBudget:
 
         assert gen.thinking_config.thinking_level == genai_types.ThinkingLevel.LOW
         assert gen.thinking_config.thinking_budget is None
+
+
+class TestResponseSchema:
+    """RFC §6.7: controlled generation, with the real SDK types."""
+
+    def test_the_schema_sets_json_mime_type_and_response_json_schema(self) -> None:
+        schema = {
+            "type": "object",
+            "properties": {"label": {"type": "string", "enum": ["yes", "no"]}},
+            "required": ["label"],
+            "additionalProperties": False,
+        }
+        config = GeminiConfig(api_key="test-key")
+        context = AIContext(
+            messages=[AIMessage(role="user", content="Hi")], response_schema=schema
+        )
+
+        gen = build_gen_config(genai_types, config, context)
+
+        assert gen.response_mime_type == "application/json"
+        assert gen.response_json_schema == schema
+
+    def test_no_schema_leaves_both_unset(self) -> None:
+        gen = _gen_config()
+
+        assert gen.response_mime_type is None
+        assert gen.response_json_schema is None

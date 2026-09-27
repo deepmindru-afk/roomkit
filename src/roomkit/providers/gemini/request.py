@@ -223,6 +223,10 @@ def build_gen_config(types: Any, config: GeminiConfig, context: AIContext) -> An
         ]
         gen_config.tools = [types.Tool(function_declarations=func_decls)]
 
+    if context.response_schema is not None:
+        gen_config.response_mime_type = "application/json"
+        gen_config.response_json_schema = context.response_schema
+
     return gen_config
 
 

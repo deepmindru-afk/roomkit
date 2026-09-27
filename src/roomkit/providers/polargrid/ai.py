@@ -67,6 +67,11 @@ from roomkit.providers.ai.openai_dialect import (
     extract_think_tags,
     fold_tool_call_fragment,
 )
+from roomkit.providers.ai.response_schema import (
+    check_schema_answer,
+    refuse_streamed_schema,
+    schema_for_generate,
+)
 from roomkit.providers.polargrid.config import PolarGridConfig
 from roomkit.providers.polargrid.models import (
     MODELS,
@@ -127,6 +132,12 @@ class PolarGridAIProvider(AIProvider):
     @property
     def supports_structured_streaming(self) -> bool:
         # Emits StreamEvent objects — text deltas, tool calls, and done.
+        return True
+
+    @property
+    def supports_response_schema(self) -> bool:
+        """Schema-locked output, through a ``json_schema`` response format
+        (vLLM guided decoding on PolarGrid's side)."""
         return True
 
     # -- Model discovery ----------------------------------------------------
@@ -415,6 +426,15 @@ class PolarGridAIProvider(AIProvider):
             req["temperature"] = context.temperature
         if self._config.top_p is not None:
             req["top_p"] = self._config.top_p
+        if context.response_schema is not None:
+            req["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "response",
+                    "schema": context.response_schema,
+                    "strict": True,
+                },
+            }
         if logger.isEnabledFor(logging.DEBUG):
             # Full outgoing payload — no API key (that lives on the client),
             # so the enable_thinking flag, tools, and messages are visible.
@@ -455,6 +475,9 @@ class PolarGridAIProvider(AIProvider):
     # -- Non-streaming ------------------------------------------------------
 
     async def generate(self, context: AIContext) -> AIResponse:
+        schema_for_generate(
+            context, supported=self.supports_response_schema, provider=self._provider_name
+        )
         client = await self._ensure_client()
         request = self._build_request(context, stream=False)
 
@@ -470,6 +493,7 @@ class PolarGridAIProvider(AIProvider):
 
         choices = getattr(response, "choices", None) or []
         if not choices:
+            self._check_schema_answer(context, "", None)
             return AIResponse(content="")
         choice = choices[0]
         message = getattr(choice, "message", None)
@@ -481,6 +505,7 @@ class PolarGridAIProvider(AIProvider):
         usage = self._extract_usage(response)
         model = getattr(response, "model", self._config.model)
         tool_calls = self._extract_tool_calls(message)
+        self._check_schema_answer(context, content, finish_reason)
 
         return AIResponse(
             content=content,
@@ -489,6 +514,19 @@ class PolarGridAIProvider(AIProvider):
             usage=usage,
             metadata={"model": model},
             tool_calls=tool_calls,
+        )
+
+    def _check_schema_answer(
+        self, context: AIContext, content: str, finish_reason: str | None
+    ) -> None:
+        """Refuse a constrained answer that did not deliver its JSON document."""
+        if context.response_schema is None:
+            return
+        check_schema_answer(
+            content,
+            provider=self._provider_name,
+            refusal="content_filter" if finish_reason == "content_filter" else None,
+            truncated=finish_reason == "length",
         )
 
     # -- Streaming ----------------------------------------------------------
@@ -511,6 +549,7 @@ class PolarGridAIProvider(AIProvider):
         per call after the text, so the consumer sees
         thinking-then-text-then-tools in natural order.
         """
+        refuse_streamed_schema(context, provider=self._provider_name)
         client = await self._ensure_client()
         request = self._build_request(context, stream=True)
 

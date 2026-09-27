@@ -20,6 +20,7 @@ from roomkit.providers.ai.base import (
     StreamToolCallDelta,
 )
 from roomkit.providers.ai.openai_dialect import ThinkTagParser, extract_think_tags
+from roomkit.providers.ai.response_schema import ResponseSchemaError
 from roomkit.providers.openai.config import OpenAIConfig
 
 
@@ -1189,3 +1190,103 @@ class TestOpenAIImageDataURIs:
             with pytest.raises(ProviderError, match="not valid base64"):
                 await provider.generate(_context(messages=[message]))
             provider._client.chat.completions.create.assert_not_called()
+
+
+_VERDICT: dict[str, Any] = {
+    "type": "object",
+    "properties": {"label": {"type": "string", "enum": ["yes", "no"]}},
+    "required": ["label"],
+    "additionalProperties": False,
+}
+
+
+class TestOpenAIResponseSchema:
+    """RFC §6.7: the schema rides a strict ``json_schema`` response format."""
+
+    @staticmethod
+    def _provider(response: SimpleNamespace | None = None, **config: Any) -> Any:
+        with patch.dict("sys.modules", {"openai": _mock_openai_module()}):
+            from roomkit.providers.openai.ai import OpenAIAIProvider
+
+            provider = OpenAIAIProvider(_config(**config))
+        provider._client = MagicMock()
+        provider._client.chat.completions.create = AsyncMock(
+            return_value=response or _mock_response(text='{"label": "yes"}')
+        )
+        return provider
+
+    async def test_the_schema_rides_a_strict_json_schema_response_format(self) -> None:
+        provider = self._provider()
+
+        result = await provider.generate(_context(response_schema=_VERDICT))
+
+        assert result.content == '{"label": "yes"}'
+        kwargs = provider._client.chat.completions.create.call_args.kwargs
+        assert kwargs["response_format"] == {
+            "type": "json_schema",
+            "json_schema": {"name": "response", "schema": _VERDICT, "strict": True},
+        }
+
+    async def test_no_schema_sends_no_response_format(self) -> None:
+        provider = self._provider()
+
+        await provider.generate(_context())
+
+        assert "response_format" not in provider._client.chat.completions.create.call_args.kwargs
+
+    async def test_think_tags_are_split_off_before_the_document_is_checked(self) -> None:
+        provider = self._provider(_mock_response(text='<think>easy</think>{"label": "no"}'))
+
+        result = await provider.generate(_context(response_schema=_VERDICT))
+
+        assert result.content == '{"label": "no"}'
+        assert result.thinking == "easy"
+
+    async def test_a_refusal_field_raises_refusal(self) -> None:
+        response = _mock_response(text="")
+        response.choices[0].message.refusal = "I can't help with that."
+        provider = self._provider(response)
+
+        with pytest.raises(ResponseSchemaError, match="can't help") as exc:
+            await provider.generate(_context(response_schema=_VERDICT))
+
+        assert exc.value.reason == "refusal"
+
+    @pytest.mark.parametrize(
+        ("text", "finish", "reason"),
+        [
+            ("", "content_filter", "refusal"),
+            ('{"label": "y', "length", "truncated"),
+            ("Yes, it is.", "stop", "invalid_json"),
+        ],
+    )
+    async def test_an_answer_without_its_document_raises(
+        self, text: str, finish: str, reason: str
+    ) -> None:
+        provider = self._provider(_mock_response(text=text, finish_reason=finish))
+
+        with pytest.raises(ResponseSchemaError) as exc:
+            await provider.generate(_context(response_schema=_VERDICT))
+
+        assert exc.value.reason == reason
+        assert exc.value.provider == "openai"
+
+    async def test_a_server_declared_without_support_is_refused_before_the_call(self) -> None:
+        provider = self._provider(base_url="http://local:8000/v1", supports_response_schema=False)
+
+        assert provider.supports_response_schema is False
+        with pytest.raises(ResponseSchemaError) as exc:
+            await provider.generate(_context(response_schema=_VERDICT))
+
+        assert exc.value.reason == "unsupported"
+        provider._client.chat.completions.create.assert_not_called()
+
+    async def test_a_streaming_call_is_refused_before_the_call(self) -> None:
+        provider = self._provider()
+
+        with pytest.raises(ResponseSchemaError) as exc:
+            async for _ in provider.generate_structured_stream(_context(response_schema=_VERDICT)):
+                pass
+
+        assert exc.value.reason == "unsupported"
+        provider._client.chat.completions.create.assert_not_called()

@@ -23,6 +23,7 @@ from roomkit.providers.ai.base import (
     StreamThinkingDelta,
     StreamToolCall,
 )
+from roomkit.providers.ai.response_schema import ResponseSchemaError
 from roomkit.providers.ollama.config import OllamaConfig
 
 
@@ -863,4 +864,59 @@ class TestOllamaImageDataURIs:
             await provider.generate(_context(messages=[message]))
         assert excinfo.value.retryable is False
         assert excinfo.value.provider == "ollama"
+        mod.AsyncClient.return_value.chat.assert_not_called()
+
+
+_VERDICT: dict[str, Any] = {
+    "type": "object",
+    "properties": {"label": {"type": "string", "enum": ["yes", "no"]}},
+    "required": ["label"],
+    "additionalProperties": False,
+}
+
+
+class TestOllamaResponseSchema:
+    """RFC §6.7: the schema rides ``format``."""
+
+    async def test_the_schema_rides_format(self) -> None:
+        provider, mod = _provider()
+        mod.AsyncClient.return_value.chat.return_value = _response_obj(content='{"label": "no"}')
+
+        result = await provider.generate(_context(response_schema=_VERDICT))
+
+        assert result.content == '{"label": "no"}'
+        assert mod.AsyncClient.return_value.chat.call_args.kwargs["format"] == _VERDICT
+
+    async def test_no_schema_sends_no_format(self) -> None:
+        provider, mod = _provider()
+        mod.AsyncClient.return_value.chat.return_value = _response_obj(content="Hi")
+
+        await provider.generate(_context())
+
+        assert "format" not in mod.AsyncClient.return_value.chat.call_args.kwargs
+
+    @pytest.mark.parametrize(
+        ("content", "done_reason", "reason"),
+        [('{"label": "n', "length", "truncated"), ("No.", "stop", "invalid_json")],
+    )
+    async def test_an_answer_without_its_document_raises(
+        self, content: str, done_reason: str, reason: str
+    ) -> None:
+        provider, mod = _provider()
+        mod.AsyncClient.return_value.chat.return_value = _response_obj(
+            content=content, done_reason=done_reason
+        )
+
+        with pytest.raises(ResponseSchemaError) as exc:
+            await provider.generate(_context(response_schema=_VERDICT))
+
+        assert exc.value.reason == reason
+
+    async def test_a_streaming_call_is_refused_before_the_call(self) -> None:
+        provider, mod = _provider()
+
+        with pytest.raises(ResponseSchemaError):
+            async for _ in provider.generate_structured_stream(_context(response_schema=_VERDICT)):
+                pass
+
         mod.AsyncClient.return_value.chat.assert_not_called()

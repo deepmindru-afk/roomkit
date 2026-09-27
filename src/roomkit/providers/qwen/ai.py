@@ -31,6 +31,10 @@ class QwenAIProvider(OpenAIAIProvider):
 
     _config: QwenConfig
     _install_extra: ClassVar[str] = "qwen-ai"
+    # Model Studio documents the free-form ``json_object`` mode; schema-locked
+    # output is not established across its models, so it stays off unless the
+    # config turns it on.
+    _response_schema_default: ClassVar[bool] = False
 
     @property
     def _provider_name(self) -> str:

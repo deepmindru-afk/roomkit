@@ -173,7 +173,7 @@ from roomkit.orchestration import (
     set_conversation_state,
     setup_handoff,
 )
-from roomkit.providers.ai import ModelPricing
+from roomkit.providers.ai import ModelPricing, ResponseSchemaError
 from roomkit.providers.cerebras import CerebrasAIProvider, CerebrasConfig
 from roomkit.providers.image import (
     ImageAttempt,
@@ -467,6 +467,7 @@ __all__ = [
     "InboundResult",
     "MockImageProvider",
     "ModelPricing",
+    "ResponseSchemaError",
     "Participant",
     "PlanUpdatedEvent",
     "ProviderResult",

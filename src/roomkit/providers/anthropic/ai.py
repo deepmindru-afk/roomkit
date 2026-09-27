@@ -29,10 +29,15 @@ from roomkit.providers.ai.base import (
     StreamToolCallDelta,
     request_api_key,
 )
+from roomkit.providers.ai.response_schema import (
+    check_schema_answer,
+    refuse_streamed_schema,
+    schema_for_generate,
+)
 from roomkit.providers.anthropic.config import AnthropicConfig
 from roomkit.providers.anthropic.models import MODELS
 from roomkit.providers.anthropic.request import build_kwargs
-from roomkit.providers.utils import http_timeout
+from roomkit.providers.utils import _aclose_stream, http_timeout
 
 logger = logging.getLogger("roomkit.providers.anthropic.ai")
 
@@ -196,12 +201,32 @@ class AnthropicAIProvider(AIProvider):
         ]
         return self._merge_curated(live)
 
+    @property
+    def supports_response_schema(self) -> bool:
+        """Structured outputs, through ``output_config.format``.
+
+        A model older than the feature answers 400, surfaced as a
+        :class:`ProviderError`.
+        """
+        return True
+
     async def generate_structured_stream(self, context: AIContext) -> AsyncIterator[StreamEvent]:
         """Yield structured events from the Anthropic Messages streaming API.
 
         When extended thinking is enabled, yields ``StreamThinkingDelta`` events
-        before text deltas.
+        before text deltas. A response schema is refused here: only
+        :meth:`generate` honours one (RFC §6.7).
         """
+        refuse_streamed_schema(context, provider="anthropic")
+        events = self._events(context)
+        try:
+            async for event in events:
+                yield event
+        finally:
+            await _aclose_stream(events)
+
+    async def _events(self, context: AIContext) -> AsyncIterator[StreamEvent]:
+        """The streamed call itself, shared by :meth:`generate`."""
         kwargs = build_kwargs(self._config, context)
         # The one place the turn's credential is chosen. ``generate`` and
         # ``generate_stream`` both consume this stream, so they inherit it.
@@ -331,14 +356,15 @@ class AnthropicAIProvider(AIProvider):
             await self._release_client(leased_api_key)
 
     async def generate(self, context: AIContext) -> AIResponse:
-        """Generate by consuming the structured stream."""
+        """Generate by consuming the streamed call."""
+        schema_for_generate(context, supported=self.supports_response_schema, provider="anthropic")
         thinking_parts: list[str] = []
         thinking_signature: str | None = None
         text_parts: list[str] = []
         tool_calls: list[AIToolCall] = []
         done_event: StreamDone | None = None
 
-        async for event in self.generate_structured_stream(context):
+        async for event in self._events(context):
             if isinstance(event, StreamThinkingDelta):
                 thinking_parts.append(event.thinking)
                 if event.signature:
@@ -352,11 +378,19 @@ class AnthropicAIProvider(AIProvider):
             elif isinstance(event, StreamDone):
                 done_event = event
 
+        finish_reason = done_event.finish_reason if done_event else None
+        if context.response_schema is not None:
+            check_schema_answer(
+                "".join(text_parts),
+                provider="anthropic",
+                refusal="refusal" if finish_reason == "refusal" else None,
+                truncated=finish_reason == "max_tokens",
+            )
         return AIResponse(
             content="".join(text_parts),
             thinking="".join(thinking_parts) if thinking_parts else None,
             thinking_signature=thinking_signature,
-            finish_reason=done_event.finish_reason if done_event else None,
+            finish_reason=finish_reason,
             usage=done_event.usage if done_event else {},
             metadata=done_event.metadata if done_event else {},
             tool_calls=tool_calls,

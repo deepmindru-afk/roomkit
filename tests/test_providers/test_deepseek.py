@@ -369,3 +369,11 @@ class TestDeepSeekUsage:
             "output_tokens": 5,
             "cache_read_input_tokens": 30,
         }
+
+
+class TestResponseSchemaDefault:
+    """Only free-form JSON mode is documented, so a response schema is off by default."""
+
+    def test_off_unless_the_config_turns_it_on(self) -> None:
+        assert _provider().supports_response_schema is False
+        assert _provider(supports_response_schema=True).supports_response_schema is True

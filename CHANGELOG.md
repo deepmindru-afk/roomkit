@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `AIContext.response_schema` constrains an AI provider's answer to a JSON
+  Schema (RMK-234, RFC §6.7). `generate()` then returns one JSON document in
+  `content`, or raises `ResponseSchemaError` with its `reason`: `refusal`,
+  `truncated`, `invalid_json`, or `unsupported` before any request when the
+  provider cannot take a schema, the turn also carries tools, or a streaming
+  method receives it. A provider never ignores the schema. The schema must stay
+  within a portable subset, checked on construction, on assignment and through
+  `model_copy(update=)`: every object lists all its properties in `required`
+  and sets `additionalProperties` to false, only strings carry `enum`, no null,
+  `anyOf`, `$ref` or bounds (`check_portable_schema`). Each provider translates
+  it natively: OpenAI and its derivatives a strict `json_schema`
+  `response_format`, Anthropic `output_config.format`, Gemini
+  `response_json_schema`, Mistral, Ollama `format`, PolarGrid.
+  `AIProvider.supports_response_schema` says which do; DeepSeek and Qwen, which
+  document only free-form JSON mode, are off, and `supports_response_schema` on
+  `OpenAIConfig`, `AzureAIConfig` and `VLLMConfig` states it for a server that
+  differs. `MockAIProvider(response_schema=True)` honours the same contract.
+  Verified live on Gemini (`gemini-3.8-flash`, a truncated answer included) and
+  on a local Ollama (`qwen3:4b-instruct`). Example:
+  `examples/ai_response_schema.py`.
+
 - `ScenarioVoiceBackend(mute_mic_during_playback=True)` makes the bench's
   caller half-duplex, as `LocalAudioBackend` is by default (RMK-232):
   `play()` drops the frames that fall while the bot is speaking, and the new
@@ -132,6 +153,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the request they had.
 
 ### Changed
+
+- The `anthropic` extra requires `anthropic>=0.77` (was `>=0.30`), the first
+  SDK that takes `output_config`, where a response schema rides (RMK-234).
 
 - `GeminiTTSConfig.model` defaults to `gemini-3.8-flash-tts` (was
   `gemini-3.1-flash-tts-preview`), Google's replacement for it, and

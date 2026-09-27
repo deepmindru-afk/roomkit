@@ -92,6 +92,10 @@ class VLLMConfig(BaseModel):
     """Reasoning block on/off. ``None`` leaves the model's own default."""
     reasoning_effort: str | None = None
     """Reasoning verbosity when thinking is on (``"low"``/``"medium"``/``"xhigh"``)."""
+    supports_response_schema: bool | None = None
+    """Whether the server honours a ``json_schema`` response format. ``None``
+    keeps the default (vLLM applies it through guided decoding); set ``False``
+    for a server that does not."""
 
     def sampling_body(self) -> dict[str, Any]:
         """The request-body fields implied by the sampling settings.

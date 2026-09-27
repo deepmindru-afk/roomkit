@@ -113,6 +113,11 @@ class AzureAIConfig(BaseModel):
     """Extra JSON fields merged into every request body via the SDK's
     ``extra_body`` — for deployment-specific params the OpenAI schema omits.
     ``None`` sends a vanilla body."""
+    supports_response_schema: bool | None = None
+    """Whether the deployment honours a ``json_schema`` response format (RFC
+    §6.7). ``None`` keeps the provider's default; set it for a deployment whose
+    model or API version differs, so a turn carrying a response schema is
+    refused up front instead of answered in prose."""
 
 
 class AzureImageConfig(BaseModel):

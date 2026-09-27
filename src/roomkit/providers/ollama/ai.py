@@ -40,6 +40,11 @@ from roomkit.providers.ai.base import (
     StreamToolCall,
 )
 from roomkit.providers.ai.image_parts import image_part_base64
+from roomkit.providers.ai.response_schema import (
+    check_schema_answer,
+    refuse_streamed_schema,
+    schema_for_generate,
+)
 from roomkit.providers.ollama.config import OllamaConfig
 from roomkit.providers.ollama.models import MODELS
 from roomkit.providers.utils import http_timeout
@@ -124,6 +129,11 @@ class OllamaAIProvider(AIProvider):
 
     @property
     def supports_structured_streaming(self) -> bool:
+        return True
+
+    @property
+    def supports_response_schema(self) -> bool:
+        """Structured outputs, through ``format`` holding the schema."""
         return True
 
     @classmethod
@@ -322,6 +332,8 @@ class OllamaAIProvider(AIProvider):
             kwargs["think"] = think
         if self._config.keep_alive is not None:
             kwargs["keep_alive"] = self._config.keep_alive
+        if context.response_schema is not None:
+            kwargs["format"] = context.response_schema
         return kwargs
 
     # -- Error mapping ------------------------------------------------------
@@ -353,6 +365,9 @@ class OllamaAIProvider(AIProvider):
     # -- Non-streaming ------------------------------------------------------
 
     async def generate(self, context: AIContext) -> AIResponse:
+        schema_for_generate(
+            context, supported=self.supports_response_schema, provider=self._provider_name
+        )
         kwargs = self._build_kwargs(context, stream=False)
         t0 = time.monotonic()
         try:
@@ -370,6 +385,10 @@ class OllamaAIProvider(AIProvider):
         finish_reason = self._get_attr(response, "done_reason", None)
         usage = self._extract_usage(response)
         tool_calls = self._extract_tool_calls(message)
+        if context.response_schema is not None:
+            check_schema_answer(
+                content, provider=self._provider_name, truncated=finish_reason == "length"
+            )
 
         return AIResponse(
             content=content,
@@ -396,8 +415,10 @@ class OllamaAIProvider(AIProvider):
         plus an optional final ``message.tool_calls``. We pass these
         straight through as the corresponding ``StreamThinkingDelta``,
         ``StreamTextDelta``, and ``StreamToolCall`` events — no tag
-        parsing, no field reordering.
+        parsing, no field reordering. A response schema is refused here: only
+        :meth:`generate` honours one (RFC §6.7).
         """
+        refuse_streamed_schema(context, provider=self._provider_name)
         kwargs = self._build_kwargs(context, stream=True)
         t0 = time.monotonic()
         first_token = True

@@ -444,3 +444,14 @@ class TestCreateVLLMProvider:
             cfg = VLLMConfig(model="test")
             with pytest.raises(ImportError, match=r"openai is required.*roomkit\[vllm\]"):
                 create_vllm_provider(cfg)
+
+
+class TestResponseSchemaSupport:
+    """vLLM applies a json_schema response format through guided decoding."""
+
+    def test_the_config_reaches_the_openai_config(self) -> None:
+        from roomkit.providers.vllm import _openai_config
+
+        assert _openai_config(VLLMConfig(model="m")).supports_response_schema is None
+        declared = _openai_config(VLLMConfig(model="m", supports_response_schema=False))
+        assert declared.supports_response_schema is False

@@ -19,6 +19,7 @@ from roomkit.providers.ai.base import (
     StreamDone,
     StreamTextDelta,
 )
+from roomkit.providers.ai.response_schema import ResponseSchemaError
 from roomkit.providers.anthropic.config import AnthropicConfig
 from roomkit.providers.anthropic.models import MODELS as ANTHROPIC_MODELS
 from roomkit.providers.anthropic.request import build_kwargs, format_content
@@ -1254,3 +1255,89 @@ class TestAnthropicImageDataURIs:
             with pytest.raises(ProviderError, match="not valid base64"):
                 await provider.generate(_context(messages=[message]))
             provider._client.messages.stream.assert_not_called()
+
+
+_VERDICT: dict[str, Any] = {
+    "type": "object",
+    "properties": {"label": {"type": "string", "enum": ["yes", "no"]}},
+    "required": ["label"],
+    "additionalProperties": False,
+}
+
+
+class TestAnthropicResponseSchema:
+    """RFC §6.7: the schema rides ``output_config.format``."""
+
+    def test_build_kwargs_puts_the_schema_in_output_config(self) -> None:
+        kwargs = build_kwargs(_config(), _context(response_schema=_VERDICT))
+
+        assert kwargs["output_config"] == {"format": {"type": "json_schema", "schema": _VERDICT}}
+
+    def test_no_schema_sends_no_output_config(self) -> None:
+        assert "output_config" not in build_kwargs(_config(), _context())
+
+    @staticmethod
+    def _provider(stream: Any) -> Any:
+        with patch.dict("sys.modules", {"anthropic": _mock_anthropic_module()}):
+            from roomkit.providers.anthropic.ai import AnthropicAIProvider
+
+            provider = AnthropicAIProvider(_config())
+        provider._client = MagicMock()
+        provider._client.messages.stream = MagicMock(return_value=stream)
+        return provider
+
+    async def test_generate_returns_the_document(self) -> None:
+        provider = self._provider(_mock_stream(text='{"label": "yes"}'))
+
+        result = await provider.generate(_context(response_schema=_VERDICT))
+
+        assert result.content == '{"label": "yes"}'
+        assert (
+            provider._client.messages.stream.call_args.kwargs["output_config"]["format"]["schema"]
+            == _VERDICT
+        )
+
+    @pytest.mark.parametrize(
+        ("text", "stop_reason", "reason"),
+        [
+            ("", "refusal", "refusal"),
+            ('{"label": "y', "max_tokens", "truncated"),
+            ("Yes.", "end_turn", "invalid_json"),
+        ],
+    )
+    async def test_an_answer_without_its_document_raises(
+        self, text: str, stop_reason: str, reason: str
+    ) -> None:
+        provider = self._provider(_mock_stream(text=text, stop_reason=stop_reason))
+
+        with pytest.raises(ResponseSchemaError) as exc:
+            await provider.generate(_context(response_schema=_VERDICT))
+
+        assert exc.value.reason == reason
+
+    async def test_tools_in_the_same_turn_are_refused_before_the_call(self) -> None:
+        provider = self._provider(_mock_stream())
+        tool = AITool(name="lookup", description="Look it up")
+
+        with pytest.raises(ResponseSchemaError) as exc:
+            await provider.generate(_context(response_schema=_VERDICT, tools=[tool]))
+
+        assert exc.value.reason == "unsupported"
+        provider._client.messages.stream.assert_not_called()
+
+    @pytest.mark.parametrize("method", ["generate_stream", "generate_structured_stream"])
+    async def test_a_streaming_call_is_refused_before_the_call(self, method: str) -> None:
+        provider = self._provider(_mock_stream())
+
+        with pytest.raises(ResponseSchemaError):
+            async for _ in getattr(provider, method)(_context(response_schema=_VERDICT)):
+                pass
+
+        provider._client.messages.stream.assert_not_called()
+
+    async def test_streaming_without_a_schema_still_streams(self) -> None:
+        provider = self._provider(_mock_stream(text="Hi"))
+
+        chunks = [chunk async for chunk in provider.generate_stream(_context())]
+
+        assert "".join(chunks) == "Hi"

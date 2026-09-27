@@ -29,6 +29,9 @@ class DeepSeekAIProvider(OpenAIAIProvider):
 
     _config: DeepSeekConfig
     _install_extra: ClassVar[str] = "deepseek"
+    # DeepSeek's JSON output is the free-form ``json_object`` mode, which
+    # constrains nothing to a schema: a response schema is refused up front.
+    _response_schema_default: ClassVar[bool] = False
 
     @property
     def _provider_name(self) -> str:

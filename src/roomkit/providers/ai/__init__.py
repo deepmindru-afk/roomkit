@@ -29,7 +29,9 @@ from roomkit.providers.ai.image_parts import (
     image_part_payload,
     image_part_uri,
 )
+from roomkit.providers.ai.json_schema import check_portable_schema
 from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.providers.ai.response_schema import ResponseSchemaError
 
 __all__ = [
     "API_KEY_METADATA_KEY",
@@ -48,12 +50,14 @@ __all__ = [
     "ModelInfo",
     "ModelPricing",
     "ProviderError",
+    "ResponseSchemaError",
     "StreamDone",
     "StreamEvent",
     "StreamTextDelta",
     "StreamThinkingDelta",
     "StreamToolCall",
     "StreamToolCallDelta",
+    "check_portable_schema",
     "image_part_base64",
     "image_part_payload",
     "image_part_uri",

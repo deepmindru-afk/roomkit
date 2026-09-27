@@ -20,6 +20,7 @@ from roomkit.providers.ai.base import (
     StreamToolCall,
     StreamToolCallDelta,
 )
+from roomkit.providers.ai.response_schema import ResponseSchemaError
 from roomkit.providers.mistral.config import MistralConfig
 
 
@@ -623,3 +624,58 @@ class TestMistralImageDataURIs:
                 provider._format_content([AIImagePart(url="data:image/png;base64,not*base64")])
             assert excinfo.value.retryable is False
             assert excinfo.value.provider == "mistral"
+
+
+_VERDICT: dict[str, Any] = {
+    "type": "object",
+    "properties": {"label": {"type": "string", "enum": ["yes", "no"]}},
+    "required": ["label"],
+    "additionalProperties": False,
+}
+
+
+class TestMistralResponseSchema:
+    """RFC §6.7: the schema rides a strict ``json_schema`` response format."""
+
+    @staticmethod
+    def _provider(stream: _FakeStream) -> Any:
+        with patch.dict("sys.modules", _mistral_modules()):
+            from roomkit.providers.mistral.ai import MistralAIProvider
+
+            provider = MistralAIProvider(_config())
+        provider._client.chat.stream_async.return_value = stream
+        return provider
+
+    async def test_the_schema_rides_the_response_format(self) -> None:
+        provider = self._provider(_stream_events(text_chunks=['{"label": ', '"yes"}']))
+
+        result = await provider.generate(_context(response_schema=_VERDICT))
+
+        assert result.content == '{"label": "yes"}'
+        assert provider._client.chat.stream_async.call_args.kwargs["response_format"] == {
+            "type": "json_schema",
+            "json_schema": {"name": "response", "schema": _VERDICT, "strict": True},
+        }
+
+    @pytest.mark.parametrize(
+        ("text", "finish_reason", "reason"),
+        [('{"label": "y', "length", "truncated"), ("Yes.", "stop", "invalid_json")],
+    )
+    async def test_an_answer_without_its_document_raises(
+        self, text: str, finish_reason: str, reason: str
+    ) -> None:
+        provider = self._provider(_stream_events(text_chunks=[text], finish_reason=finish_reason))
+
+        with pytest.raises(ResponseSchemaError) as exc:
+            await provider.generate(_context(response_schema=_VERDICT))
+
+        assert exc.value.reason == reason
+
+    async def test_a_streaming_call_is_refused_before_the_call(self) -> None:
+        provider = self._provider(_stream_events(text_chunks=["{}"]))
+
+        with pytest.raises(ResponseSchemaError):
+            async for _ in provider.generate_stream(_context(response_schema=_VERDICT)):
+                pass
+
+        provider._client.chat.stream_async.assert_not_called()

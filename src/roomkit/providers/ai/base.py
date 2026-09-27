@@ -15,6 +15,7 @@ from roomkit.models.context import RoomContext
 from roomkit.models.enums import ChannelMediaType
 from roomkit.models.response_metadata import ResponseMetadata
 from roomkit.models.task import Observation, Task
+from roomkit.providers.ai.json_schema import check_portable_schema
 
 
 class AITextPart(BaseModel):
@@ -306,6 +307,13 @@ class AIContext(BaseModel):
     """Reasoning verbosity for this turn, for providers that grade it.
     Accepted values are the provider's own; ``None`` defers to its config."""
     tools: list[AITool] = Field(default_factory=list)
+    response_schema: dict[str, Any] | None = None
+    """JSON Schema the answer must satisfy, within the portable subset of
+    :func:`~roomkit.providers.ai.json_schema.check_portable_schema` (checked
+    here, on construction and on assignment). ``generate()`` then returns one
+    JSON document in ``content`` or raises
+    :class:`~roomkit.providers.ai.response_schema.ResponseSchemaError`; a
+    provider never ignores it. See :attr:`AIProvider.supports_response_schema`."""
     room: RoomContext | None = None
     target_capabilities: ChannelCapabilities | None = None
     target_media_types: list[ChannelMediaType] = Field(default_factory=list)
@@ -329,14 +337,23 @@ class AIContext(BaseModel):
     def _protect_metadata(cls, value: dict[str, Any]) -> dict[str, Any]:
         return _AIContextMetadata(value)
 
+    @field_validator("response_schema", mode="after")
+    @classmethod
+    def _portable_response_schema(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is not None:
+            check_portable_schema(value)
+        return value
+
     def model_post_init(self, __context: Any) -> None:
         """Protect metadata even when Pydantic's validation was bypassed."""
         if not isinstance(self.metadata, _AIContextMetadata):
             self.metadata = _AIContextMetadata(self.metadata)
 
     def model_copy(self, *, update: Mapping[str, Any] | None = None, deep: bool = False) -> Self:
-        """Preserve secret wrapping when ``model_copy(update=...)`` bypasses validation."""
+        """Preserve secret wrapping and the schema check that ``update=`` bypasses."""
         protected_update = dict(update) if update is not None else None
+        if protected_update is not None and protected_update.get("response_schema") is not None:
+            check_portable_schema(protected_update["response_schema"])
         if protected_update is not None and "metadata" in protected_update:
             metadata = protected_update["metadata"]
             if not isinstance(metadata, Mapping):
@@ -637,6 +654,17 @@ class AIProvider(ABC):
     @property
     def supports_structured_streaming(self) -> bool:
         """Whether this provider supports structured streaming with tool calls."""
+        return False
+
+    @property
+    def supports_response_schema(self) -> bool:
+        """Whether :meth:`generate` honours :attr:`AIContext.response_schema`.
+
+        A provider default, not a fact about every model it can reach: a model
+        or an OpenAI-compatible server may still refuse the constraint, which
+        surfaces as an error rather than as prose. When false, a context
+        carrying a schema is refused before any request is sent.
+        """
         return False
 
     @classmethod

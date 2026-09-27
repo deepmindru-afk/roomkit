@@ -48,6 +48,11 @@ from roomkit.providers.ai.openai_dialect import (
     merge_thinking,
     overflow_fact,
 )
+from roomkit.providers.ai.response_schema import (
+    check_schema_answer,
+    refuse_streamed_schema,
+    schema_for_generate,
+)
 from roomkit.providers.openai.config import OpenAIConfig
 from roomkit.providers.openai.models import MODELS
 from roomkit.providers.utils import http_timeout
@@ -76,6 +81,12 @@ class OpenAIAIProvider(AIProvider):
     its own extra, so the hint has to follow the class rather than the
     dependency — telling a DeepSeek user to install ``roomkit[openai]`` sends
     them to an extra they did not choose."""
+
+    _response_schema_default: ClassVar[bool] = True
+    """Whether this endpoint honours a ``json_schema`` response format when the
+    config does not say. A derivative whose service only offers free-form JSON
+    mode sets it false; ``supports_response_schema`` on the config overrides
+    it either way, for a server behind ``base_url`` that differs."""
 
     def __init__(self, config: OpenAIConfig) -> None:
         try:
@@ -128,6 +139,17 @@ class OpenAIAIProvider(AIProvider):
     @property
     def supports_structured_streaming(self) -> bool:
         return True
+
+    @property
+    def supports_response_schema(self) -> bool:
+        """The config's answer when it gives one, else this endpoint's default.
+
+        An OpenAI-compatible server decides for itself whether it applies a
+        ``json_schema`` response format, so the host that knows the server
+        states it on the config rather than the class guessing.
+        """
+        configured = getattr(self._config, "supports_response_schema", None)
+        return self._response_schema_default if configured is None else configured
 
     @classmethod
     def available_models(cls) -> list[ModelInfo]:
@@ -313,6 +335,40 @@ class OpenAIAIProvider(AIProvider):
         if self._config.extra_body:
             kwargs["extra_body"] = {**self._config.extra_body, **kwargs.get("extra_body", {})}
 
+    def _apply_response_format(self, kwargs: dict[str, Any], context: AIContext) -> None:
+        """Constrain the answer to the turn's response schema, in strict mode.
+
+        Raises ``ResponseSchemaError`` before the request when this provider or
+        this turn cannot carry the schema (RFC §6.7).
+        """
+        schema = schema_for_generate(
+            context, supported=self.supports_response_schema, provider=self._provider_name
+        )
+        if schema is not None:
+            kwargs["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {"name": "response", "schema": schema, "strict": True},
+            }
+
+    def _check_schema_answer(self, context: AIContext, choice: Any, content: str) -> None:
+        """Refuse a constrained answer that did not deliver its JSON document.
+
+        ``message.refusal`` is where a structured-output refusal lands on this
+        API; Azure's content filter says the same through the finish reason.
+        """
+        if context.response_schema is None:
+            return
+        finish = getattr(choice, "finish_reason", None)
+        refusal = getattr(getattr(choice, "message", None), "refusal", None) or None
+        if refusal is None and finish == "content_filter":
+            refusal = "content_filter"
+        check_schema_answer(
+            content,
+            provider=self._provider_name,
+            refusal=refusal,
+            truncated=finish == "length",
+        )
+
     @staticmethod
     def _usage_from(raw: Any) -> dict[str, int]:
         """Map an OpenAI-shaped usage object to roomkit's canonical counters.
@@ -351,6 +407,7 @@ class OpenAIAIProvider(AIProvider):
         }
         self._apply_sampling_kwargs(kwargs, context)
         self._apply_extra_body(kwargs)
+        self._apply_response_format(kwargs, context)
 
         # Add tools if provided
         if context.tools:
@@ -406,6 +463,7 @@ class OpenAIAIProvider(AIProvider):
         )
 
         if not response.choices:
+            self._check_schema_answer(context, None, "")
             return AIResponse(content="")
 
         choice = response.choices[0]
@@ -433,6 +491,7 @@ class OpenAIAIProvider(AIProvider):
         raw_text = choice.message.content or ""
         thinking, content = extract_think_tags(raw_text)
         thinking = merge_thinking(thinking, field_reasoning(choice.message))
+        self._check_schema_answer(context, choice, content)
 
         return AIResponse(
             content=content,
@@ -453,6 +512,7 @@ class OpenAIAIProvider(AIProvider):
         :class:`StreamTextDelta`.  Tool calls are collected from the final
         chunks and yielded as :class:`StreamToolCall`.
         """
+        refuse_streamed_schema(context, provider=self._provider_name)
         messages = self._build_messages(context.messages, context.system_prompt)
         kwargs: dict[str, Any] = {
             "model": self._config.model,

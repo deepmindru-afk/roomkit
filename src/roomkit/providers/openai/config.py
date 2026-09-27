@@ -75,6 +75,11 @@ class OpenAIConfig(BaseModel):
     OpenAI schema omits — e.g. vLLM guided decoding
     (``guided_json``/``guided_choice``) and extra sampling (``top_k``,
     ``repetition_penalty``, ``min_p``). ``None`` sends a vanilla body."""
+    supports_response_schema: bool | None = None
+    """Whether the server honours a ``json_schema`` response format (RFC §6.7).
+    ``None`` keeps the provider's default; set it for a server behind
+    ``base_url`` that differs, so a turn carrying a response schema is refused
+    up front instead of answered in prose."""
 
     def model_post_init(self, __context: Any) -> None:
         """Apply safe defaults for modern models on OpenAI's own endpoint."""

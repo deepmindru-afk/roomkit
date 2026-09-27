@@ -157,6 +157,10 @@ def build_kwargs(config: AnthropicConfig, context: AIContext) -> dict[str, Any]:
             }
             for t in context.tools
         ]
+    if context.response_schema is not None:
+        kwargs["output_config"] = {
+            "format": {"type": "json_schema", "schema": context.response_schema}
+        }
     if config.enable_prompt_caching:
         _apply_cache_control(kwargs)
     return kwargs
