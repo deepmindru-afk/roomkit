@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `examples/voice_gemini.py`, a voice assistant that is Gemini end to end
+  (RMK-229): `gemini-3.5-transcribe-live` hears the microphone,
+  `gemini-3.8-flash` answers, `gemini-3.8-flash-lite-tts` speaks, on one API
+  key. Its system prompt lets the model write audio tags (`<laugh>`,
+  `<sigh>`, `[whispers]`…) that the voice performs. Run against a recorded
+  French question, the reply was ready 1.0 to 1.4 s after the transcript.
 - `GeminiSTTProvider` transcribes recordings on Google's dedicated recogniser,
   `gemini-3.5-transcribe` (RMK-228). Pass it as `model`: the provider sends a
   `transcription_config` in place of the prompt and JSON schema the model
