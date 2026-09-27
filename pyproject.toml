@@ -109,6 +109,7 @@ realtime-deepgram = ["websockets>=14.2"]
 websocket = ["websockets>=14.2"]
 sse = ["httpx>=0.27", "httpx-sse>=0.4"]
 gradium = ["gradium>=0.5.7"]
+meta-stt = ["websockets>=14.2", "httpx>=0.27"]
 opentelemetry = ["opentelemetry-api>=1.20", "opentelemetry-sdk>=1.20"]
 pyroscope = ["pyroscope-io>=1.0"]
 smart-turn = ["numpy>=1.26", "onnxruntime>=1.20", "transformers>=5.5"]
@@ -209,6 +210,7 @@ all = [
     "roomkit[realtime-gemini]",
     "roomkit[realtime-elevenlabs]",
     "roomkit[realtime-deepgram]",
+    "roomkit[meta-stt]",
     "roomkit[websocket]",
     "roomkit[sse]",
     "roomkit[postgres]",

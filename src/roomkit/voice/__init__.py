@@ -321,6 +321,20 @@ def get_gradium_stt_config() -> type:
     return GradiumSTTConfig
 
 
+def get_meta_stt_provider() -> type:
+    """Get MetaSTTProvider class (requires websockets, httpx)."""
+    from roomkit.voice.stt.meta import MetaSTTProvider
+
+    return MetaSTTProvider
+
+
+def get_meta_stt_config() -> type:
+    """Get MetaSTTConfig class."""
+    from roomkit.voice.stt.meta import MetaSTTConfig
+
+    return MetaSTTConfig
+
+
 def get_gradium_tts_provider() -> type:
     """Get GradiumTTSProvider class (requires gradium)."""
     from roomkit.voice.tts.gradium import GradiumTTSProvider

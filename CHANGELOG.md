@@ -15,6 +15,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   key. Its system prompt lets the model write audio tags (`<laugh>`,
   `<sigh>`, `[whispers]`…) that the voice performs. Run against a recorded
   French question, the reply was ready 1.0 to 1.4 s after the transcript.
+- `MetaSTTProvider` transcribes on Meta's Muse Voice Transcribe
+  (`muse-voice-transcribe-1.0`, Meta Model API), streaming over its realtime
+  WebSocket and batch over its REST endpoint (RMK-231). `MetaSTTConfig.mode`
+  follows the channel: `ENDPOINTING` for continuous STT, where the model
+  signals speech start and ends each turn itself after about 550 ms of
+  silence, and `PUSH_TO_TALK` behind a pipeline VAD, for one final per
+  utterance. `keywords` and `language_bias` bias recognition; the language
+  names are checked at construction, because the service accepts a misspelt
+  one silently. Audio at 16 or 24 kHz goes through as it is, any other rate is
+  resampled to 24 kHz. `transcribe()` takes raw PCM or a WAV `data:` URI, and
+  refuses to fetch an http(s) URL. Failures raise `MetaSTTError` with Meta's
+  `code`, `error_type` and `retryable`. Meta's `DIARIZATION` mode is refused
+  until a transcription result can carry a speaker. Verified against the live
+  API on 2026-09-27, French included, through a `VoiceChannel` in continuous
+  mode at 8 kHz. New extra `roomkit[meta-stt]`; example
+  `examples/stt_meta_live.py`.
 - `GeminiSTTProvider` transcribes recordings on Google's dedicated recogniser,
   `gemini-3.5-transcribe` (RMK-228). Pass it as `model`: the provider sends a
   `transcription_config` in place of the prompt and JSON schema the model
