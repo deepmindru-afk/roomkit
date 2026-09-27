@@ -29,8 +29,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `code`, `error_type` and `retryable`. Meta's `DIARIZATION` mode is refused
   until a transcription result can carry a speaker. Verified against the live
   API on 2026-09-27, French included, through a `VoiceChannel` in continuous
-  mode at 8 kHz. New extra `roomkit[meta-stt]`; example
-  `examples/stt_meta_live.py`.
+  mode at 8 kHz. New extra `roomkit[meta-stt]`; examples
+  `examples/stt_meta_mic.py` (speak into the microphone) and
+  `examples/stt_meta_live.py` (a WAV file, for a machine with no audio
+  device).
 - `GeminiSTTProvider` transcribes recordings on Google's dedicated recogniser,
   `gemini-3.5-transcribe` (RMK-228). Pass it as `model`: the provider sends a
   `transcription_config` in place of the prompt and JSON schema the model
