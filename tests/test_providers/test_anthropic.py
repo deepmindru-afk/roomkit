@@ -1302,7 +1302,9 @@ class TestAnthropicResponseSchema:
         [
             ("", "refusal", "refusal"),
             ('{"label": "y', "max_tokens", "truncated"),
+            ('{"label": "y', "model_context_window_exceeded", "truncated"),
             ("Yes.", "end_turn", "invalid_json"),
+            ('{"label": "maybe"}', "end_turn", "invalid_json"),
         ],
     )
     async def test_an_answer_without_its_document_raises(

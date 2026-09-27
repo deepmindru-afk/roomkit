@@ -89,6 +89,22 @@ class OpenRouterAIProvider(OpenAIAIProvider):
         if reasoning is not None and not context.tools:
             kwargs.setdefault("extra_body", {})["reasoning"] = reasoning
 
+    def _apply_response_format(self, kwargs: dict[str, Any], context: AIContext) -> None:
+        """Constrain the answer, and route only to upstreams that honour it.
+
+        OpenRouter may otherwise send the request to a provider that drops
+        ``response_format`` without a word; ``provider.require_parameters``
+        restricts routing to the ones that accept every parameter sent. The
+        configured ``provider`` preferences are kept, copied rather than
+        mutated, since they belong to the shared config.
+        """
+        super()._apply_response_format(kwargs, context)
+        if "response_format" not in kwargs:
+            return
+        extra_body = dict(kwargs.get("extra_body") or {})
+        extra_body["provider"] = {**(extra_body.get("provider") or {}), "require_parameters": True}
+        kwargs["extra_body"] = extra_body
+
     def _resolve_reasoning(self, context: AIContext) -> dict[str, Any] | None:
         """Build OpenRouter's ``reasoning`` object for this turn, or ``None`` to omit it.
 

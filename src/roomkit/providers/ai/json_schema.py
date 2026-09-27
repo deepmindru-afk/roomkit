@@ -7,6 +7,10 @@ accept is the intersection checked here, so a schema that passes runs on any
 provider that supports response schemas (RFC §6.7). It is deliberately narrow:
 widening it later breaks no caller, narrowing it would.
 
+The same subset is small enough to check an answer against without a JSON
+Schema library: :func:`schema_mismatch` is how a provider makes sure the
+document it returns satisfies the schema, whatever the server did with it.
+
 Pure and dependency-free, so ``AIContext`` can validate the field without an
 import cycle through the provider modules.
 """
@@ -43,9 +47,64 @@ def check_portable_schema(schema: Mapping[str, Any]) -> None:
     _check(schema, "$")
 
 
+def schema_mismatch(schema: Mapping[str, Any], value: Any, path: str = "$") -> str | None:
+    """Where ``value`` departs from a portable ``schema``, or ``None`` when it fits.
+
+    ``value`` is a parsed JSON document and ``schema`` one that passed
+    :func:`check_portable_schema`. An object must carry exactly its properties,
+    an ``integer`` is a whole number, and a boolean is never taken for a number.
+    """
+    kind = schema["type"]
+    if kind == "object":
+        return _object_mismatch(schema, value, path)
+    if kind == "array":
+        if not isinstance(value, list):
+            return f"{path}: expected an array"
+        for index, item in enumerate(value):
+            found = schema_mismatch(schema["items"], item, f"{path}[{index}]")
+            if found is not None:
+                return found
+        return None
+    if not _SCALAR_CHECKS[kind](value):
+        return f"{path}: expected {kind}, got {type(value).__name__}"
+    if "enum" in schema and value not in schema["enum"]:
+        return f"{path}: {value!r} is not one of {schema['enum']}"
+    return None
+
+
+def _object_mismatch(schema: Mapping[str, Any], value: Any, path: str) -> str | None:
+    if not isinstance(value, dict):
+        return f"{path}: expected an object"
+    properties = schema["properties"]
+    missing = [name for name in properties if name not in value]
+    unexpected = [name for name in value if name not in properties]
+    if missing or unexpected:
+        return f"{path}: missing {missing}, unexpected {unexpected}"
+    for name, subschema in properties.items():
+        found = schema_mismatch(subschema, value[name], f"{path}.{name}")
+        if found is not None:
+            return found
+    return None
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, int | float) and not isinstance(value, bool)
+
+
+_SCALAR_CHECKS = {
+    "string": lambda value: isinstance(value, str),
+    "boolean": lambda value: isinstance(value, bool),
+    "number": _is_number,
+    "integer": lambda value: (
+        (isinstance(value, int) and not isinstance(value, bool))
+        or (isinstance(value, float) and value.is_integer())
+    ),
+}
+
+
 def _check(schema: Any, path: str) -> None:
-    if not isinstance(schema, Mapping):
-        raise ValueError(f"{path}: a subschema must be an object")
+    if not isinstance(schema, Mapping) or not all(isinstance(key, str) for key in schema):
+        raise ValueError(f"{path}: a subschema must be an object with string keys")
     kind = schema.get("type")
     if not isinstance(kind, str) or kind not in _KEYWORDS_BY_TYPE:
         allowed = ", ".join(_KEYWORDS_BY_TYPE)
@@ -68,8 +127,8 @@ def _check(schema: Any, path: str) -> None:
 
 def _check_object(schema: Mapping[str, Any], path: str) -> None:
     properties = schema.get("properties")
-    if not isinstance(properties, Mapping):
-        raise ValueError(f"{path}: an object must declare 'properties'")
+    if not isinstance(properties, Mapping) or not all(isinstance(k, str) for k in properties):
+        raise ValueError(f"{path}: an object must declare 'properties', keyed by name")
     if schema.get("additionalProperties") is not False:
         raise ValueError(f"{path}: an object must set 'additionalProperties' to false")
     required = schema.get("required")

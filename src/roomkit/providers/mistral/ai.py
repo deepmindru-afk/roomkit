@@ -446,7 +446,10 @@ class MistralAIProvider(AIProvider):
         finish_reason = done_event.finish_reason if done_event else None
         if context.response_schema is not None:
             check_schema_answer(
-                "".join(text_parts), provider="mistral", truncated=finish_reason == "length"
+                "".join(text_parts),
+                schema=context.response_schema,
+                provider="mistral",
+                truncated=finish_reason == "length",
             )
         return AIResponse(
             content="".join(text_parts),

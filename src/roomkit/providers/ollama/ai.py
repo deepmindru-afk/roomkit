@@ -387,7 +387,10 @@ class OllamaAIProvider(AIProvider):
         tool_calls = self._extract_tool_calls(message)
         if context.response_schema is not None:
             check_schema_answer(
-                content, provider=self._provider_name, truncated=finish_reason == "length"
+                content,
+                schema=context.response_schema,
+                provider=self._provider_name,
+                truncated=finish_reason == "length",
             )
 
         return AIResponse(

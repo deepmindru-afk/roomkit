@@ -987,6 +987,21 @@ class TestGeminiResponseSchema:
 
         assert exc.value.reason == reason
 
+    async def test_a_blocked_prompt_is_a_refusal_not_bad_json(self) -> None:
+        blocked = SimpleNamespace(
+            candidates=None,
+            usage_metadata=None,
+            prompt_feedback=SimpleNamespace(
+                block_reason=SimpleNamespace(name="PROHIBITED_CONTENT")
+            ),
+        )
+        provider = self._provider(_FakeStreamIterator([blocked]))
+
+        with pytest.raises(ResponseSchemaError, match="PROHIBITED_CONTENT") as exc:
+            await provider.generate(_context(response_schema=_VERDICT))
+
+        assert exc.value.reason == "refusal"
+
     async def test_a_streaming_call_is_refused_before_the_call(self) -> None:
         provider = self._provider(_chunks_ending("{}", "STOP"))
 

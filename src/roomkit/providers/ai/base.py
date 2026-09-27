@@ -662,8 +662,13 @@ class AIProvider(ABC):
 
         A provider default, not a fact about every model it can reach: a model
         or an OpenAI-compatible server may still refuse the constraint, which
-        surfaces as an error rather than as prose. When false, a context
-        carrying a schema is refused before any request is sent.
+        surfaces as an error rather than as prose.
+
+        The contract is the implementation's to keep (RFC §6.7): refuse a
+        schema it cannot carry before sending anything, and never return an
+        answer that does not satisfy it. The helpers in
+        :mod:`roomkit.providers.ai.response_schema` do both;
+        a provider that ignores the field breaks the contract.
         """
         return False
 

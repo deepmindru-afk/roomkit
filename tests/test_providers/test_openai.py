@@ -1258,6 +1258,7 @@ class TestOpenAIResponseSchema:
             ("", "content_filter", "refusal"),
             ('{"label": "y', "length", "truncated"),
             ("Yes, it is.", "stop", "invalid_json"),
+            ('{"dept": "billing"}', "stop", "invalid_json"),
         ],
     )
     async def test_an_answer_without_its_document_raises(

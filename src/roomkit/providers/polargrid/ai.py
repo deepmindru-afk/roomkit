@@ -524,6 +524,7 @@ class PolarGridAIProvider(AIProvider):
             return
         check_schema_answer(
             content,
+            schema=context.response_schema,
             provider=self._provider_name,
             refusal="content_filter" if finish_reason == "content_filter" else None,
             truncated=finish_reason == "length",

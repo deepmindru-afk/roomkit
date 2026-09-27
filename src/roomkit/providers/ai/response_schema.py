@@ -9,9 +9,11 @@ answer came back without the JSON document it was constrained to.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from typing import Any, Literal
 
 from roomkit.providers.ai.base import AIContext, ProviderError
+from roomkit.providers.ai.json_schema import schema_mismatch
 
 ResponseSchemaFailure = Literal["unsupported", "refusal", "truncated", "invalid_json"]
 
@@ -27,8 +29,8 @@ class ResponseSchemaError(ProviderError):
             streaming method received it. Raised before any request is sent.
             ``"refusal"`` when the model declined to answer. ``"truncated"``
             when the output cap cut the document. ``"invalid_json"`` when the
-            text is not JSON, from a server that accepted the constraint and
-            did not apply it.
+            text is not a JSON document satisfying the schema, from a server
+            that accepted the constraint and did not apply it.
     """
 
     def __init__(self, message: str, *, reason: ResponseSchemaFailure, provider: str = "") -> None:
@@ -86,14 +88,21 @@ def refuse_streamed_schema(context: AIContext, *, provider: str) -> None:
 def check_schema_answer(
     content: str,
     *,
+    schema: Mapping[str, Any],
     provider: str,
     refusal: str | None = None,
     truncated: bool = False,
 ) -> None:
     """Refuse a constrained answer that did not deliver its JSON document.
 
+    The document is checked against the schema itself, not only parsed: a
+    server that takes the constraint and ignores it (an OpenAI-compatible
+    proxy routing to an upstream without structured output, say) answers
+    well-formed JSON of another shape, which must not pass for an answer.
+
     Args:
         content: The answer's text, reasoning already split out.
+        schema: The turn's response schema.
         provider: The provider's name, carried by the error.
         refusal: Why the model declined, when it did: the provider's refusal
             text or its refusal or safety stop reason.
@@ -113,10 +122,17 @@ def check_schema_answer(
             provider=provider,
         )
     try:
-        json.loads(content)
+        document = json.loads(content)
     except json.JSONDecodeError as exc:
         raise ResponseSchemaError(
             f"the answer is not a JSON document ({exc})",
             reason="invalid_json",
             provider=provider,
         ) from exc
+    mismatch = schema_mismatch(schema, document)
+    if mismatch is not None:
+        raise ResponseSchemaError(
+            f"the answer does not satisfy the response schema ({mismatch})",
+            reason="invalid_json",
+            provider=provider,
+        )

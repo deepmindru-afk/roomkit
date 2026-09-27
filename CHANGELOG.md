@@ -11,8 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `AIContext.response_schema` constrains an AI provider's answer to a JSON
   Schema (RMK-234, RFC §6.7). `generate()` then returns one JSON document in
-  `content`, or raises `ResponseSchemaError` with its `reason`: `refusal`,
-  `truncated`, `invalid_json`, or `unsupported` before any request when the
+  `content`, checked against the schema whatever the server did with it
+  (`schema_mismatch`), or raises `ResponseSchemaError` with its `reason`:
+  `refusal` (a blocked prompt included), `truncated`, `invalid_json` (not JSON,
+  or JSON of another shape), or `unsupported` before any request when the
   provider cannot take a schema, the turn also carries tools, or a streaming
   method receives it. A provider never ignores the schema. The schema must stay
   within a portable subset, checked on construction, on assignment and through
@@ -21,7 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `anyOf`, `$ref` or bounds (`check_portable_schema`). Each provider translates
   it natively: OpenAI and its derivatives a strict `json_schema`
   `response_format`, Anthropic `output_config.format`, Gemini
-  `response_json_schema`, Mistral, Ollama `format`, PolarGrid.
+  `response_json_schema`, Mistral, Ollama `format`, PolarGrid; OpenRouter also
+  asks `provider.require_parameters` so it only routes to an upstream that
+  honours the format.
   `AIProvider.supports_response_schema` says which do; DeepSeek and Qwen, which
   document only free-form JSON mode, are off, and `supports_response_schema` on
   `OpenAIConfig`, `AzureAIConfig` and `VLLMConfig` states it for a server that

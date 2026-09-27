@@ -94,6 +94,7 @@ class MockAIProvider(AIProvider):
         if context.response_schema is not None:
             check_schema_answer(
                 response.content,
+                schema=context.response_schema,
                 provider="mock",
                 refusal="refusal" if response.finish_reason == "refusal" else None,
                 truncated=response.finish_reason == "length",

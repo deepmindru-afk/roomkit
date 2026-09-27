@@ -29,7 +29,7 @@ from roomkit.providers.ai.image_parts import (
     image_part_payload,
     image_part_uri,
 )
-from roomkit.providers.ai.json_schema import check_portable_schema
+from roomkit.providers.ai.json_schema import check_portable_schema, schema_mismatch
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.providers.ai.response_schema import ResponseSchemaError
 
@@ -62,4 +62,5 @@ __all__ = [
     "image_part_payload",
     "image_part_uri",
     "is_context_overflow_message",
+    "schema_mismatch",
 ]

@@ -18,6 +18,7 @@ from roomkit.providers.ai import (
     MockAIProvider,
     ProviderError,
     check_portable_schema,
+    schema_mismatch,
 )
 
 VERDICT: dict[str, Any] = {
@@ -103,6 +104,47 @@ class TestPortableSubset:
 
         assert where in str(exc.value) or where == "root type"
 
+    def test_refuses_property_names_that_are_not_strings(self) -> None:
+        schema = _with([], properties={1: {"type": "string"}}, required=[])
+
+        with pytest.raises(ValueError, match="keyed by name"):
+            check_portable_schema(schema)
+
+
+def _answer(**changes: Any) -> dict[str, Any]:
+    document = json.loads(ANSWER)
+    document.update(changes)
+    return document
+
+
+class TestSchemaMismatch:
+    def test_a_fitting_document_has_none(self) -> None:
+        assert schema_mismatch(VERDICT, json.loads(ANSWER)) is None
+
+    def test_a_whole_float_counts_as_an_integer(self) -> None:
+        assert schema_mismatch(VERDICT, _answer(detail={"count": 2.0, "flag": False})) is None
+
+    @pytest.mark.parametrize(
+        ("document", "where"),
+        [
+            ([], "$: expected an object"),
+            ({"label": "yes"}, "missing"),
+            (_answer(extra=1), "unexpected ['extra']"),
+            (_answer(label="maybe"), "$.label"),
+            (_answer(label=1), "$.label: expected string"),
+            (_answer(confidence=True), "$.confidence: expected number"),
+            (_answer(reasons=["ok", 3]), "$.reasons[1]"),
+            (_answer(reasons="ok"), "$.reasons: expected an array"),
+            (_answer(detail={"count": 1.5, "flag": True}), "$.detail.count"),
+            (_answer(detail={"count": 1, "flag": "yes"}), "$.detail.flag"),
+        ],
+    )
+    def test_names_where_a_document_departs(self, document: Any, where: str) -> None:
+        found = schema_mismatch(VERDICT, document)
+
+        assert found is not None
+        assert where in found
+
 
 class TestAIContextField:
     def test_defaults_to_none(self) -> None:
@@ -178,6 +220,7 @@ class TestMockHonoursTheContract:
             (AIResponse(content="", finish_reason="refusal"), "refusal"),
             (AIResponse(content='{"label": "y', finish_reason="length"), "truncated"),
             (AIResponse(content="Sure, the answer is yes.", finish_reason="stop"), "invalid_json"),
+            (AIResponse(content='{"verdict": "yes"}', finish_reason="stop"), "invalid_json"),
         ],
     )
     async def test_an_answer_without_its_document_raises(

@@ -52,6 +52,19 @@ _REFUSAL_FINISH_REASONS = frozenset(
 )
 
 
+def _prompt_block_reason(chunk: Any) -> str | None:
+    """Why Gemini refused the prompt itself, when it did.
+
+    A blocked prompt produces no candidate at all, so no finish reason says so;
+    only ``prompt_feedback.block_reason`` does.
+    """
+    feedback = getattr(chunk, "prompt_feedback", None)
+    reason = getattr(feedback, "block_reason", None) if feedback is not None else None
+    if reason is None:
+        return None
+    return getattr(reason, "name", None) or str(reason)
+
+
 def _parts_layout(parts: list[Any]) -> str:
     """Compact one-line summary of a streamed chunk's parts for diagnostics.
 
@@ -201,6 +214,7 @@ class GeminiAIProvider(AIProvider):
         fcall_order: list[str] = []
         usage: dict[str, int] = {}
         finish_reason: str | None = None
+        block_reason: str | None = None
 
         try:
             response_stream = await self._client.aio.models.generate_content_stream(  # ty: ignore[unresolved-attribute]
@@ -227,6 +241,7 @@ class GeminiAIProvider(AIProvider):
                     if cached:
                         usage["cache_read_input_tokens"] = cached
 
+                block_reason = _prompt_block_reason(chunk) or block_reason
                 # Read before the content guards below: the chunk that reports
                 # MAX_TOKENS is often the one whose candidate carries no parts,
                 # so capturing it after them would drop the very case the tool
@@ -337,7 +352,10 @@ class GeminiAIProvider(AIProvider):
             yield StreamDone(
                 usage=usage,
                 finish_reason=finish_reason,
-                metadata={"model": self._config.model},
+                metadata={
+                    "model": self._config.model,
+                    **({"prompt_block_reason": block_reason} if block_reason else {}),
+                },
             )
 
         except Exception as exc:
@@ -369,11 +387,14 @@ class GeminiAIProvider(AIProvider):
                 done_event = event
 
         finish_reason = done_event.finish_reason if done_event else None
+        done_metadata = done_event.metadata if done_event else {}
         if context.response_schema is not None:
+            refused = finish_reason in _REFUSAL_FINISH_REASONS
             check_schema_answer(
                 "".join(text_parts),
+                schema=context.response_schema,
                 provider="gemini",
-                refusal=finish_reason if finish_reason in _REFUSAL_FINISH_REASONS else None,
+                refusal=finish_reason if refused else done_metadata.get("prompt_block_reason"),
                 truncated=finish_reason == "MAX_TOKENS",
             )
         return AIResponse(

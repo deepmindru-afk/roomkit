@@ -380,3 +380,32 @@ class TestOpenRouterReasoning:
         kwargs: dict[str, Any] = {}
         self._provider()._apply_sampling_kwargs(kwargs, _context(temperature=0.3))
         assert kwargs["temperature"] == 0.3
+
+
+class TestOpenRouterResponseSchema:
+    """OpenRouter must not route a constrained request to an upstream that drops it."""
+
+    async def test_routing_requires_every_parameter_and_keeps_the_config_preferences(
+        self,
+    ) -> None:
+        schema = {
+            "type": "object",
+            "properties": {"label": {"type": "string"}},
+            "required": ["label"],
+            "additionalProperties": False,
+        }
+        preferences = {"provider": {"order": ["anthropic"]}}
+        with patch.dict("sys.modules", {"openai": _mock_openai_module()}):
+            from roomkit.providers.openrouter.ai import OpenRouterAIProvider
+
+            provider = OpenRouterAIProvider(_config(extra_body=preferences))
+        provider._client = MagicMock()
+        provider._client.chat.completions.create = AsyncMock(
+            return_value=_mock_response(text='{"label": "x"}')
+        )
+
+        await provider.generate(_context(response_schema=schema))
+
+        extra_body = provider._client.chat.completions.create.call_args.kwargs["extra_body"]
+        assert extra_body["provider"] == {"order": ["anthropic"], "require_parameters": True}
+        assert preferences == {"provider": {"order": ["anthropic"]}}

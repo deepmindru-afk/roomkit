@@ -364,6 +364,7 @@ class OpenAIAIProvider(AIProvider):
             refusal = "content_filter"
         check_schema_answer(
             content,
+            schema=context.response_schema,
             provider=self._provider_name,
             refusal=refusal,
             truncated=finish == "length",

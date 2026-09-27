@@ -48,6 +48,10 @@ logger = logging.getLogger("roomkit.providers.anthropic.ai")
 # a model that is genuinely in the catalog is answered from there instead.
 _VISION_PREFIXES = ("claude-",)
 
+# Stop reasons that cut the answer short: the output cap, or the context window
+# filling up mid-answer. A constrained answer ending on one is truncated JSON.
+_CUT_STOP_REASONS = frozenset({"max_tokens", "model_context_window_exceeded"})
+
 # How many per-request clients to keep alive alongside the configured one.
 # Each holds an HTTP connection pool, so this is a memory/latency trade, not a
 # correctness one: an evicted key simply builds a fresh client next turn. Sized
@@ -382,9 +386,10 @@ class AnthropicAIProvider(AIProvider):
         if context.response_schema is not None:
             check_schema_answer(
                 "".join(text_parts),
+                schema=context.response_schema,
                 provider="anthropic",
                 refusal="refusal" if finish_reason == "refusal" else None,
-                truncated=finish_reason == "max_tokens",
+                truncated=finish_reason in _CUT_STOP_REASONS,
             )
         return AIResponse(
             content="".join(text_parts),

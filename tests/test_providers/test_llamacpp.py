@@ -16,6 +16,7 @@ import pytest
 from pydantic import ValidationError
 
 from roomkit.providers.ai.base import AIContext, AIMessage, AITool, ProviderError
+from roomkit.providers.ai.response_schema import ResponseSchemaError
 from roomkit.providers.llamacpp import LlamaCppAIProvider, LlamaCppConfig
 from roomkit.providers.llamacpp import binary as binary_mod
 
@@ -437,3 +438,26 @@ class TestLlamaCppAIProvider:
         assert ai.name == "llamacpp"
         assert ai.base_url == "http://127.0.0.1:18089/v1"
         assert ai.model_name == "m"
+
+
+class TestLlamaCppResponseSchema:
+    async def test_a_schema_it_cannot_carry_is_refused_before_the_server_starts(
+        self, monkeypatch: pytest.MonkeyPatch, fake_server: Path, tmp_path: Path
+    ) -> None:
+        starts = tmp_path / "starts"
+        monkeypatch.setenv("FAKE_STARTS_FILE", str(starts))
+        ai = LlamaCppAIProvider(LlamaCppConfig(model="m:Q4", binary=str(fake_server)))
+        schema = {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": False,
+        }
+        try:
+            with pytest.raises(ResponseSchemaError) as exc:
+                await ai.generate(_ask().model_copy(update={"response_schema": schema}))
+        finally:
+            await ai.close()
+
+        assert exc.value.reason == "unsupported"  # the turn also carries tools
+        assert not starts.exists()
