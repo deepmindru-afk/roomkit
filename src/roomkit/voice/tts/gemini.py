@@ -1,21 +1,33 @@
 """Google Gemini text-to-speech provider.
 
-Gemini TTS is a *generative* speech model, not a conventional voice engine: the
-prompt it receives is an instruction, so a natural-language direction ("Read
-this cheerfully") can steer delivery. That expressiveness costs latency —
-measured time-to-first-audio is seconds, not milliseconds (see
-:class:`GeminiTTSConfig`) — which makes this the right provider for prompts,
-announcements, and generated audio messages, and the wrong one for live
-turn-taking. For conversational voice, use a low-latency engine
-(:mod:`~roomkit.voice.tts.elevenlabs`, :mod:`~roomkit.voice.tts.gradium`) or
-Gemini's speech-to-speech path
+Gemini TTS is a *generative* speech model, not a conventional voice engine: it
+performs the text rather than reading it, so a natural-language direction
+("calm and reassuring") and inline audio tags steer the delivery. That
+expressiveness costs latency — measured time-to-first-audio is seconds, not
+milliseconds (see :class:`GeminiTTSConfig`) — which makes this the right
+provider for prompts, announcements, and generated audio messages, and the
+wrong one for live turn-taking. For conversational voice, use a low-latency
+engine (:mod:`~roomkit.voice.tts.elevenlabs`, :mod:`~roomkit.voice.tts.gradium`)
+or Gemini's speech-to-speech path
 (:class:`~roomkit.providers.gemini.realtime.GeminiLiveProvider`), which sidesteps
 the text round trip entirely.
 
-Output is fixed by the API at 24 kHz, 16-bit, mono PCM. The request accepts a
+Two request contracts live here, chosen by model family:
+
+* The 3.1 and 2.5 models have no style field, so a direction can only travel
+  inside the prompt. The text goes out wrapped in labelled instructions that
+  keep the model reciting the transcript rather than the direction.
+* From 3.8 on, the model reads those instructions aloud (measured 2026-09-27:
+  half the runs on ``gemini-3.8-flash-tts``, every run on the Lite model), so
+  the text goes out alone and the direction rides as ``speech_metadata``.
+
+Audio is 24 kHz, 16-bit, mono PCM on every model. The request accepts a
 ``sample_rate`` field, but the service ignores it and always answers at 24 kHz,
 so this provider does not expose the knob — attach a resampler stage to the
-outbound pipeline when the transport needs another rate.
+outbound pipeline when the transport needs another rate. A streamed answer is
+bare PCM on every model. A non-streamed one is bare PCM up to 3.1 and, from
+3.8, a whole WAV file with a C2PA content-credentials chunk after its audio,
+which :meth:`GeminiTTSProvider.synthesize` returns as it came.
 """
 
 from __future__ import annotations
@@ -31,7 +43,7 @@ from typing import TYPE_CHECKING, Any
 from roomkit.providers.gemini.sdk import build_genai_client, close_genai_client
 from roomkit.providers.gemini.voices import VOICES
 from roomkit.voice.base import AudioChunk
-from roomkit.voice.tts.audio_utils import wrap_wav
+from roomkit.voice.tts.audio_utils import wav_duration_seconds, wrap_wav
 from roomkit.voice.tts.base import TTSProvider
 
 if TYPE_CHECKING:
@@ -42,15 +54,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 GEMINI_TTS_MODELS: tuple[str, ...] = (
+    "gemini-3.8-flash-tts",
+    "gemini-3.8-flash-lite-tts",
     "gemini-3.1-flash-tts-preview",
     "gemini-2.5-flash-preview-tts",
     "gemini-2.5-pro-preview-tts",
 )
-"""TTS models the Gemini API serves, verified against ``models.list`` 2026-08-06.
+"""TTS models the Gemini API serves, verified against ``models.list`` 2026-09-27.
 
-Only ``gemini-3.1-flash-tts-preview`` streams audio incrementally; the 2.5
-models answer with the whole clip in one delta. The ``native-audio`` models are
-absent on purpose — they speak over the Live (bidi) API, which
+The 3.8 and 3.1 models stream audio incrementally; the 2.5 models answer with
+the whole clip in one delta. The ``native-audio`` models are absent on
+purpose — they speak over the Live (bidi) API, which
 :class:`~roomkit.providers.gemini.realtime.GeminiLiveProvider` covers.
 """
 
@@ -60,6 +74,32 @@ OUTPUT_SAMPLE_RATE = 24000
 _OUTPUT_CHANNELS = 1
 _AUDIO_FORMAT = "pcm_s16le"
 
+_PROMPTED_MODEL_PREFIXES = ("gemini-2.", "gemini-3.1-")
+"""Model families that take a delivery direction only inside the prompt.
+
+Every other id gets the 3.8 contract: the bare transcript, its direction as
+``speech_metadata``. The list is closed on the old side on purpose — Google
+ships no new model in these families, while an id newer than this module is
+far likelier to follow 3.8 than 3.1, and the 3.1 prompt is what 3.8 reads aloud.
+"""
+
+_WAV_MIME_TYPES = frozenset({"audio/wav", "audio/wave", "audio/x-wav"})
+
+
+def _uses_instruction_prompt(model: str) -> bool:
+    return model.startswith(_PROMPTED_MODEL_PREFIXES)
+
+
+def _is_wav(mime_type: str | None, audio: bytes) -> bool:
+    """Whether the service answered a whole WAV file rather than bare PCM.
+
+    The declared type decides, and the RIFF magic backs it up: a WAV file
+    mistaken for PCM does not fail, it plays its header and trailing chunks as
+    noise.
+    """
+    base_type = (mime_type or "").split(";", 1)[0].strip().lower()
+    return base_type in _WAV_MIME_TYPES or (audio[:4] == b"RIFF" and audio[8:12] == b"WAVE")
+
 
 @dataclass
 class GeminiTTSConfig:
@@ -67,30 +107,36 @@ class GeminiTTSConfig:
 
     Args:
         api_key: Gemini API key (``GEMINI_API_KEY``).
-        model: One of :data:`GEMINI_TTS_MODELS`. The default is the only model
-            that streams incrementally, which is what lets playback start
-            before the whole clip is generated.
+        model: One of :data:`GEMINI_TTS_MODELS`. The default is Google's
+            replacement for ``gemini-3.1-flash-tts-preview``;
+            ``gemini-3.8-flash-lite-tts`` is the lower-latency,
+            higher-throughput variant. Both stream incrementally, which is what
+            lets playback start before the whole clip is generated.
         voice: Prebuilt voice name — see :meth:`GeminiTTSProvider.available_voices`.
         language: Optional BCP-47 hint (e.g. ``"fr-CA"``). Left unset, the model
             infers the language from the text.
-        style_prompt: Natural-language delivery direction (e.g. ``"Read this in
-            a calm, reassuring voice"``). The API has no style field — style is
-            only expressible inside the prompt — so this is written as a
-            labelled ``Delivery direction:`` line above the ``Transcript:``
-            label in the same ``input`` string, which is what keeps the model
-            reciting the transcript instead of the direction. Gemini 3.1 is a
-            preview model and can occasionally read directions aloud anyway.
-            For cues that steer a word or a phrase rather than the whole
-            utterance, put audio tags such as ``[laughs]`` or ``[whispers]``
-            inline in the text itself.
+        style_prompt: Natural-language direction for the whole utterance (e.g.
+            ``"calm and reassuring"``). From 3.8 on it is sent as the ``style``
+            of the text's ``speech_metadata``, a field the model takes as
+            direction, never as words. The 3.1 and 2.5 models have no such
+            field, so there it is written as a labelled ``Delivery direction:``
+            line above the ``Transcript:`` label in the same ``input`` string,
+            which is what keeps the model reciting the transcript instead of
+            the direction; the 3.1 preview can occasionally read it aloud
+            anyway. For cues that steer a word or a phrase rather than the
+            whole utterance, put audio tags inline in the text itself. Google
+            documents ``<laugh>``, ``<sigh>`` and ``<short pause>`` for 3.8
+            and ``[laughs]``, ``[whispers]`` for 3.1; the 3.8 models perform
+            both spellings (measured 2026-09-27).
         timeout: Per-request timeout in seconds. Generous by design: measured
-            time-to-first-audio for a one-sentence prompt ranges from ~1.2 s to
-            ~8 s on the default model, and long text is slower still.
+            time-to-first-audio for a one-sentence prompt is ~1.1 to ~1.6 s on
+            the default model and ~0.7 s on the Lite one (2026-09-27), was up
+            to ~8 s on 3.1, and long text is slower still.
         connect_timeout: TCP connect timeout in seconds, apart from ``timeout``.
     """
 
     api_key: str = field(repr=False)
-    model: str = "gemini-3.1-flash-tts-preview"
+    model: str = "gemini-3.8-flash-tts"
     voice: str = "Kore"
     language: str | None = None
     style_prompt: str | None = None
@@ -157,6 +203,26 @@ class GeminiTTSProvider(TTSProvider):
             self._client, self._http = built.client, built.http
         return self._client
 
+    def _build_input(self, text: str) -> str | list[dict[str, Any]]:
+        """Shape the ``input`` so the configured model speaks *text* and only that."""
+        if _uses_instruction_prompt(self._config.model):
+            return self._build_prompt(text)
+        style = self._config.style_prompt
+        if not style:
+            return text
+        return [
+            {
+                "type": "user_input",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": text,
+                        "annotations": [{"type": "speech_metadata", "style": style}],
+                    }
+                ],
+            }
+        ]
+
     def _build_prompt(self, text: str) -> str:
         """Build an explicit direction/transcript prompt for reliable recitation."""
         lines = [
@@ -178,15 +244,23 @@ class GeminiTTSProvider(TTSProvider):
         return {"speech_config": [speech]}
 
     @staticmethod
-    def _decode_audio(
-        data: str, sample_rate: int | None, channels: int | None
-    ) -> tuple[bytes, int, int]:
-        """Decode and validate service audio before exposing it downstream."""
+    def _decode_base64(data: str) -> bytes:
         try:
-            pcm = base64.b64decode(data, validate=True)
+            return base64.b64decode(data, validate=True)
         except (binascii.Error, ValueError) as exc:
             raise RuntimeError("Gemini TTS returned invalid base64 audio") from exc
 
+    @classmethod
+    def _decode_audio(
+        cls, data: str, sample_rate: int | None, channels: int | None
+    ) -> tuple[bytes, int, int]:
+        """Decode and validate service PCM before exposing it downstream."""
+        return cls._check_pcm(cls._decode_base64(data), sample_rate, channels)
+
+    @staticmethod
+    def _check_pcm(
+        pcm: bytes, sample_rate: int | None, channels: int | None
+    ) -> tuple[bytes, int, int]:
         effective_rate = sample_rate or OUTPUT_SAMPLE_RATE
         effective_channels = channels or _OUTPUT_CHANNELS
         if (
@@ -210,10 +284,11 @@ class GeminiTTSProvider(TTSProvider):
     async def _create(self, text: str, voice: str | None, *, stream: bool) -> Any:
         return await self._get_client().aio.interactions.create(
             model=self._config.model,
-            input=self._build_prompt(text),
+            input=self._build_input(text),
             stream=stream,
-            # Audio ``mime_type`` and ``delivery`` are rejected by the service;
-            # ``type`` is the only field it accepts here.
+            # ``type`` only: the 3.1 models answer 400 to ``mime_type`` and
+            # ``delivery``. Each model's default format (bare PCM, or a WAV
+            # file from 3.8 on) is handled on the way back instead.
             response_format={"type": "audio"},
             generation_config=self._generation_config(voice),
             # No per-request ``timeout``: the SDK would flatten it to one float;
@@ -232,11 +307,14 @@ class GeminiTTSProvider(TTSProvider):
             voice: Prebuilt voice name overriding the configured one.
 
         Returns:
-            AudioContent holding a WAV ``data:`` URL.
+            AudioContent holding a WAV ``data:`` URL. A WAV file the service
+            answered (3.8 on) is passed through unchanged, its C2PA
+            content-credentials chunk included; bare PCM is wrapped in one.
 
         Raises:
             ValueError: *text* is empty or whitespace.
-            RuntimeError: The interaction completed without audio.
+            RuntimeError: The interaction completed without audio, or with
+                audio that does not decode.
         """
         from roomkit.models.event import AudioContent as AudioContentModel
 
@@ -250,16 +328,23 @@ class GeminiTTSProvider(TTSProvider):
                 f"Gemini TTS returned no audio (status={getattr(interaction, 'status', None)})"
             )
 
-        pcm, sample_rate, channels = self._decode_audio(
-            audio.data, audio.sample_rate, audio.channels
-        )
-        wav = wrap_wav(pcm, sample_rate, channels)
+        raw = self._decode_base64(audio.data)
+        if _is_wav(getattr(audio, "mime_type", None), raw):
+            wav = raw
+            try:
+                duration = wav_duration_seconds(wav)
+            except ValueError as exc:
+                raise RuntimeError(f"Gemini TTS returned an unreadable WAV file: {exc}") from exc
+        else:
+            pcm, sample_rate, channels = self._check_pcm(raw, audio.sample_rate, audio.channels)
+            wav = wrap_wav(pcm, sample_rate, channels)
+            duration = len(pcm) / 2 / channels / sample_rate
 
         return AudioContentModel(
             url=f"data:audio/wav;base64,{base64.b64encode(wav).decode()}",
             mime_type="audio/wav",
             transcript=text,
-            duration_seconds=len(pcm) / 2 / channels / sample_rate,
+            duration_seconds=duration,
         )
 
     async def synthesize_stream(

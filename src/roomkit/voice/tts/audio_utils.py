@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import io
 import struct
+import wave
 from typing import Any
 
 
@@ -29,6 +31,26 @@ def wrap_wav(pcm_data: bytes, sample_rate: int, num_channels: int = 1) -> bytes:
         data_size,
     )
     return header + pcm_data
+
+
+def wav_duration_seconds(wav: bytes) -> float:
+    """Duration of a WAV file held in memory.
+
+    Chunks other than ``fmt `` and ``data`` are skipped, so a file carrying
+    metadata after its audio (a provenance manifest, say) measures its audio
+    alone.
+
+    Raises:
+        ValueError: *wav* is not a readable WAV file.
+    """
+    try:
+        with wave.open(io.BytesIO(wav), "rb") as reader:
+            frames, rate = reader.getnframes(), reader.getframerate()
+    except (wave.Error, EOFError) as exc:
+        raise ValueError(f"not a readable WAV file: {exc}") from exc
+    if rate <= 0:
+        raise ValueError(f"WAV file declares an invalid sample rate: {rate}")
+    return frames / rate
 
 
 def numpy_to_pcm_s16le(samples: Any) -> bytes:

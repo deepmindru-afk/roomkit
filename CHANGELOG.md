@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `GeminiTTSProvider` works on `gemini-3.8-flash-tts` and
+  `gemini-3.8-flash-lite-tts` (RMK-227). Two things broke there.
+  `synthesize()` wrapped the WAV file 3.8 answers in a second WAV header, so
+  the inner header played as a click and the file's C2PA manifest as 125 ms
+  of full-scale noise after the speech. And the model read aloud the
+  instructions the provider wraps around the text, in place of or on top of
+  it: 3 runs in 6 on Flash, 6 in 6 on Flash-Lite. From 3.8 on, the text goes
+  out alone, `style_prompt` rides as `speech_metadata`, and a WAV answer is
+  returned unchanged, its C2PA chunk included. The 3.1 and 2.5 models keep
+  the request they had.
+
+### Changed
+
+- `GeminiTTSConfig.model` defaults to `gemini-3.8-flash-tts` (was
+  `gemini-3.1-flash-tts-preview`), Google's replacement for it, and
+  `GEMINI_TTS_MODELS` lists both 3.8 models (RMK-227).
+- The `gemini` and `realtime-gemini` extras require `google-genai>=2.25.0`
+  (was `>=2.24.0`): 2.24.0 sends the 3.8 `speech_metadata` annotation as
+  `UNKNOWN`, which the API refuses (RMK-227).
+
 ## [0.91.1] — 2026-09-27
 
 ### Fixed

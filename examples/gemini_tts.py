@@ -6,15 +6,16 @@ Synthesizes speech three ways and writes each result to a playable WAV file:
 2. ``synthesize_stream()`` — audio deltas measured as they arrive, so you can
    see the real time-to-first-audio.
 3. ``style_prompt`` — a natural-language delivery direction. Gemini TTS is a
-   generative model, so the instruction is intended to steer the voice rather
-   than be spoken (the 3.1 preview model can still occasionally read it).
+   generative model, so the direction steers the voice rather than being
+   spoken: the 3.8 models take it as ``speech_metadata``, a field they never
+   read aloud (the 3.1 preview, which only takes it inside the prompt, can).
 
 This is the provider-level view — the API surface and its real latencies. For
 the framework view, where a room speaks what is typed into it, see
 ``examples/gemini_tts_room.py``.
 
-Gemini TTS trades latency for expressiveness: expect seconds, not
-milliseconds, before the first audio byte. That makes it a good fit for
+Gemini TTS trades latency for expressiveness: expect around a second, not
+milliseconds, before the first audio byte (~0.7 s on the Lite model). That makes it a good fit for
 prompts, announcements and generated audio messages, and a poor one for live
 turn-taking — use ElevenLabs/Gradium, or Gemini Live's speech-to-speech path,
 for conversation.

@@ -3,7 +3,9 @@
 The fake client mirrors what the live API actually returns (verified
 2026-08-06): base64 ``audio/l16`` at 24 kHz mono, streamed as ``step.delta``
 events whose ``delta.type`` is ``"audio"``, interleaved with lifecycle events
-that carry no delta at all.
+that carry no delta at all. From 3.8 on (verified 2026-09-27) a non-streamed
+answer is instead a whole ``audio/wav`` file, with no sample rate or channel
+count on the response and a ``C2PA`` chunk after the audio.
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ from typing import Any
 import pytest
 
 from roomkit.voice.base import AudioChunk
+from roomkit.voice.tts.audio_utils import wrap_wav
 from roomkit.voice.tts.gemini import (
     GEMINI_TTS_MODELS,
     OUTPUT_SAMPLE_RATE,
@@ -100,6 +103,17 @@ def _pcm(seconds: float = 0.2) -> bytes:
     return b"\x01\x02" * int(OUTPUT_SAMPLE_RATE * seconds)
 
 
+def _wav_with_c2pa(pcm: bytes, manifest: bytes = b"\x7f\xff" * 3007) -> bytes:
+    """A WAV file shaped like the 3.8 answer: fmt, data, then a C2PA chunk.
+
+    The manifest bytes are loud on purpose: read as samples, they are the
+    burst of noise a mis-parsed answer plays.
+    """
+    body = wrap_wav(pcm, OUTPUT_SAMPLE_RATE, 1)[12:]
+    body += b"C2PA" + struct.pack("<I", len(manifest)) + manifest
+    return b"RIFF" + struct.pack("<I", 4 + len(body)) + b"WAVE" + body
+
+
 def _provider(pcm: bytes | None = None, **overrides: Any) -> tuple[GeminiTTSProvider, _FakeClient]:
     provider = GeminiTTSProvider(GeminiTTSConfig(api_key="test-key", **overrides))
     client = _FakeClient(pcm if pcm is not None else _pcm())
@@ -137,10 +151,13 @@ class TestMetadata:
 
         assert [v.id for v in voices] == [v.id for v in VOICES]
 
-    def test_default_model_is_the_one_that_streams(self) -> None:
+    def test_default_model_is_the_3_8_flash_model(self) -> None:
         provider, _ = _provider()
-        assert provider._config.model == "gemini-3.1-flash-tts-preview"
+        assert provider._config.model == "gemini-3.8-flash-tts"
         assert provider._config.model in GEMINI_TTS_MODELS
+
+    def test_catalog_lists_both_3_8_models(self) -> None:
+        assert {"gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts"} <= set(GEMINI_TTS_MODELS)
 
     def test_api_key_is_not_in_the_repr(self) -> None:
         config = GeminiTTSConfig(api_key="super-secret")
@@ -194,19 +211,45 @@ class TestSynthesize:
         await provider.synthesize("Hello", voice="Puck")
 
         call = client.interactions.calls[0]
-        assert call["model"] == "gemini-3.1-flash-tts-preview"
-        assert call["input"] == (
-            "Synthesize speech from the transcript below.\n"
-            "Speak only the transcript; do not read these instructions or labels aloud.\n"
-            "Transcript:\nHello"
-        )
+        assert call["model"] == "gemini-3.8-flash-tts"
+        # 3.8 reads an instruction prompt aloud: the transcript goes out alone.
+        assert call["input"] == "Hello"
         assert call["stream"] is False
-        # ``mime_type``/``delivery`` are 400s on the live API — only ``type``.
+        # ``mime_type``/``delivery`` are 400s on the 3.1 models — only ``type``.
         assert call["response_format"] == {"type": "audio"}
         assert call["generation_config"] == {"speech_config": [{"voice": "Puck"}]}
         # The split lives on the SDK's httpx client: a per-request timeout
         # would be flattened by google-genai to one float (RMK-149).
         assert "timeout" not in call
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "gemini-3.1-flash-tts-preview",
+            "gemini-2.5-flash-preview-tts",
+            "gemini-2.5-pro-preview-tts",
+        ],
+    )
+    async def test_models_before_3_8_get_the_instruction_prompt(self, model: str) -> None:
+        provider, client = _provider(model=model)
+
+        await provider.synthesize("Hello")
+
+        assert client.interactions.calls[0]["input"] == (
+            "Synthesize speech from the transcript below.\n"
+            "Speak only the transcript; do not read these instructions or labels aloud.\n"
+            "Transcript:\nHello"
+        )
+
+    @pytest.mark.parametrize("model", ["gemini-3.8-flash-lite-tts", "gemini-4.0-flash-tts"])
+    async def test_3_8_and_newer_ids_get_the_bare_transcript(self, model: str) -> None:
+        """An id newer than the catalog follows 3.8, whose contract it is likelier
+        to share than the 3.1 prompt it would read aloud."""
+        provider, client = _provider(model=model)
+
+        await provider.synthesize("Hello")
+
+        assert client.interactions.calls[0]["input"] == "Hello"
 
     async def test_language_is_forwarded_when_configured(self) -> None:
         provider, client = _provider(language="fr-CA")
@@ -216,8 +259,30 @@ class TestSynthesize:
         speech = client.interactions.calls[0]["generation_config"]["speech_config"][0]
         assert speech == {"voice": "Kore", "language": "fr-CA"}
 
-    async def test_style_prompt_is_separated_from_the_transcript(self) -> None:
-        provider, client = _provider(style_prompt="Read this cheerfully")
+    async def test_style_prompt_rides_as_speech_metadata_on_3_8(self) -> None:
+        provider, client = _provider(style_prompt="calm and reassuring")
+
+        await provider.synthesize("Hello")
+
+        assert client.interactions.calls[0]["input"] == [
+            {
+                "type": "user_input",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Hello",
+                        "annotations": [
+                            {"type": "speech_metadata", "style": "calm and reassuring"}
+                        ],
+                    }
+                ],
+            }
+        ]
+
+    async def test_style_prompt_is_separated_from_the_transcript_before_3_8(self) -> None:
+        provider, client = _provider(
+            model="gemini-3.1-flash-tts-preview", style_prompt="Read this cheerfully"
+        )
 
         await provider.synthesize("Hello")
 
@@ -267,6 +332,62 @@ class TestSynthesize:
         client.interactions.create = _malformed  # type: ignore[method-assign]
 
         with pytest.raises(RuntimeError, match=message):
+            await provider.synthesize("Hello")
+
+    async def test_a_wav_answer_is_passed_through_with_its_provenance(self) -> None:
+        """3.8 answers a whole WAV file. Wrapping it again as PCM played its
+        header as a click and its C2PA manifest as 125 ms of noise."""
+        pcm = _pcm(0.5)
+        wav = _wav_with_c2pa(pcm)
+        provider, client = _provider()
+
+        async def _wav_answer(**kwargs: Any) -> _FakeInteraction:
+            return _FakeInteraction(
+                output_audio=_FakeAudio(
+                    data=base64.b64encode(wav).decode(),
+                    mime_type="audio/wav",
+                    sample_rate=None,
+                    channels=None,
+                )
+            )
+
+        client.interactions.create = _wav_answer  # type: ignore[method-assign]
+
+        audio = await provider.synthesize("Hello")
+
+        assert audio.mime_type == "audio/wav"
+        assert base64.b64decode(audio.url.split(",", 1)[1]) == wav
+        # The manifest after the audio is not audio: it adds no duration.
+        assert audio.duration_seconds == pytest.approx(0.5)
+
+    async def test_a_wav_file_is_recognised_whatever_its_declared_type(self) -> None:
+        pcm = _pcm(0.25)
+        wav = _wav_with_c2pa(pcm)
+        provider, client = _provider()
+
+        async def _mislabelled(**kwargs: Any) -> _FakeInteraction:
+            return _FakeInteraction(output_audio=_FakeAudio(data=base64.b64encode(wav).decode()))
+
+        client.interactions.create = _mislabelled  # type: ignore[method-assign]
+
+        audio = await provider.synthesize("Hello")
+
+        assert base64.b64decode(audio.url.split(",", 1)[1]) == wav
+        assert audio.duration_seconds == pytest.approx(0.25)
+
+    async def test_an_unreadable_wav_answer_is_rejected(self) -> None:
+        provider, client = _provider()
+
+        async def _broken_wav(**kwargs: Any) -> _FakeInteraction:
+            return _FakeInteraction(
+                output_audio=_FakeAudio(
+                    data=base64.b64encode(_pcm(0.1)).decode(), mime_type="audio/wav"
+                )
+            )
+
+        client.interactions.create = _broken_wav  # type: ignore[method-assign]
+
+        with pytest.raises(RuntimeError, match="unreadable WAV"):
             await provider.synthesize("Hello")
 
     async def test_service_reported_rate_wins_over_the_documented_one(self) -> None:

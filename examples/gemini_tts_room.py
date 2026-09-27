@@ -31,7 +31,9 @@ Google documents no closed list — any descriptive cue is interpreted — so
 uncommon ones deserve a listen before you ship them: a tag the model does not
 recognise can be spoken aloud instead of performed. With a non-English
 transcript, keep the tags in English. Type ``/tags`` in the prompt for the
-short list.
+short list. The 3.8 models (the default) also take the angle-bracket spelling
+Google documents for them, ``<laugh>``, ``<sigh>``, ``<short pause>``; both
+spellings are performed.
 
 A whole-utterance direction belongs in ``style_prompt`` instead (see below);
 tags steer a word or a phrase, ``style_prompt`` steers the performance.
@@ -77,7 +79,8 @@ TAGS_HELP = """\
     character  [singing] [asmr] [like a cartoon dog]
   Google documents no closed list — any descriptive cue is interpreted, so listen
   to an unusual one before shipping it: unrecognised cues can be read aloud.
-  Keep the tags in English even when the transcript is not.
+  Keep the tags in English even when the transcript is not. The 3.8 models also
+  take Google's angle-bracket spelling: <laugh> <sigh> <short pause>.
   Durations are interpreted, never executed: a pause asked for in seconds comes
   back seconds off, and differently on every run. SSML is not an input mode here.
   Example: [whispers] I have a secret. [laughs] Just kidding!\
@@ -97,7 +100,7 @@ async def main() -> None:
                 api_key=env["GEMINI_API_KEY"],
                 voice="Kore",
                 language="en-US",
-                # style_prompt="Read this in a calm, reassuring voice",
+                # style_prompt="calm and reassuring",
             )
         ),
         # Default output rate is 24 kHz — Gemini's fixed rate, so no resampling.
