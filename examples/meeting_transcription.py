@@ -23,14 +23,25 @@ speaker labels earn their keep.
 With no argument, it synthesizes a short two-voice meeting with Gemini TTS so
 the example runs on one API key. Pass a path to transcribe your own recording.
 
+Two kinds of model
+------------------
+
+By default a multimodal model (``gemini-3.8-flash``) is asked for the
+transcript and times each turn to the second. Set
+``GEMINI_STT_MODEL=gemini-3.5-transcribe`` for Google's dedicated recogniser: it
+answers about twice as fast and times every word to 100 ms, printed below the
+turns, on recordings of up to 30 minutes when it labels speakers.
+
 Requires:
     pip install roomkit[gemini]
 
 Environment variables:
     GEMINI_API_KEY — Google Gemini API key
+    GEMINI_STT_MODEL — transcription model (default: gemini-3.8-flash)
 
 Run with:
     uv run python examples/meeting_transcription.py [recording.wav]
+    GEMINI_STT_MODEL=gemini-3.5-transcribe uv run python examples/meeting_transcription.py
 """
 
 from __future__ import annotations
@@ -41,10 +52,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import asyncio
-import base64
+import os
 import tempfile
 
-from shared import require_env
+from shared import pcm_from_wav_url, require_env
 
 from roomkit import ChannelCategory, InboundMessage, RoomEvent, RoomKit, TextContent
 from roomkit.channels.ai import AIChannel
@@ -55,6 +66,7 @@ from roomkit.voice.tts.audio_utils import wrap_wav
 from roomkit.voice.tts.gemini import GeminiTTSConfig, GeminiTTSProvider
 
 ROOM_ID = "meeting-room"
+STT_MODEL = os.environ.get("GEMINI_STT_MODEL", "gemini-3.8-flash")
 
 SCRIPT = [
     ("Kore", "Let's start. The release is blocked on the audio latency issue."),
@@ -76,7 +88,7 @@ async def synthesize_meeting(api_key: str) -> Path:
     print("Synthesizing a sample meeting (one request per turn, seconds each)…", flush=True)
     for voice, line in SCRIPT:
         audio = await tts.synthesize(line, voice=voice)
-        pcm += base64.b64decode(audio.url.split(",", 1)[1])[44:]
+        pcm += pcm_from_wav_url(audio.url)[0]
         pcm += b"\x00" * (2 * 24000 // 2)  # half a second between turns
     await tts.close()
 
@@ -87,9 +99,15 @@ async def synthesize_meeting(api_key: str) -> Path:
 
 
 def print_transcript(transcript: Transcript) -> None:
-    print(f"=== transcript ({transcript.language}, {len(transcript.segments)} turns) ===")
+    # The dedicated recogniser reports no language unless it was given one.
+    language = transcript.language or "language not reported"
+    print(f"=== transcript ({language}, {len(transcript.segments)} turns) ===")
     for segment in transcript.segments:
         print(f"  [{segment.start}–{segment.end}] {segment.speaker}: {segment.text}")
+    if transcript.words:
+        print(f"=== first words of {len(transcript.words)}, timed by the recogniser ===")
+        for word in transcript.words[:8]:
+            print(f"  {word.start:6.1f}s–{word.end:6.1f}s  {word.speaker}: {word.text}")
 
 
 async def main() -> None:
@@ -120,7 +138,7 @@ async def main() -> None:
     await kit.attach_channel(ROOM_ID, "ws-user")
     await kit.attach_channel(ROOM_ID, "scribe", category=ChannelCategory.INTELLIGENCE)
 
-    stt = GeminiSTTProvider(GeminiSTTConfig(api_key=api_key))
+    stt = GeminiSTTProvider(GeminiSTTConfig(api_key=api_key, model=STT_MODEL))
 
     async def transcribe_into_room(path: Path) -> None:
         """Transcribe *path* and let the room's AI channel write the minutes."""

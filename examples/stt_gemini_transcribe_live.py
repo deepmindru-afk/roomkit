@@ -27,11 +27,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import asyncio
-import base64
 import wave
 from collections.abc import AsyncIterator
 
-from shared import require_env, setup_logging
+from shared import pcm_from_wav_url, require_env, setup_logging
 
 from roomkit.voice.audio_frame import AudioFrame
 from roomkit.voice.base import AudioChunk
@@ -62,14 +61,12 @@ def read_wav(path: Path) -> tuple[bytes, int]:
 async def synthesize(api_key: str) -> tuple[bytes, int]:
     """Speak one sentence so the example needs no recording of its own.
 
-    Gemini TTS answers a base64 WAV data URI at 24 kHz; the 44-byte header is
-    dropped to leave raw PCM.
+    Gemini TTS answers a base64 WAV data URI at 24 kHz, read back to raw PCM.
     """
     tts = GeminiTTSProvider(GeminiTTSConfig(api_key=api_key))
     try:
         audio = await tts.synthesize(SPOKEN)
-        pcm = base64.b64decode(audio.url.split(",", 1)[1])[44:]
-        return pcm, 24000
+        return pcm_from_wav_url(audio.url)
     finally:
         await tts.close()
 

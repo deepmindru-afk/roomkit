@@ -10,6 +10,7 @@ from .audio import (
     build_pipeline,
     build_turn_detector,
     build_vad,
+    pcm_from_wav_url,
 )
 from .bench import IncomingScenarioBackend
 from .console import console_enabled, setup_console
@@ -35,6 +36,7 @@ __all__ = [
     "log_tool_call",
     "non_negative_int",
     "os_info",
+    "pcm_from_wav_url",
     "require_env",
     "run_until_stopped",
     "setup_console",

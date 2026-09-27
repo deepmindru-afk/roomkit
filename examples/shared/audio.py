@@ -6,10 +6,25 @@ dependencies only cause a warning rather than crashing the example.
 
 from __future__ import annotations
 
+import base64
+import io
 import logging
 import os
+import wave
 
 logger = logging.getLogger(__name__)
+
+
+def pcm_from_wav_url(url: str) -> tuple[bytes, int]:
+    """The PCM frames and sample rate of a ``data:audio/wav`` URL.
+
+    Read through the WAV chunks rather than by dropping a 44-byte header: a
+    Gemini 3.8 TTS answer carries a C2PA chunk after its audio, which would
+    otherwise play as a burst of noise.
+    """
+    wav = base64.b64decode(url.split(",", 1)[1])
+    with wave.open(io.BytesIO(wav), "rb") as reader:
+        return reader.readframes(reader.getnframes()), reader.getframerate()
 
 
 # ---------------------------------------------------------------------------

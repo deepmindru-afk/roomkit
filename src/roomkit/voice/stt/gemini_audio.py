@@ -25,6 +25,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from roomkit.voice.tts.audio_utils import wrap_wav
+
 # The provider's logger, so the upload and cleanup lines keep the name they
 # had when they lived there.
 logger = logging.getLogger("roomkit.voice.stt.gemini")
@@ -53,8 +55,11 @@ which list fewer: raw PCM (``audio/l16``, ``audio/s16le``) and the telephony
 codecs are accepted but undocumented. Verified 2026-08-07.
 """
 
-_PCM_MIME_TYPE = "audio/l16"
-"""What roomkit's own frames and chunks are: 16-bit little-endian PCM."""
+_PCM_AS_WAV = "audio/wav"
+"""How roomkit's own frames and chunks (16-bit little-endian PCM) are sent: in a
+WAV header, which carries their rate and channel count. The dedicated
+recogniser refuses bare ``audio/l16`` however its rate is spelled, and the
+multimodal models take WAV as readily (both verified 2026-09-27)."""
 
 _FILES_API_HOST = "generativelanguage.googleapis.com"
 
@@ -146,14 +151,9 @@ async def audio_part(
         raise TypeError(f"Cannot transcribe {type(source).__name__}: no audio bytes found")
     if not data:
         raise ValueError("Cannot transcribe empty audio")
+    wav = wrap_wav(data, getattr(source, "sample_rate", 16000), getattr(source, "channels", 1))
     return (
-        {
-            "type": "audio",
-            "data": base64.b64encode(data).decode(),
-            "mime_type": _PCM_MIME_TYPE,
-            "sample_rate": getattr(source, "sample_rate", 16000),
-            "channels": getattr(source, "channels", 1),
-        },
+        {"type": "audio", "data": base64.b64encode(wav).decode(), "mime_type": _PCM_AS_WAV},
         None,
     )
 
@@ -182,11 +182,13 @@ async def _part_from_path(
         )
 
     logger.debug("Uploading %s (%d bytes) through the Files API", path.name, size)
+    # The normalised mime goes on the upload as well as on the part. Left to
+    # itself the upload guesses ``audio/x-wav``, which the interactions
+    # endpoint rejects; and the dedicated recogniser refuses a part whose
+    # mime differs from the uploaded file's (verified 2026-09-27).
     uploaded = await get_client().aio.files.upload(
-        file=str(path), config=_files_config(upload_timeout)
+        file=str(path), config={**_files_config(upload_timeout), "mime_type": mime}
     )
-    # The upload guesses its own mime and can answer ``audio/x-wav``, which
-    # the interactions endpoint rejects — send the normalised one.
     return ({"type": "audio", "uri": uploaded.uri, "mime_type": mime}, uploaded.name)
 
 

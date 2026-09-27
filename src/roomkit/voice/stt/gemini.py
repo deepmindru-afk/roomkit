@@ -1,18 +1,27 @@
 """Google Gemini speech-to-text provider — batch transcription of recordings.
 
-Transcription here is an *instruction* to a multimodal model that takes audio
-as input, which is why this provider is batch-only: the API accepts a complete
-recording, not a stream, and answers in seconds. For live turn-taking reach for
+The API accepts a complete recording, not a stream, and answers in seconds,
+which is why this provider is batch-only. For live turn-taking reach for
 :mod:`~roomkit.voice.stt.gemini_transcribe`, which drives Google's dedicated
 ``gemini-3.5-transcribe-live`` recogniser over a WebSocket, or for
 :mod:`~roomkit.voice.stt.deepgram`, :mod:`~roomkit.voice.stt.gradium` or a
 local :mod:`~roomkit.voice.stt.sherpa_onnx` model.
 
 What the batch shape buys is what a streaming recogniser structurally cannot
-give: the model sees the whole recording before it answers, so one pass returns
+give: the model hears the whole recording before it answers, so one pass returns
 the transcript, the speaker turns and the timestamps together — no diarization
 stage, no merge. That makes this the provider for meeting recordings, voicemail
 and imported audio files.
+
+Two kinds of model, chosen by ``model``:
+
+* A multimodal model (the default, ``gemini-3.8-flash``) is *instructed*: a
+  prompt asks for the transcript and a JSON schema shapes it, with turn
+  timestamps to the second. It takes long recordings.
+* The dedicated recogniser, ``gemini-3.5-transcribe``, is configured instead:
+  it refuses a prompt, answers about twice as fast, and times every word to
+  100 ms — on up to 30 minutes when it labels speakers or times words. Its
+  contract lives in :mod:`~roomkit.voice.stt.gemini_recogniser`.
 
 Two input paths, both verified against the live API on 2026-08-07:
 
@@ -39,7 +48,15 @@ from roomkit.providers.gemini.sdk import build_genai_client, close_genai_client
 from roomkit.voice.base import TranscriptionResult
 from roomkit.voice.stt.base import STTProvider
 from roomkit.voice.stt.gemini_audio import SUPPORTED_MIME_TYPES, audio_part, delete_upload
-from roomkit.voice.stt.gemini_transcript import Transcript, TranscriptSegment
+from roomkit.voice.stt.gemini_recogniser import (
+    RECOGNISER_MODELS,
+    TRANSCRIPTION_MODES,
+    is_recogniser,
+    recogniser_conflict,
+    recogniser_transcript,
+    transcription_config,
+)
+from roomkit.voice.stt.gemini_transcript import Transcript, TranscriptSegment, TranscriptWord
 
 if TYPE_CHECKING:
     from roomkit.models.event import AudioContent
@@ -47,12 +64,17 @@ if TYPE_CHECKING:
     from roomkit.voice.base import AudioChunk
 
 __all__ = [
+    "RECOGNISER_MODELS",
     "SUPPORTED_MIME_TYPES",
     "GeminiSTTConfig",
     "GeminiSTTProvider",
     "Transcript",
     "TranscriptSegment",
+    "TranscriptWord",
 ]
+
+_MAX_VOCABULARY = 1000
+"""Google's documented bound on ``custom_vocabulary`` terms."""
 
 _MAX_INLINE_BYTES = 15 * 1024 * 1024
 """Default for ``GeminiSTTConfig.max_inline_bytes``, the bound the audio sources
@@ -92,23 +114,41 @@ class GeminiSTTConfig:
         api_key: Gemini API key (``GEMINI_API_KEY``).
         model: A text/multimodal Gemini model that accepts audio input — see
             :meth:`~roomkit.providers.gemini.ai.GeminiAIProvider.available_models`
-            for the catalog roomkit keeps. The default is the current flash
-            model: transcription is not a reasoning task, and flash is the
-            cheapest way to buy the audio context window.
-        language: Optional BCP-47 hint (e.g. ``"fr-CA"``). Left unset, the model
-            identifies the language itself and reports it on the transcript.
+            for the catalog roomkit keeps — or a dedicated recogniser from
+            :data:`RECOGNISER_MODELS`. The default is the current flash model:
+            transcription is not a reasoning task, flash is the cheapest way to
+            buy the audio context window, and it takes recordings longer than
+            the recogniser's 30 minutes with speakers.
+        language: Optional BCP-47 hint (e.g. ``"fr-CA"``). Left unset, a
+            multimodal model identifies the language itself and reports it on
+            the transcript; the recogniser detects it too but reports nothing,
+            so the transcript's ``language`` is then empty.
         diarize: Ask for speaker labels. Worth turning off for a single-speaker
             recording, where labelling costs tokens and invents distinctions.
             A conference recorded per participant track needs no diarization at
-            all — transcribe each track and merge on the timestamps.
+            all — transcribe each track and merge on the timestamps. On the
+            recogniser it needs ``word_timestamps``, since the labels ride on
+            the words.
         prompt: Extra instruction appended to the transcription request —
-            vocabulary that matters ("the product is spelled RoomKit"),
             formatting rules, anything the model should know before it listens.
+            The recogniser takes no prompt: setting one there is refused.
         timeout: Per-request timeout in seconds. Generous by design: a model
             answering on an hour of audio is not answering in milliseconds.
         max_inline_bytes: Recordings larger than this are uploaded through the
             Files API instead of being inlined in the request.
         connect_timeout: TCP connect timeout in seconds, apart from ``timeout``.
+        mode: ``"verbatim"`` (the default) or ``"smart"``, the recogniser's
+            cleaned-up transcript: fillers dropped, self-corrections resolved,
+            formatting applied. ``"smart"`` needs the recogniser and excludes
+            ``diarize`` and ``word_timestamps``.
+        custom_vocabulary: Terms to spell as written ("RoomKit"), up to 1000.
+            The recogniser takes them natively and then excludes ``diarize``
+            and ``word_timestamps``; a multimodal model reads them in its
+            prompt.
+        word_timestamps: Time every word (:attr:`Transcript.words`) and the
+            turns built from them. Recogniser only — a multimodal model always
+            times its turns to the second and never its words. Turning it off
+            lifts the recogniser's limit from 30 minutes to an hour.
     """
 
     api_key: str = field(repr=False)
@@ -119,6 +159,9 @@ class GeminiSTTConfig:
     timeout: float = 600.0
     max_inline_bytes: int = _MAX_INLINE_BYTES
     connect_timeout: float = 5.0
+    mode: str = "verbatim"
+    custom_vocabulary: list[str] = field(default_factory=list)
+    word_timestamps: bool = True
 
     def __post_init__(self) -> None:
         if not self.api_key.strip():
@@ -133,6 +176,24 @@ class GeminiSTTConfig:
             raise ValueError("connect_timeout must be a positive finite number")
         if self.max_inline_bytes <= 0:
             raise ValueError("max_inline_bytes must be positive")
+        self._check_recognition_options()
+
+    def _check_recognition_options(self) -> None:
+        """Refuse here what the recogniser would refuse with a 400 on the first call."""
+        self.mode = self.mode.lower()
+        if self.mode not in TRANSCRIPTION_MODES:
+            raise ValueError(
+                f"mode must be one of {sorted(TRANSCRIPTION_MODES)}, got {self.mode!r}"
+            )
+        if len(self.custom_vocabulary) > _MAX_VOCABULARY:
+            raise ValueError(f"custom_vocabulary takes at most {_MAX_VOCABULARY} terms")
+        if not is_recogniser(self.model):
+            if self.mode == "smart":
+                raise ValueError(f"mode='smart' needs a dedicated recogniser: {RECOGNISER_MODELS}")
+            return
+        conflict = recogniser_conflict(self)
+        if conflict:
+            raise ValueError(conflict)
 
 
 class GeminiSTTProvider(STTProvider):
@@ -195,6 +256,9 @@ class GeminiSTTProvider(STTProvider):
             lines.append('The recording has one speaker; label every segment "Speaker 1".')
         if self._config.language:
             lines.append(f"The recording is in {self._config.language}.")
+        if self._config.custom_vocabulary:
+            terms = ", ".join(self._config.custom_vocabulary)
+            lines.append(f"Spell these terms exactly as written when they are spoken: {terms}.")
         if self._config.prompt:
             lines.append(self._config.prompt)
         return "\n".join(lines)
@@ -238,8 +302,8 @@ class GeminiSTTProvider(STTProvider):
                 API and deleted afterwards.
 
         Returns:
-            The :class:`Transcript` — detected language, and one segment per
-            speaker turn.
+            The :class:`Transcript` — language, one segment per speaker turn,
+            and, from the dedicated recogniser, the timed words.
 
         Raises:
             RuntimeError: The model answered without a usable transcript.
@@ -253,12 +317,7 @@ class GeminiSTTProvider(STTProvider):
         try:
             interaction = await self._get_client().aio.interactions.create(
                 model=self._config.model,
-                input=[part, {"type": "text", "text": self._build_prompt()}],
-                response_format={
-                    "type": "text",
-                    "mime_type": "application/json",
-                    "schema": _TRANSCRIPT_SCHEMA,
-                },
+                **self._request(part),
                 # No per-request ``timeout``: the SDK would flatten it to one
                 # float; the connect/read split is on the client (``_get_client``).
             )
@@ -266,6 +325,29 @@ class GeminiSTTProvider(STTProvider):
             if uploaded_name is not None:
                 await delete_upload(uploaded_name, get_client=self._get_client)
 
+        if is_recogniser(self._config.model):
+            return recogniser_transcript(interaction, language=self._config.language)
+        return self._prompted_transcript(interaction)
+
+    def _request(self, part: dict[str, Any]) -> dict[str, Any]:
+        """The request the configured model takes around the audio *part*."""
+        if is_recogniser(self._config.model):
+            return {
+                "input": [part],
+                "generation_config": {"transcription_config": transcription_config(self._config)},
+            }
+        return {
+            "input": [part, {"type": "text", "text": self._build_prompt()}],
+            "response_format": {
+                "type": "text",
+                "mime_type": "application/json",
+                "schema": _TRANSCRIPT_SCHEMA,
+            },
+        }
+
+    @staticmethod
+    def _prompted_transcript(interaction: Any) -> Transcript:
+        """Read the JSON transcript a multimodal model answered."""
         payload = getattr(interaction, "output_text", None)
         if not payload:
             raise RuntimeError(

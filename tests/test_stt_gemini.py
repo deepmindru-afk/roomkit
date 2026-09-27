@@ -9,7 +9,9 @@ interactions endpoint rejects, which is why the provider sends its own.
 from __future__ import annotations
 
 import base64
+import io
 import json
+import wave
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -223,8 +225,11 @@ class TestInputPaths:
         assert client.files.uploaded == [str(path)]
         audio = client.interactions.calls[0]["input"][0]
         assert audio["uri"].startswith("https://generativelanguage.googleapis.com/")
-        # The upload guesses audio/x-wav, which the endpoint rejects.
+        # The upload guesses audio/x-wav, which the endpoint rejects, and the
+        # dedicated recogniser refuses a part whose mime differs from the
+        # file's: the normalised mime goes on both.
         assert audio["mime_type"] == "audio/wav"
+        assert client.files.configs[0]["mime_type"] == "audio/wav"
         assert client.files.deleted == ["files/abc123"]
 
     async def test_files_api_calls_carry_the_flat_timeout(self, tmp_path: Path) -> None:
@@ -236,7 +241,7 @@ class TestInputPaths:
         # and its option is one flat value in milliseconds (RMK-149). The
         # delete is cleanup awaited before the transcript: seconds, not minutes.
         assert client.files.configs == [
-            {"http_options": {"timeout": 42000}},
+            {"http_options": {"timeout": 42000}, "mime_type": "audio/wav"},
             {"http_options": {"timeout": 10000}},
         ]
 
@@ -265,18 +270,22 @@ class TestInputPaths:
         assert audio["data"] == payload
         assert audio["mime_type"] == "audio/wav"
 
-    async def test_raw_frame_is_sent_as_pcm_with_its_rate(self) -> None:
+    async def test_raw_frame_is_sent_as_wav_carrying_its_rate(self) -> None:
+        """The dedicated recogniser refuses bare ``audio/l16`` (verified
+        2026-09-27); a WAV header carries the rate and channel count to every
+        model."""
+        pcm = b"\x01\x02" * 100
         provider, client = _provider()
 
-        await provider.transcribe_recording(
-            AudioFrame(data=b"\x01\x02" * 100, sample_rate=24000, channels=1)
-        )
+        await provider.transcribe_recording(AudioFrame(data=pcm, sample_rate=24000, channels=1))
 
         audio = client.interactions.calls[0]["input"][0]
-        assert audio["mime_type"] == "audio/l16"
-        assert audio["sample_rate"] == 24000
-        assert audio["channels"] == 1
+        assert audio["mime_type"] == "audio/wav"
         assert audio["mime_type"] in SUPPORTED_MIME_TYPES
+        with wave.open(io.BytesIO(base64.b64decode(audio["data"])), "rb") as sent:
+            assert sent.getframerate() == 24000
+            assert sent.getnchannels() == 1
+            assert sent.readframes(sent.getnframes()) == pcm
 
     async def test_arbitrary_urls_are_refused_rather_than_fetched(self) -> None:
         """Dereferencing a caller-supplied URL would make this an SSRF vector."""

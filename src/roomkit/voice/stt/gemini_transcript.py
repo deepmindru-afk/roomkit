@@ -8,7 +8,7 @@ transcription alone; the public import path stays ``roomkit.voice.stt.gemini``.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -17,7 +17,8 @@ class TranscriptSegment:
 
     Timestamps are ``MM:SS`` strings, as the model returns them. They are the
     model's reading of the recording, not a forced alignment: treat them as
-    navigation, not as sync marks.
+    navigation, not as sync marks. They are empty when the model returned no
+    timing at all (the dedicated recogniser with ``word_timestamps=False``).
     """
 
     speaker: str
@@ -27,11 +28,31 @@ class TranscriptSegment:
 
 
 @dataclass(frozen=True)
+class TranscriptWord:
+    """One recognised word with its timing, from the dedicated recogniser.
+
+    Offsets are seconds from the start of the recording, at the 100 ms
+    resolution the service reports.
+    """
+
+    text: str
+    start: float
+    end: float
+    speaker: str | None = None
+    """Label of the turn the word belongs to, or ``None`` without diarization."""
+
+
+@dataclass(frozen=True)
 class Transcript:
     """A whole recording, as speaker turns."""
 
     language: str
+    """BCP-47 code of the language spoken. Empty when the model reported none:
+    the dedicated recogniser only knows the language it was told."""
     segments: list[TranscriptSegment]
+    words: list[TranscriptWord] = field(default_factory=list)
+    """Word-level timing, when the model returned it (the dedicated recogniser
+    with ``word_timestamps=True``); empty otherwise."""
 
     @property
     def text(self) -> str:

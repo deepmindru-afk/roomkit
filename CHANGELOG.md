@@ -7,8 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `GeminiSTTProvider` transcribes recordings on Google's dedicated recogniser,
+  `gemini-3.5-transcribe` (RMK-228). Pass it as `model`: the provider sends a
+  `transcription_config` in place of the prompt and JSON schema the model
+  refuses, and rebuilds the speaker turns from the words it answers. Against
+  the live API on a 12-second two-speaker dialogue it answered in 1.7 to
+  2.7 s (2.9 to 4.0 s on `gemini-3.8-flash`) and timed every word to 100 ms,
+  in the new `Transcript.words` (`TranscriptWord`). `GeminiSTTConfig` gains
+  `mode` (`"verbatim"` or the recogniser's cleaned-up `"smart"`),
+  `custom_vocabulary` (native on the recogniser, written into the prompt of a
+  multimodal model) and `word_timestamps`. The combinations the service
+  refuses are refused at construction, and so is `custom_vocabulary` with no
+  `language`, which the service answers with the first sentence alone. The
+  recogniser never reports the language it detected: `Transcript.language` is
+  empty unless `language` is set. The default model is unchanged: the
+  recogniser takes 30 minutes at most once it labels speakers or times words.
+  `examples/meeting_transcription.py` runs on it with
+  `GEMINI_STT_MODEL=gemini-3.5-transcribe`.
+
 ### Fixed
 
+- `GeminiSTTProvider` sends raw PCM (`AudioChunk`, `AudioFrame`) as WAV, and
+  uploads a large recording with its normalised mime type (RMK-228). The
+  dedicated recogniser refuses bare `audio/l16` however its rate is spelled,
+  and a Files API upload whose mime differs from the request's; the
+  multimodal models take both forms.
+- `examples/meeting_transcription.py` and
+  `examples/stt_gemini_transcribe_live.py` read Gemini TTS audio through the
+  WAV chunks instead of dropping a 44-byte header (RMK-228). Since RMK-227 a
+  3.8 answer carries a C2PA chunk after its audio, which the old slicing
+  played as noise at the end of every line.
 - `GeminiTTSProvider` works on `gemini-3.8-flash-tts` and
   `gemini-3.8-flash-lite-tts` (RMK-227). Two things broke there.
   `synthesize()` wrapped the WAV file 3.8 answers in a second WAV header, so
