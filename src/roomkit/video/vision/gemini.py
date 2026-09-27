@@ -69,6 +69,7 @@ class GeminiVisionProvider(VisionProvider):
         self._client: Any = None
         self._http: Any = None
         self._types: Any = None
+        self._thinking_budget_refused = False
 
     @property
     def name(self) -> str:
@@ -109,34 +110,7 @@ class GeminiVisionProvider(VisionProvider):
             data=jpeg_bytes,
             mime_type="image/jpeg",
         )
-
-        gen_config: dict[str, Any] = {
-            "max_output_tokens": self._config.max_tokens,
-            "temperature": self._config.temperature,
-            **self._config.extra_config,
-        }
-        # Disable thinking for vision — we want direct descriptions,
-        # not reasoning chains that consume the token budget.
-        # Only models that support thinking_config (2.5+, 3.x).
-        supports_thinking = any(
-            self._config.model.startswith(p) for p in ("gemini-2.5", "gemini-3")
-        )
-        if "thinking_config" not in gen_config and supports_thinking:
-            gen_config["thinking_config"] = types.ThinkingConfig(
-                thinking_budget=0,
-            )
-        # No tools here, and the SDK's automatic function calling otherwise
-        # logs a warning on every frame analysed.
-        gen_config.setdefault(
-            "automatic_function_calling", types.AutomaticFunctionCallingConfig(disable=True)
-        )
-
-        effective_prompt = prompt or self._config.prompt
-        response = await client.aio.models.generate_content(
-            model=self._config.model,
-            contents=[effective_prompt, image_part],
-            config=types.GenerateContentConfig(**gen_config),
-        )
+        response = await self._generate(client, types, [prompt or self._config.prompt, image_part])
 
         # Extract text from all parts (Gemini 2.5 may include thinking parts)
         description = ""
@@ -164,6 +138,69 @@ class GeminiVisionProvider(VisionProvider):
             description=description,
             metadata=usage_meta,
         )
+
+    def _generation_config(self, types: Any) -> tuple[dict[str, Any], bool]:
+        """The config for one frame, and whether it carries the thinking-off
+        setting this provider added (rather than the caller's own)."""
+        gen_config: dict[str, Any] = {
+            "max_output_tokens": self._config.max_tokens,
+            "temperature": self._config.temperature,
+            **self._config.extra_config,
+        }
+        # Disable thinking for vision — we want direct descriptions,
+        # not reasoning chains that consume the token budget.
+        # Only models that support thinking_config (2.5+, 3.x).
+        supports_thinking = any(
+            self._config.model.startswith(p) for p in ("gemini-2.5", "gemini-3")
+        )
+        added_thinking = (
+            "thinking_config" not in gen_config
+            and supports_thinking
+            and not self._thinking_budget_refused
+        )
+        if added_thinking:
+            gen_config["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
+        # No tools here, and the SDK's automatic function calling otherwise
+        # logs a warning on every frame analysed.
+        gen_config.setdefault(
+            "automatic_function_calling", types.AutomaticFunctionCallingConfig(disable=True)
+        )
+        return gen_config, added_thinking
+
+    async def _generate(self, client: Any, types: Any, contents: list[Any]) -> Any:
+        """Ask for the description, without the thinking-off setting where the
+        model refuses it.
+
+        No one setting minimises reasoning on every model: measured on
+        2026-09-27, ``thinking_budget=0`` does it on 2.5 Flash, 3.1 Flash-Lite
+        and 3.5/3.6 Flash, and is answered 400 by ``gemini-3.5-flash-lite`` and
+        ``gemini-3.1-pro-preview``. So it is sent, and a 400 to the setting
+        this provider added is answered by one retry without it; once that
+        retry succeeds, the model is not sent it again. A failing retry raises
+        its own error, the one about the request itself.
+        """
+        gen_config, added_thinking = self._generation_config(types)
+        try:
+            return await client.aio.models.generate_content(
+                model=self._config.model,
+                contents=contents,
+                config=types.GenerateContentConfig(**gen_config),
+            )
+        except Exception as exc:
+            if not added_thinking or getattr(exc, "code", None) != 400:
+                raise
+        del gen_config["thinking_config"]
+        response = await client.aio.models.generate_content(
+            model=self._config.model,
+            contents=contents,
+            config=types.GenerateContentConfig(**gen_config),
+        )
+        self._thinking_budget_refused = True
+        logger.info(
+            "%s refuses thinking_budget=0; analysing frames with its own thinking default",
+            self._config.model,
+        )
+        return response
 
     async def close(self) -> None:
         client, self._client = self._client, None

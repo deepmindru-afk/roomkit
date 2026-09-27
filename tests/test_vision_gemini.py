@@ -5,6 +5,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
+import pytest
 
 from roomkit.video.video_frame import VideoFrame
 from roomkit.video.vision.gemini import GeminiVisionConfig, GeminiVisionProvider
@@ -134,6 +135,98 @@ class TestGeminiVisionProvider:
     async def test_close_no_client(self) -> None:
         provider = GeminiVisionProvider(GeminiVisionConfig(api_key="test"))
         await provider.close()  # no-op
+
+
+class _ApiError(Exception):
+    """What google-genai raises: the HTTP status on ``code``."""
+
+    def __init__(self, code: int) -> None:
+        super().__init__(f"{code} error")
+        self.code = code
+
+
+def _frame() -> VideoFrame:
+    return VideoFrame(data=b"\x00" * (64 * 48 * 3), codec="raw_rgb24", width=64, height=48)
+
+
+def _vision(answers: list[object], **config: object) -> tuple[GeminiVisionProvider, MagicMock]:
+    """A provider whose client plays *answers* in turn: a response, or an
+    exception to raise. Returns it with its mocked ``types``."""
+    provider = GeminiVisionProvider(
+        GeminiVisionConfig(api_key="test-key", **config)  # type: ignore[arg-type]
+    )
+    client = MagicMock()
+    client.aio.models.generate_content = AsyncMock(side_effect=answers)
+    provider._client = client
+    provider._types = MagicMock()
+    return provider, provider._types
+
+
+def _answer(text: str = "A desk") -> MagicMock:
+    response = MagicMock()
+    response.text = text
+    return response
+
+
+def _sent_thinking(types: MagicMock) -> list[bool]:
+    """Per call, whether its config carried a thinking config."""
+    return [
+        "thinking_config" in call.kwargs for call in types.GenerateContentConfig.call_args_list
+    ]
+
+
+class TestThinkingOffWhereTheModelTakesIt:
+    """No one setting minimises reasoning on every model (measured 2026-09-27):
+    ``thinking_budget=0`` is sent, and dropped for a model that answers it 400."""
+
+    async def test_the_budget_is_sent_to_a_model_that_takes_it(self) -> None:
+        provider, types = _vision([_answer()])
+
+        await provider.analyze_frame(_frame())
+
+        types.ThinkingConfig.assert_called_once_with(thinking_budget=0)
+        assert _sent_thinking(types) == [True]
+
+    async def test_a_model_that_refuses_it_is_asked_again_without_it(self) -> None:
+        provider, types = _vision(
+            [_ApiError(400), _answer("Blue"), _answer("Red")], model="gemini-3.5-flash-lite"
+        )
+
+        first = await provider.analyze_frame(_frame())
+        second = await provider.analyze_frame(_frame())
+
+        assert (first.description, second.description) == ("Blue", "Red")
+        # Refused once, then never sent again.
+        assert _sent_thinking(types) == [True, False, False]
+
+    async def test_a_failing_retry_raises_its_own_error_and_forgets_nothing(self) -> None:
+        provider, types = _vision([_ApiError(400), _ApiError(413), _answer()])
+
+        with pytest.raises(_ApiError) as caught:
+            await provider.analyze_frame(_frame())
+        assert caught.value.code == 413
+
+        await provider.analyze_frame(_frame())
+        # The retry failed for its own reason: the budget is tried again.
+        assert _sent_thinking(types) == [True, False, True]
+
+    async def test_the_callers_own_thinking_config_is_never_dropped(self) -> None:
+        own = object()
+        provider, types = _vision([_ApiError(400)], extra_config={"thinking_config": own})
+
+        with pytest.raises(_ApiError):
+            await provider.analyze_frame(_frame())
+
+        assert types.GenerateContentConfig.call_count == 1
+        assert types.GenerateContentConfig.call_args.kwargs["thinking_config"] is own
+
+    async def test_another_error_is_not_retried(self) -> None:
+        provider, types = _vision([_ApiError(429)])
+
+        with pytest.raises(_ApiError):
+            await provider.analyze_frame(_frame())
+
+        assert types.GenerateContentConfig.call_count == 1
 
 
 class TestExports:

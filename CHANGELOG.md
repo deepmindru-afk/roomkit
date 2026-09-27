@@ -62,6 +62,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `GeminiVisionProvider` works on the models that refuse to reason with a
+  zero budget (RMK-232). It sends `thinking_budget=0` to every 2.5 and 3.x
+  model to keep descriptions direct, and `gemini-3.5-flash-lite` and
+  `gemini-3.1-pro-preview` answer that with a 400, so every frame failed on
+  them. A 400 to that setting is now answered by one retry without it, and
+  the provider stops sending it to that model, logging it once. The models
+  that take it keep it: measured on 2026-09-27, it holds reasoning to zero
+  tokens on 2.5 Flash, 3.1 Flash-Lite and 3.5/3.6 Flash, where no setting
+  costs 100 or more. A `thinking_config` given in `extra_config` is never
+  dropped.
 - `thinking_budget=0` turns reasoning off on `GeminiAIProvider`, as it does on
   every other provider (RMK-232). Gemini read `0` as "not set" and sent no
   thinking config, so the model reasoned anyway. The models that cannot run
