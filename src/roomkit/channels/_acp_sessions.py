@@ -4,10 +4,10 @@ A room gets one session, opened lazily on its first prompt and kept for the
 room's life: the agent holds the room's conversation inside its own process.
 A standalone turn (RFC §10.1.1 step 7) cannot empty that session, so it gets
 one of its own, opened for the turn and closed after it, never the room's.
-Both name their room to ``session/new`` and say which of the two they are (RFC
-§10.1.1 step 7): a transport that files sessions by room would otherwise take
-the turn's for the room's, and close it. They are serialized on the room's turn
-lock, and told apart here by :meth:`ACPSessionsMixin._is_room_session`.
+Both name their room to ``session/new`` and say which of the two they are: a
+relay that files sessions by room would otherwise take the turn's for the
+room's, and close it. They are serialized on the room's turn lock, and told
+apart here by :meth:`ACPSessionsMixin._is_room_session`.
 """
 
 from __future__ import annotations
@@ -121,6 +121,15 @@ class ACPSessionsMixin:
         """
         response = await self._new_session(room_id, connection, "turn")
         session_id = response.session_id
+        if session_id in self._session_rooms:
+            # A relay that ignores the scope answers with the room's session:
+            # prompting it would tell the room, and closing it after the turn
+            # would end the room's conversation. The turn fails, the room lives.
+            raise RuntimeError(
+                f"ACP session/new for a standalone turn in room {room_id!r} returned "
+                f"open session {session_id!r}; the transport must file a 'turn' "
+                "session apart from the room's"
+            )
         self._turn_sessions[room_id] = session_id
         self._session_rooms[session_id] = room_id
         try:

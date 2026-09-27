@@ -12,12 +12,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ACPChannel` declares a standalone turn's session as the turn's (RMK-225,
   RFC §10.1.1 step 7). Every `session/new` carried the same `_meta`,
   `roomkit.live/roomId`, for the room's session and for a standalone turn's,
-  so a transport that files sessions by room (a relay to a remote agent)
-  answered the turn from the room's session and then closed that one, and the
-  room's next prompt failed. `session/new` now also carries
-  `roomkit.live/sessionScope`, `"room"` or `"turn"`; a transport that files by
-  room files a `"turn"` session under a key of its own and closes only that
-  one (see `ACPTransport`).
+  so a relay that keeps one remote session per room answered the turn from
+  the room's session and then closed that one, and the room's next prompt
+  failed. `session/new` now also carries `roomkit.live/sessionScope`, `"room"`
+  or `"turn"`. **Action required for such a relay**: file a `"turn"` session
+  under a key of its own and close only that one (see `ACPTransport`); the
+  key is absent from older clients. Upgrading alone does not fix it: a relay
+  that still answers the turn with the room's session now fails the turn
+  with a `RuntimeError` instead of breaking the room.
 
 - An application class that combines `ACPChannel` with another base
   (`class App(Mixin, ACPChannel)`) passes mypy again (RMK-224). Since 0.91.0

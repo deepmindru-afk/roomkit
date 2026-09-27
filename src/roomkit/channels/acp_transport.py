@@ -1,11 +1,10 @@
 """How an ACP connection reaches its agent.
 
 :class:`ACPChannel` speaks the Agent Client Protocol; a transport decides how
-those bytes travel. :class:`StdioACPTransport` — the default, and the only shape
-the channel supported until now — spawns the agent as a local subprocess and
-talks over its stdio. An agent running somewhere else (another machine, behind a
-relay) needs the same protocol over a different pipe, which is what the ABC is
-for.
+those bytes travel. :class:`StdioACPTransport`, the default, spawns the agent as
+a local subprocess and talks over its stdio. An agent running somewhere else
+(another machine, behind a relay) needs the same protocol over a different pipe,
+which is what the ABC is for.
 
 The split is deliberately narrow: a transport opens the pipe, says whether it is
 still alive, and tears it down. Everything the *protocol* does — ``initialize``,
@@ -65,10 +64,13 @@ class ACPTransport(ABC):
     (``field_meta`` in Python, extra keyword arguments to ``new_session``):
     ``roomkit.live/roomId``, and ``roomkit.live/sessionScope``, which is
     ``"room"`` for the room's session, kept for the room's life, or ``"turn"``
-    for a standalone turn's, closed after that one turn. A transport that files
-    sessions by room must file a ``"turn"`` session under a key of its own and
-    close only that one: the turn must neither reach nor close the room's
-    session (RFC §10.1.1 step 7).
+    for a standalone turn's, closed after that one turn. A transport, or the
+    relay behind it, that keeps one remote session per room must file a
+    ``"turn"`` session under a key of its own and close only that one (RFC
+    §10.1.1 step 7). The key is absent before 0.92.0, where 0.91.0 opened turn
+    sessions indistinguishable from the room's. A transport that answers a
+    turn's ``session/new`` with a session already open fails the turn rather
+    than hand it the room's.
 
     Usage provenance is an opt-in extension of the connection's SDK models
     (see :attr:`provides_usage_metadata`):

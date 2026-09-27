@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 from typing import Any
 
+import pytest
 from acp.schema import PromptResponse
 
 from roomkit.channels._instruction import INSTRUCTION_MARKER
@@ -105,10 +106,10 @@ async def test_a_standalone_turn_runs_in_a_session_of_its_own(tmp_path: Any) -> 
 
 
 async def test_a_standalone_turn_declares_its_session_as_the_turns(tmp_path: Any) -> None:
-    """Step 7: a transport that files sessions by room can tell the two apart.
+    """Step 7: a relay that files sessions by room can tell the two apart.
 
-    Both name the room, so a turn session filed under the room would be
-    prompted in place of the turn's, then closed as the room's.
+    Both name the room: filed under it, the turn would be answered from the
+    room's session, which would then be closed as the turn's.
     """
     channel, connection, history = await _talked(tmp_path)
 
@@ -118,6 +119,30 @@ async def test_a_standalone_turn_declares_its_session_as_the_turns(tmp_path: Any
     assert room["roomkit.live/roomId"] == turn["roomkit.live/roomId"] == ROOM
     assert room["roomkit.live/sessionScope"] == "room"
     assert turn["roomkit.live/sessionScope"] == "turn"
+    await channel.close()
+
+
+async def test_a_relay_answering_the_turn_with_the_rooms_session_fails_the_turn(
+    tmp_path: Any,
+) -> None:
+    """A relay that ignores the scope must not get the room's session prompted, then closed."""
+    channel, connection, history = await _talked(tmp_path)
+    room_session = connection.new_session
+
+    async def files_by_room(**kwargs: Any) -> Any:
+        response = await room_session(**kwargs)
+        return response.model_copy(update={"session_id": "session-1"})
+
+    connection.new_session = files_by_room  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="must file a 'turn' session apart"):
+        await _prompt(channel, _instruction(standalone=True), _context(*history))
+
+    assert len(connection.prompt_calls) == 1  # the room's session was not told
+    assert connection.closed_sessions == []
+    following = make_event(room_id=ROOM, body="next request", index=1)
+    await _prompt(channel, following, _context(*history, following))
+    assert connection.prompt_calls[-1]["session_id"] == "session-1"
     await channel.close()
 
 
