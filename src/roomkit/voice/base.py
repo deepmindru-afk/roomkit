@@ -173,6 +173,27 @@ class VoiceSession:
         object.__setattr__(self, name, value)
 
 
+@dataclass(frozen=True)
+class SpeakerSegment:
+    """One speaker's part of a transcription (RFC §12.2.3).
+
+    Attributes:
+        speaker: The provider's label for the voice, as a string. Opaque and
+            stable within one STT stream only: another stream may give the
+            same voice another label. ``None`` when the provider could not
+            attribute the words.
+        text: The words that speaker said.
+        start_ms: Where the segment starts, from the start of the stream, when
+            the provider says.
+        end_ms: Where it ends, likewise.
+    """
+
+    speaker: str | None
+    text: str
+    start_ms: int | None = None
+    end_ms: int | None = None
+
+
 @dataclass
 class TranscriptionResult:
     """Result from speech-to-text transcription."""
@@ -184,6 +205,16 @@ class TranscriptionResult:
     words: list[dict[str, Any]] = field(default_factory=list)
     is_speech_start: bool = False
     """Set by providers with server-side VAD to signal speech detected."""
+    segments: list[SpeakerSegment] = field(default_factory=list)
+    """Who said which part of ``text``, in order (RFC §12.2.3). Empty when the
+    provider attributes nothing; always given on a final by a provider that
+    reports ``supports_diarization``."""
+
+    @property
+    def speaker(self) -> str | None:
+        """The label every segment shares, ``None`` when there is not exactly one."""
+        labels = {segment.speaker for segment in self.segments}
+        return labels.pop() if len(labels) == 1 else None
 
 
 # Type aliases for voice callbacks

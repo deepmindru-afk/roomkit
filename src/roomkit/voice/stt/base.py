@@ -13,6 +13,17 @@ if TYPE_CHECKING:
     from roomkit.voice.audio_frame import AudioFrame
 
 
+def diarizes(stt: object) -> bool:
+    """Whether ``stt`` claims to label speakers (``supports_diarization``).
+
+    Only an explicit ``True`` counts: a duck-typed provider written before the
+    property existed labels nothing, and a mock's auto-created attribute is
+    not a claim. Channels that cannot carry labels ask this before accepting a
+    provider (RFC §12.2.3).
+    """
+    return getattr(stt, "supports_diarization", False) is True
+
+
 class STTProvider(ABC):
     """Speech-to-text provider."""
 
@@ -34,6 +45,16 @@ class STTProvider(ABC):
         language: :class:`~roomkit.channels.VoiceChannel` keeps calling it
         with audio only, so an implementation written against the older
         signature keeps working unchanged.
+        """
+        return False
+
+    @property
+    def supports_diarization(self) -> bool:
+        """Whether final results say who spoke, in ``TranscriptionResult.segments``.
+
+        Labels are stable within one stream only (RFC §12.2.3), so a channel
+        that opens a stream per utterance cannot use them across turns and
+        refuses such a provider.
         """
         return False
 

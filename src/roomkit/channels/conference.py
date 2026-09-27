@@ -47,7 +47,7 @@ from roomkit.channels._conference_lane import (
 from roomkit.channels._conference_lanes import ConferenceLanesMixin
 from roomkit.channels._conference_metadata import CONFERENCE_METADATA_KEY
 from roomkit.channels._conference_operations import ConferenceOperations, ConferenceResource
-from roomkit.channels._conference_plug import ConferencePlugMixin
+from roomkit.channels._conference_plug import ConferencePlugMixin, refuse_diarizing_stt
 from roomkit.channels._conference_realtime import ConferenceRealtime
 from roomkit.channels._conference_recording import ConferenceRecording
 from roomkit.channels._conference_recording_events import (
@@ -197,6 +197,7 @@ class ConferenceChannel(
                 "backend capability RoomKit does not yet model, so pass e2ee=False "
                 "to transcribe, or drop stt= to keep the conference encrypted."
             )
+        refuse_diarizing_stt(stt)
         if realtime is not None:
             self._validate_realtime(realtime, tts=tts, e2ee=e2ee)
         self._backend = backend

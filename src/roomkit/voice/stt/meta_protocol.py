@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import io
 import wave
+from dataclasses import dataclass
 from typing import Any
 
 from roomkit.providers.ai.base import ProviderError
-from roomkit.voice.base import TranscriptionResult
+from roomkit.voice.base import SpeakerSegment, TranscriptionResult
 
 # 1011 is a server fault ("Max session duration reached" included) and 1013 a
 # rate limit: both are worth a new stream. 1008 is a refused request.
@@ -50,27 +51,128 @@ class MetaSTTError(ProviderError):
         self.error_type = error_type
 
 
-def to_result(event: dict[str, Any]) -> TranscriptionResult | None:
+# How the service spells a turn it could not attribute: ``unknown`` in the
+# REST text form; a turn without a ``speaker`` event reads as ``None`` anyway.
+_UNATTRIBUTED = frozenset({"", "unknown"})
+
+
+def speaker_label(value: Any) -> str | None:
+    """A vendor label as RoomKit carries it: a string, ``None`` when unattributed."""
+    if value is None:
+        return None
+    label = str(value).strip()
+    return None if label.lower() in _UNATTRIBUTED else label
+
+
+@dataclass
+class _TurnMarks:
+    speaker: str | None = None
+    start_ms: int | None = None
+    end_ms: int | None = None
+    ended: bool = False
+
+
+class Turns:
+    """What a ``DIARIZATION`` stream has said about its turns, by ``turnId``.
+
+    A turn's events are ``speechStart``, partials, ``speaker``, ``speechEnd``,
+    ``speechComplete`` (observed on every turn on 2026-09-27). The ``speaker``
+    event carries no ``turnId``: it labels the oldest turn that has started and
+    not ended, because it arrives just before that turn's ``speechEnd`` and
+    turns end in order. A change of voice ends a turn without a pause, so the
+    next turn may start before the previous one completes; keying by
+    ``turnId`` keeps each label and offset on its own turn. The offsets are
+    where the service had got to in the stream when it signalled the turn's
+    start and end.
+    """
+
+    def __init__(self) -> None:
+        self._turns: dict[Any, _TurnMarks] = {}
+
+    def observe(self, event: dict[str, Any]) -> None:
+        kind = event.get("type")
+        if kind == "speechStart":
+            self._turns[event.get("turnId")] = _TurnMarks(start_ms=event.get("audioProcessedMs"))
+        elif kind == "speaker":
+            open_turn = next((t for t in self._turns.values() if not t.ended), None)
+            if open_turn is not None:
+                open_turn.speaker = speaker_label(event.get("label"))
+        elif kind == "speechEnd":
+            marks = self._turns.get(event.get("turnId"))
+            if marks is not None:
+                marks.end_ms, marks.ended = event.get("audioProcessedMs"), True
+
+    def close(self, event: dict[str, Any], text: str) -> SpeakerSegment:
+        """The turn ``event`` completes, as a segment; its marks are dropped.
+
+        A completion without a known ``turnId`` takes the oldest open turn, and
+        a turn nothing was recorded for is unattributed rather than guessed.
+        """
+        marks = self._turns.pop(event.get("turnId"), None)
+        if marks is None and self._turns:
+            marks = self._turns.pop(next(iter(self._turns)))
+        marks = marks or _TurnMarks()
+        return SpeakerSegment(marks.speaker, text, marks.start_ms, marks.end_ms)
+
+
+def to_result(event: dict[str, Any], turns: Turns | None = None) -> TranscriptionResult | None:
     """Map one server event to a result, ``None`` for the ones RoomKit ignores.
 
-    One mapping serves both modes, as observed on the live service: in
-    ``ENDPOINTING`` a turn's final is ``speechComplete`` and the stream ends
-    on an *empty* ``transcript`` marked final; in ``PUSH_TO_TALK`` there is no
-    ``speechComplete`` and the final is that ``transcript``, with the text.
-    ``speechEnd`` precedes ``speechComplete`` and adds nothing to it.
+    One mapping serves every mode, as observed on the live service: in
+    ``ENDPOINTING`` and ``DIARIZATION`` a turn's final is ``speechComplete``
+    and the stream ends on an *empty* ``transcript`` marked final; in
+    ``PUSH_TO_TALK`` there is no ``speechComplete`` and the final is that
+    ``transcript``, with the text. ``speechEnd`` precedes ``speechComplete``.
+
+    Pass ``turns`` on a ``DIARIZATION`` stream: it follows the turns under way,
+    and each final then carries its turn as its one speaker segment.
     """
     kind = event.get("type")
     if kind == "error":
         raise event_error(event)
+    if turns is not None:
+        turns.observe(event)
     if kind == "speechStart":
         return TranscriptionResult(text="", is_final=False, is_speech_start=True)
     if kind not in ("transcript", "speechComplete"):
         return None
     text = str(event.get("transcript") or "").strip()
+    if kind == "speechComplete" and turns is not None:
+        # Closed even when empty, so its label cannot drift onto a later turn.
+        segment = turns.close(event, text)
+        return TranscriptionResult(text=text, segments=[segment]) if text else None
     if not text:
         return None
     is_final = kind == "speechComplete" or bool(event.get("final"))
+    if is_final and turns is not None:
+        return TranscriptionResult(text=text, segments=[SpeakerSegment(None, text)])
     return TranscriptionResult(text=text, is_final=is_final)
+
+
+def rest_result(body: dict[str, Any], *, diarized: bool) -> TranscriptionResult:
+    """The REST answer ``{transcript, turns: [{speaker, transcript, startMs, endMs}]}``.
+
+    Turns become speaker segments when the request asked for ``DIARIZATION``;
+    in the other modes the service answers no speaker and none is invented.
+    """
+    text = str(body.get("transcript") or "").strip()
+    if not diarized:
+        return TranscriptionResult(text=text)
+    segments = [
+        SpeakerSegment(
+            speaker_label(turn.get("speaker")),
+            str(turn.get("transcript") or "").strip(),
+            turn.get("startMs"),
+            turn.get("endMs"),
+        )
+        for turn in body.get("turns") or []
+        if str(turn.get("transcript") or "").strip()
+    ]
+    if text and not segments:
+        # Every diarized final names its segments (RFC §12.2.3): text the
+        # service answered with no turn is attributed to nobody, not dropped.
+        segments = [SpeakerSegment(None, text)]
+    return TranscriptionResult(text=text, segments=segments)
 
 
 def event_error(event: dict[str, Any]) -> MetaSTTError:

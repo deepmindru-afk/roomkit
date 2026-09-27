@@ -33,6 +33,7 @@ from roomkit.models.enums import (
 from roomkit.voice.base import VoiceCapability
 from roomkit.voice.bridge import AudioBridge, AudioBridgeConfig, BridgeFrameFilter
 from roomkit.voice.interruption import InterruptionConfig
+from roomkit.voice.stt.base import diarizes
 from roomkit.voice.tts.context import TTSContextConfig, TTSContextLevel, TTSContextStore
 from roomkit.voice.utils import rms_db
 
@@ -57,6 +58,22 @@ if TYPE_CHECKING:
     from roomkit.voice.tts.context import AssistantTurnRecorder
 
 logger = logging.getLogger("roomkit.voice")
+
+
+def _refuse_diarizing_stt(stt: STTProvider | None) -> None:
+    """Refuse an STT that labels speakers: the channel cannot carry its labels yet.
+
+    Labels compare only within one stream (RFC §12.2.3), and the channel opens
+    a new stream per utterance or per turn, so every turn would restart at the
+    first label. Keeping one stream across turns is the part of §12.2.3 not
+    implemented here yet; until it is, a diarizing provider is used directly.
+    """
+    if stt is not None and diarizes(stt):
+        raise ValueError(
+            f"{stt.name} labels speakers (supports_diarization=True), and VoiceChannel "
+            "does not carry speaker labels to the room yet (RFC §12.2.3): configure the "
+            "provider without diarization, or read its transcribe_stream() directly"
+        )
 
 
 def _utcnow() -> datetime:
@@ -239,6 +256,7 @@ class VoiceChannel(
         tts_context: TTSContextConfig | None = None,
     ) -> None:
         super().__init__(channel_id)
+        _refuse_diarizing_stt(stt)
         self._stt = stt
         self._tts = tts
         # The dialogue a context-aware TTS hears (RFC §12.2.2); absent for a

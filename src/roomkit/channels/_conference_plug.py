@@ -45,6 +45,7 @@ from roomkit.conference.models import ConferenceCapability, ConferenceGrants
 from roomkit.core.exceptions import RoomNotAttachedError
 from roomkit.core.task_utils import log_task_exception
 from roomkit.voice.pipeline.engine import AudioPipeline
+from roomkit.voice.stt.base import diarizes
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -64,6 +65,21 @@ if TYPE_CHECKING:
     from roomkit.voice.tts.base import TTSProvider
 
 logger = logging.getLogger("roomkit.channels.conference")
+
+
+def refuse_diarizing_stt(stt: STTProvider | None) -> None:
+    """A conference attributes speech by track: a diarizing STT has no place here.
+
+    Each participant's track is transcribed utterance by utterance, so a label
+    would compare with nothing, and the track already says who spoke
+    (RFC §12.2.3, §12.10).
+    """
+    if stt is not None and diarizes(stt):
+        raise ValueError(
+            f"{stt.name} labels speakers (supports_diarization=True), and a conference "
+            "attributes speech by participant track, transcribing each utterance on its "
+            "own (RFC §12.2.3): configure the provider without diarization"
+        )
 
 
 class ConferencePlugMixin:
@@ -153,6 +169,7 @@ class ConferencePlugMixin:
         offers it, so the observation gap belongs in the open: unplug, then
         plug.
         """
+        refuse_diarizing_stt(stt)
         async with self._plug_lock:
             if self._stt is not None:
                 raise ValueError(

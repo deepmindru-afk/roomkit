@@ -28,16 +28,16 @@ from roomkit import HookExecution, HookResult, HookTrigger, RoomKit, VoiceChanne
 from roomkit.models.event import AudioContent
 from roomkit.voice.audio_frame import AudioFrame
 from roomkit.voice.backends.mock import MockVoiceBackend
-from roomkit.voice.base import AudioChunk, TranscriptionResult
+from roomkit.voice.base import AudioChunk, SpeakerSegment, TranscriptionResult
 from roomkit.voice.pipeline import AudioPipelineConfig
 from roomkit.voice.stt.meta import MetaSTTConfig, MetaSTTError, MetaSTTProvider
-from roomkit.voice.stt.meta_protocol import to_result
+from roomkit.voice.stt.meta_protocol import Turns, speaker_label, to_result
 
 _ACK = {"sessionId": "voyager/duplex/TEST"}
 _END_OF_STREAM = {"type": "transcript", "transcript": "", "final": True, "audioProcessedMs": 0}
 
-# One ENDPOINTING turn as the live service sent it, speaker event included
-# (it is ignored until results can carry a speaker).
+# One turn as the live service sent it in DIARIZATION mode; ENDPOINTING sends
+# the same frames without the speaker event, which it would ignore anyway.
 _ENDPOINTING_TURN = [
     {"type": "speechStart", "audioProcessedMs": 60, "turnId": 0},
     {"type": "transcript", "transcript": " Bonjour", "final": False, "audioProcessedMs": 1200},
@@ -124,9 +124,12 @@ _PCM_16K = b"\x01\x00" * 1600  # 100 ms of 16 kHz mono
 
 
 class TestConfig:
-    def test_diarization_is_refused_with_the_reason(self) -> None:
-        with pytest.raises(ValueError, match="no speaker label"):
-            MetaSTTConfig(api_key="k", mode="DIARIZATION")  # type: ignore[arg-type]
+    @pytest.mark.parametrize(
+        ("mode", "diarizing"),
+        [("DIARIZATION", True), ("ENDPOINTING", False), ("PUSH_TO_TALK", False)],
+    )
+    def test_only_diarization_mode_labels_speakers(self, mode: Any, diarizing: bool) -> None:
+        assert _provider("ws://unused", mode=mode).supports_diarization is diarizing
 
     def test_unknown_mode_is_refused(self) -> None:
         with pytest.raises(ValueError, match="ENDPOINTING"):
@@ -187,6 +190,82 @@ class TestEventMapping:
     def test_events_without_text_for_roomkit_are_dropped(self, event: dict[str, Any]) -> None:
         assert to_result(event) is None
 
+    @pytest.mark.parametrize(
+        ("value", "label"),
+        [("A", "A"), (0, "0"), (" B ", "B"), ("unknown", None), ("", None), (None, None)],
+    )
+    def test_labels_are_strings_and_unattributed_is_none(
+        self, value: Any, label: str | None
+    ) -> None:
+        assert speaker_label(value) == label
+
+    def test_diarized_turn_carries_its_speaker_and_offsets(self) -> None:
+        turn = Turns()
+        results = [to_result(event, turn) for event in _ENDPOINTING_TURN]
+        final = [r for r in results if r is not None and r.is_final]
+
+        assert final == [
+            TranscriptionResult(
+                text="Bonjour Julie, ça va?",
+                segments=[SpeakerSegment("A", "Bonjour Julie, ça va?", 60, 4060)],
+            )
+        ]
+        assert final[0].speaker == "A"
+
+    def test_a_label_is_never_carried_into_the_next_turn(self) -> None:
+        turn = Turns()
+        for event in _ENDPOINTING_TURN:
+            to_result(event, turn)
+        # A turn the service could not attribute: no speaker event at all.
+        to_result({"type": "speechStart", "audioProcessedMs": 5000, "turnId": 1}, turn)
+        result = to_result({"type": "speechComplete", "transcript": "Oui.", "turnId": 1}, turn)
+
+        assert result is not None
+        assert result.segments == [SpeakerSegment(None, "Oui.", 5000, None)]
+        assert result.speaker is None
+
+    def test_overlapping_turns_keep_their_own_speaker_and_offsets(self) -> None:
+        # A change of voice ends a turn without a pause: turn 1 may start
+        # before turn 0 completes, and the speaker event names no turn.
+        turns = Turns()
+        events = [
+            {"type": "speechStart", "audioProcessedMs": 0, "turnId": 0},
+            {"type": "transcript", "transcript": "Bonjour", "final": False},
+            {"type": "speechStart", "audioProcessedMs": 3000, "turnId": 1},
+            {"type": "speaker", "label": "A"},
+            {"type": "speechEnd", "audioProcessedMs": 2900, "turnId": 0},
+            {"type": "speechComplete", "transcript": "Bonjour", "turnId": 0},
+            {"type": "speaker", "label": "B"},
+            {"type": "speechEnd", "audioProcessedMs": 5000, "turnId": 1},
+            {"type": "speechComplete", "transcript": "Oui", "turnId": 1},
+        ]
+        finals = [r for e in events if (r := to_result(e, turns)) is not None and r.is_final]
+
+        assert [r.segments for r in finals] == [
+            [SpeakerSegment("A", "Bonjour", 0, 2900)],
+            [SpeakerSegment("B", "Oui", 3000, 5000)],
+        ]
+
+    def test_an_empty_completion_still_closes_its_turn(self) -> None:
+        turns = Turns()
+        for event in [
+            {"type": "speechStart", "audioProcessedMs": 0, "turnId": 0},
+            {"type": "speaker", "label": "A"},
+            {"type": "speechEnd", "audioProcessedMs": 900, "turnId": 0},
+        ]:
+            to_result(event, turns)
+        assert to_result({"type": "speechComplete", "transcript": " ", "turnId": 0}, turns) is None
+
+        to_result({"type": "speechStart", "audioProcessedMs": 1000, "turnId": 1}, turns)
+        # A completion naming no turn takes the oldest open one: turn 1, not A's.
+        result = to_result({"type": "speechComplete", "transcript": "Oui."}, turns)
+        assert result is not None
+        assert result.segments == [SpeakerSegment(None, "Oui.", 1000, None)]
+
+    def test_partials_carry_no_speaker(self) -> None:
+        result = to_result({"type": "transcript", "transcript": "Bon", "final": False}, Turns())
+        assert result is not None and result.segments == []
+
     def test_error_frame_raises_with_meta_codes(self) -> None:
         with pytest.raises(MetaSTTError) as info:
             to_result(
@@ -234,8 +313,32 @@ class TestStreaming:
             TranscriptionResult(text="", is_final=False, is_speech_start=True),
             TranscriptionResult(text="Bonjour", is_final=False),
             TranscriptionResult(text="Bonjour Julie,", is_final=False),
+            # ENDPOINTING: the speaker frame is ignored, no speaker invented.
             TranscriptionResult(text="Bonjour Julie, ça va?", is_final=True),
         ]
+
+    async def test_diarization_stream_names_each_turns_speaker(self) -> None:
+        record = _Record()
+        second_turn = [
+            {"type": "speechStart", "audioProcessedMs": 4300, "turnId": 1},
+            {"type": "transcript", "transcript": " Oui", "final": False},
+            {"type": "speaker", "label": "B", "audioProcessedMs": 10080},
+            {"type": "speechEnd", "audioProcessedMs": 9580, "turnId": 1},
+            {"type": "speechComplete", "turnId": 1, "transcript": " Oui, je l'ai lu. "},
+        ]
+        events = _ENDPOINTING_TURN[:-1] + second_turn + [_END_OF_STREAM]
+        async with _server(_scripted(record, events)) as url:
+            results = await _collect(
+                _provider(url, mode="DIARIZATION"), AudioChunk(data=_PCM_16K, sample_rate=16000)
+            )
+
+        assert record.handshake["mode"] == "DIARIZATION"
+        finals = [r for r in results if r.is_final]
+        assert [(r.speaker, r.text) for r in finals] == [
+            ("A", "Bonjour Julie, ça va?"),
+            ("B", "Oui, je l'ai lu."),
+        ]
+        assert finals[1].segments == [SpeakerSegment("B", "Oui, je l'ai lu.", 4300, 9580)]
 
     async def test_push_to_talk_final_arrives_after_end_of_stream(self) -> None:
         record = _Record()
@@ -462,6 +565,52 @@ class TestBatch:
             assert (wav.getframerate(), wav.getnchannels(), wav.getsampwidth()) == (16000, 1, 2)
             assert wav.readframes(wav.getnframes()) == _PCM_16K
 
+    async def test_diarized_clip_comes_back_as_speaker_segments(self) -> None:
+        # The live answer's shape (2026-09-27), plus a turn Meta left unattributed.
+        answer = {
+            "sessionId": "s",
+            "transcript": "Bonjour Julie? Oui. Parfait.",
+            "audioDurationMs": 8240,
+            "turns": [
+                {
+                    "turnId": 0,
+                    "startMs": 300,
+                    "endMs": 4380,
+                    "transcript": "Bonjour Julie?",
+                    "speaker": "A",
+                },
+                {
+                    "turnId": 1,
+                    "startMs": 4380,
+                    "endMs": 9420,
+                    "transcript": " Oui. ",
+                    "speaker": "B",
+                },
+                {"turnId": 2, "startMs": 9660, "endMs": 11000, "transcript": "Parfait."},
+            ],
+        }
+        with _rest(lambda _: httpx.Response(200, json=answer)) as seen:
+            provider = _provider("ws://unused", mode="DIARIZATION")
+            result = await provider.transcribe(AudioChunk(data=_PCM_16K, sample_rate=16000))
+            await provider.close()
+
+        assert json.loads(_multipart(seen[0])["request"][1])["mode"] == "DIARIZATION"
+        assert result.text == "Bonjour Julie? Oui. Parfait."
+        assert result.segments == [
+            SpeakerSegment("A", "Bonjour Julie?", 300, 4380),
+            SpeakerSegment("B", "Oui.", 4380, 9420),
+            SpeakerSegment(None, "Parfait.", 9660, 11000),
+        ]
+
+    async def test_diarized_text_without_turns_is_attributed_to_nobody(self) -> None:
+        answer = {"sessionId": "s", "transcript": "Bonjour.", "turns": []}
+        with _rest(lambda _: httpx.Response(200, json=answer)):
+            provider = _provider("ws://unused", mode="DIARIZATION")
+            result = await provider.transcribe(AudioChunk(data=_PCM_16K, sample_rate=16000))
+            await provider.close()
+
+        assert result.segments == [SpeakerSegment(None, "Bonjour.")]
+
     @pytest.mark.parametrize(("status", "retryable"), [(402, False), (429, True), (503, True)])
     async def test_transcribe_maps_error_bodies(self, status: int, retryable: bool) -> None:
         body = {"error": {"code": "billing_not_configured", "type": "billing_error"}}
@@ -522,6 +671,15 @@ async def _eventually(predicate: Callable[[], bool], timeout: float = 3.0) -> No
 
 
 class TestVoiceChannelContinuous:
+    def test_diarizing_provider_is_refused_until_labels_can_be_carried(self) -> None:
+        with pytest.raises(ValueError, match="RFC §12.2.3"):
+            VoiceChannel(
+                "voice-1",
+                stt=_provider("ws://unused", mode="DIARIZATION"),
+                backend=MockVoiceBackend(),
+                pipeline=AudioPipelineConfig(),
+            )
+
     async def test_model_endpointing_drives_the_turn(self) -> None:
         # No pipeline VAD: the channel streams everything and the model's
         # speechStart / speechComplete are the turn's only boundaries.

@@ -17,7 +17,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every frame never showed a continuous STT stream the silence a local mic
   gives it while the bot answers; on this setting a two-turn scenario stalls
   without the RMK-230 fix and passes with it.
-
+- A transcription result can say who spoke (RMK-233, RFC §12.2.3):
+  `TranscriptionResult.segments` lists the `SpeakerSegment`s its text is made
+  of (speaker label, text, start and end offsets),
+  `TranscriptionResult.speaker` is the label they share, and
+  `STTProvider.supports_diarization` says a provider fills them on every
+  final. A label is the provider's (`"A"`, `"B"`…), a string, and holds within
+  one stream only. `MetaSTTProvider` gains `mode="DIARIZATION"`: each final
+  carries its turn as one segment, over the WebSocket and over REST alike; on
+  a two-voice French dialogue both attributed 5 turns out of 5.
+  `examples/stt_meta_mic.py --diarize` shows it live. A `VoiceChannel` refuses
+  a diarizing provider at construction, since it opens a stream per utterance
+  or per turn and every turn would restart at the first label; keeping one
+  stream across turns and carrying the label to the room message and the AI
+  context are the Planned parts of §12.2.3. A `ConferenceChannel` refuses one
+  too, at construction and in `plug_stt()`: it attributes speech by
+  participant track and transcribes each utterance on its own.
 - `examples/voice_gemini.py`, a voice assistant that is Gemini end to end
   (RMK-229): `gemini-3.5-transcribe-live` hears the microphone,
   `gemini-3.8-flash` answers, `gemini-3.8-flash-lite-tts` speaks, on one API
@@ -35,10 +50,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one silently. Audio at 16 or 24 kHz goes through as it is, any other rate is
   resampled to 24 kHz. `transcribe()` takes raw PCM or a WAV `data:` URI, and
   refuses to fetch an http(s) URL. Failures raise `MetaSTTError` with Meta's
-  `code`, `error_type` and `retryable`. Meta's `DIARIZATION` mode is refused
-  until a transcription result can carry a speaker. Verified against the live
-  API on 2026-09-27, French included, through a `VoiceChannel` in continuous
-  mode at 8 kHz. New extra `roomkit[meta-stt]`; examples
+  `code`, `error_type` and `retryable`. Verified against the live API on
+  2026-09-27, French included, through a `VoiceChannel` in continuous mode at
+  8 kHz. New extra `roomkit[meta-stt]`; examples
   `examples/stt_meta_mic.py` (speak into the microphone) and
   `examples/stt_meta_live.py` (a WAV file, for a machine with no audio
   device).

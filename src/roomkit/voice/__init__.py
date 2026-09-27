@@ -9,6 +9,7 @@ from roomkit.voice.backends.base import AudioReceivedCallback, SessionReadyCallb
 from roomkit.voice.base import (
     AudioChunk,
     BargeInCallback,
+    SpeakerSegment,
     TranscriptionResult,
     VoiceCapability,
     VoiceSession,
@@ -141,6 +142,7 @@ __all__ = [
     # Base types
     "AudioChunk",
     "AudioFrame",
+    "SpeakerSegment",
     "TranscriptionResult",
     "VoiceBackend",
     "VoiceCapability",

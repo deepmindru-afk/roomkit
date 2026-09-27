@@ -17,9 +17,12 @@ is set up, which the provider cannot see, so it is configuration:
 * ``PUSH_TO_TALK`` — a pipeline VAD delimits utterances. The channel opens one
   stream per utterance, and the model answers one final once the stream ends.
 
-Speaker attribution (Meta's ``DIARIZATION`` mode) is refused for now:
-:class:`~roomkit.voice.base.TranscriptionResult` has nowhere to carry a
-speaker yet (RFC §12.2).
+* ``DIARIZATION`` — ``ENDPOINTING`` plus who spoke: each final carries its
+  turn as one :class:`~roomkit.voice.base.SpeakerSegment` labelled ``"A"``,
+  ``"B"``… (RFC §12.2.3). A change of voice also ends a turn, even without a
+  pause. Labels hold within one stream only, so read ``transcribe_stream()``
+  directly: a ``VoiceChannel`` refuses a diarizing provider until it can carry
+  labels across turns.
 """
 
 from __future__ import annotations
@@ -39,9 +42,11 @@ from roomkit.voice.pipeline.resampler.linear import LinearResamplerProvider
 from roomkit.voice.stt.base import STTProvider
 from roomkit.voice.stt.meta_protocol import (
     WAV_MIME_TYPES,
+    Turns,
     event_error,
     http_error,
     read_wav,
+    rest_result,
     stream_error,
     to_result,
     wav_bytes,
@@ -91,7 +96,7 @@ name (``"french"``, ``"fr"``) exactly like a known one, and the bias then
 silently does nothing.
 """
 
-MetaSTTMode = Literal["ENDPOINTING", "PUSH_TO_TALK"]
+MetaSTTMode = Literal["ENDPOINTING", "PUSH_TO_TALK", "DIARIZATION"]
 
 # The two input rates the service takes; anything else is resampled to the
 # model's native 24 kHz.
@@ -131,7 +136,8 @@ class MetaSTTConfig:
         api_key: Meta Model API key (sent as ``Bearer``).
         model: Transcription model id.
         mode: How a stream ends — see the module docstring. ``ENDPOINTING``
-            for a channel without a pipeline VAD, ``PUSH_TO_TALK`` behind one.
+            for a channel without a pipeline VAD, ``PUSH_TO_TALK`` behind one,
+            ``DIARIZATION`` to have every final name its speaker.
         keywords: Terms to bias recognition toward (product names, people,
             places). A bias, not a guaranteed spelling.
         language_bias: Language *names* to bias toward, from
@@ -158,13 +164,10 @@ class MetaSTTConfig:
     def __post_init__(self) -> None:
         if not self.api_key:
             raise ValueError("MetaSTTConfig.api_key is required")
-        if self.mode == "DIARIZATION":
+        if self.mode not in ("ENDPOINTING", "PUSH_TO_TALK", "DIARIZATION"):
             raise ValueError(
-                "mode='DIARIZATION' is not supported yet: RoomKit transcription "
-                "results carry no speaker label (RFC §12.2)"
+                f"mode must be 'ENDPOINTING', 'PUSH_TO_TALK' or 'DIARIZATION', got {self.mode!r}"
             )
-        if self.mode not in ("ENDPOINTING", "PUSH_TO_TALK"):
-            raise ValueError(f"mode must be 'ENDPOINTING' or 'PUSH_TO_TALK', got {self.mode!r}")
         unknown = [name for name in self.language_bias if name not in SUPPORTED_LANGUAGES]
         if unknown:
             raise ValueError(
@@ -188,6 +191,11 @@ class MetaSTTProvider(STTProvider):
     @property
     def supports_streaming(self) -> bool:
         return True
+
+    @property
+    def supports_diarization(self) -> bool:
+        """True in ``DIARIZATION`` mode: every final then names its speaker."""
+        return self._config.mode == "DIARIZATION"
 
     def _request_fields(self, mode: str) -> dict[str, Any]:
         """The settings every request carries, REST body or stream handshake."""
@@ -222,8 +230,9 @@ class MetaSTTProvider(STTProvider):
         """Transcribe one finished clip over the REST endpoint.
 
         The clip is sent as a WAV in ``PUSH_TO_TALK`` mode — one clip, one
-        transcript — whatever :attr:`MetaSTTConfig.mode` says for streams.
-        Meta reports no confidence and no language, so neither is set.
+        transcript — or in ``DIARIZATION`` mode when the provider is
+        configured for it, and the service's turns then come back as speaker
+        segments. Meta reports no confidence and no language, so neither is set.
 
         Raises:
             ValueError: ``audio`` is an http(s) URL, or a ``data:`` URI that
@@ -235,7 +244,8 @@ class MetaSTTProvider(STTProvider):
         data, sample_rate, channels, width = _clip_pcm(audio)
         rate = sample_rate if sample_rate in _ENCODINGS else _NATIVE_RATE
         pcm = self._supported_pcm(data, sample_rate, channels, rate, width)
-        request = {**self._request_fields("PUSH_TO_TALK"), "audioEncoding": "WAV"}
+        mode = "DIARIZATION" if self.supports_diarization else "PUSH_TO_TALK"
+        request = {**self._request_fields(mode), "audioEncoding": "WAV"}
         response = await self._http_client().post(
             f"{self._config.base_url}/asr/transcribe",
             files={
@@ -246,8 +256,7 @@ class MetaSTTProvider(STTProvider):
         )
         if response.status_code >= 400:
             raise http_error(response)
-        body = response.json()
-        return TranscriptionResult(text=str(body.get("transcript") or "").strip())
+        return rest_result(response.json(), diarized=self.supports_diarization)
 
     def _http_client(self) -> Any:
         if self._http is None:
@@ -268,9 +277,10 @@ class MetaSTTProvider(STTProvider):
         """Stream audio to the realtime endpoint and yield its transcripts.
 
         Yields ``is_speech_start`` when the model hears speech begin
-        (``ENDPOINTING`` only), cumulative partials while it listens, and a
-        final per turn. The input rate is read off the first chunk: 16 and
-        24 kHz go through as they are, any other rate is resampled to 24 kHz.
+        (``ENDPOINTING`` and ``DIARIZATION``), cumulative partials while it
+        listens, and a final per turn, with its speaker in ``DIARIZATION``.
+        The input rate is read off the first chunk: 16 and 24 kHz go through
+        as they are, any other rate is resampled to 24 kHz.
 
         Raises:
             MetaSTTError: The service refused the stream or closed it
@@ -284,10 +294,11 @@ class MetaSTTProvider(STTProvider):
             logger.debug("Meta STT: resampling %d Hz to %d Hz", first.sample_rate, rate)
         ws = await self._open_stream(rate)
         sender = asyncio.create_task(self._send_audio(ws, first, audio_stream, rate))
+        turns = Turns() if self.supports_diarization else None
         try:
             async with contextlib.aclosing(_events(ws)) as events:
                 async for event in events:
-                    result = to_result(event)
+                    result = to_result(event, turns)
                     if result is not None:
                         yield result
         finally:

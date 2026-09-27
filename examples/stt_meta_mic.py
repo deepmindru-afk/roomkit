@@ -1,7 +1,7 @@
 """RoomKit - speak into your microphone and watch Meta Muse transcribe it.
 
     META_API_KEY=... uv run --extra meta-stt --extra local-audio \\
-        python examples/stt_meta_mic.py
+        python examples/stt_meta_mic.py [--diarize]
 
 Live speech-to-text on Meta's ``muse-voice-transcribe-1.0``, fed by your own
 voice. The line at the bottom of the terminal reacts as soon as the model hears
@@ -12,6 +12,13 @@ your turns ends (``ENDPOINTING``), with no VAD on RoomKit's side.
 That is the shape a ``VoiceChannel`` without a pipeline VAD relies on: turn
 boundaries come from the recogniser, and a reply can start the moment a turn
 is committed.
+
+``--diarize`` switches the model to ``DIARIZATION``: each committed turn says
+who spoke (``> A: ...``, ``> B: ...``), and a change of voice ends a turn even
+without a pause. Try it with two people talking in turn near the microphone.
+The labels hold for the life of the stream, which is why the example reads the
+provider directly: a ``VoiceChannel`` does not carry speaker labels across
+turns yet (RFC §12.2.3).
 
 Requires:
     pip install roomkit[meta-stt,local-audio]
@@ -31,6 +38,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import argparse
 import asyncio
 import contextlib
 import os
@@ -70,8 +78,8 @@ class Caption:
     def interim(self, text: str) -> None:
         self._write(f"  {text}")
 
-    def final(self, text: str) -> None:
-        self._write(f"> {text}")
+    def final(self, text: str, speaker: str | None = None) -> None:
+        self._write(f"> {speaker}: {text}" if speaker else f"> {text}")
         print()
         self._width = 0
 
@@ -114,6 +122,11 @@ async def mic_chunks(
 
 
 async def main() -> None:
+    parser = argparse.ArgumentParser(description="Speak and watch Meta Muse transcribe.")
+    parser.add_argument(
+        "--diarize", action="store_true", help="label each turn with its speaker (A, B, ...)"
+    )
+    args = parser.parse_args()
     env = require_env("META_API_KEY")
 
     backend = LocalAudioBackend(
@@ -126,7 +139,7 @@ async def main() -> None:
     provider = MetaSTTProvider(
         MetaSTTConfig(
             api_key=env["META_API_KEY"],
-            mode="ENDPOINTING",
+            mode="DIARIZATION" if args.diarize else "ENDPOINTING",
             language_bias=[bias] if bias else [],
             keywords=_split(os.environ.get("STT_KEYWORDS")),
         )
@@ -142,7 +155,7 @@ async def main() -> None:
             if result.is_speech_start:
                 caption.interim("...")
             elif result.is_final:
-                caption.final(result.text)
+                caption.final(result.text, result.speaker)
                 turns += 1
             else:
                 caption.interim(result.text)
