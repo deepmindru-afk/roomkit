@@ -12,7 +12,7 @@ import asyncio
 import contextlib
 import logging
 import time
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Coroutine, Sequence
 from contextlib import AbstractAsyncContextManager
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any
@@ -58,17 +58,21 @@ class ACPTurnMixin:
     _after_response_hook: AfterResponseCallback | None
 
     # Implemented by the other mixins of the channel. Annotations, never stub
-    # methods: a stub would shadow an implementation later in the MRO.
+    # methods: a stub would shadow an implementation later in the MRO. An
+    # ``async def`` is declared as returning a ``Coroutine``, not an
+    # ``Awaitable``: mypy requires a name two bases define to be compatible in
+    # MRO order, and ``Awaitable`` is not a ``Coroutine``, so an application's
+    # ``class X(Mixin, ACPChannel)`` failed whenever the annotation came first.
     _sdk: Callable[[], _SDK]
-    _ensure_connection: Callable[[], Awaitable[Any]]
-    _drain_session_updates: Callable[[str], Awaitable[None]]
+    _ensure_connection: Callable[[], Coroutine[Any, Any, Any]]
+    _drain_session_updates: Callable[[str], Coroutine[Any, Any, None]]
     _room_turn_lock: Callable[[str], AbstractAsyncContextManager[None]]
-    _session_for: Callable[[str, Any], Awaitable[str]]
-    _open_turn_session: Callable[[str, Any], Awaitable[str]]
-    _close_turn_session: Callable[[str, str, Any], Awaitable[None]]
+    _session_for: Callable[[str, Any], Coroutine[Any, Any, str]]
+    _open_turn_session: Callable[[str, Any], Coroutine[Any, Any, str]]
+    _close_turn_session: Callable[[str, str, Any], Coroutine[Any, Any, None]]
     session_config: Callable[[str], dict[str, str | bool]]
-    _close_open_tools: Callable[..., Awaitable[bool]]
-    _publish: Callable[..., Awaitable[None]]
+    _close_open_tools: Callable[..., Coroutine[Any, Any, bool]]
+    _publish: Callable[..., Coroutine[Any, Any, None]]
 
     async def _prompt_stream(
         self,

@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Callable, Coroutine
 from pathlib import Path
 from typing import Any, Literal
 
@@ -39,9 +39,10 @@ class ACPSessionsMixin:
 
     # Implemented elsewhere on the channel. Declared as annotations, never as
     # stub methods: a stub here would shadow the implementation of any mixin
-    # after this one in the MRO.
+    # after this one in the MRO. A ``Coroutine``, not an ``Awaitable``, for the
+    # reason ``ACPTurnMixin`` gives.
     session_config: Callable[[str], dict[str, str | bool]]
-    _publish_config_options: Callable[[str, Any, dict[str, str | bool]], Awaitable[None]]
+    _publish_config_options: Callable[[str, Any, dict[str, str | bool]], Coroutine[Any, Any, None]]
 
     async def _new_session(
         self, room_id: str, connection: Any, scope: Literal["room", "turn"]

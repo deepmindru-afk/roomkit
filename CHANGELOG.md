@@ -19,6 +19,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   room files a `"turn"` session under a key of its own and closes only that
   one (see `ACPTransport`).
 
+- An application class that combines `ACPChannel` with another base
+  (`class App(Mixin, ACPChannel)`) passes mypy again (RMK-224). Since 0.91.0
+  the ACP mixins declared `_publish`, `_close_open_tools` and
+  `_publish_config_options` as returning an `Awaitable` ahead of the
+  `async def` that implements them, and mypy's multiple-inheritance check
+  rejects an `Awaitable` where a `Coroutine` is defined: three `[misc]` errors
+  in any such subclass. A test now runs mypy on a two-base subclass of every
+  public class with several bases; `mypy` joins the `dev` extra.
+
 ## [0.91.0] — 2026-09-26
 
 ### Added
