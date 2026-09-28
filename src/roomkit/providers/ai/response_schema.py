@@ -47,18 +47,20 @@ class ResponseSchemaError(ProviderError):
 
 
 def schema_for_generate(
-    context: AIContext, *, supported: bool, provider: str
+    context: AIContext, *, supported: bool, provider: str, with_tools: bool = False
 ) -> dict[str, Any] | None:
-    """The schema a ``generate()`` call must send, or ``None`` when there is none.
+    """The schema a call must send, or ``None`` when there is none.
 
     Args:
         context: The turn's context.
         supported: The provider's :attr:`~AIProvider.supports_response_schema`.
         provider: The provider's name, carried by the error.
+        with_tools: The provider's
+            :attr:`~AIProvider.supports_response_schema_with_tools`.
 
     Raises:
         ResponseSchemaError: ``unsupported``, when the provider cannot honour a
-            schema, or when the turn also carries tools.
+            schema, or cannot honour one in a turn that also carries tools.
     """
     schema = context.response_schema
     if schema is None:
@@ -70,9 +72,10 @@ def schema_for_generate(
             reason="unsupported",
             provider=provider,
         )
-    if context.tools:
+    if context.tools and not with_tools:
         raise ResponseSchemaError(
-            "a response schema cannot be combined with tools in the same turn",
+            f"{provider} cannot combine a response schema with tools in the same "
+            "turn; check supports_response_schema_with_tools before setting both",
             reason="unsupported",
             provider=provider,
         )

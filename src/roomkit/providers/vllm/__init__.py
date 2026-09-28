@@ -151,5 +151,6 @@ def _openai_config(config: VLLMConfig) -> OpenAIConfig:
         default_headers=config.headers,
         extra_body=extra_body,
         supports_response_schema=config.supports_response_schema,
+        supports_response_schema_with_tools=config.supports_response_schema_with_tools,
     )
     return openai_config

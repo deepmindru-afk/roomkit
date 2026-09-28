@@ -480,7 +480,10 @@ class PolarGridAIProvider(AIProvider):
 
     async def generate(self, context: AIContext) -> AIResponse:
         schema_for_generate(
-            context, supported=self.supports_response_schema, provider=self._provider_name
+            context,
+            supported=self.supports_response_schema,
+            with_tools=self.supports_response_schema_with_tools,
+            provider=self._provider_name,
         )
         client = await self._ensure_client()
         request = self._build_request(context, stream=False)
@@ -509,7 +512,8 @@ class PolarGridAIProvider(AIProvider):
         usage = self._extract_usage(response)
         model = getattr(response, "model", self._config.model)
         tool_calls = self._extract_tool_calls(message)
-        self._check_schema_answer(context, content, finish_reason)
+        if not tool_calls:
+            self._check_schema_answer(context, content, finish_reason)
 
         return AIResponse(
             content=content,
@@ -571,7 +575,10 @@ class PolarGridAIProvider(AIProvider):
     async def _stream_events(self, context: AIContext) -> AsyncIterator[StreamEvent]:
         """The streamed call itself."""
         schema_for_generate(
-            context, supported=self.supports_response_schema, provider=self._provider_name
+            context,
+            supported=self.supports_response_schema,
+            with_tools=self.supports_response_schema_with_tools,
+            provider=self._provider_name,
         )
         client = await self._ensure_client()
         request = self._build_request(context, stream=True)

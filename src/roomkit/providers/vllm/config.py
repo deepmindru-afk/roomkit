@@ -94,6 +94,10 @@ class VLLMConfig(BaseModel):
     """Whether the server honours a ``json_schema`` response format. ``None``
     keeps the default (vLLM applies it through guided decoding); set ``False``
     for a server that does not."""
+    supports_response_schema_with_tools: bool | None = None
+    """Whether a schema may ride a turn with tools. ``None`` keeps it off: guided
+    decoding forces the output into the schema, so the model cannot call a tool
+    under it."""
 
     def sampling_body(self) -> dict[str, Any]:
         """The request-body fields implied by the sampling settings.

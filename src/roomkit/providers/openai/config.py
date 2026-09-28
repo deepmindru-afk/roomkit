@@ -78,6 +78,10 @@ class OpenAIConfig(BaseModel):
     ``None`` keeps the provider's default; set it for a server behind
     ``base_url`` that differs, so a turn carrying a response schema is refused
     up front instead of answered in prose."""
+    supports_response_schema_with_tools: bool | None = None
+    """Whether the server takes a ``json_schema`` response format beside function
+    tools and still lets the model call them. ``None`` keeps the provider's
+    default (on for OpenAI's own endpoint, off behind a ``base_url``)."""
 
     def model_post_init(self, __context: Any) -> None:
         """Apply safe defaults for modern models on OpenAI's own endpoint."""

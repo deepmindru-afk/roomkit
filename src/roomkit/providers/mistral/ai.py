@@ -310,7 +310,12 @@ class MistralAIProvider(AIProvider):
         and yielded as :class:`StreamToolCall`. A response schema is checked
         before the done event (RFC §6.7).
         """
-        schema_for_generate(context, supported=self.supports_response_schema, provider="mistral")
+        schema_for_generate(
+            context,
+            supported=self.supports_response_schema,
+            with_tools=self.supports_response_schema_with_tools,
+            provider="mistral",
+        )
         stream = checked_stream(
             self._events(context),
             context,

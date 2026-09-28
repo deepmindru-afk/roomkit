@@ -366,7 +366,10 @@ class OllamaAIProvider(AIProvider):
 
     async def generate(self, context: AIContext) -> AIResponse:
         schema_for_generate(
-            context, supported=self.supports_response_schema, provider=self._provider_name
+            context,
+            supported=self.supports_response_schema,
+            with_tools=self.supports_response_schema_with_tools,
+            provider=self._provider_name,
         )
         kwargs = self._build_kwargs(context, stream=False)
         t0 = time.monotonic()
@@ -385,7 +388,7 @@ class OllamaAIProvider(AIProvider):
         finish_reason = self._get_attr(response, "done_reason", None)
         usage = self._extract_usage(response)
         tool_calls = self._extract_tool_calls(message)
-        if context.response_schema is not None:
+        if context.response_schema is not None and not tool_calls:
             check_schema_answer(
                 content,
                 schema=context.response_schema,
@@ -437,7 +440,10 @@ class OllamaAIProvider(AIProvider):
     async def _stream_events(self, context: AIContext) -> AsyncIterator[StreamEvent]:
         """The streamed call itself."""
         schema_for_generate(
-            context, supported=self.supports_response_schema, provider=self._provider_name
+            context,
+            supported=self.supports_response_schema,
+            with_tools=self.supports_response_schema_with_tools,
+            provider=self._provider_name,
         )
         kwargs = self._build_kwargs(context, stream=True)
         t0 = time.monotonic()

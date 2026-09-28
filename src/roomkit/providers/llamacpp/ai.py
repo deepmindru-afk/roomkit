@@ -72,14 +72,20 @@ class LlamaCppAIProvider(_VLLMProvider):
         # A turn that cannot carry its schema is refused before the server is
         # downloaded or started for it.
         schema_for_generate(
-            context, supported=self.supports_response_schema, provider=self._provider_name
+            context,
+            supported=self.supports_response_schema,
+            with_tools=self.supports_response_schema_with_tools,
+            provider=self._provider_name,
         )
         await self.start()
         return await super().generate(context)
 
     async def generate_structured_stream(self, context: AIContext) -> AsyncIterator[StreamEvent]:
         schema_for_generate(
-            context, supported=self.supports_response_schema, provider=self._provider_name
+            context,
+            supported=self.supports_response_schema,
+            with_tools=self.supports_response_schema_with_tools,
+            provider=self._provider_name,
         )
         await self.start()
         async for event in super().generate_structured_stream(context):

@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A response schema may share a turn with tools (RMK-248, RFC §6.7) where
+  `AIProvider.supports_response_schema_with_tools` says the provider can
+  combine them: OpenAI's own endpoint and Azure, Anthropic, Gemini. The model
+  calls tools or answers in the schema; a response carrying tool calls is a
+  step of the loop and is not checked, the final answer is. Everywhere the
+  constraint is a decoding grammar (Ollama, vLLM, llama.cpp, PolarGrid) the
+  pair is refused before any request: measured on Ollama, the grammar stops the
+  model from calling the tool and it invents a schema-valid answer instead.
+  `supports_response_schema_with_tools` on `OpenAIConfig`, `AzureAIConfig` and
+  `VLLMConfig` states it for a server that differs. Verified live on Gemini and
+  Anthropic (a tool round, then a checked final answer).
+
 - A response schema streams (RMK-247, RFC §6.7): `generate_stream()` and
   `generate_structured_stream()` send it like `generate()` on every provider
   that supports it, the text deltas are the JSON as it is written, and the
@@ -95,8 +107,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`schema_mismatch`), or raises `ResponseSchemaError` with its `reason`:
   `refusal` (a blocked prompt included), `truncated`, `invalid_json` (not JSON,
   or JSON of another shape), or `unsupported` before any request when the
-  provider cannot take a schema or the turn also carries tools. A provider
-  never ignores the schema. The schema must stay
+  provider cannot take a schema, or cannot take it beside the turn's tools. A
+  provider never ignores the schema. The schema must stay
   within a portable subset, checked on construction, on assignment and through
   `model_copy(update=)`: every object lists all its properties in `required`
   and sets `additionalProperties` to false, only strings carry `enum`, no null,

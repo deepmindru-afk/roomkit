@@ -186,12 +186,23 @@ class GeminiAIProvider(AIProvider):
         """Controlled generation, through ``response_json_schema``."""
         return True
 
+    @property
+    def supports_response_schema_with_tools(self) -> bool:
+        """Function calling and ``response_json_schema`` share a request
+        (verified live on ``gemini-3.8-flash``, 2026-09-27)."""
+        return True
+
     async def generate_structured_stream(self, context: AIContext) -> AsyncIterator[StreamEvent]:
         """Yield structured events from the Gemini streaming API.
 
         A response schema is checked before the done event (RFC §6.7).
         """
-        schema_for_generate(context, supported=self.supports_response_schema, provider="gemini")
+        schema_for_generate(
+            context,
+            supported=self.supports_response_schema,
+            with_tools=self.supports_response_schema_with_tools,
+            provider="gemini",
+        )
         stream = checked_stream(
             self._events(context),
             context,

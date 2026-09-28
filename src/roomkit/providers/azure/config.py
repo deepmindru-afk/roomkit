@@ -116,6 +116,10 @@ class AzureAIConfig(BaseModel):
     §6.7). ``None`` keeps the provider's default; set it for a deployment whose
     model or API version differs, so a turn carrying a response schema is
     refused up front instead of answered in prose."""
+    supports_response_schema_with_tools: bool | None = None
+    """Whether the server takes a ``json_schema`` response format beside function
+    tools and still lets the model call them. ``None`` keeps the provider's
+    default, on for Azure OpenAI deployments."""
 
 
 class AzureImageConfig(BaseModel):

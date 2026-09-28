@@ -1349,3 +1349,61 @@ class TestOpenAIResponseSchema:
 
         assert error is not None and error.reason == "refusal"
         assert "can't help" in str(error)
+
+
+class TestOpenAIResponseSchemaWithTools:
+    """RFC §6.7: OpenAI's own endpoint combines a schema with tools; a server
+    behind base_url only when its config says so."""
+
+    @staticmethod
+    def _provider(**config: Any) -> Any:
+        with patch.dict("sys.modules", {"openai": _mock_openai_module()}):
+            from roomkit.providers.openai.ai import OpenAIAIProvider
+
+            provider = OpenAIAIProvider(_config(**config))
+        provider._client = MagicMock()
+        return provider
+
+    def test_on_for_the_official_endpoint_off_behind_a_base_url(self) -> None:
+        assert self._provider().supports_response_schema_with_tools is True
+        assert (
+            self._provider(base_url="http://vllm:8000/v1").supports_response_schema_with_tools
+            is False
+        )
+        assert (
+            self._provider(
+                base_url="http://proxy/v1", supports_response_schema_with_tools=True
+            ).supports_response_schema_with_tools
+            is True
+        )
+
+    async def test_a_tool_round_is_not_checked_and_the_final_answer_is(self) -> None:
+        provider = self._provider()
+        tool = AITool(name="lookup", description="Look it up")
+        provider._client.chat.completions.create = AsyncMock(
+            side_effect=[
+                _mock_response(text="", tool_calls=[{"name": "lookup"}]),
+                _mock_response(text="Yes."),
+            ]
+        )
+        context = _context(response_schema=_VERDICT, tools=[tool])
+
+        first = await provider.generate(context)
+        with pytest.raises(ResponseSchemaError) as exc:
+            await provider.generate(context)
+
+        assert [call.name for call in first.tool_calls] == ["lookup"]
+        assert exc.value.reason == "invalid_json"
+        kwargs = provider._client.chat.completions.create.call_args.kwargs
+        assert "tools" in kwargs and "response_format" in kwargs
+
+    async def test_a_server_behind_base_url_refuses_the_pair_before_the_call(self) -> None:
+        provider = self._provider(base_url="http://vllm:8000/v1")
+        provider._client.chat.completions.create = AsyncMock()
+        tool = AITool(name="lookup", description="Look it up")
+
+        with pytest.raises(ResponseSchemaError) as exc:
+            await provider.generate(_context(response_schema=_VERDICT, tools=[tool]))
+
+        assert exc.value.reason == "unsupported"
+        provider._client.chat.completions.create.assert_not_called()

@@ -227,6 +227,12 @@ class AnthropicAIProvider(AIProvider):
         """
         return True
 
+    @property
+    def supports_response_schema_with_tools(self) -> bool:
+        """``output_config.format`` and tools share a request: the model calls
+        tools or answers in the schema."""
+        return True
+
     async def generate_structured_stream(self, context: AIContext) -> AsyncIterator[StreamEvent]:
         """Yield structured events from the Anthropic Messages streaming API.
 
@@ -234,7 +240,12 @@ class AnthropicAIProvider(AIProvider):
         before text deltas. A response schema is checked before the done event
         (RFC §6.7).
         """
-        schema_for_generate(context, supported=self.supports_response_schema, provider="anthropic")
+        schema_for_generate(
+            context,
+            supported=self.supports_response_schema,
+            with_tools=self.supports_response_schema_with_tools,
+            provider="anthropic",
+        )
         stream = checked_stream(
             self._events(context),
             context,

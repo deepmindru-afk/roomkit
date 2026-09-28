@@ -47,6 +47,7 @@ class MockAIProvider(AIProvider):
         streaming: bool = False,
         tool_call_delta_chunks: int = 0,
         response_schema: bool = False,
+        response_schema_with_tools: bool = False,
     ) -> None:
         self.responses = responses or ["Hello from AI"]
         self._ai_responses = ai_responses
@@ -56,6 +57,7 @@ class MockAIProvider(AIProvider):
         self._streaming = streaming
         self._tool_call_delta_chunks = tool_call_delta_chunks
         self._response_schema = response_schema
+        self._response_schema_with_tools = response_schema_with_tools
 
     @property
     def model_name(self) -> str:
@@ -77,6 +79,10 @@ class MockAIProvider(AIProvider):
     def supports_response_schema(self) -> bool:
         return self._response_schema
 
+    @property
+    def supports_response_schema_with_tools(self) -> bool:
+        return self._response_schema_with_tools
+
     @classmethod
     def available_models(cls) -> list[ModelInfo]:
         """Fixed two-entry catalog for exercising model-discovery code."""
@@ -84,10 +90,15 @@ class MockAIProvider(AIProvider):
 
     async def generate(self, context: AIContext) -> AIResponse:
         # Refused before the call is recorded: a real provider sends nothing.
-        schema_for_generate(context, supported=self._response_schema, provider="mock")
+        schema_for_generate(
+            context,
+            supported=self._response_schema,
+            with_tools=self._response_schema_with_tools,
+            provider="mock",
+        )
         self.calls.append(context)
         response = self._next_response()
-        if context.response_schema is not None:
+        if context.response_schema is not None and not response.tool_calls:
             check_schema_answer(
                 response.content,
                 schema=context.response_schema,

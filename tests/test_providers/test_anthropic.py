@@ -1324,15 +1324,29 @@ class TestAnthropicResponseSchema:
 
         assert exc.value.reason == reason
 
-    async def test_tools_in_the_same_turn_are_refused_before_the_call(self) -> None:
-        provider = self._provider(_mock_stream())
+    async def test_tools_and_schema_share_the_request_and_a_tool_round_is_not_checked(
+        self,
+    ) -> None:
+        provider = self._provider(
+            _mock_stream(text="", stop_reason="tool_use", tool_use=[{"name": "lookup"}])
+        )
+        tool = AITool(name="lookup", description="Look it up")
+
+        result = await provider.generate(_context(response_schema=_VERDICT, tools=[tool]))
+
+        assert [call.name for call in result.tool_calls] == ["lookup"]
+        kwargs = provider._client.messages.stream.call_args.kwargs
+        assert kwargs["tools"][0]["name"] == "lookup"
+        assert kwargs["output_config"]["format"]["schema"] == _VERDICT
+
+    async def test_the_final_answer_of_a_tool_turn_is_checked(self) -> None:
+        provider = self._provider(_mock_stream(text="Yes."))
         tool = AITool(name="lookup", description="Look it up")
 
         with pytest.raises(ResponseSchemaError) as exc:
             await provider.generate(_context(response_schema=_VERDICT, tools=[tool]))
 
-        assert exc.value.reason == "unsupported"
-        provider._client.messages.stream.assert_not_called()
+        assert exc.value.reason == "invalid_json"
 
     @staticmethod
     async def _drain(stream: Any) -> tuple[list[Any], ResponseSchemaError | None]:

@@ -672,6 +672,17 @@ class AIProvider(ABC):
         """
         return False
 
+    @property
+    def supports_response_schema_with_tools(self) -> bool:
+        """Whether a response schema may ride a turn that also carries tools.
+
+        The model then either calls tools or answers in the schema, and only
+        the final answer is checked (RFC §6.7). False wherever the constraint
+        is a decoding grammar: it stops the model from calling a tool, and the
+        model invents a schema-valid answer instead.
+        """
+        return False
+
     @classmethod
     def available_models(cls) -> list[ModelInfo]:
         """Offline metadata for the models roomkit can describe without a key.

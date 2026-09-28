@@ -160,6 +160,17 @@ class OpenAIAIProvider(AIProvider):
         configured = getattr(self._config, "supports_response_schema", None)
         return self._response_schema_default if configured is None else configured
 
+    @property
+    def supports_response_schema_with_tools(self) -> bool:
+        """OpenAI's own endpoint takes a strict ``json_schema`` format beside
+        function tools. Behind a ``base_url`` it depends on the server, and a
+        grammar-constrained one (vLLM, llama.cpp) cannot call a tool under the
+        constraint, so it is off unless the config says otherwise."""
+        configured = getattr(self._config, "supports_response_schema_with_tools", None)
+        if configured is not None:
+            return configured
+        return self.supports_response_schema and getattr(self._config, "base_url", None) is None
+
     @classmethod
     def available_models(cls) -> list[ModelInfo]:
         """Curated, offline catalog of OpenAI chat/multimodal models."""
@@ -351,7 +362,10 @@ class OpenAIAIProvider(AIProvider):
         this turn cannot carry the schema (RFC §6.7).
         """
         schema = schema_for_generate(
-            context, supported=self.supports_response_schema, provider=self._provider_name
+            context,
+            supported=self.supports_response_schema,
+            with_tools=self.supports_response_schema_with_tools,
+            provider=self._provider_name,
         )
         if schema is not None:
             kwargs["response_format"] = {
@@ -365,8 +379,10 @@ class OpenAIAIProvider(AIProvider):
         ``message.refusal`` is where a structured-output refusal lands on this
         API; Azure's content filter says the same through the finish reason.
         """
-        if context.response_schema is None:
-            return
+        if context.response_schema is None or getattr(
+            getattr(choice, "message", None), "tool_calls", None
+        ):
+            return  # a tool round is a step of the loop, not the answer
         finish = getattr(choice, "finish_reason", None)
         refusal = getattr(getattr(choice, "message", None), "refusal", None) or None
         if refusal is None and finish == "content_filter":

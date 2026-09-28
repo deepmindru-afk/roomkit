@@ -955,3 +955,19 @@ class TestOllamaResponseSchema:
 
         assert error is not None and error.reason == "invalid_json"
         assert not any(isinstance(e, StreamDone) for e in events)
+
+
+class TestOllamaResponseSchemaWithTools:
+    """``format`` is a decoding grammar: under it the model cannot call a tool,
+    and invents a schema-valid answer instead (measured 2026-09-27)."""
+
+    async def test_the_pair_is_refused_before_the_call(self) -> None:
+        provider, mod = _provider()
+        tool = AITool(name="lookup", description="Look it up")
+
+        assert provider.supports_response_schema_with_tools is False
+        with pytest.raises(ResponseSchemaError) as exc:
+            await provider.generate(_context(response_schema=_VERDICT, tools=[tool]))
+
+        assert exc.value.reason == "unsupported"
+        mod.AsyncClient.return_value.chat.assert_not_called()
