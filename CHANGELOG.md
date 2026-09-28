@@ -213,6 +213,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Two delegations to the same agent in two rooms at once no longer cross
+  (RMK-246). The forced result tool and its capture handler are installed on
+  the agent's channel, which every room shares: a second room could read the
+  first room's `submit_result` or `submit_verdict`, the tool was offered twice
+  in a turn, and a stale handler stayed on the channel once both ended. The
+  capture is now scoped to the child room the call runs in, the tool is
+  injected once however many delegations need it, and the last one out restores
+  the channel. Overlapping supervisor sub-runs likewise no longer lose
+  `delegate_workers` for good: the tool leaves the list when the first sub-run
+  starts and comes back when the last one ends.
+
 - The voice examples read their speech language from `VOICE_LANGUAGE`
   (RMK-238). They read `LANGUAGE`, which is the system's gettext variable: a
   French Linux desktop sets it to `fr_CA:fr`, so `voice_gemini.py`,
@@ -220,6 +231,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `rtp_gradium_stt.py` and `avatar_call.py` sent that, no BCP-47 tag, to their
   STT and TTS as the language. The shared `voice_language()` helper reads the
   new variable.
+
 - `AnthropicAIProvider` works on the `anthropic` 1.x SDK the lock has carried
   since 2026-09-24 (RMK-236). The client's timeout was an `httpx.Timeout`, which
   1.x refuses because it runs on httpx2; the refusal only showed in a process
@@ -307,7 +319,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of a JSON object scraped from the supervisor's text (RMK-246). The mechanism
   that forces a worker to call `submit_result` now takes the tool to force:
   `ResultTool` (tool, how its call is read, the reminder, the payload when it
-  never comes), `SUBMIT_RESULT` its default, and `kit.delegate(result_tool=)`.
+  never comes), `SUBMIT_RESULT` its default, both exported from `roomkit`, and
+  `kit.delegate(result_tool=)`. The supervisor's provider must call tools.
   The supervisor is re-prompted when a turn ends without its verdict, like a
   worker, on any provider that calls tools. A verdict that never comes, or a
   review that times out, still fails closed; only a real `true` approves (a

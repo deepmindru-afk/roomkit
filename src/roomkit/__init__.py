@@ -154,6 +154,7 @@ from roomkit.models.tool_call import (
 from roomkit.models.voice_delivery import VoiceDeliveryRecord
 from roomkit.orchestration import (
     HANDOFF_TOOL,
+    SUBMIT_RESULT,
     ConversationPhase,
     ConversationPipeline,
     ConversationRouter,
@@ -165,6 +166,7 @@ from roomkit.orchestration import (
     Orchestration,
     Pipeline,
     PipelineStage,
+    ResultTool,
     RoutingConditions,
     RoutingRule,
     Supervisor,
@@ -369,6 +371,8 @@ __all__ = [
     "visible_events",
     "set_conversation_state",
     "HANDOFF_TOOL",
+    "SUBMIT_RESULT",
+    "ResultTool",
     "HandoffHandler",
     "HandoffRequest",
     "HandoffResult",

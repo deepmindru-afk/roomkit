@@ -18,6 +18,7 @@ from roomkit.orchestration.pipeline import (
     ConversationPipeline,
     PipelineStage,
 )
+from roomkit.orchestration.result import SUBMIT_RESULT, MissingResult, ResultTool
 from roomkit.orchestration.router import (
     ConversationRouter,
     RoutingConditions,
@@ -77,6 +78,10 @@ __all__ = [
     "JSONLSessionAuditor",
     "SessionAuditEntry",
     "SessionAuditor",
+    # Structured results of a delegation
+    "MissingResult",
+    "ResultTool",
+    "SUBMIT_RESULT",
 ]
 
 # RedisStatusBackend requires redis>=5.0.1 (optional dep).

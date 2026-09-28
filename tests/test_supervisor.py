@@ -941,14 +941,14 @@ class TestParseVerdict:
         assert v["approved"] is True
         assert v["next_task"] == "go"
 
-    def test_prose_is_no_longer_read(self) -> None:
-        # The verdict now arrives as a submit_verdict call serialized by the
-        # orchestration; a JSON object buried in prose is not a verdict.
+    def test_prose_is_not_a_verdict(self) -> None:
+        # A verdict is a submit_verdict call serialized by the orchestration; a
+        # JSON object buried in prose is not one.
         v = _parse_verdict('Sure: {"approved": true, "feedback": ""} done')
         assert v["approved"] is False
 
     def test_only_a_real_true_approves(self) -> None:
-        # A string "false" is truthy; bool() on it would have approved the step.
+        # A string "false" is truthy: bool() on it approves the step.
         assert _parse_verdict('{"approved": "false", "feedback": "x"}')["approved"] is False
         assert _parse_verdict('{"approved": "true", "feedback": ""}')["approved"] is False
 
@@ -958,7 +958,7 @@ class TestParseVerdict:
         v = _parse_verdict("I approve this, looks great!")
         assert v["approved"] is False
         assert v["next_task"] is None
-        assert v["feedback"]  # tells the supervisor to re-emit clean JSON
+        assert v["feedback"]  # tells the worker what to redo
 
 
 class TestReviewUsesTheVerdictTool:

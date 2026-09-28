@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 from roomkit.providers.ai.base import AITool
 
@@ -109,6 +109,12 @@ def orchestration_fail(*, role: str, last_output: str, attempts: int) -> dict[st
     }
 
 
+class MissingResult(Protocol):
+    """Builds the payload returned when a delegated agent never called its tool."""
+
+    def __call__(self, *, role: str, last_output: str, attempts: int) -> dict[str, Any]: ...
+
+
 @dataclass(frozen=True)
 class ResultTool:
     """The tool a delegated agent must call to hand its work back, and how it is read.
@@ -131,7 +137,7 @@ class ResultTool:
 
     tool: AITool
     normalize: Callable[[dict[str, Any]], dict[str, Any]]
-    on_missing: Callable[..., dict[str, Any]]
+    on_missing: MissingResult
     reminder: str
 
     @property
@@ -142,9 +148,9 @@ class ResultTool:
     def matches(self, tool_name: str) -> bool:
         """Whether *tool_name* is a call of this tool.
 
-        A function-calling provider calls it by its bare name; a claude_code
-        worker calls the gateway-exposed tool, which the sandbox surfaces with an
-        MCP prefix (``mcp__<server>__<name>``). Both count.
+        A function-calling provider calls it by its bare name; an agent whose
+        tools come from an MCP server sees it prefixed
+        (``mcp__<server>__<name>``). Both count.
         """
         return tool_name == self.name or tool_name.endswith(f"__{self.name}")
 

@@ -34,8 +34,9 @@ def _make_kit(
     payload: dict[str, Any] | None = None,
     tool_name: str = "submit_result",
 ):
-    """Mock kit whose broadcast simulates the worker calling submit_result on the
-    given 1-based attempt (None = never). Returns (kit, channel, attempts-counter)."""
+    """Mock kit whose broadcast simulates the worker calling *tool_name* on the
+    given 1-based attempt (None = never). Returns (kit, channel, counter), the
+    counter holding the attempts and the message each one received."""
     kit = MagicMock()
     kit.get_room = AsyncMock(
         return_value=Room(id="parent::task-1", metadata={"task_agent_id": agent_id})

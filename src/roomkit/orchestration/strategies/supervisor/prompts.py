@@ -31,15 +31,18 @@ def _normalize_verdict(arguments: dict[str, Any]) -> dict[str, Any]:
     Only a real ``true`` approves: a string ``"false"`` or a missing field is a
     reject, never a pass.
     """
+    approved = arguments.get("approved")
+    if not isinstance(approved, bool):
+        logger.warning("Supervisor verdict approved=%r is not a boolean; rejecting", approved)
     next_task = arguments.get("next_task")
     return {
-        "approved": arguments.get("approved") is True,
+        "approved": approved is True,
         "feedback": str(arguments.get("feedback") or ""),
         "next_task": (str(next_task).strip() or None) if next_task else None,
     }
 
 
-def _no_verdict(**_attempt: Any) -> dict[str, Any]:
+def _no_verdict(*, role: str = "", last_output: str = "", attempts: int = 0) -> dict[str, Any]:
     """The verdict returned when the supervisor never called ``submit_verdict``:
     closed, so an unjudged step never passes. The rework loop is bounded by
     ``max_revisions``, so a supervisor that keeps failing to judge ends in an
@@ -99,7 +102,7 @@ def _parse_verdict(raw: str) -> dict[str, Any]:
     except (TypeError, ValueError):
         obj = None
     if not isinstance(obj, dict) or "approved" not in obj:
-        logger.warning("No supervisor verdict; rejecting by default: %r", raw[:200])
+        logger.warning("No supervisor verdict; rejecting by default: %r", str(raw)[:200])
         return _no_verdict()
     return _normalize_verdict(obj)
 
