@@ -23,6 +23,7 @@ from roomkit.models.streaming import ToolCallEndMarker, ToolCallStartMarker
 
 if TYPE_CHECKING:
     from roomkit.core.framework import RoomKit
+    from roomkit.orchestration.result import ResultTool
 
 
 _tasks_logger = logging.getLogger("roomkit.tasks")
@@ -195,8 +196,11 @@ async def _broadcast_and_collect(
 _LATEST_TAIL_CURSOR = 2**31 - 1
 
 
-async def _scan_for_submitted_result(kit: RoomKit, child_room_id: str) -> dict[str, Any] | None:
-    """Find a ``submit_result`` call in the worker's persisted trace.
+async def _scan_for_submitted_result(
+    kit: RoomKit, child_room_id: str, result_tool: ResultTool | None = None
+) -> dict[str, Any] | None:
+    """Find a call of the result tool (``submit_result`` by default) in the
+    worker's persisted trace.
 
     The function-calling path captures the payload through the wrapped
     ``tool_handler``; a claude_code worker instead calls the gateway-exposed
@@ -204,16 +208,17 @@ async def _scan_for_submitted_result(kit: RoomKit, child_room_id: str) -> dict[s
     TOOL_CALL event (with an ``mcp__…`` prefix). Scanning the trace tail makes
     the capture delivery-agnostic. Returns the normalized payload, or None.
     """
-    from roomkit.orchestration.result import is_submit_result, normalize_result
+    from roomkit.orchestration.result import SUBMIT_RESULT
 
+    tool = result_tool or SUBMIT_RESULT
     events = await kit.store.list_events(
         child_room_id, before_index=_LATEST_TAIL_CURSOR, limit=100
     )
     for ev in reversed(events):
         if ev.type in (EventType.TOOL_CALL_END, EventType.TOOL_CALL_START):
             name = getattr(ev.content, "tool_name", "") or ""
-            if is_submit_result(name):
-                return normalize_result(getattr(ev.content, "arguments", None) or {})
+            if tool.matches(name):
+                return tool.normalize(getattr(ev.content, "arguments", None) or {})
     return None
 
 
@@ -235,24 +240,22 @@ async def _run_with_structured_result(
     child_room_id: str,
     task_desc: str,
     max_result_retries: int,
+    result_tool: ResultTool | None = None,
 ) -> str:
-    """Run a delegated agent that must hand its work back via the ``submit_result``
-    tool. Injects the tool (for function-calling providers), runs the agent, and a
-    deterministic completion guard: if the agent ends a turn without calling
-    ``submit_result``, it is re-prompted to use the tool (up to *max_result_retries*
-    times); if it still hasn't, the orchestration submits a fail on its behalf.
+    """Run a delegated agent that must hand its work back via a result tool
+    (*result_tool*, ``submit_result`` by default). Injects the tool (for
+    function-calling providers), runs the agent, and a deterministic completion
+    guard: if the agent ends a turn without calling the tool, it is re-prompted to
+    use it (up to *max_result_retries* times); if it still hasn't, the tool's
+    ``on_missing`` payload is returned on its behalf.
 
     Capture is delivery-agnostic: a function-calling provider's call is caught by
     the wrapped ``tool_handler``; a claude_code worker calls the gateway-exposed
     tool, which is caught by scanning its persisted trace. Returns the structured
     payload as a JSON string (an orchestration fail when exhausted)."""
-    from roomkit.orchestration.result import (
-        SUBMIT_RESULT_TOOL,
-        SUBMIT_RESULT_TOOL_NAME,
-        normalize_result,
-        orchestration_fail,
-    )
+    from roomkit.orchestration.result import SUBMIT_RESULT
 
+    tool = result_tool or SUBMIT_RESULT
     room = await kit.get_room(child_room_id)
     agent_id = (room.metadata or {}).get("task_agent_id")
     channel = kit.channels.get(agent_id) if agent_id else None
@@ -266,14 +269,14 @@ async def _run_with_structured_result(
     original_handler = channel.tool_handler
 
     async def _capture(name: str, arguments: dict[str, Any]) -> str:
-        if name == SUBMIT_RESULT_TOOL_NAME:
-            captured["payload"] = normalize_result(arguments or {})
+        if name == tool.name:
+            captured["payload"] = tool.normalize(arguments or {})
             return json.dumps({"status": "received"})
         if original_handler:
             return await original_handler(name, arguments)
         return json.dumps({"error": f"unknown tool {name}"})
 
-    channel._injected_tools.append(SUBMIT_RESULT_TOOL)
+    channel._injected_tools.append(tool.tool)
     channel.tool_handler = _capture
     try:
         message = task_desc
@@ -282,26 +285,23 @@ async def _run_with_structured_result(
             text = await _broadcast_and_collect(kit, child_room_id, message)
             if "payload" in captured:
                 return json.dumps(captured["payload"])
-            scanned = await _scan_for_submitted_result(kit, child_room_id)
+            scanned = await _scan_for_submitted_result(kit, child_room_id, tool)
             if scanned is not None:
                 return json.dumps(scanned)
             last_text = text or last_text
-            message = (
-                "You did not submit a result. You MUST now call the `submit_result` "
-                "tool with your final structured result. Do NOT reply with plain text "
-                "or a question — call submit_result."
-            )
+            message = tool.reminder
         _tasks_logger.warning(
-            "Delegated agent %s never called submit_result after %d attempts; failing.",
+            "Delegated agent %s never called %s after %d attempts; failing.",
             agent_id,
+            tool.name,
             max_result_retries + 1,
         )
         return json.dumps(
-            orchestration_fail(role=role, last_output=last_text, attempts=max_result_retries + 1)
+            tool.on_missing(role=role, last_output=last_text, attempts=max_result_retries + 1)
         )
     finally:
         with contextlib.suppress(ValueError):
-            channel._injected_tools.remove(SUBMIT_RESULT_TOOL)
+            channel._injected_tools.remove(tool.tool)
         channel.tool_handler = original_handler
 
 
@@ -312,6 +312,7 @@ async def run_agent_in_child_room(
     *,
     require_structured_result: bool = False,
     max_result_retries: int = 3,
+    result_tool: ResultTool | None = None,
 ) -> str | None:
     """Send a task to a child room and collect the attached agent's response.
 
@@ -320,14 +321,16 @@ async def run_agent_in_child_room(
 
     By default the agent's free-text response is collected and returned. When
     *require_structured_result* is set, the agent must instead hand its work back
-    via the ``submit_result`` tool (forced structure + a guaranteed result); the
-    returned string is then the JSON-encoded structured payload (see
-    :func:`_run_with_structured_result`).
+    via a result tool, *result_tool* or ``submit_result`` by default (forced
+    structure + a guaranteed result); the returned string is then the
+    JSON-encoded structured payload (see :func:`_run_with_structured_result`).
 
     Either way the agent's full trace (tool calls + messages) is persisted in the
     child room, which records its parent via ``metadata.parent_room_id`` (set at
     creation in :meth:`delegate`) so the parent↔child link is rebuildable.
     """
     if require_structured_result:
-        return await _run_with_structured_result(kit, child_room_id, task_desc, max_result_retries)
+        return await _run_with_structured_result(
+            kit, child_room_id, task_desc, max_result_retries, result_tool
+        )
     return await _broadcast_and_collect(kit, child_room_id, task_desc)

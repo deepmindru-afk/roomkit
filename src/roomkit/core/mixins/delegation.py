@@ -36,6 +36,7 @@ from roomkit.tasks.models import DelegatedTask, DelegatedTaskResult
 if TYPE_CHECKING:
     from roomkit.channels.base import Channel
     from roomkit.core.hooks import HookEngine
+    from roomkit.orchestration.result import ResultTool
     from roomkit.store.base import ConversationStore
     from roomkit.tasks.base import TaskRunner
     from roomkit.telemetry.base import TelemetryProvider
@@ -161,6 +162,7 @@ class DelegationMixin(HelpersMixin):
         on_complete: Any | None = None,
         require_structured_result: bool = False,
         max_result_retries: int = 3,
+        result_tool: ResultTool | None = None,
     ) -> DelegatedTask:
         """Delegate a task to an agent in a child room.
 
@@ -180,6 +182,14 @@ class DelegationMixin(HelpersMixin):
             notify: Channel ID to update when the task completes
                 (system prompt injection). Defaults to *agent_id*.
             on_complete: Optional async callback ``(DelegatedTaskResult) -> None``.
+            require_structured_result: Inline runs only: the agent must hand its
+                work back by calling a result tool, re-prompted up to
+                *max_result_retries* times; the result's ``output`` is then
+                the tool's JSON payload.
+            max_result_retries: How many times a turn ending without the call
+                is re-prompted.
+            result_tool: The tool to force, when not ``submit_result``
+                (:data:`~roomkit.orchestration.result.SUBMIT_RESULT`).
 
         Returns:
             A :class:`DelegatedTask` handle. When *wait* is ``True``,
@@ -314,6 +324,7 @@ class DelegationMixin(HelpersMixin):
                 on_complete,
                 require_structured_result=require_structured_result,
                 max_result_retries=max_result_retries,
+                result_tool=result_tool,
             )
             telemetry.end_span(
                 span_id,
@@ -338,6 +349,7 @@ class DelegationMixin(HelpersMixin):
         *,
         require_structured_result: bool = False,
         max_result_retries: int = 3,
+        result_tool: ResultTool | None = None,
     ) -> DelegatedTask:
         """Run the agent inline and return a pre-completed task."""
         start = time.monotonic()
@@ -352,6 +364,7 @@ class DelegationMixin(HelpersMixin):
                 handle.task,
                 require_structured_result=require_structured_result,
                 max_result_retries=max_result_retries,
+                result_tool=result_tool,
             )
         except asyncio.CancelledError:
             # A caller cancelled this delegation (e.g. a supervisor's per-task

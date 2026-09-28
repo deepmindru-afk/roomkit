@@ -26,6 +26,7 @@ from roomkit.orchestration.strategies.supervisor._common import (
 )
 from roomkit.orchestration.strategies.supervisor.prompts import (
     _VERDICT_INSTRUCTIONS,
+    SUBMIT_VERDICT,
     _compose_rework,
     _compose_supervised_handoff,
     _parse_verdict,
@@ -41,6 +42,7 @@ from roomkit.orchestration.strategies.supervisor.results import (
 if TYPE_CHECKING:
     from roomkit.channels.agent import Agent
     from roomkit.core.framework import RoomKit
+    from roomkit.orchestration.result import ResultTool
 
 
 async def _delegate_and_wait(
@@ -52,12 +54,14 @@ async def _delegate_and_wait(
     share_channels: list[str] | None,
     task_timeout: float,
     require_structured_result: bool = False,
+    result_tool: ResultTool | None = None,
 ) -> tuple[str, bool]:
     """Delegate *task* to an agent and wait for its result, bounded by
     *task_timeout*. Returns ``(output, completed_ok)``. When
-    *require_structured_result* is set, ``output`` is the JSON-encoded
-    ``submit_result`` payload (the worker is forced to hand its work back via
-    the tool); otherwise it is the agent's free text."""
+    *require_structured_result* is set, ``output`` is the JSON-encoded payload
+    of the forced result tool (*result_tool*, ``submit_result`` by default: a
+    worker hands its work back through it, the supervisor its verdict through
+    ``submit_verdict``); otherwise it is the agent's free text."""
     try:
         delegated = await asyncio.wait_for(
             kit.delegate(
@@ -67,6 +71,7 @@ async def _delegate_and_wait(
                 wait=True,
                 share_channels=share_channels,
                 require_structured_result=require_structured_result,
+                result_tool=result_tool,
             ),
             timeout=task_timeout,
         )
@@ -180,6 +185,8 @@ async def _supervisor_review(
             prompt,
             share_channels=share_channels,
             task_timeout=task_timeout,
+            require_structured_result=True,
+            result_tool=SUBMIT_VERDICT,
         )
     return _parse_verdict(raw)
 

@@ -41,6 +41,8 @@ from roomkit.orchestration.strategies.supervisor import (
     _two_pass_delegate,
     _worker_label,
 )
+from roomkit.orchestration.strategies.supervisor.prompts import SUBMIT_VERDICT
+from roomkit.orchestration.strategies.supervisor.supervised import _supervisor_review
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.tasks.models import DelegatedTaskResult
 
@@ -939,10 +941,16 @@ class TestParseVerdict:
         assert v["approved"] is True
         assert v["next_task"] == "go"
 
-    def test_json_embedded_in_prose(self) -> None:
-        v = _parse_verdict('Sure: {"approved": false, "feedback": "fix it"} done')
+    def test_prose_is_no_longer_read(self) -> None:
+        # The verdict now arrives as a submit_verdict call serialized by the
+        # orchestration; a JSON object buried in prose is not a verdict.
+        v = _parse_verdict('Sure: {"approved": true, "feedback": ""} done')
         assert v["approved"] is False
-        assert v["feedback"] == "fix it"
+
+    def test_only_a_real_true_approves(self) -> None:
+        # A string "false" is truthy; bool() on it would have approved the step.
+        assert _parse_verdict('{"approved": "false", "feedback": "x"}')["approved"] is False
+        assert _parse_verdict('{"approved": "true", "feedback": ""}')["approved"] is False
 
     def test_unparseable_fails_closed(self) -> None:
         # An unreadable verdict must NOT pass a step through unjudged — reject so
@@ -951,6 +959,37 @@ class TestParseVerdict:
         assert v["approved"] is False
         assert v["next_task"] is None
         assert v["feedback"]  # tells the supervisor to re-emit clean JSON
+
+
+class TestReviewUsesTheVerdictTool:
+    async def test_the_review_forces_submit_verdict(self) -> None:
+        seen: dict[str, Any] = {}
+
+        async def _fake_delegate_and_wait(kit, room_id, channel_id, task, **kw):
+            seen.update(kw, task=task)
+            return (json.dumps({"approved": True, "feedback": "", "next_task": ""}), True)
+
+        boss = _make_agent("boss", role="Supervisor")
+        with patch(
+            "roomkit.orchestration.strategies.supervisor.supervised._delegate_and_wait",
+            side_effect=_fake_delegate_and_wait,
+        ):
+            verdict = await _supervisor_review(
+                _make_mock_kit(Room(id="r1")),
+                boss,
+                "r1",
+                goal="research",
+                worker=_make_agent("w1", role="Researcher"),
+                output="facts",
+                next_worker=None,
+                share_channels=None,
+                task_timeout=30.0,
+            )
+
+        assert verdict == {"approved": True, "feedback": "", "next_task": None}
+        assert seen["require_structured_result"] is True
+        assert seen["result_tool"] is SUBMIT_VERDICT
+        assert "submit_verdict" in seen["task"]
 
 
 class TestRenderResult:

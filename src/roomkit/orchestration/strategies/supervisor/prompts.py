@@ -1,6 +1,6 @@
 """Prompt, verdict, and digest builders for the supervised flow.
 
-Pure functions: the verdict-format instruction, verdict parsing, rework
+Pure functions and values: the verdict tool and how its call is read, rework
 re-framing, the final digest, and the next-worker hand-off composition. No
 delegation or kit access.
 """
@@ -10,41 +10,98 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from roomkit.orchestration.result import ResultTool
 from roomkit.orchestration.strategies.supervisor._common import logger
+from roomkit.providers.ai.base import AITool
 
 _VERDICT_INSTRUCTIONS = (
-    "Respond with ONLY a JSON object, no other text, of exactly this shape:\n"
-    '{"approved": true_or_false, "feedback": "what to fix if not approved, else empty", '
-    '"next_task": "task for the next worker if approved and one exists, else empty"}'
+    "Deliver your verdict by calling the `submit_verdict` tool exactly once, with "
+    "approved, feedback and next_task. Do not answer in plain text."
+)
+
+_NO_VERDICT_FEEDBACK = (
+    "This step could not be reviewed: no verdict was given. Redo it so that its "
+    "result is complete and plainly answers the task."
+)
+
+
+def _normalize_verdict(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Read a ``submit_verdict`` call into ``{approved, feedback, next_task}``.
+
+    Only a real ``true`` approves: a string ``"false"`` or a missing field is a
+    reject, never a pass.
+    """
+    next_task = arguments.get("next_task")
+    return {
+        "approved": arguments.get("approved") is True,
+        "feedback": str(arguments.get("feedback") or ""),
+        "next_task": (str(next_task).strip() or None) if next_task else None,
+    }
+
+
+def _no_verdict(**_attempt: Any) -> dict[str, Any]:
+    """The verdict returned when the supervisor never called ``submit_verdict``:
+    closed, so an unjudged step never passes. The rework loop is bounded by
+    ``max_revisions``, so a supervisor that keeps failing to judge ends in an
+    honest failure rather than a silent approval."""
+    return {"approved": False, "feedback": _NO_VERDICT_FEEDBACK, "next_task": None}
+
+
+#: The supervisor judges a step by calling this tool, forced by the same
+#: mechanism that makes a worker call ``submit_result`` (re-prompts included).
+SUBMIT_VERDICT = ResultTool(
+    tool=AITool(
+        name="submit_verdict",
+        description=(
+            "Submit your verdict on this step of the team's work. You MUST call this "
+            "exactly once; it is the ONLY way your judgement reaches the team."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "approved": {
+                    "type": "boolean",
+                    "description": "true only if the output genuinely fulfills the step.",
+                },
+                "feedback": {
+                    "type": "string",
+                    "description": "What to fix, precisely, when not approved; else empty.",
+                },
+                "next_task": {
+                    "type": "string",
+                    "description": (
+                        "When approved and a next worker exists, its self-contained "
+                        "task; else empty."
+                    ),
+                },
+            },
+            "required": ["approved", "feedback", "next_task"],
+        },
+    ),
+    normalize=_normalize_verdict,
+    on_missing=_no_verdict,
+    reminder=(
+        "You did not submit a verdict. You MUST now call the `submit_verdict` tool "
+        "with approved, feedback and next_task. Do NOT reply with plain text."
+    ),
 )
 
 
 def _parse_verdict(raw: str) -> dict[str, Any]:
-    """Parse the supervisor's review JSON.
+    """Read the verdict a delegation returned: the JSON payload of the
+    ``submit_verdict`` call, serialized by the orchestration.
 
-    Fails CLOSED (``approved=False``) on a parse miss: an unreadable verdict must
-    not pass a step through unjudged. The miss is logged and fed back as feedback
-    so the next attempt can correct itself; the surrounding rework loop is bounded
-    by ``max_revisions``, so a persistently malformed verdict ends in an honest
-    failure rather than a silent approval.
+    Anything else (the review timed out, the delegation returned an error) fails
+    CLOSED (``approved=False``): an unjudged step must never pass.
     """
     try:
-        start = raw.index("{")
-        end = raw.rindex("}")
-        obj = json.loads(raw[start : end + 1])
-    except (ValueError, json.JSONDecodeError):
-        logger.warning("Supervisor verdict unparseable; rejecting by default: %r", raw[:200])
-        return {
-            "approved": False,
-            "feedback": "Your verdict was unreadable. Respond with ONLY the JSON verdict.",
-            "next_task": None,
-        }
-    next_task = obj.get("next_task")
-    return {
-        "approved": bool(obj.get("approved", False)),
-        "feedback": str(obj.get("feedback") or ""),
-        "next_task": (str(next_task).strip() or None) if next_task else None,
-    }
+        obj = json.loads(raw)
+    except (TypeError, ValueError):
+        obj = None
+    if not isinstance(obj, dict) or "approved" not in obj:
+        logger.warning("No supervisor verdict; rejecting by default: %r", raw[:200])
+        return _no_verdict()
+    return _normalize_verdict(obj)
 
 
 def _compose_rework(task: str, output: str, feedback: str) -> str:

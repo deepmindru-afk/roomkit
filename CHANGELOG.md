@@ -280,6 +280,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The supervised flow's verdict arrives as a `submit_verdict` tool call instead
+  of a JSON object scraped from the supervisor's text (RMK-246). The mechanism
+  that forces a worker to call `submit_result` now takes the tool to force:
+  `ResultTool` (tool, how its call is read, the reminder, the payload when it
+  never comes), `SUBMIT_RESULT` its default, and `kit.delegate(result_tool=)`.
+  The supervisor is re-prompted when a turn ends without its verdict, like a
+  worker, on any provider that calls tools. A verdict that never comes, or a
+  review that times out, still fails closed; only a real `true` approves (a
+  string `"false"` used to pass as truthy). `_parse_verdict` no longer digs a
+  JSON object out of prose.
+
 - **BREAKING — `ElevenLabsTTSProvider.list_voices()` and
   `GradiumTTSProvider.list_voices()` return `VoiceInfo`** (RMK-241, RFC §12.2),
   like every catalog. `ElevenLabsVoice` and `GradiumVoice` are removed.

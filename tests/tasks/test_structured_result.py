@@ -10,11 +10,13 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+from roomkit.core.mixins._child_execution import _scan_for_submitted_result
 from roomkit.core.mixins.delegation import _run_with_structured_result
 from roomkit.models.enums import ChannelType, EventType
 from roomkit.models.event import EventSource, RoomEvent, TextContent, ToolCallContent
 from roomkit.models.room import Room
 from roomkit.orchestration.result import is_submit_result, normalize_result, orchestration_fail
+from roomkit.orchestration.strategies.supervisor.prompts import SUBMIT_VERDICT
 
 
 def _text_event(body: str) -> RoomEvent:
@@ -26,7 +28,12 @@ def _text_event(body: str) -> RoomEvent:
     )
 
 
-def _make_kit(agent_id: str, submit_on_attempt: int | None, payload: dict[str, Any] | None = None):
+def _make_kit(
+    agent_id: str,
+    submit_on_attempt: int | None,
+    payload: dict[str, Any] | None = None,
+    tool_name: str = "submit_result",
+):
     """Mock kit whose broadcast simulates the worker calling submit_result on the
     given 1-based attempt (None = never). Returns (kit, channel, attempts-counter)."""
     kit = MagicMock()
@@ -41,13 +48,14 @@ def _make_kit(agent_id: str, submit_on_attempt: int | None, payload: dict[str, A
 
     channel = SimpleNamespace(_injected_tools=[], tool_handler=None, role="Researcher")
     kit.channels = {agent_id: channel}
-    counter = {"n": 0}
+    counter: dict[str, Any] = {"n": 0, "messages": []}
 
-    async def _broadcast(_event, _binding, _context):
+    async def _broadcast(event, _binding, _context):
         counter["n"] += 1
+        counter["messages"].append(getattr(event.content, "body", ""))
         if submit_on_attempt is not None and counter["n"] == submit_on_attempt:
             await channel.tool_handler(
-                "submit_result",
+                tool_name,
                 payload or {"status": "completed", "summary": "done", "data": {"x": 1}},
             )
         out = SimpleNamespace(responded=True, response_events=[_text_event("raw text")])
@@ -196,3 +204,60 @@ class TestResultHelpers:
         assert f["role"] == "Analyst"
         assert f["last_output"] == "partial"
         assert "3" in f["reason"]
+
+
+class TestAnotherResultTool:
+    """The guard forces whichever tool it is given; the supervised flow's verdict
+    goes through ``submit_verdict`` this way (RMK-246)."""
+
+    async def test_the_given_tool_is_injected_and_its_call_captured(self) -> None:
+        kit, channel, _counter = _make_kit(
+            "agent:boss",
+            submit_on_attempt=1,
+            payload={"approved": True, "feedback": "", "next_task": "write it up"},
+            tool_name="submit_verdict",
+        )
+        seen: list[list[str]] = []
+        original_broadcast = kit._get_router.return_value.broadcast.side_effect
+
+        async def _spy(event, binding, context):
+            seen.append([t.name for t in channel._injected_tools])
+            return await original_broadcast(event, binding, context)
+
+        kit._get_router.return_value.broadcast.side_effect = _spy
+
+        out = await _run_with_structured_result(
+            kit, "parent::task-1", "judge it", max_result_retries=2, result_tool=SUBMIT_VERDICT
+        )
+
+        assert json.loads(out) == {"approved": True, "feedback": "", "next_task": "write it up"}
+        assert seen == [["submit_verdict"]]
+        assert channel._injected_tools == []
+
+    async def test_its_reminder_and_its_missing_payload_are_used(self) -> None:
+        kit, _channel, counter = _make_kit(
+            "agent:boss", submit_on_attempt=None, tool_name="submit_verdict"
+        )
+
+        out = await _run_with_structured_result(
+            kit, "parent::task-1", "judge it", max_result_retries=1, result_tool=SUBMIT_VERDICT
+        )
+
+        verdict = json.loads(out)
+        assert verdict["approved"] is False
+        assert verdict["next_task"] is None
+        assert counter["messages"][1] == SUBMIT_VERDICT.reminder
+
+    async def test_a_prefixed_gateway_call_is_found_in_the_trace(self) -> None:
+        kit = _make_cc_kit(
+            [
+                _tool_call_event(
+                    "mcp__gateway__submit_verdict",
+                    {"approved": False, "feedback": "add sources", "next_task": ""},
+                )
+            ]
+        )
+
+        found = await _scan_for_submitted_result(kit, "parent::task-1", SUBMIT_VERDICT)
+
+        assert found == {"approved": False, "feedback": "add sources", "next_task": None}
