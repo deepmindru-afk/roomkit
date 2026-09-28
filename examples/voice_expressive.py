@@ -1,21 +1,22 @@
 """RoomKit -- ElevenLabs expressive voice assistant.
 
-Demonstrates ElevenLabs v3 Conversational TTS with expressive mode.
-The AI responds with emotion tags ([laughs], [whispers], [sighs], etc.)
+Demonstrates ElevenLabs expressive mode on Eleven v4 Turbo.
+The AI responds with audio tags ([laughs], [whispers], [sighs], etc.)
 that ElevenLabs renders with matching tone, timing, and delivery.
 
 Audio flows:
 
-  Mic -> Deepgram STT -> Claude -> ElevenLabs v3 TTS -> Speaker
+  Mic -> Deepgram STT -> Claude -> ElevenLabs v4 Turbo TTS -> Speaker
 
-The system prompt instructs Claude to use expressive tags naturally.
-Tags last ~4-5 words before reverting to normal delivery.
+The system prompt instructs Claude to use audio tags naturally. Tags can
+be stacked (``[whispers] [excited]``); each response continues the voice of
+the previous ones through request stitching.
 
-Supported tags:
+Tags used here (v4 documents many more):
   [laughs]    — laughter
   [whispers]  — soft/quiet speech
   [sighs]     — audible sigh
-  [slow]      — slower pacing
+  [pause]     — a beat of silence
   [excited]   — energetic delivery
 
 Requirements:
@@ -60,8 +61,10 @@ tags naturally to convey emotion — but don't overuse them:
   [laughs]    when something is genuinely funny
   [whispers]  for dramatic effect or secrets
   [sighs]     for sympathy, tiredness, or resignation
-  [slow]      for emphasis or gravitas
+  [pause]     before something that deserves weight
   [excited]   for enthusiasm and energy
+
+Tags can be stacked: "[whispers] [excited] Guess what?"
 
 Example: "[excited] Oh, that's such a great idea! [laughs] I love it."
 
@@ -95,7 +98,7 @@ async def main() -> None:
             api_key=env["ELEVENLABS_API_KEY"],
             voice_id=os.environ.get("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM"),
             output_format="pcm_24000",
-            expressive=True,  # <-- enables v3 Conversational + expressive tags
+            expressive=True,  # <-- Eleven v4 Turbo + inline audio tags
         )
     )
 

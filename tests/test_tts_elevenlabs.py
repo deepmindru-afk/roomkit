@@ -4,10 +4,14 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from roomkit.voice.tts.elevenlabs import (
     EXPRESSIVE_TAGS,
     MODEL_MULTILINGUAL_V2,
     MODEL_V3,
+    MODEL_V4,
+    MODEL_V4_TURBO,
     ElevenLabsConfig,
     ElevenLabsTTSProvider,
 )
@@ -72,7 +76,7 @@ class TestProviderBasics:
         assert provider.supports_streaming_input is False
 
     def test_supports_streaming_input_v3_false(self):
-        provider = ElevenLabsTTSProvider(ElevenLabsConfig(api_key="k", expressive=True))
+        provider = ElevenLabsTTSProvider(ElevenLabsConfig(api_key="k", model_id=MODEL_V3))
         assert provider.supports_streaming_input is False
 
 
@@ -82,13 +86,13 @@ class TestProviderBasics:
 
 
 class TestExpressiveMode:
-    def test_expressive_sets_v3_model(self):
-        """expressive=True should force model to v3 conversational."""
+    def test_expressive_sets_v4_turbo_model(self):
+        """expressive=True picks Eleven v4 Turbo."""
         provider = ElevenLabsTTSProvider(ElevenLabsConfig(api_key="k", expressive=True))
-        assert provider._config.model_id == MODEL_V3
+        assert provider._config.model_id == MODEL_V4_TURBO
 
-    def test_expressive_overrides_explicit_model(self):
-        """expressive=True overrides any explicit model_id."""
+    def test_expressive_overrides_a_model_without_audio_tags(self):
+        """expressive=True replaces a model_id that does not render audio tags."""
         provider = ElevenLabsTTSProvider(
             ElevenLabsConfig(
                 api_key="k",
@@ -96,7 +100,15 @@ class TestExpressiveMode:
                 expressive=True,
             )
         )
-        assert provider._config.model_id == MODEL_V3
+        assert provider._config.model_id == MODEL_V4_TURBO
+
+    @pytest.mark.parametrize("model_id", [MODEL_V4, MODEL_V3, "eleven_v3_conversational"])
+    def test_expressive_keeps_a_model_with_audio_tags(self, model_id):
+        """An explicit v3 or v4 model already renders the tags and is kept."""
+        provider = ElevenLabsTTSProvider(
+            ElevenLabsConfig(api_key="k", model_id=model_id, expressive=True)
+        )
+        assert provider._config.model_id == model_id
 
     def test_non_expressive_keeps_model(self):
         """Without expressive, model_id is untouched."""
@@ -107,7 +119,12 @@ class TestExpressiveMode:
 
     def test_is_v3_model_expressive(self):
         provider = ElevenLabsTTSProvider(ElevenLabsConfig(api_key="k", expressive=True))
-        assert provider._is_v3_model() is True
+        assert provider._is_v3_model() is False
+
+    @pytest.mark.parametrize("model_id", [MODEL_V4, MODEL_V4_TURBO])
+    def test_is_v3_model_v4(self, model_id):
+        provider = ElevenLabsTTSProvider(ElevenLabsConfig(api_key="k", model_id=model_id))
+        assert provider._is_v3_model() is False
 
     def test_is_v3_model_explicit(self):
         provider = ElevenLabsTTSProvider(ElevenLabsConfig(api_key="k", model_id=MODEL_V3))
@@ -144,12 +161,25 @@ class TestVoiceSettings:
             "use_speaker_boost": False,
         }
 
+    def test_expressive_includes_all_settings(self):
+        """Expressive mode runs on v4 Turbo, which takes every voice setting."""
+        provider = ElevenLabsTTSProvider(
+            ElevenLabsConfig(api_key="k", expressive=True, style=0.3, use_speaker_boost=False)
+        )
+        settings = provider._build_voice_settings()
+        assert settings == {
+            "stability": 0.5,
+            "similarity_boost": 0.75,
+            "style": 0.3,
+            "use_speaker_boost": False,
+        }
+
     def test_v3_omits_style_and_speaker_boost(self):
         """v3 model should only include stability and similarity_boost."""
         provider = ElevenLabsTTSProvider(
             ElevenLabsConfig(
                 api_key="k",
-                expressive=True,
+                model_id=MODEL_V3,
                 style=0.5,
                 use_speaker_boost=True,
             )
@@ -195,7 +225,7 @@ class TestSynthesize:
         assert result.transcript == "Hello world"
 
     async def test_synthesize_expressive_payload(self):
-        """Expressive mode sends v3 model."""
+        """Expressive mode sends the v4 Turbo model."""
         provider = ElevenLabsTTSProvider(ElevenLabsConfig(api_key="k", expressive=True))
 
         mock_client = MagicMock()
@@ -208,7 +238,7 @@ class TestSynthesize:
             await provider.synthesize("[laughs] That's funny!")
 
         call_kwargs = mock_client.text_to_speech.convert.call_args.kwargs
-        assert call_kwargs["model_id"] == MODEL_V3
+        assert call_kwargs["model_id"] == MODEL_V4_TURBO
         assert call_kwargs["text"] == "[laughs] That's funny!"
 
     async def test_synthesize_custom_voice(self):
@@ -301,7 +331,7 @@ class TestStreamingLatency:
 
     async def test_v3_excludes_latency_param(self):
         """v3 models skip optimize_streaming_latency."""
-        provider = ElevenLabsTTSProvider(ElevenLabsConfig(api_key="k", expressive=True))
+        provider = ElevenLabsTTSProvider(ElevenLabsConfig(api_key="k", model_id=MODEL_V3))
         assert provider._is_v3_model() is True
 
 

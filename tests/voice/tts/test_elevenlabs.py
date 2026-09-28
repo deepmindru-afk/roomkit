@@ -85,11 +85,11 @@ class TestElevenLabsTTSProvider:
             similarity_boost=0.75,
             style=0.3,
         )
-        # Expressive mode forces v3 model and omits style/speaker_boost
-        assert provider._config.model_id == "eleven_v3"
+        # Expressive mode picks v4 Turbo, which takes style and speaker boost
+        assert provider._config.model_id == "eleven_v4_turbo"
         settings = provider._build_voice_settings()
-        assert "style" not in settings
-        assert "use_speaker_boost" not in settings
+        assert settings["style"] == 0.3
+        assert settings["use_speaker_boost"] is True
         assert settings["stability"] == 0.5
         assert settings["similarity_boost"] == 0.75
 

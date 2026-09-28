@@ -1,11 +1,11 @@
 """ElevenLabs text-to-speech provider.
 
-Supports expressive mode via the ``eleven_v3`` model, and request
+Supports expressive mode via the ``eleven_v4_turbo`` model, and request
 stitching from the TTS conversation context (RFC §12.2.2): each response
 continues the voice of the previous ones.
-When ``expressive=True``, synthesis uses v3 Conversational TTS which
-understands expressive tags such as ``[laughs]``, ``[whispers]``,
-``[sighs]``, ``[slow]``, and ``[excited]`` embedded in the text.
+When ``expressive=True``, synthesis uses Eleven v4 Turbo, which renders
+audio tags such as ``[laughs]``, ``[whispers]``, ``[sighs]``, ``[pause]``
+and ``[excited]`` embedded in the text, alone or stacked.
 
 .. note::
 
@@ -36,11 +36,18 @@ logger = logging.getLogger(__name__)
 
 # Model ID constants
 MODEL_MULTILINGUAL_V2 = "eleven_multilingual_v2"
-MODEL_TURBO_V2_5 = "eleven_turbo_v2_5"
+MODEL_TURBO_V2_5 = "eleven_turbo_v2_5"  # deprecated by ElevenLabs for MODEL_FLASH_V2_5
 MODEL_FLASH_V2_5 = "eleven_flash_v2_5"
 MODEL_V3 = "eleven_v3"
+MODEL_V4 = "eleven_v4"
+MODEL_V4_TURBO = "eleven_v4_turbo"
 
-# Expressive tags recognised by v3 Conversational TTS.
+# The model families that render inline audio tags: ``expressive=True``
+# keeps a ``model_id`` of one of them and picks v4 Turbo otherwise.
+_AUDIO_TAG_MODELS = ("eleven_v3", "eleven_v4")
+
+# Expressive tags recognised by v3 Conversational TTS. Eleven v4 documents a
+# wider set (``[pause]``, ``[long pause]``, sound effects) and lets tags stack.
 EXPRESSIVE_TAGS = frozenset({"[laughs]", "[whispers]", "[sighs]", "[slow]", "[excited]"})
 
 
@@ -48,9 +55,11 @@ EXPRESSIVE_TAGS = frozenset({"[laughs]", "[whispers]", "[sighs]", "[slow]", "[ex
 class ElevenLabsConfig:
     """Configuration for ElevenLabs TTS provider.
 
-    Set ``expressive=True`` to enable expressive mode (v3 Conversational
-    model).  This overrides ``model_id`` and disables voice settings that
-    are not supported by v3 (``style``, ``use_speaker_boost``).
+    Set ``expressive=True`` to enable expressive mode: synthesis uses Eleven
+    v4 Turbo (``eleven_v4_turbo``), which renders inline audio tags at
+    conversational latency. A ``model_id`` that already renders them
+    (``eleven_v4``, ``eleven_v3``) is kept. v3 models do not take ``style``
+    or ``use_speaker_boost``; both are left out of their requests.
     """
 
     api_key: str = field(repr=False)
@@ -63,7 +72,7 @@ class ElevenLabsConfig:
     output_format: str = "mp3_44100_128"  # mp3, pcm_16000, pcm_22050, etc.
     # Streaming options
     optimize_streaming_latency: int = 3  # 0-4, higher = lower latency
-    # Expressive mode — uses v3 Conversational TTS with emotion/tone tags
+    # Expressive mode — Eleven v4 Turbo with inline audio tags
     expressive: bool = False
     # Request stitching from the conversation context: the provider receives
     # its own previous turns (SELF) and sends their request ids, or their text.
@@ -75,15 +84,15 @@ class ElevenLabsTTSProvider(TTSProvider):
     """ElevenLabs text-to-speech provider with streaming support.
 
     When *expressive mode* is enabled (``config.expressive=True``), the
-    provider uses the ``eleven_v3`` model which supports
-    inline expressive tags (``[laughs]``, ``[whispers]``, etc.) and adapts
+    provider uses the ``eleven_v4_turbo`` model which supports
+    inline audio tags (``[laughs]``, ``[whispers]``, etc.) and adapts
     tone and timing based on conversational context.
     """
 
     def __init__(self, config: ElevenLabsConfig) -> None:
         self._config = config
-        if config.expressive:
-            self._config.model_id = MODEL_V3
+        if config.expressive and not config.model_id.startswith(_AUDIO_TAG_MODELS):
+            self._config.model_id = MODEL_V4_TURBO
         self._client: Any = None  # AsyncElevenLabs (lazy)
         self._voices_cache: list[VoiceInfo] | None = None
         self._request_ids = RequestIdLedger()

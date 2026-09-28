@@ -172,10 +172,27 @@ class TestProvider:
         provider, _ = _provider()
         assert provider.context_level == TTSContextLevel.SELF
 
-    @pytest.mark.parametrize("config", [{"use_context": False}, {"expressive": True}])
+    @pytest.mark.parametrize("config", [{"use_context": False}, {"model_id": "eleven_v3"}])
     def test_level_is_none_when_off_or_v3(self, config: dict[str, Any]) -> None:
         provider, _ = _provider(**config)
         assert provider.context_level == TTSContextLevel.NONE
+
+    @pytest.mark.parametrize(
+        "config",
+        [{"expressive": True}, {"model_id": "eleven_v4"}, {"model_id": "eleven_v4_turbo"}],
+    )
+    def test_v4_models_are_stitched(self, config: dict[str, Any]) -> None:
+        provider, _ = _provider(**config)
+        assert provider.context_level == TTSContextLevel.SELF
+
+    async def test_expressive_mode_carries_the_previous_request_id(self) -> None:
+        provider, calls = _provider(expressive=True)
+
+        await _drain(provider.synthesize_stream("One.", context=_context(next_turn_id="t0")))
+        await _drain(provider.synthesize_stream("Two.", context=_context(_turn("t0", "One."))))
+
+        assert calls[1]["model_id"] == "eleven_v4_turbo"
+        assert calls[1]["previous_request_ids"] == ["req-0"]
 
     async def test_the_second_call_carries_the_first_request_id(self) -> None:
         provider, calls = _provider()

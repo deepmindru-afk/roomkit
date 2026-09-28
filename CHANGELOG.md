@@ -7,8 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- ElevenLabs TTS constants `MODEL_V4` (`eleven_v4`) and `MODEL_V4_TURBO`
+  (`eleven_v4_turbo`) for the v4 models ElevenLabs released on 2026-09-28.
+  A v4 `model_id` already worked; both models take request stitching and
+  every voice setting (RMK-263).
+
 ### Changed
 
+- ElevenLabs `expressive=True` selects Eleven v4 Turbo (`eleven_v4_turbo`)
+  where it forced `eleven_v3` (RMK-263). v4 Turbo renders the same inline
+  audio tags, stacked if need be, at conversational latency, and unlike v3
+  it takes request stitching: an expressive voice now continues from one
+  response to the next, and `style` and `use_speaker_boost` are sent. The
+  voice sounds different; to keep v3, pass `model_id="eleven_v3"`. A
+  `model_id` that names a v3 or v4 model is no longer replaced by
+  `expressive=True`.
 - An `ON_TOOL_CALL` hook sees a call's structured copy and may rewrite it,
   and a blocked call carries none (RMK-262). The copy (MCP
   `structuredContent`), which the tool-call event carries for UI surfaces,
