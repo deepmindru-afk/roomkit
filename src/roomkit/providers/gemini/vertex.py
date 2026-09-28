@@ -69,7 +69,7 @@ class GeminiVertexConfig(GeminiConfig):
     """Gemini-on-Vertex configuration.
 
     Subclasses :class:`GeminiConfig`, inheriting every generation field
-    (``model``, ``max_tokens``, ``temperature``, ``thinking_level``) so the two
+    (``model``, ``max_tokens``, ``thinking_level``) so the two
     cannot drift. There is no API key on Vertex: the caller is authenticated
     either by an explicit service-account key or, failing that, by Application
     Default Credentials — the standard Google chain

@@ -1,8 +1,8 @@
 """An AI provider config carries no temperature: the turn's ``AIContext`` does (RMK-243).
 
-The field existed on nine configs and was never read, since ``AIChannel`` always
-sets ``AIContext.temperature``; a caller setting it on the config changed
-nothing and was not told. Passing it now is ignored, as it was before.
+Every provider sends ``AIContext.temperature``, which ``AIChannel`` always sets,
+so a temperature on the config would change nothing. A caller passing one is
+ignored, like any field the config does not declare.
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ def test_the_config_has_no_temperature_field(config: type[BaseModel]) -> None:
     assert "temperature" not in config.model_fields
 
 
-def test_passing_one_is_ignored_as_before() -> None:
+def test_passing_one_is_ignored() -> None:
     config = OpenAIConfig(api_key="k", model="m", temperature=0.2)  # type: ignore[call-arg]
 
     assert not hasattr(config, "temperature")

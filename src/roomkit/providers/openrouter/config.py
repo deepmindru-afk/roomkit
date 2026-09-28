@@ -10,7 +10,7 @@ class OpenRouterConfig(OpenAIConfig):
 
     OpenRouter exposes the OpenAI-compatible Chat Completions API for 300+
     models behind a single key, so this **subclasses** :class:`OpenAIConfig`
-    and inherits every request field (``temperature``, ``reasoning_effort``,
+    and inherits every request field (``reasoning_effort``,
     ``include_stream_usage``, ``use_max_completion_tokens``,
     ``supports_custom_temperature`` …). Inheriting — rather than re-declaring
     those fields — keeps the two configs from drifting apart: any field the

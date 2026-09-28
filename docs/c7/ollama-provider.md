@@ -48,7 +48,6 @@ OllamaConfig(
     host="http://localhost:11434",   # Ollama server
     model="qwen3:8b",                # any pulled model
     max_tokens=None,                 # → options.num_predict
-    temperature=0.7,                 # → options.temperature
     timeout=120.0,                   # long: cold-start + reasoning is slow
     think=None,                      # None = model default, True/False = explicit
     keep_alive="5m",                 # how long the model stays loaded

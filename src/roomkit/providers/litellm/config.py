@@ -14,7 +14,7 @@ class LiteLLMConfig(OpenAIConfig):
     endpoint, adding virtual keys, per-key budgets, and central routing — the
     self-hosted gateway pattern. It speaks the OpenAI Chat Completions API
     verbatim, so this **subclasses** :class:`OpenAIConfig` and inherits every
-    request field (``temperature``, ``reasoning_effort``,
+    request field (``reasoning_effort``,
     ``include_stream_usage``, ``use_max_completion_tokens``, ``extra_body`` …).
     Inheriting — rather than re-declaring those fields — keeps the two configs
     from drifting apart: any field the inherited
