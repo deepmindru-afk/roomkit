@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- ElevenLabs TTS can stream its text input over WebSocket (RMK-265): with
+  `ElevenLabsConfig(stream_input=True)` a streaming AI response is spoken
+  from its first sentence instead of once it is complete. First audio came
+  after 140 ms on v4 Turbo and flash v2.5 and 350 ms on multilingual v2,
+  against 2.6 to 3.9 s, with an LLM writing a sentence every 0.8 s. v4 and
+  v4 Turbo, expressive mode included, go over the Text to Dialogue socket,
+  which applies no voice settings (a warning says so when they differ from
+  their defaults); the v2 and v2.5 models go over the Text to Speech socket;
+  v3 has no socket. It is off by default: on a streamed response the Voice
+  Channel runs no `BEFORE_TTS` hook, a TTS failure ends the AI response
+  where it failed with `ON_ERROR` instead of storing it whole with
+  `tts_error`, and nothing is stitched across responses. The `elevenlabs`
+  extra declares `websockets`, which the SDK already installed.
 - ElevenLabs TTS constants `MODEL_V4` (`eleven_v4`) and `MODEL_V4_TURBO`
   (`eleven_v4_turbo`) for the v4 models ElevenLabs released on 2026-09-28.
   A v4 `model_id` already worked; both models take request stitching and

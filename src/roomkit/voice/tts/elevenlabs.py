@@ -1,8 +1,10 @@
 """ElevenLabs text-to-speech provider.
 
-Supports expressive mode via the ``eleven_v4_turbo`` model, and request
-stitching from the TTS conversation context (RFC §12.2.2): each response
-continues the voice of the previous ones.
+Supports expressive mode via the ``eleven_v4_turbo`` model, streaming text
+input over WebSocket (opt-in), so a streaming AI response is spoken from its
+first sentence, and request stitching from the TTS conversation context (RFC
+§12.2.2): a response synthesized over HTTP continues the voice of the previous
+ones.
 When ``expressive=True``, synthesis uses Eleven v4 Turbo, which renders
 audio tags such as ``[laughs]``, ``[whispers]``, ``[sighs]``, ``[pause]``
 and ``[excited]`` embedded in the text, alone or stacked.
@@ -18,12 +20,13 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import AsyncIterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import TYPE_CHECKING, Any
 
 from roomkit.providers.elevenlabs.voices import VOICES as ELEVENLABS_VOICES
 from roomkit.voice.base import AudioChunk
 from roomkit.voice.tts._elevenlabs_stitching import RequestIdLedger, request_id_of
+from roomkit.voice.tts._elevenlabs_ws import DialogueSocket, socket_for, stream_audio
 from roomkit.voice.tts.base import TTSProvider
 from roomkit.voice.tts.context import TTSContextLevel
 from roomkit.voice.voices import VoiceInfo, filter_voices
@@ -82,8 +85,15 @@ class ElevenLabsConfig:
     expressive: bool = False
     # Request stitching from the conversation context: the provider receives
     # its own previous turns (SELF) and sends their request ids, or their text.
-    # Not available on v3 models.
+    # Not available on v3 models, nor on the streaming-input socket.
     use_context: bool = True
+    # Streaming text input over WebSocket: a streaming AI response is spoken
+    # from its first sentence instead of once it is complete. v4 / v4 Turbo
+    # use the Text to Dialogue socket, which applies no voice settings; the
+    # v2 / v2.5 models use the Text to Speech socket; v3 has none. Opt-in: on
+    # that path the Voice Channel runs no BEFORE_TTS hook, a TTS failure ends
+    # the AI response where it failed, and nothing is stitched across responses.
+    stream_input: bool = False
 
 
 class ElevenLabsTTSProvider(TTSProvider):
@@ -104,6 +114,12 @@ class ElevenLabsTTSProvider(TTSProvider):
                 "ElevenLabs model %s does not take optimize_streaming_latency; it is not sent",
                 config.model_id,
             )
+        if self._dialogue_socket_drops_voice_settings():
+            logger.warning(
+                "ElevenLabs model %s streams input over the Text to Dialogue socket, "
+                "which applies no voice settings; set stream_input=False to keep them",
+                config.model_id,
+            )
         self._client: Any = None  # AsyncElevenLabs (lazy)
         self._voices_cache: list[VoiceInfo] | None = None
         self._request_ids = RequestIdLedger()
@@ -118,8 +134,8 @@ class ElevenLabsTTSProvider(TTSProvider):
 
     @property
     def supports_streaming_input(self) -> bool:
-        # The official SDK does not expose WebSocket input streaming.
-        return False
+        """True when ``stream_input`` is on and the model has a socket (v3 has none)."""
+        return self._config.stream_input and socket_for(self._config.model_id) is not None
 
     @property
     def context_level(self) -> TTSContextLevel:
@@ -141,6 +157,19 @@ class ElevenLabsTTSProvider(TTSProvider):
 
     def _takes_latency_param(self) -> bool:
         return self._config.model_id.startswith(_LATENCY_MODELS)
+
+    def _dialogue_socket_drops_voice_settings(self) -> bool:
+        """Whether voice settings set away from their defaults would be lost on
+        the Text to Dialogue socket."""
+        if not self.supports_streaming_input:
+            return False
+        if not isinstance(socket_for(self._config.model_id), DialogueSocket):
+            return False
+        defaults = {f.name: f.default for f in fields(ElevenLabsConfig)}
+        return any(
+            getattr(self._config, name) != defaults[name]
+            for name in ("stability", "similarity_boost", "style", "use_speaker_boost")
+        )
 
     def _query_params(self) -> dict[str, Any]:
         """The query arguments of a synthesis request: the output format, and
@@ -259,6 +288,53 @@ class ElevenLabsTTSProvider(TTSProvider):
             mime_type=mime_type,
             transcript=text,
             duration_seconds=duration,
+        )
+
+    async def synthesize_stream_input(
+        self,
+        text_stream: AsyncIterator[str],
+        *,
+        voice: str | None = None,
+        context: TTSContext | None = None,
+    ) -> AsyncIterator[AudioChunk]:
+        """Stream audio from a stream of text chunks, over one WebSocket.
+
+        Each chunk (a sentence, as the Voice Channel sends them) is spoken as
+        soon as it arrives. ``context`` is not used: neither socket stitches a
+        response to the previous ones.
+
+        Args:
+            text_stream: Async iterator yielding text chunks.
+            voice: Voice ID (uses default_voice if not specified).
+            context: The session's previous turns; unused on this path.
+
+        Yields:
+            AudioChunk with raw audio data, then a final empty chunk.
+        """
+        socket = socket_for(self._config.model_id) if self._config.stream_input else None
+        if socket is None:
+            raise NotImplementedError(
+                f"ElevenLabs model {self._config.model_id} does not stream input here."
+            )
+        voice_id = voice or self._config.voice_id
+        audio = stream_audio(
+            socket,
+            api_key=self._config.api_key,
+            voice_id=voice_id,
+            query={"model_id": self._config.model_id, **self._query_params()},
+            voice_settings=self._build_voice_settings(),
+            text_stream=text_stream,
+        )
+        try:
+            async for data in audio:
+                yield self._chunk(data)
+        finally:
+            await audio.aclose()
+        yield AudioChunk(
+            data=b"",
+            sample_rate=self._get_sample_rate(),
+            format=self._get_audio_format(),
+            is_final=True,
         )
 
     async def synthesize_stream(

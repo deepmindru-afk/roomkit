@@ -70,10 +70,14 @@ class TestProviderBasics:
         provider = ElevenLabsTTSProvider(ElevenLabsConfig(api_key="k", voice_id="custom"))
         assert provider.default_voice == "custom"
 
-    def test_supports_streaming_input_always_false(self):
-        """SDK migration disables streaming input for all models."""
+    def test_supports_streaming_input_off_by_default(self):
         provider = ElevenLabsTTSProvider(ElevenLabsConfig(api_key="k"))
         assert provider.supports_streaming_input is False
+
+    def test_supports_streaming_input_when_asked(self):
+        """The default model streams input over the Text to Speech socket."""
+        provider = ElevenLabsTTSProvider(ElevenLabsConfig(api_key="k", stream_input=True))
+        assert provider.supports_streaming_input is True
 
     def test_supports_streaming_input_v3_false(self):
         provider = ElevenLabsTTSProvider(ElevenLabsConfig(api_key="k", model_id=MODEL_V3))

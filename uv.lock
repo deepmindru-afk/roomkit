@@ -5818,6 +5818,7 @@ docs = [
 ]
 elevenlabs = [
     { name = "elevenlabs" },
+    { name = "websockets" },
 ]
 fastrtc = [
     { name = "aiortc" },
@@ -6209,6 +6210,7 @@ requires-dist = [
     { name = "vui-tts", marker = "python_full_version < '3.13' and extra == 'vui'", specifier = ">=1.1.4,<1.2" },
     { name = "websockets", marker = "extra == 'all'", specifier = ">=14.2" },
     { name = "websockets", marker = "extra == 'dev'", specifier = ">=14.2" },
+    { name = "websockets", marker = "extra == 'elevenlabs'", specifier = ">=14.2" },
     { name = "websockets", marker = "extra == 'meta-stt'", specifier = ">=14.2" },
     { name = "websockets", marker = "extra == 'realtime-deepgram'", specifier = ">=14.2" },
     { name = "websockets", marker = "extra == 'realtime-openai'", specifier = ">=14.2" },

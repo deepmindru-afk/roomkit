@@ -54,10 +54,10 @@ class TestElevenLabsTTSProvider:
         provider = _make_provider(el, api_key="k", voice_id="custom-voice")
         assert provider.default_voice == "custom-voice"
 
-    def test_supports_streaming_input_false(self) -> None:
+    def test_supports_streaming_input_follows_the_flag(self) -> None:
         el = _mock_elevenlabs_module()
-        provider = _make_provider(el, api_key="k")
-        assert provider.supports_streaming_input is False
+        assert _make_provider(el, api_key="k").supports_streaming_input is False
+        assert _make_provider(el, api_key="k", stream_input=True).supports_streaming_input is True
 
     def test_voice_settings_normal_mode(self) -> None:
         el = _mock_elevenlabs_module()

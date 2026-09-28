@@ -68,7 +68,7 @@ sherpa-onnx = [
     "sherpa-onnx>=1.12.26",
     "sherpa-onnx-core>=1.12.26; platform_machine != 'armv7l'",
 ]
-elevenlabs = ["elevenlabs>=2.40"]
+elevenlabs = ["elevenlabs>=2.40", "websockets>=14.2"]
 qwen-tts = ["qwen-tts>=0.1"]
 qwen-asr = ["qwen-asr>=0.0.4"]
 neutts = ["neutts>=0.1"]

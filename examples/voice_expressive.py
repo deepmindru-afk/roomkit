@@ -9,8 +9,9 @@ Audio flows:
   Mic -> Deepgram STT -> Claude -> ElevenLabs v4 Turbo TTS -> Speaker
 
 The system prompt instructs Claude to use audio tags naturally. Tags can
-be stacked (``[whispers] [excited]``); each response continues the voice of
-the previous ones through request stitching.
+be stacked (``[whispers] [excited]``). Claude's reply is spoken from its
+first sentence: the provider streams it to ElevenLabs over the Text to
+Dialogue WebSocket as Claude writes it (``stream_input=True``).
 
 Tags used here (v4 documents many more):
   [laughs]    — laughter
@@ -99,6 +100,9 @@ async def main() -> None:
             voice_id=os.environ.get("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM"),
             output_format="pcm_24000",
             expressive=True,  # <-- Eleven v4 Turbo + inline audio tags
+            # Each sentence is spoken as Claude writes it, over the Text to
+            # Dialogue WebSocket. No BEFORE_TTS hook runs on that path.
+            stream_input=True,
         )
     )
 
