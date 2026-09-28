@@ -31,6 +31,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now reads `delta.refusal`. Verified live on Gemini (a truncated stream
   included) and Anthropic.
 
+- `GeminiSTTConfig.speaker_segments` puts Gemini's speaker turns on
+  `transcribe()`'s result as the shared `SpeakerSegment`s (RMK-253, RFC
+  §12.2.3), and the provider then reports `supports_diarization`. It needs
+  `diarize` and is off by default: `diarize` has always been on, and a
+  diarizing STT is refused by a `VoiceChannel` behind a VAD.
+  `Transcript.speaker_segments()` converts a `transcribe_recording()` answer
+  the same way — word-timed to 100 ms on the recogniser, to the second
+  otherwise. `roomkit.voice.base.speaker_label` is the one label rule every
+  diarizing provider now applies: a string, `None` for an unattributed speaker
+  (`UU`, `PENDING`, `unknown`), and no leading "speaker" word (`"Speaker 1"` →
+  `"1"`), so a channel's default name is never "Speaker Speaker 1". Both
+  Gemini model kinds attributed the two-voice French dialogue's 5 turns
+  correctly (2026-09-27); `examples/meeting_transcription.py` prints the
+  shared segments.
 - `MetaAIProvider` converses on Meta's Muse Spark (`muse-spark-1.3`, 1.2, 1.1;
   Meta Model API) (RMK-252). It subclasses `OpenAIAIProvider` on Meta's Chat
   Completions, so tools, streaming and usage (reasoning and cached tokens) are
@@ -224,6 +238,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `delegate_workers` for good: the tool leaves the list when the first sub-run
   starts and comes back when the last one ends.
 
+- The Gemini recogniser's word timing no longer drags a turn back ten seconds
+  (RMK-253). On a change of speaker, `gemini-3.5-transcribe` sent the first
+  word's start ten seconds early (`"4.300s"` for a word ending at `"14.900s"`,
+  right after one ending at `"14.100s"`; measured 2026-09-27), so `Transcript`
+  gave that turn a start of `00:04`; a start that goes back before the
+  previous word's is now taken as that word's end.
 - The voice examples read their speech language from `VOICE_LANGUAGE`
   (RMK-238). They read `LANGUAGE`, which is the system's gettext variable: a
   French Linux desktop sets it to `fr_CA:fr`, so `voice_gemini.py`,

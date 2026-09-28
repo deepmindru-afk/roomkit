@@ -10,7 +10,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from roomkit.voice.base import AudioChunk, SpeakerSegment, TranscriptionResult
+from roomkit.voice.base import AudioChunk, SpeakerSegment, TranscriptionResult, speaker_label
 from roomkit.voice.stt.base import STTProvider
 
 if TYPE_CHECKING:
@@ -84,8 +84,7 @@ def _speaker_segments(words: Any, text: str) -> list[SpeakerSegment]:
     """
     runs: list[tuple[str | None, list[str], int | None, int | None]] = []
     for word in words or []:
-        speaker = _word_field(word, "speaker")
-        label = None if speaker is None else str(speaker)
+        label = speaker_label(_word_field(word, "speaker"))
         token = _word_field(word, "punctuated_word") or _word_field(word, "word") or ""
         start, end = _word_field(word, "start"), _word_field(word, "end")
         start_ms = None if start is None else round(start * 1000)

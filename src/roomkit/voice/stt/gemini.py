@@ -149,6 +149,12 @@ class GeminiSTTConfig:
             turns built from them. Recogniser only — a multimodal model always
             times its turns to the second and never its words. Turning it off
             lifts the recogniser's limit from 30 minutes to an hour.
+        speaker_segments: Put the speaker turns on :meth:`transcribe`'s result,
+            as ``TranscriptionResult.segments`` (RFC §12.2.3), and report
+            :attr:`supports_diarization`. Needs ``diarize``. Off by default: a
+            diarizing STT is refused by a ``VoiceChannel`` behind a VAD, where
+            labels would not compare across utterances, and ``diarize`` has
+            always been on.
     """
 
     api_key: str = field(repr=False)
@@ -162,6 +168,7 @@ class GeminiSTTConfig:
     mode: str = "verbatim"
     custom_vocabulary: list[str] = field(default_factory=list)
     word_timestamps: bool = True
+    speaker_segments: bool = False
 
     def __post_init__(self) -> None:
         if not self.api_key.strip():
@@ -176,6 +183,10 @@ class GeminiSTTConfig:
             raise ValueError("connect_timeout must be a positive finite number")
         if self.max_inline_bytes <= 0:
             raise ValueError("max_inline_bytes must be positive")
+        if self.speaker_segments and not self.diarize:
+            raise ValueError(
+                "speaker_segments needs diarize: without it every turn is labelled Speaker 1"
+            )
         self._check_recognition_options()
 
     def _check_recognition_options(self) -> None:
@@ -225,6 +236,11 @@ class GeminiSTTProvider(STTProvider):
     def supports_streaming(self) -> bool:
         """The API takes a complete recording; there is no stream to open."""
         return False
+
+    @property
+    def supports_diarization(self) -> bool:
+        """True with ``speaker_segments`` (and ``diarize``): results carry the turns."""
+        return self._config.diarize and self._config.speaker_segments
 
     # ------------------------------------------------------------------
     # Client and prompt
@@ -281,15 +297,16 @@ class GeminiSTTProvider(STTProvider):
 
         Returns:
             TranscriptionResult whose ``text`` carries the spoken words and
-            whose ``language`` carries what the model identified. Speaker turns
-            and timestamps are dropped by this shape — call
-            :meth:`transcribe_recording` for those.
+            whose ``language`` carries what the model identified. With
+            ``speaker_segments`` its ``segments`` carry the speaker turns;
+            :meth:`transcribe_recording` returns the full :class:`Transcript`.
         """
         transcript = await self.transcribe_recording(audio)
         return TranscriptionResult(
             text=transcript.plain_text,
             is_final=True,
             language=transcript.language or None,
+            segments=transcript.speaker_segments() if self.supports_diarization else [],
         )
 
     async def transcribe_recording(self, source: Any) -> Transcript:

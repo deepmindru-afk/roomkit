@@ -243,6 +243,26 @@ class TestTranscript:
         assert transcript.words[-1] == TranscriptWord("Oui.", 63.8, 64.1, "Speaker 2")
         assert transcript.language == "fr-CA"
 
+    async def test_a_start_sent_back_in_time_is_repaired(self) -> None:
+        # The live service's answer (2026-09-27): on a change of speaker the
+        # first word's start came ten seconds early, dragging its turn back.
+        answer = _answer(
+            "le mois de novembre. D'accord. Je",
+            [
+                _word("novembre.", "13.600s", "14.100s", "spk:0"),
+                _word("D'accord.", "4.300s", "14.900s", "spk:1"),
+                _word("Je", "15.200s", "15.300s", "spk:1"),
+            ],
+        )
+        provider, _ = _provider(answer)
+
+        transcript = await provider.transcribe_recording(_frame())
+
+        assert transcript.words[1] == TranscriptWord("D'accord.", 14.1, 14.9, "Speaker 2")
+        assert transcript.segments[1] == TranscriptSegment(
+            "Speaker 2", "00:14", "00:15", "D'accord. Je"
+        )
+
     async def test_words_without_speakers_make_one_turn(self) -> None:
         answer = _answer(
             "Bonjour à tous.",

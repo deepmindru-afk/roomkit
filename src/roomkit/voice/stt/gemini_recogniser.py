@@ -126,6 +126,12 @@ def _words(interaction: Any) -> list[TranscriptWord]:
 
     The service labels speakers ``spk:0``, ``spk:1``; the prompted path says
     ``Speaker 1``, ``Speaker 2``. One vocabulary whichever model answered.
+
+    A word's start is kept from going back before the previous word's: on a
+    change of speaker the service has sent the first word's start ten seconds
+    early (``"4.300s"`` for a word ending at ``"14.900s"``, right after one
+    ending at ``"14.100s"``; measured 2026-09-27), which dragged its whole
+    turn back. Such a start is taken as the previous word's end.
     """
     labels: dict[str, str] = {}
     words: list[TranscriptWord] = []
@@ -135,14 +141,11 @@ def _words(interaction: Any) -> list[TranscriptWord]:
         speaker = annotation.speaker
         if speaker is not None:
             speaker = labels.setdefault(speaker, f"Speaker {len(labels) + 1}")
-        words.append(
-            TranscriptWord(
-                text=annotation.text,
-                start=_seconds(annotation.start_offset),
-                end=_seconds(annotation.end_offset),
-                speaker=speaker,
-            )
-        )
+        start = _seconds(annotation.start_offset)
+        end = _seconds(annotation.end_offset)
+        if words and start < words[-1].start:
+            start = min(words[-1].end, end)
+        words.append(TranscriptWord(text=annotation.text, start=start, end=end, speaker=speaker))
     return words
 
 

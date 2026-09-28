@@ -15,6 +15,7 @@ from typing import Any
 
 from roomkit.providers.ai.base import ProviderError
 from roomkit.voice.base import SpeakerSegment, TranscriptionResult
+from roomkit.voice.base import speaker_label as speaker_label
 
 # 1011 is a server fault ("Max session duration reached" included) and 1013 a
 # rate limit: both are worth a new stream. 1008 is a refused request.
@@ -49,19 +50,6 @@ class MetaSTTError(ProviderError):
         super().__init__(message, retryable=retryable, provider="MetaSTT", status_code=status_code)
         self.code = code
         self.error_type = error_type
-
-
-# How the service spells a turn it could not attribute: ``unknown`` in the
-# REST text form; a turn without a ``speaker`` event reads as ``None`` anyway.
-_UNATTRIBUTED = frozenset({"", "unknown"})
-
-
-def speaker_label(value: Any) -> str | None:
-    """A vendor label as RoomKit carries it: a string, ``None`` when unattributed."""
-    if value is None:
-        return None
-    label = str(value).strip()
-    return None if label.lower() in _UNATTRIBUTED else label
 
 
 @dataclass

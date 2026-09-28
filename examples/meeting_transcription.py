@@ -108,6 +108,12 @@ def print_transcript(transcript: Transcript) -> None:
         print(f"=== first words of {len(transcript.words)}, timed by the recogniser ===")
         for word in transcript.words[:8]:
             print(f"  {word.start:6.1f}s–{word.end:6.1f}s  {word.speaker}: {word.text}")
+    # The same turns as the SpeakerSegment every diarizing STT returns
+    # (Meta, Deepgram): what transcribe() gives with speaker_segments=True.
+    print("=== as shared speaker segments ===")
+    for turn in transcript.speaker_segments():
+        start = (turn.start_ms or 0) / 1000
+        print(f"  {start:6.1f}s  speaker {turn.speaker}: {turn.text}")
 
 
 async def main() -> None:
