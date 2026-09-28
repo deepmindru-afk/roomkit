@@ -15,6 +15,7 @@ import logging
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
+from roomkit.channels._ai_policy import policy_admits, policy_refusal
 from roomkit.core.exceptions import ToolRefusedError
 from roomkit.models.enums import ChannelType
 from roomkit.models.tool_call import ToolCallEvent, ToolCallVerdict
@@ -29,6 +30,13 @@ logger = logging.getLogger("roomkit.channels.conference")
 
 MAX_RESULT_CHARS = 16384
 """The bound on a result the model reads: RealtimeVoiceChannel's default."""
+
+
+def declared_tools(config: ConferenceRealtimeConfig) -> list[dict[str, Any]] | None:
+    """The tools a conference declares to its provider: what its policy admits."""
+    if config.tools is None:
+        return None
+    return [t for t in config.tools if policy_admits(config.tool_policy, str(t.get("name", "")))]
 
 
 class ConferenceToolGate:
@@ -103,6 +111,9 @@ class ConferenceToolGate:
             return arguments, f"Tool '{name}' is not declared"
         params = declared.get(name, {}).get("parameters")
         schema = params if isinstance(params, dict) else None
+        if not policy_admits(config.tool_policy, name):
+            logger.warning("Conference tool %s blocked by policy", name)
+            return arguments, policy_refusal(name)
         if schema is not None:
             folded, fold_error = fold_hoisted_arguments(schema, arguments)
             arguments = folded if folded is not None else arguments

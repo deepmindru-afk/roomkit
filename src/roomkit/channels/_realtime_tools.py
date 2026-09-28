@@ -9,6 +9,7 @@ import threading
 import time
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from roomkit.channels._ai_policy import policy_admits, policy_refusal
 from roomkit.channels._skill_constants import TOOL_ACTIVATE_SKILL
 from roomkit.channels._tool_search_constants import TOOL_CALL_TOOL
 from roomkit.channels.ai import _current_loop_ctx, _ToolLoopContext
@@ -27,6 +28,7 @@ from roomkit.voice.base import VoiceSessionState
 if TYPE_CHECKING:
     from roomkit.core.framework import RoomKit
     from roomkit.models.context import RoomContext
+    from roomkit.tools.policy import ToolPolicy
     from roomkit.voice.backends.base import VoiceBackend
     from roomkit.voice.base import VoiceSession
     from roomkit.voice.realtime.provider import RealtimeVoiceProvider
@@ -95,6 +97,8 @@ class RealtimeToolsHost(Protocol):
     _mute_on_tool_call: bool
     _tool_result_max_length: int
     _skill_support: Any
+    _tool_policy: ToolPolicy | None
+    _session_roles: dict[str, str | None]
     _tool_search_support: Any
     _provider: RealtimeVoiceProvider
     _transport: VoiceBackend
@@ -159,6 +163,8 @@ class RealtimeToolsMixin:
     _mute_on_tool_call: bool
     _tool_result_max_length: int
     _skill_support: Any
+    _tool_policy: ToolPolicy | None
+    _session_roles: dict[str, str | None]
     _tool_search_support: Any
     _provider: RealtimeVoiceProvider
     _transport: VoiceBackend
@@ -785,13 +791,36 @@ class RealtimeToolsMixin:
         return bool(self._skill_support and self._skill_support.is_skill_tool(name))
 
     def _tool_reachable(self, name: str, session_id: str) -> bool:
-        """Whether the session may call *name* as far as skill gating goes.
+        """Whether the session may call *name*: its tool policy and skill gating.
 
         What Tool Search may name in its results and listings (RFC §21.1); the
-        pre-execution gate enforces the same gating on the call itself.
+        pre-execution gate enforces the same rule on the call itself.
         """
+        if not policy_admits(self._session_policy(session_id), name):
+            return False
         support = self._skill_support
         return support is None or not support.is_gated(name, session_id)
+
+    def _session_policy(self, session_id: str) -> ToolPolicy | None:
+        """The tool policy resolved for the session's participant (RFC §12.4)."""
+        if self._tool_policy is None:
+            return None
+        return self._tool_policy.resolve(self._session_roles.get(session_id))
+
+    def _policy_filter(self, session_id: str, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """The part of *tools* the session's policy admits."""
+        policy = self._session_policy(session_id)
+        if policy is None:
+            return tools
+        return [t for t in tools if policy_admits(policy, str(t.get("name", "")))]
+
+    async def _resolve_session_role(self, room_id: str | None, participant_id: str) -> str | None:
+        """The session participant's role, where a policy has overrides to read."""
+        policy = self._tool_policy
+        if policy is None or not policy.role_overrides or not (self._framework and room_id):
+            return None
+        participant = await self._framework.store.get_participant(room_id, participant_id)
+        return participant.role if participant is not None else None
 
     async def _authorize_realtime_tool(
         self,
@@ -850,6 +879,12 @@ class RealtimeToolsMixin:
                     json.dumps({"error": f"Invalid arguments for '{name}': {arg_error}"}),
                     None,
                 )
+
+        # Execution guard: the tool policy (RFC §12.4), resolved for the
+        # session's participant, before skill gating as on the classic path.
+        if not policy_admits(self._session_policy(session.id), name):
+            logger.warning("Realtime tool %s blocked by policy", name)
+            return arguments, json.dumps({"error": policy_refusal(name)}), None
 
         # Execution guard: skill gating (parity with the classic AI path).
         # Hiding a gated tool from the catalogue is not enforcement — the model

@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 from roomkit.voice.interruption import InterruptionStrategy
 
 if TYPE_CHECKING:
+    from roomkit.tools.policy import ToolPolicy
     from roomkit.voice.realtime.provider import RealtimeVoiceProvider
 
 
@@ -454,6 +455,11 @@ class ConferenceRealtimeConfig:
     Required when ``tools`` is set: a call nothing answers leaves the
     provider's turn waiting on a result that never comes.
     """
+
+    tool_policy: ToolPolicy | None = None
+    """Allow/deny rules for ``tools`` (RFC §21.1, §12.10.12): a denied tool is
+    not declared to the provider and a call to it is refused. The mix names no
+    participant, so the base rules apply and role overrides never do."""
 
     temperature: float | None = None
     """Sampling temperature, where the provider supports one."""

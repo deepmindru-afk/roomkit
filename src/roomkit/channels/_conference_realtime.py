@@ -34,7 +34,7 @@ from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._conference_mixer import ConferenceMixer
 from roomkit.channels._conference_operations import ConferenceResource
-from roomkit.channels._conference_tools import ConferenceToolGate
+from roomkit.channels._conference_tools import ConferenceToolGate, declared_tools
 from roomkit.core.task_utils import log_task_exception
 from roomkit.models.event import TextContent
 from roomkit.models.tool_call import ToolCallEvent
@@ -246,7 +246,7 @@ class ConferenceRealtime:
                         session,
                         system_prompt=config.system_prompt,
                         voice=config.voice,
-                        tools=config.tools,
+                        tools=declared_tools(config),
                         temperature=config.temperature,
                         input_sample_rate=config.input_sample_rate,
                         output_sample_rate=config.output_sample_rate,

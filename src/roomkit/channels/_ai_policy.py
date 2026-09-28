@@ -47,6 +47,21 @@ POLICY_EXEMPT_TOOL_NAMES: frozenset[str] = frozenset(
 )
 
 
+def policy_admits(policy: ToolPolicy | None, name: str) -> bool:
+    """Whether a channel's role-resolved *policy* admits *name* (RFC §21.1).
+
+    The one reading of the policy for every channel that carries one, AI or
+    realtime, and for a conference: the exempt names pass, anything else is
+    the policy's to allow.
+    """
+    return name in POLICY_EXEMPT_TOOL_NAMES or policy is None or policy.is_allowed(name)
+
+
+def policy_refusal(name: str) -> str:
+    """What the model reads of a call the tool policy refused."""
+    return f"Tool '{name}' is not permitted by the agent's tool policy."
+
+
 @runtime_checkable
 class ToolPolicyHost(Protocol):
     """Contract: capabilities a host class must provide for AIToolPolicyMixin.
@@ -177,10 +192,7 @@ class AIToolPolicyMixin:
         Skill gating aside: what the prompt may describe as available, a gated
         tool included, since activating its skill opens it.
         """
-        if name in POLICY_EXEMPT_TOOL_NAMES:
-            return True
-        policy = self._effective_tool_policy
-        return policy is None or policy.is_allowed(name)
+        return policy_admits(self._effective_tool_policy, name)
 
     def _gate_refusal(self, name: str) -> dict[str, str] | None:
         """Why the policy or skill gating refuses a call to *name*, or ``None``.
@@ -191,10 +203,9 @@ class AIToolPolicyMixin:
         """
         if name in POLICY_EXEMPT_TOOL_NAMES:
             return None
-        policy = self._effective_tool_policy
-        if policy is not None and not policy.is_allowed(name):
+        if not policy_admits(self._effective_tool_policy, name):
             logger.warning("Tool %s blocked by policy", name)
-            return {"error": f"Tool '{name}' is not permitted by the agent's tool policy."}
+            return {"error": policy_refusal(name)}
         if matches_any_pattern(name, self._gated_tool_names):
             logger.warning("Tool %s blocked by skill gating", name)
             return {
@@ -221,7 +232,7 @@ class AIToolPolicyMixin:
         """Whether the role-resolved *policy* and skill gating admit *name*."""
         if name in POLICY_EXEMPT_TOOL_NAMES:
             return True
-        if policy is not None and not policy.is_allowed(name):
+        if not policy_admits(policy, name):
             return False
         # ``gated`` holds ToolPolicy globs, not names (RFC §24.2): an
         # exact-membership test would let ``search_*`` gate nothing at all.

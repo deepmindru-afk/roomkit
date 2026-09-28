@@ -111,6 +111,7 @@ class RealtimeDelegationMixin:
     _update_idle_event: Any  # see RealtimeDelegationHost — cross-mixin
     _telemetry_provider: Any  # see RealtimeDelegationHost — cross-mixin
     _authorize_realtime_tool: Any  # see RealtimeToolsMixin
+    _policy_filter: Any  # see RealtimeToolsMixin
     _serve_gated_tool_call: Any  # see RealtimeToolsMixin
     _fire_tool_refusal: Any  # see RealtimeToolsMixin
 
@@ -258,7 +259,10 @@ class RealtimeDelegationMixin:
         with self._state_lock:
             first = session.id not in self._delegated_before
             self._delegated_before.add(session.id)
-            tools = [dict(t) for t in self._session_tools.get(session.id, [])]
+            tools = [
+                dict(t)
+                for t in self._policy_filter(session.id, self._session_tools.get(session.id, []))
+            ]
         request = ReasoningRequest(
             session=session,
             delegation_id=delegation_id,

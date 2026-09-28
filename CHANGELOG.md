@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `RealtimeVoiceChannel(tool_policy=...)` and `ConferenceRealtimeConfig(tool_policy=...)`
+  (RMK-286, RFC §12.4, §12.10.12): the `ToolPolicy` an `AIChannel` takes,
+  with the same exempt names. A denied tool is not declared to the session
+  (connection, reconfiguration, Tool Search reveals and skill activations
+  included) nor to a reasoning backend, is never named by `find_tools`, and
+  is refused at the gate, whether the call comes from the provider, from
+  spoken text the channel recovered or from a backend; the refusal reaches
+  `ON_TOOL_CALL`'s observers. Role overrides apply to the session's
+  participant, read when the session starts; a conference, whose mix names
+  no participant, applies the base rules. Default `None`: nothing changes.
+  See `examples/realtime_tool_policy.py`.
 - ElevenLabs TTS can stream its text input over WebSocket (RMK-265): with
   `ElevenLabsConfig(stream_input=True)` a streaming AI response is spoken
   from its first sentence instead of once it is complete. First audio came

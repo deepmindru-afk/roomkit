@@ -61,6 +61,7 @@ if TYPE_CHECKING:
     from roomkit.skills.executor import ScriptExecutor
     from roomkit.skills.models import Skill
     from roomkit.skills.registry import SkillRegistry
+    from roomkit.tools.policy import ToolPolicy
     from roomkit.voice.pipeline.config import AudioPipelineConfig
     from roomkit.voice.pipeline.engine import AudioPipeline
     from roomkit.voice.realtime.injection import VoiceInjectionResult
@@ -172,6 +173,7 @@ class RealtimeVoiceChannel(
         tool_search_threshold: int = 20,
         reasoning_backend: ReasoningBackend | None = None,
         reasoning_timeout_s: float = 120.0,
+        tool_policy: ToolPolicy | None = None,
     ) -> None:
         """Initialize realtime voice channel.
 
@@ -213,6 +215,13 @@ class RealtimeVoiceChannel(
             tool_result_max_length: Maximum character length of tool results
                 before truncation.  Large results (e.g. SVG payloads) can
                 overflow the provider's context window.  Defaults to 16384.
+            tool_policy: Allow/deny rules for the session's tools, with the
+                meaning they have on an ``AIChannel`` (RFC §21.1). A tool the
+                policy denies is not declared to the session, is never named
+                by Tool Search, and is refused if called anyway, whether the
+                call comes from the provider, from spoken text the channel
+                recovered, or from a reasoning backend. Role overrides apply
+                to the session's participant, read when the session starts.
             pipeline: Optional ``AudioPipelineConfig`` for local audio
                 processing (AEC, VAD, denoiser, etc.).  When set, mic
                 audio is processed through the pipeline before being
@@ -370,6 +379,9 @@ class RealtimeVoiceChannel(
         self._tool_handler = effective_handler
         self._mute_on_tool_call = mute_on_tool_call
         self._tool_result_max_length = tool_result_max_length
+        self._tool_policy = tool_policy
+        # session_id -> the participant's role, for the policy's role overrides.
+        self._session_roles: dict[str, str | None] = {}
         self._framework: RoomKit | None = None
         self._pipeline_config = pipeline
         self._pipeline: AudioPipeline | None = None
@@ -1108,6 +1120,7 @@ class RealtimeVoiceChannel(
             self._reported_tool_calls.pop(session.id, None)
             self._awaiting_tool_response.discard(session.id)
             self._session_tools.pop(session.id, None)
+            self._session_roles.pop(session.id, None)
             self._session_config_locks.pop(session.id, None)
             self._response_generation.pop(session.id, None)
             self._audio_drained.discard(session.id)
@@ -1164,6 +1177,10 @@ class RealtimeVoiceChannel(
         with self._state_lock:
             self._preconnect_audio[session.id] = []
             self._preconnect_audio_bytes[session.id] = 0
+
+        # The participant's role, for the tool policy's role overrides; read
+        # before any tool list is composed for the session.
+        self._session_roles[session.id] = await self._resolve_session_role(room_id, participant_id)
 
         # Initialize skill activation state for this session
         if self._skill_support:
@@ -1444,6 +1461,7 @@ class RealtimeVoiceChannel(
             self._session_rooms.pop(session.id, None)
             self._session_bindings.pop(session.id, None)
             self._session_tools.pop(session.id, None)
+            self._session_roles.pop(session.id, None)
             self._session_config_locks.pop(session.id, None)
             self._audio_generation.pop(session.id, None)
             self._session_transport_rates.pop(session.id, None)
@@ -1568,7 +1586,7 @@ class RealtimeVoiceChannel(
             names = {tool["name"] for tool in skill_defs}
             visible = skill_defs + [tool for tool in visible if tool.get("name") not in names]
             visible = self._skill_support.get_visible_tools(visible, session_id, pending_skill)
-        return visible
+        return self._policy_filter(session_id, visible)
 
     async def reconfigure_session(
         self,
