@@ -32,6 +32,7 @@ from roomkit.providers.ai.base import (
     AIToolCall,
 )
 from roomkit.providers.ai.mock import MockAIProvider
+from tests.tool_loop_modes import run_tool_loop
 
 # ---------------------------------------------------------------------------
 # The store
@@ -334,7 +335,7 @@ class TestToolUsageInContext:
         assert "Tools you've already used here" in (ctx.system_prompt or "")
         assert "SpotifyPlayback" in (ctx.system_prompt or "")
 
-    async def test_the_next_turn_sees_the_data_a_tool_returned(self) -> None:
+    async def test_the_next_turn_sees_the_data_a_tool_returned(self, streaming: bool) -> None:
         """A call executed through the tool loop reaches the next turn whole,
         not as the eviction placeholder its oversized result was given."""
         boards = '{"boards": [' + ", ".join(f'"Board {i}"' for i in range(1, 21)) + "]}"
@@ -350,7 +351,7 @@ class TestToolUsageInContext:
                     ),
                     AIResponse(content="Twenty boards.", finish_reason="stop"),
                 ],
-                streaming=True,
+                streaming=streaming,
             ),
             tool_handler=handler,
             evict_threshold_tokens=1000,
@@ -358,7 +359,7 @@ class TestToolUsageInContext:
         _current_loop_ctx.set(_ToolLoopContext(room_id="r1"))
         try:
             turn = AIContext(messages=[AIMessage(role="user", content="my boards?")])
-            [d async for d in ch._run_streaming_tool_loop(turn)]
+            await run_tool_loop(ch, turn, streaming=streaming)
             ctx = await ch._build_context(_event(), _binding(_CATALOGUE), _context())
         finally:
             _current_loop_ctx.set(None)
@@ -366,16 +367,16 @@ class TestToolUsageInContext:
         assert "Board 20" in prompt
         assert "Result too large" not in prompt
 
-    async def _digest_after_one_call(self, ch: AIChannel) -> str:
+    async def _digest_after_one_call(self, ch: AIChannel, *, streaming: bool) -> str:
         _current_loop_ctx.set(_ToolLoopContext(room_id="r1"))
         try:
             turn = AIContext(messages=[AIMessage(role="user", content="go")])
-            [d async for d in ch._run_streaming_tool_loop(turn)]
+            await run_tool_loop(ch, turn, streaming=streaming)
         finally:
             _current_loop_ctx.set(None)
         return ch._tool_usage.render_digest("r1") or ""
 
-    def _one_call_channel(self, handler: AsyncMock) -> AIChannel:
+    def _one_call_channel(self, handler: AsyncMock, *, streaming: bool) -> AIChannel:
         return AIChannel(
             "ai1",
             provider=MockAIProvider(
@@ -387,24 +388,24 @@ class TestToolUsageInContext:
                     ),
                     AIResponse(content="done", finish_reason="stop"),
                 ],
-                streaming=True,
+                streaming=streaming,
             ),
             tool_handler=handler,
         )
 
-    async def test_an_on_tool_call_override_is_what_is_remembered(self) -> None:
-        ch = self._one_call_channel(AsyncMock(return_value="raw data"))
+    async def test_an_on_tool_call_override_is_what_is_remembered(self, streaming: bool) -> None:
+        ch = self._one_call_channel(AsyncMock(return_value="raw data"), streaming=streaming)
         ch._tool_call_hook = AsyncMock(return_value="data as the hook rewrote it")
-        digest = await self._digest_after_one_call(ch)
+        digest = await self._digest_after_one_call(ch, streaming=streaming)
         assert "data as the hook rewrote it" in digest
         assert "raw data" not in digest
 
-    async def test_a_hook_that_raises_leaves_the_error_in_memory(self) -> None:
+    async def test_a_hook_that_raises_leaves_the_error_in_memory(self, streaming: bool) -> None:
         """The model was told the call failed: the memory must not show it the
         data the handler returned before the hook raised."""
-        ch = self._one_call_channel(AsyncMock(return_value="secret success"))
+        ch = self._one_call_channel(AsyncMock(return_value="secret success"), streaming=streaming)
         ch._tool_call_hook = AsyncMock(side_effect=RuntimeError("hook broke"))
-        digest = await self._digest_after_one_call(ch)
+        digest = await self._digest_after_one_call(ch, streaming=streaming)
         assert "Error executing tool 'lookup'" in digest
         assert "secret success" not in digest
 

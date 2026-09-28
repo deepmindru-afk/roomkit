@@ -28,6 +28,7 @@ from roomkit.tools.external import (
     ToolDecision,
 )
 from roomkit.tools.policy import ToolPolicy
+from tests.tool_loop_modes import respond
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -268,13 +269,13 @@ async def _trigger_ai(kit: RoomKit, ai: AIChannel, room_id: str) -> None:
         channel_type=ChannelType.AI,
     )
     context = await kit._build_context(room_id)
-    await ai.on_event(event, binding, context)
+    await respond(ai, event, binding, context)
 
 
 class TestBeforeToolUseHook:
-    async def test_hook_blocks_tool_execution(self) -> None:
+    async def test_hook_blocks_tool_execution(self, streaming: bool) -> None:
         """A BEFORE_TOOL_USE hook that blocks prevents the tool from running."""
-        provider = MockAIProvider(ai_responses=_make_tool_responses())
+        provider = MockAIProvider(ai_responses=_make_tool_responses(), streaming=streaming)
         ai = AIChannel(
             "ai-1",
             provider=provider,
@@ -299,9 +300,9 @@ class TestBeforeToolUseHook:
 
         assert "get_weather" in blocked_tools
 
-    async def test_hook_allows_tool_execution(self) -> None:
+    async def test_hook_allows_tool_execution(self, streaming: bool) -> None:
         """A BEFORE_TOOL_USE hook that allows lets the tool run normally."""
-        provider = MockAIProvider(ai_responses=_make_tool_responses())
+        provider = MockAIProvider(ai_responses=_make_tool_responses(), streaming=streaming)
         ai = AIChannel(
             "ai-1",
             provider=provider,
@@ -326,7 +327,7 @@ class TestBeforeToolUseHook:
 
         assert "get_weather" in observed_tools
 
-    async def test_hook_rewrites_arguments_before_the_handler_runs(self) -> None:
+    async def test_hook_rewrites_arguments_before_the_handler_runs(self, streaming: bool) -> None:
         """``metadata["arguments"]`` replaces what the tool actually receives.
 
         The mirror of ON_TOOL_CALL's result override: a redaction hook hands
@@ -338,7 +339,7 @@ class TestBeforeToolUseHook:
             seen_by_tool.append(args)
             return json.dumps({"ok": True})
 
-        provider = MockAIProvider(ai_responses=_make_tool_responses())
+        provider = MockAIProvider(ai_responses=_make_tool_responses(), streaming=streaming)
         ai = AIChannel(
             "ai-1",
             provider=provider,
@@ -369,7 +370,9 @@ class TestBeforeToolUseHook:
         # The downstream observer sees what ran, not what the model asked for.
         assert observed_by_on_tool_call == [{"city": "Montreal"}]
 
-    async def test_hook_cannot_rewrite_arguments_outside_the_tool_schema(self) -> None:
+    async def test_hook_cannot_rewrite_arguments_outside_the_tool_schema(
+        self, streaming: bool
+    ) -> None:
         """The payload after the hook is the one the execution guard must validate."""
         seen_by_tool: list[dict[str, Any]] = []
 
@@ -377,7 +380,7 @@ class TestBeforeToolUseHook:
             seen_by_tool.append(args)
             return json.dumps({"ok": True})
 
-        provider = MockAIProvider(ai_responses=_make_tool_responses())
+        provider = MockAIProvider(ai_responses=_make_tool_responses(), streaming=streaming)
         ai = AIChannel(
             "ai-1",
             provider=provider,
@@ -398,7 +401,7 @@ class TestBeforeToolUseHook:
 
         assert seen_by_tool == []
 
-    async def test_invalid_rewrite_shape_fails_closed(self) -> None:
+    async def test_invalid_rewrite_shape_fails_closed(self, streaming: bool) -> None:
         """An attempted non-object rewrite cannot fall back to original input."""
         seen_by_tool: list[dict[str, Any]] = []
 
@@ -406,7 +409,7 @@ class TestBeforeToolUseHook:
             seen_by_tool.append(args)
             return json.dumps({"ok": True})
 
-        provider = MockAIProvider(ai_responses=_make_tool_responses())
+        provider = MockAIProvider(ai_responses=_make_tool_responses(), streaming=streaming)
         ai = AIChannel(
             "ai-1",
             provider=provider,
@@ -427,7 +430,7 @@ class TestBeforeToolUseHook:
 
         assert seen_by_tool == []
 
-    async def test_in_place_hook_mutation_is_revalidated(self) -> None:
+    async def test_in_place_hook_mutation_is_revalidated(self, streaming: bool) -> None:
         """Mutating the event's dict cannot bypass post-hook schema checks."""
         seen_by_tool: list[dict[str, Any]] = []
 
@@ -435,7 +438,7 @@ class TestBeforeToolUseHook:
             seen_by_tool.append(args)
             return json.dumps({"ok": True})
 
-        provider = MockAIProvider(ai_responses=_make_tool_responses())
+        provider = MockAIProvider(ai_responses=_make_tool_responses(), streaming=streaming)
         ai = AIChannel(
             "ai-1",
             provider=provider,
@@ -457,7 +460,7 @@ class TestBeforeToolUseHook:
 
         assert seen_by_tool == []
 
-    async def test_hook_without_rewrite_leaves_arguments_alone(self) -> None:
+    async def test_hook_without_rewrite_leaves_arguments_alone(self, streaming: bool) -> None:
         """An allow with no ``arguments`` key keeps the model's own input."""
         seen_by_tool: list[dict[str, Any]] = []
 
@@ -465,7 +468,7 @@ class TestBeforeToolUseHook:
             seen_by_tool.append(args)
             return json.dumps({"ok": True})
 
-        provider = MockAIProvider(ai_responses=_make_tool_responses())
+        provider = MockAIProvider(ai_responses=_make_tool_responses(), streaming=streaming)
         ai = AIChannel(
             "ai-1",
             provider=provider,
@@ -547,9 +550,9 @@ class TestBeforeToolUseHook:
         assert "already wired to channel 'ai-one'" in caplog.text
         assert handler.channel_id == "ai-two"
 
-    async def test_multiple_hooks_priority_order(self) -> None:
+    async def test_multiple_hooks_priority_order(self, streaming: bool) -> None:
         """Multiple BEFORE_TOOL_USE hooks run in priority order; first block wins."""
-        provider = MockAIProvider(ai_responses=_make_tool_responses())
+        provider = MockAIProvider(ai_responses=_make_tool_responses(), streaming=streaming)
         ai = AIChannel(
             "ai-1",
             provider=provider,

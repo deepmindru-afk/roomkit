@@ -21,6 +21,7 @@ from roomkit.skills.parser import parse_frontmatter
 from roomkit.skills.registry import SkillRegistry
 from roomkit.tools.policy import ToolPolicy, matches_any_pattern
 from tests.test_skills_integration import ToolCallMockProvider, _binding, _ctx, make_event
+from tests.tool_loop_modes import respond
 
 # The shape §24.1 uses.
 RFC_EXAMPLE = """---
@@ -138,7 +139,9 @@ class TestAGlobGatedToolDoesNotRun:
         registry.discover(tmp_path)
         return registry
 
-    async def test_a_glob_gated_tool_does_not_execute(self, tmp_path: Path) -> None:
+    async def test_a_glob_gated_tool_does_not_execute(
+        self, tmp_path: Path, streaming: bool
+    ) -> None:
         ran: list[str] = []
 
         async def handler(name: str, args: dict[str, Any]) -> str:
@@ -146,7 +149,7 @@ class TestAGlobGatedToolDoesNotRun:
             return "searched"
 
         provider = ToolCallMockProvider(
-            tool_calls=[AIToolCall(id="tc1", name="search_web", arguments={})]
+            tool_calls=[AIToolCall(id="tc1", name="search_web", arguments={})], streaming=streaming
         )
         ch = AIChannel(
             "ai1",
@@ -155,7 +158,7 @@ class TestAGlobGatedToolDoesNotRun:
             tool_handler=handler,
             tools=[AITool(name="search_web", description="Search the web", parameters={})],
         )
-        await ch.on_event(make_event(body="find something"), _binding(), _ctx())
+        await respond(ch, make_event(body="find something"), _binding(), _ctx())
 
         assert ran == []
         tool_msg = [m for m in provider.calls[1].messages if m.role == "tool"]
@@ -163,7 +166,9 @@ class TestAGlobGatedToolDoesNotRun:
         assert "not available to this agent" in error
         assert "gated behind a skill" in error
 
-    async def test_a_tool_the_glob_does_not_cover_still_runs(self, tmp_path: Path) -> None:
+    async def test_a_tool_the_glob_does_not_cover_still_runs(
+        self, tmp_path: Path, streaming: bool
+    ) -> None:
         ran: list[str] = []
 
         async def handler(name: str, args: dict[str, Any]) -> str:
@@ -171,7 +176,7 @@ class TestAGlobGatedToolDoesNotRun:
             return "done"
 
         provider = ToolCallMockProvider(
-            tool_calls=[AIToolCall(id="tc1", name="send_email", arguments={})]
+            tool_calls=[AIToolCall(id="tc1", name="send_email", arguments={})], streaming=streaming
         )
         ch = AIChannel(
             "ai1",
@@ -180,6 +185,6 @@ class TestAGlobGatedToolDoesNotRun:
             tool_handler=handler,
             tools=[AITool(name="send_email", description="Send an email", parameters={})],
         )
-        await ch.on_event(make_event(body="mail it"), _binding(), _ctx())
+        await respond(ch, make_event(body="mail it"), _binding(), _ctx())
 
         assert ran == ["send_email"]

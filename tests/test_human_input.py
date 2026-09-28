@@ -14,6 +14,7 @@ from roomkit.models.enums import ChannelType
 from roomkit.models.pending_input import PendingInput, PendingInputEvent, PendingInputStatus
 from roomkit.tools.compose import compose_tool_handlers
 from roomkit.tools.human_input import HumanInputHandler, HumanInputToolHandler
+from tests.tool_loop_modes import respond
 
 # ── HumanInputHandler ────────────────────────────────────────────────
 
@@ -471,7 +472,7 @@ async def test_a_request_with_no_actor_says_so() -> None:
     assert pending.actor_id is None
 
 
-async def test_request_names_the_speaker_through_the_framework() -> None:
+async def test_request_names_the_speaker_through_the_framework(streaming: bool) -> None:
     """Two people, one agent, one channel object: each request names the
     person whose turn raised it."""
     from roomkit import (
@@ -512,7 +513,7 @@ async def test_request_names_the_speaker_through_the_framework() -> None:
     )
     ai = AIChannel(
         "ai-ask",
-        provider=MockAIProvider(ai_responses=turn() * 2),
+        provider=MockAIProvider(ai_responses=turn() * 2, streaming=streaming),
         human_input_handler=human,
     )
     ws = WebSocketChannel("ws-ask")
@@ -546,7 +547,9 @@ async def test_request_names_the_speaker_through_the_framework() -> None:
 # ── Wiring diagnostics ──────────────────────────────────────────────
 
 
-def _warn_setup(tool_definitions: list[Any] | None) -> tuple[Any, Any, Any]:
+def _warn_setup(
+    tool_definitions: list[Any] | None, *, streaming: bool = False
+) -> tuple[Any, Any, Any]:
     from roomkit.models.channel import ChannelBinding
     from roomkit.models.context import RoomContext
     from roomkit.models.enums import ChannelCategory
@@ -558,7 +561,7 @@ def _warn_setup(tool_definitions: list[Any] | None) -> tuple[Any, Any, Any]:
     )
     channel = AIChannel(
         "ai-warn",
-        provider=MockAIProvider(responses=["ok", "ok"]),
+        provider=MockAIProvider(responses=["ok", "ok"], streaming=streaming),
         human_input_handler=human,
     )
     binding = ChannelBinding(
@@ -576,16 +579,17 @@ def _unoffered_warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
 
 async def test_warns_once_when_a_human_input_tool_is_never_offered(
     caplog: pytest.LogCaptureFixture,
+    streaming: bool,
 ) -> None:
     """A tool the turn never offers is a wiring mistake with no other symptom:
     the model is not told it exists, so no human is ever asked."""
     from tests.conftest import make_event
 
-    channel, binding, ctx = _warn_setup(None)
+    channel, binding, ctx = _warn_setup(None, streaming=streaming)
 
     with caplog.at_level(logging.WARNING, logger="roomkit.channels.ai"):
         for _ in range(2):
-            await channel.on_event(make_event(room_id="r", channel_id="ws"), binding, ctx)
+            await respond(channel, make_event(room_id="r", channel_id="ws"), binding, ctx)
 
     warnings = _unoffered_warnings(caplog)
     assert len(warnings) == 1, "the wiring does not change between turns"
@@ -595,16 +599,18 @@ async def test_warns_once_when_a_human_input_tool_is_never_offered(
 
 async def test_no_warning_when_the_handler_declares_the_tool(
     caplog: pytest.LogCaptureFixture,
+    streaming: bool,
 ) -> None:
     from roomkit.providers.ai.base import AITool
     from tests.conftest import make_event
 
     channel, binding, ctx = _warn_setup(
-        [AITool(name="AskUser", description="Ask.", parameters={"type": "object"})]
+        [AITool(name="AskUser", description="Ask.", parameters={"type": "object"})],
+        streaming=streaming,
     )
 
     with caplog.at_level(logging.WARNING, logger="roomkit.channels.ai"):
-        await channel.on_event(make_event(room_id="r", channel_id="ws"), binding, ctx)
+        await respond(channel, make_event(room_id="r", channel_id="ws"), binding, ctx)
 
     assert _unoffered_warnings(caplog) == []
 
@@ -868,9 +874,9 @@ async def test_rebuilt_channel_survives_its_predecessors_teardown() -> None:
     await kit.close()
 
 
-async def test_hook_deny_blocks_tool_via_framework() -> None:
+async def test_hook_deny_blocks_tool_via_framework(streaming: bool) -> None:
     from roomkit import HookExecution, HookResult, HookTrigger, RoomKit
-    from roomkit.providers.ai.base import AIResponse, AIToolCall
+    from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
     from roomkit.providers.ai.mock import MockAIProvider
 
     kit = RoomKit()
@@ -883,10 +889,23 @@ async def test_hook_deny_blocks_tool_via_framework() -> None:
                 tool_calls=[AIToolCall(id="tc-1", name="AskUser", arguments={"q": "?"})],
             ),
             AIResponse(content="OK, moving on.", finish_reason="stop"),
-        ]
+        ],
+        streaming=streaming,
     )
 
-    human = HumanInputToolHandler(tool_names={"AskUser"}, timeout=5)
+    human = HumanInputToolHandler(
+        tool_names={"AskUser"},
+        timeout=5,
+        # Declared, so the model's call reaches the handler and its hook
+        # rather than being refused as a tool the turn never offered.
+        tool_definitions=[
+            AITool(
+                name="AskUser",
+                description="Ask the human.",
+                parameters={"type": "object", "properties": {}},
+            )
+        ],
+    )
     ai = AIChannel("ai-deny", provider=provider, human_input_handler=human)
 
     kit.register_channel(ai)
@@ -906,9 +925,6 @@ async def test_hook_deny_blocks_tool_via_framework() -> None:
     kit.register_channel(ws)
     await kit.attach_channel("deny-room", "ws-test")
 
-    inbox: list = []
-    ws.register_connection("c1", lambda _conn, ev: inbox.append(ev), room_id="deny-room")
-
     await kit.process_inbound(
         InboundMessage(
             channel_id="ws-test",
@@ -916,8 +932,15 @@ async def test_hook_deny_blocks_tool_via_framework() -> None:
             content=TextContent(body="hello"),
         )
     )
-    await asyncio.sleep(0.5)
 
-    # The AI should have received a rejection error and continued
-    assert len(inbox) > 0
+    # The AI read the hook's refusal as its tool result and carried on.
+    tool_results = [
+        str(part.result)
+        for message in provider.calls[1].messages
+        if message.role == "tool"
+        for part in message.content
+    ]
+    assert any("Human input rejected" in r for r in tool_results)
+    stored = await kit.store.list_events("deny-room")
+    assert stored[-1].content.body == "OK, moving on."
     await kit.close()

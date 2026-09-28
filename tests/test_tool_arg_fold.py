@@ -33,6 +33,7 @@ from roomkit.models.tool_call import ToolCallEvent
 from roomkit.providers.ai.base import AIResponse, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
+from tests.tool_loop_modes import respond
 
 # A hub tool: one tool per domain, ``{action, params}``. FastMCP closes the
 # schema for a typed function, which is what makes a hoisted key a hard error.
@@ -121,7 +122,7 @@ async def _trigger_ai(kit: RoomKit, ai: AIChannel, room_id: str) -> None:
     binding = ChannelBinding(
         channel_id=ai.channel_id, room_id=room_id, channel_type=ChannelType.AI
     )
-    await ai.on_event(event, binding, await kit._build_context(room_id))
+    await respond(ai, event, binding, await kit._build_context(room_id))
 
 
 def _tool_error(provider: MockAIProvider) -> str:
@@ -132,21 +133,21 @@ def _tool_error(provider: MockAIProvider) -> str:
 
 
 class TestClassicChannel:
-    async def test_hoisted_call_executes_as_if_it_had_been_nested(self) -> None:
+    async def test_hoisted_call_executes_as_if_it_had_been_nested(self, streaming: bool) -> None:
         handler, calls = _recording_handler()
-        provider = _tool_call_provider("boards", HOISTED_CALL)
+        provider = _tool_call_provider("boards", HOISTED_CALL, streaming=streaming)
         kit, ai, room_id = await _ai_setup(provider, handler, [BOARDS_TOOL])
 
         await _trigger_ai(kit, ai, room_id)
 
         assert calls == [("boards", FOLDED_CALL)]
 
-    async def test_hook_and_handler_see_the_folded_payload(self) -> None:
+    async def test_hook_and_handler_see_the_folded_payload(self, streaming: bool) -> None:
         """The repair is upstream of every gate, so nothing downstream sees the
         model's flat shape — including the post-hook validation, which would
         otherwise refuse what was just repaired."""
         handler, calls = _recording_handler()
-        provider = _tool_call_provider("boards", HOISTED_CALL)
+        provider = _tool_call_provider("boards", HOISTED_CALL, streaming=streaming)
         kit, ai, room_id = await _ai_setup(provider, handler, [BOARDS_TOOL])
 
         seen_by_hook: list[dict[str, Any]] = []
@@ -188,10 +189,14 @@ class TestClassicChannel:
         assert end.arguments == FOLDED_CALL  # what ran
         assert calls == [("boards", FOLDED_CALL)]
 
-    async def test_both_forms_at_once_is_refused_with_a_message_that_decides(self) -> None:
+    async def test_both_forms_at_once_is_refused_with_a_message_that_decides(
+        self, streaming: bool
+    ) -> None:
         handler, calls = _recording_handler()
         provider = _tool_call_provider(
-            "boards", {"action": "x", "params": {"board_id": "1"}, "column_id": "2"}
+            "boards",
+            {"action": "x", "params": {"board_id": "1"}, "column_id": "2"},
+            streaming=streaming,
         )
         kit, ai, room_id = await _ai_setup(provider, handler, [BOARDS_TOOL])
 
@@ -202,9 +207,11 @@ class TestClassicChannel:
         assert "'column_id'" in error
         assert "inside 'params'" in error
 
-    async def test_unknown_argument_on_a_flat_tool_is_still_refused(self) -> None:
+    async def test_unknown_argument_on_a_flat_tool_is_still_refused(self, streaming: bool) -> None:
         handler, calls = _recording_handler()
-        provider = _tool_call_provider("get_weather", {"city": "Laval", "units": "metric"})
+        provider = _tool_call_provider(
+            "get_weather", {"city": "Laval", "units": "metric"}, streaming=streaming
+        )
         kit, ai, room_id = await _ai_setup(provider, handler, [WEATHER_TOOL])
 
         await _trigger_ai(kit, ai, room_id)
@@ -212,11 +219,11 @@ class TestClassicChannel:
         assert calls == []
         assert "unknown argument 'units'" in _tool_error(provider)
 
-    async def test_hook_rewritten_arguments_are_not_folded(self) -> None:
+    async def test_hook_rewritten_arguments_are_not_folded(self, streaming: bool) -> None:
         """A hook is user code: a flat payload out of one is its bug, and the
         refusal names it instead of quietly reshaping what it returned."""
         handler, calls = _recording_handler()
-        provider = _tool_call_provider("boards", FOLDED_CALL)
+        provider = _tool_call_provider("boards", FOLDED_CALL, streaming=streaming)
         kit, ai, room_id = await _ai_setup(provider, handler, [BOARDS_TOOL])
 
         @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="flatten")

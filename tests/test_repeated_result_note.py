@@ -25,6 +25,7 @@ import pytest
 from roomkit.channels.ai import AIChannel
 from roomkit.providers.ai.base import AIContext, AIMessage, AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
+from tests.tool_loop_modes import run_tool_loop
 
 NOTE = "identical result"
 
@@ -42,7 +43,7 @@ def _search(i: int) -> AIResponse:
 def _channel(responses: list[AIResponse], handler) -> AIChannel:
     return AIChannel(
         "ai1",
-        provider=MockAIProvider(ai_responses=responses, streaming=True),
+        provider=MockAIProvider(ai_responses=responses),
         tool_handler=handler,
     )
 
@@ -63,8 +64,8 @@ def _in_a_turn(ch: AIChannel):
         _current_loop_ctx.reset(token)
 
 
-async def _run(ch: AIChannel, ctx: AIContext) -> list[object]:
-    return [d async for d in ch._run_streaming_tool_loop(ctx)]
+async def _run(ch: AIChannel, ctx: AIContext, *, streaming: bool) -> None:
+    await run_tool_loop(ch, ctx, streaming=streaming)
 
 
 def _tool_results(ctx: AIContext) -> list[str]:
@@ -77,7 +78,9 @@ def _tool_results(ctx: AIContext) -> list[str]:
     ]
 
 
-async def test_the_note_reaches_the_model_where_the_argument_guard_is_silent() -> None:
+async def test_the_note_reaches_the_model_where_the_argument_guard_is_silent(
+    streaming: bool,
+) -> None:
     """The whole point, end to end through the real loop.
 
     Every call carries DIFFERENT arguments, so ``_repeated_call_guard`` never
@@ -92,7 +95,7 @@ async def test_the_note_reaches_the_model_where_the_argument_guard_is_silent() -
     ch = _channel([*[_search(i) for i in range(4)], AIResponse(content="done")], always_empty)
     ctx = AIContext(messages=[AIMessage(role="user", content="go")])
 
-    await _run(ch, ctx)
+    await _run(ch, ctx, streaming=streaming)
     results = _tool_results(ctx)
 
     assert len(results) == 4
@@ -108,7 +111,7 @@ async def test_the_note_reaches_the_model_where_the_argument_guard_is_silent() -
 
 
 @pytest.mark.parametrize("fails", [False, True], ids=["result", "error"])
-async def test_an_evicted_answer_is_still_recognised(fails: bool) -> None:
+async def test_an_evicted_answer_is_still_recognised(fails: bool, streaming: bool) -> None:
     """An oversized answer reaches the model as a placeholder whose id is
     unique per call; the repeat is counted on what the tool gave, not on it."""
     body = "row " * 20_000
@@ -124,7 +127,7 @@ async def test_an_evicted_answer_is_still_recognised(fails: bool) -> None:
     boards = AITool(name="boards", description="Search boards.", parameters={"type": "object"})
     ctx = AIContext(messages=[AIMessage(role="user", content="go")], tools=[boards])
 
-    await _run(ch, ctx)
+    await _run(ch, ctx, streaming=streaming)
     results = _tool_results(ctx)
 
     assert all(r.startswith("Result too large (") for r in results)

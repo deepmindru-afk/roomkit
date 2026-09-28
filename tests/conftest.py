@@ -53,6 +53,28 @@ def room() -> Room:
     return Room(id="test-room")
 
 
+@pytest.fixture(params=[False, True], ids=["non-streaming", "streaming"])
+def streaming(request: pytest.FixtureRequest) -> bool:
+    """Run a tool-loop test once per AIChannel generation mode.
+
+    Every in-repo provider streams, so production runs the streaming tool
+    loop; a test written against one loop only is blind to the other. Pass
+    the value to ``MockAIProvider(streaming=...)`` and drive the turn with
+    ``tests/tool_loop_modes.py``.
+
+    A known divergence between the loops is marked on the test with
+    ``@pytest.mark.xfail_streaming("RMK-…: …")`` (or ``xfail_non_streaming``):
+    that variant alone becomes a strict xfail, so the fix turns it red until
+    the mark goes.
+    """
+    marker = request.node.get_closest_marker(
+        "xfail_streaming" if request.param else "xfail_non_streaming"
+    )
+    if marker is not None:
+        request.applymarker(pytest.mark.xfail(strict=True, reason=marker.args[0]))
+    return request.param
+
+
 class PoolCheckoutRecorder:
     """Stand-in for a store's connection pool that records every checkout.
 

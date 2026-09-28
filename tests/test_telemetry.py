@@ -488,43 +488,39 @@ class TestLLMTelemetry:
         assert span.attributes[Attr.LLM_INPUT_TOKENS] == 10
         assert span.attributes[Attr.LLM_OUTPUT_TOKENS] == 5
 
-    async def test_ai_channel_tool_call_span(self) -> None:
+    async def test_ai_channel_tool_call_span(self, streaming: bool) -> None:
         mock = MockTelemetryProvider()
         kit = RoomKit(telemetry=mock)
 
         from roomkit.channels.ai import AIChannel
-        from roomkit.providers.ai.base import AIToolCall
+        from roomkit.providers.ai.base import AITool, AIToolCall
+        from roomkit.providers.ai.mock import MockAIProvider
 
-        call_count = 0
-
-        class _ToolAIProvider(AIProvider):
-            name = "tool-ai"
-            supports_streaming = False
-            supports_vision = False
-
-            @property
-            def model_name(self) -> str:
-                return "tool-model"
-
-            async def generate(self, context: AIContext) -> AIResponse:
-                nonlocal call_count
-                call_count += 1
-                if call_count == 1:
-                    return AIResponse(
-                        content="",
-                        tool_calls=[
-                            AIToolCall(id="t1", name="get_weather", arguments={"city": "Paris"})
-                        ],
-                    )
-                return AIResponse(
+        provider = MockAIProvider(
+            ai_responses=[
+                AIResponse(
+                    content="",
+                    tool_calls=[
+                        AIToolCall(id="t1", name="get_weather", arguments={"city": "Paris"})
+                    ],
+                ),
+                AIResponse(
                     content="It's sunny!",
                     usage={"input_tokens": 20, "output_tokens": 10},
-                )
+                ),
+            ],
+            streaming=streaming,
+        )
 
         async def tool_handler(name: str, args: dict) -> str:
             return '{"temp": 22}'
 
-        ai = AIChannel("ai1", provider=_ToolAIProvider(), tool_handler=tool_handler)
+        ai = AIChannel(
+            "ai1",
+            provider=provider,
+            tool_handler=tool_handler,
+            tools=[AITool(name="get_weather", description="Weather for a city.")],
+        )
         kit.register_channel(ai)
 
         ch = SimpleChannel("ch1")

@@ -24,6 +24,7 @@ from roomkit.providers.ai.base import (
 )
 from roomkit.providers.ai.mock import MockAIProvider
 from tests.conftest import make_event
+from tests.tool_loop_modes import respond
 
 _SCREENSHOT_TOOL = {
     "name": "take_screenshot",
@@ -103,7 +104,7 @@ async def test_streaming_loop_carries_the_part_list_too() -> None:
     assert result_part.result == _PARTS
 
 
-async def test_an_oversized_part_list_is_evicted_with_its_images_kept() -> None:
+async def test_an_oversized_part_list_is_evicted_with_its_images_kept(streaming: bool) -> None:
     """The text of a part list is bounded like a string result; the images
     still reach the provider, and the full text reads back."""
     big = "node " * 30_000  # an accessibility tree, ~150 KB
@@ -112,10 +113,11 @@ async def test_an_oversized_part_list_is_evicted_with_its_images_kept() -> None:
     async def handler(name: str, arguments: dict) -> list[AITextPart | AIImagePart]:
         return [AITextPart(text=big), image]
 
-    provider = MockAIProvider(ai_responses=_responses(), vision=True)
+    provider = MockAIProvider(ai_responses=_responses(), vision=True, streaming=streaming)
     ch = AIChannel("ai1", provider=provider, tool_handler=handler)
 
-    await ch.on_event(
+    await respond(
+        ch,
         make_event(body="go", channel_id="sms1"),
         _binding(),
         RoomContext(room=Room(id="r1")),
@@ -131,13 +133,14 @@ async def test_an_oversized_part_list_is_evicted_with_its_images_kept() -> None:
     assert big in ch._eviction._store.values()
 
 
-async def test_a_text_only_model_gets_the_text_of_a_part_list() -> None:
+async def test_a_text_only_model_gets_the_text_of_a_part_list(streaming: bool) -> None:
     """Like a message's images: an image a text-only model cannot take would
     fail the request, so it reads the parts' text and an [image] mark."""
-    provider = MockAIProvider(ai_responses=_responses(), vision=False)
+    provider = MockAIProvider(ai_responses=_responses(), vision=False, streaming=streaming)
     ch = AIChannel("ai1", provider=provider, tool_handler=_handler)
 
-    await ch.on_event(
+    await respond(
+        ch,
         make_event(body="go", channel_id="sms1"),
         _binding(),
         RoomContext(room=Room(id="r1")),
@@ -149,10 +152,10 @@ async def test_a_text_only_model_gets_the_text_of_a_part_list() -> None:
     assert result_part.result == "here\n[image]"
 
 
-async def test_the_hook_sees_the_text_a_text_only_model_reads() -> None:
+async def test_the_hook_sees_the_text_a_text_only_model_reads(streaming: bool) -> None:
     """ON_TOOL_CALL sees the shape the model reads: for a text-only model, the
     flattened text, so a redacting hook written for text covers it."""
-    provider = MockAIProvider(ai_responses=_responses(), vision=False)
+    provider = MockAIProvider(ai_responses=_responses(), vision=False, streaming=streaming)
     ch = AIChannel("ai1", provider=provider, tool_handler=_handler)
     seen: list[object] = []
 
@@ -162,7 +165,8 @@ async def test_the_hook_sees_the_text_a_text_only_model_reads() -> None:
 
     ch._tool_call_hook = observe
 
-    await ch.on_event(
+    await respond(
+        ch,
         make_event(body="go", channel_id="sms1"),
         _binding(),
         RoomContext(room=Room(id="r1")),

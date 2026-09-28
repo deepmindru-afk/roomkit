@@ -9,9 +9,11 @@ from unittest.mock import AsyncMock
 import pytest
 
 from roomkit import Agent, ChannelCategory, InboundMessage, RoomKit, TextContent
+from roomkit.models.enums import EventType
 from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from tests.test_framework import SimpleChannel
+from tests.tool_loop_modes import open_tool_calls
 
 
 class PausedTool:
@@ -112,9 +114,12 @@ async def test_caller_cancellation_drains_tool_and_preserves_other_room(streamin
         await kit.close()
 
 
-async def test_queued_turn_in_same_room_survives_cancelled_cascade() -> None:
+@pytest.mark.xfail_streaming(
+    "RMK-282: a streamed turn cancelled while its tool runs leaves the TOOL_CALL_START pending"
+)
+async def test_queued_turn_in_same_room_survives_cancelled_cascade(streaming: bool) -> None:
     tool = PausedTool(slow_cleanup=True)
-    kit, ai, provider = await setup(tool)
+    kit, ai, provider = await setup(tool, streaming=streaming)
     try:
         first = await kit.process_inbound(message(), room_id="owned", defer_delivery=True)
         await tool.started.wait()
@@ -130,7 +135,9 @@ async def test_queued_turn_in_same_room_survives_cancelled_cascade() -> None:
         await asyncio.wait_for(second.delivery.wait(), 2)
         assert second.cancellation_reason is None
         assert second.response_events[-1].content.body == "Resumed"
-        assert first.response_events == []
+        # The cancelled turn says nothing, and closes whatever call it stored.
+        assert not [e for e in first.response_events if e.type == EventType.MESSAGE]
+        assert open_tool_calls(first.response_events) == []
         assert ai.active_turns == 0
         assert len(provider.calls) == 2
     finally:
@@ -138,9 +145,9 @@ async def test_queued_turn_in_same_room_survives_cancelled_cascade() -> None:
         await kit.close()
 
 
-async def test_queued_cancel_does_not_wait_for_unrelated_tool() -> None:
+async def test_queued_cancel_does_not_wait_for_unrelated_tool(streaming: bool) -> None:
     tool = PausedTool()
-    kit, _, _ = await setup(tool)
+    kit, _, _ = await setup(tool, streaming=streaming)
     try:
         first = await kit.process_inbound(message(), room_id="owned", defer_delivery=True)
         await tool.started.wait()
@@ -164,9 +171,11 @@ async def test_queued_cancel_does_not_wait_for_unrelated_tool() -> None:
 
 @pytest.mark.parametrize("failure", ["cancel", "error"])
 @pytest.mark.parametrize("deferred", [False, True])
-async def test_post_commit_setup_failure_drains_owned_tool(failure: str, deferred: bool) -> None:
+async def test_post_commit_setup_failure_drains_owned_tool(
+    failure: str, deferred: bool, streaming: bool
+) -> None:
     tool = PausedTool()
-    kit, ai, _ = await setup(tool)
+    kit, ai, _ = await setup(tool, streaming=streaming)
 
     async def connect(*args: Any) -> None:
         await tool.started.wait()
@@ -204,9 +213,9 @@ async def test_post_commit_setup_failure_drains_owned_tool(failure: str, deferre
         await kit.close()
 
 
-async def test_cancel_under_room_lock_is_rejected_without_cancelling_turn() -> None:
+async def test_cancel_under_room_lock_is_rejected_without_cancelling_turn(streaming: bool) -> None:
     tool = PausedTool()
-    kit, _, _ = await setup(tool)
+    kit, _, _ = await setup(tool, streaming=streaming)
     try:
         result = await kit.process_inbound(message(), room_id="owned", defer_delivery=True)
         assert result.delivery is not None
@@ -254,9 +263,9 @@ async def test_deferred_cancel_is_terminal_and_releases_all_waiters(streaming: b
         await kit.close()
 
 
-async def test_second_caller_cancellation_does_not_interrupt_finalizer() -> None:
+async def test_second_caller_cancellation_does_not_interrupt_finalizer(streaming: bool) -> None:
     tool = PausedTool(slow_cleanup=True)
-    kit, ai, _ = await setup(tool)
+    kit, ai, _ = await setup(tool, streaming=streaming)
     try:
         caller = asyncio.create_task(kit.process_inbound(message(), room_id="owned"))
         await tool.started.wait()
@@ -276,9 +285,11 @@ async def test_second_caller_cancellation_does_not_interrupt_finalizer() -> None
         await kit.close()
 
 
-async def test_cancel_timeout_reports_incomplete_cleanup_and_can_be_joined() -> None:
+async def test_cancel_timeout_reports_incomplete_cleanup_and_can_be_joined(
+    streaming: bool,
+) -> None:
     tool = PausedTool(slow_cleanup=True)
-    kit, ai, _ = await setup(tool)
+    kit, ai, _ = await setup(tool, streaming=streaming)
     try:
         result = await kit.process_inbound(message(), room_id="owned", defer_delivery=True)
         handle = result.delivery
@@ -302,9 +313,9 @@ async def test_cancel_timeout_reports_incomplete_cleanup_and_can_be_joined() -> 
         await kit.close()
 
 
-async def test_cancelling_cancel_waiter_still_finishes_cleanup() -> None:
+async def test_cancelling_cancel_waiter_still_finishes_cleanup(streaming: bool) -> None:
     tool = PausedTool(slow_cleanup=True)
-    kit, ai, _ = await setup(tool)
+    kit, ai, _ = await setup(tool, streaming=streaming)
     try:
         result = await kit.process_inbound(message(), room_id="owned", defer_delivery=True)
         handle = result.delivery
@@ -327,9 +338,9 @@ async def test_cancelling_cancel_waiter_still_finishes_cleanup() -> None:
         await kit.close()
 
 
-async def test_cancelled_waiter_does_not_cancel_deferred_turn() -> None:
+async def test_cancelled_waiter_does_not_cancel_deferred_turn(streaming: bool) -> None:
     tool = PausedTool()
-    kit, _, _ = await setup(tool)
+    kit, _, _ = await setup(tool, streaming=streaming)
     try:
         result = await kit.process_inbound(message(), room_id="owned", defer_delivery=True)
         handle = result.delivery

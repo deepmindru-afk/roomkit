@@ -30,6 +30,7 @@ from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from tests.conftest import make_event
 from tests.test_framework import SimpleChannel
+from tests.tool_loop_modes import respond
 
 TRIAGE: dict[str, Any] = {
     "type": "object",
@@ -144,8 +145,9 @@ class TestTurn:
 
     async def test_tools_beside_the_schema_fail_the_turn_where_they_cannot_combine(
         self,
+        streaming: bool,
     ) -> None:
-        provider = MockAIProvider([ANSWER], response_schema=True)
+        provider = MockAIProvider([ANSWER], response_schema=True, streaming=streaming)
 
         async def handler(_name: str, _arguments: dict[str, Any]) -> str:
             return "{}"
@@ -160,13 +162,15 @@ class TestTurn:
         binding = _binding()
 
         with pytest.raises(ResponseSchemaError) as exc:
-            await channel.on_event(make_event(body="charged twice"), binding, _ctx(binding))
+            await respond(channel, make_event(body="charged twice"), binding, _ctx(binding))
 
         assert exc.value.reason == "unsupported"
         assert provider.calls == []
 
-    async def test_tools_beside_the_schema_run_where_they_combine(self) -> None:
-        provider = MockAIProvider([ANSWER], response_schema=True, response_schema_with_tools=True)
+    async def test_tools_beside_the_schema_run_where_they_combine(self, streaming: bool) -> None:
+        provider = MockAIProvider(
+            [ANSWER], response_schema=True, response_schema_with_tools=True, streaming=streaming
+        )
 
         async def handler(_name: str, _arguments: dict[str, Any]) -> str:
             return "{}"
@@ -180,9 +184,9 @@ class TestTurn:
         )
         binding = _binding()
 
-        output = await channel.on_event(make_event(body="charged twice"), binding, _ctx(binding))
+        run = await respond(channel, make_event(body="charged twice"), binding, _ctx(binding))
 
-        assert json.loads(output.response_events[0].content.body) == {"department": "billing"}
+        assert json.loads(run.text) == {"department": "billing"}
 
 
 async def _turn_through_the_room(ai: AIChannel) -> tuple[Any, list[RoomEvent], SimpleChannel]:

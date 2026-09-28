@@ -42,6 +42,7 @@ from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.skills.models import SkillMetadata
 from roomkit.skills.registry import SkillRegistry
 from roomkit.tools.policy import RoleOverride, ToolPolicy
+from tests.tool_loop_modes import run_tool_loop
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -238,7 +239,7 @@ class TestPolicyVisibilityFilter:
 
 
 class TestPolicyExecutionGuard:
-    async def test_denied_tool_blocked_at_execution(self) -> None:
+    async def test_denied_tool_blocked_at_execution(self, streaming: bool) -> None:
         """Defense-in-depth: even if a tool call sneaks past visibility, execution blocks it."""
         provider = MockAIProvider(
             ai_responses=[
@@ -256,12 +257,12 @@ class TestPolicyExecutionGuard:
             max_tool_rounds=5,
         )
         context = AIContext(messages=[AIMessage(role="user", content="go")])
-        await ch._run_tool_loop(context)
+        await run_tool_loop(ch, context, streaming=streaming)
 
         # The handler should NOT have been called for the forbidden tool
         handler.assert_not_called()
 
-    async def test_allowed_tool_executes(self) -> None:
+    async def test_allowed_tool_executes(self, streaming: bool) -> None:
         provider = MockAIProvider(
             ai_responses=[
                 _tool_response("safe_tool"),
@@ -278,7 +279,7 @@ class TestPolicyExecutionGuard:
             max_tool_rounds=5,
         )
         context = AIContext(messages=[AIMessage(role="user", content="go")])
-        await ch._run_tool_loop(context)
+        await run_tool_loop(ch, context, streaming=streaming)
 
         handler.assert_called_once_with("safe_tool", {"q": "test"})
 
@@ -367,7 +368,7 @@ class TestSkillGatingVisibility:
 
 
 class TestSkillGatingExecution:
-    async def test_gated_tool_blocked_at_execution(self) -> None:
+    async def test_gated_tool_blocked_at_execution(self, streaming: bool) -> None:
         """Gated tool execution returns helpful error before activation."""
         provider = MockAIProvider(
             ai_responses=[
@@ -385,12 +386,12 @@ class TestSkillGatingExecution:
             max_tool_rounds=5,
         )
         context = AIContext(messages=[AIMessage(role="user", content="go")])
-        await ch._run_tool_loop(context)
+        await run_tool_loop(ch, context, streaming=streaming)
 
         # Handler not called — gating blocked it
         handler.assert_not_called()
 
-    async def test_gated_tool_allowed_after_activation(self) -> None:
+    async def test_gated_tool_allowed_after_activation(self, streaming: bool) -> None:
         """After activate_skill within the same tool loop, gated tools execute."""
         # Sequence: activate_skill("analytics") -> run_query
         provider = MockAIProvider(
@@ -421,7 +422,7 @@ class TestSkillGatingExecution:
             max_tool_rounds=10,
         )
         context = AIContext(messages=[AIMessage(role="user", content="go")])
-        await ch._run_tool_loop(context)
+        await run_tool_loop(ch, context, streaming=streaming)
 
         # The skill-aware handler dispatched activate_skill internally,
         # then run_query was forwarded to the user handler.
@@ -434,7 +435,7 @@ class TestSkillGatingExecution:
 
 
 class TestActivationTracking:
-    async def test_activation_resets_per_tool_loop(self) -> None:
+    async def test_activation_resets_per_tool_loop(self, streaming: bool) -> None:
         """activated_skills starts fresh for each tool loop invocation."""
         provider = MockAIProvider(ai_responses=[_final_response()])
         registry = _skill_registry(("s1", "Skill 1", "t1"))
@@ -450,7 +451,7 @@ class TestActivationTracking:
         try:
             context = AIContext(messages=[AIMessage(role="user", content="go")])
             # _run_tool_loop creates a fresh _ToolLoopContext, so "s1" is NOT inherited
-            await ch._run_tool_loop(context)
+            await run_tool_loop(ch, context, streaming=streaming)
             # After tool loop, active_loops should be empty
             assert len(ch._active_loops) == 0
         finally:

@@ -35,12 +35,17 @@ class _JudgeByOutput(AIProvider):
     both mid-turn at once.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, streaming: bool = False) -> None:
         self.tools_seen: list[list[str]] = []
+        self._streaming = streaming
 
     @property
     def model_name(self) -> str:
         return "judge"
+
+    @property
+    def supports_structured_streaming(self) -> bool:
+        return self._streaming
 
     async def generate(self, context: AIContext) -> AIResponse:
         if any(
@@ -79,9 +84,9 @@ async def _review(kit: RoomKit, boss: Agent, worker: Agent, room: str, output: s
     )
 
 
-async def _kit_with_supervisor() -> tuple[RoomKit, Agent, Agent, _JudgeByOutput]:
+async def _kit_with_supervisor(*, streaming: bool) -> tuple[RoomKit, Agent, Agent, _JudgeByOutput]:
     kit = RoomKit()
-    judge = _JudgeByOutput()
+    judge = _JudgeByOutput(streaming=streaming)
     boss = Agent("boss", provider=judge, role="Supervisor")
     worker = Agent("w1", provider=judge, role="Researcher")
     kit.register_channel(boss)
@@ -92,15 +97,15 @@ async def _kit_with_supervisor() -> tuple[RoomKit, Agent, Agent, _JudgeByOutput]
 
 
 class TestReviewThroughTheToolLoop:
-    async def test_a_review_reads_the_verdict_its_room_submitted(self) -> None:
-        kit, boss, worker, _judge = await _kit_with_supervisor()
+    async def test_a_review_reads_the_verdict_its_room_submitted(self, streaming: bool) -> None:
+        kit, boss, worker, _judge = await _kit_with_supervisor(streaming=streaming)
 
         verdict = await _review(kit, boss, worker, "room-a", "GOOD: Montréal, StatCan")
 
         assert verdict == {"approved": True, "feedback": "", "next_task": None}
 
-    async def test_two_reviews_at_once_each_read_their_own_verdict(self) -> None:
-        kit, boss, worker, judge = await _kit_with_supervisor()
+    async def test_two_reviews_at_once_each_read_their_own_verdict(self, streaming: bool) -> None:
+        kit, boss, worker, judge = await _kit_with_supervisor(streaming=streaming)
         handler_before = boss.tool_handler
         tools_before = list(boss._injected_tools)
 

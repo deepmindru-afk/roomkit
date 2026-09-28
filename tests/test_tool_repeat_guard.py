@@ -20,6 +20,7 @@ from roomkit.models.room import Room
 from roomkit.providers.ai.base import AIResponse, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from tests.conftest import make_event
+from tests.tool_loop_modes import respond
 
 _ECHO_TOOL = {
     "name": "echo",
@@ -54,7 +55,7 @@ def _same_call_response(call_id: str, arguments: dict) -> AIResponse:
     )
 
 
-async def test_third_identical_call_is_refused() -> None:
+async def test_third_identical_call_is_refused(streaming: bool) -> None:
     executions: list[dict] = []
 
     async def handler(name: str, arguments: dict) -> str:
@@ -69,9 +70,11 @@ async def test_third_identical_call_is_refused() -> None:
             _same_call_response("t3", args),
             AIResponse(content="done", finish_reason="stop"),
         ],
+        streaming=streaming,
     )
     ch = AIChannel("ai1", provider=provider, tool_handler=handler)
-    await ch.on_event(
+    await respond(
+        ch,
         make_event(body="go", channel_id="sms1"),
         _binding([_ECHO_TOOL]),
         RoomContext(room=Room(id="r1")),
@@ -84,7 +87,7 @@ async def test_third_identical_call_is_refused() -> None:
     assert "STOP" in third["hint"]
 
 
-async def test_different_arguments_are_not_guarded() -> None:
+async def test_different_arguments_are_not_guarded(streaming: bool) -> None:
     executions: list[dict] = []
 
     async def handler(name: str, arguments: dict) -> str:
@@ -98,9 +101,11 @@ async def test_different_arguments_are_not_guarded() -> None:
             _same_call_response("t3", {"value": "c"}),
             AIResponse(content="done", finish_reason="stop"),
         ],
+        streaming=streaming,
     )
     ch = AIChannel("ai1", provider=provider, tool_handler=handler)
-    await ch.on_event(
+    await respond(
+        ch,
         make_event(body="go", channel_id="sms1"),
         _binding([_ECHO_TOOL]),
         RoomContext(room=Room(id="r1")),
@@ -108,7 +113,7 @@ async def test_different_arguments_are_not_guarded() -> None:
     assert len(executions) == 3
 
 
-async def test_second_identical_find_tools_is_refused() -> None:
+async def test_second_identical_find_tools_is_refused(streaming: bool) -> None:
     async def handler(name: str, arguments: dict) -> str:
         return json.dumps({"ok": True})
 
@@ -117,10 +122,13 @@ async def test_second_identical_find_tools_is_refused() -> None:
         finish_reason="tool_calls",
         tool_calls=[AIToolCall(id="t", name="find_tools", arguments={"query": "send sms"})],
     )
-    provider = MockAIProvider(ai_responses=[find_call, find_call, AIResponse(content="done")])
+    provider = MockAIProvider(
+        ai_responses=[find_call, find_call, AIResponse(content="done")], streaming=streaming
+    )
     ch = AIChannel("ai1", provider=provider, tool_search=True, tool_handler=handler)
     noise = [{"name": f"widget_{i}", "description": f"Operate widget {i}."} for i in range(30)]
-    await ch.on_event(
+    await respond(
+        ch,
         make_event(body="go", channel_id="sms1"),
         _binding(noise),
         RoomContext(room=Room(id="r1")),
@@ -133,7 +141,9 @@ async def test_second_identical_find_tools_is_refused() -> None:
     assert "EXACT arguments" in second["error"]
 
 
-async def test_unknown_skill_matching_tools_redirects_and_reveals(tmp_path) -> None:
+async def test_unknown_skill_matching_tools_redirects_and_reveals(
+    tmp_path, streaming: bool
+) -> None:
     """Small models confuse skills with tools ("activate the Spotify skill"
     when SpotifySearch/... are tools). The dead-end error must reveal the
     matching tools and say to call them directly."""
@@ -162,13 +172,15 @@ async def test_unknown_skill_matching_tools_redirects_and_reveals(tmp_path) -> N
             ),
             AIResponse(content="done", finish_reason="stop"),
         ],
+        streaming=streaming,
     )
 
     async def handler(name: str, arguments: dict) -> str:
         return json.dumps({"ok": True})
 
     ch = AIChannel("ai1", provider=provider, skills=registry, tool_handler=handler)
-    await ch.on_event(
+    await respond(
+        ch,
         make_event(body="play music", channel_id="sms1"),
         _binding(spotify_tools),
         RoomContext(room=Room(id="r1")),
@@ -180,7 +192,7 @@ async def test_unknown_skill_matching_tools_redirects_and_reveals(tmp_path) -> N
     assert "call one directly" in result["tools_hint"]
 
 
-async def test_force_stop_ends_loop_when_model_ignores_guard() -> None:
+async def test_force_stop_ends_loop_when_model_ignores_guard(streaming: bool) -> None:
     """When a model keeps re-issuing a blocked identical call, the guard pulls
     the ripcord: tools are stripped and a final plain-text answer is forced,
     instead of hammering the same call to the round limit (observed: 37×)."""
@@ -195,10 +207,13 @@ async def test_force_stop_ends_loop_when_model_ignores_guard() -> None:
     # The model insists on the same call far more than the guard tolerates;
     # after force-stop it must produce the final answer.
     repeats = [_same_call_response(f"t{i}", args) for i in range(10)]
-    provider = MockAIProvider(ai_responses=[*repeats, AIResponse(content="done")])
+    provider = MockAIProvider(
+        ai_responses=[*repeats, AIResponse(content="done")], streaming=streaming
+    )
     # Rename the echo tool call to a plain tool so it's not a pure discovery tool.
     ch = AIChannel("ai1", provider=provider, tool_handler=handler)
-    await ch.on_event(
+    await respond(
+        ch,
         make_event(body="go", channel_id="sms1"),
         _binding([_ECHO_TOOL]),
         RoomContext(room=Room(id="r1")),

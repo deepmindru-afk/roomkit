@@ -22,6 +22,7 @@ from roomkit.skills.executor import ScriptExecutor
 from roomkit.skills.models import ScriptResult, Skill
 from roomkit.skills.registry import SkillRegistry
 from tests.conftest import make_event
+from tests.tool_loop_modes import respond
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -85,8 +86,10 @@ class ToolCallMockProvider(MockAIProvider):
         self,
         tool_calls: list[AIToolCall],
         final_response: str = "Done.",
+        *,
+        streaming: bool = False,
     ) -> None:
-        super().__init__(responses=[final_response])
+        super().__init__(responses=[final_response], streaming=streaming)
         self._tool_calls = tool_calls
         self._first_call = True
 
@@ -132,19 +135,21 @@ class MockScriptExecutor(ScriptExecutor):
 class TestSkillsSystemPrompt:
     """Skills preamble and XML are injected into the system prompt."""
 
-    async def test_skills_injected_into_system_prompt(self, tmp_path: Path) -> None:
+    async def test_skills_injected_into_system_prompt(
+        self, tmp_path: Path, streaming: bool
+    ) -> None:
         _make_skill_dir(tmp_path, "code-review")
         registry = SkillRegistry()
         registry.discover(tmp_path)
 
-        provider = MockAIProvider(responses=["ok"])
+        provider = MockAIProvider(responses=["ok"], streaming=streaming)
         ch = AIChannel(
             "ai1",
             provider=provider,
             system_prompt="Be helpful.",
             skills=registry,
         )
-        await ch.on_event(make_event(body="hello", channel_id="sms1"), _binding(), _ctx())
+        await respond(ch, make_event(body="hello", channel_id="sms1"), _binding(), _ctx())
 
         assert len(provider.calls) == 1
         prompt = provider.calls[0].system_prompt
@@ -154,32 +159,34 @@ class TestSkillsSystemPrompt:
         assert "code-review" in prompt
         assert "activate_skill" in prompt
 
-    async def test_no_scripts_note_when_no_executor(self, tmp_path: Path) -> None:
+    async def test_no_scripts_note_when_no_executor(self, tmp_path: Path, streaming: bool) -> None:
         _make_skill_dir(tmp_path, "no-exec")
         registry = SkillRegistry()
         registry.discover(tmp_path)
 
-        provider = MockAIProvider(responses=["ok"])
+        provider = MockAIProvider(responses=["ok"], streaming=streaming)
         ch = AIChannel("ai1", provider=provider, skills=registry)
-        await ch.on_event(make_event(body="hi", channel_id="sms1"), _binding(), _ctx())
+        await respond(ch, make_event(body="hi", channel_id="sms1"), _binding(), _ctx())
 
         prompt = provider.calls[0].system_prompt
         assert prompt is not None
         assert "not available" in prompt
 
-    async def test_no_scripts_note_absent_when_executor_set(self, tmp_path: Path) -> None:
+    async def test_no_scripts_note_absent_when_executor_set(
+        self, tmp_path: Path, streaming: bool
+    ) -> None:
         _make_skill_dir(tmp_path, "has-exec")
         registry = SkillRegistry()
         registry.discover(tmp_path)
 
-        provider = MockAIProvider(responses=["ok"])
+        provider = MockAIProvider(responses=["ok"], streaming=streaming)
         ch = AIChannel(
             "ai1",
             provider=provider,
             skills=registry,
             script_executor=MockScriptExecutor(),
         )
-        await ch.on_event(make_event(body="hi", channel_id="sms1"), _binding(), _ctx())
+        await respond(ch, make_event(body="hi", channel_id="sms1"), _binding(), _ctx())
 
         prompt = provider.calls[0].system_prompt
         assert prompt is not None
@@ -189,14 +196,14 @@ class TestSkillsSystemPrompt:
 class TestSkillToolInjection:
     """Skill tools are added to the AI context."""
 
-    async def test_activate_and_read_tools_present(self, tmp_path: Path) -> None:
+    async def test_activate_and_read_tools_present(self, tmp_path: Path, streaming: bool) -> None:
         _make_skill_dir(tmp_path, "my-skill")
         registry = SkillRegistry()
         registry.discover(tmp_path)
 
-        provider = MockAIProvider(responses=["ok"])
+        provider = MockAIProvider(responses=["ok"], streaming=streaming)
         ch = AIChannel("ai1", provider=provider, skills=registry)
-        await ch.on_event(make_event(body="go", channel_id="sms1"), _binding(), _ctx())
+        await respond(ch, make_event(body="go", channel_id="sms1"), _binding(), _ctx())
 
         tools = provider.calls[0].tools
         tool_names = [t.name for t in tools]
@@ -204,30 +211,32 @@ class TestSkillToolInjection:
         assert "read_skill_reference" in tool_names
         assert "run_skill_script" not in tool_names
 
-    async def test_run_script_tool_present_with_executor(self, tmp_path: Path) -> None:
+    async def test_run_script_tool_present_with_executor(
+        self, tmp_path: Path, streaming: bool
+    ) -> None:
         _make_skill_dir(tmp_path, "scripted")
         registry = SkillRegistry()
         registry.discover(tmp_path)
 
-        provider = MockAIProvider(responses=["ok"])
+        provider = MockAIProvider(responses=["ok"], streaming=streaming)
         ch = AIChannel(
             "ai1",
             provider=provider,
             skills=registry,
             script_executor=MockScriptExecutor(),
         )
-        await ch.on_event(make_event(body="go", channel_id="sms1"), _binding(), _ctx())
+        await respond(ch, make_event(body="go", channel_id="sms1"), _binding(), _ctx())
 
         tool_names = [t.name for t in provider.calls[0].tools]
         assert "run_skill_script" in tool_names
 
-    async def test_user_tools_preserved(self, tmp_path: Path) -> None:
+    async def test_user_tools_preserved(self, tmp_path: Path, streaming: bool) -> None:
         """User-defined tools from binding metadata are kept alongside skill tools."""
         _make_skill_dir(tmp_path, "alongside")
         registry = SkillRegistry()
         registry.discover(tmp_path)
 
-        provider = MockAIProvider(responses=["ok"])
+        provider = MockAIProvider(responses=["ok"], streaming=streaming)
         ch = AIChannel("ai1", provider=provider, skills=registry)
         binding = ChannelBinding(
             channel_id="ai1",
@@ -236,7 +245,7 @@ class TestSkillToolInjection:
             category=ChannelCategory.INTELLIGENCE,
             metadata={"tools": [{"name": "search", "description": "Search web"}]},
         )
-        await ch.on_event(make_event(body="go", channel_id="sms1"), binding, _ctx())
+        await respond(ch, make_event(body="go", channel_id="sms1"), binding, _ctx())
 
         tool_names = [t.name for t in provider.calls[0].tools]
         assert "search" in tool_names
@@ -246,7 +255,9 @@ class TestSkillToolInjection:
 class TestActivateSkillHandler:
     """Test the activate_skill tool handler end-to-end."""
 
-    async def test_activate_skill_returns_instructions(self, tmp_path: Path) -> None:
+    async def test_activate_skill_returns_instructions(
+        self, tmp_path: Path, streaming: bool
+    ) -> None:
         _make_skill_dir_full(
             tmp_path,
             "code-gen",
@@ -266,15 +277,17 @@ class TestActivateSkillHandler:
                 )
             ],
             final_response="I activated code-gen.",
+            streaming=streaming,
         )
         ch = AIChannel("ai1", provider=provider, skills=registry)
-        output = await ch.on_event(
+        run = await respond(
+            ch,
             make_event(body="activate code-gen", channel_id="sms1"),
             _binding(),
             _ctx(),
         )
 
-        assert output.responded is True
+        assert run.text == "I activated code-gen."
         # The provider should have been called twice (tool call + final)
         assert len(provider.calls) == 2
 
@@ -290,7 +303,9 @@ class TestActivateSkillHandler:
         assert "gen.sh" in result_json["scripts"]
         assert "api.md" in result_json["references"]
 
-    async def test_channel_reports_the_room_s_active_skills(self, tmp_path: Path) -> None:
+    async def test_channel_reports_the_room_s_active_skills(
+        self, tmp_path: Path, streaming: bool
+    ) -> None:
         """A host rendering its own manifest needs runtime state, not the catalogue.
 
         Without it the host cannot tell an available skill from an active one,
@@ -306,12 +321,14 @@ class TestActivateSkillHandler:
                 AIToolCall(id="tc1", name="activate_skill", arguments={"name": "code-gen"})
             ],
             final_response="done",
+            streaming=streaming,
         )
         ch = AIChannel("ai1", provider=provider, skills=registry)
 
         assert ch.active_skill_names("r1") == set()
 
-        await ch.on_event(
+        await respond(
+            ch,
             make_event(body="activate code-gen", channel_id="sms1"),
             _binding(),
             _ctx(),
@@ -323,7 +340,7 @@ class TestActivateSkillHandler:
         assert ch.active_skill_names("other-room") == set()
         assert ch.active_skill_names(None) == set()
 
-    async def test_activate_unknown_skill(self, tmp_path: Path) -> None:
+    async def test_activate_unknown_skill(self, tmp_path: Path, streaming: bool) -> None:
         _make_skill_dir(tmp_path, "known")
         registry = SkillRegistry()
         registry.discover(tmp_path)
@@ -336,9 +353,10 @@ class TestActivateSkillHandler:
                     arguments={"name": "unknown"},
                 )
             ],
+            streaming=streaming,
         )
         ch = AIChannel("ai1", provider=provider, skills=registry)
-        await ch.on_event(make_event(body="go", channel_id="sms1"), _binding(), _ctx())
+        await respond(ch, make_event(body="go", channel_id="sms1"), _binding(), _ctx())
 
         messages = provider.calls[1].messages
         tool_msg = [m for m in messages if m.role == "tool"]
@@ -346,7 +364,9 @@ class TestActivateSkillHandler:
         assert "not found" in result_json["error"]
         assert "known" in result_json["available_skills"]
 
-    async def test_activate_unavailable_skill_reports_reason(self, tmp_path: Path) -> None:
+    async def test_activate_unavailable_skill_reports_reason(
+        self, tmp_path: Path, streaming: bool
+    ) -> None:
         """A skill marked unavailable answers with its reason, not "not found"."""
         _make_skill_dir(tmp_path, "known")
         registry = SkillRegistry()
@@ -363,9 +383,10 @@ class TestActivateSkillHandler:
                     arguments={"name": "gated-skill"},
                 )
             ],
+            streaming=streaming,
         )
         ch = AIChannel("ai1", provider=provider, skills=registry)
-        await ch.on_event(make_event(body="go", channel_id="sms1"), _binding(), _ctx())
+        await respond(ch, make_event(body="go", channel_id="sms1"), _binding(), _ctx())
 
         messages = provider.calls[1].messages
         tool_msg = [m for m in messages if m.role == "tool"]
@@ -379,7 +400,7 @@ class TestActivateSkillHandler:
 class TestReadReferenceHandler:
     """Test the read_skill_reference tool handler."""
 
-    async def test_read_reference(self, tmp_path: Path) -> None:
+    async def test_read_reference(self, tmp_path: Path, streaming: bool) -> None:
         _make_skill_dir_full(
             tmp_path,
             "ref-skill",
@@ -396,9 +417,10 @@ class TestReadReferenceHandler:
                     arguments={"skill_name": "ref-skill", "filename": "guide.md"},
                 )
             ],
+            streaming=streaming,
         )
         ch = AIChannel("ai1", provider=provider, skills=registry)
-        await ch.on_event(make_event(body="read guide", channel_id="sms1"), _binding(), _ctx())
+        await respond(ch, make_event(body="read guide", channel_id="sms1"), _binding(), _ctx())
 
         messages = provider.calls[1].messages
         tool_msg = [m for m in messages if m.role == "tool"]
@@ -406,7 +428,7 @@ class TestReadReferenceHandler:
         assert result_json["filename"] == "guide.md"
         assert "Step 1" in result_json["content"]
 
-    async def test_read_reference_traversal_blocked(self, tmp_path: Path) -> None:
+    async def test_read_reference_traversal_blocked(self, tmp_path: Path, streaming: bool) -> None:
         _make_skill_dir_full(
             tmp_path,
             "sec-skill",
@@ -423,9 +445,10 @@ class TestReadReferenceHandler:
                     arguments={"skill_name": "sec-skill", "filename": "../secret"},
                 )
             ],
+            streaming=streaming,
         )
         ch = AIChannel("ai1", provider=provider, skills=registry)
-        await ch.on_event(make_event(body="hack", channel_id="sms1"), _binding(), _ctx())
+        await respond(ch, make_event(body="hack", channel_id="sms1"), _binding(), _ctx())
 
         messages = provider.calls[1].messages
         tool_msg = [m for m in messages if m.role == "tool"]
@@ -436,7 +459,7 @@ class TestReadReferenceHandler:
 class TestRunScriptHandler:
     """Test the run_skill_script tool handler."""
 
-    async def test_run_script(self, tmp_path: Path) -> None:
+    async def test_run_script(self, tmp_path: Path, streaming: bool) -> None:
         _make_skill_dir_full(tmp_path, "scripted", scripts=["build.sh"])
         registry = SkillRegistry()
         registry.discover(tmp_path)
@@ -456,6 +479,7 @@ class TestRunScriptHandler:
                     },
                 )
             ],
+            streaming=streaming,
         )
         ch = AIChannel(
             "ai1",
@@ -463,7 +487,7 @@ class TestRunScriptHandler:
             skills=registry,
             script_executor=executor,
         )
-        await ch.on_event(make_event(body="build it", channel_id="sms1"), _binding(), _ctx())
+        await respond(ch, make_event(body="build it", channel_id="sms1"), _binding(), _ctx())
 
         # Executor was called
         assert len(executor.calls) == 1
@@ -476,7 +500,9 @@ class TestRunScriptHandler:
         assert result_json["exit_code"] == 0
         assert result_json["stdout"] == "Build complete"
 
-    async def test_escaping_script_never_reaches_executor(self, tmp_path: Path) -> None:
+    async def test_escaping_script_never_reaches_executor(
+        self, tmp_path: Path, streaming: bool
+    ) -> None:
         """Containment is enforced before any integrator code runs.
 
         The executor decides how a script runs; which file it is stays the
@@ -499,9 +525,10 @@ class TestRunScriptHandler:
                     arguments={"skill_name": "sneaky", "script_name": "innocent.sh"},
                 )
             ],
+            streaming=streaming,
         )
         ch = AIChannel("ai1", provider=provider, skills=registry, script_executor=executor)
-        await ch.on_event(make_event(body="run it", channel_id="sms1"), _binding(), _ctx())
+        await respond(ch, make_event(body="run it", channel_id="sms1"), _binding(), _ctx())
 
         assert executor.calls == []
         messages = provider.calls[1].messages
@@ -509,7 +536,7 @@ class TestRunScriptHandler:
         result_json = json.loads(tool_msg[0].content[0].result)
         assert "escapes" in result_json["error"]
 
-    async def test_run_script_no_executor(self, tmp_path: Path) -> None:
+    async def test_run_script_no_executor(self, tmp_path: Path, streaming: bool) -> None:
         _make_skill_dir(tmp_path, "no-exec")
         registry = SkillRegistry()
         registry.discover(tmp_path)
@@ -522,11 +549,12 @@ class TestRunScriptHandler:
                     arguments={"skill_name": "no-exec", "script_name": "x.sh"},
                 )
             ],
+            streaming=streaming,
         )
         # No script_executor — run_skill_script tool shouldn't be injected,
         # but if AI calls it anyway, we handle gracefully
         ch = AIChannel("ai1", provider=provider, skills=registry)
-        await ch.on_event(make_event(body="go", channel_id="sms1"), _binding(), _ctx())
+        await respond(ch, make_event(body="go", channel_id="sms1"), _binding(), _ctx())
 
         messages = provider.calls[1].messages
         tool_msg = [m for m in messages if m.role == "tool"]
@@ -537,7 +565,7 @@ class TestRunScriptHandler:
 class TestUserToolHandlerDelegation:
     """Skill handler delegates non-skill tools to the user's handler."""
 
-    async def test_user_tool_delegated(self, tmp_path: Path) -> None:
+    async def test_user_tool_delegated(self, tmp_path: Path, streaming: bool) -> None:
         _make_skill_dir(tmp_path, "delegator")
         registry = SkillRegistry()
         registry.discover(tmp_path)
@@ -556,6 +584,7 @@ class TestUserToolHandlerDelegation:
                     arguments={"query": "test"},
                 )
             ],
+            streaming=streaming,
         )
         ch = AIChannel(
             "ai1",
@@ -564,12 +593,12 @@ class TestUserToolHandlerDelegation:
             tool_handler=user_handler,
             tools=[AITool(name="custom_search", description="Search", parameters={})],
         )
-        await ch.on_event(make_event(body="search", channel_id="sms1"), _binding(), _ctx())
+        await respond(ch, make_event(body="search", channel_id="sms1"), _binding(), _ctx())
 
         assert len(user_calls) == 1
         assert user_calls[0] == ("custom_search", {"query": "test"})
 
-    async def test_unknown_tool_no_user_handler(self, tmp_path: Path) -> None:
+    async def test_unknown_tool_no_user_handler(self, tmp_path: Path, streaming: bool) -> None:
         _make_skill_dir(tmp_path, "no-handler")
         registry = SkillRegistry()
         registry.discover(tmp_path)
@@ -582,9 +611,10 @@ class TestUserToolHandlerDelegation:
                     arguments={},
                 )
             ],
+            streaming=streaming,
         )
         ch = AIChannel("ai1", provider=provider, skills=registry)
-        await ch.on_event(make_event(body="go", channel_id="sms1"), _binding(), _ctx())
+        await respond(ch, make_event(body="go", channel_id="sms1"), _binding(), _ctx())
 
         messages = provider.calls[1].messages
         tool_msg = [m for m in messages if m.role == "tool"]
@@ -693,7 +723,9 @@ def _tool_results(context: AIContext) -> list[dict[str, Any]]:
 class TestActivationSurvivesTheTurn:
     """A skill activated once stays active — body in the prompt, ACK on the tool."""
 
-    async def test_body_once_then_ack_with_rules_in_the_prompt(self, tmp_path: Path) -> None:
+    async def test_body_once_then_ack_with_rules_in_the_prompt(
+        self, tmp_path: Path, streaming: bool
+    ) -> None:
         _make_skill_dir_full(
             tmp_path,
             "onboarding",
@@ -703,11 +735,13 @@ class TestActivationSurvivesTheTurn:
         registry = SkillRegistry()
         registry.discover(tmp_path)
 
-        provider = PerTurnToolCallProvider("activate_skill", {"name": "onboarding"})
+        provider = PerTurnToolCallProvider(
+            "activate_skill", {"name": "onboarding"}, streaming=streaming
+        )
         ch = AIChannel("ai1", provider=provider, skills=registry)
 
-        await ch.on_event(make_event(body="hi", channel_id="sms1"), _binding(), _ctx())
-        await ch.on_event(make_event(body="and then?", channel_id="sms1"), _binding(), _ctx())
+        await respond(ch, make_event(body="hi", channel_id="sms1"), _binding(), _ctx())
+        await respond(ch, make_event(body="and then?", channel_id="sms1"), _binding(), _ctx())
 
         # Turn 1: the prompt cannot carry a body nobody has activated yet, so
         # the tool answers with the full instructions.
@@ -725,7 +759,9 @@ class TestActivationSurvivesTheTurn:
         assert "instructions" not in ack
         assert "catalog.md" in ack["references"]
 
-    async def test_bodies_reach_a_host_that_renders_its_own_manifest(self, tmp_path: Path) -> None:
+    async def test_bodies_reach_a_host_that_renders_its_own_manifest(
+        self, tmp_path: Path, streaming: bool
+    ) -> None:
         """``skills_in_prompt=False`` drops the catalogue, never the active rules.
 
         The flag says "I render the skills manifest myself"; a host cannot know
@@ -736,11 +772,13 @@ class TestActivationSurvivesTheTurn:
         registry = SkillRegistry()
         registry.discover(tmp_path)
 
-        provider = PerTurnToolCallProvider("activate_skill", {"name": "onboarding"})
+        provider = PerTurnToolCallProvider(
+            "activate_skill", {"name": "onboarding"}, streaming=streaming
+        )
         ch = AIChannel("ai1", provider=provider, skills=registry, skills_in_prompt=False)
 
-        await ch.on_event(make_event(body="hi", channel_id="sms1"), _binding(), _ctx())
-        await ch.on_event(make_event(body="next", channel_id="sms1"), _binding(), _ctx())
+        await respond(ch, make_event(body="hi", channel_id="sms1"), _binding(), _ctx())
+        await respond(ch, make_event(body="next", channel_id="sms1"), _binding(), _ctx())
 
         prompt = provider.calls[2].system_prompt or ""
         assert "<available_skills>" not in prompt
@@ -767,15 +805,17 @@ class TestActivationSurvivesTheTurn:
         assert "Follow the onboarding script." in (provider.calls[2].system_prompt or "")
         assert _tool_results(provider.calls[3])[-1]["already_active"] is True
 
-    async def test_activation_is_scoped_to_its_room(self, tmp_path: Path) -> None:
+    async def test_activation_is_scoped_to_its_room(self, tmp_path: Path, streaming: bool) -> None:
         _make_skill_dir(tmp_path, "onboarding", body="Follow the onboarding script.")
         registry = SkillRegistry()
         registry.discover(tmp_path)
 
-        provider = PerTurnToolCallProvider("activate_skill", {"name": "onboarding"})
+        provider = PerTurnToolCallProvider(
+            "activate_skill", {"name": "onboarding"}, streaming=streaming
+        )
         ch = AIChannel("ai1", provider=provider, skills=registry)
 
-        await ch.on_event(make_event(body="hi", channel_id="sms1"), _binding(), _ctx())
+        await respond(ch, make_event(body="hi", channel_id="sms1"), _binding(), _ctx())
 
         other_binding = ChannelBinding(
             channel_id="ai1",
@@ -784,8 +824,8 @@ class TestActivationSurvivesTheTurn:
             category=ChannelCategory.INTELLIGENCE,
         )
         other_ctx = RoomContext(room=Room(id="r2"))
-        await ch.on_event(
-            make_event(body="hi", channel_id="sms1", room_id="r2"), other_binding, other_ctx
+        await respond(
+            ch, make_event(body="hi", channel_id="sms1", room_id="r2"), other_binding, other_ctx
         )
 
         # Another conversation gets the body, not one room's activation.
@@ -793,7 +833,9 @@ class TestActivationSurvivesTheTurn:
         other_result = _tool_results(provider.calls[3])[0]
         assert "Follow the onboarding script." in other_result["instructions"]
 
-    async def test_gated_tools_stay_visible_on_later_turns(self, tmp_path: Path) -> None:
+    async def test_gated_tools_stay_visible_on_later_turns(
+        self, tmp_path: Path, streaming: bool
+    ) -> None:
         """Activation counts for the conversation, so its tools stop re-hiding."""
         skill_dir = tmp_path / "publisher"
         skill_dir.mkdir()
@@ -805,7 +847,9 @@ class TestActivationSurvivesTheTurn:
         registry = SkillRegistry()
         registry.discover(tmp_path)
 
-        provider = PerTurnToolCallProvider("activate_skill", {"name": "publisher"})
+        provider = PerTurnToolCallProvider(
+            "activate_skill", {"name": "publisher"}, streaming=streaming
+        )
         ch = AIChannel("ai1", provider=provider, skills=registry)
         binding = ChannelBinding(
             channel_id="ai1",
@@ -815,8 +859,8 @@ class TestActivationSurvivesTheTurn:
             metadata={"tools": [{"name": "publish_site", "description": "Publish"}]},
         )
 
-        await ch.on_event(make_event(body="hi", channel_id="sms1"), binding, _ctx())
-        await ch.on_event(make_event(body="publish it", channel_id="sms1"), binding, _ctx())
+        await respond(ch, make_event(body="hi", channel_id="sms1"), binding, _ctx())
+        await respond(ch, make_event(body="publish it", channel_id="sms1"), binding, _ctx())
 
         # Turn 1 round 0: gated. Turn 2 round 0: still visible, no re-activation.
         assert "publish_site" not in [t.name for t in provider.calls[0].tools]
@@ -826,22 +870,26 @@ class TestActivationSurvivesTheTurn:
 class TestSkillBodyEscapesEviction:
     """Instructions are binding rules — never a preview behind a pointer."""
 
-    async def test_large_skill_body_is_returned_whole(self, tmp_path: Path) -> None:
+    async def test_large_skill_body_is_returned_whole(
+        self, tmp_path: Path, streaming: bool
+    ) -> None:
         body = "Follow this rule.\n" * 400  # ~7 KB, well past the threshold below
         _make_skill_dir(tmp_path, "verbose", body=body)
         registry = SkillRegistry()
         registry.discover(tmp_path)
 
-        provider = PerTurnToolCallProvider("activate_skill", {"name": "verbose"})
+        provider = PerTurnToolCallProvider(
+            "activate_skill", {"name": "verbose"}, streaming=streaming
+        )
         ch = AIChannel("ai1", provider=provider, skills=registry, evict_threshold_tokens=100)
 
-        await ch.on_event(make_event(body="hi", channel_id="sms1"), _binding(), _ctx())
+        await respond(ch, make_event(body="hi", channel_id="sms1"), _binding(), _ctx())
 
         result = _tool_results(provider.calls[1])[0]
         assert result["instructions"].count("Follow this rule.") == 400
         assert "read_stored_result" not in json.dumps(result)
 
-    async def test_large_reference_is_still_evicted(self, tmp_path: Path) -> None:
+    async def test_large_reference_is_still_evicted(self, tmp_path: Path, streaming: bool) -> None:
         """A reference is data, and paginating data is what eviction is for."""
         _make_skill_dir_full(
             tmp_path,
@@ -852,11 +900,13 @@ class TestSkillBodyEscapesEviction:
         registry.discover(tmp_path)
 
         provider = PerTurnToolCallProvider(
-            "read_skill_reference", {"skill_name": "documented", "filename": "big.md"}
+            "read_skill_reference",
+            {"skill_name": "documented", "filename": "big.md"},
+            streaming=streaming,
         )
         ch = AIChannel("ai1", provider=provider, skills=registry, evict_threshold_tokens=100)
 
-        await ch.on_event(make_event(body="hi", channel_id="sms1"), _binding(), _ctx())
+        await respond(ch, make_event(body="hi", channel_id="sms1"), _binding(), _ctx())
 
         messages = provider.calls[1].messages
         tool_msg = [m for m in messages if m.role == "tool"][0]

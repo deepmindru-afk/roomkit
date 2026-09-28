@@ -13,6 +13,7 @@ from roomkit.models.room import Room
 from roomkit.providers.ai.base import AIImagePart, AIMessage, AITextPart, AITool
 from roomkit.providers.ai.mock import MockAIProvider
 from tests.conftest import make_event, make_media_event
+from tests.tool_loop_modes import respond
 
 
 class TestAIChannel:
@@ -296,9 +297,9 @@ class TestPerRoomConfiguration:
         assert len(provider.calls) == 1
         assert provider.calls[0].max_tokens == 2048
 
-    async def test_tools_passed_to_provider(self) -> None:
+    async def test_tools_passed_to_provider(self, streaming: bool) -> None:
         """Tools from binding metadata are passed to provider."""
-        provider = MockAIProvider(responses=["ok"])
+        provider = MockAIProvider(responses=["ok"], streaming=streaming)
         ch = AIChannel("ai1", provider=provider)
         binding = ChannelBinding(
             channel_id="ai1",
@@ -321,7 +322,7 @@ class TestPerRoomConfiguration:
         )
         ctx = RoomContext(room=Room(id="r1"))
         event = make_event(body="search for cats", channel_id="sms1")
-        await ch.on_event(event, binding, ctx)
+        await respond(ch, event, binding, ctx)
 
         assert len(provider.calls) == 1
         assert len(provider.calls[0].tools) == 1
@@ -331,9 +332,9 @@ class TestPerRoomConfiguration:
         assert tool.description == "Search for information"
         assert tool.parameters["type"] == "object"
 
-    async def test_multiple_tools_passed_to_provider(self) -> None:
+    async def test_multiple_tools_passed_to_provider(self, streaming: bool) -> None:
         """Multiple tools from binding metadata are passed to provider."""
-        provider = MockAIProvider(responses=["ok"])
+        provider = MockAIProvider(responses=["ok"], streaming=streaming)
         ch = AIChannel("ai1", provider=provider)
         binding = ChannelBinding(
             channel_id="ai1",
@@ -349,7 +350,7 @@ class TestPerRoomConfiguration:
         )
         ctx = RoomContext(room=Room(id="r1"))
         event = make_event(body="hello", channel_id="sms1")
-        await ch.on_event(event, binding, ctx)
+        await respond(ch, event, binding, ctx)
 
         assert len(provider.calls) == 1
         assert len(provider.calls[0].tools) == 2

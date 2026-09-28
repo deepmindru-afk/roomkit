@@ -22,6 +22,7 @@ from roomkit.models.tool_call import AIResponseEvent, DeclaredTool
 from roomkit.providers.ai.base import AIContext, AIResponse, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from tests.conftest import make_event
+from tests.tool_loop_modes import respond
 
 _SMS_TOOL = {
     "name": "send_sms",
@@ -86,15 +87,12 @@ def _observe(ch: AIChannel) -> list[AIResponseEvent]:
 
 
 async def _turn(ch: AIChannel, binding: ChannelBinding) -> None:
-    output = await ch.on_event(
+    await respond(
+        ch,
         make_event(body="go", channel_id="sms1", room_id="r1"),
         binding,
         RoomContext(room=Room(id="r1")),
     )
-    # A streaming provider runs the loop as the stream is drained.
-    if output.response_stream is not None:
-        async for _ in output.response_stream:
-            pass
 
 
 def _by_name(event: AIResponseEvent) -> dict[str, DeclaredTool]:
@@ -155,14 +153,15 @@ async def test_without_tool_search_the_whole_declaration_is_reported(streaming: 
     assert declared["mail_deliver"].parameters == _MAIL_TOOL["parameters"]
 
 
-async def test_the_union_keeps_a_tool_the_reveal_window_dropped() -> None:
+async def test_the_union_keeps_a_tool_the_reveal_window_dropped(streaming: bool) -> None:
     """``revealed_tools`` is swapped by every ``find_tools``; the event unions the rounds."""
     provider = MockAIProvider(
         ai_responses=[
             _find("sms phone", "t1"),
             _find("electronic mail", "t2"),
             AIResponse(content="done", finish_reason="stop"),
-        ]
+        ],
+        streaming=streaming,
     )
     ch = AIChannel("ai1", provider=provider, tool_search=True, tool_handler=_noop_handler)
     seen = _observe(ch)
@@ -181,13 +180,14 @@ async def test_the_union_keeps_a_tool_the_reveal_window_dropped() -> None:
     assert declared["mail_deliver"].origin == "revealed"
 
 
-async def test_a_tool_found_in_an_earlier_turn_is_sticky() -> None:
+async def test_a_tool_found_in_an_earlier_turn_is_sticky(streaming: bool) -> None:
     provider = MockAIProvider(
         ai_responses=[
             _find("send sms", "t1"),
             AIResponse(content="done", finish_reason="stop"),
             AIResponse(content="hi again", finish_reason="stop"),
-        ]
+        ],
+        streaming=streaming,
     )
     ch = AIChannel("ai1", provider=provider, tool_search=True, tool_handler=_noop_handler)
     seen = _observe(ch)

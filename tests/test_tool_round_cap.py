@@ -31,6 +31,7 @@ from roomkit.models.room import Room
 from roomkit.providers.ai.base import AIResponse, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from tests.conftest import make_event
+from tests.tool_loop_modes import respond
 
 _TEST_CAP = 4
 _FLOOD = 20
@@ -98,17 +99,14 @@ def _tool_result_ids(context: Any) -> list[str]:
     ]
 
 
-async def _run(provider: MockAIProvider, handler: Any) -> Any:
+async def _run(provider: MockAIProvider, handler: Any) -> None:
     ch = AIChannel("ai1", provider=provider, tool_handler=handler)
-    output = await ch.on_event(
+    await respond(
+        ch,
         make_event(body="go", channel_id="sms1"),
         _binding(),
         RoomContext(room=Room(id="r1")),
     )
-    if output.response_stream is not None:
-        async for _ in output.response_stream:
-            pass
-    return output
 
 
 def _recording_handler(executed: list[dict]) -> Any:
@@ -125,19 +123,25 @@ def test_shipped_ceiling_is_a_real_bound() -> None:
     assert 8 <= ceiling <= 64
 
 
-async def test_flooded_round_is_capped(small_cap: int) -> None:
+async def test_flooded_round_is_capped(small_cap: int, streaming: bool) -> None:
     executed: list[dict] = []
-    await _run(MockAIProvider(ai_responses=_responses(_FLOOD)), _recording_handler(executed))
+    await _run(
+        MockAIProvider(ai_responses=_responses(_FLOOD), streaming=streaming),
+        _recording_handler(executed),
+    )
     assert len(executed) == small_cap
 
 
-async def test_round_under_the_ceiling_is_untouched(small_cap: int) -> None:
+async def test_round_under_the_ceiling_is_untouched(small_cap: int, streaming: bool) -> None:
     executed: list[dict] = []
-    await _run(MockAIProvider(ai_responses=_responses(small_cap)), _recording_handler(executed))
+    await _run(
+        MockAIProvider(ai_responses=_responses(small_cap), streaming=streaming),
+        _recording_handler(executed),
+    )
     assert len(executed) == small_cap
 
 
-async def test_capped_round_leaves_no_orphan_tool_call(small_cap: int) -> None:
+async def test_capped_round_leaves_no_orphan_tool_call(small_cap: int, streaming: bool) -> None:
     """A dropped call must be absent from the assistant message too.
 
     An assistant message carrying a tool call with no matching result is a
@@ -145,26 +149,7 @@ async def test_capped_round_leaves_no_orphan_tool_call(small_cap: int) -> None:
     without truncating the transcript would trade a loop for a 400 on the
     very next round.
     """
-    provider = MockAIProvider(ai_responses=_responses(_FLOOD))
-    await _run(provider, _recording_handler([]))
-
-    final_context = provider.calls[-1]
-    call_ids = _assistant_tool_call_ids(final_context)
-    assert len(call_ids) == small_cap
-    assert call_ids == _tool_result_ids(final_context)
-
-
-async def test_streaming_flooded_round_is_capped(small_cap: int) -> None:
-    executed: list[dict] = []
-    await _run(
-        MockAIProvider(ai_responses=_responses(_FLOOD), streaming=True),
-        _recording_handler(executed),
-    )
-    assert len(executed) == small_cap
-
-
-async def test_streaming_capped_round_leaves_no_orphan_tool_call(small_cap: int) -> None:
-    provider = MockAIProvider(ai_responses=_responses(_FLOOD), streaming=True)
+    provider = MockAIProvider(ai_responses=_responses(_FLOOD), streaming=streaming)
     await _run(provider, _recording_handler([]))
 
     final_context = provider.calls[-1]

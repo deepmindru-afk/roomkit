@@ -30,6 +30,7 @@ from roomkit.providers.ai.base import AIContext, AIMessage, AIResponse, AITool, 
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.tools import current_tool_call
 from tests.test_framework import SimpleChannel
+from tests.tool_loop_modes import run_tool_loop
 
 _COPY = {"contact": "Jane Doe", "salary": 120_000}
 
@@ -41,9 +42,9 @@ async def _publishing_handler(name: str, args: dict[str, Any]) -> str:
     return '{"contact": "Jane Doe", "salary": 120000}'
 
 
-async def _kit() -> tuple[RoomKit, MockAIProvider]:
+async def _kit(*, streaming: bool) -> tuple[RoomKit, MockAIProvider]:
     provider = MockAIProvider(
-        streaming=True,
+        streaming=streaming,
         ai_responses=[
             AIResponse(
                 content="",
@@ -79,8 +80,8 @@ async def _tool_end(kit: RoomKit) -> ToolCallContent:
     return ends[0].content
 
 
-async def test_a_blocked_call_is_failed_and_carries_no_structured_copy() -> None:
-    kit, provider = await _kit()
+async def test_a_blocked_call_is_failed_and_carries_no_structured_copy(streaming: bool) -> None:
+    kit, provider = await _kit(streaming=streaming)
 
     @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="withhold")
     async def withhold(event: ToolCallEvent, ctx: Any) -> HookResult:
@@ -94,8 +95,8 @@ async def test_a_blocked_call_is_failed_and_carries_no_structured_copy() -> None
     assert "restricted: not for this room" in tool_message.content[0].result
 
 
-async def test_the_hook_sees_the_copy_and_may_replace_it() -> None:
-    kit, _ = await _kit()
+async def test_the_hook_sees_the_copy_and_may_replace_it(streaming: bool) -> None:
+    kit, _ = await _kit(streaming=streaming)
     seen: list[Any] = []
 
     @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="redact")
@@ -111,8 +112,8 @@ async def test_the_hook_sees_the_copy_and_may_replace_it() -> None:
     assert end.status == "completed"
 
 
-async def test_the_hook_may_clear_the_copy() -> None:
-    kit, _ = await _kit()
+async def test_the_hook_may_clear_the_copy(streaming: bool) -> None:
+    kit, _ = await _kit(streaming=streaming)
 
     @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="clear")
     async def clear(event: ToolCallEvent, ctx: Any) -> HookResult:
@@ -124,9 +125,9 @@ async def test_the_hook_may_clear_the_copy() -> None:
     assert end.status == "completed"
 
 
-async def test_a_result_rewrite_alone_keeps_the_copy() -> None:
+async def test_a_result_rewrite_alone_keeps_the_copy(streaming: bool) -> None:
     """Re-tokenising text is not withholding the payload a widget renders."""
-    kit, _ = await _kit()
+    kit, _ = await _kit(streaming=streaming)
 
     @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="tokenise")
     async def tokenise(event: ToolCallEvent, ctx: Any) -> HookResult:
@@ -139,7 +140,7 @@ async def test_a_result_rewrite_alone_keeps_the_copy() -> None:
     assert end.structured_content == _COPY
 
 
-async def test_a_call_that_fails_after_its_copy_was_captured_keeps_none() -> None:
+async def test_a_call_that_fails_after_its_copy_was_captured_keeps_none(streaming: bool) -> None:
     """The copy is read once the handler returns; a failure past that point
     (here the ON_TOOL_CALL dispatch itself) must not publish it."""
     provider = MockAIProvider(
@@ -155,7 +156,9 @@ async def test_a_call_that_fails_after_its_copy_was_captured_keeps_none() -> Non
     ch = AIChannel("ai1", provider=provider, tool_handler=_publishing_handler)
     ch._tool_call_hook = AsyncMock(side_effect=RuntimeError("hook dispatch broke"))
 
-    await ch._run_tool_loop(AIContext(messages=[AIMessage(role="user", content="go")]))
+    await run_tool_loop(
+        ch, AIContext(messages=[AIMessage(role="user", content="go")]), streaming=streaming
+    )
 
     tool_message = next(m for m in provider.calls[-1].messages if m.role == "tool")
     part = tool_message.content[0]
@@ -163,8 +166,10 @@ async def test_a_call_that_fails_after_its_copy_was_captured_keeps_none() -> Non
     assert part.structured_content is None
 
 
-async def test_a_copy_that_is_not_a_mapping_is_dropped_and_the_turn_goes_on() -> None:
-    kit, provider = await _kit()
+async def test_a_copy_that_is_not_a_mapping_is_dropped_and_the_turn_goes_on(
+    streaming: bool,
+) -> None:
+    kit, provider = await _kit(streaming=streaming)
 
     @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="broken")
     async def broken(event: ToolCallEvent, ctx: Any) -> HookResult:
@@ -177,7 +182,7 @@ async def test_a_copy_that_is_not_a_mapping_is_dropped_and_the_turn_goes_on() ->
     assert provider.calls[-1].messages[-1].role == "tool"
 
 
-async def test_a_block_without_a_reason_never_serves_the_original() -> None:
+async def test_a_block_without_a_reason_never_serves_the_original(streaming: bool) -> None:
     provider = MockAIProvider(
         ai_responses=[
             AIResponse(
@@ -191,7 +196,9 @@ async def test_a_block_without_a_reason_never_serves_the_original() -> None:
     ch = AIChannel("ai1", provider=provider, tool_handler=_publishing_handler)
     ch._tool_call_hook = AsyncMock(return_value=ToolCallVerdict(blocked=True))
 
-    await ch._run_tool_loop(AIContext(messages=[AIMessage(role="user", content="go")]))
+    await run_tool_loop(
+        ch, AIContext(messages=[AIMessage(role="user", content="go")]), streaming=streaming
+    )
 
     part = next(m for m in provider.calls[-1].messages if m.role == "tool").content[0]
     assert part.is_error
@@ -199,10 +206,10 @@ async def test_a_block_without_a_reason_never_serves_the_original() -> None:
     assert part.structured_content is None
 
 
-async def test_a_fail_closed_hook_that_cannot_run_withholds_the_result() -> None:
+async def test_a_fail_closed_hook_that_cannot_run_withholds_the_result(streaming: bool) -> None:
     """The room's context would not build, so no ON_TOOL_CALL hook runs: a
     fail-closed one withholds, as its own failure would."""
-    kit, _ = await _kit()
+    kit, _ = await _kit(streaming=streaming)
 
     @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="pii", fail_closed=True)
     async def pii(event: ToolCallEvent, ctx: Any) -> HookResult:
@@ -226,8 +233,8 @@ async def test_a_fail_closed_hook_that_cannot_run_withholds_the_result() -> None
     assert "hook_error:pii" in str(verdict.result)
 
 
-async def test_without_a_fail_closed_hook_the_result_stands() -> None:
-    kit, _ = await _kit()
+async def test_without_a_fail_closed_hook_the_result_stands(streaming: bool) -> None:
+    kit, _ = await _kit(streaming=streaming)
     callback = kit._build_tool_call_hook("ai1")
     kit._build_context = AsyncMock(side_effect=RuntimeError("store down"))  # type: ignore[method-assign]
     event = ToolCallEvent(

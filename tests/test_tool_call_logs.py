@@ -13,6 +13,7 @@ from roomkit.channels.ai import AIChannel, _current_loop_ctx, _ToolLoopContext
 from roomkit.providers.ai.base import AIContext, AIMessage, AIResponse, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.telemetry.redaction import set_content_logging
+from tests.tool_loop_modes import run_tool_loop
 
 _LOGGER = "roomkit.channels.ai"
 
@@ -32,7 +33,7 @@ def _channel() -> AIChannel:
     done = AIResponse(content="Two cards.", finish_reason="stop")
     return AIChannel(
         "ai1",
-        provider=MockAIProvider(ai_responses=[call, done], streaming=True),
+        provider=MockAIProvider(ai_responses=[call, done]),
         tool_handler=_handler,
     )
 
@@ -46,17 +47,17 @@ def _in_a_turn():
         _current_loop_ctx.reset(token)
 
 
-async def _run_turn(caplog, level: str) -> list[str]:
+async def _run_turn(caplog, level: str, *, streaming: bool) -> list[str]:
     caplog.set_level(level, logger=_LOGGER)
     ch = _channel()
     with _in_a_turn():
         ctx = AIContext(messages=[AIMessage(role="user", content="my cards?")])
-        [d async for d in ch._run_streaming_tool_loop(ctx)]
+        await run_tool_loop(ch, ctx, streaming=streaming)
     return [r.getMessage() for r in caplog.records if r.name == _LOGGER]
 
 
-async def test_info_names_the_call_but_not_its_values(caplog) -> None:
-    lines = await _run_turn(caplog, "INFO")
+async def test_info_names_the_call_but_not_its_values(caplog, streaming: bool) -> None:
+    lines = await _run_turn(caplog, "INFO", streaming=streaming)
 
     assert "Executing tool find_cards (call t1) with query" in lines
     assert any(
@@ -66,17 +67,19 @@ async def test_info_names_the_call_but_not_its_values(caplog) -> None:
     assert not any("alice@example.com" in line or "RMK-1" in line for line in lines)
 
 
-async def test_debug_redacts_the_values_by_default(caplog) -> None:
-    lines = await _run_turn(caplog, "DEBUG")
+async def test_debug_redacts_the_values_by_default(caplog, streaming: bool) -> None:
+    lines = await _run_turn(caplog, "DEBUG", streaming=streaming)
 
     assert "Tool find_cards arguments: <redacted:30 chars>" in lines
     assert not any("alice@example.com" in line for line in lines)
 
 
-async def test_debug_with_content_logging_shows_the_arguments_and_the_result(caplog) -> None:
+async def test_debug_with_content_logging_shows_the_arguments_and_the_result(
+    caplog, streaming: bool
+) -> None:
     set_content_logging(True)
     try:
-        lines = await _run_turn(caplog, "DEBUG")
+        lines = await _run_turn(caplog, "DEBUG", streaming=streaming)
     finally:
         set_content_logging(False)
 

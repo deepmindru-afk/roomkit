@@ -22,8 +22,8 @@ from roomkit import (
 from roomkit.channels.ai import AIChannel
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 from roomkit.models.channel import ChannelBinding
-from roomkit.models.enums import ChannelDirection, ChannelType, EventType
-from roomkit.models.event import EventSource, RoomEvent, TextContent, ToolCallContent
+from roomkit.models.enums import ChannelDirection, ChannelType
+from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.skills.registry import SkillRegistry
@@ -31,6 +31,7 @@ from roomkit.tools.external import PolicyExternalToolHandler
 from roomkit.tools.policy import ToolPolicy
 from roomkit.voice.base import VoiceSession
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
+from tests.tool_loop_modes import LoopRun, respond
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -61,8 +62,8 @@ def rt_channel(
 
 
 @pytest.fixture
-def ai_provider() -> MockAIProvider:
-    return MockAIProvider()
+def ai_provider(streaming: bool) -> MockAIProvider:
+    return MockAIProvider(streaming=streaming)
 
 
 @pytest.fixture
@@ -384,7 +385,7 @@ class TestAIChannelToolCallHook:
         )
         context = await kit_with_ai._build_context(room.id)
 
-        await ai_channel.on_event(event, binding, context)
+        await respond(ai_channel, event, binding, context)
 
         assert len(observed) == 1
         assert observed[0].channel_type == ChannelType.AI
@@ -452,7 +453,7 @@ class TestAIChannelToolCallHook:
             channel_type=ChannelType.AI,
         )
         context = await kit_with_ai._build_context(room.id)
-        await ai_channel.on_event(event, binding, context)
+        await respond(ai_channel, event, binding, context)
 
         # The overridden result should have been passed to the provider
         assert any("override" in r for r in seen_results)
@@ -595,7 +596,7 @@ class TestToolAuthorizationH1:
         )
         binding = ChannelBinding(channel_id="ai-x", room_id=room.id, channel_type=ChannelType.AI)
         context = await kit._build_context(room.id)
-        await ch.on_event(event, binding, context)
+        await respond(ch, event, binding, context)
 
         # The malformed call never reached the handler.
         assert called == []
@@ -647,7 +648,7 @@ class TestToolAuthorizationH1:
             },
         )
 
-        await ch.on_event(event, binding, await kit._build_context(room.id))
+        await respond(ch, event, binding, await kit._build_context(room.id))
 
         handler.assert_not_awaited()
 
@@ -690,7 +691,7 @@ class TestToolAuthorizationH1:
             channel_id="ai-declared", room_id=room.id, channel_type=ChannelType.AI
         )
 
-        await ch.on_event(event, binding, await kit._build_context(room.id))
+        await respond(ch, event, binding, await kit._build_context(room.id))
 
         handler.assert_not_awaited()
 
@@ -1281,11 +1282,12 @@ async def _ai_room(
     tools: list[AITool] | None = None,
     tool_policy: ToolPolicy | None = None,
     channel_id: str = "ai-ref",
+    streaming: bool,
 ) -> tuple[RoomKit, AIChannel, str, list[ToolCallEvent], list[ToolCallEvent]]:
     """An AI channel with one ASYNC observer and one SYNC servant attached."""
     ch = AIChannel(
         channel_id,
-        provider=MockAIProvider(streaming=False),
+        provider=MockAIProvider(streaming=streaming),
         tool_handler=tool_handler,
         tools=tools if tools is not None else [_WEATHER_TOOL],
         tool_policy=tool_policy,
@@ -1311,7 +1313,7 @@ async def _ai_room(
     return kit, ch, room.id, observed, served
 
 
-async def _call_one_tool(kit: RoomKit, ch: AIChannel, room_id: str, name: str) -> Any:
+async def _call_one_tool(kit: RoomKit, ch: AIChannel, room_id: str, name: str) -> LoopRun:
     ch._provider._ai_responses = [
         AIResponse(
             content="",
@@ -1331,7 +1333,7 @@ async def _call_one_tool(kit: RoomKit, ch: AIChannel, room_id: str, name: str) -
     binding = ChannelBinding(
         channel_id=ch.channel_id, room_id=room_id, channel_type=ChannelType.AI
     )
-    return await ch.on_event(event, binding, await kit._build_context(room_id))
+    return await respond(ch, event, binding, await kit._build_context(room_id))
 
 
 async def _ok_handler(name: str, arguments: dict[str, Any]) -> str:
@@ -1346,9 +1348,11 @@ class TestRefusedAIToolCallsAreObserved:
     trail could not tell an agent refused its tools from one that never asked.
     """
 
-    async def test_a_policy_denial_is_observed_and_marked(self) -> None:
+    async def test_a_policy_denial_is_observed_and_marked(self, streaming: bool) -> None:
         kit, ch, room_id, observed, served = await _ai_room(
-            tool_handler=_ok_handler, tool_policy=ToolPolicy(deny=["get_weather"])
+            streaming=streaming,
+            tool_handler=_ok_handler,
+            tool_policy=ToolPolicy(deny=["get_weather"]),
         )
         await _call_one_tool(kit, ch, room_id, "get_weather")
 
@@ -1360,8 +1364,10 @@ class TestRefusedAIToolCallsAreObserved:
         # would hide the side effect instead of preventing it.
         assert served == []
 
-    async def test_an_undeclared_tool_is_observed_and_marked(self) -> None:
-        kit, ch, room_id, observed, served = await _ai_room(tool_handler=_ok_handler)
+    async def test_an_undeclared_tool_is_observed_and_marked(self, streaming: bool) -> None:
+        kit, ch, room_id, observed, served = await _ai_room(
+            streaming=streaming, tool_handler=_ok_handler
+        )
         await _call_one_tool(kit, ch, room_id, "wire_money")
 
         assert len(observed) == 1
@@ -1369,11 +1375,11 @@ class TestRefusedAIToolCallsAreObserved:
         assert observed[0].name == "wire_money"
         assert served == []
 
-    async def test_a_handler_that_raised_is_observed_and_marked(self) -> None:
+    async def test_a_handler_that_raised_is_observed_and_marked(self, streaming: bool) -> None:
         async def boom(name: str, arguments: dict[str, Any]) -> str:
             raise RuntimeError("integration gateway unreachable")
 
-        kit, ch, room_id, observed, served = await _ai_room(tool_handler=boom)
+        kit, ch, room_id, observed, served = await _ai_room(streaming=streaming, tool_handler=boom)
         await _call_one_tool(kit, ch, room_id, "get_weather")
 
         assert len(observed) == 1
@@ -1384,7 +1390,7 @@ class TestRefusedAIToolCallsAreObserved:
         assert "integration gateway unreachable" in observed[0].result
         assert served == []
 
-    async def test_a_handler_that_refused_keeps_its_words(self) -> None:
+    async def test_a_handler_that_refused_keeps_its_words(self, streaming: bool) -> None:
         """A refusal the handler *states* is marked, and not rewritten.
 
         Raising anything else hands the model
@@ -1399,7 +1405,9 @@ class TestRefusedAIToolCallsAreObserved:
                 f"Error: the tool '{name}' does not exist. Call one of your actual tools."
             )
 
-        kit, ch, room_id, observed, served = await _ai_room(tool_handler=declines)
+        kit, ch, room_id, observed, served = await _ai_room(
+            streaming=streaming, tool_handler=declines
+        )
         await _call_one_tool(kit, ch, room_id, "get_weather")
 
         assert len(observed) == 1
@@ -1412,7 +1420,9 @@ class TestRefusedAIToolCallsAreObserved:
         # effect, it does not hide it.
         assert served == []
 
-    async def test_a_handler_refusal_persists_as_a_failed_tool_call_event(self) -> None:
+    async def test_a_handler_refusal_persists_as_a_failed_tool_call_event(
+        self, streaming: bool
+    ) -> None:
         """The stored event agrees with the hook, so the transcript does too.
 
         This is the half a person sees: a refused call used to render as a
@@ -1422,18 +1432,20 @@ class TestRefusedAIToolCallsAreObserved:
         async def declines(name: str, arguments: dict[str, Any]) -> str:
             raise ToolRefusedError("integration gateway is not reachable")
 
-        kit, ch, room_id, _observed, _served = await _ai_room(tool_handler=declines)
-        output = await _call_one_tool(kit, ch, room_id, "get_weather")
+        kit, ch, room_id, _observed, _served = await _ai_room(
+            streaming=streaming, tool_handler=declines
+        )
+        run = await _call_one_tool(kit, ch, room_id, "get_weather")
 
-        ends = [e for e in output.response_events if e.type == EventType.TOOL_CALL_END]
-        assert len(ends) == 1
-        content = ends[0].content
-        assert isinstance(content, ToolCallContent)
-        assert content.status == "failed"
-        assert content.error == "integration gateway is not reachable"
+        assert len(run.calls) == 1
+        call = run.calls[0]
+        assert call.failed
+        assert call.error == "integration gateway is not reachable"
 
-    async def test_a_served_call_is_observed_unmarked(self) -> None:
-        kit, ch, room_id, observed, served = await _ai_room(tool_handler=_ok_handler)
+    async def test_a_served_call_is_observed_unmarked(self, streaming: bool) -> None:
+        kit, ch, room_id, observed, served = await _ai_room(
+            streaming=streaming, tool_handler=_ok_handler
+        )
         await _call_one_tool(kit, ch, room_id, "get_weather")
 
         assert len(observed) == 1
@@ -1441,23 +1453,23 @@ class TestRefusedAIToolCallsAreObserved:
         assert json.loads(observed[0].result) == {"temp": 22}
         assert len(served) == 1
 
-    async def test_a_refusal_persists_as_a_failed_tool_call_event(self) -> None:
+    async def test_a_refusal_persists_as_a_failed_tool_call_event(self, streaming: bool) -> None:
         """The stored event agrees with the hook.
 
         It used to read the result body for a prose prefix, so a refusal — a
         JSON error envelope — was persisted as ``completed``.
         """
         kit, ch, room_id, _observed, _served = await _ai_room(
-            tool_handler=_ok_handler, tool_policy=ToolPolicy(deny=["get_weather"])
+            streaming=streaming,
+            tool_handler=_ok_handler,
+            tool_policy=ToolPolicy(deny=["get_weather"]),
         )
-        output = await _call_one_tool(kit, ch, room_id, "get_weather")
+        run = await _call_one_tool(kit, ch, room_id, "get_weather")
 
-        ends = [e for e in output.response_events if e.type == EventType.TOOL_CALL_END]
-        assert len(ends) == 1
-        content = ends[0].content
-        assert isinstance(content, ToolCallContent)
-        assert content.status == "failed"
-        assert content.error is not None
+        assert len(run.calls) == 1
+        call = run.calls[0]
+        assert call.failed
+        assert call.error is not None
 
 
 class TestExternalToolFailureReachesTheHook:

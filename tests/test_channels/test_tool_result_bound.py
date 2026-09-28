@@ -25,6 +25,7 @@ from roomkit.providers.ai.base import (
     AIToolResultPart,
 )
 from roomkit.providers.ai.mock import MockAIProvider
+from tests.tool_loop_modes import run_tool_loop
 
 _HUGE = "<html>" + "x" * 500_000 + "</html>"
 
@@ -44,20 +45,23 @@ def _channel(handler: AsyncMock, *, vision: bool = False) -> tuple[AIChannel, Mo
     return AIChannel("ai1", provider=provider, tool_handler=handler), provider
 
 
-async def _model_copy(ch: AIChannel, provider: MockAIProvider) -> AIToolResultPart:
-    await ch._run_tool_loop(AIContext(messages=[AIMessage(role="user", content="go")]))
+async def _model_copy(
+    ch: AIChannel, provider: MockAIProvider, *, streaming: bool
+) -> AIToolResultPart:
+    context = AIContext(messages=[AIMessage(role="user", content="go")])
+    await run_tool_loop(ch, context, streaming=streaming)
     tool_message = next(m for m in provider.calls[-1].messages if m.role == "tool")
     part = tool_message.content[0]
     assert isinstance(part, AIToolResultPart)
     return part
 
 
-async def test_an_oversized_refusal_is_evicted_and_the_hook_sees_it_whole() -> None:
+async def test_an_oversized_refusal_is_evicted_and_the_hook_sees_it_whole(streaming: bool) -> None:
     ch, provider = _channel(AsyncMock(side_effect=ToolRefusedError(_HUGE)))
     observed: list[ToolCallEvent] = []
     ch._tool_observer_hook = AsyncMock(side_effect=observed.append)
 
-    part = await _model_copy(ch, provider)
+    part = await _model_copy(ch, provider, streaming=streaming)
 
     assert part.is_error
     assert isinstance(part.result, str) and is_eviction_placeholder(part.result)
@@ -65,17 +69,19 @@ async def test_an_oversized_refusal_is_evicted_and_the_hook_sees_it_whole() -> N
     assert observed[0].result == _HUGE
 
 
-async def test_an_oversized_exception_is_evicted() -> None:
+async def test_an_oversized_exception_is_evicted(streaming: bool) -> None:
     ch, provider = _channel(AsyncMock(side_effect=RuntimeError(_HUGE)))
 
-    part = await _model_copy(ch, provider)
+    part = await _model_copy(ch, provider, streaming=streaming)
 
     assert part.is_error
     assert isinstance(part.result, str) and is_eviction_placeholder(part.result)
     assert _HUGE in ch._eviction._store[("", "evicted_t1")]
 
 
-async def test_the_hook_sees_the_whole_result_and_the_store_keeps_its_rewrite() -> None:
+async def test_the_hook_sees_the_whole_result_and_the_store_keeps_its_rewrite(
+    streaming: bool,
+) -> None:
     """A redacting ON_TOOL_CALL hook covers the full text: what the model can
     page back with read_stored_result is what the hook handed back."""
     body = "row\n" * 10_000 + "client: Jane Doe, jane@example.com\n" + "row\n" * 10_000
@@ -88,7 +94,7 @@ async def test_the_hook_sees_the_whole_result_and_the_store_keeps_its_rewrite() 
 
     ch._tool_call_hook = redact
 
-    part = await _model_copy(ch, provider)
+    part = await _model_copy(ch, provider, streaming=streaming)
 
     assert seen[0].result == body
     assert isinstance(part.result, str) and is_eviction_placeholder(part.result)
@@ -102,7 +108,9 @@ async def test_the_hook_sees_the_whole_result_and_the_store_keeps_its_rewrite() 
     assert "[PERSON_1], [EMAIL_1]" in stored
 
 
-async def test_an_oversized_override_is_evicted_and_the_hook_input_is_unchanged() -> None:
+async def test_an_oversized_override_is_evicted_and_the_hook_input_is_unchanged(
+    streaming: bool,
+) -> None:
     ch, provider = _channel(AsyncMock(return_value="small result"))
     seen: list[ToolCallEvent] = []
 
@@ -112,22 +120,22 @@ async def test_an_oversized_override_is_evicted_and_the_hook_input_is_unchanged(
 
     ch._tool_call_hook = rewrite
 
-    part = await _model_copy(ch, provider)
+    part = await _model_copy(ch, provider, streaming=streaming)
 
     assert seen[0].result == "small result"
     assert isinstance(part.result, str) and is_eviction_placeholder(part.result)
     assert ch._eviction._store[("", "evicted_t1")] == _HUGE
 
 
-async def test_a_small_error_reaches_the_model_unchanged() -> None:
+async def test_a_small_error_reaches_the_model_unchanged(streaming: bool) -> None:
     ch, provider = _channel(AsyncMock(side_effect=ToolRefusedError("Missing tenant header")))
 
-    part = await _model_copy(ch, provider)
+    part = await _model_copy(ch, provider, streaming=streaming)
 
     assert part.result == "Missing tenant header"
 
 
-async def test_an_oversized_part_list_override_keeps_its_images() -> None:
+async def test_an_oversized_part_list_override_keeps_its_images(streaming: bool) -> None:
     ch, provider = _channel(AsyncMock(return_value="small result"), vision=True)
     image = AIImagePart(url="data:image/png;base64,AAAA", mime_type="image/png")
 
@@ -136,7 +144,7 @@ async def test_an_oversized_part_list_override_keeps_its_images() -> None:
 
     ch._tool_call_hook = rewrite
 
-    part = await _model_copy(ch, provider)
+    part = await _model_copy(ch, provider, streaming=streaming)
 
     assert isinstance(part.result, list)
     text, kept = part.result

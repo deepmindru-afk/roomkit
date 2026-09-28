@@ -271,6 +271,8 @@ addopts = "-m 'not stress'"
 markers = [
     "stress: load/contention tests, excluded from the default run (run with `make stress`)",
     "wallclock: asserts real elapsed-time budgets; deselect on loaded CI runners",
+    "xfail_streaming(reason): known tool-loop divergence, the streaming variant is xfail (strict); the reason names the card",
+    "xfail_non_streaming(reason): known tool-loop divergence, the non-streaming variant is xfail (strict); the reason names the card",
 ]
 filterwarnings = [
     "error",

@@ -20,6 +20,7 @@ from roomkit.providers.ai.base import (
     ProviderError,
 )
 from roomkit.providers.ai.mock import MockAIProvider
+from tests.tool_loop_modes import run_tool_loop
 
 
 def _tool_response(content: str = "", tool_name: str = "search") -> AIResponse:
@@ -36,7 +37,7 @@ def _final_response(content: str = "Done") -> AIResponse:
 
 
 class TestToolLoopTimeout:
-    async def test_loop_stops_at_deadline(self) -> None:
+    async def test_loop_stops_at_deadline(self, streaming: bool) -> None:
         """Tool loop breaks when timeout is exceeded."""
         max_rounds = 200
         provider = MockAIProvider(ai_responses=[_tool_response()] * max_rounds)
@@ -63,13 +64,13 @@ class TestToolLoopTimeout:
 
         context = AIContext(messages=[AIMessage(role="user", content="go")])
         with patch.object(asyncio.get_running_loop(), "time", advancing_time):
-            await ch._run_tool_loop(context)
+            await run_tool_loop(ch, context, streaming=streaming)
 
         # Timeout must have stopped the loop — far fewer than max_tool_rounds
         assert handler.call_count < max_rounds
         assert handler.call_count <= 2
 
-    async def test_no_timeout_when_none(self) -> None:
+    async def test_no_timeout_when_none(self, streaming: bool) -> None:
         """Tool loop runs without timeout when tool_loop_timeout_seconds is None."""
         responses = [_tool_response(), _tool_response(), _final_response()]
         provider = MockAIProvider(ai_responses=responses)
@@ -83,12 +84,12 @@ class TestToolLoopTimeout:
         )
 
         context = AIContext(messages=[AIMessage(role="user", content="go")])
-        response = (await ch._run_tool_loop(context)).response
+        run = await run_tool_loop(ch, context, streaming=streaming)
 
-        assert response.content == "Done"
+        assert run.text == "Done"
         assert handler.call_count == 2
 
-    async def test_timeout_before_any_tool_response(self) -> None:
+    async def test_timeout_before_any_tool_response(self, streaming: bool) -> None:
         """Timeout fires on first round — loop returns partial with no tool results."""
         max_rounds = 200
         provider = MockAIProvider(ai_responses=[_tool_response()] * max_rounds)
@@ -115,14 +116,14 @@ class TestToolLoopTimeout:
 
         context = AIContext(messages=[AIMessage(role="user", content="go")])
         with patch.object(asyncio.get_running_loop(), "time", already_expired):
-            response = (await ch._run_tool_loop(context)).response
+            run = await run_tool_loop(ch, context, streaming=streaming)
 
         # At most 1 round completes (the one in-flight when timeout is checked)
         assert handler.call_count <= 1
         # Response should exist (may be partial or timeout message)
-        assert response is not None
+        assert run is not None
 
-    async def test_loop_completes_current_round_before_timeout(self) -> None:
+    async def test_loop_completes_current_round_before_timeout(self, streaming: bool) -> None:
         """Timeout check happens after round finishes, not mid-tool-execution."""
         call_count = 0
 
@@ -143,15 +144,15 @@ class TestToolLoopTimeout:
         )
 
         context = AIContext(messages=[AIMessage(role="user", content="go")])
-        response = (await ch._run_tool_loop(context)).response
+        run = await run_tool_loop(ch, context, streaming=streaming)
 
         assert call_count == 1
-        assert response.content == "Done"
+        assert run.text == "Done"
 
 
 class TestToolLoopWarning:
     async def test_soft_warning_at_configured_round(
-        self, caplog: pytest.LogCaptureFixture
+        self, caplog: pytest.LogCaptureFixture, streaming: bool
     ) -> None:
         """Warning is logged at tool_loop_warn_after rounds."""
         warn_after = 3
@@ -169,14 +170,16 @@ class TestToolLoopWarning:
 
         context = AIContext(messages=[AIMessage(role="user", content="go")])
         with caplog.at_level(logging.WARNING, logger="roomkit.channels.ai"):
-            await ch._run_tool_loop(context)
+            await run_tool_loop(ch, context, streaming=streaming)
 
         warning_msgs = [r.message for r in caplog.records if r.levelno == logging.WARNING]
         assert any(f"reached {warn_after} rounds, still running" in m for m in warning_msgs), (
             f"Expected exact warning format, got: {warning_msgs}"
         )
 
-    async def test_no_warning_below_threshold(self, caplog: pytest.LogCaptureFixture) -> None:
+    async def test_no_warning_below_threshold(
+        self, caplog: pytest.LogCaptureFixture, streaming: bool
+    ) -> None:
         """No warning when loop finishes before warn_after."""
         responses = [_tool_response(), _final_response()]
         provider = MockAIProvider(ai_responses=responses)
@@ -192,12 +195,12 @@ class TestToolLoopWarning:
 
         context = AIContext(messages=[AIMessage(role="user", content="go")])
         with caplog.at_level(logging.WARNING, logger="roomkit.channels.ai"):
-            await ch._run_tool_loop(context)
+            await run_tool_loop(ch, context, streaming=streaming)
 
         warning_msgs = [r.message for r in caplog.records if r.levelno == logging.WARNING]
         assert not any("still running" in m for m in warning_msgs)
 
-    async def test_hard_cap_terminates_loop(self) -> None:
+    async def test_hard_cap_terminates_loop(self, streaming: bool) -> None:
         """Loop stops at max_tool_rounds even if model keeps requesting tools."""
         max_rounds = 3
         # Distinct arguments per round: identical repeats would trip the
@@ -223,13 +226,13 @@ class TestToolLoopWarning:
         )
 
         context = AIContext(messages=[AIMessage(role="user", content="go")])
-        await ch._run_tool_loop(context)
+        await run_tool_loop(ch, context, streaming=streaming)
 
         assert handler.call_count == max_rounds
 
 
 class TestParallelToolExecution:
-    async def test_tools_run_concurrently(self) -> None:
+    async def test_tools_run_concurrently(self, streaming: bool) -> None:
         """Multiple tool calls in a single round interleave execution."""
         execution_order: list[str] = []
 
@@ -258,9 +261,9 @@ class TestParallelToolExecution:
         )
 
         context = AIContext(messages=[AIMessage(role="user", content="go")])
-        response = (await ch._run_tool_loop(context)).response
+        run = await run_tool_loop(ch, context, streaming=streaming)
 
-        assert response.content == "Done"
+        assert run.text == "Done"
         assert len(execution_order) == 4
         # With asyncio.gather + sleep(0), both starts happen before ends
         # because gather launches all coroutines, they each hit sleep(0)
@@ -270,7 +273,7 @@ class TestParallelToolExecution:
         assert execution_order[2].startswith("end:")
         assert execution_order[3].startswith("end:")
 
-    async def test_tool_failure_isolation(self) -> None:
+    async def test_tool_failure_isolation(self, streaming: bool) -> None:
         """One tool failing doesn't prevent others from completing."""
 
         async def handler(name: str, args: dict) -> str:
@@ -295,7 +298,7 @@ class TestParallelToolExecution:
         )
 
         context = AIContext(messages=[AIMessage(role="user", content="go")])
-        await ch._run_tool_loop(context)
+        await run_tool_loop(ch, context, streaming=streaming)
 
         # Messages: [0]=user "go", [1]=assistant (tool calls), [2]=tool (results)
         assert context.messages[1].role == "assistant"
@@ -435,7 +438,7 @@ class TestEvictedResultReading:
 
 
 class TestContextOverflowRecovery:
-    async def test_overflow_triggers_compaction(self) -> None:
+    async def test_overflow_triggers_compaction(self, streaming: bool) -> None:
         """Context overflow error triggers compaction and retry."""
         call_count = 0
 
@@ -462,9 +465,9 @@ class TestContextOverflowRecovery:
         context = AIContext(
             messages=[AIMessage(role="user", content=f"msg{i}") for i in range(10)]
         )
-        response = (await ch._run_tool_loop(context)).response
+        run = await run_tool_loop(ch, context, streaming=streaming)
 
-        assert response.content == "Recovered"
+        assert run.text == "Recovered"
         assert call_count == 3
 
     async def test_non_overflow_error_returns_partial(self) -> None:
@@ -498,7 +501,7 @@ class TestContextOverflowRecovery:
         assert "[Response interrupted]" in response.content
         assert "Internal server error" not in response.content
 
-    async def test_compaction_still_overflows_raises(self) -> None:
+    async def test_compaction_still_overflows_raises(self, streaming: bool) -> None:
         """When compaction doesn't help, error propagates."""
         call_count = 0
 
@@ -527,7 +530,7 @@ class TestContextOverflowRecovery:
             messages=[AIMessage(role="user", content=f"msg{i}") for i in range(10)]
         )
         with pytest.raises(ProviderError, match="context length exceeded"):
-            await ch._run_tool_loop(context)
+            await run_tool_loop(ch, context, streaming=streaming)
 
     def test_is_context_overflow_matches_known_patterns(self) -> None:
         """_is_context_overflow detects known error messages."""
@@ -582,7 +585,7 @@ class TestContextOverflowRecovery:
 
 
 class TestToolLoopContextAccumulation:
-    async def test_tool_results_appear_in_context_for_next_round(self) -> None:
+    async def test_tool_results_appear_in_context_for_next_round(self, streaming: bool) -> None:
         """Each round's tool results are appended to context, visible to next generate."""
         contexts_seen: list[int] = []
 
@@ -607,9 +610,9 @@ class TestToolLoopContextAccumulation:
         )
 
         context = AIContext(messages=[AIMessage(role="user", content="go")])
-        response = (await ch._run_tool_loop(context)).response
+        run = await run_tool_loop(ch, context, streaming=streaming)
 
-        assert response.content == "Done"
+        assert run.text == "Done"
         # First call: 1 message (user "go")
         assert contexts_seen[0] == 1
         # Second call: 1 + 2 = 3 (user + assistant[tool_calls] + tool[results])
@@ -623,7 +626,7 @@ class TestToolLoopContextAccumulation:
         assert context.messages[3].role == "assistant"
         assert context.messages[4].role == "tool"
 
-    async def test_tool_results_content_matches_handler_output(self) -> None:
+    async def test_tool_results_content_matches_handler_output(self, streaming: bool) -> None:
         """Tool result parts contain the actual handler return values."""
 
         async def handler(name: str, args: dict) -> str:
@@ -646,7 +649,7 @@ class TestToolLoopContextAccumulation:
         )
 
         context = AIContext(messages=[AIMessage(role="user", content="go")])
-        await ch._run_tool_loop(context)
+        await run_tool_loop(ch, context, streaming=streaming)
 
         tool_msg = context.messages[2]
         assert tool_msg.role == "tool"
@@ -702,7 +705,9 @@ class TestEvictionToolAvailableMidLoop:
     the model burned rounds hunting for a tool that did not exist.
     """
 
-    async def test_read_stored_result_is_injected_the_round_after_eviction(self) -> None:
+    async def test_read_stored_result_is_injected_the_round_after_eviction(
+        self, streaming: bool
+    ) -> None:
         large = "\n".join(f"NEEDLE-{i} " + "x" * 80 for i in range(200))
         provider = MockAIProvider(
             ai_responses=[
@@ -729,7 +734,7 @@ class TestEvictionToolAvailableMidLoop:
         )
 
         context = AIContext(messages=[AIMessage(role="user", content="go")])
-        await ch._run_tool_loop(context)
+        await run_tool_loop(ch, context, streaming=streaming)
 
         # The round *after* the eviction advertises the re-read tool…
         assert len(provider.calls) == 3
@@ -744,7 +749,7 @@ class TestEvictionToolAvailableMidLoop:
         final_messages = str(provider.calls[2].messages)
         assert "NEEDLE-0" in final_messages
 
-    async def test_no_injection_when_nothing_was_evicted(self) -> None:
+    async def test_no_injection_when_nothing_was_evicted(self, streaming: bool) -> None:
         provider = MockAIProvider(
             ai_responses=[_tool_response(tool_name="search"), _final_response()]
         )
@@ -757,7 +762,7 @@ class TestEvictionToolAvailableMidLoop:
         )
 
         context = AIContext(messages=[AIMessage(role="user", content="go")])
-        await ch._run_tool_loop(context)
+        await run_tool_loop(ch, context, streaming=streaming)
 
         assert len(provider.calls) == 2
         round2_tools = [t.name for t in (provider.calls[1].tools or [])]

@@ -24,6 +24,7 @@ from roomkit.providers.ai.base import (
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.tools.external import BeforeToolDecision
 from tests.conftest import make_event
+from tests.tool_loop_modes import LoopCall, respond
 
 
 def _binding() -> ChannelBinding:
@@ -54,7 +55,7 @@ def _ctx() -> RoomContext:
 class TestStreamingToolLoop:
     """Test the streaming tool loop in AIChannel."""
 
-    async def test_single_tool_round(self) -> None:
+    async def test_single_tool_round(self, streaming: bool) -> None:
         """Provider returns tool call on round 1, text on round 2."""
 
         async def tool_handler(name: str, args: dict[str, Any]) -> str:
@@ -77,29 +78,23 @@ class TestStreamingToolLoop:
             ),
         ]
 
-        provider = MockAIProvider(ai_responses=responses, streaming=True)
+        provider = MockAIProvider(ai_responses=responses, streaming=streaming)
         ch = AIChannel(
             "ai1",
             provider=provider,
             tool_handler=tool_handler,
         )
 
-        output = await ch.on_event(
+        run = await respond(
+            ch,
             make_event(body="search for test", channel_id="sms1"),
             _binding(),
             _ctx(),
         )
 
-        assert output.responded is True
-        assert output.response_stream is not None
-
-        # Collect all text deltas (filter out stream markers)
-        chunks = [chunk async for chunk in output.response_stream]
-        text = "".join(c for c in chunks if isinstance(c, str))
-
-        # Both rounds' text should be yielded
-        assert "Let me search." in text
-        assert "Here are the results." in text
+        # Both rounds' text reaches the reply
+        assert run.said == ["Let me search.", "Here are the results."]
+        assert run.text == "Here are the results."
 
         # Provider was called twice (two rounds)
         assert len(provider.calls) == 2
@@ -155,23 +150,22 @@ class TestStreamingToolLoop:
         assert len(pre_tool_text) > 0
         assert "Thinking..." in "".join(c.split(":", 1)[1] for c in pre_tool_text)
 
-    async def test_no_tools_single_round(self) -> None:
+    async def test_no_tools_single_round(self, streaming: bool) -> None:
         """Without tools, stream completes after one generation."""
-        provider = MockAIProvider(responses=["Just text."], streaming=True)
+        provider = MockAIProvider(responses=["Just text."], streaming=streaming)
         ch = AIChannel("ai1", provider=provider)
 
-        output = await ch.on_event(
+        run = await respond(
+            ch,
             make_event(body="hi", channel_id="sms1"),
             _binding(),
             _ctx(),
         )
 
-        assert output.response_stream is not None
-        chunks = [chunk async for chunk in output.response_stream]
-        assert "".join(c for c in chunks if isinstance(c, str)) == "Just text."
+        assert run.text == "Just text."
         assert len(provider.calls) == 1
 
-    async def test_no_tools_no_handler(self) -> None:
+    async def test_no_tools_no_handler(self, streaming: bool) -> None:
         """Tool calls without a handler end the loop after round 1."""
         responses = [
             AIResponse(
@@ -184,24 +178,22 @@ class TestStreamingToolLoop:
             ),
         ]
 
-        provider = MockAIProvider(ai_responses=responses, streaming=True)
+        provider = MockAIProvider(ai_responses=responses, streaming=streaming)
         # No tool_handler
         ch = AIChannel("ai1", provider=provider)
 
-        output = await ch.on_event(
+        run = await respond(
+            ch,
             make_event(body="go", channel_id="sms1"),
             _binding(),
             _ctx(),
         )
 
-        assert output.response_stream is not None
-        chunks = [chunk async for chunk in output.response_stream]
-        text = "".join(c for c in chunks if isinstance(c, str))
-        assert text == "I want to call tools but can't."
+        assert run.said == ["I want to call tools but can't."]
         # Only one round because no handler
         assert len(provider.calls) == 1
 
-    async def test_max_rounds_honored(self) -> None:
+    async def test_max_rounds_honored(self, streaming: bool) -> None:
         """Loop stops at max_tool_rounds even if provider keeps returning tools."""
         tool_executions = 0
 
@@ -223,7 +215,7 @@ class TestStreamingToolLoop:
                 )
                 for i in range(10)
             ],
-            streaming=True,
+            streaming=streaming,
         )
         ch = AIChannel(
             "ai1",
@@ -232,23 +224,21 @@ class TestStreamingToolLoop:
             max_tool_rounds=3,
         )
 
-        output = await ch.on_event(
+        run = await respond(
+            ch,
             make_event(body="go", channel_id="sms1"),
             _binding(),
             _ctx(),
         )
 
-        assert output.response_stream is not None
-        async for _ in output.response_stream:
-            pass
-
+        assert run.reason == "max_rounds"
         # max_tool_rounds=3 → 4 generations (0,1,2,3) but only 3 tool executions
         # The last generation sees tool calls but does NOT execute them (no
         # generation would follow to use the results).
         assert len(provider.calls) == 4
         assert tool_executions == 3
 
-    async def test_tool_execution_error_fed_back_to_llm(self) -> None:
+    async def test_tool_execution_error_fed_back_to_llm(self, streaming: bool) -> None:
         """Tool errors are fed back as tool results instead of propagating."""
 
         async def broken_handler(name: str, args: dict[str, Any]) -> str:
@@ -270,24 +260,21 @@ class TestStreamingToolLoop:
             ),
         ]
 
-        provider = MockAIProvider(ai_responses=responses, streaming=True)
+        provider = MockAIProvider(ai_responses=responses, streaming=streaming)
         ch = AIChannel("ai1", provider=provider, tool_handler=broken_handler)
 
-        output = await ch.on_event(
+        run = await respond(
+            ch,
             make_event(body="go", channel_id="sms1"),
             _binding(),
             _ctx(),
         )
 
-        assert output.response_stream is not None
-        collected = []
-        async for delta in output.response_stream:
-            if isinstance(delta, str):
-                collected.append(delta)
-        # Should get both rounds of text (tool error handled gracefully)
-        assert len(collected) > 0
+        # Both rounds' text: the error went back to the model, not up the stack
+        assert run.said == ["Calling tool.", "The tool failed, let me explain."]
+        assert run.calls[0].failed
 
-    async def test_context_updated_between_rounds(self) -> None:
+    async def test_context_updated_between_rounds(self, streaming: bool) -> None:
         """Verify tool results are appended to context between rounds."""
 
         async def tool_handler(name: str, args: dict[str, Any]) -> str:
@@ -309,18 +296,15 @@ class TestStreamingToolLoop:
             ),
         ]
 
-        provider = MockAIProvider(ai_responses=responses, streaming=True)
+        provider = MockAIProvider(ai_responses=responses, streaming=streaming)
         ch = AIChannel("ai1", provider=provider, tool_handler=tool_handler)
 
-        output = await ch.on_event(
+        await respond(
+            ch,
             make_event(body="what is 6*7?", channel_id="sms1"),
             _binding(),
             _ctx(),
         )
-
-        assert output.response_stream is not None
-        async for _ in output.response_stream:
-            pass
 
         # Second call should have assistant + tool messages appended
         second_ctx = provider.calls[1]
@@ -415,7 +399,7 @@ class TestToolCallEphemeralEvents:
 
     async def test_tool_calls_yield_stream_markers(self) -> None:
         """Streaming tool loop yields structured markers instead of ephemeral events."""
-        from roomkit.models.streaming import ToolCallEndMarker, ToolCallStartMarker
+        from roomkit.models.streaming import ToolCallStartMarker
 
         async def tool_handler(name: str, args: dict[str, Any]) -> str:
             return f"Result for {name}"
@@ -476,7 +460,7 @@ class TestToolCallEphemeralEvents:
 
     async def test_end_marker_records_post_hook_arguments_that_executed(self) -> None:
         """Persistence keeps the request marker and the actual execution distinct."""
-        from roomkit.models.streaming import ToolCallEndMarker, ToolCallStartMarker
+        from roomkit.models.streaming import ToolCallStartMarker
 
         seen: list[dict[str, Any]] = []
 
@@ -783,7 +767,7 @@ class TestStreamingToolOutcome:
     """
 
     @staticmethod
-    async def _end_marker(handler: Any) -> ToolCallEndMarker:
+    async def _outcome(handler: Any, *, streaming: bool) -> LoopCall:
         provider = MockAIProvider(
             ai_responses=[
                 AIResponse(
@@ -793,40 +777,39 @@ class TestStreamingToolOutcome:
                 ),
                 AIResponse(content="done", finish_reason="stop"),
             ],
-            streaming=True,
+            streaming=streaming,
         )
         ch = AIChannel("ai1", provider=provider, tool_handler=handler)
-        output = await ch.on_event(
-            make_event(body="search", channel_id="sms1"), _binding(), _ctx()
-        )
-        assert output.response_stream is not None
-        items = [item async for item in output.response_stream]
-        return next(item for item in items if isinstance(item, ToolCallEndMarker))
+        run = await respond(ch, make_event(body="search", channel_id="sms1"), _binding(), _ctx())
+        assert len(run.calls) == 1
+        return run.calls[0]
 
-    async def test_a_refusal_is_a_failed_marker_in_the_handlers_words(self) -> None:
+    async def test_a_refusal_is_a_failed_marker_in_the_handlers_words(
+        self, streaming: bool
+    ) -> None:
         async def declines(name: str, args: dict[str, Any]) -> str:
             raise ToolRefusedError(f"Error: Tool '{name}' is temporarily unavailable.")
 
-        end = await self._end_marker(declines)
+        end = await self._outcome(declines, streaming=streaming)
 
-        assert end.status == "failed"
+        assert end.failed
         assert end.error == "Error: Tool 'search' is temporarily unavailable."
 
-    async def test_a_handler_that_raised_is_a_failed_marker(self) -> None:
+    async def test_a_handler_that_raised_is_a_failed_marker(self, streaming: bool) -> None:
         async def boom(name: str, args: dict[str, Any]) -> str:
             raise RuntimeError("upstream down")
 
-        end = await self._end_marker(boom)
+        end = await self._outcome(boom, streaming=streaming)
 
-        assert end.status == "failed"
+        assert end.failed
         assert end.error is not None
         assert end.error.startswith("Error executing tool 'search'")
 
-    async def test_a_served_call_is_a_completed_marker(self) -> None:
+    async def test_a_served_call_is_a_completed_marker(self, streaming: bool) -> None:
         async def ok(name: str, args: dict[str, Any]) -> str:
             return "ok"
 
-        end = await self._end_marker(ok)
+        end = await self._outcome(ok, streaming=streaming)
 
-        assert end.status == "completed"
+        assert not end.failed
         assert end.error is None

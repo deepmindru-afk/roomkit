@@ -25,6 +25,7 @@ from roomkit.sandbox.executor import SandboxExecutor
 from roomkit.skills.registry import SkillRegistry
 from roomkit.tools.policy import ToolPolicy
 from tests.conftest import make_event
+from tests.tool_loop_modes import LoopRun, respond
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -86,8 +87,8 @@ def _tool_names(context) -> set[str]:
     return {t.name for t in context.tools}
 
 
-async def _run(ch: AIChannel, binding: ChannelBinding):
-    return await ch.on_event(make_event(body="go", channel_id="sms1"), binding, _ctx())
+async def _run(ch: AIChannel, binding: ChannelBinding) -> LoopRun:
+    return await respond(ch, make_event(body="go", channel_id="sms1"), binding, _ctx())
 
 
 def _tool_result(context) -> dict:
@@ -103,12 +104,12 @@ def _tool_result(context) -> dict:
 
 
 class TestActivationGating:
-    async def test_under_window_pct_is_noop(self) -> None:
+    async def test_under_window_pct_is_noop(self, streaming: bool) -> None:
         """Deferrable tools under the window-% budget → no search tools, all visible.
 
         Mock window is 8192; a high pct (50%) keeps a small catalogue under budget.
         """
-        provider = MockAIProvider(responses=["hi"])
+        provider = MockAIProvider(responses=["hi"], streaming=streaming)
         ch = AIChannel(
             "ai1", provider=provider, system_prompt="Be nice.", tool_search_threshold_pct=50.0
         )
@@ -120,13 +121,13 @@ class TestActivationGating:
         assert names == {"widget_0", "widget_1", "widget_2"}
         assert provider.calls[0].system_prompt == "Be nice."
 
-    async def test_auto_activates_above_window_pct(self) -> None:
+    async def test_auto_activates_above_window_pct(self, streaming: bool) -> None:
         """Deferrable tools over the window-% budget auto-activate Tool Search.
 
         A low pct (0.5% of 8192 ≈ 41 tokens) is exceeded by a few tools, so the
         catalogue is deferred — self-tuning to the model's window, not a count.
         """
-        provider = MockAIProvider(responses=["hi"])
+        provider = MockAIProvider(responses=["hi"], streaming=streaming)
         ch = AIChannel("ai1", provider=provider, tool_search_threshold_pct=0.5)
         await _run(ch, _binding(_catalogue(5)))
 
@@ -134,24 +135,28 @@ class TestActivationGating:
         assert "find_tools" in names and "list_tools" in names
         assert not any(n.startswith("widget_") for n in names)
 
-    async def test_count_fallback_when_window_unknown(self) -> None:
+    async def test_count_fallback_when_window_unknown(self, streaming: bool) -> None:
         """No known context window → fall back to the tool-count threshold."""
         # 5 tools > threshold 3 → activate; the % path is unavailable.
         on = AIChannel(
-            "ai1", provider=UnknownWindowProvider(responses=["hi"]), tool_search_threshold=3
+            "ai1",
+            provider=UnknownWindowProvider(responses=["hi"], streaming=streaming),
+            tool_search_threshold=3,
         )
         await _run(on, _binding(_catalogue(5)))
         assert "find_tools" in _tool_names(on._provider.calls[0])  # type: ignore[attr-defined]
 
         # 2 tools <= threshold 3 → no activation.
         off = AIChannel(
-            "ai2", provider=UnknownWindowProvider(responses=["hi"]), tool_search_threshold=3
+            "ai2",
+            provider=UnknownWindowProvider(responses=["hi"], streaming=streaming),
+            tool_search_threshold=3,
         )
         await _run(off, _binding(_catalogue(2)))
         assert "find_tools" not in _tool_names(off._provider.calls[0])  # type: ignore[attr-defined]
 
-    async def test_forced_off_never_activates(self) -> None:
-        provider = MockAIProvider(responses=["hi"])
+    async def test_forced_off_never_activates(self, streaming: bool) -> None:
+        provider = MockAIProvider(responses=["hi"], streaming=streaming)
         ch = AIChannel("ai1", provider=provider, tool_search=False, tool_search_threshold=3)
         await _run(ch, _binding(_catalogue(10)))
 
@@ -166,8 +171,8 @@ class TestActivationGating:
 
 
 class TestInitialSurface:
-    async def test_round0_only_infra_and_pinned(self) -> None:
-        provider = MockAIProvider(responses=["hi"])
+    async def test_round0_only_infra_and_pinned(self, streaming: bool) -> None:
+        provider = MockAIProvider(responses=["hi"], streaming=streaming)
         ch = AIChannel(
             "ai1",
             provider=provider,
@@ -207,12 +212,7 @@ class TestFindToolsReveal:
         )
         ch = AIChannel("ai1", provider=provider, tool_search=True, tool_handler=_noop_handler)
         binding = _binding([*_catalogue(5), _SMS_TOOL])
-        output = await _run(ch, binding)
-        assert output.responded is True
-        # Streaming providers run the tool loop lazily as the stream is drained.
-        if output.response_stream is not None:
-            async for _ in output.response_stream:
-                pass
+        await _run(ch, binding)
 
         # Round 0: send_sms hidden behind find_tools.
         assert "send_sms" not in _tool_names(provider.calls[0])
@@ -230,7 +230,7 @@ class TestFindToolsReveal:
         assert "find_tools" in round1 and "list_tools" in round1
         assert not any(n.startswith("widget_") for n in round1)
 
-    async def test_list_tools_reveals_nothing(self) -> None:
+    async def test_list_tools_reveals_nothing(self, streaming: bool) -> None:
         provider = MockAIProvider(
             ai_responses=[
                 AIResponse(
@@ -240,6 +240,7 @@ class TestFindToolsReveal:
                 ),
                 AIResponse(content="done", finish_reason="stop"),
             ],
+            streaming=streaming,
         )
         ch = AIChannel("ai1", provider=provider, tool_search=True, tool_handler=_noop_handler)
         binding = _binding([*_catalogue(3), _SMS_TOOL])
@@ -262,7 +263,7 @@ class TestFindToolsReveal:
 
 
 class TestPolicyExemption:
-    async def test_find_tools_runs_under_whitelist_policy(self) -> None:
+    async def test_find_tools_runs_under_whitelist_policy(self, streaming: bool) -> None:
         """A whitelist policy that omits find_tools must not block it."""
         provider = MockAIProvider(
             ai_responses=[
@@ -275,6 +276,7 @@ class TestPolicyExemption:
                 ),
                 AIResponse(content="done", finish_reason="stop"),
             ],
+            streaming=streaming,
         )
         ch = AIChannel(
             "ai1",
@@ -328,7 +330,9 @@ class _FakeSandbox(SandboxExecutor):
 
 
 class TestSandboxToolSearch:
-    async def test_sandbox_tools_deferred_then_revealed_under_policy(self) -> None:
+    async def test_sandbox_tools_deferred_then_revealed_under_policy(
+        self, streaming: bool
+    ) -> None:
         """Sandbox tools defer behind find_tools AND skip a whitelist policy.
 
         With Tool Search active they are hidden round 0 (not pinned), even
@@ -349,6 +353,7 @@ class TestSandboxToolSearch:
                 ),
                 AIResponse(content="done", finish_reason="stop"),
             ],
+            streaming=streaming,
         )
         ch = AIChannel(
             "ai1",
@@ -375,9 +380,9 @@ class TestSandboxToolSearch:
         assert "sandbox_read" in round1
         assert "sandbox_grep" not in round1
 
-    async def test_sandbox_tools_visible_when_search_off(self) -> None:
+    async def test_sandbox_tools_visible_when_search_off(self, streaming: bool) -> None:
         """Tool Search off → sandbox tools stay visible AND policy-exempt."""
-        provider = MockAIProvider(responses=["hi"])
+        provider = MockAIProvider(responses=["hi"], streaming=streaming)
         ch = AIChannel(
             "ai1",
             provider=provider,
@@ -425,14 +430,6 @@ def _direct_call_provider(name: str, arguments: dict, *, streaming: bool = False
     )
 
 
-async def _drain(ch: AIChannel, binding: ChannelBinding):
-    output = await _run(ch, binding)
-    if output.response_stream is not None:
-        async for _ in output.response_stream:
-            pass
-    return output
-
-
 class TestDeferredCallRecovery:
     @pytest.mark.parametrize("streaming", [False, True])
     async def test_undeclared_catalogue_call_executes(self, streaming: bool) -> None:
@@ -442,7 +439,7 @@ class TestDeferredCallRecovery:
         )
         handler, calls = _recording_handler()
         ch = AIChannel("ai1", provider=provider, tool_search=True, tool_handler=handler)
-        await _drain(ch, _binding([*_catalogue(5), _SMS_TOOL]))
+        await _run(ch, _binding([*_catalogue(5), _SMS_TOOL]))
 
         # Round 0 never declared send_sms — the call recovered anyway.
         assert "send_sms" not in _tool_names(provider.calls[0])
@@ -455,32 +452,36 @@ class TestDeferredCallRecovery:
         assert "send_sms" in round1
         assert not any(n.startswith("widget_") for n in round1)
 
-    async def test_recovered_call_still_validates_arguments(self) -> None:
+    async def test_recovered_call_still_validates_arguments(self, streaming: bool) -> None:
         """The catalogue schema keeps argument validation fail-closed."""
-        provider = _direct_call_provider("send_sms", {"to": "+15551234567"})  # body missing
+        provider = _direct_call_provider(
+            "send_sms", {"to": "+15551234567"}, streaming=streaming
+        )  # body missing
         handler, calls = _recording_handler()
         ch = AIChannel("ai1", provider=provider, tool_search=True, tool_handler=handler)
-        await _drain(ch, _binding([*_catalogue(5), _SMS_TOOL]))
+        await _run(ch, _binding([*_catalogue(5), _SMS_TOOL]))
 
         assert calls == []
         result = _tool_result(provider.calls[1])
         assert "Invalid arguments for 'send_sms'" in result["error"]
 
-    async def test_unknown_name_fails_with_find_tools_hint(self) -> None:
+    async def test_unknown_name_fails_with_find_tools_hint(self, streaming: bool) -> None:
         """A name absent from the catalogue is not confused with a deferred tool."""
-        provider = _direct_call_provider("does_not_exist", {})
+        provider = _direct_call_provider("does_not_exist", {}, streaming=streaming)
         handler, calls = _recording_handler()
         ch = AIChannel("ai1", provider=provider, tool_search=True, tool_handler=handler)
-        await _drain(ch, _binding(_catalogue(5)))
+        await _run(ch, _binding(_catalogue(5)))
 
         assert calls == []
         result = _tool_result(provider.calls[1])
         assert "no tool by that name exists" in result["error"]
         assert "find_tools" in result["hint"]
 
-    async def test_policy_denied_catalogue_tool_is_not_recovered(self) -> None:
+    async def test_policy_denied_catalogue_tool_is_not_recovered(self, streaming: bool) -> None:
         """Recovery must not execute what the visibility filter would drop."""
-        provider = _direct_call_provider("send_sms", {"to": "+15551234567", "body": "hi"})
+        provider = _direct_call_provider(
+            "send_sms", {"to": "+15551234567", "body": "hi"}, streaming=streaming
+        )
         handler, calls = _recording_handler()
         ch = AIChannel(
             "ai1",
@@ -489,7 +490,7 @@ class TestDeferredCallRecovery:
             tool_policy=ToolPolicy(allow=["widget_0"]),
             tool_handler=handler,
         )
-        await _drain(ch, _binding([*_catalogue(5), _SMS_TOOL]))
+        await _run(ch, _binding([*_catalogue(5), _SMS_TOOL]))
 
         assert calls == []
         result = _tool_result(provider.calls[1])
@@ -498,7 +499,7 @@ class TestDeferredCallRecovery:
         # The failed probe must not leave the name revealed for later rounds.
         assert "send_sms" not in _tool_names(provider.calls[1])
 
-    async def test_glob_gated_tool_is_not_recovered(self, tmp_path: Path) -> None:
+    async def test_glob_gated_tool_is_not_recovered(self, tmp_path: Path, streaming: bool) -> None:
         """Skill gating is glob-based and only the filter enforces globs —
         recovery through the filter must not reopen what gating closed."""
         skill_dir = tmp_path / "sms-sender"
@@ -511,7 +512,9 @@ class TestDeferredCallRecovery:
         registry = SkillRegistry()
         registry.discover(tmp_path)
 
-        provider = _direct_call_provider("send_sms", {"to": "+15551234567", "body": "hi"})
+        provider = _direct_call_provider(
+            "send_sms", {"to": "+15551234567", "body": "hi"}, streaming=streaming
+        )
         handler, calls = _recording_handler()
         ch = AIChannel(
             "ai1",
@@ -520,7 +523,7 @@ class TestDeferredCallRecovery:
             skills=registry,
             tool_handler=handler,
         )
-        await _drain(ch, _binding([*_catalogue(5), _SMS_TOOL]))
+        await _run(ch, _binding([*_catalogue(5), _SMS_TOOL]))
 
         assert calls == []
         result = _tool_result(provider.calls[1])

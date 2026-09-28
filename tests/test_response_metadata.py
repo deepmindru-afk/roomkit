@@ -34,6 +34,7 @@ from roomkit.providers.ai.base import AIContext, AIResponse, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.tools import current_response_metadata
 from tests.conftest import make_event
+from tests.tool_loop_modes import respond
 
 _SOURCES = [{"document_id": "doc-1", "name": "report.pdf", "relevance": 0.9}]
 
@@ -426,11 +427,13 @@ class TestLiveRecord:
         assert ai_events[0].metadata["rag_sources"] == _SOURCES
         await kit.close()
 
-    async def test_a_hook_that_replaces_the_context_keeps_one_record(self) -> None:
+    async def test_a_hook_that_replaces_the_context_keeps_one_record(
+        self, streaming: bool
+    ) -> None:
         # A hook may return a NEW AIContext instead of mutating the one it got.
         # The turn still has one record: the tool handler's writes must land on
         # the record the reply is built from, whichever object the hook returned.
-        provider = MockAIProvider(ai_responses=list(_TOOL_ROUNDS))
+        provider = MockAIProvider(ai_responses=list(_TOOL_ROUNDS), streaming=streaming)
         ch = AIChannel("ai1", provider=provider, tool_handler=_citing_handler)
 
         async def _replacing_hook(gen_event: AIGenerationEvent) -> SyncPipelineResult:
@@ -448,10 +451,7 @@ class TestLiveRecord:
             category=ChannelCategory.INTELLIGENCE,
             metadata=_TOOLS_BINDING_META,
         )
-        output = await ch.on_event(make_event(body="read", channel_id="sms1"), binding, _ctx())
+        run = await respond(ch, make_event(body="read", channel_id="sms1"), binding, _ctx())
 
-        messages = [e for e in output.response_events if e.type == EventType.MESSAGE]
-        assert messages
-        for e in messages:
-            assert e.metadata["rag_sources"] == _SOURCES
-            assert e.metadata["cited"] == [{"tool": "read_page", "page": 3}]
+        assert run.metadata["rag_sources"] == _SOURCES
+        assert run.metadata["cited"] == [{"tool": "read_page", "page": 3}]

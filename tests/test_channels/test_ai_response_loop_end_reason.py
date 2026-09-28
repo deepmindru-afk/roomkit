@@ -19,9 +19,10 @@ from roomkit.models.context import RoomContext
 from roomkit.models.enums import ChannelCategory, ChannelType
 from roomkit.models.room import Room
 from roomkit.models.tool_call import AIResponseEvent
-from roomkit.providers.ai.base import AIContext, AIMessage, AIResponse, AIToolCall
+from roomkit.providers.ai.base import AIResponse, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from tests.conftest import make_event
+from tests.tool_loop_modes import respond
 
 _ECHO_TOOL = {
     "name": "echo",
@@ -71,9 +72,10 @@ def _observed(ch: AIChannel) -> list[AIResponseEvent]:
     return seen
 
 
-async def _buffered(ch: AIChannel) -> AIResponseEvent:
+async def _turn(ch: AIChannel) -> AIResponseEvent:
     seen = _observed(ch)
-    await ch.on_event(
+    await respond(
+        ch,
         make_event(body="go", channel_id="sms1"),
         _binding(),
         RoomContext(room=Room(id="r1")),
@@ -82,72 +84,39 @@ async def _buffered(ch: AIChannel) -> AIResponseEvent:
     return seen[0]
 
 
-async def _streamed(ch: AIChannel) -> AIResponseEvent:
-    seen = _observed(ch)
-    context = AIContext(messages=[AIMessage(role="user", content="go")])
-    async for _ in ch._run_streaming_tool_loop(context):
-        pass
-    assert len(seen) == 1
-    return seen[0]
-
-
-async def test_buffered_plain_answer_is_completed() -> None:
-    event = await _buffered(_channel([AIResponse(content="hello")], streaming=False))
+async def test_plain_answer_is_completed(streaming: bool) -> None:
+    event = await _turn(_channel([AIResponse(content="hello")], streaming=streaming))
 
     assert event.loop_end_reason == "completed"
     assert event.tool_calls_count == 0
 
 
-async def test_buffered_answer_after_tools_is_completed_despite_a_positive_count() -> None:
+async def test_answer_after_tools_is_completed_despite_a_positive_count(streaming: bool) -> None:
     """The case that made counting tool calls the wrong signal: a healthy turn
     that used tools reports work done, not a cut-off."""
-    ch = _channel([_tool(0), _tool(1), AIResponse(content="done")], streaming=False)
+    ch = _channel([_tool(0), _tool(1), AIResponse(content="done")], streaming=streaming)
 
-    event = await _buffered(ch)
+    event = await _turn(ch)
 
     assert event.loop_end_reason == "completed"
     assert event.tool_calls_count == 2
     assert event.round_count == 2
 
 
-async def test_buffered_round_cap_is_named() -> None:
-    ch = _channel([_tool(0), _tool(1), _tool(2)], streaming=False, max_tool_rounds=1)
+async def test_round_cap_is_named(streaming: bool) -> None:
+    ch = _channel([_tool(0), _tool(1), _tool(2)], streaming=streaming, max_tool_rounds=1)
 
-    event = await _buffered(ch)
+    event = await _turn(ch)
 
     assert event.loop_end_reason == "max_rounds"
 
 
-async def test_buffered_ripcord_is_named() -> None:
+async def test_ripcord_is_named(streaming: bool) -> None:
     ch = _channel(
         [*[_tool(0) for _ in range(6)], AIResponse(content="what I found")],
-        streaming=False,
+        streaming=streaming,
     )
 
-    event = await _buffered(ch)
+    event = await _turn(ch)
 
     assert event.loop_end_reason == "force_stopped"
-
-
-async def test_streaming_plain_answer_is_completed() -> None:
-    event = await _streamed(_channel([AIResponse(content="hello")], streaming=True))
-
-    assert event.loop_end_reason == "completed"
-
-
-async def test_streaming_answer_after_tools_is_completed_despite_a_positive_count() -> None:
-    ch = _channel([_tool(0), _tool(1), AIResponse(content="done")], streaming=True)
-
-    event = await _streamed(ch)
-
-    assert event.loop_end_reason == "completed"
-    assert event.tool_calls_count == 2
-    assert event.round_count == 2
-
-
-async def test_streaming_round_cap_is_named() -> None:
-    ch = _channel([_tool(0), _tool(1), _tool(2)], streaming=True, max_tool_rounds=1)
-
-    event = await _streamed(ch)
-
-    assert event.loop_end_reason == "max_rounds"

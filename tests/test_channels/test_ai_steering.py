@@ -15,6 +15,7 @@ from roomkit.providers.ai.base import (
     StreamToolCall,
 )
 from roomkit.providers.ai.mock import MockAIProvider
+from tests.tool_loop_modes import run_tool_loop
 
 
 def _tool_response(content: str = "", tool_name: str = "search") -> AIResponse:
@@ -186,7 +187,7 @@ class TestDrainSteeringQueue:
 
 
 class TestToolLoopCancellation:
-    async def test_cancel_before_first_round(self) -> None:
+    async def test_cancel_before_first_round(self, streaming: bool) -> None:
         """Pre-queued cancel stops the tool loop immediately.
 
         We register a loop before calling _run_tool_loop so the steer() call
@@ -219,13 +220,13 @@ class TestToolLoopCancellation:
         provider.generate = generate_with_cancel  # type: ignore[assignment]
 
         context = AIContext(messages=[AIMessage(role="user", content="go")])
-        response = (await ch._run_tool_loop(context)).response
+        run = await run_tool_loop(ch, context, streaming=streaming)
 
         # Tool execution should be skipped because cancel was set
         assert handler.call_count == 0
-        assert response is not None
+        assert run is not None
 
-    async def test_cancel_mid_loop(self) -> None:
+    async def test_cancel_mid_loop(self, streaming: bool) -> None:
         """Cancel injected during tool execution stops subsequent rounds."""
         call_count = 0
 
@@ -248,13 +249,13 @@ class TestToolLoopCancellation:
         )
 
         context = AIContext(messages=[AIMessage(role="user", content="go")])
-        response = (await ch._run_tool_loop(context)).response
+        run = await run_tool_loop(ch, context, streaming=streaming)
 
         # Tool handler runs once, then drain catches the cancel
         assert call_count == 1
-        assert response is not None
+        assert run is not None
 
-    async def test_inject_message_during_tool_loop(self) -> None:
+    async def test_inject_message_during_tool_loop(self, streaming: bool) -> None:
         """Injected message appears in context for the next generate call."""
         generate_calls: list[AIContext] = []
 
@@ -284,9 +285,9 @@ class TestToolLoopCancellation:
         )
 
         context = AIContext(messages=[AIMessage(role="user", content="go")])
-        response = (await ch._run_tool_loop(context)).response
+        run = await run_tool_loop(ch, context, streaming=streaming)
 
-        assert response.content == "saw it"
+        assert run.text == "saw it"
         # Second generate call should have the injected message
         second_ctx = generate_calls[1]
         injected = [m for m in second_ctx.messages if m.content == "urgent update"]
