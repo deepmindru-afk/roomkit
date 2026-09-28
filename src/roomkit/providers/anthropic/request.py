@@ -147,7 +147,10 @@ def build_kwargs(config: AnthropicConfig, context: AIContext) -> dict[str, Any]:
             }
         kwargs.pop("temperature", None)
     elif context.temperature is not None and config.supports_custom_temperature:
-        kwargs["temperature"] = context.temperature
+        # anthropic 1.x dropped ``temperature`` from ``messages.stream()``; the
+        # models profiled as taking it still do, so it rides ``extra_body``,
+        # which the SDK merges into the request JSON as it is.
+        kwargs["extra_body"] = {"temperature": context.temperature}
     if context.tools:
         kwargs["tools"] = [
             {

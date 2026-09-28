@@ -221,6 +221,10 @@ async def _ollama() -> Any:
 
 async def _anthropic() -> Any:
     mod = _sdk_module()
+    # The provider builds the SDK's own ``Timeout`` (httpx2 in anthropic 1.x);
+    # the fake SDK exposes one so the split is read back. The real class is
+    # held by ``test_anthropic.py::TestAnthropicSDK1``.
+    mod.Timeout = httpx.Timeout
     with patch.dict("sys.modules", {"anthropic": mod}):
         AnthropicAIProvider(AnthropicConfig(api_key="k", model="claude-opus-5", **_TIMEOUTS))
     return mod.AsyncAnthropic.call_args.kwargs["timeout"]

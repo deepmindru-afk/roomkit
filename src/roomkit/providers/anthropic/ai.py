@@ -37,7 +37,7 @@ from roomkit.providers.ai.response_schema import (
 from roomkit.providers.anthropic.config import AnthropicConfig
 from roomkit.providers.anthropic.models import MODELS
 from roomkit.providers.anthropic.request import build_kwargs
-from roomkit.providers.utils import _aclose_stream, http_timeout
+from roomkit.providers.utils import _aclose_stream
 
 logger = logging.getLogger("roomkit.providers.anthropic.ai")
 
@@ -89,7 +89,14 @@ class AnthropicAIProvider(AIProvider):
         """Build an Anthropic client for ``api_key`` with this provider's config."""
         client_kwargs: dict[str, Any] = {
             "api_key": api_key,
-            "timeout": http_timeout(self._config),
+            # The SDK's own ``Timeout``, with the connect/read split of
+            # ``http_timeout_from``: anthropic 1.x runs on httpx2 and refuses
+            # any object from the ``httpx`` package. Its check reads the class's
+            # ``__module__``, which the openai SDK rewrites on import, so an
+            # ``httpx.Timeout`` only got through when openai was loaded first.
+            "timeout": self._anthropic.Timeout(
+                self._config.timeout, connect=self._config.connect_timeout
+            ),
         }
         if self._config.base_url:
             client_kwargs["base_url"] = self._config.base_url

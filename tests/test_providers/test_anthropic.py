@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import inspect
+import subprocess
+import sys
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -224,6 +227,11 @@ def _mock_stream(
     )
 
 
+def _sends_temperature(kwargs: dict[str, Any]) -> bool:
+    """Whether a request carries ``temperature``, top level or in ``extra_body``."""
+    return "temperature" in kwargs or "temperature" in kwargs.get("extra_body", {})
+
+
 def _context(**overrides: Any) -> AIContext:
     defaults: dict[str, Any] = {
         "messages": [AIMessage(role="user", content="Hi")],
@@ -382,7 +390,7 @@ class TestAnthropicAIProvider:
             )
             assert kwargs["thinking"] == {"type": "adaptive", "display": "summarized"}
             assert "budget_tokens" not in kwargs["thinking"]
-            assert "temperature" not in kwargs
+            assert not _sends_temperature(kwargs)
 
             fixed = AnthropicAIProvider(_config(use_adaptive_thinking=False))
             kwargs = build_kwargs(fixed._config, _context(thinking_budget=8192))
@@ -432,7 +440,7 @@ class TestAnthropicAIProvider:
             provider = AnthropicAIProvider(_config(supports_custom_temperature=False))
             kwargs = build_kwargs(provider._config, _context(thinking_budget=0, temperature=0.7))
             assert "thinking" not in kwargs
-            assert "temperature" not in kwargs
+            assert not _sends_temperature(kwargs)
 
     @pytest.mark.asyncio
     async def test_sdk_error_wrapped_in_provider_error(self) -> None:
@@ -651,7 +659,7 @@ class TestAnthropicAIProvider:
                 "display": "summarized",
             }
             # temperature must NOT be set when thinking is enabled
-            assert "temperature" not in call_kwargs
+            assert not _sends_temperature(call_kwargs)
 
     @pytest.mark.asyncio
     async def test_generate_with_thinking_captures_thinking(self) -> None:
@@ -1343,3 +1351,72 @@ class TestAnthropicResponseSchema:
         chunks = [chunk async for chunk in provider.generate_stream(_context())]
 
         assert "".join(chunks) == "Hi"
+
+
+_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {"label": {"type": "string"}},
+    "required": ["label"],
+    "additionalProperties": False,
+}
+
+
+class TestAnthropicSDK1:
+    """Against the installed SDK, not the mock: anthropic 1.x runs on httpx2 and
+    dropped the sampling parameters from ``messages.stream()`` (RMK-236)."""
+
+    def test_the_client_timeout_is_the_sdks_own_with_the_connect_split(self) -> None:
+        anthropic = pytest.importorskip("anthropic")
+        from roomkit.providers.anthropic.ai import AnthropicAIProvider
+
+        provider = AnthropicAIProvider(_config(timeout=12.0, connect_timeout=3.0))
+
+        timeout = provider._client.timeout
+        assert type(timeout) is anthropic.Timeout
+        assert (timeout.connect, timeout.read) == (3.0, 12.0)
+
+    def test_it_builds_in_a_process_that_never_imported_openai(self) -> None:
+        """The openai SDK rewrites ``httpx.Timeout.__module__`` on import, which
+        let an httpx object past anthropic's httpx2 check. Only a fresh process
+        without openai shows what a host using Anthropic alone gets."""
+        pytest.importorskip("anthropic")
+        code = (
+            "import sys\n"
+            "from roomkit.providers.anthropic import AnthropicAIProvider, AnthropicConfig\n"
+            "AnthropicAIProvider(AnthropicConfig(api_key='k', model='claude-opus-5'))\n"
+            "assert 'openai' not in sys.modules\n"
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True, timeout=120
+        )
+
+        assert result.returncode == 0, result.stderr
+
+    @pytest.mark.parametrize(
+        ("model", "overrides"),
+        [
+            ("claude-haiku-4-5", {"temperature": 0.2}),
+            ("claude-sonnet-4-6", {"thinking_budget": 2048}),
+            ("claude-opus-5", {"temperature": 0.2, "thinking_budget": 4096}),
+            (
+                "claude-opus-5",
+                {"tools": [AITool(name="lookup", description="Look it up")]},
+            ),
+            ("claude-opus-5", {"response_schema": _SCHEMA, "max_tokens": 512}),
+        ],
+    )
+    def test_messages_stream_takes_every_request_we_build(
+        self, model: str, overrides: dict[str, Any]
+    ) -> None:
+        anthropic = pytest.importorskip("anthropic")
+        stream = anthropic.AsyncAnthropic(api_key="k").messages.stream
+        kwargs = build_kwargs(_config(model=model), _context(**overrides))
+
+        inspect.signature(stream).bind(**kwargs)  # TypeError on a kwarg the SDK dropped
+
+    def test_a_legacy_model_still_receives_its_temperature(self) -> None:
+        kwargs = build_kwargs(_config(model="claude-haiku-4-5"), _context(temperature=0.2))
+
+        assert kwargs["extra_body"] == {"temperature": 0.2}
+        assert "temperature" not in kwargs

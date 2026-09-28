@@ -101,6 +101,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `AnthropicAIProvider` works on the `anthropic` 1.x SDK the lock has carried
+  since 2026-09-24 (RMK-236). The client's timeout was an `httpx.Timeout`, which
+  1.x refuses because it runs on httpx2; the refusal only showed in a process
+  that had not imported the openai SDK, whose import rewrites
+  `httpx.Timeout.__module__` and slipped the object past the check, so a host
+  using Anthropic alone failed at construction. The timeout is now the SDK's own
+  `anthropic.Timeout`, with the same connect/read split. And 1.x dropped
+  `temperature` from `messages.stream()`, so the legacy models that still take
+  it (Claude 4.6 and before, Haiku 4.5) and any custom `base_url` raised
+  `TypeError` before the request left; it now rides `extra_body`. Tests now
+  hold the installed SDK to every request shape the provider builds, and build
+  the provider in a fresh process without openai.
+
 - `GeminiVisionProvider` works on the models that refuse to reason with a
   zero budget (RMK-232). It sends `thinking_budget=0` to every 2.5 and 3.x
   model to keep descriptions direct, and `gemini-3.5-flash-lite` and
@@ -158,8 +171,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- The `anthropic` extra requires `anthropic>=0.77` (was `>=0.30`), the first
-  SDK that takes `output_config`, where a response schema rides (RMK-234).
+- The `anthropic` extra requires `anthropic>=1.8,<2` (was `>=0.30`), the
+  current SDK: it takes `output_config`, where a response schema rides
+  (RMK-234), and runs on httpx2 (RMK-236).
 
 - `GeminiTTSConfig.model` defaults to `gemini-3.8-flash-tts` (was
   `gemini-3.1-flash-tts-preview`), Google's replacement for it, and
