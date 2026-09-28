@@ -11,7 +11,8 @@ from types import TracebackType
 from typing import Any
 
 from roomkit.core.exceptions import ToolRefusedError
-from roomkit.providers.ai.base import AIImagePart, AITextPart, AITool
+from roomkit.providers.ai.base import AITool
+from roomkit.tools._mcp_result import error_text, handler_result, text_body
 from roomkit.tools.compose import ToolHandler, ToolResult
 
 logger = logging.getLogger("roomkit.tools.mcp")
@@ -31,8 +32,8 @@ _STRUCTURED_CONTENT_MAX_BYTES = 512 * 1024
 def _publish_structured_content(result: Any) -> None:
     """Expose ``CallToolResult.structuredContent`` to the tool-call context.
 
-    The ToolHandler contract flattens results to the LLM-facing string, which
-    large-result eviction may later replace with a placeholder. UI surfaces
+    The ToolHandler contract renders results for the model (text, or content
+    parts), which large-result eviction may later bound. UI surfaces
     (MCP Apps widgets) need the structured payload verbatim, so it travels
     out-of-band on the ToolCallContext when one is active.
     """
@@ -53,44 +54,6 @@ def _publish_structured_content(result: Any) -> None:
     except (TypeError, ValueError):
         return
     ctx.structured_content = structured
-
-
-def _content_text(content: Any) -> str:
-    return content.text if hasattr(content, "text") else str(content)
-
-
-def _is_image(content: Any) -> bool:
-    return getattr(content, "type", None) == "image" and bool(getattr(content, "data", None))
-
-
-def _error_text(result: Any) -> str:
-    """The words of a result the server flagged ``isError``."""
-    return " ".join(_content_text(c) for c in result.content)
-
-
-def _text_body(result: Any) -> str:
-    """A successful result as one string: single part → text, several → JSON array."""
-    texts = [_content_text(c) for c in result.content]
-    if len(texts) == 1:
-        return str(texts[0])
-    return json.dumps(texts)
-
-
-def _content_parts(result: Any) -> list[AITextPart | AIImagePart]:
-    """A successful result as content parts: its images as images.
-
-    Flattened to a string, an ``ImageContent`` is its repr, base64 included:
-    the model reads kilobytes of noise and never sees the image. Every other
-    content keeps the text it has in :func:`_text_body`.
-    """
-    parts: list[AITextPart | AIImagePart] = []
-    for content in result.content:
-        if _is_image(content):
-            mime = getattr(content, "mimeType", None) or "image/png"
-            parts.append(AIImagePart(url=f"data:{mime};base64,{content.data}", mime_type=mime))
-        else:
-            parts.append(AITextPart(text=_content_text(content)))
-    return parts
 
 
 class MCPToolProvider:
@@ -377,8 +340,8 @@ class MCPToolProvider:
         """
         result = await self._invoke(name, arguments, timeout=timeout)
         if result.isError:
-            return json.dumps({"error": _error_text(result)})
-        return _text_body(result)
+            return json.dumps({"error": error_text(result)})
+        return text_body(result)
 
     def as_tool_handler(self, *, gate_discovery: bool = True) -> ToolHandler:
         """Return a ToolHandler suitable for ``AIChannel(tool_handler=...)``.
@@ -401,10 +364,13 @@ class MCPToolProvider:
         loop marks the call failed and hands the server's message to the model
         unchanged.
 
-        A result that carries an image comes back as content parts
+        A result that carries an image (PNG, JPEG, GIF or WebP, with a payload
+        that decodes) comes back as content parts
         (:class:`~roomkit.providers.ai.base.AITextPart` and
         :class:`~roomkit.providers.ai.base.AIImagePart`), so the model sees the
-        image; any other result is the string :meth:`call_tool` returns.
+        image; any other result is the string :meth:`call_tool` returns. Binary
+        content the model cannot take (another image format, audio, a blob
+        resource) becomes a one-line note rather than its base64.
         """
         self._ensure_connected()
 
@@ -420,9 +386,7 @@ class MCPToolProvider:
                 # The server declined; say so instead of returning a body the
                 # loop would have to recognise, and keep the server's words —
                 # they are what the model is meant to read.
-                raise ToolRefusedError(_error_text(result))
-            if any(_is_image(c) for c in result.content):
-                return _content_parts(result)
-            return _text_body(result)
+                raise ToolRefusedError(error_text(result))
+            return handler_result(result)
 
         return _handler

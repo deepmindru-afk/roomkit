@@ -53,12 +53,37 @@ class MockImageContent:
         return f"type='image' data='{self.data}' mimeType='{self.mimeType}'"
 
 
+class MockAudioContent:
+    """Mimics mcp.types.AudioContent."""
+
+    type = "audio"
+
+    def __init__(self, data: str, mime_type: str) -> None:
+        self.data = data
+        self.mimeType = mime_type
+
+    def __str__(self) -> str:
+        return f"type='audio' data='{self.data}' mimeType='{self.mimeType}'"
+
+
+class MockBlobResource:
+    """Mimics mcp.types.EmbeddedResource around BlobResourceContents."""
+
+    type = "resource"
+
+    def __init__(self, blob: str, mime_type: str) -> None:
+        self.resource = type("Blob", (), {"blob": blob, "mimeType": mime_type})()
+
+    def __str__(self) -> str:
+        return f"type='resource' resource=blob='{self.resource.blob}'"
+
+
 class MockCallToolResult:
     """Mimics the result from session.call_tool()."""
 
     def __init__(
         self,
-        content: list[MockTextContent | MockImageContent],
+        content: list[Any],
         is_error: bool = False,
     ) -> None:
         self.content = content
@@ -226,7 +251,7 @@ async def test_call_tool_multi_part() -> None:
 
 
 async def test_tool_handler_returns_an_image_as_an_image_part() -> None:
-    """Flattened to text, an image was its repr: base64 the model cannot see."""
+    """The model sees the image, not its base64 spelled out as text."""
     provider = _make_provider_connected(
         [SEARCH_TOOL],
         call_tool_side_effect=lambda name, args: MockCallToolResult(
@@ -254,7 +279,37 @@ async def test_call_tool_keeps_its_string_contract_for_an_image() -> None:
 
     result = await provider.call_tool("search", {"query": "hello"})
 
+    assert result == "type='image' data='iVBORw0KGgo' mimeType='image/png'"
+
+
+@pytest.mark.parametrize(
+    ("content", "note"),
+    [
+        (MockImageContent("not base64!", "image/png"), "[image content (image/png)"),
+        (MockImageContent("PHN2Zz4=", "image/svg+xml"), "[image content (image/svg+xml)"),
+        (MockAudioContent("UklGRg==", "audio/wav"), "[audio content (audio/wav)"),
+        (MockBlobResource("JVBERi0=", "application/pdf"), "[resource content (application/pdf)"),
+    ],
+    ids=["corrupt-image", "svg", "audio", "blob"],
+)
+async def test_tool_handler_notes_what_the_model_cannot_take(content: Any, note: str) -> None:
+    """A bad image would fail the whole request at the vendor, and audio or a
+    blob spelled out is base64 noise: each becomes a one-line note."""
+    provider = _make_provider_connected(
+        [SEARCH_TOOL],
+        call_tool_side_effect=lambda name, args: MockCallToolResult(
+            [MockTextContent("the page"), content]
+        ),
+    )
+    handler = provider.as_tool_handler()
+
+    result = await handler("search", {"query": "hello"})
+
     assert isinstance(result, str)
+    texts = json.loads(result)
+    assert texts[0] == "the page"
+    assert texts[1].startswith(note)
+    assert texts[1].endswith("not shown to the model]")
 
 
 async def test_as_tool_handler() -> None:
