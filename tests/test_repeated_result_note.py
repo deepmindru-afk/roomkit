@@ -23,7 +23,7 @@ from contextlib import contextmanager
 import pytest
 
 from roomkit.channels.ai import AIChannel
-from roomkit.providers.ai.base import AIContext, AIMessage, AIResponse, AIToolCall
+from roomkit.providers.ai.base import AIContext, AIMessage, AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 
 NOTE = "identical result"
@@ -105,6 +105,31 @@ async def test_the_note_reaches_the_model_where_the_argument_guard_is_silent() -
     assert NOTE in results[3]
     # The payload the model needs is still there, ahead of the note.
     assert results[2].startswith('{"success": true, "cards": [], "total": 0}')
+
+
+@pytest.mark.parametrize("fails", [False, True], ids=["result", "error"])
+async def test_an_evicted_answer_is_still_recognised(fails: bool) -> None:
+    """An oversized answer reaches the model as a placeholder whose id is
+    unique per call; the repeat is counted on what the tool gave, not on it."""
+    body = "row " * 20_000
+
+    async def same_big_answer(name: str, args: dict) -> str:
+        if fails:
+            raise RuntimeError(body)
+        return body
+
+    ch = _channel([*[_search(i) for i in range(4)], AIResponse(content="done")], same_big_answer)
+    # Declared: once a result is evicted, read_stored_result joins the tool
+    # list, and an undeclared name would then be refused.
+    boards = AITool(name="boards", description="Search boards.", parameters={"type": "object"})
+    ctx = AIContext(messages=[AIMessage(role="user", content="go")], tools=[boards])
+
+    await _run(ch, ctx)
+    results = _tool_results(ctx)
+
+    assert all(r.startswith("Result too large (") for r in results)
+    assert NOTE not in results[1]
+    assert NOTE in results[2]
 
 
 async def test_the_first_two_identical_answers_pass_unremarked() -> None:

@@ -550,19 +550,17 @@ class AIToolsMixin:
             # Remember this call (final result, success or error) so later turns
             # can show "tools you've already used" and re-reveal it under Tool
             # Search. Infra/discovery tools are filtered inside record().
-            self._tool_usage.record(
-                room_id,
-                tc.name,
-                arguments,
-                recorded_result if recorded_result is not None else result,
-            )
-            # Annotate an answer this tool already gave this turn. Runs on the
-            # recorded result, so the memory above keeps the tool's own output
-            # and only the model's copy carries the note — and the hash stays
-            # stable, since annotating before hashing would make every repeat
-            # look new.
+            outcome = recorded_result if recorded_result is not None else result
+            self._tool_usage.record(room_id, tc.name, arguments, outcome)
+            # Annotate an answer this tool already gave this turn. The hash is
+            # taken on the recorded outcome, so the memory above keeps the
+            # tool's own output and only the model's copy carries the note, and
+            # the hash stays stable: annotating before hashing would make every
+            # repeat look new, and so would an evicted copy, whose placeholder
+            # id is unique per call.
             if isinstance(result, str):
-                result = self._repeated_result_note(tc.name, result)
+                hashed = outcome if isinstance(outcome, str) else result
+                result = self._repeated_result_note(tc.name, result, outcome=hashed)
             return AIToolResultPart(
                 tool_call_id=tc.id,
                 name=tc.name,
@@ -643,8 +641,12 @@ class AIToolsMixin:
     # not get annotated as a repeated result. It already says what is wrong.
     _ADVISORY_MARKER = "these EXACT arguments"
 
-    def _repeated_result_note(self, name: str, result: str) -> str:
+    def _repeated_result_note(self, name: str, result: str, *, outcome: str | None = None) -> str:
         """Append a note when a tool returns an answer it already gave this turn.
+
+        ``outcome`` is what the tool gave, when ``result`` (the model's copy)
+        differs from it: an evicted copy carries a per-call id, so identical
+        answers are recognised on the outcome. It defaults to ``result``.
 
         The blind spot in ``_repeated_call_guard``: it keys on the arguments, so
         a model that permutes them is never told anything. Measured on a stuck
@@ -663,7 +665,8 @@ class AIToolsMixin:
         """
         if self._ADVISORY_MARKER in result:
             return result
-        digest = hashlib.sha256(result.encode("utf-8", "replace")).hexdigest()
+        hashed = result if outcome is None else outcome
+        digest = hashlib.sha256(hashed.encode("utf-8", "replace")).hexdigest()
         counts = self._get_loop_ctx().repeated_results
         key = (name, digest)
         counts[key] = count = counts.get(key, 0) + 1

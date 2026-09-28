@@ -48,6 +48,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   body, or a hook's rewrite reached the provider whole. Hooks still receive
   what they did: the refusal observer gets the full message, and
   `ON_TOOL_CALL` gets the bounded result; only the model's copy changes.
+- The identical-result note fires for an evicted answer (RMK-259). It hashed
+  the model's copy, and an evicted copy carries a placeholder id unique per
+  call, so a tool returning the same oversized result (or the same oversized
+  error) for different arguments was never flagged. The hash is now taken on
+  what the tool gave; the note still rides on the model's copy.
 - The token estimate counts the images of a tool result (RMK-259): 1000
   tokens each, as for an image in a message. They counted nothing, so a turn
   carrying ten screenshots read some ten thousand tokens lighter than it
