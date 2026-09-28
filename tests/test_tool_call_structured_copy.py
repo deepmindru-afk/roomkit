@@ -25,7 +25,7 @@ from roomkit import (
     ToolCallVerdict,
 )
 from roomkit.channels.ai import AIChannel
-from roomkit.models.enums import EventType
+from roomkit.models.enums import ChannelType, EventType
 from roomkit.providers.ai.base import AIContext, AIMessage, AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.tools import current_tool_call
@@ -197,3 +197,47 @@ async def test_a_block_without_a_reason_never_serves_the_original() -> None:
     assert part.is_error
     assert "Jane Doe" not in str(part.result)
     assert part.structured_content is None
+
+
+async def test_a_fail_closed_hook_that_cannot_run_withholds_the_result() -> None:
+    """The room's context would not build, so no ON_TOOL_CALL hook runs: a
+    fail-closed one withholds, as its own failure would."""
+    kit, _ = await _kit()
+
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="pii", fail_closed=True)
+    async def pii(event: ToolCallEvent, ctx: Any) -> HookResult:
+        return HookResult.allow()
+
+    callback = kit._build_tool_call_hook("ai1")
+    kit._build_context = AsyncMock(side_effect=RuntimeError("store down"))  # type: ignore[method-assign]
+    event = ToolCallEvent(
+        channel_id="ai1",
+        channel_type=ChannelType.AI,
+        tool_call_id="c1",
+        name="hr_lookup",
+        arguments={},
+        result="Jane Doe",
+        room_id="r1",
+    )
+
+    verdict = await callback(event)
+
+    assert verdict is not None and verdict.blocked
+    assert "hook_error:pii" in str(verdict.result)
+
+
+async def test_without_a_fail_closed_hook_the_result_stands() -> None:
+    kit, _ = await _kit()
+    callback = kit._build_tool_call_hook("ai1")
+    kit._build_context = AsyncMock(side_effect=RuntimeError("store down"))  # type: ignore[method-assign]
+    event = ToolCallEvent(
+        channel_id="ai1",
+        channel_type=ChannelType.AI,
+        tool_call_id="c1",
+        name="hr_lookup",
+        arguments={},
+        result="ok",
+        room_id="r1",
+    )
+
+    assert await callback(event) is None

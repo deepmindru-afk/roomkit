@@ -306,6 +306,18 @@ class HookEngine:
         """Whether an unusable outcome of *hook* blocks (RFC §9.3)."""
         return hook.fail_closed or trigger in self.FAIL_CLOSED_TRIGGERS
 
+    def fail_closed_hook(self, room_id: str, trigger: HookTrigger) -> str | None:
+        """The name of the first SYNC hook on *trigger* that fails closed, or None.
+
+        For a caller that cannot run the pipeline at all (the room's context
+        would not build): with such a hook registered, the payload must be
+        withheld as the hook's own failure would withhold it.
+        """
+        for hook in self._get_hooks(room_id, trigger, HookExecution.SYNC):
+            if self._fails_closed(hook, trigger):
+                return hook.name
+        return None
+
     def _close(
         self,
         result: SyncPipelineResult,

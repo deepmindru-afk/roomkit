@@ -827,7 +827,7 @@ class HelpersMixin:
                     event.room_id,
                     exc_info=True,
                 )
-                return None
+                return kit_ref._unreachable_tool_call_verdict(event.room_id)
 
             hook_result = await kit_ref._hook_engine.run_sync_hooks(
                 event.room_id,
@@ -851,6 +851,19 @@ class HelpersMixin:
             return _tool_call_verdict(hook_result)
 
         return _callback
+
+    def _unreachable_tool_call_verdict(self, room_id: str) -> ToolCallVerdict | None:
+        """The verdict on a call whose ON_TOOL_CALL hooks could not run.
+
+        None, keeping the result, unless a hook there fails closed: then the
+        result is withheld as that hook's own failure would withhold it, since
+        the redaction it exists for must not be skipped.
+        """
+        closed = self._hook_engine.fail_closed_hook(room_id, HookTrigger.ON_TOOL_CALL)
+        if closed is None:
+            return None
+        reason = json.dumps({"error": f"hook_error:{closed}"})
+        return ToolCallVerdict(result=reason, blocked=True)
 
     def _build_tool_observer_hook(self, channel_id: str) -> Any:
         """Build a ToolCallObserver closure for an AIChannel.

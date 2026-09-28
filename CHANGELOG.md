@@ -63,6 +63,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A fail-closed `ON_TOOL_CALL` hook withholds a tool's result when the
+  room's context cannot be built (RMK-262). The dispatch then ran no hook at
+  all and let the result through, so a redaction hook declared
+  `fail_closed=True` was skipped on exactly the failure it guards against.
+  The call is now blocked with `hook_error:<name>`, as the hook's own
+  failure would block it.
 - The pipeline's diarization stage no longer fires `ON_SPEAKER_CHANGE` for a
   voice it matched to nobody (RMK-256, RFC §12.3.9). sherpa-onnx answers
   `"unknown"` below its `search_threshold`, and every such result fired a
