@@ -121,6 +121,26 @@ class TestTally:
         )
         assert tally.take("s") is None
 
+    def test_a_result_counts_for_the_audio_since_the_previous_one(self) -> None:
+        # sherpa-onnx judges a buffer: speaker_0 over the first 0.2 s, then
+        # speaker_1 over the next 0.4 s. By result, a tie the first would win.
+        tally = PipelineSpeakerTally()
+        for speaker in (None, "speaker_0", None, None, None, "speaker_1"):
+            tally.add("s", self._frame(speaker))
+        taken = tally.take("s")
+        assert taken is not None and taken.label == "1"
+
+    def test_audio_after_the_last_result_is_judged_by_nobody(self) -> None:
+        tally = PipelineSpeakerTally()
+        tally.add("s", self._frame("speaker_0"))
+        tally.take("s")
+        for _ in range(5):
+            tally.add("s", self._frame(None))
+        tally.reset("s")  # the next utterance starts: the silence is not carried over
+        tally.add("s", self._frame("speaker_1"))
+        taken = tally.take("s")
+        assert taken is not None and taken.label == "1"
+
     def test_frames_the_stage_did_not_identify_count_for_nobody(self) -> None:
         tally = PipelineSpeakerTally()
         tally.add("s", self._frame(None))

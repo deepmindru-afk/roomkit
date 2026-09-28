@@ -112,10 +112,16 @@ class PipelineSpeakerTally:
     The stage marks each frame it identified
     (``frame.metadata["diarization"]["speaker_id"]``); every processed frame is
     added here, after the stage ran. A transcript's speaker is the one heard
-    the longest since the count last closed (RFC §12.2.3, "With the pipeline
+    the longest since the count last closed (RFC §12.2.3, "From the pipeline
     stage"); a voice the stage matched to nobody counts too, as
     :data:`UNKNOWN_SPEAKER`. The stage's labels hold for the whole session, so
     the epoch is always 0.
+
+    A result counts for the audio since the stage's previous one: a stage that
+    labels every frame weighs each frame, and one that judges a buffer —
+    sherpa-onnx, every 2 s of speech and on the rest at SPEECH_END — weighs
+    each verdict by the speech it heard, so a short tail does not tie with a
+    two-second stretch.
 
     Behind a VAD the count closes on the SPEECH_END frame itself — the frame a
     stage such as sherpa-onnx's identifies on — and the pipeline fires its
@@ -130,18 +136,22 @@ class PipelineSpeakerTally:
 
     def __init__(self) -> None:
         self._seconds: dict[str, dict[str, float]] = {}
+        self._unjudged: dict[str, float] = {}  # audio since the stage's last result
         self._claims: dict[str, Future[SpeakerAttribution | None]] = {}
         self._lock = threading.Lock()
 
     def add(self, session_id: str, frame: AudioFrame) -> None:
         verdict = _verdict(frame)
         with self._lock:
-            if verdict is not None:
+            unjudged = self._unjudged.pop(session_id, 0.0) + _seconds_of(frame)
+            if verdict is None:
+                self._unjudged[session_id] = unjudged
+            else:
                 heard = self._seconds.setdefault(session_id, {})
-                heard[verdict] = heard.get(verdict, 0.0) + _seconds_of(frame)
+                heard[verdict] = heard.get(verdict, 0.0) + unjudged
             if not frame.metadata.get("vad_speech_end"):
                 return
-            speaker = _heard_longest(self._seconds.pop(session_id, None))
+            speaker = self._close(session_id)
             claim = self._claims.pop(session_id, None)
         _answer(claim, speaker)
 
@@ -161,14 +171,19 @@ class PipelineSpeakerTally:
     def take(self, session_id: str) -> SpeakerAttribution | None:
         """The speaker heard the longest since the last take, then a clean slate."""
         with self._lock:
-            return _heard_longest(self._seconds.pop(session_id, None))
+            return self._close(session_id)
 
     def reset(self, session_id: str) -> None:
         """Forget the count; a claim still open is answered with nobody."""
         with self._lock:
-            self._seconds.pop(session_id, None)
+            self._close(session_id)
             claim = self._claims.pop(session_id, None)
         _answer(claim, None)
+
+    def _close(self, session_id: str) -> SpeakerAttribution | None:
+        """The count's speaker, then a clean slate; the caller holds the lock."""
+        self._unjudged.pop(session_id, None)
+        return _heard_longest(self._seconds.pop(session_id, None))
 
 
 async def claimed_speaker(

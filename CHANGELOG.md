@@ -68,13 +68,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `speaker_label` / `speaker_epoch` (always 0) / `sender_name` metadata a
   diarizing STT gives, and renamable by an `ON_TRANSCRIPTION` hook. A voice the
   stage matched to nobody (sherpa-onnx's `"unknown"`) is `"Unknown speaker"`.
+  Each result counts for the audio since the stage's previous one, so a
+  verdict over 2 s of speech outweighs one over a short tail.
   Opt-in, and refused without a diarization stage and in batch mode. The
   pipeline fires `SPEECH_END` before its diarization stage sees that frame,
   which is the frame sherpa-onnx identifies on, so the channel waits for it,
   on the loop or a DSP thread. With sherpa-onnx TitaNet and TEN VAD, 9 of 9
   utterances of a two-voice French dialogue went to the right voice at
-  `search_threshold=0.4` (2026-09-27); `examples/voice_pipeline_speakers.py`
-  enrolls voices from the microphone and runs it live.
+  `search_threshold=0.4` (2026-09-27); on a laptop microphone the wrong voice
+  never scored above 0.21. `examples/voice_pipeline_speakers.py` enrolls
+  voices from the microphone and runs it live.
 - `GeminiSTTConfig.speaker_segments` puts Gemini's speaker turns on
   `transcribe()`'s result as the shared `SpeakerSegment`s (RMK-253, RFC
   §12.2.3), and the provider then reports `supports_diarization`. It needs
