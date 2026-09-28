@@ -42,7 +42,7 @@ if TYPE_CHECKING:
     from roomkit.models.channel import ChannelBinding
     from roomkit.models.context import RoomContext
     from roomkit.models.enums import ChannelType
-    from roomkit.providers.ai.base import AIProvider, AIToolCall, AIToolResultPart
+    from roomkit.providers.ai.base import AIProvider, AITool, AIToolCall, AIToolResultPart
 
 
 @dataclass
@@ -207,6 +207,8 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
             room_id=event.room_id,
             provider_name=self.provider_name,
         )
+        # Read before the hook runs: it may edit the list in place.
+        declared = {tool.name for tool in ai_context.tools or []}
         sync_result = await self._before_generation_hook(gen_event)
         if not sync_result.allowed:
             logger.info(
@@ -225,6 +227,7 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
         loop_ctx = _current_loop_ctx.get()
         if loop_ctx is not None:
             loop_ctx.response_metadata = gen_event.ai_context.response_metadata
+            _adopt_hook_toolset(loop_ctx, declared, gen_event.ai_context.tools)
         return gen_event.ai_context, False
 
     async def _generate_response(
@@ -693,6 +696,27 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
         finally:
             self._active_loops.pop(loop_ctx.loop_id, None)
             _current_loop_ctx.set(enclosing_ctx)
+
+
+def _adopt_hook_toolset(
+    loop_ctx: _ToolLoopContext, declared: set[str], left: list[AITool] | None
+) -> None:
+    """Make what BEFORE_AI_GENERATION left of the first declaration the turn's base.
+
+    Every later round re-filters from ``all_context_tools``: without this, a
+    tool the hook withdrew came back from round 1 (and ran), and one it added
+    vanished. The hook only sees the first round's declaration, so a tool it
+    never saw (deferred by Tool Search, gated by a skill) stays in the base.
+    """
+    if loop_ctx.all_context_tools is None:
+        return
+    kept = {tool.name: tool for tool in left or []}
+    withdrawn = declared - kept.keys()
+    base = [kept.get(t.name, t) for t in loop_ctx.all_context_tools if t.name not in withdrawn]
+    known = {tool.name for tool in base}
+    base.extend(tool for name, tool in kept.items() if name not in known)
+    loop_ctx.all_context_tools = base
+    loop_ctx.withdrawn_tools = loop_ctx.withdrawn_tools | withdrawn
 
 
 def _tool_call_events(

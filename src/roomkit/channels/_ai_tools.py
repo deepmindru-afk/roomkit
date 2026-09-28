@@ -516,6 +516,7 @@ class AIToolsMixin:
                 # note shape the model's copy of it.
                 await self._fire_tool_refusal(tc, arguments, error, room_id)
                 result = self._bound_tool_result(tc.name, error, tc.id)
+            self._settle_activation(tc.id, served=not tool_failed)
             # Remember this call (final result, success or error) so later turns
             # can show "tools you've already used" and re-reveal it under Tool
             # Search. Infra/discovery tools are filtered inside record().
@@ -762,16 +763,43 @@ class AIToolsMixin:
                     )
                     result_str = json.dumps(data)
             return result_str
-        # Track activation so gated tools become visible on next round
-        loop_ctx.activated_skills.add(skill_name)
-        # ... and for the rest of the conversation, so the body can ride the
-        # system prompt instead of being re-fetched every turn.
-        if skill is None or self._skill_activation.activate(loop_ctx.room_id, skill_name):
+        # Recorded once the call's outcome is known: an ON_TOOL_CALL hook that
+        # blocks the call, or a failure, must open no gate (_settle_activation).
+        already_active = self._skill_activation.is_active(loop_ctx.room_id, skill_name)
+        self._defer_activation(loop_ctx, skill_name)
+        if skill is None or not already_active:
             return result_str
         # Already active: _build_context put these very instructions in front of
         # the model before the turn started, so the body just built above would
         # be a second copy of rules it already holds. Ack instead.
         return activation_ack(skill, ALREADY_ACTIVE_NOTE, already_active=True)
+
+    def _defer_activation(self, loop_ctx: _ToolLoopContext, skill_name: str) -> None:
+        """Hold an activation until its call is served, or record it now.
+
+        Inside the tool loop the call's outcome is not known yet: an
+        ON_TOOL_CALL hook may still block it. Outside one (a direct call)
+        nothing can, and the activation is recorded at once.
+        """
+        call = _current_tool_call.get()
+        if call is not None and call.tool_call_id:
+            loop_ctx.pending_activations[call.tool_call_id] = skill_name
+        else:
+            self._record_activation(loop_ctx, skill_name)
+
+    def _settle_activation(self, tool_call_id: str, *, served: bool) -> None:
+        """Record the activation a served call asked for; drop a refused one."""
+        loop_ctx = self._get_loop_ctx()
+        skill_name = loop_ctx.pending_activations.pop(tool_call_id, None)
+        if skill_name is not None and served:
+            self._record_activation(loop_ctx, skill_name)
+
+    def _record_activation(self, loop_ctx: _ToolLoopContext, skill_name: str) -> None:
+        # For this turn, so gated tools become visible on the next round...
+        loop_ctx.activated_skills.add(skill_name)
+        # ... and for the rest of the conversation, so the body can ride the
+        # system prompt instead of being re-fetched every turn.
+        self._skill_activation.activate(loop_ctx.room_id, skill_name)
 
     async def _handle_read_reference(self, arguments: dict[str, Any]) -> str:
         """Read a reference file from a skill."""

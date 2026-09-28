@@ -315,7 +315,7 @@ class AIToolLoopRulesMixin:
         # run (webhook, schedule) has no next event at all: its evicted content
         # was simply lost. Inject the definition per round instead — the
         # dispatch table already accepts the call unconditionally.
-        if self._eviction.has_evicted:
+        if self._eviction.has_evicted and "read_stored_result" not in loop_ctx.withdrawn_tools:
             current = tools if tools is not None else list(context.tools or [])
             if all(t.name != "read_stored_result" for t in current):
                 tools = [*current, ToolEviction.tool_definition()]
