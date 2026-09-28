@@ -48,6 +48,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   body, or a hook's rewrite reached the provider whole. Hooks still receive
   what they did: the refusal observer gets the full message, and
   `ON_TOOL_CALL` gets the bounded result; only the model's copy changes.
+- The token estimate counts the images of a tool result (RMK-259): 1000
+  tokens each, as for an image in a message. They counted nothing, so a turn
+  carrying ten screenshots read some ten thousand tokens lighter than it
+  was billed, and compaction started late. Compaction now starts earlier in
+  conversations rich in tool screenshots.
 
 ## [0.92.0] — 2026-09-27
 

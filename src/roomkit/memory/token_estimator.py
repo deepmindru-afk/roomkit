@@ -27,6 +27,11 @@ if TYPE_CHECKING:
     from roomkit.models.event import RoomEvent
 
 
+# Flat cost of one image: vendors bill an image by its (downscaled) size, a
+# thousand-odd tokens for a screenshot, whatever its base64 length.
+_IMAGE_TOKENS = 1000
+
+
 def estimate_tokens(text: str) -> int:
     """Rough estimate: 1 token ~ 4 characters for English text."""
     return len(text) // 4 + 1
@@ -61,9 +66,14 @@ def estimate_message_tokens(message: AIMessage) -> int:
             )
             total += estimate_tokens(part.name) + estimate_tokens(args_str)
         elif isinstance(part, AIToolResultPart):
+            # as_text() stands a "[image]" for each image; the images are
+            # billed as images all the same.
             total += estimate_tokens(part.as_text())
+            if isinstance(part.result, list):
+                images = sum(isinstance(p, AIImagePart) for p in part.result)
+                total += images * _IMAGE_TOKENS
         elif isinstance(part, AIImagePart):
-            total += 1000  # rough estimate for vision tokens
+            total += _IMAGE_TOKENS
     return total
 
 

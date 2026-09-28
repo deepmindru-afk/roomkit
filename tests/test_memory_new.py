@@ -90,6 +90,19 @@ class TestEstimateMessageTokens:
         result = estimate_message_tokens(msg)
         assert result > 4
 
+    def test_tool_result_images_count_like_bare_images(self) -> None:
+        """A screenshot in a tool result is billed like one in a user message."""
+        image = AIImagePart(url="data:image/png;base64,AAAA", mime_type="image/png")
+        caption = AITextPart(text="page")
+        result_part = AIToolResultPart(
+            tool_call_id="tc1", name="shot", result=[caption, image, image]
+        )
+        msg = AIMessage(role="tool", content=[result_part])
+
+        result = estimate_message_tokens(msg)
+
+        assert result == 4 + estimate_tokens(result_part.as_text()) + 2 * 1000
+
     def test_mixed_content(self) -> None:
         msg = AIMessage(
             role="assistant",
