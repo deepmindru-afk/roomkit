@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from roomkit.providers.ai.base import RETRYABLE_STATUS_CODES, ProviderError
 
 _RETRYABLE_TERMS = ("rate", "limit", "429", "500", "502", "503")
@@ -11,6 +13,27 @@ _RETRYABLE_TERMS = ("rate", "limit", "429", "500", "502", "503")
 REFUSAL_FINISH_REASONS = frozenset(
     {"SAFETY", "RECITATION", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII"}
 )
+
+
+def reason_name(raw: Any) -> str | None:
+    """The wire spelling of a finish or block reason (``"MAX_TOKENS"``).
+
+    The SDK hands back an enum whose ``.name`` is that spelling; a plain
+    string passes through.
+    """
+    if raw is None:
+        return None
+    return getattr(raw, "name", None) or str(raw)
+
+
+def prompt_block_reason(response: Any) -> str | None:
+    """Why Gemini refused the prompt itself, when it did.
+
+    A blocked prompt produces no candidate at all, so no finish reason says so;
+    only ``prompt_feedback.block_reason`` does.
+    """
+    feedback = getattr(response, "prompt_feedback", None)
+    return reason_name(getattr(feedback, "block_reason", None) if feedback is not None else None)
 
 
 def wrap_gemini_error(exc: Exception) -> ProviderError:

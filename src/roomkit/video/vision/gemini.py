@@ -19,7 +19,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from roomkit.providers.ai.response_schema import check_schema_answer, check_schema_request
-from roomkit.providers.gemini.errors import REFUSAL_FINISH_REASONS
+from roomkit.providers.gemini.errors import (
+    REFUSAL_FINISH_REASONS,
+    prompt_block_reason,
+    reason_name,
+)
 from roomkit.providers.gemini.sdk import build_genai_client, close_genai_client
 from roomkit.video.video_frame import VideoFrame
 from roomkit.video.vision.base import DEFAULT_VISION_PROMPT, VisionProvider, VisionResult
@@ -125,34 +129,23 @@ class GeminiVisionProvider(VisionProvider):
             client, types, [prompt or self._config.prompt, image_part], response_schema
         )
 
-        # Extract text from all parts (Gemini 2.5 may include thinking parts)
-        description = ""
-        if response.candidates:
-            content = response.candidates[0].content
-            parts = (content.parts or []) if content else []
-            text_parts = [p.text for p in parts if p.text]
-            description = " ".join(text_parts).strip()
-        # Fallback to response.text if parts extraction is empty
-        if not description and response.text:
-            description = response.text.strip()
+        description = _answer_text(response)
         if response_schema is not None:
             _check_answer(response, description, response_schema)
+        return VisionResult(description=description, metadata=self._metadata(response))
 
-        usage_meta: dict[str, Any] = {"model": self._config.model}
-        if response.usage_metadata:
-            usage_meta["usage"] = {
-                "prompt_tokens": response.usage_metadata.prompt_token_count,
-                "completion_tokens": response.usage_metadata.candidates_token_count,
+    def _metadata(self, response: Any) -> dict[str, Any]:
+        """The model, and the token counts when the response carries them."""
+        metadata: dict[str, Any] = {"model": self._config.model}
+        usage = response.usage_metadata
+        if usage:
+            metadata["usage"] = {
+                "prompt_tokens": usage.prompt_token_count,
+                "completion_tokens": usage.candidates_token_count,
             }
-            if hasattr(response.usage_metadata, "thoughts_token_count"):
-                usage_meta["usage"]["thinking_tokens"] = (
-                    response.usage_metadata.thoughts_token_count
-                )
-
-        return VisionResult(
-            description=description,
-            metadata=usage_meta,
-        )
+            if hasattr(usage, "thoughts_token_count"):
+                metadata["usage"]["thinking_tokens"] = usage.thoughts_token_count
+        return metadata
 
     def _generation_config(
         self, types: Any, response_schema: dict[str, Any] | None = None
@@ -235,14 +228,33 @@ class GeminiVisionProvider(VisionProvider):
         await close_genai_client(client, http)
 
 
+def _answer_text(response: Any) -> str:
+    """The first candidate's answer parts, joined as written.
+
+    Thought parts are left out, and nothing is inserted between parts: a JSON
+    document split across two parts must come back whole.
+    """
+    parts: list[Any] = []
+    if response.candidates:
+        content = response.candidates[0].content
+        parts = (content.parts or []) if content else []
+    text = "".join(p.text for p in parts if p.text and getattr(p, "thought", None) is not True)
+    if not text and response.text:
+        text = response.text
+    return text.strip()
+
+
 def _check_answer(response: Any, description: str, schema: dict[str, Any]) -> None:
-    """Refuse a constrained description that did not deliver its JSON document."""
-    raw_reason = response.candidates[0].finish_reason if response.candidates else None
-    finish = getattr(raw_reason, "name", None) or (str(raw_reason) if raw_reason else None)
+    """Refuse a constrained description that did not deliver its JSON document.
+
+    A withheld answer is a refusal whether the model stopped on a safety reason
+    or the prompt itself was blocked, which leaves no candidate at all.
+    """
+    finish = reason_name(response.candidates[0].finish_reason) if response.candidates else None
     check_schema_answer(
         description,
         schema=schema,
         provider="gemini-vision",
-        refusal=finish if finish in REFUSAL_FINISH_REASONS else None,
+        refusal=finish if finish in REFUSAL_FINISH_REASONS else prompt_block_reason(response),
         truncated=finish == "MAX_TOKENS",
     )

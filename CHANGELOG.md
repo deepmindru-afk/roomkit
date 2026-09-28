@@ -15,7 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`response_json_schema`) and `OpenAIVisionProvider` (a strict `json_schema`
   format; `supports_response_schema=False` on its config for a server that
   does not apply one) check the description before returning it;
-  `MockVisionProvider(response_schema=True)` follows the same contract. The
+  `MockVisionProvider(response_schema=True)` follows the same contract. A
+  withheld answer raises `refusal`: a safety stop or a blocked prompt on
+  Gemini, a refusal field or a content filter on OpenAI. `GeminiVisionProvider`
+  joins a description's parts as written and leaves thought parts out, so a
+  document split across parts comes back whole. The
   screen input tools' element locate passes its schema where the provider
   takes one and reads the answer as it is, keeping the repair of free text for
   the others. Verified live on Gemini: a red rectangle located at its exact

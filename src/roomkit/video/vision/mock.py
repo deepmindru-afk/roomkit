@@ -62,10 +62,12 @@ class MockVisionProvider(VisionProvider):
             )
         self.calls.append(frame)
         desc = self.descriptions[self._index % len(self.descriptions)]
+        frame_labels = self.labels[self._index % len(self.labels)]
+        # A description that fails the check is still spent: the next call
+        # plays the next one, as a real model would answer afresh.
+        self._index += 1
         if response_schema is not None:
             check_schema_answer(desc, schema=response_schema, provider="mock-vision")
-        frame_labels = self.labels[self._index % len(self.labels)]
-        self._index += 1
         return VisionResult(
             description=desc,
             labels=frame_labels,

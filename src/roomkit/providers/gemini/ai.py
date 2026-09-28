@@ -29,7 +29,12 @@ from roomkit.providers.ai.base import (
 )
 from roomkit.providers.ai.response_schema import checked_stream, schema_for_generate
 from roomkit.providers.gemini.config import GeminiConfig
-from roomkit.providers.gemini.errors import REFUSAL_FINISH_REASONS, wrap_gemini_error
+from roomkit.providers.gemini.errors import (
+    REFUSAL_FINISH_REASONS,
+    prompt_block_reason,
+    reason_name,
+    wrap_gemini_error,
+)
 from roomkit.providers.gemini.models import MODELS
 from roomkit.providers.gemini.request import (
     build_gen_config,
@@ -51,19 +56,6 @@ def _refusal(done: StreamDone) -> str | None:
 
 def _truncated(done: StreamDone) -> bool:
     return done.finish_reason == "MAX_TOKENS"
-
-
-def _prompt_block_reason(chunk: Any) -> str | None:
-    """Why Gemini refused the prompt itself, when it did.
-
-    A blocked prompt produces no candidate at all, so no finish reason says so;
-    only ``prompt_feedback.block_reason`` does.
-    """
-    feedback = getattr(chunk, "prompt_feedback", None)
-    reason = getattr(feedback, "block_reason", None) if feedback is not None else None
-    if reason is None:
-        return None
-    return getattr(reason, "name", None) or str(reason)
 
 
 def _parts_layout(parts: list[Any]) -> str:
@@ -258,17 +250,16 @@ class GeminiAIProvider(AIProvider):
                     if cached:
                         usage["cache_read_input_tokens"] = cached
 
-                block_reason = _prompt_block_reason(chunk) or block_reason
+                block_reason = prompt_block_reason(chunk) or block_reason
                 # Read before the content guards below: the chunk that reports
                 # MAX_TOKENS is often the one whose candidate carries no parts,
                 # so capturing it after them would drop the very case the tool
                 # loop needs — a round truncated with nothing to show for it.
-                # The SDK hands back a FinishReason enum; ``.name`` is its wire
-                # spelling ("MAX_TOKENS"), and a plain string passes through.
                 if chunk.candidates:
-                    raw_reason = getattr(chunk.candidates[0], "finish_reason", None)
-                    if raw_reason is not None:
-                        finish_reason = getattr(raw_reason, "name", None) or str(raw_reason)
+                    finish_reason = (
+                        reason_name(getattr(chunk.candidates[0], "finish_reason", None))
+                        or finish_reason
+                    )
 
                 if not chunk.candidates or not chunk.candidates[0].content:
                     continue

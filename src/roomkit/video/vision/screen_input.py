@@ -342,7 +342,10 @@ async def _locate(vision: VisionProvider, frame: Any, prompt: str) -> dict[str, 
     result = await vision.analyze_frame(frame, prompt=prompt)
     raw = result.description or ""
     logger.debug("Vision locate raw: %s", raw[:500])
-    return _parse_json_response(raw)
+    parsed = _parse_json_response(raw)
+    if parsed is None:
+        logger.warning("Vision locate answer has no locate document: %s", raw[:300])
+    return parsed
 
 
 async def _find_element(

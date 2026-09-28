@@ -66,6 +66,7 @@ from roomkit.providers.ai.openai_dialect import (
     ThinkTagParser,
     extract_think_tags,
     fold_tool_call_fragment,
+    json_schema_format,
 )
 from roomkit.providers.ai.response_schema import (
     check_schema_answer,
@@ -431,14 +432,7 @@ class PolarGridAIProvider(AIProvider):
         if self._config.top_p is not None:
             req["top_p"] = self._config.top_p
         if context.response_schema is not None:
-            req["response_format"] = {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "response",
-                    "schema": context.response_schema,
-                    "strict": True,
-                },
-            }
+            req["response_format"] = json_schema_format(context.response_schema)
         if logger.isEnabledFor(logging.DEBUG):
             # Full outgoing payload — no API key (that lives on the client),
             # so the enable_thinking flag, tools, and messages are visible.

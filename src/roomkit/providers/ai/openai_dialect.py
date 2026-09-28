@@ -4,9 +4,11 @@ Several providers speak it: ``OpenAIAIProvider`` and its derivatives, Mistral
 and PolarGrid in their own packages. What they share is how a response is
 read, not how a request is built: the two reasoning conventions (inline
 ``<think>`` tags and a dedicated field), the way a tool call is fragmented
-across stream chunks, and the structured context-overflow fact off a status
-error. It lives with the AI provider ABC rather than under one vendor because
-three vendor packages consume it, and nothing here shapes a request.
+across stream chunks, the structured context-overflow fact off a status
+error, and why a constrained answer was withheld. It lives with the AI provider
+ABC rather than under one vendor because three vendor packages consume it. The
+one request piece is the strict ``json_schema`` response format (RFC §6.7),
+which every speaker of the dialect asks for in the same words.
 """
 
 from __future__ import annotations
@@ -171,3 +173,24 @@ def extract_think_tags(text: str) -> tuple[str | None, str]:
     thinking = "\n".join(m.strip() for m in matches if m.strip())
     clean = _THINK_RE.sub("", text).strip()
     return thinking or None, clean
+
+
+def json_schema_format(schema: dict[str, Any]) -> dict[str, Any]:
+    """The ``response_format`` that constrains an answer to *schema*, strictly."""
+    return {
+        "type": "json_schema",
+        "json_schema": {"name": "response", "schema": schema, "strict": True},
+    }
+
+
+def choice_refusal(choice: Any) -> str | None:
+    """Why a choice withheld its constrained answer, if it did.
+
+    ``message.refusal`` is where a structured-output refusal lands on this
+    dialect; a content filter (Azure's, and some compatible servers') says the
+    same through the finish reason instead.
+    """
+    refusal = getattr(getattr(choice, "message", None), "refusal", None)
+    if refusal:
+        return refusal
+    return "content_filter" if getattr(choice, "finish_reason", None) == "content_filter" else None

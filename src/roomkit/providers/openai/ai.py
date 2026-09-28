@@ -42,9 +42,11 @@ from roomkit.providers.ai.base import (
 from roomkit.providers.ai.image_parts import image_part_uri
 from roomkit.providers.ai.openai_dialect import (
     ThinkTagParser,
+    choice_refusal,
     extract_think_tags,
     field_reasoning,
     fold_tool_call_fragment,
+    json_schema_format,
     merge_thinking,
     overflow_fact,
 )
@@ -368,31 +370,20 @@ class OpenAIAIProvider(AIProvider):
             provider=self._provider_name,
         )
         if schema is not None:
-            kwargs["response_format"] = {
-                "type": "json_schema",
-                "json_schema": {"name": "response", "schema": schema, "strict": True},
-            }
+            kwargs["response_format"] = json_schema_format(schema)
 
     def _check_schema_answer(self, context: AIContext, choice: Any, content: str) -> None:
-        """Refuse a constrained answer that did not deliver its JSON document.
-
-        ``message.refusal`` is where a structured-output refusal lands on this
-        API; Azure's content filter says the same through the finish reason.
-        """
+        """Refuse a constrained answer that did not deliver its JSON document."""
         if context.response_schema is None or getattr(
             getattr(choice, "message", None), "tool_calls", None
         ):
             return  # a tool round is a step of the loop, not the answer
-        finish = getattr(choice, "finish_reason", None)
-        refusal = getattr(getattr(choice, "message", None), "refusal", None) or None
-        if refusal is None and finish == "content_filter":
-            refusal = "content_filter"
         check_schema_answer(
             content,
             schema=context.response_schema,
             provider=self._provider_name,
-            refusal=refusal,
-            truncated=finish == "length",
+            refusal=choice_refusal(choice),
+            truncated=getattr(choice, "finish_reason", None) == "length",
         )
 
     @staticmethod

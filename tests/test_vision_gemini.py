@@ -166,6 +166,7 @@ def _vision(answers: list[object], **config: object) -> tuple[GeminiVisionProvid
 def _answer(text: str = "A desk") -> MagicMock:
     response = MagicMock()
     response.text = text
+    response.prompt_feedback = None
     return response
 
 
@@ -282,6 +283,41 @@ class TestResponseSchema:
             await provider.analyze_frame(_frame(), response_schema=_BUTTON)
 
         assert exc.value.reason == "truncated"
+
+    async def test_a_safety_stop_raises_refusal(self) -> None:
+        withheld = _answer("")
+        withheld.candidates.__getitem__.return_value.finish_reason = "SAFETY"
+        provider, _types = _vision([withheld])
+
+        with pytest.raises(ResponseSchemaError) as exc:
+            await provider.analyze_frame(_frame(), response_schema=_BUTTON)
+
+        assert exc.value.reason == "refusal"
+
+    async def test_a_blocked_prompt_raises_refusal(self) -> None:
+        blocked = _answer("")
+        blocked.candidates = []
+        blocked.prompt_feedback = MagicMock(block_reason="PROHIBITED_CONTENT")
+        provider, _types = _vision([blocked])
+
+        with pytest.raises(ResponseSchemaError) as exc:
+            await provider.analyze_frame(_frame(), response_schema=_BUTTON)
+
+        assert exc.value.reason == "refusal"
+
+    async def test_a_document_split_across_parts_comes_back_whole(self) -> None:
+        split = _answer("")
+        split.candidates[0].content.parts = [
+            MagicMock(text="Looking for the button.", thought=True),
+            MagicMock(text='{"found": true, ', thought=None),
+            MagicMock(text='"label": "OK"}', thought=None),
+        ]
+        split.candidates[0].finish_reason = "STOP"
+        provider, _types = _vision([split])
+
+        result = await provider.analyze_frame(_frame(), response_schema=_BUTTON)
+
+        assert result.description == '{"found": true, "label": "OK"}'
 
     async def test_no_schema_sends_no_constraint(self) -> None:
         provider, types = _vision([_answer()])

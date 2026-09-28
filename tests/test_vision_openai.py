@@ -175,13 +175,13 @@ _BUTTON: dict[str, object] = {
 
 
 def _openai_vision(
-    content: str, *, finish: str = "stop", **config: object
+    content: str, *, finish: str = "stop", refusal: str | None = None, **config: object
 ) -> OpenAIVisionProvider:
     provider = OpenAIVisionProvider(OpenAIVisionConfig(model="gpt-4o", **config))  # type: ignore[arg-type]
     response = MagicMock()
     response.choices = [MagicMock()]
     response.choices[0].message.content = content
-    response.choices[0].message.refusal = None
+    response.choices[0].message.refusal = refusal
     response.choices[0].finish_reason = finish
     client = AsyncMock()
     client.chat.completions.create = AsyncMock(return_value=response)
@@ -216,6 +216,22 @@ class TestResponseSchema:
             await provider.analyze_frame(_frame(), response_schema=_BUTTON)
 
         assert exc.value.reason == "truncated"
+
+    async def test_a_refusal_raises_refusal(self) -> None:
+        provider = _openai_vision("", refusal="I can't help with that.")
+
+        with pytest.raises(ResponseSchemaError) as exc:
+            await provider.analyze_frame(_frame(), response_schema=_BUTTON)
+
+        assert exc.value.reason == "refusal"
+
+    async def test_a_content_filter_stop_raises_refusal(self) -> None:
+        provider = _openai_vision("", finish="content_filter")
+
+        with pytest.raises(ResponseSchemaError) as exc:
+            await provider.analyze_frame(_frame(), response_schema=_BUTTON)
+
+        assert exc.value.reason == "refusal"
 
     async def test_a_server_declared_without_support_refuses_before_the_call(self) -> None:
         provider = _openai_vision("{}", supports_response_schema=False)

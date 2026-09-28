@@ -28,7 +28,11 @@ from roomkit.providers.ai.base import (
     StreamToolCall,
 )
 from roomkit.providers.ai.image_parts import image_part_uri
-from roomkit.providers.ai.openai_dialect import ThinkTagParser, fold_tool_call_fragment
+from roomkit.providers.ai.openai_dialect import (
+    ThinkTagParser,
+    fold_tool_call_fragment,
+    json_schema_format,
+)
 from roomkit.providers.ai.response_schema import checked_stream, schema_for_generate
 from roomkit.providers.mistral.config import MistralConfig
 from roomkit.providers.mistral.models import MODELS
@@ -236,14 +240,7 @@ class MistralAIProvider(AIProvider):
                 for t in context.tools
             ]
         if context.response_schema is not None:
-            kwargs["response_format"] = {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "response",
-                    "schema": context.response_schema,
-                    "strict": True,
-                },
-            }
+            kwargs["response_format"] = json_schema_format(context.response_schema)
         return kwargs
 
     @staticmethod

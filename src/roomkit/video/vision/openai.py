@@ -34,6 +34,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from roomkit.providers.ai.openai_dialect import choice_refusal, json_schema_format
 from roomkit.providers.ai.response_schema import check_schema_answer, check_schema_request
 from roomkit.providers.utils import http_timeout
 from roomkit.video.video_frame import VideoFrame
@@ -161,33 +162,13 @@ class OpenAIVisionProvider(VisionProvider):
             check_schema_request(
                 response_schema, supported=self.supports_response_schema, provider="openai-vision"
             )
-        client = self._get_client()
-        image_b64 = frame_to_jpeg_base64(frame)
-        effective_prompt = prompt or self._config.prompt
         extra: dict[str, Any] = {}
         if response_schema is not None:
-            extra["response_format"] = {
-                "type": "json_schema",
-                "json_schema": {"name": "response", "schema": response_schema, "strict": True},
-            }
+            extra["response_format"] = json_schema_format(response_schema)
 
-        response = await client.chat.completions.create(
+        response = await self._get_client().chat.completions.create(
             model=self._config.model,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": effective_prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{image_b64}",
-                                "detail": self._config.detail,
-                            },
-                        },
-                    ],
-                }
-            ],
+            messages=self._messages(frame, prompt or self._config.prompt),
             max_tokens=self._config.max_tokens,
             temperature=self._config.temperature,
             **extra,
@@ -203,7 +184,7 @@ class OpenAIVisionProvider(VisionProvider):
                 description,
                 schema=response_schema,
                 provider="openai-vision",
-                refusal=getattr(choice.message, "refusal", None) or None,
+                refusal=choice_refusal(choice),
                 truncated=choice.finish_reason == "length",
             )
 
@@ -217,6 +198,25 @@ class OpenAIVisionProvider(VisionProvider):
                 },
             },
         )
+
+    def _messages(self, frame: VideoFrame, prompt: str) -> list[dict[str, Any]]:
+        """The one user message: the prompt, then the frame as a base64 JPEG."""
+        image_b64 = frame_to_jpeg_base64(frame)
+        return [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{image_b64}",
+                            "detail": self._config.detail,
+                        },
+                    },
+                ],
+            }
+        ]
 
     async def close(self) -> None:
         if self._client is not None:

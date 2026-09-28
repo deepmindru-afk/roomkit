@@ -5,9 +5,13 @@ from __future__ import annotations
 import json
 from unittest.mock import patch
 
+import pytest
+
+from roomkit.providers.ai.response_schema import ResponseSchemaError
 from roomkit.video.video_frame import VideoFrame
 from roomkit.video.vision.mock import MockVisionProvider
 from roomkit.video.vision.screen_input import (
+    _LOCATE_SCHEMA,
     _build_press_key_tool,
     _get_scale_factor,
     _locate,
@@ -153,6 +157,25 @@ async def test_locate_reports_no_answer_when_the_constrained_one_is_not_the_shap
     vision = MockVisionProvider(["an OK button, top left"], response_schema=True)
 
     assert await _locate(vision, _FRAME, "find OK") is None
+
+
+async def test_the_mock_spends_a_description_that_fails_the_check() -> None:
+    vision = MockVisionProvider(["not a document", _FOUND], response_schema=True)
+
+    with pytest.raises(ResponseSchemaError):
+        await vision.analyze_frame(_FRAME, response_schema=_LOCATE_SCHEMA)
+    answer = await vision.analyze_frame(_FRAME, response_schema=_LOCATE_SCHEMA)
+
+    assert json.loads(answer.description)["cx"] == 10
+
+
+async def test_locate_logs_a_free_answer_it_cannot_read(caplog: pytest.LogCaptureFixture) -> None:
+    vision = MockVisionProvider(["I see no such button"])
+
+    with caplog.at_level("WARNING", logger="roomkit.video.vision.screen_input"):
+        assert await _locate(vision, _FRAME, "find OK") is None
+
+    assert "I see no such button" in caplog.text
 
 
 async def test_locate_repairs_a_free_answer_from_a_provider_without_schemas() -> None:
