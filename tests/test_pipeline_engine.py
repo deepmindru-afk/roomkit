@@ -565,6 +565,31 @@ class TestSpeakerChangeCallbacks:
         assert len(received) == 1
         assert received[0].speaker_id == "spk_A"
 
+    def _changes(self, speaker_ids: list[str]) -> tuple[list[str], list[object]]:
+        diarizer = MockDiarizationProvider(
+            results=[
+                DiarizationResult(speaker_id=s, confidence=0.5, is_new_speaker=False)
+                for s in speaker_ids
+            ]
+        )
+        pipeline = AudioPipeline(AudioPipelineConfig(diarization=diarizer))
+        received: list[str] = []
+        pipeline.on_speaker_change(lambda _s, r: received.append(r.speaker_id))
+        session = _session()
+        frames = [_frame() for _ in speaker_ids]
+        for frame in frames:
+            pipeline.process_inbound(session, frame)
+        return received, [f.metadata.get("diarization") for f in frames]
+
+    def test_a_voice_matched_to_nobody_is_no_change(self):
+        """RFC §12.3.9: an unattributed result neither fires nor resets the last speaker."""
+        received, _ = self._changes(["spk_A", "unknown", "spk_A", "UU", "", "spk_B"])
+        assert received == ["spk_A", "spk_B"]
+
+    def test_an_unattributed_result_still_reaches_the_frame(self):
+        _, stamped = self._changes(["unknown"])
+        assert stamped == [{"speaker_id": "unknown", "confidence": 0.5}]
+
 
 # ---------------------------------------------------------------------------
 # Error propagation (pipeline resilience)

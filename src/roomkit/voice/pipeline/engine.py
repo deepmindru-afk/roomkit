@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from roomkit.core.task_utils import log_task_exception
-from roomkit.voice.base import VoiceCapability
+from roomkit.voice.base import VoiceCapability, speaker_label
 from roomkit.voice.pipeline._telemetry import _PipelineTelemetry, active_stage_names
 from roomkit.voice.pipeline.aec.base import AECProvider
 from roomkit.voice.pipeline.vad.base import VADEventType
@@ -325,6 +325,19 @@ class AudioPipeline:
         if dt is not None:
             dt.tap(stage, frame)
 
+    def _is_speaker_change(self, stream: str, speaker_id: str) -> bool:
+        """Whether a diarization result names a speaker other than the stream's last.
+
+        A result attributing the audio to nobody (``unknown``, RFC §12.3.9) is
+        no speaker: it neither fires ON_SPEAKER_CHANGE nor resets the last one.
+        """
+        if speaker_label(speaker_id) is None:
+            return False
+        if speaker_id == self._last_speaker_id.get(stream):
+            return False
+        self._last_speaker_id[stream] = speaker_id
+        return True
+
     def _fanout(
         self,
         callbacks: Sequence[Callable[..., Any]],
@@ -576,8 +589,7 @@ class AudioPipeline:
                         "speaker_id": diarization_result.speaker_id,
                         "confidence": diarization_result.confidence,
                     }
-                    if diarization_result.speaker_id != self._last_speaker_id.get(stream):
-                        self._last_speaker_id[stream] = diarization_result.speaker_id
+                    if self._is_speaker_change(stream, diarization_result.speaker_id):
                         self._fanout(
                             self._speaker_change_callbacks,
                             subject,

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The pipeline's diarization stage no longer fires `ON_SPEAKER_CHANGE` for a
+  voice it matched to nobody (RMK-256, RFC §12.3.9). sherpa-onnx answers
+  `"unknown"` below its `search_threshold`, and every such result fired a
+  change and reset the last speaker, so one voice read as
+  `unknown → Julie → unknown → Julie`. An unattributed result (`unknown`,
+  `UU`, `PENDING`, empty — the label rule a diarizing STT follows) now neither
+  fires nor resets; it still reaches the frame, where `pipeline_speakers`
+  counts it as `"Unknown speaker"`.
+
 ## [0.92.0] — 2026-09-27
 
 ### Added
