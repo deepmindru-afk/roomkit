@@ -46,6 +46,10 @@ MODEL_V4_TURBO = "eleven_v4_turbo"
 # keeps a ``model_id`` of one of them and picks v4 Turbo otherwise.
 _AUDIO_TAG_MODELS = ("eleven_v3", "eleven_v4")
 
+# The model families that take ``optimize_streaming_latency`` (the ``_v2_5``
+# variants included); v3 and v4 answer 400 to it.
+_LATENCY_MODELS = ("eleven_multilingual_v2", "eleven_flash_v2", "eleven_turbo_v2")
+
 # Expressive tags recognised by v3 Conversational TTS. Eleven v4 documents a
 # wider set (``[pause]``, ``[long pause]``, sound effects) and lets tags stack.
 EXPRESSIVE_TAGS = frozenset({"[laughs]", "[whispers]", "[sighs]", "[slow]", "[excited]"})
@@ -70,8 +74,10 @@ class ElevenLabsConfig:
     style: float = 0.0
     use_speaker_boost: bool = True
     output_format: str = "mp3_44100_128"  # mp3, pcm_16000, pcm_22050, etc.
-    # Streaming options
-    optimize_streaming_latency: int = 3  # 0-4, higher = lower latency
+    # Latency optimization, 0-4 (higher = lower latency, at some cost of
+    # quality). None sends nothing. Only the v2 / v2.5 models take it, and
+    # ElevenLabs deprecates it.
+    optimize_streaming_latency: int | None = None
     # Expressive mode — Eleven v4 Turbo with inline audio tags
     expressive: bool = False
     # Request stitching from the conversation context: the provider receives
@@ -93,6 +99,11 @@ class ElevenLabsTTSProvider(TTSProvider):
         self._config = config
         if config.expressive and not config.model_id.startswith(_AUDIO_TAG_MODELS):
             self._config.model_id = MODEL_V4_TURBO
+        if config.optimize_streaming_latency is not None and not self._takes_latency_param():
+            logger.warning(
+                "ElevenLabs model %s does not take optimize_streaming_latency; it is not sent",
+                config.model_id,
+            )
         self._client: Any = None  # AsyncElevenLabs (lazy)
         self._voices_cache: list[VoiceInfo] | None = None
         self._request_ids = RequestIdLedger()
@@ -127,6 +138,17 @@ class ElevenLabsTTSProvider(TTSProvider):
     def _is_v3_model(self) -> bool:
         """Return True when the selected model is a v3 variant."""
         return "v3" in self._config.model_id
+
+    def _takes_latency_param(self) -> bool:
+        return self._config.model_id.startswith(_LATENCY_MODELS)
+
+    def _query_params(self) -> dict[str, Any]:
+        """The query arguments of a synthesis request: the output format, and
+        the latency level when one is set and the model takes it."""
+        params: dict[str, Any] = {"output_format": self._config.output_format}
+        if self._config.optimize_streaming_latency is not None and self._takes_latency_param():
+            params["optimize_streaming_latency"] = self._config.optimize_streaming_latency
+        return params
 
     def _get_client(self) -> Any:
         if self._client is None:
@@ -200,7 +222,7 @@ class ElevenLabsTTSProvider(TTSProvider):
             text=text,
             model_id=self._config.model_id,
             voice_settings=self._make_voice_settings(),
-            output_format=self._config.output_format,
+            **self._query_params(),
         )
 
         # SDK convert() may return bytes or an async iterator — normalise.
@@ -264,7 +286,7 @@ class ElevenLabsTTSProvider(TTSProvider):
             "text": text,
             "model_id": self._config.model_id,
             "voice_settings": self._make_voice_settings(),
-            "output_format": self._config.output_format,
+            **self._query_params(),
         }
 
         if context is None or self.context_level == TTSContextLevel.NONE:

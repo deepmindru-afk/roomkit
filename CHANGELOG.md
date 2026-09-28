@@ -78,6 +78,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- ElevenLabs `optimize_streaming_latency` reaches the API again (RMK-264).
+  It had not been sent since the move to the official SDK, whatever its
+  value. It now goes to the models that take it, the v2 and v2.5 families;
+  v3 and v4 answer 400 to it, so a value set for them is left out with a
+  warning. Its default is `None`, which sends nothing: the default was `3`
+  but never sent, so a configuration that left it alone synthesizes as
+  before.
 - Gemini accepts a tool whose schema narrows an object with a `oneOf` /
   `anyOf` (RMK-266). The schema cleaner folded every union to its first
   branch, so `{"type": "object", "properties": {url, path}, "oneOf":

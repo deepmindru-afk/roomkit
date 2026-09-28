@@ -31,7 +31,7 @@ class TestElevenLabsConfig:
         assert cfg.style == 0.0
         assert cfg.use_speaker_boost is True
         assert cfg.output_format == "mp3_44100_128"
-        assert cfg.optimize_streaming_latency == 3
+        assert cfg.optimize_streaming_latency is None
         assert cfg.expressive is False
 
     def test_custom_values(self):
@@ -323,16 +323,58 @@ class TestSynthesizeStream:
 # ---------------------------------------------------------------------------
 
 
-class TestStreamingLatency:
-    async def test_v2_includes_latency_param(self):
-        """Non-v3 models include optimize_streaming_latency."""
-        provider = ElevenLabsTTSProvider(ElevenLabsConfig(api_key="k"))
-        assert provider._is_v3_model() is False
+def _mock_client() -> tuple[list[dict], MagicMock]:
+    """An SDK client whose stream() records the keyword arguments of each call."""
+    calls: list[dict] = []
 
-    async def test_v3_excludes_latency_param(self):
-        """v3 models skip optimize_streaming_latency."""
-        provider = ElevenLabsTTSProvider(ElevenLabsConfig(api_key="k", model_id=MODEL_V3))
-        assert provider._is_v3_model() is True
+    async def mock_stream(**kwargs):
+        calls.append(kwargs)
+        yield b"data"
+
+    mock_client = MagicMock()
+    mock_client.text_to_speech.stream = mock_stream
+    mock_client.text_to_speech.convert = AsyncMock(return_value=b"audio")
+    return calls, mock_client
+
+
+def _sdk(provider: ElevenLabsTTSProvider, client: MagicMock):
+    return patch.multiple(
+        provider, _get_client=MagicMock(return_value=client), _make_voice_settings=MagicMock()
+    )
+
+
+class TestStreamingLatency:
+    async def test_default_sends_no_latency_param(self):
+        provider = ElevenLabsTTSProvider(ElevenLabsConfig(api_key="k"))
+        calls, client = _mock_client()
+        with _sdk(provider, client):
+            [c async for c in provider.synthesize_stream("Hi")]
+        assert "optimize_streaming_latency" not in calls[0]
+        assert calls[0]["output_format"] == "mp3_44100_128"
+
+    @pytest.mark.parametrize("model_id", [MODEL_MULTILINGUAL_V2, "eleven_flash_v2_5"])
+    async def test_a_set_level_reaches_a_v2_model(self, model_id):
+        provider = ElevenLabsTTSProvider(
+            ElevenLabsConfig(api_key="k", model_id=model_id, optimize_streaming_latency=3)
+        )
+        calls, client = _mock_client()
+        with _sdk(provider, client):
+            [c async for c in provider.synthesize_stream("Hi")]
+            await provider.synthesize("Hi")
+        assert calls[0]["optimize_streaming_latency"] == 3
+        assert client.text_to_speech.convert.call_args.kwargs["optimize_streaming_latency"] == 3
+
+    @pytest.mark.parametrize("model_id", [MODEL_V4_TURBO, MODEL_V4, MODEL_V3])
+    async def test_a_model_that_refuses_it_never_gets_it(self, model_id, caplog):
+        with caplog.at_level("WARNING", logger="roomkit.voice.tts.elevenlabs"):
+            provider = ElevenLabsTTSProvider(
+                ElevenLabsConfig(api_key="k", model_id=model_id, optimize_streaming_latency=3)
+            )
+        assert "does not take optimize_streaming_latency" in caplog.text
+        calls, client = _mock_client()
+        with _sdk(provider, client):
+            [c async for c in provider.synthesize_stream("Hi")]
+        assert "optimize_streaming_latency" not in calls[0]
 
 
 # ---------------------------------------------------------------------------
