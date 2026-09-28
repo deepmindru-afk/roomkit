@@ -4,16 +4,16 @@ The single code path for running a delegated agent — used by both
 ``delegate(wait=True)`` (inline) and the background task runner via
 :meth:`DelegationMixin`. Persists the worker's full trace (tool calls +
 messages) into the child room and returns its output, either as free text or
-as a structured ``submit_result`` payload.
+as the structured payload of the result tool the delegation forces.
 """
 
 from __future__ import annotations
 
-import contextlib
 import json
 import logging
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from roomkit.core.mixins._result_capture import capture_result
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import ChannelType, EventStatus, EventType
@@ -202,11 +202,11 @@ async def _scan_for_submitted_result(
     """Find a call of the result tool (``submit_result`` by default) in the
     worker's persisted trace.
 
-    The function-calling path captures the payload through the wrapped
-    ``tool_handler``; a claude_code worker instead calls the gateway-exposed
-    tool, which never reaches that handler — but the call IS persisted as a
-    TOOL_CALL event (with an ``mcp__…`` prefix). Scanning the trace tail makes
-    the capture delivery-agnostic. Returns the normalized payload, or None.
+    A call made through the channel's tool loop is caught by the capture
+    handler; an agent whose tools come from an MCP server calls the tool there,
+    out of that handler's reach, but the call is persisted as a TOOL_CALL event
+    (named ``mcp__<server>__<name>``). Scanning the room's trace tail catches
+    it. Returns the normalized payload, or None.
     """
     from roomkit.orchestration.result import SUBMIT_RESULT
 
@@ -249,10 +249,12 @@ async def _run_with_structured_result(
     use it (up to *max_result_retries* times); if it still hasn't, the tool's
     ``on_missing`` payload is returned on its behalf.
 
-    Capture is delivery-agnostic: a function-calling provider's call is caught by
-    the wrapped ``tool_handler``; a claude_code worker calls the gateway-exposed
-    tool, which is caught by scanning its persisted trace. Returns the structured
-    payload as a JSON string (an orchestration fail when exhausted)."""
+    Capture is delivery-agnostic and scoped to *child_room_id*: a call made
+    through the channel's tool loop is caught by the handler
+    :func:`~roomkit.core.mixins._result_capture.capture_result` installs, and a
+    call served by an MCP server instead is found in the room's persisted trace.
+    Another room's delegation to the same agent never sees this one's result.
+    Returns the payload as a JSON string (``on_missing``'s when exhausted)."""
     from roomkit.orchestration.result import SUBMIT_RESULT
 
     tool = result_tool or SUBMIT_RESULT
@@ -265,26 +267,13 @@ async def _run_with_structured_result(
         return text or ""
     role = getattr(channel, "role", None) or getattr(channel, "description", None) or str(agent_id)
 
-    captured: dict[str, Any] = {}
-    original_handler = channel.tool_handler
-
-    async def _capture(name: str, arguments: dict[str, Any]) -> str:
-        if name == tool.name:
-            captured["payload"] = tool.normalize(arguments or {})
-            return json.dumps({"status": "received"})
-        if original_handler:
-            return await original_handler(name, arguments)
-        return json.dumps({"error": f"unknown tool {name}"})
-
-    channel._injected_tools.append(tool.tool)
-    channel.tool_handler = _capture
-    try:
+    with capture_result(channel, child_room_id, tool) as slot:
         message = task_desc
         last_text = ""
         for _attempt in range(max_result_retries + 1):
             text = await _broadcast_and_collect(kit, child_room_id, message)
-            if "payload" in captured:
-                return json.dumps(captured["payload"])
+            if slot.payload is not None:
+                return json.dumps(slot.payload)
             scanned = await _scan_for_submitted_result(kit, child_room_id, tool)
             if scanned is not None:
                 return json.dumps(scanned)
@@ -299,10 +288,6 @@ async def _run_with_structured_result(
         return json.dumps(
             tool.on_missing(role=role, last_output=last_text, attempts=max_result_retries + 1)
         )
-    finally:
-        with contextlib.suppress(ValueError):
-            channel._injected_tools.remove(tool.tool)
-        channel.tool_handler = original_handler
 
 
 async def run_agent_in_child_room(

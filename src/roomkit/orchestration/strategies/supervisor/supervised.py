@@ -81,6 +81,11 @@ async def _delegate_and_wait(
     return (_result_output(result), _result_completed(result))
 
 
+# Supervisors whose strategy tool is out for a sub-run: how many sub-runs, and
+# the tools taken out, keyed by the channel object's id while any is active.
+_WITHOUT_STRATEGY: dict[int, tuple[int, list[Any]]] = {}
+
+
 @contextlib.contextmanager
 def _supervisor_without_strategy_tool(supervisor: Agent) -> Iterator[None]:
     """Run the supervisor for dispatch/review WITHOUT its ``delegate_workers`` tool.
@@ -91,13 +96,29 @@ def _supervisor_without_strategy_tool(supervisor: Agent) -> Iterator[None]:
     (delegate_workers within delegate_workers) and stalling. The orchestrator has
     already decided to delegate; here the supervisor only frames and judges. A
     no-op in auto-delegate mode, where the supervisor has no such tool.
+
+    The supervisor is one channel object shared by every room, so overlapping
+    sub-runs (two rooms reviewing at once) share this too: the tool leaves the
+    list when the first one starts and comes back when the last one ends, and
+    the list is edited in place, never swapped, so an overlap can neither lose
+    the tool for good nor drop a tool another delegation injected meanwhile.
     """
-    saved = supervisor._injected_tools
-    supervisor._injected_tools = [t for t in saved if t.name != _STRATEGY_TOOL_NAME]
+    key = id(supervisor)
+    active, removed = _WITHOUT_STRATEGY.get(key, (0, []))
+    if not active:
+        tools = supervisor._injected_tools
+        removed = [t for t in tools if t.name == _STRATEGY_TOOL_NAME]
+        tools[:] = [t for t in tools if t.name != _STRATEGY_TOOL_NAME]
+    _WITHOUT_STRATEGY[key] = (active + 1, removed)
     try:
         yield
     finally:
-        supervisor._injected_tools = saved
+        active, removed = _WITHOUT_STRATEGY[key]
+        if active > 1:
+            _WITHOUT_STRATEGY[key] = (active - 1, removed)
+        else:
+            del _WITHOUT_STRATEGY[key]
+            supervisor._injected_tools.extend(removed)
 
 
 async def _supervisor_dispatch(
