@@ -10,7 +10,9 @@ has its own file.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+import json
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 import pytest
 
@@ -19,13 +21,16 @@ from roomkit import (
     MockConferenceBackend,
     RoomKit,
 )
+from roomkit.channels._conference_tools import MAX_RESULT_CHARS
 from roomkit.channels.base import Channel
 from roomkit.channels.conference import ConferenceChannel
 from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
-from roomkit.models.enums import ChannelType
+from roomkit.models.enums import ChannelType, HookExecution, HookTrigger
 from roomkit.models.event import EventSource, RoomEvent, TextContent
+from roomkit.models.hook import HookResult
+from roomkit.models.tool_call import ToolCallEvent
 from roomkit.voice.realtime.mock import MockRealtimeProvider
 from roomkit.voice.tts.mock import MockTTSProvider
 
@@ -335,7 +340,8 @@ class TestToolCalls:
 
         (_, call_id, result) = provider.tool_results[0]
         assert call_id == "call-1"
-        assert "error" in result and "backend down" in result
+        # The exception is logged; the model reads that the tool failed.
+        assert json.loads(result) == {"error": "Tool 'x' failed"}
 
     async def test_a_call_with_no_handler_configured_still_gets_an_answer(self) -> None:
         provider = MockRealtimeProvider()
@@ -348,6 +354,171 @@ class TestToolCalls:
 
         (_, _, result) = provider.tool_results[0]
         assert "no handler" in result
+
+
+_LOOKUP = {
+    "name": "lookup",
+    "description": "Look a customer up",
+    "parameters": {
+        "type": "object",
+        "properties": {"email": {"type": "string"}},
+        "required": ["email"],
+    },
+}
+
+
+async def _gated_kit(
+    handler: Callable[..., Awaitable[str]],
+) -> tuple[RoomKit, ConferenceChannel, MockRealtimeProvider, list[ToolCallEvent]]:
+    """A conference whose provider declares ``lookup``, with an ASYNC observer."""
+    provider = MockRealtimeProvider()
+    kit, channel, _, _ = await realtime_kit(
+        provider=provider,
+        config=ConferenceRealtimeConfig(provider=provider, tools=[_LOOKUP], tool_handler=handler),
+    )
+    observed: list[ToolCallEvent] = []
+
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    async def audit(event: ToolCallEvent, ctx: RoomContext) -> None:
+        observed.append(event)
+
+    return kit, channel, provider, observed
+
+
+async def _call(
+    channel: ConferenceChannel, provider: MockRealtimeProvider, name: str, arguments: dict
+) -> Any:  # type: ignore[type-arg]
+    session = await channel._realtime.ensure_session(ROOM)
+    assert session is not None
+    await provider.simulate_tool_call(session, "call-1", name, arguments)
+    await until(lambda: bool(provider.tool_results))
+    await asyncio.sleep(0.05)  # the ASYNC observers are fire-and-forget
+    return json.loads(provider.tool_results[0][2])
+
+
+class TestToolCallGate:
+    """A conference's tool calls pass the tool gate (RFC 12.10.12)."""
+
+    @pytest.mark.parametrize(
+        ("name", "arguments", "error"),
+        [
+            ("delete_everything", {}, "Tool 'delete_everything' is not declared"),
+            ("lookup", {"email": 3}, "Invalid arguments for 'lookup'"),
+        ],
+    )
+    async def test_a_refused_call_never_reaches_the_handler(
+        self,
+        name: str,
+        arguments: dict,
+        error: str,  # type: ignore[type-arg]
+    ) -> None:
+        ran: list[str] = []
+
+        async def handler(room_id: str, tool: str, args: dict) -> str:  # type: ignore[type-arg]
+            ran.append(tool)
+            return "{}"
+
+        kit, channel, provider, observed = await _gated_kit(handler)
+
+        result = await _call(channel, provider, name, arguments)
+
+        assert ran == []
+        assert error in result["error"]
+        assert [(e.name, e.is_error) for e in observed] == [(name, True)]
+        await kit.close()
+
+    async def test_on_tool_call_rewrites_and_observers_see_the_final_result(self) -> None:
+        async def handler(room_id: str, tool: str, args: dict) -> str:  # type: ignore[type-arg]
+            return '{"ssn": "123-45-6789"}'
+
+        kit, channel, provider, observed = await _gated_kit(handler)
+
+        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="redact")
+        async def redact(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
+            return HookResult(action="allow", metadata={"result": '{"ssn": "[REDACTED]"}'})
+
+        result = await _call(channel, provider, "lookup", {"email": "a@b.example"})
+
+        assert result == {"ssn": "[REDACTED]"}
+        assert [e.result for e in observed] == ['{"ssn": "[REDACTED]"}']
+        await kit.close()
+
+    async def test_a_block_withholds_the_result_and_is_observed(self) -> None:
+        async def handler(room_id: str, tool: str, args: dict) -> str:  # type: ignore[type-arg]
+            return '{"ssn": "123-45-6789"}'
+
+        kit, channel, provider, observed = await _gated_kit(handler)
+
+        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="withhold")
+        async def withhold(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
+            return HookResult.block("restricted")
+
+        result = await _call(channel, provider, "lookup", {"email": "a@b.example"})
+
+        assert result == {"error": "restricted"}
+        assert [e.is_error for e in observed] == [True]
+        await kit.close()
+
+    async def test_before_tool_use_denies_before_the_handler(self) -> None:
+        ran: list[str] = []
+
+        async def handler(room_id: str, tool: str, args: dict) -> str:  # type: ignore[type-arg]
+            ran.append(tool)
+            return "{}"
+
+        kit, channel, provider, _ = await _gated_kit(handler)
+
+        @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="deny")
+        async def deny(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
+            return HookResult.block("not here")
+
+        result = await _call(channel, provider, "lookup", {"email": "a@b.example"})
+
+        assert ran == []
+        assert "denied" in result["error"]
+        await kit.close()
+
+    async def test_the_result_is_bounded(self) -> None:
+        async def handler(room_id: str, tool: str, args: dict) -> str:  # type: ignore[type-arg]
+            return "x" * 100_000
+
+        kit, channel, provider, _ = await _gated_kit(handler)
+        session = await channel._realtime.ensure_session(ROOM)
+        assert session is not None
+
+        await provider.simulate_tool_call(session, "call-1", "lookup", {"email": "a@b.example"})
+        await until(lambda: bool(provider.tool_results))
+
+        result = provider.tool_results[0][2]
+        assert len(result) <= MAX_RESULT_CHARS
+        assert "truncated" in result
+        await kit.close()
+
+    async def test_an_abandoned_call_interrupts_its_handler(self) -> None:
+        started, interrupted = asyncio.Event(), asyncio.Event()
+
+        async def handler(room_id: str, tool: str, args: dict) -> str:  # type: ignore[type-arg]
+            started.set()
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                interrupted.set()
+                raise
+            return "{}"
+
+        kit, channel, provider, observed = await _gated_kit(handler)
+        session = await channel._realtime.ensure_session(ROOM)
+        assert session is not None
+
+        await provider.simulate_tool_call(session, "call-1", "lookup", {"email": "a@b.example"})
+        await asyncio.wait_for(started.wait(), 2)
+        await provider.simulate_tool_call_cancellation(session, ["call-1"])
+        await asyncio.wait_for(interrupted.wait(), 2)
+        await asyncio.sleep(0.05)
+
+        assert provider.tool_results == []
+        assert [(e.cancelled, e.is_error) for e in observed] == [(True, True)]
+        await kit.close()
 
 
 class TestDisclosure:

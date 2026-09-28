@@ -34,9 +34,10 @@ from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._conference_mixer import ConferenceMixer
 from roomkit.channels._conference_operations import ConferenceResource
-from roomkit.core.exceptions import ToolRefusedError
+from roomkit.channels._conference_tools import ConferenceToolGate
 from roomkit.core.task_utils import log_task_exception
 from roomkit.models.event import TextContent
+from roomkit.models.tool_call import ToolCallEvent
 from roomkit.voice.base import AudioChunk, VoiceSession
 
 if TYPE_CHECKING:
@@ -92,12 +93,15 @@ class _RoomRealtime:
     next_connect_at: float = 0.0
     utterance: _Utterance | None = None
     tasks: set[asyncio.Task[None]] = field(default_factory=set)
+    tool_calls: dict[str, tuple[asyncio.Task[None], ToolCallEvent]] = field(default_factory=dict)
+    """Calls in flight, by call id: what a provider cancellation interrupts."""
 
-    def spawn(self, coro: Awaitable[None]) -> None:
+    def spawn(self, coro: Awaitable[None]) -> asyncio.Task[None]:
         task = asyncio.ensure_future(coro)
         self.tasks.add(task)
         task.add_done_callback(self.tasks.discard)
         task.add_done_callback(log_task_exception)
+        return task
 
 
 class ConferenceRealtime:
@@ -126,6 +130,7 @@ class ConferenceRealtime:
         self._config: ConferenceRealtimeConfig | None = None
         self._framework: RoomKit | None = None
         self._rooms: dict[str, _RoomRealtime] = {}
+        self._tools = ConferenceToolGate(channel_id)
         # Providers register callbacks append-only, so each instance is wired
         # exactly once, ever — a re-plug of the same provider reuses the
         # registration, and the per-session identity guards make callbacks
@@ -140,6 +145,7 @@ class ConferenceRealtime:
 
     def set_framework(self, framework: RoomKit) -> None:
         self._framework = framework
+        self._tools.set_framework(framework)
 
     def session_for(self, room_id: str) -> VoiceSession | None:
         """The provider session serving a room, if one is connected."""
@@ -160,6 +166,7 @@ class ConferenceRealtime:
             provider.on_response_start(self._on_response_start)
             provider.on_response_end(self._on_response_end)
             provider.on_tool_call(self._on_tool_call)
+            provider.on_tool_call_cancelled(self._on_tool_call_cancelled)
         self._config = config
         self.mixer.configure(input_sample_rate=config.input_sample_rate)
         self._voice.set_on_interrupted(self.interrupt)
@@ -477,55 +484,55 @@ class ConferenceRealtime:
         room = self._guarded(session)
         if room is None:
             return
-        room.spawn(self._answer_tool(session, call_id, name, arguments))
+        event = self._tools.event(session, call_id, name, arguments)
+        task = room.spawn(self._answer_tool(session, event))
+        room.tool_calls[call_id] = (task, event)
+        task.add_done_callback(lambda done: _forget_call(room, call_id, done))
 
-    async def _answer_tool(
-        self, session: VoiceSession, call_id: str, name: str, arguments: dict[str, Any]
-    ) -> None:
-        """Answer one tool call, with an error result rather than silence.
+    async def _on_tool_call_cancelled(self, session: VoiceSession, call_ids: list[str]) -> None:
+        """The model abandoned these calls: interrupt their handlers, send
+        nothing, and report them to ON_TOOL_CALL's observers as cancelled."""
+        room = self._guarded(session)
+        if room is None:
+            return
+        for call_id in call_ids:
+            entry = room.tool_calls.pop(call_id, None)
+            if entry is None:
+                continue
+            task, event = entry
+            if task.done():
+                continue
+            task.cancel()
+            body = json.dumps(
+                {
+                    "error": "Tool call cancelled",
+                    "tool": event.name,
+                    "hint": "The model abandoned this call before its result; nothing was sent.",
+                }
+            )
+            await self._tools.refuse(event, body, cancelled=True)
 
-        A handler that raises — or a call for which none was configured —
-        submits what went wrong: the provider's turn is waiting on this
-        result, and a turn nothing answers wedges the conversation.
+    async def _answer_tool(self, session: VoiceSession, event: ToolCallEvent) -> None:
+        """Answer one tool call through the gate, with an error rather than silence.
+
+        A refused or failing call still submits a result: the provider's turn
+        is waiting on it, and a turn nothing answers wedges the conversation.
         """
         config = self._config
         if config is None:
             return
-        if config.tool_handler is None:
-            result = json.dumps({"error": f"no handler is configured for tool {name!r}"})
-        else:
-            try:
-                result = await config.tool_handler(session.room_id, name, arguments)
-            except ToolRefusedError as refusal:
-                # A declined call, in the handler's own words. Wrapping it the
-                # way the branch below wraps a crash would hand the model the
-                # exception's class name instead of the reason.
-                logger.info(
-                    "Conference channel %r: the tool handler refused %r in room %s",
-                    self._channel_id,
-                    name,
-                    session.room_id,
-                )
-                result = refusal.message
-            except Exception as error:
-                logger.exception(
-                    "Conference channel %r: the tool handler failed on %r in room %s",
-                    self._channel_id,
-                    name,
-                    session.room_id,
-                )
-                result = json.dumps({"error": f"{type(error).__name__}: {error}"})
+        result = await self._tools.answer(config, event)
         try:
             with self._operations.use(
                 ConferenceResource.REALTIME, what=f"tool result for room {session.room_id}"
             ):
-                await config.provider.submit_tool_result(session, call_id, result)
+                await config.provider.submit_tool_result(session, event.tool_call_id, result)
         except Exception:
             logger.warning(
                 "Conference channel %r could not return the result of tool %r to the "
                 "realtime provider in room %s",
                 self._channel_id,
-                name,
+                event.name,
                 session.room_id,
                 exc_info=True,
             )
@@ -624,3 +631,10 @@ class ConferenceRealtime:
         config = self._config
         if config is not None:
             await config.provider.close()
+
+
+def _forget_call(room: _RoomRealtime, call_id: str, task: asyncio.Task[None]) -> None:
+    """Drop a finished call from the room's in-flight calls, if it is still that one."""
+    entry = room.tool_calls.get(call_id)
+    if entry is not None and entry[0] is task:
+        del room.tool_calls[call_id]

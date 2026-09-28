@@ -109,6 +109,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A conference's realtime tool calls go through the tool gate (RMK-274,
+  RFC §12.10.12). They went straight to `tool_handler`: an undeclared name
+  or invalid arguments reached it, `BEFORE_TOOL_USE` and `ON_TOOL_CALL` never
+  ran, the result was not bounded, and a call the provider abandoned kept
+  running. A call must now name one of the configuration's `tools` and match
+  its schema, passes `BEFORE_TOOL_USE`, fires `ON_TOOL_CALL` (sync hooks,
+  then observers, refusals included), is bounded at 16384 characters, and is
+  interrupted when the provider cancels it. A handler's exception is logged;
+  the model reads `{"error": "Tool 'x' failed"}` instead of its text.
 - `ON_TOOL_CALL`'s sync hooks chain on one result (RMK-273, RFC §9.3): each
   sees the result as the previous one left it, and a `HookResult.modify(event)`
   carrying a new result now counts, where only `metadata={"result": ...}` did.
