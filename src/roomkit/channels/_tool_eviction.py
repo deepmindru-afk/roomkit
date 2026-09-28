@@ -19,6 +19,13 @@ _MAX_EVICTED = 50
 # under the re-eviction bound (4 * threshold_tokens chars). See handle_read.
 _PAGE_ENVELOPE_CHARS = 512
 
+# Ceiling of the preview that stands in for an evicted result, in chars. The
+# budget also shrinks with the threshold (see _preview_budget), so a preview
+# never carries as much as the result it replaces.
+_PREVIEW_MAX_CHARS = 8000
+_PREVIEW_HEAD_LINES = 5
+_PREVIEW_TAIL_LINES = 5
+
 # How every eviction placeholder starts. The usage memory recognises one by it:
 # a placeholder is what TOOL_CALL_END persists for an evicted result, and its
 # ``evicted_…`` id dies with the process, so it must not be replayed as data.
@@ -30,11 +37,76 @@ def is_eviction_placeholder(text: str) -> bool:
     return text.startswith(EVICTION_PLACEHOLDER_PREFIX)
 
 
+def _omission_marker(count: int) -> str:
+    return f"[... {count} lines omitted ...]"
+
+
+def _clip_line(line: str, room: int) -> str | None:
+    """*line* cut to fit *room* chars, the cut stated in a marker; ``None``
+    when the marker leaves no room for any of the line."""
+    # Sized for the widest count, so the real marker is never longer.
+    keep = room - len(f" [... {len(line)} chars truncated ...]")
+    if keep < 1:
+        return None
+    return f"{line[:keep]} [... {len(line) - keep} chars truncated ...]"
+
+
+def _fit_lines(lines: list[str], budget: int) -> list[str]:
+    """The leading *lines* that fit in *budget* chars once joined by newlines.
+
+    The first line that does not fit is clipped, if its marker leaves room for
+    some of it, and ends the run: the lines after it are not shown.
+    """
+    kept: list[str] = []
+    used = 0
+    for line in lines:
+        sep = 1 if kept else 0
+        room = budget - used - sep
+        if len(line) > room:
+            clipped = _clip_line(line, room)
+            if clipped is not None:
+                kept.append(clipped)
+            break
+        kept.append(line)
+        used += sep + len(line)
+    return kept
+
+
+def _preview(result: str, budget: int) -> str:
+    """Head/tail preview of *result* within *budget* chars.
+
+    Bounding the lines alone let one giant line (minified HTML, a JSON blob)
+    reach the provider whole, which is what eviction exists to prevent. The
+    head takes at most half the budget and the tail the rest, filled from the
+    last line; a line that does not fit is clipped with a marker, and every
+    line not shown is counted in the omission marker.
+    """
+    lines = result.splitlines()
+    # Reserved at its widest, which also covers the newline joining head and
+    # tail when nothing is omitted.
+    reserve = len(_omission_marker(len(lines))) + 4
+    if budget < reserve:
+        return ""
+    head_src = lines[:_PREVIEW_HEAD_LINES]
+    tail_src = lines[_PREVIEW_HEAD_LINES:][-_PREVIEW_TAIL_LINES:]
+    lines_budget = budget - reserve
+    head = _fit_lines(head_src, lines_budget // 2 if tail_src else lines_budget)
+    head_text = "\n".join(head)
+    tail = _fit_lines(tail_src[::-1], lines_budget - len(head_text))[::-1]
+    tail_text = "\n".join(tail)
+
+    omitted = len(lines) - len(head) - len(tail)
+    if not omitted:
+        return "\n".join(head + tail)
+    return "\n\n".join(part for part in (head_text, _omission_marker(omitted), tail_text) if part)
+
+
 class ToolEviction:
     """Stores large tool results and provides paginated re-reading.
 
     When a tool result exceeds ``threshold_tokens``, the full result is
-    stored in a FIFO-bounded buffer and replaced with a head/tail preview.
+    stored in a FIFO-bounded buffer and replaced with a head/tail preview
+    bounded in lines and in chars.
     The ``read_stored_result`` tool definition is injected into the AI
     context so the agent can paginate back through the full output.
 
@@ -73,21 +145,16 @@ class ToolEviction:
         while len(self._store) > _MAX_EVICTED:
             self._store.popitem(last=False)
 
-        lines = result.splitlines()
-        head_n, tail_n = 5, 5
-        if len(lines) <= head_n + tail_n:
-            preview = result[:8000]
-        else:
-            head = "\n".join(lines[:head_n])
-            tail = "\n".join(lines[-tail_n:])
-            omitted = len(lines) - head_n - tail_n
-            preview = f"{head}\n\n[... {omitted} lines omitted ...]\n\n{tail}"
-
         return (
             f"{EVICTION_PLACEHOLDER_PREFIX}{estimated} tokens). Full output saved as "
             f"'{result_id}'. Use read_stored_result to read it with pagination.\n\n"
-            f"Preview:\n{preview}"
+            f"Preview:\n{_preview(result, self._preview_budget())}"
         )
+
+    def _preview_budget(self) -> int:
+        """Chars the preview may use: the ceiling, or half of what evicts (the
+        estimator is len // 4 tokens) when the threshold is small."""
+        return min(_PREVIEW_MAX_CHARS, 2 * self.threshold_tokens)
 
     def handle_read(self, arguments: dict[str, Any]) -> str:
         """Paginate a previously evicted result.

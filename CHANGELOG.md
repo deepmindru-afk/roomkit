@@ -23,6 +23,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   used to surface as a `UnicodeEncodeError` from the HTTP client on the REST
   path. The error never repeats the key: the two pydantic configs hide their
   input in validation errors.
+- The preview that stands in for an evicted tool result is bounded in
+  characters, not only in lines (RMK-258). It kept 5 head and 5 tail lines
+  whatever their length, so a result of more than ten lines with one giant
+  line (minified HTML, a JSON blob, an external MCP answer) reached the
+  provider whole. The preview now holds at most 8000 characters, or twice
+  `evict_threshold_tokens` when that is smaller; a line too long for it is
+  clipped with a `[... N chars truncated ...]` marker, and the lines left out
+  are counted. The stored result is unchanged and `read_stored_result` still
+  paginates all of it.
 
 ## [0.92.0] — 2026-09-27
 
