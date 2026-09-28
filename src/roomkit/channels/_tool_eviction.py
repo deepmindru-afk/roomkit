@@ -35,7 +35,7 @@ class ToolEviction:
 
     When a tool result exceeds ``threshold_tokens``, the full result is
     stored in a FIFO-bounded buffer and replaced with a head/tail preview.
-    The ``read_tool_result`` tool definition is injected into the AI
+    The ``read_stored_result`` tool definition is injected into the AI
     context so the agent can paginate back through the full output.
 
     The store is scoped per room: the eviction buffer lives on a channel
