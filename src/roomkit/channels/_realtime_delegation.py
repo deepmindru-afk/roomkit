@@ -61,7 +61,8 @@ class RealtimeDelegationHost(Protocol):
 
     Cross-mixin methods (implemented elsewhere in the MRO):
         _track_task, _rt_span_ctx, _update_idle_event, _telemetry_provider,
-        _authorize_realtime_tool, _serve_gated_tool_call.
+        _authorize_realtime_tool, _serve_gated_tool_call, _fire_tool_refusal,
+        _tool_reachable.
     """
 
     _state_lock: threading.Lock
@@ -111,7 +112,7 @@ class RealtimeDelegationMixin:
     _update_idle_event: Any  # see RealtimeDelegationHost — cross-mixin
     _telemetry_provider: Any  # see RealtimeDelegationHost — cross-mixin
     _authorize_realtime_tool: Any  # see RealtimeToolsMixin
-    _policy_filter: Any  # see RealtimeToolsMixin
+    _tool_reachable: Any  # see RealtimeToolsMixin
     _serve_gated_tool_call: Any  # see RealtimeToolsMixin
     _fire_tool_refusal: Any  # see RealtimeToolsMixin
 
@@ -259,16 +260,12 @@ class RealtimeDelegationMixin:
         with self._state_lock:
             first = session.id not in self._delegated_before
             self._delegated_before.add(session.id)
-            tools = [
-                dict(t)
-                for t in self._policy_filter(session.id, self._session_tools.get(session.id, []))
-            ]
         request = ReasoningRequest(
             session=session,
             delegation_id=delegation_id,
             transcript=self._take_transcript(session.id),
             first=first,
-            tools=tools,
+            tools=self._backend_catalogue(session.id),
             execute_tool=lambda name, arguments: self._execute_backend_tool(
                 session, delegation_id, name, arguments
             ),
@@ -314,6 +311,13 @@ class RealtimeDelegationMixin:
             else:
                 logger.info("Delegation %s served (session %s)", delegation_id, session.id)
 
+    def _backend_catalogue(self, session_id: str) -> list[dict[str, Any]]:
+        """The session's tools a backend may call: none its policy denies or a
+        skill gates, so a tool the backend is offered is one it may call."""
+        with self._state_lock:
+            tools = list(self._session_tools.get(session_id, []))
+        return [dict(t) for t in tools if self._tool_reachable(str(t.get("name", "")), session_id)]
+
     async def _fallback(self, session: VoiceSession, delegation_id: str, text: str) -> None:
         """One spoken output, so the model does not wait for an answer that never comes."""
         if session.state == VoiceSessionState.ENDED:
@@ -343,8 +347,8 @@ class RealtimeDelegationMixin:
     ) -> str:
         """Run a backend's tool call as the framework runs any realtime tool call.
 
-        Same gate (declared catalogue, argument schema, skill gating,
-        ``BEFORE_TOOL_USE``), then the same serving path as any realtime tool
+        Same gate (declared catalogue, argument schema, tool policy, skill
+        gating, ``BEFORE_TOOL_USE``), then the same serving path as any realtime tool
         call; the one difference is where the result goes — back to the
         backend model, not to the provider (RFC §12.4.1).
         """

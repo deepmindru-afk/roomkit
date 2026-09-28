@@ -75,6 +75,8 @@ class RealtimeToolsHost(Protocol):
         _mute_on_tool_call: Whether to mute mic during tool execution.
         _tool_result_max_length: Max characters for tool result.
         _skill_support: Skill infrastructure support.
+        _tool_policy: The channel's tool policy, or None.
+        _session_roles: The participant role each session's policy resolves for.
         _provider: The realtime voice provider.
         _transport: The voice backend transport.
         _framework: The RoomKit framework instance (or None).
@@ -851,11 +853,12 @@ class RealtimeToolsMixin:
         session: VoiceSession,
     ) -> tuple[dict[str, Any], str | None, RoomContext | None]:
         """Pre-execution gate for realtime tool calls (parity with the classic
-        AI path).
+        AI path), in RFC §12.4's order.
 
-        Folds a flattened hub-tool call back into ``params``, validates the
-        arguments against the declared schema, and runs BEFORE_TOOL_USE
-        so a block prevents the side effect rather than only hiding the result.
+        Checks the tool is declared, folds a flattened hub-tool call back into
+        ``params`` and validates the arguments against the declared schema,
+        applies the tool policy and skill gating, and runs BEFORE_TOOL_USE so
+        a block prevents the side effect rather than only hiding the result.
         Hooks may replace the arguments through ``metadata["arguments"]``; the
         replacement is validated before it can reach the handler.
 
@@ -867,72 +870,87 @@ class RealtimeToolsMixin:
         if not self._is_declared_realtime_tool(name, session):
             logger.warning("Realtime provider requested undeclared tool %s", name)
             return arguments, json.dumps({"error": f"Tool '{name}' is not declared"}), None
-
-        # Argument validation against the declared schema (fail-closed), after
-        # repairing a hub tool's flattened ``params`` — same gate, same order as
-        # the classic AI path.
         params = self._tool_parameters(name, session)
-        if params is not None:
-            folded, fold_error = fold_hoisted_arguments(params, arguments)
-            if fold_error is not None:
-                logger.warning("Realtime tool %s arguments ambiguous: %s", name, fold_error)
-                return (
-                    arguments,
-                    json.dumps({"error": f"Invalid arguments for '{name}': {fold_error}"}),
-                    None,
-                )
-            if folded is not None:
-                logger.info(
-                    "Realtime tool %s: folded hoisted arguments %s into its container "
-                    "(provider=%s, model=%s)",
-                    name,
-                    sorted(set(arguments) - set(folded)),
-                    self._provider.name,
-                    self._provider.model_name,
-                )
-                arguments = folded
-            arg_error = validate_tool_arguments(params, arguments)
-            if arg_error is not None:
-                logger.warning("Realtime tool %s arguments rejected: %s", name, arg_error)
-                return (
-                    arguments,
-                    json.dumps({"error": f"Invalid arguments for '{name}': {arg_error}"}),
-                    None,
-                )
-
-        # Execution guard: the tool policy (RFC §12.4), resolved for the
-        # session's participant, before skill gating as on the classic path.
+        arguments, invalid = self._validated_realtime_arguments(name, arguments, params)
+        if invalid is not None:
+            return arguments, invalid, None
         await self._refresh_session_role(session, room_id)
-        if not policy_admits(self._session_policy(session.id), name):
-            logger.warning("Realtime tool %s blocked by policy", name)
-            return arguments, json.dumps({"error": policy_refusal(name)}), None
+        refusal = self._access_refusal(name, session.id)
+        if refusal is not None:
+            return arguments, refusal, None
+        return await self._before_realtime_tool_use(
+            name, arguments, params, call_id, room_id, session
+        )
 
-        # Execution guard: skill gating (parity with the classic AI path).
+    def _validated_realtime_arguments(
+        self, name: str, arguments: dict[str, Any], params: dict[str, Any] | None
+    ) -> tuple[dict[str, Any], str | None]:
+        """The model's arguments checked against the declared schema (fail-closed),
+        after repairing a hub tool's flattened ``params``: same gate, same order
+        as the classic AI path."""
+        if params is None:
+            return arguments, None
+        folded, fold_error = fold_hoisted_arguments(params, arguments)
+        if fold_error is not None:
+            logger.warning("Realtime tool %s arguments ambiguous: %s", name, fold_error)
+            return arguments, json.dumps(
+                {"error": f"Invalid arguments for '{name}': {fold_error}"}
+            )
+        if folded is not None:
+            logger.info(
+                "Realtime tool %s: folded hoisted arguments %s into its container "
+                "(provider=%s, model=%s)",
+                name,
+                sorted(set(arguments) - set(folded)),
+                self._provider.name,
+                self._provider.model_name,
+            )
+            arguments = folded
+        arg_error = validate_tool_arguments(params, arguments)
+        if arg_error is not None:
+            logger.warning("Realtime tool %s arguments rejected: %s", name, arg_error)
+            return arguments, json.dumps({"error": f"Invalid arguments for '{name}': {arg_error}"})
+        return arguments, None
+
+    def _access_refusal(self, name: str, session_id: str) -> str | None:
+        """Why the session may not call *name*: its tool policy, resolved for
+        its participant, then skill gating, as on the classic path."""
+        if not policy_admits(self._session_policy(session_id), name):
+            logger.warning("Realtime tool %s blocked by policy", name)
+            return json.dumps({"error": policy_refusal(name)})
         # Hiding a gated tool from the catalogue is not enforcement — the model
         # may still name one it saw before the skill was deactivated.
-        if self._skill_support is not None and self._skill_support.is_gated(name, session.id):
+        if self._skill_support is not None and self._skill_support.is_gated(name, session_id):
             logger.warning("Realtime tool %s blocked by skill gating", name)
-            return (
-                arguments,
-                json.dumps(
-                    {
-                        "error": (
-                            f"Tool '{name}' is gated by a skill. "
-                            "Activate the skill first using activate_skill."
-                        )
-                    }
-                ),
-                None,
+            return json.dumps(
+                {
+                    "error": (
+                        f"Tool '{name}' is gated by a skill. "
+                        "Activate the skill first using activate_skill."
+                    )
+                }
             )
+        return None
 
-        # BEFORE_TOOL_USE gate (needs a framework + room to run room hooks).
-        if self._framework is None or not room_id:
+    async def _before_realtime_tool_use(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        params: dict[str, Any] | None,
+        call_id: str,
+        room_id: str | None,
+        session: VoiceSession,
+    ) -> tuple[dict[str, Any], str | None, RoomContext | None]:
+        """BEFORE_TOOL_USE, which needs a framework and a room to run room
+        hooks; the arguments it leaves are validated again."""
+        framework = self._framework
+        if framework is None or not room_id:
             return arguments, None, None
         # Building a context costs two store reads; skip it when nothing listens.
         # Schema validation above stays unconditional — it needs no context.
-        if not self._framework.hook_engine.has_hooks(HookTrigger.BEFORE_TOOL_USE):
+        if not framework.hook_engine.has_hooks(HookTrigger.BEFORE_TOOL_USE):
             return arguments, None, None
-
+        context = await framework._build_context(room_id)
         pre_event = ToolCallEvent(
             channel_id=self.channel_id,
             channel_type=ChannelType.REALTIME_VOICE,
@@ -943,15 +961,10 @@ class RealtimeToolsMixin:
             room_id=room_id,
             session=session,
         )
-        context = await self._framework._build_context(room_id)
-        hook_result = await self._framework.hook_engine.run_sync_hooks(
-            room_id,
-            HookTrigger.BEFORE_TOOL_USE,
-            pre_event,
-            context,
-            skip_event_filter=True,
+        hook_result = await framework.hook_engine.run_sync_hooks(
+            room_id, HookTrigger.BEFORE_TOOL_USE, pre_event, context, skip_event_filter=True
         )
-        await self._framework._emit_framework_event(
+        await framework._emit_framework_event(
             "before_tool_use",
             room_id=room_id,
             channel_id=self.channel_id,
@@ -962,50 +975,12 @@ class RealtimeToolsMixin:
                 "reason": hook_result.reason,
             },
         )
-
         if not hook_result.allowed:
             logger.info("Realtime tool %s denied by BEFORE_TOOL_USE hook", name)
-            return (
-                arguments,
-                json.dumps(
-                    {"error": hook_result.reason or f"Tool '{name}' denied by pre-execution hook."}
-                ),
-                context,
-            )
-
-        rewritten = hook_result.metadata.get("arguments")
-        if "arguments" in hook_result.metadata and not isinstance(rewritten, dict):
-            logger.error(
-                "BEFORE_TOOL_USE hook returned non-object arguments for realtime tool %s "
-                "— denying tool call",
-                name,
-            )
-            return (
-                arguments,
-                json.dumps(
-                    {"error": f"Invalid rewritten arguments for '{name}': expected an object"}
-                ),
-                context,
-            )
-
-        effective_arguments = rewritten if isinstance(rewritten, dict) else arguments
-        # No fold here, deliberately: a hook's rewritten arguments are user code,
-        # and repairing them would hide the hook's bug. The model's own call was
-        # already folded above.
-        if params is not None:
-            arg_error = validate_tool_arguments(params, effective_arguments)
-            if arg_error is not None:
-                logger.warning(
-                    "Realtime tool %s post-hook arguments rejected: %s", name, arg_error
-                )
-                return (
-                    effective_arguments,
-                    json.dumps(
-                        {"error": f"Invalid rewritten arguments for '{name}': {arg_error}"}
-                    ),
-                    context,
-                )
-        return effective_arguments, None, context
+            reason = hook_result.reason or f"Tool '{name}' denied by pre-execution hook."
+            return arguments, json.dumps({"error": reason}), context
+        arguments, invalid = _rewritten_arguments(name, arguments, params, hook_result.metadata)
+        return arguments, invalid, context
 
     async def _fire_tool_refusal(
         self,
@@ -1267,3 +1242,33 @@ class RealtimeToolsMixin:
             "The full content has been delivered to the client.]"
         )
         return result_str[: self._tool_result_max_length - len(notice)] + notice
+
+
+def _rewritten_arguments(
+    name: str,
+    arguments: dict[str, Any],
+    params: dict[str, Any] | None,
+    metadata: dict[str, Any],
+) -> tuple[dict[str, Any], str | None]:
+    """The arguments BEFORE_TOOL_USE left, returned or edited in place, checked
+    against the schema again."""
+    rewritten = metadata.get("arguments")
+    if "arguments" in metadata and not isinstance(rewritten, dict):
+        logger.error(
+            "BEFORE_TOOL_USE hook returned non-object arguments for realtime tool %s "
+            "— denying tool call",
+            name,
+        )
+        error = f"Invalid rewritten arguments for '{name}': expected an object"
+        return arguments, json.dumps({"error": error})
+    effective = rewritten if isinstance(rewritten, dict) else arguments
+    # No fold here, deliberately: a hook's rewritten arguments are user code,
+    # and repairing them would hide the hook's bug. The model's own call was
+    # already folded above.
+    arg_error = validate_tool_arguments(params, effective) if params is not None else None
+    if arg_error is not None:
+        logger.warning("Realtime tool %s post-hook arguments rejected: %s", name, arg_error)
+        return effective, json.dumps(
+            {"error": f"Invalid rewritten arguments for '{name}': {arg_error}"}
+        )
+    return effective, None

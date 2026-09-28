@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -24,6 +25,7 @@ from roomkit import (
 )
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 from roomkit.models.participant import Participant
+from roomkit.skills.registry import SkillRegistry
 from roomkit.tools.policy import RoleOverride, ToolPolicy
 from roomkit.voice.base import VoiceSession
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
@@ -64,6 +66,7 @@ async def _channel(
     policy: ToolPolicy = DENY_DELETE,
     role: str | None = None,
     backend: ReasoningBackend | None = None,
+    skills: SkillRegistry | None = None,
 ) -> tuple[RoomKit, RealtimeVoiceChannel, MockRealtimeProvider, VoiceSession]:
     provider = MockRealtimeProvider(full_duplex=backend is not None)
     channel = RealtimeVoiceChannel(
@@ -74,6 +77,7 @@ async def _channel(
         tool_handler=calls.handler,
         tool_policy=policy,
         reasoning_backend=backend,
+        skills=skills,
     )
     kit = RoomKit()
     kit.register_channel(channel)
@@ -93,7 +97,8 @@ async def _channel(
 
 
 def _declared(provider: MockRealtimeProvider) -> set[str]:
-    connected = next(c.args for c in provider.calls if c.method == "connect")
+    """What the session's last connection declared."""
+    connected = [c.args for c in provider.calls if c.method == "connect"][-1]
     return {tool["name"] for tool in connected["tools"] or []}
 
 
@@ -163,30 +168,87 @@ async def test_a_reasoning_backend_gets_the_admitted_tools_and_is_refused_the_re
     await kit.close()
 
 
-async def test_tool_search_never_names_a_denied_tool() -> None:
-    calls = _Calls()
-    provider = MockRealtimeProvider()
+async def _searching_channel(
+    provider: MockRealtimeProvider, calls: _Calls, policy: ToolPolicy = DENY_DELETE
+) -> tuple[RoomKit, RealtimeVoiceChannel, VoiceSession]:
+    """A channel whose catalogue is large enough for Tool Search."""
     channel = RealtimeVoiceChannel(
         "rt",
         provider=provider,
         transport=MockRealtimeTransport(),
         tools=[*TOOLS, *(_tool(f"filler_{i}") for i in range(30))],
         tool_handler=calls.handler,
-        tool_policy=DENY_DELETE,
+        tool_policy=policy,
         tool_search=True,
     )
     kit = RoomKit()
     kit.register_channel(channel)
     await kit.create_room(room_id="r1")
     await kit.attach_channel("r1", "rt")
-    session = await channel.start_session("r1", "u1", "ws")
+    return kit, channel, await channel.start_session("r1", "u1", "ws")
+
+
+async def test_tool_search_never_names_a_denied_tool() -> None:
+    provider = MockRealtimeProvider()
+    kit, _, session = await _searching_channel(provider, _Calls())
 
     await provider.simulate_tool_call(session, "c1", "find_tools", {"query": "account"})
-    await until(lambda: bool(provider.tool_results))
+    await provider.simulate_tool_call(session, "c2", "list_tools", {})
+    await until(lambda: len(provider.tool_results) == 2)
 
-    found = {match["name"] for match in json.loads(provider.tool_results[0][2])["matches"]}
+    results = {call_id: result for _sid, call_id, result in provider.tool_results}
+    found = {match["name"] for match in json.loads(results["c1"])["matches"]}
     assert "lookup_account" in found
     assert "delete_account" not in found
+    assert "lookup_account" in results["c2"]
+    assert "delete_account" not in results["c2"]
+    await kit.close()
+
+
+async def test_a_reconfiguration_declares_no_denied_tool() -> None:
+    kit, channel, provider, session = await _channel(_Calls())
+
+    await channel.reconfigure_session(session, tools=TOOLS)
+
+    assert _declared(provider) == {"lookup_account"}
+    await kit.close()
+
+
+def _accounts_skill(tmp_path: Path) -> SkillRegistry:
+    """A skill that gates ``lookup_account`` until it is activated."""
+    skill_dir = tmp_path / "accounts"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: accounts\ndescription: Accounts\n"
+        "allowed_tools: lookup_account, delete_account\n---\nServe accounts.",
+        encoding="utf-8",
+    )
+    registry = SkillRegistry()
+    registry.discover(tmp_path)
+    return registry
+
+
+async def test_a_skill_activation_reveals_no_denied_tool(tmp_path: Path) -> None:
+    kit, _, provider, session = await _channel(_Calls(), skills=_accounts_skill(tmp_path))
+    assert not {"lookup_account", "delete_account"} & _declared(provider)
+
+    await provider.simulate_tool_call(session, "c1", "activate_skill", {"name": "accounts"})
+    await until(lambda: bool(provider.tool_results) and "lookup_account" in _declared(provider))
+
+    assert "delete_account" not in _declared(provider)
+    await kit.close()
+
+
+async def test_a_reasoning_backend_is_not_offered_a_gated_tool(tmp_path: Path) -> None:
+    calls, backend = _Calls(), _Backend()
+    kit, _, provider, session = await _channel(
+        calls, backend=backend, skills=_accounts_skill(tmp_path)
+    )
+
+    await provider.simulate_delegation(session, "d1", "integrator")
+    await until(lambda: bool(backend.results))
+
+    assert "lookup_account" not in backend.tools
     await kit.close()
 
 
@@ -248,22 +310,8 @@ class _FixedProvider(MockRealtimeProvider):
 
 
 async def test_a_whitelist_keeps_the_call_tool_transport_and_gates_what_it_names() -> None:
-    calls = _Calls()
-    provider = _FixedProvider()
-    channel = RealtimeVoiceChannel(
-        "rt",
-        provider=provider,
-        transport=MockRealtimeTransport(),
-        tools=[*TOOLS, *(_tool(f"filler_{i}") for i in range(30))],
-        tool_handler=calls.handler,
-        tool_policy=ToolPolicy(allow=["lookup_*"]),
-        tool_search=True,
-    )
-    kit = RoomKit()
-    kit.register_channel(channel)
-    await kit.create_room(room_id="r1")
-    await kit.attach_channel("r1", "rt")
-    session = await channel.start_session("r1", "u1", "ws")
+    calls, provider = _Calls(), _FixedProvider()
+    kit, _, session = await _searching_channel(provider, calls, ToolPolicy(allow=["lookup_*"]))
 
     for call_id, name in (("c1", "delete_account"), ("c2", "lookup_account")):
         arguments = {"name": name, "arguments_json": '{"id": "42"}'}

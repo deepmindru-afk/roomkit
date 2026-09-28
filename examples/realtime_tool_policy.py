@@ -85,7 +85,7 @@ async def main() -> None:
     kit.register_channel(channel)
     room = await kit.create_room()
     await kit.attach_channel(room.id, "voice")
-    for participant_id, role in (("alice", "member"), ("olivier", "observer")):
+    for participant_id, role in (("alice", "member"), ("bob", "observer")):
         await kit.store.add_participant(
             Participant(id=participant_id, room_id=room.id, channel_id="voice", role=role)
         )
@@ -95,13 +95,13 @@ async def main() -> None:
         outcome = "refused" if event.is_error else "served"
         print(f"  audit         : {event.name} {outcome}")
 
-    for participant_id in ("alice", "olivier"):
+    for participant_id in ("alice", "bob"):
         session = await channel.start_session(room.id, participant_id, connection=None)
         connect = [c.args for c in provider.calls if c.method == "connect"][-1]
         print(f"\n{participant_id}'s session declares: {[t['name'] for t in connect['tools']]}")
 
     # The observer's model names the denied tool anyway.
-    print("\nolivier's model calls close_account")
+    print("\nbob's model calls close_account")
     await provider.simulate_tool_call(session, "call-1", "close_account", {"account": "A-1"})
     await asyncio.sleep(0.1)
     print(f"  tool result   : {provider.tool_results[-1][2]}")
