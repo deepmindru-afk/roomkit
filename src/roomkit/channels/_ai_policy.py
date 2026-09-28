@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
@@ -28,6 +29,7 @@ if TYPE_CHECKING:
     from roomkit.models.event import RoomEvent
     from roomkit.skills.registry import SkillRegistry
 
+logger = logging.getLogger("roomkit.channels.ai")
 
 # RFC §21.1: the tools a channel provides that only read or unlock and never
 # act. They escape the tool policy and skill gating, by exact name, wherever
@@ -102,6 +104,7 @@ class AIToolPolicyMixin:
     _SKILL_INFRA_TOOLS: frozenset[str] = SKILL_INFRA_TOOL_NAMES | frozenset(
         {"read_stored_result", "plan_tasks"}
     )
+    _NEVER_DEFERRED: frozenset[str] = _SKILL_INFRA_TOOLS | TOOL_SEARCH_INFRA_TOOL_NAMES
 
     @property
     def _gated_tool_names(self) -> set[str]:
@@ -168,6 +171,40 @@ class AIToolPolicyMixin:
             return "revealed"
         return "always"
 
+    def _policy_allows(self, name: str) -> bool:
+        """Whether the turn's role-resolved policy admits *name* (RFC §21.1).
+
+        Skill gating aside: what the prompt may describe as available, a gated
+        tool included, since activating its skill opens it.
+        """
+        if name in POLICY_EXEMPT_TOOL_NAMES:
+            return True
+        policy = self._effective_tool_policy
+        return policy is None or policy.is_allowed(name)
+
+    def _gate_refusal(self, name: str) -> dict[str, str] | None:
+        """Why the policy or skill gating refuses a call to *name*, or ``None``.
+
+        The execution guard's reading of the listing filter's rule (RFC
+        §21.1): the same exempt names, the same role-resolved policy, the same
+        glob-aware gating (RFC §24.2).
+        """
+        if name in POLICY_EXEMPT_TOOL_NAMES:
+            return None
+        policy = self._effective_tool_policy
+        if policy is not None and not policy.is_allowed(name):
+            logger.warning("Tool %s blocked by policy", name)
+            return {"error": f"Tool '{name}' is not permitted by the agent's tool policy."}
+        if matches_any_pattern(name, self._gated_tool_names):
+            logger.warning("Tool %s blocked by skill gating", name)
+            return {
+                "error": (
+                    f"Tool '{name}' is gated by a skill. "
+                    "Activate the skill first using activate_skill."
+                )
+            }
+        return None
+
     def _reachable_tools(self, tools: Iterable[AITool]) -> list[AITool]:
         """The tools the policy and skill gating let this turn reach (RFC §21.1).
 
@@ -226,10 +263,7 @@ class AIToolPolicyMixin:
             name = tool.name
             if not self._is_reachable(name, policy, gated):
                 continue
-            deferrable = (
-                name not in self._SKILL_INFRA_TOOLS and name not in TOOL_SEARCH_INFRA_TOOL_NAMES
-            )
-            if keep is not None and deferrable and name not in keep:
+            if keep is not None and name not in self._NEVER_DEFERRED and name not in keep:
                 continue
             result.append(tool)
         return result

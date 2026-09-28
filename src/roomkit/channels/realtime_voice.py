@@ -439,6 +439,7 @@ class RealtimeVoiceChannel(
                 pinned=tool_search_pinned,
                 threshold=tool_search_threshold,
                 reconfigure_capable=provider.supports_mid_session_reconfigure,
+                reachable=self._tool_reachable,
             )
 
         # Lock for shared state accessed from both asyncio and audio threads

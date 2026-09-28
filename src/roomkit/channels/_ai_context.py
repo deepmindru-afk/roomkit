@@ -13,6 +13,7 @@ from roomkit.channels._skill_constants import (
 from roomkit.channels._skill_constants import (
     SKILLS_PREAMBLE as _SKILLS_PREAMBLE,
 )
+from roomkit.channels._skill_constants import TOOL_RUN_SCRIPT
 from roomkit.channels._task_planner import TaskPlanner
 from roomkit.channels._tool_eviction import ToolEviction
 from roomkit.channels._tool_search import search_tool_defs, should_activate_tool_search
@@ -105,6 +106,7 @@ class AIContextHost(Protocol):
         extra_tools: ``AIChannel`` property returning user + injected tools.
         _skill_tools: ``AIToolsMixin`` — builds skill tool definitions.
         _apply_tool_filters: ``AIToolPolicyMixin`` — applies policy + gating.
+        _policy_allows: ``AIToolPolicyMixin`` — the turn's policy admits a name.
         _get_loop_ctx: ``AISteeringMixin`` — returns the current tool-loop context.
     """
 
@@ -140,6 +142,7 @@ class AIContextHost(Protocol):
     def extra_tools(self) -> list[AITool]: ...
     def _skill_tools(self) -> list[AITool]: ...
     def _apply_tool_filters(self, tools: list[AITool]) -> list[AITool]: ...
+    def _policy_allows(self, name: str) -> bool: ...
     def _get_loop_ctx(self) -> _ToolLoopContext: ...
 
 
@@ -183,6 +186,7 @@ class AIContextMixin:
     extra_tools: Any  # see AIContextHost
     _skill_tools: Any  # see AIContextHost
     _apply_tool_filters: Any  # see AIContextHost
+    _policy_allows: Any  # see AIContextHost
     _get_loop_ctx: Any  # see AIContextHost
 
     def _warn_unoffered_human_input_tools(self, offered: set[str]) -> None:
@@ -295,7 +299,9 @@ class AIContextMixin:
             tools.extend(self._skill_tools())
             if self._skills_in_prompt:
                 preamble = _SKILLS_PREAMBLE
-                if not self._script_executor:
+                # No executor, or a policy that denies the tool: either way
+                # the model must not be told it can run a skill's scripts.
+                if not self._script_executor or not self._policy_allows(TOOL_RUN_SCRIPT):
                     preamble += _SKILLS_NO_SCRIPTS_NOTE
                 skills_xml = self._skills.to_prompt_xml()
                 skill_block = f"\n\n{preamble}\n\n{skills_xml}"
@@ -320,6 +326,7 @@ class AIContextMixin:
         # Inject sandbox tools and preamble
         if self._sandbox is not None:
             user_tool_names = {t.name for t in tools}
+            sandbox_allowed = False
             for tdef in self._sandbox.tool_definitions():
                 name = tdef["name"]
                 if not name.startswith(_SANDBOX_TOOL_PREFIX):
@@ -331,6 +338,7 @@ class AIContextMixin:
                     continue
                 if name in user_tool_names:
                     logger.warning("Sandbox tool %r shadows an existing tool", name)
+                sandbox_allowed = sandbox_allowed or self._policy_allows(name)
                 tools.append(
                     AITool(
                         name=name,
@@ -338,7 +346,10 @@ class AIContextMixin:
                         parameters=tdef.get("parameters", {}),
                     )
                 )
-            system_prompt = (system_prompt or "") + f"\n\n{_SANDBOX_PREAMBLE}"
+            # The preamble describes tools the policy may deny (RFC §21.1): with
+            # none of them allowed it would promise what the model cannot call.
+            if sandbox_allowed:
+                system_prompt = (system_prompt or "") + f"\n\n{_SANDBOX_PREAMBLE}"
 
         # Inject eviction re-read tool when large results have been stored
         if self._eviction.has_evicted:

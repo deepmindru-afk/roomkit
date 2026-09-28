@@ -715,6 +715,15 @@ class RealtimeToolsMixin:
             return True
         return bool(self._skill_support and self._skill_support.is_skill_tool(name))
 
+    def _tool_reachable(self, name: str, session_id: str) -> bool:
+        """Whether the session may call *name* as far as skill gating goes.
+
+        What Tool Search may name in its results and listings (RFC §21.1); the
+        pre-execution gate enforces the same gating on the call itself.
+        """
+        support = self._skill_support
+        return support is None or not support.is_gated(name, session_id)
+
     async def _authorize_realtime_tool(
         self,
         name: str,

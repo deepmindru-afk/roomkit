@@ -10,7 +10,6 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from roomkit.channels._ai_policy import POLICY_EXEMPT_TOOL_NAMES
 from roomkit.channels._sandbox_handlers import handle_sandbox_command
 from roomkit.channels._skill_constants import (
     ACTIVATE_SKILL_SCHEMA,
@@ -53,7 +52,6 @@ from roomkit.sandbox.tools import SANDBOX_TOOL_PREFIX
 from roomkit.telemetry.base import SpanKind
 from roomkit.telemetry.redaction import redact
 from roomkit.tools.context import ToolCallContext, _current_tool_call
-from roomkit.tools.policy import matches_any_pattern
 from roomkit.tools.validation import fold_hoisted_arguments, validate_tool_arguments
 
 if TYPE_CHECKING:
@@ -117,6 +115,8 @@ class AIToolsHost(Protocol):
             Tool Search visibility filter.
         _reachable_tools: ``AIToolPolicyMixin`` — the tools policy and skill
             gating admit, Tool Search's window aside.
+        _gate_refusal: ``AIToolPolicyMixin`` — why policy or gating refuses a
+            call, or ``None``.
     """
 
     _provider: AIProvider
@@ -155,6 +155,7 @@ class AIToolsHost(Protocol):
     def _get_loop_ctx(self) -> _ToolLoopContext: ...
     def _apply_tool_filters(self, tools: list[AITool]) -> list[AITool]: ...
     def _reachable_tools(self, tools: Iterable[AITool]) -> list[AITool]: ...
+    def _gate_refusal(self, name: str) -> dict[str, str] | None: ...
 
 
 class AIToolsMixin:
@@ -192,6 +193,7 @@ class AIToolsMixin:
     _get_loop_ctx: Any  # see AIToolsHost
     _apply_tool_filters: Any  # see AIToolsHost
     _reachable_tools: Any  # see AIToolsHost
+    _gate_refusal: Any  # see AIToolsHost
     extra_tools: Any  # AIChannel property: user + orchestration-injected tools
 
     def _tool_parameters(
@@ -215,10 +217,9 @@ class AIToolsMixin:
         revealing it first. The name being exact, the call is trivially
         recoverable: reveal the tool as find_tools would have and let the call
         proceed — provided it survives the same visibility filter a reveal is
-        subject to. That filter is the authority on eligibility (tool policy,
-        glob-aware skill gating); the execution guards re-check policy and
-        exact-name gating, but glob gating is enforced only by the filter, so
-        recovery must not bypass it.
+        subject to (tool policy, glob-aware skill gating). The execution guard
+        applies that rule again to the call, but a name the filter refuses
+        must not even be revealed.
 
         Returns the catalogue tool (its schema keeps argument validation
         fail-closed) or ``None`` when the name is not recoverable.
@@ -353,7 +354,7 @@ class AIToolsMixin:
             channel_managed = (
                 tc.name in self._SKILL_INFRA_TOOLS
                 or tc.name in TOOL_SEARCH_INFRA_TOOL_NAMES
-                or tc.name.startswith(SANDBOX_TOOL_PREFIX)
+                or tc.name in self._sandbox_tool_names()
             )
             if declared_names and tc.name not in declared_names and not channel_managed:
                 recovered = self._recover_deferred_tool(tc.name)
@@ -391,38 +392,11 @@ class AIToolsMixin:
                         {"error": f"Invalid arguments for '{tc.name}': {arg_error}"}
                     )
 
-            # Execution guard: policy deny (defense-in-depth, role-aware). The
-            # listing filter's exemption, by exact name (RFC §21.1): the tools
-            # the channel injects are governed like the host's, sandbox
-            # commands and skill scripts included.
-            effective_policy = self._effective_tool_policy
-            if (
-                tc.name not in POLICY_EXEMPT_TOOL_NAMES
-                and effective_policy
-                and not effective_policy.is_allowed(tc.name)
-            ):
-                logger.warning("Tool %s blocked by policy", tc.name)
-                return await rejected(
-                    {"error": f"Tool '{tc.name}' is not permitted by the agent's tool policy."}
-                )
-
-            # Execution guard: skill gating. The gated entries are ToolPolicy
-            # globs (RFC §24.2), so they are matched, never tested for
-            # membership — ``search_*`` gates ``search_web``. The same exact
-            # names as the policy guard are exempt, as in the listing filter:
-            # activation and discovery are how a gated name is unlocked.
-            if tc.name not in POLICY_EXEMPT_TOOL_NAMES and matches_any_pattern(
-                tc.name, self._gated_tool_names
-            ):
-                logger.warning("Tool %s blocked by skill gating", tc.name)
-                return await rejected(
-                    {
-                        "error": (
-                            f"Tool '{tc.name}' is gated by a skill. "
-                            "Activate the skill first using activate_skill."
-                        ),
-                    }
-                )
+            # Execution guard: policy and skill gating, the listing filter's
+            # rule (RFC §21.1), re-checked on the call itself.
+            refusal = self._gate_refusal(tc.name)
+            if refusal is not None:
+                return await rejected(refusal)
 
             # Pre-execution gate: BEFORE_TOOL_USE hook can deny the tool call,
             # or hand back rewritten arguments (a redaction hook putting real
@@ -713,6 +687,20 @@ class AIToolsMixin:
             }
         )
 
+    def _sandbox_tool_names(self) -> frozenset[str]:
+        """The names the attached sandbox declares, the ones the channel serves.
+
+        By exact name, never by prefix: a host tool that merely starts with
+        ``sandbox_`` is the host's (RFC §21.1).
+        """
+        if self._sandbox is None:
+            return frozenset()
+        return frozenset(
+            tdef["name"]
+            for tdef in self._sandbox.tool_definitions()
+            if tdef["name"].startswith(SANDBOX_TOOL_PREFIX)
+        )
+
     async def _channel_tool_handler(self, name: str, arguments: dict[str, Any]) -> ToolResult:
         """Unified tool dispatcher: channel-managed -> sandbox -> skill -> user tools."""
         guard = self._repeated_call_guard(name, arguments)
@@ -725,8 +713,8 @@ class AIToolsMixin:
             if asyncio.iscoroutine(result):
                 return str(await result)
             return str(result)
-        # Sandbox tools — dispatched by prefix before user/MCP tools
-        if self._sandbox is not None and name.startswith(SANDBOX_TOOL_PREFIX):
+        # The sandbox's own tools, by exact name, before user/MCP tools
+        if self._sandbox is not None and name in self._sandbox_tool_names():
             return await handle_sandbox_command(name, arguments or {}, self._sandbox)
         if self._user_tool_handler:
             # Provider responses are untrusted and may name a tool outside the

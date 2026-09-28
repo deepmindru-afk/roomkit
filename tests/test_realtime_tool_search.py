@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -25,6 +26,7 @@ from roomkit.channels._tool_search_constants import (
     TOOL_SEARCH_PREAMBLE,
 )
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
+from roomkit.skills.registry import SkillRegistry
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
 
 # ---------------------------------------------------------------------------
@@ -634,6 +636,54 @@ class TestDispatch:
         assert len(provider.tool_results) == 1
         result = json.loads(provider.tool_results[0][2])
         assert "matches" in result
+
+    async def test_search_names_no_tool_a_skill_gates(
+        self,
+        provider: MockRealtimeProvider,
+        transport: MockRealtimeTransport,
+        tmp_path: Path,
+    ) -> None:
+        """find_tools and list_tools name only what the session may call (RFC
+        §21.1): a gated tool would be promised, then left out of the
+        declaration."""
+        skill_dir = tmp_path / "billing"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: billing\ndescription: Billing operations\n"
+            "allowed_tools: refund_order\n---\nUse the billing tools.",
+            encoding="utf-8",
+        )
+        registry = SkillRegistry()
+        registry.discover(tmp_path)
+        catalogue = [
+            *_make_catalogue(40),
+            _tool("refund_order", "Refund a customer order."),
+            _tool("track_order", "Track a customer order."),
+        ]
+        channel = RealtimeVoiceChannel(
+            "rt-search",
+            provider=provider,
+            transport=transport,
+            tools=catalogue,
+            skills=registry,
+        )
+        kit = RoomKit()
+        kit.register_channel(channel)
+        room = await kit.create_room()
+        await kit.attach_channel(room.id, "rt-search")
+        session = await channel.start_session(room.id, "user-1", "fake-ws")
+        provider.reconfigure = AsyncMock()  # type: ignore[method-assign]
+
+        await provider.simulate_tool_call(session, "c1", TOOL_FIND_TOOLS, {"query": "order"})
+        await provider.simulate_tool_call(session, "c2", TOOL_LIST_TOOLS, {})
+        await asyncio.sleep(0.05)
+
+        found = json.loads(provider.tool_results[0][2])
+        listed = json.loads(provider.tool_results[1][2])
+        assert [m["name"] for m in found["matches"]] == ["track_order"]
+        listed_names = {t["name"] for t in listed["tools"]}
+        assert "track_order" in listed_names
+        assert "refund_order" not in listed_names
 
     async def test_list_tools_does_not_reconfigure(
         self,

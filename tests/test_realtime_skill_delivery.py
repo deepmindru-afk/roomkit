@@ -188,8 +188,15 @@ async def test_activation_and_configuration_preserve_session_rules(
 ):
     body = "Mandatory rule that must survive every configuration update."
     registry = _registry_with_skill(tmp_path, body=body, allowed_tools="calendar")
+    # The search needs a match the session may call before the activation:
+    # Tool Search never names the gated calendar (RFC §21.1).
+    tools = [tool("calendar"), tool("agenda", "Read the calendar agenda")]
     async with running(
-        registry, provider=MockRealtimeProvider(), tool_search=True, system_prompt="Original role"
+        registry,
+        provider=MockRealtimeProvider(),
+        tool_search=True,
+        system_prompt="Original role",
+        tools=tools,
     ) as (channel, provider, session, _):
         entered, release, second_started = asyncio.Event(), asyncio.Event(), asyncio.Event()
         applied = []
@@ -234,7 +241,10 @@ async def test_activation_and_configuration_preserve_session_rules(
         assert ("New role" if update == "handoff" else "Original role") in final_prompt
         assert not channel._skill_support.is_gated("calendar", session.id)
         if update == "search":
-            assert "calendar" in {tool["name"] for tool in applied[-1]["tools"]}
+            # The search's reveal survives the update that follows it: after the
+            # activation it finds the calendar; before it, only the agenda.
+            revealed = "calendar" if activation_first else "agenda"
+            assert revealed in {tool["name"] for tool in applied[-1]["tools"]}
         await channel.end_session(session)
         assert session.id not in channel._session_config_locks
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from copy import deepcopy
 from typing import Any
 
@@ -51,8 +52,13 @@ class RealtimeToolSearchSupport:
         pinned: list[str] | None = None,
         threshold: int = 20,
         reconfigure_capable: bool = True,
+        reachable: Callable[[str, str], bool] | None = None,
     ) -> None:
         self._catalogue: list[dict[str, Any]] = list(catalogue)
+        # (tool name, session id) -> whether the session may call it. Search
+        # results and listings name nothing else (RFC §21.1): a match the
+        # model can never call is a false promise and discloses the gate.
+        self._reachable = reachable
         self._pinned_names: set[str] = set(pinned or [])
         self._threshold = threshold
         self.uses_call_tool = not reconfigure_capable
@@ -114,6 +120,15 @@ class RealtimeToolSearchSupport:
         if self.is_search_tool(name) or not any(t.get("name") == name for t in catalogue):
             return name, decoded, f"Tool '{name}' is unavailable in this session"
         return name, decoded, None
+
+    def _searchable(
+        self, session_id: str, catalogue: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """The part of *catalogue* the session may call, for search and listing."""
+        reachable = self._reachable
+        if reachable is None:
+            return catalogue
+        return [t for t in catalogue if reachable(str(t.get("name", "")), session_id)]
 
     # -- Per-session lifecycle --
 
@@ -195,8 +210,11 @@ class RealtimeToolSearchSupport:
 
         max_results = normalize_max_results(arguments.get("max_results"), self._threshold)
         exclude = self._pinned_names | TOOL_SEARCH_INFRA_TOOL_NAMES
-        catalogue = self._session_catalogues.get(
-            session_id, [] if self.uses_call_tool else self._catalogue
+        catalogue = self._searchable(
+            session_id,
+            self._session_catalogues.get(
+                session_id, [] if self.uses_call_tool else self._catalogue
+            ),
         )
         matches = search_catalogue(catalogue, query, max_results, exclude_names=exclude)
 
@@ -218,7 +236,7 @@ class RealtimeToolSearchSupport:
     def _handle_list_tools(self, arguments: dict[str, Any], session_id: str) -> str:
         if self.uses_call_tool and "name" in arguments:
             name = arguments["name"]
-            for tool in self._session_catalogues.get(session_id, []):
+            for tool in self._searchable(session_id, self._session_catalogues.get(session_id, [])):
                 if tool.get("name") == name and not self.is_search_tool(name):
                     return json.dumps(
                         {"tool": tool, "_note": "Execute this tool using call_tool."}
@@ -226,8 +244,11 @@ class RealtimeToolSearchSupport:
             return json.dumps({"error": f"Tool '{name}' is unavailable in this session"})
         category = str(arguments.get("category", "")).strip()
         return render_list_payload(
-            self._session_catalogues.get(
-                session_id, [] if self.uses_call_tool else self._catalogue
+            self._searchable(
+                session_id,
+                self._session_catalogues.get(
+                    session_id, [] if self.uses_call_tool else self._catalogue
+                ),
             ),
             category,
             exclude_names=TOOL_SEARCH_INFRA_TOOL_NAMES,

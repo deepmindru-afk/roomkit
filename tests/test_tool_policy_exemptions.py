@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from roomkit.channels._skill_constants import SKILLS_NO_SCRIPTS_NOTE
 from roomkit.channels.ai import AIChannel
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.context import RoomContext
@@ -23,6 +24,7 @@ from roomkit.providers.ai.base import AIContext, AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.sandbox.executor import SandboxExecutor
 from roomkit.sandbox.models import SandboxResult
+from roomkit.sandbox.tools import SANDBOX_PREAMBLE
 from roomkit.skills.registry import SkillRegistry
 from roomkit.tools.policy import ToolPolicy
 from tests.conftest import make_event
@@ -113,52 +115,132 @@ def _registry(tmp_path: Path, *, gating: str | None = None) -> SkillRegistry:
     return registry
 
 
-async def test_deny_all_neither_declares_nor_runs_what_the_channel_injects(
-    tmp_path: Path, streaming: bool
-) -> None:
-    sandbox = _Sandbox()
-    scripts = MockScriptExecutor()
-    provider = MockAIProvider(
-        ai_responses=_calls(
-            ("sandbox_bash", {"command": "rm -rf /data"}),
-            ("run_skill_script", {"name": "ops", "script": "deploy.sh"}),
-        ),
-        streaming=streaming,
-    )
+def _deny_all(
+    tmp_path: Path, provider: MockAIProvider, **channel: Any
+) -> tuple[AIChannel, list[ToolCallEvent]]:
+    """A channel under ``deny=["*"]`` with a sandbox, skills with a script, and
+    an ON_TOOL_CALL observer; returns the channel and what it observed."""
     observed: list[ToolCallEvent] = []
 
     async def handler(name: str, arguments: dict[str, Any]) -> str:
         raise AssertionError(f"{name} reached the host handler")
+
+    async def observe(event: ToolCallEvent) -> None:
+        observed.append(event)
 
     ch = AIChannel(
         "ai1",
         provider=provider,
         tool_handler=handler,
         tool_policy=ToolPolicy(deny=["*"]),
-        sandbox=sandbox,
         skills=_registry(tmp_path),
-        script_executor=scripts,
         tool_search=False,
+        **channel,
     )
-
-    async def observe(event: ToolCallEvent) -> None:
-        observed.append(event)
-
     ch._tool_observer_hook = observe
+    return ch, observed
+
+
+async def test_deny_all_neither_declares_nor_runs_what_the_channel_injects(
+    tmp_path: Path, streaming: bool
+) -> None:
+    sandbox, scripts = _Sandbox(), MockScriptExecutor()
+    provider = MockAIProvider(
+        ai_responses=_calls(
+            ("sandbox_bash", {"command": "rm -rf /data"}),
+            ("run_skill_script", {"name": "ops", "script": "deploy.sh"}),
+            ("plan_tasks", {"tasks": []}),
+        ),
+        streaming=streaming,
+    )
+    ch, observed = _deny_all(
+        tmp_path, provider, sandbox=sandbox, script_executor=scripts, enable_planning=True
+    )
 
     run = await _turn(ch)
 
     declared = _declared(provider.calls[0])
-    assert "sandbox_bash" not in declared
-    assert "run_skill_script" not in declared
+    assert not declared & {"sandbox_bash", "run_skill_script", "plan_tasks"}
     # The tools that only read or unlock stay reachable (RFC §21.1).
     assert {"activate_skill", "read_skill_reference"} <= declared
     assert sandbox.ran == []
     assert scripts.calls == []
-    assert [call.failed for call in run.calls] == [True, True]
-    assert {event.name for event in observed} == {"sandbox_bash", "run_skill_script"}
+    assert [call.failed for call in run.calls] == [True, True, True]
+    assert {e.name for e in observed} == {"sandbox_bash", "run_skill_script", "plan_tasks"}
     assert all(event.is_error for event in observed)
     assert "not permitted" in _tool_payload(provider.calls[1], "sandbox_bash")["error"]
+
+
+async def test_deny_all_keeps_the_prompt_from_promising_denied_tools(
+    tmp_path: Path, streaming: bool
+) -> None:
+    """The sandbox preamble names sandbox tools, and the skills preamble says
+    whether scripts can run: neither may describe what the policy denies."""
+    provider = MockAIProvider(responses=["ok"], streaming=streaming)
+    ch, _ = _deny_all(tmp_path, provider, sandbox=_Sandbox(), script_executor=MockScriptExecutor())
+
+    await _turn(ch)
+
+    prompt = provider.calls[0].system_prompt or ""
+    assert SANDBOX_PREAMBLE not in prompt
+    assert SKILLS_NO_SCRIPTS_NOTE.strip() in prompt
+
+
+async def test_read_stored_result_stays_reachable_under_a_whitelist(streaming: bool) -> None:
+    """The eviction re-read only reads: a whitelist that does not name it
+    still lets the model page back what the channel evicted."""
+    large = "\n".join(f"ROW-{i} " + "x" * 80 for i in range(200))
+    provider = MockAIProvider(
+        ai_responses=[
+            _calls(("search", {}))[0],
+            _calls(("read_stored_result", {"result_id": "evicted_c0"}))[0],
+            AIResponse(content="done", finish_reason="stop"),
+        ],
+        streaming=streaming,
+    )
+
+    async def search(name: str, arguments: dict[str, Any]) -> str:
+        return large
+
+    ch = AIChannel(
+        "ai1",
+        provider=provider,
+        tool_handler=search,
+        tool_policy=ToolPolicy(allow=["search"]),
+        tools=[AITool(name="search", description="Search", parameters={})],
+        evict_threshold_tokens=100,
+    )
+
+    await _turn(ch)
+
+    assert "read_stored_result" in _declared(provider.calls[1])
+    assert "ROW-0" in str(provider.calls[2].messages)
+
+
+async def test_a_host_tool_named_like_a_sandbox_tool_reaches_the_host(streaming: bool) -> None:
+    """With a sandbox attached, only the names it declares go to it: a host
+    tool that merely starts with ``sandbox_`` is served by the host."""
+    ran: list[str] = []
+    sandbox = _Sandbox()
+
+    async def handler(name: str, arguments: dict[str, Any]) -> str:
+        ran.append(name)
+        return "host"
+
+    provider = MockAIProvider(ai_responses=_calls(("sandbox_x", {})), streaming=streaming)
+    ch = AIChannel(
+        "ai1",
+        provider=provider,
+        tool_handler=handler,
+        sandbox=sandbox,
+        tools=[AITool(name="sandbox_x", description="A host tool", parameters={})],
+    )
+
+    run = await _turn(ch)
+
+    assert ran == ["sandbox_x"]
+    assert sandbox.ran == []
+    assert not run.calls[0].failed
 
 
 async def test_a_host_tool_that_looks_like_a_sandbox_tool_obeys_the_policy(
