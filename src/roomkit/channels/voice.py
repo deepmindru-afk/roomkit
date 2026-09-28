@@ -14,7 +14,11 @@ from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._voice_hooks import VoiceHooksMixin
 from roomkit.channels._voice_pipeline import VoicePipelineMixin
-from roomkit.channels._voice_speakers import SpeakerAttribution, SpeakerTracker
+from roomkit.channels._voice_speakers import (
+    PipelineSpeakerTally,
+    SpeakerAttribution,
+    SpeakerTracker,
+)
 from roomkit.channels._voice_stt import VoiceSTTMixin
 from roomkit.channels._voice_tts import VoiceTTSMixin
 from roomkit.channels._voice_turn import VoiceTurnMixin
@@ -83,6 +87,20 @@ def _refuse_diarizing_stt(
             f"{stt.name} labels speakers (supports_diarization=True), and speaker labels "
             "hold within one STT stream: VoiceChannel carries them only in continuous "
             "mode, a streaming STT with no pipeline VAD and no batch_mode (RFC §12.2.3)"
+        )
+
+
+def _refuse_pipeline_speakers(pipeline: AudioPipelineConfig | None, *, batch_mode: bool) -> None:
+    """Refuse ``pipeline_speakers`` where it could name nobody (RFC §12.2.3)."""
+    if pipeline is None or pipeline.diarization is None:
+        raise ValueError(
+            "pipeline_speakers needs a DiarizationProvider in the pipeline "
+            "(AudioPipelineConfig(diarization=...)): it names speakers from that stage"
+        )
+    if batch_mode:
+        raise ValueError(
+            "pipeline_speakers does not apply in batch_mode: a flush may hold several "
+            "speakers, and the channel names one per utterance or continuous final"
         )
 
 
@@ -243,6 +261,14 @@ class VoiceChannel(
     of the session on every streaming call (RFC §12.2.2): the channel keeps it
     per session, as ``tts_context`` bounds it, and releases it when the
     session is unbound.
+
+    Who spoke (RFC §12.2.3): with a diarizing STT in continuous mode each
+    segment becomes its own message carrying ``speaker_label``,
+    ``speaker_epoch`` and ``sender_name``. ``pipeline_speakers=True`` does the
+    same from the pipeline's ``DiarizationProvider`` when the STT labels
+    nothing: each transcript takes the speaker the stage heard the longest
+    over it (refused in batch mode, where a flush may hold several). Opt-in,
+    because it changes the name every message carries.
     """
 
     channel_type = ChannelType.VOICE
@@ -270,9 +296,14 @@ class VoiceChannel(
         close_providers: bool = True,
         stt_language_lock: STTLanguageLock | None = None,
         tts_context: TTSContextConfig | None = None,
+        pipeline_speakers: bool = False,
     ) -> None:
         super().__init__(channel_id)
         _refuse_diarizing_stt(stt, pipeline, batch_mode=batch_mode)
+        if pipeline_speakers:
+            _refuse_pipeline_speakers(pipeline, batch_mode=batch_mode)
+        # The pipeline stage's speakers, by audio heard, per session (RFC §12.2.3)
+        self._pipeline_speaker_tally = PipelineSpeakerTally() if pipeline_speakers else None
         self._stt = stt
         self._tts = tts
         # The dialogue a context-aware TTS hears (RFC §12.2.2); absent for a
@@ -459,6 +490,8 @@ class VoiceChannel(
             and self._stt.supports_streaming
         )
 
+        if self._pipeline_speaker_tally is not None:
+            pipeline.on_processed_frame(self._pipeline_speaker_tally.add_frame)
         # Pipeline events -> VoiceChannel hooks
         if self._continuous_stt:
             pipeline.on_processed_frame(self._on_processed_frame_for_stt)
@@ -630,8 +663,15 @@ class VoiceChannel(
         room_id, _ = binding_info
 
         dtmf_kwargs = {"dtmf_seen": True} if dtmf_seen else {}
+        # Claimed now: the next utterance's SPEECH_START would start a new
+        # count. Answered once the stage has seen this closing frame, which
+        # the pipeline hands SPEECH_END callbacks before its diarization.
+        tally = self._pipeline_speaker_tally
+        speaker_claim = tally.claim(session.id) if tally is not None else None
         self._schedule(
-            self._process_speech_end(session, audio, room_id, stream_state, **dtmf_kwargs),
+            self._process_speech_end(
+                session, audio, room_id, stream_state, speaker_claim=speaker_claim, **dtmf_kwargs
+            ),
             name=f"speech_end:{session.id}",
         )
 
@@ -649,6 +689,9 @@ class VoiceChannel(
         if vad_event.type == VADEventType.SPEECH_START:
             # More speech: a turn waiting to be judged over now goes on (RFC §12).
             self._note_turn_speech(session.id, speaking=True)
+            if self._pipeline_speaker_tally is not None:
+                # An utterance starts: its speaker is counted from here.
+                self._pipeline_speaker_tally.reset(session.id)
             # Check for barge-in using InterruptionHandler
             suppress_speech = False
             with self._state_lock:
@@ -1247,6 +1290,8 @@ class VoiceChannel(
         self._pending_turn_speakers.pop(session.id, None)
         self._speaker_trackers.pop(session.id, None)
         self._transcript_locks.pop(session.id, None)
+        if self._pipeline_speaker_tally is not None:
+            self._pipeline_speaker_tally.reset(session.id)
         self._pending_audio.pop(session.id, None)
         self._cancel_turn_wait(session.id)
         self._unheard_turns.release(session.id)

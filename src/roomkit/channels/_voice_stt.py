@@ -10,7 +10,12 @@ import time
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from roomkit.channels._voice_speakers import SpeakerAttribution, SpeakerTracker
+from roomkit.channels._voice_speakers import (
+    PipelineSpeakerTally,
+    SpeakerAttribution,
+    SpeakerTracker,
+    claimed_speaker,
+)
 from roomkit.models.enums import HookTrigger
 from roomkit.telemetry.base import Attr, SpanKind, TelemetryProvider
 from roomkit.telemetry.noop import NoopTelemetryProvider
@@ -24,6 +29,7 @@ _NOOP = NoopTelemetryProvider()
 
 if TYPE_CHECKING:
     import threading
+    from concurrent.futures import Future
 
     from roomkit.core.framework import RoomKit
     from roomkit.models.channel import ChannelBinding
@@ -41,6 +47,20 @@ if TYPE_CHECKING:
     from .voice import TTSPlaybackState, _STTStreamState
 
 logger = logging.getLogger("roomkit.voice")
+
+
+def _transcription_event(
+    session: VoiceSession, text: str, language: str | None, speaker: SpeakerAttribution | None
+) -> TranscriptionEvent:
+    """The ON_TRANSCRIPTION event, with who said ``text`` when it is known."""
+    return TranscriptionEvent(
+        session=session,
+        text=text,
+        language=language,
+        speaker=speaker.label if speaker else None,
+        speaker_epoch=speaker.epoch if speaker else None,
+        sender_name=speaker.sender_name if speaker else None,
+    )
 
 
 def _with_hook_sender_name(speaker: SpeakerAttribution, hook_event: Any) -> SpeakerAttribution:
@@ -138,6 +158,7 @@ class STTHost(Protocol):
     _burst_backchannel: dict[str, str]
     _speaker_trackers: dict[str, SpeakerTracker]
     _transcript_locks: dict[str, asyncio.Lock]
+    _pipeline_speaker_tally: PipelineSpeakerTally | None
     _scheduled_tasks: set[asyncio.Task[Any]]
     _state_lock: threading.Lock
     _interruption_handler: Any  # InterruptionHandler
@@ -177,6 +198,7 @@ class VoiceSTTMixin:
     _burst_backchannel: dict[str, str]
     _speaker_trackers: dict[str, SpeakerTracker]
     _transcript_locks: dict[str, asyncio.Lock]
+    _pipeline_speaker_tally: PipelineSpeakerTally | None
     _scheduled_tasks: set[asyncio.Task[Any]]
     _state_lock: Any  # threading.Lock — see STTHost
     _interruption_handler: Any  # InterruptionHandler — see STTHost
@@ -789,6 +811,11 @@ class VoiceSTTMixin:
                             # kept stream is ended for it (a language holds
                             # for the life of a stream).
                             self._observe_stt_language(session, result, restart=keep_stream)
+                            # The pipeline stage's speaker, taken as the final
+                            # lands; an STT label outranks it.
+                            stage_speaker = (
+                                None if keep_stream else self._pipeline_speaker(session.id)
+                            )
                             # Provider signals turn complete — route to AI
                             self._schedule(
                                 self._handle_continuous_transcription(
@@ -798,6 +825,7 @@ class VoiceSTTMixin:
                                     language=result.language,
                                     segments=_segments_of(result) if keep_stream else None,
                                     epoch=epoch,
+                                    speaker=stage_speaker,
                                 ),
                                 name=f"continuous_stt:{session.id}",
                             )
@@ -911,6 +939,7 @@ class VoiceSTTMixin:
         language: str | None = None,
         segments: list[SpeakerSegment] | None = None,
         epoch: int = 0,
+        speaker: SpeakerAttribution | None = None,
     ) -> None:
         """Process a transcription result from continuous STT.
 
@@ -928,7 +957,13 @@ class VoiceSTTMixin:
             return
         if segments is None:
             await self._process_continuous_final(
-                session, text, room_id, language=language, segments=None, epoch=epoch
+                session,
+                text,
+                room_id,
+                language=language,
+                segments=None,
+                epoch=epoch,
+                speaker=speaker,
             )
             return
         lock = self._transcript_locks.setdefault(session.id, asyncio.Lock())
@@ -946,8 +981,12 @@ class VoiceSTTMixin:
         language: str | None,
         segments: list[SpeakerSegment] | None,
         epoch: int,
+        speaker: SpeakerAttribution | None = None,
     ) -> None:
-        """One continuous-mode final, from the echo check to the room."""
+        """One continuous-mode final, from the echo check to the room.
+
+        ``speaker`` is the pipeline stage's, for a final the STT labelled not.
+        """
         if not self._framework:
             return
         _vs_token = None
@@ -995,12 +1034,12 @@ class VoiceSTTMixin:
             )
 
             if segments is None:
-                await self._deliver_transcript(session, text, room_id, context, language, None)
+                await self._deliver_transcript(session, text, room_id, context, language, speaker)
                 return
             for segment in segments:
-                speaker = SpeakerAttribution.of(segment.speaker, epoch)
+                labelled = SpeakerAttribution.of(segment.speaker, epoch)
                 await self._deliver_transcript(
-                    session, segment.text, room_id, context, language, speaker
+                    session, segment.text, room_id, context, language, labelled, ordered=True
                 )
 
         except Exception as exc:
@@ -1032,23 +1071,21 @@ class VoiceSTTMixin:
         context: RoomContext,
         language: str | None,
         speaker: SpeakerAttribution | None,
+        *,
+        ordered: bool = False,
     ) -> None:
         """ON_TRANSCRIPTION, the TTS context, then the turn detector or the room.
 
-        ``speaker`` is who said ``text`` when a diarizing STT labelled it: the
-        hook sees the label, its epoch and the name, and may rename the
-        speaker; a speaker change fires ON_SPEAKER_CHANGE (RFC §12.2.3).
+        ``speaker`` is who said ``text``, from a diarizing STT or the pipeline's
+        diarization stage: the hook sees the label, its epoch and the name, and
+        may rename the speaker (RFC §12.2.3). An STT label that changes speaker
+        fires ON_SPEAKER_CHANGE; the pipeline stage fires its own. ``ordered``
+        is set under a diarized session's ordering lock: the reply is then
+        awaited outside it.
         """
         if not self._framework or not text.strip():
             return
-        tx_event = TranscriptionEvent(
-            session=session,
-            text=text,
-            language=language,
-            speaker=speaker.label if speaker else None,
-            speaker_epoch=speaker.epoch if speaker else None,
-            sender_name=speaker.sender_name if speaker else None,
-        )
+        tx_event = _transcription_event(session, text, language, speaker)
         transcription_result = await self._framework.hook_engine.run_sync_hooks(
             room_id,
             HookTrigger.ON_TRANSCRIPTION,
@@ -1063,13 +1100,12 @@ class VoiceSTTMixin:
         final_text = _extract_transcription_text(transcription_result.event, text)
         if speaker is not None:
             speaker = _with_hook_sender_name(speaker, transcription_result.event)
-            self._note_stt_speaker(session, speaker, room_id)
+            if speaker.source == "stt":
+                self._note_stt_speaker(session, speaker, room_id)
         # Continuous STT keeps no utterance audio: the turn is text only.
         self._record_user_turn(session, text, final_text)
 
-        # A diarized final is delivered under its session's ordering lock:
-        # the reply is awaited outside it.
-        await_delivery = speaker is None
+        await_delivery = not ordered
         turn_detector = self._pipeline_config.turn_detector if self._pipeline_config else None
         if turn_detector is not None:
             await self._evaluate_turn(
@@ -1084,6 +1120,11 @@ class VoiceSTTMixin:
             await self._route_text(
                 session, final_text, room_id, speaker=speaker, await_delivery=await_delivery
             )
+
+    def _pipeline_speaker(self, session_id: str) -> SpeakerAttribution | None:
+        """The pipeline stage's speaker for the transcript at hand, when asked for."""
+        tally = self._pipeline_speaker_tally
+        return tally.take(session_id) if tally is not None else None
 
     def _note_stt_speaker(
         self, session: VoiceSession, speaker: SpeakerAttribution, room_id: str
@@ -1118,6 +1159,7 @@ class VoiceSTTMixin:
         stream_state: _STTStreamState | None = None,
         *,
         dtmf_seen: bool = False,
+        speaker_claim: Future[SpeakerAttribution | None] | None = None,
     ) -> None:
         """Process speech end: fire hooks, transcribe, route inbound.
 
@@ -1129,6 +1171,8 @@ class VoiceSTTMixin:
             stream_state: The STT stream state popped by the caller
                 (_on_pipeline_speech_end) so it is immune to a rapid
                 SPEECH_START overwriting _stt_streams[session.id].
+            speaker_claim: With ``pipeline_speakers``, the utterance's
+                speaker as the diarization stage will have heard it.
         """
         if not self._framework:
             return
@@ -1291,9 +1335,11 @@ class VoiceSTTMixin:
             # Broadcast to other bridged participants
             await self._broadcast_bridge_transcription(session, text, room_id)
 
-            # Fire ON_TRANSCRIPTION hooks (sync, can modify)
-            tx_event = TranscriptionEvent(
-                session=session, text=text, language=result.language if result else None
+            # Fire ON_TRANSCRIPTION hooks (sync, can modify). With
+            # pipeline_speakers the utterance carries the stage's speaker.
+            speaker = await claimed_speaker(speaker_claim)
+            tx_event = _transcription_event(
+                session, text, result.language if result else None, speaker
             )
             transcription_result = await self._framework.hook_engine.run_sync_hooks(
                 room_id,
@@ -1309,6 +1355,8 @@ class VoiceSTTMixin:
 
             # Use potentially modified text
             final_text = _extract_transcription_text(transcription_result.event, text)
+            if speaker is not None:
+                speaker = _with_hook_sender_name(speaker, transcription_result.event)
             self._record_user_turn(
                 session,
                 text,
@@ -1327,10 +1375,12 @@ class VoiceSTTMixin:
             # Turn detection: if configured, evaluate before routing
             turn_detector = self._pipeline_config.turn_detector if self._pipeline_config else None
             if turn_detector is not None:
-                await self._evaluate_turn(session, final_text, room_id, context, audio_bytes=audio)
+                await self._evaluate_turn(
+                    session, final_text, room_id, context, audio_bytes=audio, speaker=speaker
+                )
             else:
                 # No turn detector — route immediately
-                await self._route_text(session, final_text, room_id)
+                await self._route_text(session, final_text, room_id, speaker=speaker)
 
         except Exception as exc:
             logger.exception("Error processing speech end")
