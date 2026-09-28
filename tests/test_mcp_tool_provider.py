@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from roomkit.core.exceptions import ToolRefusedError
-from roomkit.providers.ai.base import AITool
+from roomkit.providers.ai.base import AIImagePart, AITextPart, AITool
 from roomkit.tools.mcp import MCPToolProvider
 
 # ---------------------------------------------------------------------------
@@ -40,12 +40,25 @@ class MockTextContent:
         self.text = text
 
 
+class MockImageContent:
+    """Mimics mcp.types.ImageContent: base64 data, no ``text``."""
+
+    type = "image"
+
+    def __init__(self, data: str, mime_type: str) -> None:
+        self.data = data
+        self.mimeType = mime_type
+
+    def __str__(self) -> str:
+        return f"type='image' data='{self.data}' mimeType='{self.mimeType}'"
+
+
 class MockCallToolResult:
     """Mimics the result from session.call_tool()."""
 
     def __init__(
         self,
-        content: list[MockTextContent],
+        content: list[MockTextContent | MockImageContent],
         is_error: bool = False,
     ) -> None:
         self.content = content
@@ -210,6 +223,38 @@ async def test_call_tool_multi_part() -> None:
     result = await provider.call_tool("search", {"query": "hello"})
     parsed = json.loads(result)
     assert parsed == ["part1", "part2"]
+
+
+async def test_tool_handler_returns_an_image_as_an_image_part() -> None:
+    """Flattened to text, an image was its repr: base64 the model cannot see."""
+    provider = _make_provider_connected(
+        [SEARCH_TOOL],
+        call_tool_side_effect=lambda name, args: MockCallToolResult(
+            [MockTextContent("the page"), MockImageContent("iVBORw0KGgo", "image/jpeg")]
+        ),
+    )
+    handler = provider.as_tool_handler()
+
+    result = await handler("search", {"query": "hello"})
+
+    assert result == [
+        AITextPart(text="the page"),
+        AIImagePart(url="data:image/jpeg;base64,iVBORw0KGgo", mime_type="image/jpeg"),
+    ]
+
+
+async def test_call_tool_keeps_its_string_contract_for_an_image() -> None:
+    """``call_tool`` returns a string whatever the server sent."""
+    provider = _make_provider_connected(
+        [SEARCH_TOOL],
+        call_tool_side_effect=lambda name, args: MockCallToolResult(
+            [MockImageContent("iVBORw0KGgo", "image/png")]
+        ),
+    )
+
+    result = await provider.call_tool("search", {"query": "hello"})
+
+    assert isinstance(result, str)
 
 
 async def test_as_tool_handler() -> None:

@@ -53,6 +53,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   carrying ten screenshots read some ten thousand tokens lighter than it
   was billed, and compaction started late. Compaction now starts earlier in
   conversations rich in tool screenshots.
+- `MCPToolProvider.as_tool_handler()` hands an MCP image to the model as an
+  image (RMK-259). A result carrying an `ImageContent` comes back as content
+  parts (`AITextPart`, `AIImagePart`); it used to be flattened to the
+  content's repr, so the model read `type='image' data='iVBOR…'` as text,
+  kilobytes of base64 it cannot see. A result without an image is the same
+  string as before, and `call_tool()` still returns a string.
 
 ## [0.92.0] — 2026-09-27
 

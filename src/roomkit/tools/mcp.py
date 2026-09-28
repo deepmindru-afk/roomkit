@@ -5,13 +5,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Callable, Sequence
 from contextlib import AsyncExitStack
 from types import TracebackType
 from typing import Any
 
 from roomkit.core.exceptions import ToolRefusedError
-from roomkit.providers.ai.base import AITool
+from roomkit.providers.ai.base import AIImagePart, AITextPart, AITool
+from roomkit.tools.compose import ToolHandler, ToolResult
 
 logger = logging.getLogger("roomkit.tools.mcp")
 
@@ -19,7 +20,6 @@ _DEFAULT_CALL_TIMEOUT = 30.0
 """Seconds a tool call waits: one default shared by :meth:`MCPToolProvider.call_tool`
 and the tool handler, so the two cannot drift apart."""
 
-ToolHandler = Callable[[str, dict[str, Any]], Awaitable[str]]
 
 # Upper bound for publishing a structured result on the tool-call context
 # (serialized size). Tool-call events ride the room event pipeline — DB rows,
@@ -53,6 +53,44 @@ def _publish_structured_content(result: Any) -> None:
     except (TypeError, ValueError):
         return
     ctx.structured_content = structured
+
+
+def _content_text(content: Any) -> str:
+    return content.text if hasattr(content, "text") else str(content)
+
+
+def _is_image(content: Any) -> bool:
+    return getattr(content, "type", None) == "image" and bool(getattr(content, "data", None))
+
+
+def _error_text(result: Any) -> str:
+    """The words of a result the server flagged ``isError``."""
+    return " ".join(_content_text(c) for c in result.content)
+
+
+def _text_body(result: Any) -> str:
+    """A successful result as one string: single part → text, several → JSON array."""
+    texts = [_content_text(c) for c in result.content]
+    if len(texts) == 1:
+        return str(texts[0])
+    return json.dumps(texts)
+
+
+def _content_parts(result: Any) -> list[AITextPart | AIImagePart]:
+    """A successful result as content parts: its images as images.
+
+    Flattened to a string, an ``ImageContent`` is its repr, base64 included:
+    the model reads kilobytes of noise and never sees the image. Every other
+    content keeps the text it has in :func:`_text_body`.
+    """
+    parts: list[AITextPart | AIImagePart] = []
+    for content in result.content:
+        if _is_image(content):
+            mime = getattr(content, "mimeType", None) or "image/png"
+            parts.append(AIImagePart(url=f"data:{mime};base64,{content.data}", mime_type=mime))
+        else:
+            parts.append(AITextPart(text=_content_text(content)))
+    return parts
 
 
 class MCPToolProvider:
@@ -300,34 +338,19 @@ class MCPToolProvider:
         arguments: dict[str, Any],
         *,
         timeout: float,
-    ) -> tuple[str, bool]:
-        """Call the tool and return ``(body, refused)``.
+    ) -> Any:
+        """Call the tool and return the server's ``CallToolResult``.
 
-        The server's ``isError`` is the one place this outcome exists, and both
-        entry points below need it: :meth:`call_tool` renders it into the error
+        The server's ``isError`` is the one place a refusal exists, and both
+        entry points below read it: :meth:`call_tool` renders it into the error
         envelope its callers have always received, while the tool handler
         raises, because a tool loop cannot recognise a refusal in a body.
         """
         self._ensure_connected()
         result = await asyncio.wait_for(self._session.call_tool(name, arguments), timeout=timeout)
-
-        if result.isError:
-            parts = [getattr(c, "text", str(c)) for c in result.content]
-            return " ".join(parts), True
-
-        _publish_structured_content(result)
-
-        # Extract text from content parts
-        texts = []
-        for content in result.content:
-            if hasattr(content, "text"):
-                texts.append(content.text)
-            else:
-                texts.append(str(content))
-
-        if len(texts) == 1:
-            return str(texts[0]), False
-        return json.dumps(texts), False
+        if not result.isError:
+            _publish_structured_content(result)
+        return result
 
     async def call_tool(
         self,
@@ -352,8 +375,10 @@ class MCPToolProvider:
         :class:`~roomkit.core.exceptions.ToolRefusedError` so the outcome does
         not have to be recognised in the body.
         """
-        body, refused = await self._invoke(name, arguments, timeout=timeout)
-        return json.dumps({"error": body}) if refused else body
+        result = await self._invoke(name, arguments, timeout=timeout)
+        if result.isError:
+            return json.dumps({"error": _error_text(result)})
+        return _text_body(result)
 
     def as_tool_handler(self, *, gate_discovery: bool = True) -> ToolHandler:
         """Return a ToolHandler suitable for ``AIChannel(tool_handler=...)``.
@@ -375,22 +400,29 @@ class MCPToolProvider:
         :class:`~roomkit.core.exceptions.ToolRefusedError` either way: the tool
         loop marks the call failed and hands the server's message to the model
         unchanged.
+
+        A result that carries an image comes back as content parts
+        (:class:`~roomkit.providers.ai.base.AITextPart` and
+        :class:`~roomkit.providers.ai.base.AIImagePart`), so the model sees the
+        image; any other result is the string :meth:`call_tool` returns.
         """
         self._ensure_connected()
 
-        async def _handler(name: str, arguments: dict[str, Any]) -> str:
+        async def _handler(name: str, arguments: dict[str, Any]) -> ToolResult:
             lookup = name
             # Strip mcp__<server>__ prefix if present (e.g. from system prompt naming)
             if lookup.startswith("mcp__") and "__" in lookup[5:]:
                 lookup = lookup.split("__", 2)[-1]
             if gate_discovery and lookup not in self._tool_set:
                 return json.dumps({"error": f"Unknown tool: {name}"})
-            body, refused = await self._invoke(lookup, arguments, timeout=_DEFAULT_CALL_TIMEOUT)
-            if refused:
+            result = await self._invoke(lookup, arguments, timeout=_DEFAULT_CALL_TIMEOUT)
+            if result.isError:
                 # The server declined; say so instead of returning a body the
                 # loop would have to recognise, and keep the server's words —
                 # they are what the model is meant to read.
-                raise ToolRefusedError(body)
-            return body
+                raise ToolRefusedError(_error_text(result))
+            if any(_is_image(c) for c in result.content):
+                return _content_parts(result)
+            return _text_body(result)
 
         return _handler

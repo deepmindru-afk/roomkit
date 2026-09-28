@@ -34,14 +34,14 @@ from roomkit.models.room import Room
 class ToolCallContext:
     """Contextvar payload carrying tool-call metadata.
 
-    The ToolHandler protocol is ``(name, arguments) → str`` — it does not
+    The ToolHandler protocol is ``(name, arguments) → result`` — it does not
     receive ``room_id``, ``tool_call_id`` or ``channel_id``.  This payload
     bridges the gap: ``_ai_tools._run_one()`` sets it before calling the
     handler, and a handler that needs the call's origin reads it.  Safe
     with :func:`asyncio.gather`, which creates Tasks with copied contexts.
 
     ``structured_content`` is the reverse channel: the ToolHandler contract
-    returns only a string, but MCP tools can produce a structured result
+    returns only text or content parts, but MCP tools can produce a structured result
     (``CallToolResult.structuredContent``) that UI surfaces need verbatim —
     the LLM-facing string may be truncated/evicted when large. A handler
     that has one sets it here; ``_run_one()`` reads it back after the call
