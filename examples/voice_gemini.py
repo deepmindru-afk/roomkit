@@ -20,7 +20,7 @@ so plain speakers work without echo cancellation. The flip side: you cannot
 interrupt it mid-sentence.
 
 Speak French, English or any of the recogniser's 85+ languages: it detects
-the language and the model answers in it. Set LANGUAGE to pin one.
+the language and the model answers in it. Set VOICE_LANGUAGE to pin one.
 
 Requirements:
     pip install roomkit[gemini,local-audio]
@@ -30,7 +30,7 @@ Run with:
 
 Environment variables:
     GEMINI_API_KEY    (required) Gemini API key
-    LANGUAGE          BCP-47 code for both STT and TTS, e.g. fr-FR
+    VOICE_LANGUAGE    BCP-47 code for both STT and TTS, e.g. fr-FR
                       (default: detected from what you say)
     GEMINI_TTS_MODEL  gemini-3.8-flash-lite-tts (default, built for voice
                       agents) or gemini-3.8-flash-tts (more acting range,
@@ -48,7 +48,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from shared import require_env, run_until_stopped, setup_logging
+from shared import require_env, run_until_stopped, setup_logging, voice_language
 
 from roomkit import AIChannel, ChannelCategory, HookResult, HookTrigger, RoomKit, VoiceChannel
 from roomkit.providers.gemini import GeminiAIProvider, GeminiConfig
@@ -85,7 +85,7 @@ Example: "Oh, that one got me <laugh> Okay, [whispers] here is the secret..."
 
 def build_channels(api_key: str, backend: VoiceBackend) -> tuple[VoiceChannel, AIChannel]:
     """The two channels of the room: the voice, and the model behind it."""
-    language = os.environ.get("LANGUAGE") or None
+    language = voice_language(None)
 
     stt = GeminiTranscribeProvider(
         GeminiTranscribeConfig(api_key=api_key, language_codes=[language] if language else [])

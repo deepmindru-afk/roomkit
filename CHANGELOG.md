@@ -148,6 +148,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The voice examples read their speech language from `VOICE_LANGUAGE`
+  (RMK-238). They read `LANGUAGE`, which is the system's gettext variable: a
+  French Linux desktop sets it to `fr_CA:fr`, so `voice_gemini.py`,
+  `voice_cloud.py`, `voice_gradium.py`, `voice_deepgram_grok.py`,
+  `rtp_gradium_stt.py` and `avatar_call.py` sent that, no BCP-47 tag, to their
+  STT and TTS as the language. The shared `voice_language()` helper reads the
+  new variable.
 - `AnthropicAIProvider` works on the `anthropic` 1.x SDK the lock has carried
   since 2026-09-24 (RMK-236). The client's timeout was an `httpx.Timeout`, which
   1.x refuses because it runs on httpx2; the refusal only showed in a process

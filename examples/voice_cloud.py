@@ -31,7 +31,7 @@ Environment variables:
     DEEPGRAM_API_KEY    (required) Deepgram API key
     ELEVENLABS_API_KEY  (required) ElevenLabs API key
     ELEVENLABS_VOICE_ID Voice ID (default: Rachel)
-    LANGUAGE            Language code for STT (default: en)
+    VOICE_LANGUAGE      Language code for STT (default: en)
     SYSTEM_PROMPT       Custom system prompt for Claude
 
     --- VAD (sherpa-onnx) ---
@@ -87,7 +87,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from shared import require_env, run_until_stopped, setup_console, setup_logging
+from shared import require_env, run_until_stopped, setup_console, setup_logging, voice_language
 
 from roomkit import ChannelCategory, HookExecution, HookResult, HookTrigger, RoomKit, VoiceChannel
 from roomkit.channels.ai import AIChannel
@@ -265,7 +265,7 @@ async def main() -> None:
     )
 
     # --- Deepgram STT ---------------------------------------------------------
-    language = os.environ.get("LANGUAGE", "en")
+    language = voice_language("en")
     stt_model = os.environ.get("DEEPGRAM_MODEL", "nova-3")
     keyterms = [k.strip() for k in os.environ.get("DEEPGRAM_KEYTERMS", "").split(",") if k.strip()]
     stt = DeepgramSTTProvider(

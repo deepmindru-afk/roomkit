@@ -32,7 +32,7 @@ Environment variables:
     RTP_LOCAL_PORT      Local port to bind RTP (default: 10000)
     GRADIUM_REGION      API region (default: us)
     GRADIUM_STT_MODEL   STT model name (default: default)
-    LANGUAGE            Language code for STT (default: en)
+    VOICE_LANGUAGE      Language code for STT (default: en)
 
     --- Debug ---
     DEBUG               Set to 1 for verbose pipeline/STT logging
@@ -54,7 +54,7 @@ import wave
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from shared import require_env, run_until_stopped, setup_console, setup_logging
+from shared import require_env, run_until_stopped, setup_console, setup_logging, voice_language
 
 from roomkit import (
     HookExecution,
@@ -131,7 +131,7 @@ async def main() -> None:
 
     # --- Gradium STT ----------------------------------------------------------
     region = os.environ.get("GRADIUM_REGION", "us")
-    language = os.environ.get("LANGUAGE", "en")
+    language = voice_language("en")
     stt = GradiumSTTProvider(
         config=GradiumSTTConfig(
             api_key=env["GRADIUM_API_KEY"],

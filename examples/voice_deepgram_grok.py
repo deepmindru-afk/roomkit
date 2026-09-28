@@ -14,7 +14,7 @@ Environment variables:
     XAI_API_KEY         (required) xAI API key for Grok TTS
 
     --- Voice (optional) ---
-    LANGUAGE            Language for both STT and TTS (default: en)
+    VOICE_LANGUAGE      Language for both STT and TTS (default: en)
     GROK_VOICE          Grok voice: eve | ara | rex | sal | leo (default: eve)
     SAMPLE_RATE         Audio sample rate in Hz (default: 16000)
 
@@ -36,7 +36,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from shared import require_env, run_until_stopped, setup_console, setup_logging
+from shared import require_env, run_until_stopped, setup_console, setup_logging, voice_language
 
 from roomkit import ChannelCategory, HookExecution, HookResult, HookTrigger, RoomKit, VoiceChannel
 from roomkit.channels.ai import AIChannel
@@ -79,7 +79,7 @@ async def main() -> None:
     pipeline_config = AudioPipelineConfig(aec=aec, denoiser=denoiser)
 
     # --- Language (shared by STT + TTS) ----------------------------------------
-    language = os.environ.get("LANGUAGE", "en")
+    language = voice_language("en")
 
     # --- Deepgram STT ---------------------------------------------------------
     stt = DeepgramSTTProvider(

@@ -37,7 +37,7 @@ import asyncio
 import logging
 import os
 
-from shared import require_env, run_until_stopped, setup_logging
+from shared import require_env, run_until_stopped, setup_logging, voice_language
 
 from roomkit import (
     AudioVideoChannel,
@@ -102,7 +102,7 @@ async def main() -> None:
         config=DeepgramConfig(
             api_key=deepgram_key,
             model=os.environ.get("DEEPGRAM_MODEL", "nova-2"),
-            language=os.environ.get("LANGUAGE", "en"),
+            language=voice_language("en"),
             punctuate=True,
             smart_format=True,
             endpointing=300,
