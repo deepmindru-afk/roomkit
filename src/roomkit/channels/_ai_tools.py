@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.channels._sandbox_handlers import handle_sandbox_command
@@ -39,7 +40,7 @@ from roomkit.channels._tool_search_constants import (
 )
 from roomkit.core.exceptions import ToolRefusedError
 from roomkit.models.enums import ChannelType
-from roomkit.models.tool_call import ToolCallEvent
+from roomkit.models.tool_call import ToolCallEvent, ToolCallVerdict
 from roomkit.providers.ai.base import (
     AIImagePart,
     AIProvider,
@@ -73,6 +74,16 @@ if TYPE_CHECKING:
     ToolHandler = Callable[[str, dict[str, Any]], Awaitable[ToolResult]]
 
 logger = logging.getLogger("roomkit.channels.ai")
+
+
+@dataclass(frozen=True)
+class _HookOutcome:
+    """ON_TOOL_CALL's verdict applied to one served call."""
+
+    result: Any  # what the model reads, before eviction
+    recorded: Any  # what the usage memory keeps
+    failed: bool  # the hook blocked the call
+    structured: dict[str, Any] | None  # the structured copy the call keeps
 
 
 @runtime_checkable
@@ -499,12 +510,12 @@ class AIToolsMixin:
                 # BEFORE eviction — the string below may become a placeholder,
                 # but UI surfaces need the structured payload verbatim.
                 structured_content = _tc_ctx.structured_content
-                result, overridden = await self._apply_tool_call_hook(
-                    tc, arguments, result, room_id
+                hook = await self._apply_tool_call_hook(
+                    tc, arguments, result, structured_content, room_id
                 )
-                if overridden:
-                    recorded_result = result
-                result = self._bound_tool_result(tc.name, result, tc.id)
+                recorded_result, tool_failed = hook.recorded, hook.failed
+                structured_content = hook.structured
+                result = self._bound_tool_result(tc.name, hook.result, tc.id)
 
                 telemetry.end_span(tool_span_id)
             except asyncio.CancelledError:
@@ -552,7 +563,9 @@ class AIToolsMixin:
                 tool_call_id=tc.id,
                 name=tc.name,
                 result=result,
-                structured_content=structured_content,
+                # A failed call's payload is not published: it is withheld,
+                # or it never finished.
+                structured_content=None if tool_failed else structured_content,
                 is_error=tool_failed,
             )
 
@@ -847,32 +860,45 @@ class AIToolsMixin:
         return render_list_payload(catalogue, category, exclude_names=TOOL_SEARCH_INFRA_TOOL_NAMES)
 
     async def _apply_tool_call_hook(
-        self, tc: Any, arguments: dict[str, Any], result: ToolResult, room_id: str | None
-    ) -> tuple[ToolResult, bool]:
+        self,
+        tc: Any,
+        arguments: dict[str, Any],
+        result: ToolResult,
+        structured: dict[str, Any] | None,
+        room_id: str | None,
+    ) -> _HookOutcome:
         """Run ON_TOOL_CALL on the outcome the model will read, whole.
 
         After a text-only model's flattening, so the hook sees the shape the
         model reads; before eviction, so everything read_stored_result can
         page back has passed through the hook and a redacting hook covers the
-        full text, not a preview of it. Returns the result to carry on with,
-        and whether the hook replaced it.
+        full text, not a preview of it. The hook sees the structured copy too,
+        and may replace it; a BLOCK withholds the result and drops the copy.
         """
-        result = self._shape_for_model(tc.name, result, tc.id)
+        shaped = self._shape_for_model(tc.name, result, tc.id)
+        kept = _HookOutcome(shaped, result, False, structured)
         if self._tool_call_hook is None:
-            return result, False
+            return kept
         event = ToolCallEvent(
             channel_id=self.channel_id,
             channel_type=ChannelType.AI,
             tool_call_id=tc.id,
             name=tc.name,
             arguments=arguments,
-            result=result,
+            result=shaped,
             room_id=room_id,
+            structured_content=structured,
         )
-        override = await self._tool_call_hook(event)
-        if override is None:
-            return result, False
-        return override, True
+        verdict = await self._tool_call_hook(event)
+        if verdict is None:
+            return kept
+        if not isinstance(verdict, ToolCallVerdict):
+            verdict = ToolCallVerdict(result=verdict)  # a bare override
+        if verdict.replaces_structured:
+            structured = verdict.structured_content
+        if verdict.result is None:
+            return _HookOutcome(shaped, result, verdict.blocked, structured)
+        return _HookOutcome(verdict.result, verdict.result, verdict.blocked, structured)
 
     def _shape_for_model(self, name: str, result: ToolResult, tool_call_id: str) -> ToolResult:
         """A text-only model gets the text of a content-part result, the way it

@@ -102,10 +102,39 @@ class ToolCallEvent:
     like a refusal's; :attr:`result` carries a short envelope saying so.
     """
 
+    structured_content: dict[str, Any] | None = None
+    """The call's structured copy, carried beside :attr:`result` on its
+    tool-call event for UI surfaces (MCP ``structuredContent``); never read by
+    the model.
 
-# Callback type injected into AIChannel by the framework.
-# Returns a result (str or content parts) to override, None to keep the original.
-ToolCallCallback = Callable[[ToolCallEvent], Awaitable[str | list[Any] | None]]
+    A SYNC hook replaces it with ``HookResult(metadata={"structured_content":
+    ...})``, and ``None`` there clears it. A hook that replaces only the result
+    keeps it (rewriting text is not withholding the payload), and a BLOCK drops
+    it: the event of a withheld call must not publish what was withheld.
+    """
+
+
+@dataclass(frozen=True)
+class ToolCallVerdict:
+    """What ON_TOOL_CALL's SYNC hooks decided about a call that was served.
+
+    :attr:`result` replaces the tool's result when not ``None``.
+    :attr:`blocked` withholds it: the model reads :attr:`result`, the block's
+    reason, as a failed call, and the call keeps no structured copy.
+    :attr:`structured_content` replaces the structured copy when
+    :attr:`replaces_structured` is set, ``None`` then clearing it.
+    """
+
+    result: str | list[Any] | None = None
+    blocked: bool = False
+    replaces_structured: bool = False
+    structured_content: dict[str, Any] | None = None
+
+
+# Callback type injected into AIChannel by the framework: the hooks' verdict,
+# a bare result (str or content parts) to override, or None to keep the
+# original.
+ToolCallCallback = Callable[[ToolCallEvent], Awaitable[ToolCallVerdict | str | list[Any] | None]]
 
 
 # Callback type injected into AIChannel by the framework for a call that failed

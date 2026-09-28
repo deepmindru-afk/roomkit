@@ -65,7 +65,7 @@ from roomkit.models.session_event import SessionStartedEvent
 from roomkit.models.store_filter import EventFilter, PersistencePolicy
 from roomkit.models.task import Observation, Task
 from roomkit.models.thinking_event import ThinkingEvent
-from roomkit.models.tool_call import ToolCallCallback, ToolCallEvent
+from roomkit.models.tool_call import ToolCallCallback, ToolCallEvent, ToolCallVerdict
 from roomkit.models.trace import ProtocolTrace
 from roomkit.models.voice_delivery import VoiceDeliveryRecord
 
@@ -136,5 +136,6 @@ __all__ = [
     "ToolCallCallback",
     "ToolCallContent",
     "ToolCallEvent",
+    "ToolCallVerdict",
     "VideoContent",
 ]

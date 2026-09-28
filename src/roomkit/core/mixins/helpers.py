@@ -809,14 +809,17 @@ class HelpersMixin:
 
         The returned callback runs ON_TOOL_CALL sync hooks against the
         framework's hook engine and emits a ``tool_call`` framework event.
-        Returns the hook-provided result (str) or None to keep the original.
+        Returns the hooks' :class:`ToolCallVerdict`, or None to keep the
+        original: a BLOCK is told apart from a rewrite, since a blocked call
+        must not keep its structured copy, and ``metadata["structured_content"]``
+        replaces that copy.
         """
         from roomkit.models.enums import HookTrigger
-        from roomkit.models.tool_call import ToolCallEvent
+        from roomkit.models.tool_call import ToolCallEvent, ToolCallVerdict
 
         kit_ref = self
 
-        async def _callback(event: ToolCallEvent) -> str | None:
+        async def _callback(event: ToolCallEvent) -> ToolCallVerdict | None:
             if not event.room_id:
                 return None
             try:
@@ -851,8 +854,14 @@ class HelpersMixin:
             if not hook_result.allowed:
                 import json
 
-                return json.dumps({"error": hook_result.reason or "blocked"})
-            return hook_result.metadata.get("result")
+                reason = json.dumps({"error": hook_result.reason or "blocked"})
+                return ToolCallVerdict(result=reason, blocked=True)
+            metadata = hook_result.metadata
+            return ToolCallVerdict(
+                result=metadata.get("result"),
+                replaces_structured="structured_content" in metadata,
+                structured_content=metadata.get("structured_content"),
+            )
 
         return _callback
 

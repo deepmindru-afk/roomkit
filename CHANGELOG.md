@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- An `ON_TOOL_CALL` hook sees a call's structured copy and may rewrite it,
+  and a blocked call carries none (RMK-262). The copy (MCP
+  `structuredContent`), which the tool-call event carries for UI surfaces,
+  was out of the hook's reach: a hook that blocked a result withheld its text
+  from the model while the stored and broadcast event kept the payload, and
+  marked the call `completed`. `ToolCallEvent.structured_content` now shows
+  the copy, `HookResult(metadata={"structured_content": ...})` replaces it
+  and `None` clears it, a result rewritten alone keeps it, and a blocked call
+  is `failed` with no copy, like any failed call. The framework's
+  `ToolCallCallback` returns a `ToolCallVerdict` (a bare result is still
+  accepted), which tells a block apart from a rewrite.
 - An `ON_TOOL_CALL` hook sees a tool's whole result, before eviction, and
   eviction runs on what it hands back (RMK-260). The hook used to receive the
   evicted preview while the raw text sat in the store, so a redacting hook
