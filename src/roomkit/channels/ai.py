@@ -247,6 +247,14 @@ _current_loop_ctx: contextvars.ContextVar[_ToolLoopContext | None] = contextvars
 )
 
 
+def _portable_schema(schema: dict[str, Any] | None) -> dict[str, Any] | None:
+    """*schema*, checked against the portable subset now: one outside it fails
+    at construction rather than on the first message."""
+    if schema is not None:
+        check_portable_schema(schema)
+    return schema
+
+
 class AIChannel(
     AIStreamingMixin,
     AIGenerationMixin,
@@ -317,12 +325,8 @@ class AIChannel(
         self._enable_thinking = enable_thinking
         self._reasoning_effort = reasoning_effort
         # Every turn's answer is constrained to this schema unless the binding
-        # or the config provider says otherwise (RFC §6.7). Checked now, so a
-        # schema outside the portable subset fails at construction, not on the
-        # first message.
-        if response_schema is not None:
-            check_portable_schema(response_schema)
-        self._response_schema = response_schema
+        # or the config provider says otherwise (RFC §6.7).
+        self._response_schema = _portable_schema(response_schema)
         self._max_tool_rounds = max_tool_rounds
         self._tool_loop_timeout_seconds = tool_loop_timeout_seconds
         self._tool_loop_warn_after = tool_loop_warn_after

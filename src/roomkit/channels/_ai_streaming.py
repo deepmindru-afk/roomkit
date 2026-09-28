@@ -15,6 +15,7 @@ from roomkit.channels._ai_loop_rules import (
     AIToolLoopRulesMixin,
     _accumulate_usage,
     final_round_reason,
+    require_schema_answer,
 )
 from roomkit.channels._ai_resilience import _StreamRetryBoundary
 from roomkit.channels._ai_stream_external_tools import _ExternalStreamTools
@@ -146,6 +147,20 @@ class AIStreamingHost(Protocol):
     ) -> None: ...
     @property
     def _telemetry_provider(self) -> NoopTelemetryProvider: ...
+
+
+async def _answered_or_raise(
+    context: AIContext, deltas: AsyncIterator[StreamDelta]
+) -> AsyncIterator[StreamDelta]:
+    """The streaming tool loop, failing a constrained turn that ends without
+    its answer (see :func:`require_schema_answer`)."""
+    try:
+        async for delta in deltas:
+            if isinstance(delta, LoopEndMarker):
+                require_schema_answer(context, delta.reason)
+            yield delta
+    finally:
+        await _aclose_stream(deltas)
 
 
 class AIStreamingMixin(AIToolLoopRulesMixin):
@@ -311,8 +326,14 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
         try:
             if not self._provider.supports_structured_streaming:
                 stream = self._provider.generate_stream(ai_context)
+                # A constrained answer is checked when the stream ends: its text
+                # waits until then, and never leaves when the check fails.
+                held = ai_context.response_schema is not None
                 async for chunk in stream:
                     text_parts.append(chunk)
+                    if not held:
+                        yield chunk
+                for chunk in text_parts if held else ():
                     yield chunk
                 completed = True
                 return
@@ -421,8 +442,9 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
         # _build_context) must be captured NOW and passed explicitly.
         return ChannelOutput(
             responded=True,
-            response_stream=self._run_streaming_tool_loop(
-                ai_context, parent_loop_ctx=_current_loop_ctx.get()
+            response_stream=_answered_or_raise(
+                ai_context,
+                self._run_streaming_tool_loop(ai_context, parent_loop_ctx=_current_loop_ctx.get()),
             ),
             response_metadata=ai_context.response_metadata,
         )

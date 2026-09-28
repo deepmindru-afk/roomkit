@@ -8,6 +8,7 @@ request is sent.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -17,13 +18,18 @@ from pydantic import ValidationError
 from roomkit import ResponseSchemaError
 from roomkit.channels._turn_config import AIChannelTurnConfig
 from roomkit.channels.ai import AIChannel
+from roomkit.core.framework import RoomKit
+from roomkit.core.hooks import HookRegistration
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.context import RoomContext
-from roomkit.models.enums import ChannelCategory, ChannelType
+from roomkit.models.delivery import InboundMessage
+from roomkit.models.enums import ChannelCategory, ChannelType, HookExecution, HookTrigger
+from roomkit.models.event import RoomEvent, TextContent
 from roomkit.models.room import Room
-from roomkit.providers.ai.base import AITool
+from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from tests.conftest import make_event
+from tests.test_framework import SimpleChannel
 
 TRIAGE: dict[str, Any] = {
     "type": "object",
@@ -177,3 +183,158 @@ class TestTurn:
         output = await channel.on_event(make_event(body="charged twice"), binding, _ctx(binding))
 
         assert json.loads(output.response_events[0].content.body) == {"department": "billing"}
+
+
+async def _turn_through_the_room(ai: AIChannel) -> tuple[Any, list[RoomEvent], SimpleChannel]:
+    """One inbound turn in a room with an SMS channel and *ai*: the result, the
+    ON_ERROR events, and the SMS channel that records what it was sent."""
+    kit = RoomKit()
+    sms = SimpleChannel("sms1")
+    kit.register_channel(sms)
+    kit.register_channel(ai)
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "sms1")
+    await kit.attach_channel("r1", "ai1", category=ChannelCategory.INTELLIGENCE)
+    errors: list[RoomEvent] = []
+
+    async def on_error(event: RoomEvent, _ctx: RoomContext) -> None:
+        errors.append(event)
+
+    kit.hook_engine.register(
+        HookRegistration(
+            trigger=HookTrigger.ON_ERROR,
+            execution=HookExecution.ASYNC,
+            fn=on_error,
+            name="capture_error",
+        )
+    )
+    result = await kit.process_inbound(
+        InboundMessage(channel_id="sms1", sender_id="u1", content=TextContent(body="go"))
+    )
+    await asyncio.sleep(0.05)
+    stored = await kit.store.list_events("r1")
+    sms.stored_ai = [e for e in stored if e.source.channel_id == "ai1"]  # type: ignore[attr-defined]
+    await kit.close()
+    return result, errors, sms
+
+
+class TestStreamedTurnThroughTheRoom:
+    """A streamed constrained answer reaches the room only once it is checked."""
+
+    async def test_an_answer_that_fails_the_check_is_never_stored_nor_sent(self) -> None:
+        provider = MockAIProvider(
+            ["Sure! The department is billing."], response_schema=True, streaming=True
+        )
+
+        result, errors, sms = await _turn_through_the_room(
+            AIChannel("ai1", provider=provider, response_schema=TRIAGE)
+        )
+
+        assert isinstance(result.error, ResponseSchemaError)
+        assert result.error.reason == "invalid_json"
+        assert len(errors) == 1
+        assert sms.delivered == []
+        assert sms.stored_ai == []  # type: ignore[attr-defined]
+
+    async def test_an_answer_that_passes_is_stored_and_sent_whole(self) -> None:
+        provider = MockAIProvider([ANSWER], response_schema=True, streaming=True)
+
+        result, errors, sms = await _turn_through_the_room(
+            AIChannel("ai1", provider=provider, response_schema=TRIAGE)
+        )
+
+        assert result.error is None and errors == []
+        assert [json.loads(e.content.body) for e in sms.delivered] == [{"department": "billing"}]
+
+
+class _AlwaysCallsATool(MockAIProvider):
+    """A model that never stops calling its tool."""
+
+    def _next_response(self) -> AIResponse:
+        return AIResponse(
+            content="Let me look that up.",
+            finish_reason="tool_calls",
+            tool_calls=[AIToolCall(id="c1", name="lookup", arguments={})],
+        )
+
+
+class TestToolLoopCutShort:
+    """A constrained turn whose tool loop stops before a final answer fails."""
+
+    @staticmethod
+    def _channel(streaming: bool) -> AIChannel:
+        async def handler(_name: str, _arguments: dict[str, Any]) -> str:
+            return "{}"
+
+        return AIChannel(
+            "ai1",
+            provider=_AlwaysCallsATool(
+                response_schema=True, response_schema_with_tools=True, streaming=streaming
+            ),
+            response_schema=TRIAGE,
+            tools=[AITool(name="lookup", description="Look it up")],
+            tool_handler=handler,
+            max_tool_rounds=2,
+        )
+
+    async def test_the_non_streaming_turn_raises_truncated(self) -> None:
+        binding = _binding()
+
+        with pytest.raises(ResponseSchemaError) as exc:
+            await self._channel(streaming=False).on_event(
+                make_event(body="go"), binding, _ctx(binding)
+            )
+
+        assert exc.value.reason == "truncated"
+        assert "max_rounds" in str(exc.value)
+
+    async def test_the_streaming_turn_raises_truncated(self) -> None:
+        binding = _binding()
+        output = await self._channel(streaming=True).on_event(
+            make_event(body="go"), binding, _ctx(binding)
+        )
+
+        with pytest.raises(ResponseSchemaError) as exc:
+            async for _ in output.response_stream:
+                pass
+
+        assert exc.value.reason == "truncated"
+
+
+class TestToolRoundNarration:
+    """A tool round's own text reaches the room as its own message; the turn's
+    last text message is the document."""
+
+    @pytest.mark.parametrize("streaming", [False, True])
+    async def test_the_narration_and_the_document_are_separate_messages(
+        self, streaming: bool
+    ) -> None:
+        async def handler(_name: str, _arguments: dict[str, Any]) -> str:
+            return "{}"
+
+        provider = MockAIProvider(
+            ai_responses=[
+                AIResponse(
+                    content="Let me look that up.",
+                    finish_reason="tool_calls",
+                    tool_calls=[AIToolCall(id="c1", name="lookup", arguments={})],
+                ),
+                AIResponse(content=ANSWER, finish_reason="stop"),
+            ],
+            response_schema=True,
+            response_schema_with_tools=True,
+            streaming=streaming,
+        )
+        ai = AIChannel(
+            "ai1",
+            provider=provider,
+            response_schema=TRIAGE,
+            tools=[AITool(name="lookup", description="Look it up")],
+            tool_handler=handler,
+        )
+
+        result, _errors, sms = await _turn_through_the_room(ai)
+
+        texts = [e.content.body for e in sms.delivered if isinstance(e.content, TextContent)]
+        assert result.error is None
+        assert texts == ["Let me look that up.", ANSWER]

@@ -20,6 +20,7 @@ from roomkit.providers.ai.base import (
     StreamToolCallDelta,
     is_context_overflow_message,
 )
+from roomkit.providers.ai.response_schema import hold_until_checked
 from roomkit.providers.utils import _aclose_stream
 
 if TYPE_CHECKING:
@@ -158,7 +159,7 @@ class AIResilienceMixin:
         while attempt <= policy.max_retries:
             emitted = False
             projected_composition = False
-            stream = self._provider.generate_structured_stream(context)
+            stream = self._structured_stream(self._provider, context)
             try:
                 async for event in stream:
                     # A composition delta is a projection: it is neither
@@ -217,7 +218,7 @@ class AIResilienceMixin:
         if self._fallback_provider and last_error:
             logger.warning("Trying fallback provider for stream.")
             projected_composition = False
-            stream = self._fallback_provider.generate_structured_stream(context)
+            stream = self._structured_stream(self._fallback_provider, context)
             try:
                 async for event in stream:
                     if isinstance(event, StreamToolCallDelta):
@@ -233,6 +234,16 @@ class AIResilienceMixin:
 
         if last_error:
             raise last_error
+
+    @staticmethod
+    def _structured_stream(provider: AIProvider, context: AIContext) -> AsyncIterator[StreamEvent]:
+        """The provider's structured stream, its text held back until checked
+        when the turn is constrained to a response schema: the room must never
+        receive an answer the check then refuses (RFC §6.7)."""
+        stream = provider.generate_structured_stream(context)
+        if context.response_schema is None:
+            return stream
+        return hold_until_checked(stream)
 
     @staticmethod
     def _is_context_overflow(exc: ProviderError) -> bool:

@@ -22,11 +22,13 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from roomkit.channels._tool_eviction import ToolEviction
 from roomkit.models.streaming import LoopEndReason
 from roomkit.providers.ai.base import (
+    AIContext,
     AIMessage,
     AITextPart,
     AIThinkingPart,
     AIToolCallPart,
 )
+from roomkit.providers.ai.response_schema import ResponseSchemaError
 from roomkit.realtime.base import EphemeralEventType
 
 if TYPE_CHECKING:
@@ -93,6 +95,30 @@ def _is_truncation(finish_reason: str | None) -> bool:
     ``max_tokens`` are one entry rather than two.
     """
     return finish_reason is not None and finish_reason.lower() in _TRUNCATION_FINISH_REASONS
+
+
+# How a tool loop can stop short of its final answer. A turn constrained to a
+# response schema that ends this way has no checked document to deliver.
+_CUT_SHORT: frozenset[str] = frozenset(
+    {"max_rounds", "timeout", "force_stopped", "empty_response", "truncated"}
+)
+
+
+def require_schema_answer(context: AIContext, reason: LoopEndReason) -> None:
+    """Fail a turn constrained to a response schema that ended without its answer.
+
+    Its last text is the model's narration of a tool round, not the document
+    (RFC §6.7), so the turn raises rather than delivering it. A cancelled turn
+    is left alone: someone stopped it on purpose.
+
+    Raises:
+        ResponseSchemaError: ``truncated``, naming why the loop stopped.
+    """
+    if context.response_schema is not None and reason in _CUT_SHORT:
+        raise ResponseSchemaError(
+            f"the tool loop stopped ({reason}) before a final answer in the response schema",
+            reason="truncated",
+        )
 
 
 def final_round_reason(

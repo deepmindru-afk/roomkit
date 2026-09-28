@@ -18,7 +18,12 @@ from roomkit.providers.ai.base import (
     StreamToolCall,
     StreamToolCallDelta,
 )
-from roomkit.providers.ai.response_schema import check_schema_answer, schema_for_generate
+from roomkit.providers.ai.response_schema import (
+    check_schema_answer,
+    checked_stream,
+    schema_for_generate,
+)
+from roomkit.providers.utils import _aclose_stream
 
 _MOCK_MODELS = [
     ModelInfo(id="mock", display_name="Mock", context_window=8192, supports_vision=False),
@@ -123,14 +128,43 @@ class MockAIProvider(AIProvider):
         )
 
     async def generate_stream(self, context: AIContext) -> AsyncIterator[str]:
-        """Yield text from generate() as a single delta."""
-        response = await self.generate(context)
-        if response.content:
-            yield response.content
+        """Yield the scripted text as a single delta."""
+        async for event in self.generate_structured_stream(context):
+            if isinstance(event, StreamTextDelta):
+                yield event.text
 
     async def generate_structured_stream(self, context: AIContext) -> AsyncIterator[StreamEvent]:
-        """Yield structured events from generate() result."""
-        response = await self.generate(context)
+        """Yield the scripted response as events, the way a real provider does:
+        text first, then a response schema's check before the done event."""
+        schema_for_generate(
+            context,
+            supported=self._response_schema,
+            with_tools=self._response_schema_with_tools,
+            provider="mock",
+        )
+        stream = checked_stream(
+            self._scripted_events(context),
+            context,
+            provider="mock",
+            refusal=lambda done: "refusal" if done.finish_reason == "refusal" else None,
+            truncated=lambda done: done.finish_reason == "length",
+        )
+        try:
+            async for event in stream:
+                yield event
+        finally:
+            await _aclose_stream(stream)
+
+    async def _scripted_events(self, context: AIContext) -> AsyncIterator[StreamEvent]:
+        if context.response_schema is None:
+            # Through generate(), so a test double that scripts generate() alone
+            # drives the stream too.
+            response = await self.generate(context)
+        else:
+            # Unchecked here: the text goes out first and checked_stream checks
+            # it at the done event, as a real provider's stream does.
+            self.calls.append(context)
+            response = self._next_response()
         if response.thinking:
             yield StreamThinkingDelta(thinking=response.thinking)
         if response.content:

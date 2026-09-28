@@ -25,11 +25,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `AIChannel(response_schema=)` for every turn, `AIChannelTurnConfig.response_schema`
   from the config provider, or `response_schema` in the binding metadata for one
   room, resolved like the other per-turn settings (binding, then config
-  provider, then channel). The final message is then one JSON document checked
-  against it, streamed or not. A provider that cannot honour the schema, or
-  cannot honour it beside the turn's tools, fails the turn before any request,
-  through `ON_ERROR`. A channel default outside the portable subset fails at
-  construction. Verified live on Gemini through a room, the channel's schema in
+  provider, then channel). The answer reaches the room only once checked: a
+  streamed answer is held until its check passes, and one that fails is never
+  delivered nor stored. A tool loop that stops before its final answer fails
+  the turn with `truncated`, and the tools the channel adds itself (skills,
+  sandbox, planning, orchestration) count as the turn's tools. A provider that
+  cannot honour the schema, or cannot honour it beside the turn's tools, fails
+  the turn before any request, through `ON_ERROR`. A channel default outside
+  the portable subset fails at construction. Verified live on Gemini through a room, the channel's schema in
   one room and a binding's in another.
 
 - A response schema may share a turn with tools (RMK-248, RFC §6.7) where

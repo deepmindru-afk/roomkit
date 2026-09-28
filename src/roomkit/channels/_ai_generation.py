@@ -13,6 +13,7 @@ from roomkit.channels._ai_loop_rules import (
     AIToolLoopRulesMixin,
     _accumulate_usage,
     final_round_reason,
+    require_schema_answer,
 )
 from roomkit.models.channel import ChannelOutput
 from roomkit.models.enums import EventType
@@ -238,6 +239,7 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
         )
         try:
             loop_result = await self._run_tool_loop(ai_context, parent_span_id=span_id)
+            require_schema_answer(ai_context, loop_result.reason)
         except ProviderError as exc:
             telemetry.end_span(span_id, status="error", error_message=str(exc))
             if exc.status_code == 404:

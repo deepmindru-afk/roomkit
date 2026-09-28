@@ -19,6 +19,7 @@ from roomkit.providers.ai.base import (
     StreamEvent,
     StreamTextDelta,
     StreamToolCall,
+    StreamToolCallDelta,
 )
 from roomkit.providers.ai.json_schema import check_portable_schema, schema_mismatch
 from roomkit.providers.utils import _aclose_stream
@@ -197,6 +198,31 @@ async def checked_stream(
                         refusal=refusal(event),
                         truncated=truncated(event),
                     )
+            yield event
+    finally:
+        await _aclose_stream(events)
+
+
+async def hold_until_checked(events: AsyncIterator[StreamEvent]) -> AsyncIterator[StreamEvent]:
+    """Hold a constrained stream's text until the answer is known to be good.
+
+    For a consumer that delivers text as it arrives (a room, a speaker): the
+    deltas of a :func:`checked_stream` are provisional until its done event, so
+    they are released only then. A round that goes on to call tools narrates
+    rather than answers, and its text is released as the first tool call
+    arrives. When the check fails the stream raises instead of ending, and the
+    held text is never released. Other events pass straight through.
+    """
+    held: list[StreamEvent] = []
+    try:
+        async for event in events:
+            if isinstance(event, StreamTextDelta):
+                held.append(event)
+                continue
+            if isinstance(event, StreamDone | StreamToolCall | StreamToolCallDelta):
+                for text in held:
+                    yield text
+                held.clear()
             yield event
     finally:
         await _aclose_stream(events)

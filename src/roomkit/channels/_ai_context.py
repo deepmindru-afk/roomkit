@@ -36,6 +36,7 @@ from roomkit.sandbox.tools import SANDBOX_TOOL_PREFIX as _SANDBOX_TOOL_PREFIX
 if TYPE_CHECKING:
     from roomkit.channels._skill_activation import SkillActivationMemory
     from roomkit.channels._tool_usage import ToolUsageMemory
+    from roomkit.channels._turn_config import AIChannelTurnConfig
     from roomkit.channels.ai import _ContentPart, _ToolLoopContext
     from roomkit.memory.base import MemoryProvider
     from roomkit.models.channel import ChannelBinding
@@ -49,6 +50,18 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("roomkit.channels.ai")
 
+
+# The settings a turn resolves binding metadata > config provider > channel
+# default, each read from ``_<name>`` on the channel. ``tools`` resolves apart.
+_TURN_SETTINGS = (
+    "system_prompt",
+    "temperature",
+    "max_tokens",
+    "thinking_budget",
+    "enable_thinking",
+    "reasoning_effort",
+    "response_schema",
+)
 
 # Injected once per turn when the history window holds several speakers: the
 # model must read the "Name:" prefixes as transcript metadata, and not start
@@ -74,6 +87,8 @@ class AIContextHost(Protocol):
         _thinking_budget: Optional thinking budget for extended thinking.
         _enable_thinking: Default reasoning switch (overridable per room).
         _reasoning_effort: Default reasoning verbosity (overridable per room).
+        _response_schema: Default JSON Schema the answer must follow (overridable
+            per room); ``None`` leaves the answer free.
         _skills: Skill registry for tool injection.
         _skills_in_prompt: Whether to auto-inject the skills manifest into the prompt.
         _script_executor: Script executor for skill scripts.
@@ -222,28 +237,10 @@ class AIContextMixin:
         if self._config_provider is not None:
             turn = await self._config_provider(binding, context)
 
-        def _pick(key: str, turn_value: Any, default: Any) -> Any:
-            if key in binding.metadata:
-                return binding.metadata[key]
-            return turn_value if turn_value is not None else default
-
-        system_prompt = _pick(
-            "system_prompt", turn.system_prompt if turn else None, self._system_prompt
-        )
-        temperature = _pick("temperature", turn.temperature if turn else None, self._temperature)
-        max_tokens = _pick("max_tokens", turn.max_tokens if turn else None, self._max_tokens)
-        thinking_budget = _pick(
-            "thinking_budget", turn.thinking_budget if turn else None, self._thinking_budget
-        )
-        enable_thinking = _pick(
-            "enable_thinking", turn.enable_thinking if turn else None, self._enable_thinking
-        )
-        reasoning_effort = _pick(
-            "reasoning_effort", turn.reasoning_effort if turn else None, self._reasoning_effort
-        )
-        response_schema = _pick(
-            "response_schema", turn.response_schema if turn else None, self._response_schema
-        )
+        settings = self._turn_settings(binding, turn)
+        # The prompt grows below (skills, sandbox, planner, notes); the other
+        # settings reach the context as resolved.
+        system_prompt = settings.pop("system_prompt")
 
         if turn is not None and turn.tools is not None:
             tools = list(turn.tools)
@@ -563,20 +560,29 @@ class AIContextMixin:
         return AIContext(
             messages=messages,
             system_prompt=system_prompt,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            thinking_budget=thinking_budget,
-            enable_thinking=enable_thinking,
-            reasoning_effort=reasoning_effort,
             tools=tools,
-            response_schema=response_schema,
             room=context,
             target_capabilities=target_caps,
             target_media_types=target_media,
             # The turn's record, not a fresh dict: hooks and tool handlers write
             # into what the loop context already holds (by identity — see the type).
             response_metadata=loop_ctx.response_metadata,
+            **settings,
         )
+
+    def _turn_settings(
+        self, binding: ChannelBinding, turn: AIChannelTurnConfig | None
+    ) -> dict[str, Any]:
+        """Each per-turn setting from the binding metadata, else the config
+        provider's result, else the channel default."""
+        settings: dict[str, Any] = {}
+        for key in _TURN_SETTINGS:
+            if key in binding.metadata:
+                settings[key] = binding.metadata[key]
+                continue
+            turn_value = getattr(turn, key) if turn is not None else None
+            settings[key] = turn_value if turn_value is not None else getattr(self, f"_{key}")
+        return settings
 
     async def _hydrate_room_memories(
         self, usage_room_id: str, activation_room_id: str | None
