@@ -390,38 +390,9 @@ class RealtimeToolsMixin:
 
             # Skill infrastructure tools — handle internally
             if self._skill_support and self._skill_support.is_skill_tool(name):
-                result_str = await self._deliver_skill_call(session, call_id, name, arguments)
-
-                # Fire ON_TOOL_CALL hook observationally — the skill tool
-                # has already executed, but audit + UI-broadcast hooks
-                # need visibility into it the same as any other tool.
-                if self._framework and room_id:
-                    skill_event = ToolCallEvent(
-                        channel_id=self.channel_id,
-                        channel_type=ChannelType.REALTIME_VOICE,
-                        tool_call_id=call_id,
-                        name=name,
-                        arguments=arguments,
-                        result=result_str,
-                        room_id=room_id,
-                        session=session,
-                    )
-                    try:
-                        skill_ctx = await self._framework._build_context(room_id)
-                        await self._framework.hook_engine.run_sync_hooks(
-                            room_id,
-                            HookTrigger.ON_TOOL_CALL,
-                            skill_event,
-                            skill_ctx,
-                            skip_event_filter=True,
-                        )
-                    except Exception:
-                        logger.debug(
-                            "ON_TOOL_CALL observation failed for skill tool %s",
-                            name,
-                            exc_info=True,
-                        )
-
+                result_str = await self._deliver_skill_call(
+                    session, call_id, name, arguments, room_id
+                )
                 telemetry.end_span(tool_span_id)
                 logger.info(
                     "Skill tool %s(%s) handled for session %s",
@@ -620,30 +591,50 @@ class RealtimeToolsMixin:
         return ctx
 
     async def _deliver_skill_call(
-        self, session: VoiceSession, call_id: str, name: str, arguments: dict[str, Any]
+        self,
+        session: VoiceSession,
+        call_id: str,
+        name: str,
+        arguments: dict[str, Any],
+        room_id: str | None,
     ) -> str:
-        """Deliver a skill before committing activation or opening its gates."""
+        """Serve a skill tool: ON_TOOL_CALL decides, then delivery, then gates.
+
+        The SYNC hooks run on the result before it goes out, as for any other
+        tool, so a hook that blocks ``activate_skill`` blocks the activation
+        too: the model reads the refusal and no gate opens. They run outside
+        the session's configuration lock, which a hook may itself need to
+        reconfigure the session.
+        """
         support = self._skill_support
         if name != TOOL_ACTIVATE_SKILL:
             result = await support.handle_tool_call(name, arguments, session.id)
+            result, _ = await self._screen_skill_result(
+                session, call_id, name, arguments, result, room_id
+            )
             await self._submit_realtime_tool_result(session, call_id, result)
             return result
         lock = self._session_config_locks.get(session.id)
         if lock is None:
             return json.dumps({"error": "Session ended before skill activation"})
+        with self._state_lock:
+            base_tools = self._session_tools.get(session.id, self._tools or [])
+        result, skill = await support.prepare_activation(arguments, session.id, base_tools)
+        result, blocked = await self._screen_skill_result(
+            session, call_id, name, arguments, result, room_id
+        )
         # Discovery, handoff and activation must preserve the same session rules.
         async with lock:
             if session.state == VoiceSessionState.ENDED:
                 return json.dumps({"error": "Session ended before skill activation"})
-            with self._state_lock:
-                base_tools = self._session_tools.get(session.id, self._tools or [])
-            result, skill = await support.prepare_activation(arguments, session.id, base_tools)
             # The call ID belongs to the current connection. Submit before
             # native reconfiguration can replace that connection.
             delivered = await self._submit_realtime_tool_result(session, call_id, result)
-            if not delivered or skill is None:
+            if not delivered or skill is None or blocked:
                 return result
             if self._provider.supports_mid_session_reconfigure:
+                with self._state_lock:
+                    base_tools = self._session_tools.get(session.id, self._tools or [])
                 visible = self._compose_session_tools(session.id, base_tools, pending_skill=skill)
                 addendum = support.activated_skills_prompt(session.id, skill)
                 if addendum or skill.metadata.gated_tool_names:
@@ -656,6 +647,31 @@ class RealtimeToolsMixin:
             if session.state != VoiceSessionState.ENDED:
                 support.commit_activation(session.id, skill)
             return result
+
+    async def _screen_skill_result(
+        self,
+        session: VoiceSession,
+        call_id: str,
+        name: str,
+        arguments: dict[str, Any],
+        result: str,
+        room_id: str | None,
+    ) -> tuple[str, bool]:
+        """Run ON_TOOL_CALL on a skill tool's result; return what the model reads
+        and whether a hook blocked it."""
+        if not (self._framework and room_id):
+            return result, False
+        event = ToolCallEvent(
+            channel_id=self.channel_id,
+            channel_type=ChannelType.REALTIME_VOICE,
+            tool_call_id=call_id,
+            name=name,
+            arguments=arguments,
+            result=result,
+            room_id=room_id,
+            session=session,
+        )
+        return await self._fire_tool_hook_outcome(event, room_id, result, name, call_id, session)
 
     async def _submit_realtime_tool_result(
         self, session: VoiceSession, call_id: str, result: str
@@ -961,7 +977,23 @@ class RealtimeToolsMixin:
         session: VoiceSession,
         carrying: RoomContext | None = None,
     ) -> str:
-        """Fire ON_TOOL_CALL hook and determine final result.
+        """Fire ON_TOOL_CALL and return the result the model reads."""
+        result_str, _ = await self._fire_tool_hook_outcome(
+            tool_event, room_id, handler_result, name, call_id, session, carrying
+        )
+        return result_str
+
+    async def _fire_tool_hook_outcome(
+        self,
+        tool_event: Any,
+        room_id: str,
+        handler_result: str | None,
+        name: str,
+        call_id: str,
+        session: VoiceSession,
+        carrying: RoomContext | None = None,
+    ) -> tuple[str, bool]:
+        """Fire ON_TOOL_CALL hook; return the final result and whether it failed.
 
         ``carrying`` is the context the pre-execution gate already built for
         this same call, when it built one: handing it over spares the room
@@ -1042,7 +1074,7 @@ class RealtimeToolsMixin:
             await self._fire_tool_refusal(
                 session, call_id, name, tool_event.arguments, result_str, room_id
             )
-        return result_str
+        return result_str, failed
 
     async def _dispatch_tool_search_call(
         self,

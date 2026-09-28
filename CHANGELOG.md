@@ -109,6 +109,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A tool a `BEFORE_AI_GENERATION` hook removes stays removed for the whole
+  turn (RMK-272). Every later round re-filtered from the toolset built before
+  the hook ran, so the tool came back from round 1 and could run; a tool the
+  hook added vanished the same way. The tools the hook leaves are now the
+  turn's toolset, and a call to a removed one is refused as undeclared.
+- An `ON_TOOL_CALL` hook that blocks `activate_skill` blocks the activation
+  (RMK-272). The skill was recorded active before the hook ran, so its gated
+  tools opened although the model read the refusal. On AIChannel the
+  activation now counts once the call is served; on RealtimeVoiceChannel the
+  skill tools run `ON_TOOL_CALL` before their result is sent, as other tools
+  do, where it was only observed afterwards: a block or a rewrite now reaches
+  the model.
 - The non-streaming tool loop stores the arguments a call ran with on its
   `TOOL_CALL_END` event, as the streaming loop does (RMK-270). It stored
   what the model asked for, so a call folded back into shape or rewritten by

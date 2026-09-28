@@ -317,3 +317,65 @@ def test_unsupported_fixed_provider_refuses_on_demand(tmp_path):
             skills=_registry_with_skill(tmp_path),
             skill_delivery_mode="on_demand",
         )
+
+
+async def test_a_blocked_activation_is_refused_and_opens_no_gate(tmp_path):
+    """ON_TOOL_CALL decides before the result goes out: a block reaches the
+    model as the refusal, and the skill's gates stay closed (RMK-272)."""
+    registry = _registry_with_skill(tmp_path, body="Payment rules.", allowed_tools="calendar")
+    async with running(registry, provider=MockRealtimeProvider()) as ctx:
+        channel, provider, session, _ = ctx
+
+        @channel._framework.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC)
+        async def refuse(event, context):
+            if event.name == "activate_skill":
+                return HookResult.block(reason="skill not allowed for this user")
+            return HookResult.allow()
+
+        result = await call(channel, provider, session, "activate_skill", {"name": "test-skill"})
+
+        assert result == {"error": "skill not allowed for this user"}
+        assert channel._skill_support.is_gated("calendar", session.id)
+        provider.reconfigure.assert_not_called()
+
+
+async def test_a_hook_rewrites_a_skill_tool_result_before_it_is_sent(tmp_path):
+    registry = _registry_with_skill(tmp_path, body="Rules.", references=[("guide.md", "SECRET")])
+    async with running(registry, provider=MockRealtimeProvider()) as ctx:
+        channel, provider, session, _ = ctx
+
+        @channel._framework.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC)
+        async def redact(event, context):
+            if event.name == "read_skill_reference":
+                return HookResult(action="allow", metadata={"result": '{"content": "[redacted]"}'})
+            return HookResult.allow()
+
+        result = await call(
+            channel,
+            provider,
+            session,
+            "read_skill_reference",
+            {"skill_name": "test-skill", "filename": "guide.md"},
+        )
+
+        assert result == {"content": "[redacted]"}
+
+
+async def test_a_hook_may_reconfigure_the_session_during_an_activation(tmp_path):
+    """The hooks run outside the session's configuration lock: one that
+    reconfigures the session from ON_TOOL_CALL does not wait on itself."""
+    registry = _registry_with_skill(tmp_path, body="Rules.", allowed_tools="calendar")
+    async with running(registry, provider=MockRealtimeProvider()) as ctx:
+        channel, provider, session, _ = ctx
+
+        @channel._framework.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC)
+        async def observer(event, context):
+            if event.name == "activate_skill":
+                await channel.reconfigure_session(session, system_prompt="Observer role")
+            return HookResult.allow()
+
+        await asyncio.wait_for(
+            call(channel, provider, session, "activate_skill", {"name": "test-skill"}), 3
+        )
+
+        assert not channel._skill_support.is_gated("calendar", session.id)
