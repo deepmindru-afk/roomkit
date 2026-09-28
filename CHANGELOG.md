@@ -98,17 +98,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   warning. Its default is `None`, which sends nothing: the default was `3`
   but never sent, so a configuration that left it alone synthesizes as
   before.
-- Gemini accepts a tool whose schema narrows an object with a `oneOf` /
-  `anyOf` (RMK-266). The schema cleaner folded every union to its first
-  branch, so `{"type": "object", "properties": {url, path}, "oneOf":
-  [{"required": ["url"]}, {"required": ["path"]}]}` ("give url or path")
-  reached Gemini as `{"required": ["url"]}`, with no type and no properties,
-  and the whole request failed with a 400, text and Live alike, whatever
-  tool the model needed. A union beside an object's own `properties`, or
-  one whose branches name no `type`, now leaves the node whole and is
-  dropped like any constraint Gemini cannot express; `Optional[X]` and
-  other typed unions fold as before. An object's `required` also keeps only
-  the properties that survived the cleaning.
+- Gemini accepts a tool whose schema narrows an object with a union
+  (`oneOf`, `anyOf`, `allOf`) (RMK-266). The schema cleaner folded every
+  union to its first branch, so `{"type": "object", "properties": {url,
+  path}, "oneOf": [{"required": ["url"]}, {"required": ["path"]}]}` ("give
+  url or path") reached Gemini as `{"required": ["url"]}`, with no type and
+  no properties, and the whole request failed with a 400, text and Live
+  alike, whatever tool the model needed. A union beside an object's own
+  `properties`, or one whose branches name no `type`, now leaves the node
+  whole, declares the fields its branches add (none of them required, since
+  only one branch applies) and is dropped like any constraint Gemini cannot
+  express; `Optional[X]` and other typed unions fold as before. `required`
+  also names only the properties that survived the cleaning, and goes when
+  none did.
 - A fail-closed `ON_TOOL_CALL` hook withholds a tool's result when the
   room's context cannot be built (RMK-262). The dispatch then ran no hook at
   all and let the result through, so a redaction hook declared

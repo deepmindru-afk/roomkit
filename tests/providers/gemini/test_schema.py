@@ -381,21 +381,21 @@ def _assert_declarable(node: dict[str, Any], path: str = "parameters") -> None:
         _assert_declarable(node["items"], f"{path}.items")
 
 
-# A stored-file reference as a tool gateway publishes it: an object whose
-# ``oneOf`` only narrows it ("a form reference needs its version").
+# A stored-file reference: an object whose ``oneOf`` only narrows it ("an
+# upload needs its version"), the shape a file-accepting MCP tool declares.
 _FILE_REFERENCE = {
     "type": "object",
     "description": "A stored file",
     "properties": {
-        "source": {"type": "string", "enum": ["form", "attachment"]},
+        "source": {"type": "string", "enum": ["upload", "library"]},
         "id": {"type": "string", "format": "uuid"},
         "version": {"type": "integer", "minimum": 1},
     },
     "required": ["source", "id"],
     "additionalProperties": False,
     "oneOf": [
-        {"properties": {"source": {"enum": ["form"]}}, "required": ["version"]},
-        {"properties": {"source": {"enum": ["attachment"]}}, "not": {"required": ["version"]}},
+        {"properties": {"source": {"enum": ["upload"]}}, "required": ["version"]},
+        {"properties": {"source": {"enum": ["library"]}}, "not": {"required": ["version"]}},
     ],
 }
 
@@ -403,9 +403,9 @@ _FILE_REFERENCE = {
 class TestRefiningUnion:
     """A union that narrows its node is not a choice between types.
 
-    Folding one to its first branch, as ``Optional[X]`` is folded, replaced
-    the object with an untyped fragment requiring a property it no longer
-    declared, and Gemini refused the whole request (RMK-266).
+    Folding one to its first branch, as ``Optional[X]`` is folded, would
+    replace the object with an untyped fragment requiring a property it does
+    not declare, and Gemini refuses the whole request over it (RMK-266).
     """
 
     def test_constraint_one_of_keeps_the_object(self) -> None:
@@ -414,7 +414,7 @@ class TestRefiningUnion:
             "type": "object",
             "description": "A stored file",
             "properties": {
-                "source": {"type": "string", "enum": ["form", "attachment"]},
+                "source": {"type": "string", "enum": ["upload", "library"]},
                 "id": {"type": "string", "format": "uuid"},
                 "version": {"type": "integer", "minimum": 1},
             },
@@ -422,8 +422,8 @@ class TestRefiningUnion:
         }
 
     def test_either_or_root_keeps_every_property(self) -> None:
-        """The "give url or path" tool: its root used to become
-        ``{"required": ["url"]}``, with no type and no properties."""
+        """The "give url or path" tool keeps its type and all its properties,
+        where the fold would leave ``{"required": ["url"]}``."""
         schema = {
             "type": "object",
             "properties": {
@@ -443,9 +443,56 @@ class TestRefiningUnion:
             },
         }
 
+    def test_fields_a_branch_adds_are_declared_without_its_required(self) -> None:
+        """``url`` or ``path`` beside ``mode``: both are offered, neither is
+        required, since only one branch applies."""
+        schema = {
+            "type": "object",
+            "properties": {"mode": {"type": "string"}},
+            "required": ["mode"],
+            "oneOf": [
+                {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]},
+                {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                },
+            ],
+        }
+        cleaned = clean_gemini_schema(schema)
+        assert cleaned == {
+            "type": "object",
+            "properties": {
+                "mode": {"type": "string"},
+                "url": {"type": "string"},
+                "path": {"type": "string"},
+            },
+            "required": ["mode"],
+        }
+
+    def test_all_of_mixin_adds_its_fields_and_the_node_wins(self) -> None:
+        schema = {
+            "type": "object",
+            "properties": {"a": {"type": "string", "description": "own"}},
+            "allOf": [{"properties": {"a": {"type": "integer"}, "b": {"type": "boolean"}}}],
+        }
+        cleaned = clean_gemini_schema(schema)
+        assert cleaned == {
+            "type": "object",
+            "properties": {
+                "a": {"type": "string", "description": "own"},
+                "b": {"type": "boolean"},
+            },
+        }
+
     def test_untyped_branches_keep_a_scalar(self) -> None:
         schema = {"type": "string", "anyOf": [{"format": "date"}, {"format": "date-time"}]}
         assert clean_gemini_schema(schema) == {"type": "string"}
+
+    def test_empty_union_takes_the_typed_fallback(self) -> None:
+        """An empty union narrows nothing, and a typeless node is what this
+        module exists to prevent."""
+        assert clean_gemini_schema({"anyOf": []}) == {"type": "string", "nullable": True}
 
     def test_typed_union_on_a_bare_object_still_folds(self) -> None:
         """``{"type": "object"}`` without properties of its own offers its
@@ -461,44 +508,44 @@ class TestRefiningUnion:
         assert cleaned == {"type": "object", "properties": {"a": {"type": "string"}}}
 
     def test_nested_tool_is_declarable(self) -> None:
-        """The failing tool's shape: file references inside ``files[]``, next
-        to free-form objects, which Gemini accepts and are kept."""
+        """An MCP tool that nests file references in an array, next to
+        free-form objects, which Gemini accepts and are kept."""
         schema = {
             "type": "object",
             "properties": {
                 "title": {"type": "string"},
-                "files": {
+                "attachments": {
                     "type": "array",
                     "items": {
                         "type": "object",
                         "properties": {
                             "name": {"type": "string"},
-                            "role_bindings": {
+                            "labels": {
                                 "type": "object",
                                 "additionalProperties": {"type": "string"},
                             },
-                            "placement": {
+                            "metadata": {
                                 "anyOf": [
                                     {"type": "object", "additionalProperties": True},
                                     {"type": "null"},
                                 ],
                             },
-                            "file_ref": _FILE_REFERENCE,
-                            "signature_ref": _FILE_REFERENCE,
+                            "document_ref": _FILE_REFERENCE,
+                            "preview_ref": _FILE_REFERENCE,
                         },
                         "required": ["name"],
                     },
                 },
             },
-            "required": ["title", "files"],
+            "required": ["title", "attachments"],
         }
         cleaned = clean_gemini_schema(schema)
         assert cleaned is not None
         _assert_declarable(cleaned)
-        item = cleaned["properties"]["files"]["items"]["properties"]
-        assert item["role_bindings"] == {"type": "object"}
-        assert item["placement"] == {"type": "object", "nullable": True}
-        assert set(item["signature_ref"]["properties"]) == {"source", "id", "version"}
+        item = cleaned["properties"]["attachments"]["items"]["properties"]
+        assert item["labels"] == {"type": "object"}
+        assert item["metadata"] == {"type": "object", "nullable": True}
+        assert set(item["preview_ref"]["properties"]) == {"source", "id", "version"}
 
     def test_empty_root_is_left_alone(self) -> None:
         schema = {"type": "object", "properties": {}}
@@ -521,6 +568,18 @@ class TestRequiredMatchesProperties:
             "required": ["a"],
         }
 
-    def test_required_without_properties_is_emptied(self) -> None:
-        cleaned = clean_gemini_schema({"type": "object", "required": ["a"]})
-        assert cleaned == {"type": "object", "required": []}
+    def test_required_left_empty_is_dropped(self) -> None:
+        assert clean_gemini_schema({"type": "object", "required": ["a"]}) == {"type": "object"}
+        assert clean_gemini_schema({"type": "string", "required": ["a"]}) == {"type": "string"}
+
+    def test_a_name_that_is_not_a_string_is_dropped(self) -> None:
+        """One malformed tool must not raise while every tool of the request
+        is being cleaned."""
+        schema = {
+            "type": "object",
+            "properties": {"a": {"type": "string"}},
+            "required": [["a"], "a"],
+        }
+        cleaned = clean_gemini_schema(schema)
+        assert cleaned is not None
+        assert cleaned["required"] == ["a"]
