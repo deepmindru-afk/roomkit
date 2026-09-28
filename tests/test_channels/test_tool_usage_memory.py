@@ -503,8 +503,8 @@ class TestToolUsageInContext:
 
     async def test_framework_loader_reads_persisted_tool_calls(self) -> None:
         """End to end through the framework seam: register_channel injects the
-        loader, and it rebuilds call dicts from persisted TOOL_CALL_END events
-        — the piece that lets a conversation outlive the channel object."""
+        loader, and it rebuilds call dicts from persisted tool-call events —
+        the piece that lets a conversation outlive the channel object."""
         from roomkit import RoomKit
         from roomkit.models.enums import EventType
         from roomkit.models.event import ToolCallContent
@@ -515,27 +515,37 @@ class TestToolUsageInContext:
         assert ch._tool_usage_loader is not None
 
         await kit.create_room(room_id="r1")
-        await kit._store.add_event_auto_index(
-            "r1",
-            RoomEvent(
-                room_id="r1",
-                source=EventSource(
-                    channel_id="ai1", channel_type=ChannelType.SMS, provider="mock"
+        source = EventSource(channel_id="ai1", channel_type=ChannelType.SMS, provider="mock")
+        # The start carries the model's request, the end what ran: here a
+        # BEFORE_TOOL_USE hook put a real account back in place of a token.
+        for event_type, arguments, status in (
+            (EventType.TOOL_CALL_START, {"action": "skip", "account": "<ACCOUNT_1>"}, "pending"),
+            (EventType.TOOL_CALL_END, {"action": "skip", "account": "alice"}, "completed"),
+        ):
+            await kit._store.add_event_auto_index(
+                "r1",
+                RoomEvent(
+                    room_id="r1",
+                    source=source,
+                    type=event_type,
+                    content=ToolCallContent(
+                        tool_name="SpotifyPlayback",
+                        tool_id="tc1",
+                        arguments=arguments,
+                        result="Skipped." if status == "completed" else None,
+                        status=status,
+                    ),
                 ),
-                type=EventType.TOOL_CALL_END,
-                content=ToolCallContent(
-                    tool_name="SpotifyPlayback",
-                    tool_id="tc1",
-                    arguments={"action": "skip"},
-                    result="Skipped.",
-                    status="completed",
-                ),
-            ),
-        )
+            )
 
         calls = await ch._tool_usage_loader("r1")
+        # The digest goes back into the prompt: it quotes the model's request.
         assert calls == [
-            {"name": "SpotifyPlayback", "arguments": {"action": "skip"}, "result": "Skipped."}
+            {
+                "name": "SpotifyPlayback",
+                "arguments": {"action": "skip", "account": "<ACCOUNT_1>"},
+                "result": "Skipped.",
+            }
         ]
         # And the channel-side seam consumes it: the memory rebuilds.
         ch._tool_usage.seed("r1", calls)

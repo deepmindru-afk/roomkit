@@ -409,8 +409,8 @@ class AIToolsMixin:
             # Pre-execution gate: BEFORE_TOOL_USE hook can deny the tool call,
             # or hand back rewritten arguments (a redaction hook putting real
             # values back before the tool acts on the model's tokenised text).
-            # Everything downstream — the handler, ON_TOOL_CALL, the usage
-            # record — reads ``arguments``, so it reports what actually ran.
+            # The handler and ON_TOOL_CALL read ``arguments``, so they report
+            # what actually ran; the usage record keeps the model's own.
             arguments = call_arguments
             arguments_rewritten = False
             if self._before_tool_call_hook is not None:

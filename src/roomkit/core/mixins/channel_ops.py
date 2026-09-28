@@ -234,7 +234,7 @@ class ChannelOpsMixin(HelpersMixin):
             )
         handler._channel_id = channel_id
         handler._before_tool_hook = self._build_before_tool_call_hook(channel_id)
-        handler._on_tool_hook = self._build_tool_call_hook(channel_id)
+        handler._on_tool_hook = self._build_tool_report_hook(channel_id)
 
     def unregister_channel(self, channel_id: str) -> Channel | None:
         """Remove a channel from the registry and return it.

@@ -23,10 +23,12 @@ from roomkit import (
     RoomKit,
     TextContent,
 )
+from roomkit.channels._tool_usage import ToolUsageMemory
 from roomkit.models.context import RoomContext
 from roomkit.models.tool_call import ToolCallEvent
 from roomkit.providers.ai.base import AIContext, AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.tools.external import PolicyExternalToolHandler
 from roomkit.voice.realtime.mock import MockRealtimeProvider
 from tests.test_framework import SimpleChannel
 from tests.test_realtime_fixed_tools import call
@@ -182,8 +184,122 @@ async def test_the_next_prompt_keeps_the_model_s_arguments(streaming: bool) -> N
     await _say(kit, "and then?")
 
     prompt = provider.calls[-1].system_prompt or ""
-    assert "lookup" in prompt  # the digest is there...
-    assert "alice@real.example" not in prompt  # ...without the real address
+    assert "<EMAIL_1>" in prompt  # the digest quotes the model's arguments...
+    assert "alice@real.example" not in prompt  # ...never the real address
+    await kit.close()
+
+
+async def test_a_cold_digest_keeps_the_model_s_arguments_too(streaming: bool) -> None:
+    """After a restart the digest is rebuilt from the stored tool-call events;
+    the end carries the arguments that ran, the start the model's request."""
+    kit, provider = await _kit(
+        streaming,
+        AIResponse(content="done", finish_reason="stop"),
+        AIResponse(content="again", finish_reason="stop"),
+    )
+
+    @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="detokenize")
+    async def detokenize(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
+        return HookResult(action="allow", metadata={"arguments": {"email": "alice@real.example"}})
+
+    await _say(kit)
+    agent = kit.channels["ai1"]
+    agent._tool_usage = ToolUsageMemory()  # the process restarted: nothing in memory
+    await _say(kit, "and then?")
+
+    prompt = provider.calls[-1].system_prompt or ""
+    assert "<EMAIL_1>" in prompt
+    assert "alice@real.example" not in prompt
+    await kit.close()
+
+
+async def test_a_modify_the_chain_cannot_use_keeps_the_previous_rewrite(
+    streaming: bool,
+) -> None:
+    """A MODIFY whose payload is no tool-call event replaces nothing (RFC
+    §9.3): the chain carries on from the previous hook's redaction."""
+    kit, provider = await _kit(streaming)
+
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="redact", priority=1)
+    async def redact(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
+        return HookResult(action="allow", metadata={"result": _redact(event).result})
+
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="broken", priority=2)
+    async def broken(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
+        return HookResult.modify(f"{event.result} (source: CRM)")  # a str, not the event
+
+    await _say(kit)
+
+    assert _read_by_model(provider.calls[1]) == ["SSN [REDACTED]"]
+    await kit.close()
+
+
+async def test_the_structured_copy_chains_too(streaming: bool) -> None:
+    kit, provider = await _kit(streaming)
+    seen: list[Any] = []
+
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="publish", priority=1)
+    async def publish(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
+        return HookResult(action="allow", metadata={"structured_content": {"rows": 1}})
+
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="read", priority=2)
+    async def read(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
+        seen.append(event.structured_content)
+        return HookResult.allow()
+
+    await _say(kit)
+
+    assert seen == [{"rows": 1}]
+    await kit.close()
+
+
+async def _external_report(
+    sync_hook: Any,
+) -> tuple[list[ToolCallEvent], PolicyExternalToolHandler, RoomKit]:
+    kit = RoomKit()
+    handler = PolicyExternalToolHandler()
+    kit.register_channel(
+        Agent("ext", provider=MockAIProvider(responses=["ok"]), external_tool_handler=handler)
+    )
+    await kit.create_room(room_id="r1")
+    observed: list[ToolCallEvent] = []
+    kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="sync")(sync_hook)
+
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    async def audit(event: ToolCallEvent, ctx: RoomContext) -> None:
+        observed.append(event)
+
+    await handler._fire_on_tool_hook(
+        "Read", {"path": "a.txt"}, "file contents", is_error=False, tool_call_id="t1", room_id="r1"
+    )
+    await asyncio.sleep(0.05)
+    return observed, handler, kit
+
+
+async def test_an_external_report_s_observers_see_the_provider_s_outcome() -> None:
+    """An external tool already ran and its agent read the result: a hook's
+    rewrite or block changes nothing there, and the audit must not record
+    one either."""
+
+    async def rewrite(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
+        return HookResult(action="allow", metadata={"result": "REWRITTEN"})
+
+    observed, _, kit = await _external_report(rewrite)
+    assert [(e.result, e.is_error) for e in observed] == [("file contents", False)]
+    await kit.close()
+
+    async def block(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
+        return HookResult.block("restricted")
+
+    observed, _, kit = await _external_report(block)
+    assert [(e.result, e.is_error) for e in observed] == [("file contents", False)]
+    await kit.close()
+
+    async def modify(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
+        return HookResult.modify(dataclasses.replace(event, result="MODIFIED"))
+
+    observed, _, kit = await _external_report(modify)
+    assert [(e.result, e.is_error) for e in observed] == [("file contents", False)]
     await kit.close()
 
 

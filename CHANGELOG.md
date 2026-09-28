@@ -116,13 +116,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   then "cite the source" handed the model the unredacted text. The async
   observers see the final result instead of the original, and a blocked call,
   or one a failing fail-closed hook withheld, now fires them with `is_error`
-  and the reason instead of skipping them. Same on RealtimeVoiceChannel.
-  `HookEngine.run_sync_hooks` takes a `fold` for this; other triggers are
-  unchanged.
+  and the reason instead of skipping them. Same on RealtimeVoiceChannel. A
+  `modify` whose payload is not the `ToolCallEvent` replaces nothing: the
+  chain carries on from the previous hook's rewrite. An external tool's
+  report (ACP, Claude Agent SDK) reaches the observers as its provider told
+  it, whatever a sync hook returned. `HookEngine.run_sync_hooks` takes a
+  `fold` and a `fire_observers` flag for this; other triggers are unchanged.
 - The tool-usage digest of the next turn's prompt records the arguments the
   model sent, not the ones a `BEFORE_TOOL_USE` hook rewrote (RMK-273): a
   de-tokenising hook put the real values back into the prompt it kept them
-  from.
+  from. A digest rebuilt from the stored history after a restart reads them
+  from the call's `TOOL_CALL_START`, not from its `TOOL_CALL_END`.
 - A tool a `BEFORE_AI_GENERATION` hook removes stays removed for the whole
   turn (RMK-272). Every later round re-filtered from the toolset built before
   the hook ran, so the tool came back from round 1 and could run; a tool the

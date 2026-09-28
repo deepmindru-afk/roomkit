@@ -302,6 +302,60 @@ class HookEngine:
         {HookTrigger.BEFORE_TTS, HookTrigger.ON_TRANSCRIPTION}
     )
 
+    def _apply_rewrite(
+        self,
+        result: SyncPipelineResult,
+        hook: HookRegistration,
+        trigger: HookTrigger,
+        room_id: str,
+        original: Any,
+        hook_result: HookResult,
+        fold: Callable[[Any, dict[str, Any]], Any] | None,
+    ) -> bool:
+        """Carry *hook_result*'s rewrite into the event the next hook sees.
+
+        A MODIFY replaces the payload; with a *fold*, the hook's metadata
+        rewrite is written into it too. A MODIFY whose payload is not of the
+        type the trigger passed in replaces nothing (RFC §9.3): it blocks when
+        the hook fails closed, and under a *fold* the chain carries on from
+        the previous outcome, the hook's metadata rewrite still applied.
+        Without a fold on a fail-open hook the payload is taken as it is.
+        Returns whether the pipeline was closed.
+        """
+        current = result.event if result.event is not None else original
+        payload = hook_result.event
+        if hook_result.action == "modify" and payload is not None:
+            usable = isinstance(payload, type(current))
+            if usable or (fold is None and not self._fails_closed(hook, trigger)):
+                result.event = payload
+            else:
+                # The consumer would silently ignore a payload it cannot use
+                # and carry on with the original — which for a redaction hook
+                # publishes the very content it meant to replace.
+                expected, got = type(current).__name__, type(payload).__name__
+                logger.error(
+                    "Sync hook %s returned a %s where a %s was expected",
+                    hook.name,
+                    got,
+                    expected,
+                    extra={"room_id": room_id},
+                )
+                result.hook_errors.append(
+                    {"hook": hook.name, "error": f"modify returned {got}, expected {expected}"}
+                )
+                if self._close(
+                    result,
+                    hook,
+                    trigger,
+                    "hook_invalid_result",
+                    f"hook {hook.name} returned an unusable payload",
+                ):
+                    return True
+        if fold is not None and hook_result.metadata:
+            latest = result.event if result.event is not None else original
+            result.event = fold(latest, hook_result.metadata)
+        return False
+
     def _fails_closed(self, hook: HookRegistration, trigger: HookTrigger) -> bool:
         """Whether an unusable outcome of *hook* blocks (RFC §9.3)."""
         return hook.fail_closed or trigger in self.FAIL_CLOSED_TRIGGERS
@@ -353,6 +407,7 @@ class HookEngine:
         skip_event_filter: bool = False,
         needs_lock: bool | None = None,
         fold: Callable[[Any, dict[str, Any]], Any] | None = None,
+        fire_observers: bool = True,
     ) -> SyncPipelineResult:
         """Run sync hooks sequentially. Stops on block, passes modified events.
 
@@ -374,6 +429,9 @@ class HookEngine:
                 left it, so the next hook, the ASYNC observers and the caller
                 all see the chain's latest state. ``None`` leaves metadata
                 beside the event.
+            fire_observers: ``False`` leaves the ASYNC observers to the
+                caller, for a firing whose observers must see an event no
+                SYNC hook can change (an external tool's report).
         """
         filter_event = None if skip_event_filter else event
         hooks = self._get_hooks(room_id, trigger, HookExecution.SYNC, event=filter_event)
@@ -488,49 +546,15 @@ class HookEngine:
                 result.blocked_by = hook.name
                 return result
 
-            if hook_result.action == "modify" and hook_result.event is not None:
-                if self._fails_closed(hook, trigger) and not isinstance(
-                    hook_result.event, type(current_event)
-                ):
-                    # The consumer would silently ignore a payload it cannot use
-                    # and carry on with the original — which for a redaction hook
-                    # publishes the very content it meant to replace.
-                    logger.error(
-                        "Sync hook %s returned a %s where a %s was expected",
-                        hook.name,
-                        type(hook_result.event).__name__,
-                        type(current_event).__name__,
-                        extra={"room_id": room_id},
-                    )
-                    result.hook_errors.append(
-                        {
-                            "hook": hook.name,
-                            "error": (
-                                f"modify returned {type(hook_result.event).__name__}, "
-                                f"expected {type(current_event).__name__}"
-                            ),
-                        }
-                    )
-                    self._close(
-                        result,
-                        hook,
-                        trigger,
-                        "hook_invalid_result",
-                        f"hook {hook.name} returned an unusable payload",
-                    )
-                    return result
-                result.event = hook_result.event
-
-            if fold is not None and hook_result.metadata:
-                latest = result.event if result.event is not None else event
-                result.event = fold(latest, hook_result.metadata)
+            if self._apply_rewrite(result, hook, trigger, room_id, event, hook_result, fold):
+                return result
 
         # Fire ASYNC observers for the same trigger (fire-and-forget).
         # This allows ASYNC hooks to observe events from triggers that
         # are only invoked via run_sync_hooks (e.g. ON_TRANSCRIPTION,
         # ON_VISION_RESULT, ON_TOOL_CALL).  Only ASYNC hooks are fired
         # — SYNC hooks already ran above.
-        if needs_lock is False:
+        if needs_lock is False or not fire_observers:
             return result
         final_event = result.event if result.event is not None else event
         filter_ev = None if skip_event_filter else final_event

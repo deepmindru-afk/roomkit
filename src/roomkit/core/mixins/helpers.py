@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import dataclasses
 import json
 import logging
 from collections.abc import Callable, Coroutine, Mapping
@@ -50,7 +49,12 @@ from roomkit.models.participant import Participant
 from roomkit.models.plan_event import PlanUpdatedEvent
 from roomkit.models.task import Observation, Task
 from roomkit.models.thinking_event import ThinkingEvent
-from roomkit.models.tool_call import ToolCallEvent, ToolCallVerdict
+from roomkit.models.tool_call import (
+    ToolCallEvent,
+    ToolCallVerdict,
+    fold_tool_call_rewrite,
+    withheld_call_event,
+)
 
 _RECENT_EVENTS_LIMIT = 2_000
 """Hard ceiling on events kept in ``RoomContext.recent_events`` in memory."""
@@ -786,20 +790,30 @@ class HelpersMixin:
             with kit_ref._resource_lease():
                 events = await kit_ref._store.get_timeline(
                     room_id,
-                    event_filter=EventFilter(event_types=[EventType.TOOL_CALL_END]),
-                    limit=limit,
+                    event_filter=EventFilter(
+                        event_types=[EventType.TOOL_CALL_START, EventType.TOOL_CALL_END]
+                    ),
+                    limit=limit * 2,  # a start and an end per call
                     newest_first=True,  # most recent N, returned ascending
                 )
+            # The arguments the model sent, from the call's start: the end
+            # carries the ones that ran, which a BEFORE_TOOL_USE hook may have
+            # de-tokenised, and the digest goes back into the model's prompt.
+            requested = {
+                getattr(ev.content, "tool_id", ""): getattr(ev.content, "arguments", {}) or {}
+                for ev in events
+                if ev.type == EventType.TOOL_CALL_START
+            }
             calls: list[dict[str, Any]] = []
             for ev in events:
                 content = ev.content
                 name = getattr(content, "tool_name", "")
-                if not name:
+                if ev.type != EventType.TOOL_CALL_END or not name:
                     continue
                 calls.append(
                     {
                         "name": name,
-                        "arguments": getattr(content, "arguments", {}) or {},
+                        "arguments": requested.get(getattr(content, "tool_id", ""), {}),
                         "result": getattr(content, "result", "") or "",
                     }
                 )
@@ -808,28 +822,22 @@ class HelpersMixin:
         return _load
 
     def _build_tool_call_hook(self, channel_id: str) -> Any:
-        """Build a ToolCallCallback closure for an AIChannel.
+        """Build the ON_TOOL_CALL callback for a call a channel served.
 
-        The returned callback runs ON_TOOL_CALL sync hooks against the
-        framework's hook engine and emits a ``tool_call`` framework event.
-        Returns the hooks' :class:`ToolCallVerdict` (see
-        :func:`_tool_call_verdict`), or None to keep the original.
+        The returned callback runs ON_TOOL_CALL's SYNC hooks as a chain on the
+        call's outcome (RFC §9.3, ``fold_tool_call_rewrite``) and returns their
+        :class:`ToolCallVerdict` (see :func:`_tool_call_verdict`). The ASYNC
+        observers see the final outcome; a BLOCK, which the engine stops at,
+        fires them here with the failure. Emits a ``tool_call`` framework event.
         """
         kit_ref = self
 
         async def _callback(event: ToolCallEvent) -> ToolCallVerdict | None:
             if not event.room_id:
                 return None
-            try:
-                context = await kit_ref._build_context(event.room_id)
-            except Exception:
-                logger.warning(
-                    "Failed to build context for ON_TOOL_CALL hook in room %s",
-                    event.room_id,
-                    exc_info=True,
-                )
+            context = await kit_ref._tool_hook_context(event.room_id)
+            if context is None:
                 return kit_ref._unreachable_tool_call_verdict(event.room_id)
-
             hook_result = await kit_ref._hook_engine.run_sync_hooks(
                 event.room_id,
                 HookTrigger.ON_TOOL_CALL,
@@ -840,33 +848,75 @@ class HelpersMixin:
             )
             verdict = _tool_call_verdict(hook_result, event)
             if verdict.blocked:
-                # The engine stops at a block, before its observers: a call
-                # still fires them with its outcome (RFC §9.3), the failure.
-                failed = dataclasses.replace(
-                    event, result=verdict.result, is_error=True, structured_content=None
-                )
-                await kit_ref._hook_engine.run_observers(
-                    event.room_id,
-                    HookTrigger.ON_TOOL_CALL,
-                    failed,
-                    context,
-                    skip_event_filter=True,
-                )
-
-            await kit_ref._emit_framework_event(
-                "tool_call",
-                room_id=event.room_id,
-                channel_id=channel_id,
-                data={
-                    "tool_name": event.name,
-                    "tool_call_id": event.tool_call_id,
-                    "channel_type": str(event.channel_type),
-                },
-            )
-
+                withheld = withheld_call_event(event, str(verdict.result))
+                await kit_ref._observe_tool_call(withheld, context)
+            await kit_ref._emit_tool_call_event(event, channel_id)
             return verdict
 
         return _callback
+
+    def _build_tool_report_hook(self, channel_id: str) -> Any:
+        """Build the ON_TOOL_CALL callback for a call an external handler ran.
+
+        A report, by construction (RFC §9.3): the agent already read the
+        provider's result, so nothing a hook returns reaches it, no rewrite is
+        folded in, and a BLOCK withholds nothing. The observers see the
+        provider's outcome and its own ``is_error``, a block included.
+        """
+        kit_ref = self
+
+        async def _callback(event: ToolCallEvent) -> None:
+            if not event.room_id:
+                return
+            context = await kit_ref._tool_hook_context(event.room_id)
+            if context is None:
+                return
+            await kit_ref._hook_engine.run_sync_hooks(
+                event.room_id,
+                HookTrigger.ON_TOOL_CALL,
+                event,
+                context,
+                skip_event_filter=True,
+                fire_observers=False,
+            )
+            await kit_ref._observe_tool_call(event, context)
+            await kit_ref._emit_tool_call_event(event, channel_id)
+
+        return _callback
+
+    async def _tool_hook_context(self, room_id: str) -> RoomContext | None:
+        """The room's context for ON_TOOL_CALL, or ``None`` when it will not build."""
+        try:
+            return await self._build_context(room_id)
+        except Exception:
+            logger.warning(
+                "Failed to build context for ON_TOOL_CALL hook in room %s",
+                room_id,
+                exc_info=True,
+            )
+            return None
+
+    async def _observe_tool_call(self, event: ToolCallEvent, context: RoomContext) -> None:
+        """Fire ON_TOOL_CALL's ASYNC observers alone on *event*."""
+        await self._hook_engine.run_observers(
+            str(event.room_id),
+            HookTrigger.ON_TOOL_CALL,
+            event,
+            context,
+            skip_event_filter=True,
+        )
+
+    async def _emit_tool_call_event(self, event: ToolCallEvent, channel_id: str) -> None:
+        await self._emit_framework_event(
+            "tool_call",
+            room_id=event.room_id,
+            channel_id=channel_id,
+            data={
+                "tool_name": event.name,
+                "tool_call_id": event.tool_call_id,
+                "channel_type": str(event.channel_type),
+            },
+        )
 
     def _unreachable_tool_call_verdict(self, room_id: str) -> ToolCallVerdict | None:
         """The verdict on a call whose ON_TOOL_CALL hooks could not run.
@@ -1335,35 +1385,6 @@ class HelpersMixin:
         )
 
 
-def fold_tool_call_rewrite(event: Any, metadata: dict[str, Any]) -> Any:
-    """An ON_TOOL_CALL hook's override, written into the event it leaves.
-
-    The engine's ``fold`` for ON_TOOL_CALL (RFC §9.3): the next SYNC hook,
-    the ASYNC observers and the channel then read the outcome as the chain
-    left it, whether a hook replaced it with ``modify`` or through
-    ``metadata``. ``metadata["result"]`` replaces the result;
-    ``metadata["structured_content"]`` replaces the structured copy, and a
-    value that is not a mapping is no copy a surface can render, so it clears
-    the copy rather than publish the original.
-    """
-    if not isinstance(event, ToolCallEvent):
-        return event
-    changes: dict[str, Any] = {}
-    if "result" in metadata:
-        changes["result"] = metadata["result"]
-    if "structured_content" in metadata:
-        copy = metadata["structured_content"]
-        if copy is not None and not isinstance(copy, Mapping):
-            logger.warning(
-                "ON_TOOL_CALL hook returned a structured_content of type %s, not a mapping; "
-                "the call's structured copy is dropped",
-                type(copy).__name__,
-            )
-            copy = None
-        changes["structured_content"] = dict(copy) if copy is not None else None
-    return dataclasses.replace(event, **changes) if changes else event
-
-
 def _tool_call_verdict(hook_result: Any, event: ToolCallEvent) -> ToolCallVerdict:
     """ON_TOOL_CALL's SYNC hooks' result as the verdict the channel applies.
 
@@ -1376,8 +1397,17 @@ def _tool_call_verdict(hook_result: Any, event: ToolCallEvent) -> ToolCallVerdic
         reason = json.dumps({"error": hook_result.reason or "blocked"})
         return ToolCallVerdict(result=reason, blocked=True)
     final = hook_result.event if isinstance(hook_result.event, ToolCallEvent) else event
+    copy = final.structured_content
+    if copy is not None and not isinstance(copy, Mapping):
+        # A MODIFY skips the fold's check; the same rule applies to it.
+        logger.warning(
+            "ON_TOOL_CALL hook left a structured_content of type %s, not a mapping; "
+            "the call's structured copy is dropped",
+            type(copy).__name__,
+        )
+        copy = None
     return ToolCallVerdict(
         result=final.result if final.result is not event.result else None,
-        replaces_structured=final.structured_content is not event.structured_content,
-        structured_content=final.structured_content,
+        replaces_structured=copy is not event.structured_content,
+        structured_content=dict(copy) if copy is not None else None,
     )

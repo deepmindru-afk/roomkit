@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import dataclasses
 import json
 import logging
 import threading
@@ -14,9 +13,12 @@ from roomkit.channels._skill_constants import TOOL_ACTIVATE_SKILL
 from roomkit.channels._tool_search_constants import TOOL_CALL_TOOL
 from roomkit.channels.ai import _current_loop_ctx, _ToolLoopContext
 from roomkit.core.exceptions import ToolRefusedError
-from roomkit.core.mixins.helpers import fold_tool_call_rewrite
 from roomkit.models.enums import ChannelType, HookTrigger
-from roomkit.models.tool_call import ToolCallEvent
+from roomkit.models.tool_call import (
+    ToolCallEvent,
+    fold_tool_call_rewrite,
+    withheld_call_event,
+)
 from roomkit.providers.ai.base import AIImagePart, AITextPart
 from roomkit.telemetry.base import Attr, SpanKind
 from roomkit.tools.validation import fold_hoisted_arguments, validate_tool_arguments
@@ -111,6 +113,32 @@ class RealtimeToolsHost(Protocol):
     def _update_idle_event(self, session_id: str) -> None: ...
 
     def _expect_provider_output(self, session_id: str) -> None: ...
+
+
+def _hook_outcome(
+    hook_result: Any, tool_event: ToolCallEvent, handler_result: str | None, name: str
+) -> tuple[str, bool]:
+    """The result a realtime model reads after ON_TOOL_CALL, and whether it failed.
+
+    Read off the event the SYNC chain left (RFC §9.3), so a MODIFY counts like
+    the override.
+    """
+    if not hook_result.allowed:
+        return json.dumps({"error": hook_result.reason or "Tool call blocked by hook"}), True
+    final = hook_result.event if isinstance(hook_result.event, ToolCallEvent) else tool_event
+    if final.result is not tool_event.result:
+        value = final.result
+        return (value if isinstance(value, str) else json.dumps(value)), False
+    if handler_result is not None:
+        return handler_result, False
+    if hook_result.hook_errors:
+        errors = "; ".join(f"{e['hook']}: {e['error']}" for e in hook_result.hook_errors)
+        return json.dumps({"error": f"Tool call failed: {errors}"}), True
+    # Nothing served this call: no handler, and the hooks that could have
+    # answered it did not. Reporting ``{"status": "ok"}`` would be a success
+    # for work nobody did, which the model then acts on and an audit trail
+    # records as a completed call.
+    return json.dumps({"error": f"No handler for tool {name}"}), True
 
 
 class RealtimeToolsMixin:
@@ -1035,8 +1063,6 @@ class RealtimeToolsMixin:
             skip_event_filter=True,
             fold=fold_tool_call_rewrite,
         )
-        # The outcome as the SYNC chain left it, a MODIFY included (RFC §9.3).
-        final = hook_result.event if isinstance(hook_result.event, ToolCallEvent) else tool_event
         if handler_result is not None:
             # The firing carried the handler's result: that was the report. A
             # cancellation landing between here and the wire must not add a
@@ -1048,45 +1074,18 @@ class RealtimeToolsMixin:
             name,
             (time.perf_counter() - t_seg) * 1000,
         )
-
-        failed = False
-        if not hook_result.allowed:
-            failed = True
-            result_str = json.dumps({"error": hook_result.reason or "Tool call blocked by hook"})
-            if handler_result is not None:
-                # The engine stops at a block, before its observers; the call
-                # still fires them with its outcome, the failure. (Nothing
-                # served, the refusal below reports it instead.)
-                await self._framework.hook_engine.run_observers(
-                    room_id,
-                    HookTrigger.ON_TOOL_CALL,
-                    dataclasses.replace(
-                        final, result=result_str, is_error=True, structured_content=None
-                    ),
-                    context,
-                    skip_event_filter=True,
-                )
-        elif final.result is not tool_event.result:
-            hook_val = final.result
-            result_str = hook_val if isinstance(hook_val, str) else json.dumps(hook_val)
-        elif handler_result is not None:
-            result_str = handler_result
-        elif hook_result.hook_errors:
-            failed = True
-            errors = "; ".join(f"{e['hook']}: {e['error']}" for e in hook_result.hook_errors)
-            result_str = json.dumps(
-                {
-                    "error": f"Tool call failed: {errors}",
-                }
+        result_str, failed = _hook_outcome(hook_result, tool_event, handler_result, name)
+        if not hook_result.allowed and handler_result is not None:
+            # The engine stops at a block, before its observers: the served
+            # call still fires them, with the failure. (A call nothing served
+            # is reported by the refusal below instead.)
+            await self._framework.hook_engine.run_observers(
+                room_id,
+                HookTrigger.ON_TOOL_CALL,
+                withheld_call_event(tool_event, result_str),
+                context,
+                skip_event_filter=True,
             )
-        else:
-            # Nothing served this call: no handler, and the hooks that could
-            # have answered it did not. It used to report ``{"status": "ok"}``
-            # — a success for work nobody did, which the model then acted on
-            # and an audit trail recorded as a completed call. Say what
-            # happened, in the same words the no-framework path already uses.
-            failed = True
-            result_str = json.dumps({"error": f"No handler for tool {name}"})
 
         await self._framework._emit_framework_event(
             "tool_call",
@@ -1108,10 +1107,9 @@ class RealtimeToolsMixin:
             # ran just above, on this same call.
             #
             # Only when nothing had served the call. A handler that ran and was
-            # then blocked is not a refused call: it executed, the firing above
-            # already reported its result, and a second report would put two
-            # outcomes on one ``tool_call_id`` — the withheld result is a
-            # substitution, which BEFORE_TOOL_USE is the trigger for refusing.
+            # then blocked is not a refused call: it executed, and its
+            # observers got the withheld outcome above — a second report
+            # would put two outcomes on one ``tool_call_id``.
             await self._fire_tool_refusal(
                 session, call_id, name, tool_event.arguments, result_str, room_id
             )
