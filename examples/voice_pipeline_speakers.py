@@ -48,9 +48,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import argparse
 import asyncio
 import dataclasses
+import itertools
+import math
 import os
 from typing import Any
 
+import numpy as np
 import sounddevice as sd
 from shared import build_vad, require_env, run_until_stopped, setup_logging
 
@@ -66,6 +69,7 @@ from roomkit.voice.stt.meta import MetaSTTConfig, MetaSTTProvider
 logger = setup_logging("roomkit.examples.voice_pipeline_speakers")
 
 SAMPLE_RATE = 16000
+SILENT_DBFS = -50.0  # an enrollment quieter than this recorded no voice
 
 
 def record(seconds: float) -> bytes:
@@ -75,15 +79,39 @@ def record(seconds: float) -> bytes:
     return frames.tobytes()
 
 
+def level_dbfs(pcm: bytes) -> float:
+    """The recording's RMS level, in dBFS."""
+    samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float64)
+    rms = math.sqrt(float(np.mean(samples**2))) if samples.size else 0.0
+    return 20 * math.log10(max(rms, 1.0) / 32768)
+
+
+def similarity(a: list[float], b: list[float]) -> float:
+    va, vb = np.asarray(a), np.asarray(b)
+    return float(va @ vb / (np.linalg.norm(va) * np.linalg.norm(vb)))
+
+
 async def enroll(
     diarization: SherpaOnnxDiarizationProvider, names: list[str], seconds: float
 ) -> None:
-    """Record each person in turn and register their voice under their name."""
+    """Record each person in turn and register their voice under their name.
+
+    Logs each recording's level and how alike the enrolled voices are: a
+    voice is named when its score passes MATCH_THRESHOLD, so the threshold
+    has to sit above what two different voices score together.
+    """
+    voices: dict[str, list[float]] = {}
     for name in names:
         await asyncio.to_thread(input, f"\n{name}: press Enter, then talk for {seconds:g} s... ")
         pcm = await asyncio.to_thread(record, seconds)
-        diarization.enroll_speaker(name, diarization.extract_embedding(pcm, SAMPLE_RATE))
-        logger.info("Enrolled %s", name)
+        level = level_dbfs(pcm)
+        if level < SILENT_DBFS:
+            raise SystemExit(f"{name}: the recording is silent ({level:.0f} dBFS), check the mic")
+        voices[name] = diarization.extract_embedding(pcm, SAMPLE_RATE)
+        diarization.enroll_speaker(name, voices[name])
+        logger.info("Enrolled %s (level %.0f dBFS)", name, level)
+    for a, b in itertools.combinations(voices, 2):
+        logger.info("%s and %s score %.2f together", a, b, similarity(voices[a], voices[b]))
 
 
 async def main() -> None:
