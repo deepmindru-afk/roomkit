@@ -125,6 +125,8 @@ from roomkit.voice.tts.filters import (
     StripInternalTags,
     TTSStreamFilter,
 )
+from roomkit.voice.tts.library import CustomVoice, VoiceConsentError, VoiceLibrary
+from roomkit.voice.voices import DialogueTurn, VoiceInfo, filter_voices
 
 __all__ = [
     # Bridge
@@ -241,6 +243,14 @@ __all__ = [
     "STTLanguageLock",
     "STTProvider",
     "TTSProvider",
+    # Custom voices (RFC §12.2.4)
+    "CustomVoice",
+    "VoiceConsentError",
+    "VoiceLibrary",
+    # Voices (RFC §12.2)
+    "DialogueTurn",
+    "VoiceInfo",
+    "filter_voices",
     # TTS conversation context
     "ConversationTurn",
     "TTSContext",
@@ -531,6 +541,20 @@ def get_gemini_tts_config() -> type:
     from roomkit.voice.tts.gemini import GeminiTTSConfig
 
     return GeminiTTSConfig
+
+
+def get_gemini_voice_library() -> type:
+    """Get GeminiVoiceLibrary class (requires google-genai)."""
+    from roomkit.voice.tts.gemini_library import GeminiVoiceLibrary
+
+    return GeminiVoiceLibrary
+
+
+def get_gemini_voice_library_config() -> type:
+    """Get GeminiVoiceLibraryConfig class."""
+    from roomkit.voice.tts.gemini_library import GeminiVoiceLibraryConfig
+
+    return GeminiVoiceLibraryConfig
 
 
 def get_openai_realtime_provider() -> type:

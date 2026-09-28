@@ -335,11 +335,35 @@ class TestListVoices:
         with patch.object(provider, "_get_client", return_value=mock_client):
             voices = await provider.list_voices()
 
-        assert len(voices) == 2
-        assert voices[0].voice_id == "v1"
+        # VoiceInfo, like every catalog (RFC §12.2): the shared labels become
+        # fields, the rest stays under attributes.
+        assert [v.id for v in voices] == ["v1", "v2"]
         assert voices[0].name == "Rachel"
-        assert voices[0].labels == {"accent": "american"}
-        assert voices[1].voice_id == "v2"
+        assert voices[0].accent == "american"
+        assert voices[0].attributes == {"category": "premade"}
+        assert voices[1].accent is None
+
+    async def test_list_voices_applies_the_filters(self):
+        provider = ElevenLabsTTSProvider(ElevenLabsConfig(api_key="k"))
+        french = MagicMock(voice_id="v1", category="cloned", description="Voix posée")
+        french.name = "Chloé"
+        french.labels = {"language": "fr", "gender": "female", "age": "young"}
+        english = MagicMock(voice_id="v2", category="premade", description=None)
+        english.name = "Adam"
+        english.labels = {"language": "en", "gender": "male"}
+        mock_client = MagicMock()
+        mock_client.voices.get_all = AsyncMock(return_value=MagicMock(voices=[french, english]))
+
+        with patch.object(provider, "_get_client", return_value=mock_client):
+            found = await provider.list_voices(language="fr", gender="female", query="posée")
+
+        assert [v.id for v in found] == ["v1"]
+        assert found[0].attributes == {"age": "young", "category": "cloned"}
+
+    def test_available_voices_is_the_curated_catalog(self):
+        from roomkit.providers.elevenlabs.voices import VOICES
+
+        assert ElevenLabsTTSProvider.available_voices() == VOICES
 
     async def test_list_voices_caches(self):
         provider = ElevenLabsTTSProvider(ElevenLabsConfig(api_key="k"))

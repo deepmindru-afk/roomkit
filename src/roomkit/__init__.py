@@ -219,6 +219,8 @@ from roomkit.voice.tts.context import (
     TTSContextConfig,
     TTSContextLevel,
 )
+from roomkit.voice.tts.library import CustomVoice, VoiceConsentError, VoiceLibrary
+from roomkit.voice.voices import DialogueTurn, VoiceInfo
 
 # Console (optional — requires `rich`)
 with contextlib.suppress(ImportError):
@@ -334,6 +336,11 @@ __all__ = [
     "TTSContext",
     "TTSContextConfig",
     "TTSContextLevel",
+    "DialogueTurn",
+    "VoiceInfo",
+    "CustomVoice",
+    "VoiceConsentError",
+    "VoiceLibrary",
     "PCMAudio",
     "ScenarioVoiceBackend",
     "TraceEntry",

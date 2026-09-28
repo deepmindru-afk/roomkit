@@ -8,12 +8,13 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel
-
 from roomkit.core.task_utils import log_task_exception
 from roomkit.telemetry.base import Attr
 from roomkit.voice.base import VoiceSession
 from roomkit.voice.realtime.injection import VoiceInjectionResult
+
+# Re-exported: the realtime providers and callers import it from here.
+from roomkit.voice.voices import VoiceInfo as VoiceInfo
 
 logger = logging.getLogger("roomkit.voice.realtime.provider")
 
@@ -39,33 +40,6 @@ RealtimeDelegationCallback = Callable[[VoiceSession, str, str], Any]
 """(session, delegation_id, target) — ``target`` is ``"hosted"`` or ``"integrator"``"""
 RealtimeUsageCallback = Callable[[VoiceSession, dict[str, Any]], Any]
 """(session, usage) — what the provider has just recorded for the session"""
-
-
-class VoiceInfo(BaseModel):
-    """Metadata describing a single voice offered by a realtime voice provider.
-
-    Both the curated catalog (:meth:`RealtimeVoiceProvider.available_voices`) and
-    the live query (:meth:`RealtimeVoiceProvider.list_voices`) return these. Only
-    ``id`` is guaranteed; the remaining fields are best-effort and may be ``None``
-    when the source does not report them.
-
-    Attributes:
-        id: Exact voice identifier passed as ``connect(voice=...)``
-            (e.g. ``"alloy"``, ``"Puck"``, an ElevenLabs ``voice_id``).
-        name: Human-friendly display name.
-        language: Language/locale tag if voice-specific (e.g. ``"en-US"``,
-            ``"multilingual"``), else ``None``.
-        gender: ``"male"``/``"female"``/``"neutral"`` if known.
-        description: Short characterization (e.g. ``"Upbeat"``) if known.
-        deprecated: Whether the provider marks the voice deprecated.
-    """
-
-    id: str
-    name: str | None = None
-    language: str | None = None
-    gender: str | None = None
-    description: str | None = None
-    deprecated: bool = False
 
 
 class RealtimeVoiceProvider(ABC):

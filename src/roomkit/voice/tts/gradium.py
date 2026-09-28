@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from roomkit.voice.base import AudioChunk
 from roomkit.voice.tts.base import TTSProvider
+from roomkit.voice.voices import VoiceInfo, filter_voices
 
 if TYPE_CHECKING:
     from roomkit.models.event import AudioContent
@@ -38,21 +39,13 @@ class GradiumTTSConfig:
     json_config: dict[str, Any] | None = field(default=None, repr=False)
 
 
-@dataclass
-class GradiumVoice:
-    """Voice metadata from Gradium."""
-
-    uid: str
-    name: str
-
-
 class GradiumTTSProvider(TTSProvider):
     """Gradium text-to-speech provider with streaming support."""
 
     def __init__(self, config: GradiumTTSConfig) -> None:
         self._config = config
         self._client: Any = None
-        self._voices_cache: list[GradiumVoice] | None = None
+        self._voices_cache: list[VoiceInfo] | None = None
 
     @property
     def name(self) -> str:
@@ -205,25 +198,40 @@ class GradiumTTSProvider(TTSProvider):
         async for chunk in self._yield_stream(stream):
             yield chunk
 
-    async def list_voices(self) -> list[GradiumVoice]:
-        """List available voices from Gradium."""
-        if self._voices_cache is not None:
-            return list(self._voices_cache)
+    async def list_voices(
+        self,
+        *,
+        language: str | None = None,
+        gender: str | None = None,
+        query: str | None = None,
+    ) -> list[VoiceInfo]:
+        """Voices from Gradium, its catalog and the account's own.
 
-        client = self._get_client()
-        voices = await client.voice_get(include_catalog=True)
-
-        # voice_get returns a dict or list depending on the API response
-        voice_list = voices if isinstance(voices, list) else voices.get("voices", [])
-        self._voices_cache = [
-            GradiumVoice(
-                uid=v["uid"],
-                name=v.get("name", v["uid"]),
-            )
-            for v in voice_list
-        ]
-        return list(self._voices_cache)
+        The list is fetched once and kept; the filters apply to it (RFC §12.2).
+        Gradium reports a voice's ``uid`` and ``name``; any ``language``,
+        ``gender`` or ``description`` it adds is carried too.
+        """
+        if self._voices_cache is None:
+            client = self._get_client()
+            voices = await client.voice_get(include_catalog=True)
+            # voice_get returns a dict or list depending on the API response
+            voice_list = voices if isinstance(voices, list) else voices.get("voices", [])
+            self._voices_cache = [
+                VoiceInfo(
+                    id=v["uid"],
+                    name=v.get("name") or v["uid"],
+                    language=_text(v.get("language")),
+                    gender=_text(v.get("gender")),
+                    description=_text(v.get("description")),
+                )
+                for v in voice_list
+            ]
+        return filter_voices(self._voices_cache, language=language, gender=gender, query=query)
 
     async def close(self) -> None:
         """Release resources."""
         self._client = None
+
+
+def _text(value: Any) -> str | None:
+    return value if isinstance(value, str) and value else None

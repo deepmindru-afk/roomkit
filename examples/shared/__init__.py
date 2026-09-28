@@ -14,7 +14,7 @@ from .audio import (
 )
 from .bench import IncomingScenarioBackend
 from .console import console_enabled, setup_console
-from .env import auto_select_provider, env_bool, os_info, require_env
+from .env import auto_select_provider, env_bool, os_info, require_env, voice_language
 from .hooks import log_tool_call
 from .lifecycle import run_until_stopped
 from .log import setup_logging
@@ -41,4 +41,5 @@ __all__ = [
     "run_until_stopped",
     "setup_console",
     "setup_logging",
+    "voice_language",
 ]

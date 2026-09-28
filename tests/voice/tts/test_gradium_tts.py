@@ -128,3 +128,31 @@ class TestGradiumTTSProvider:
         # default voice uses "voice" key, not "voice_id"
         assert setup["voice"] == "default"
         assert "voice_id" not in setup
+
+
+class TestGradiumListVoices:
+    """``list_voices`` answers VoiceInfo, like every catalog (RFC §12.2)."""
+
+    async def test_voices_are_voice_infos_filtered_like_every_catalog(self) -> None:
+        grad = _mock_gradium_module()
+        provider = _make_provider(grad, api_key="k")
+        client = MagicMock()
+        client.voice_get = AsyncMock(
+            return_value={
+                "voices": [
+                    {"uid": "u1", "name": "Élise", "language": "fr", "description": "Calme"},
+                    {"uid": "u2", "name": "Tom", "language": "en"},
+                    {"uid": "u3"},
+                ]
+            }
+        )
+        provider._client = client
+
+        french = await provider.list_voices(language="fr")
+        everyone = await provider.list_voices()
+
+        assert [(v.id, v.name, v.description) for v in french] == [("u1", "Élise", "Calme")]
+        # A voice with no name is named by its uid.
+        assert [(v.id, v.name) for v in everyone] == [("u1", "Élise"), ("u2", "Tom"), ("u3", "u3")]
+        # Fetched once, filtered twice.
+        assert client.voice_get.await_count == 1

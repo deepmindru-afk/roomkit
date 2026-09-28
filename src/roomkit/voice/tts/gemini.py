@@ -36,19 +36,25 @@ import base64
 import binascii
 import logging
 import math
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from roomkit.providers.gemini.sdk import build_genai_client, close_genai_client
-from roomkit.providers.gemini.voices import VOICES
+from roomkit.providers.gemini.voices import VOICES, voice_info_from_catalog
 from roomkit.voice.base import AudioChunk
 from roomkit.voice.tts.audio_utils import wav_duration_seconds, wrap_wav
 from roomkit.voice.tts.base import TTSProvider
+from roomkit.voice.voices import (
+    DialogueTurn,
+    VoiceInfo,
+    check_dialogue,
+    dialogue_transcript,
+    filter_voices,
+)
 
 if TYPE_CHECKING:
     from roomkit.models.event import AudioContent
-    from roomkit.voice.realtime.provider import VoiceInfo
     from roomkit.voice.tts.context import TTSContext
 
 logger = logging.getLogger(__name__)
@@ -72,6 +78,12 @@ OUTPUT_SAMPLE_RATE = 24000
 """Sample rate of every Gemini TTS response — fixed by the service."""
 
 _OUTPUT_CHANNELS = 1
+_CATALOG_PAGE_SIZE = 1000
+"""The largest page ``voices.list`` serves; the whole catalog is three pages."""
+
+_DIALOGUE_SPEAKERS = 2
+"""Speakers one Gemini TTS request can voice, per Google's speech-generation
+guide; verified with two on ``gemini-3.8-flash-tts`` on 2026-09-27."""
 _AUDIO_FORMAT = "pcm_s16le"
 
 _PROMPTED_MODEL_PREFIXES = ("gemini-2.", "gemini-3.1-")
@@ -188,6 +200,35 @@ class GeminiTTSProvider(TTSProvider):
     def available_voices(cls) -> list[VoiceInfo]:
         """The 30 prebuilt voices, shared with Gemini Live native audio."""
         return list(VOICES)
+
+    async def list_voices(
+        self,
+        *,
+        language: str | None = None,
+        gender: str | None = None,
+        query: str | None = None,
+    ) -> list[VoiceInfo]:
+        """Google's voice catalog, the account's custom voices first.
+
+        The whole catalog is read — 2,089 voices in three pages, 0.4 s on
+        2026-09-27 — and filtered here: the service's own filters mean
+        something else (its ``language_code`` wants an exact tag, ``fr`` finds
+        nothing, and its ``search`` for ``Kore`` answers Korean voices), and
+        RFC §12.2 wants every provider to filter alike. Any ``id`` returned
+        is accepted as ``voice``.
+        """
+        client = self._get_client()
+        voices: list[VoiceInfo] = []
+        page_token: str | None = None
+        while True:
+            page = await client.aio.voices.list(
+                page_size=_CATALOG_PAGE_SIZE, page_token=page_token
+            )
+            voices.extend(voice_info_from_catalog(voice) for voice in page.voices or [])
+            page_token = page.next_page_token
+            if not page_token:
+                break
+        return filter_voices(voices, language=language, gender=gender, query=query)
 
     # ------------------------------------------------------------------
     # Request building
@@ -315,6 +356,45 @@ class GeminiTTSProvider(TTSProvider):
     # Synthesis
     # ------------------------------------------------------------------
 
+    @property
+    def max_dialogue_speakers(self) -> int:
+        """Two from 3.8 on; none on the 3.1 and 2.5 models, whose prompt-only
+        contract this provider does not extend to several speakers."""
+        return 0 if _uses_instruction_prompt(self._config.model) else _DIALOGUE_SPEAKERS
+
+    async def synthesize_dialogue(
+        self, turns: Sequence[DialogueTurn], voices: Mapping[str, str]
+    ) -> AudioContent:
+        """Voice a scripted exchange of up to two speakers in one clip.
+
+        Each turn goes out as its own text item, its speaker (and its
+        ``style``, when set) riding as ``speech_metadata``, and each speaker
+        is bound to its voice in ``speech_config``. ``style_prompt`` does not
+        apply: a dialogue directs each turn on its own.
+
+        Raises:
+            NotImplementedError: The configured model voices no dialogue.
+            ValueError: More than two speakers, or a speaker ``voices`` does
+                not map (both before any request).
+            RuntimeError: The interaction completed without audio.
+        """
+        speakers = check_dialogue(
+            turns, voices, max_speakers=self.max_dialogue_speakers, provider=self.name
+        )
+        speech_config: list[dict[str, Any]] = []
+        for speaker in speakers:
+            entry: dict[str, Any] = {"speaker": speaker, "voice": voices[speaker]}
+            if self._config.language:
+                entry["language"] = self._config.language
+            speech_config.append(entry)
+        interaction = await self._get_client().aio.interactions.create(
+            model=self._config.model,
+            input=[{"type": "user_input", "content": [_dialogue_item(t) for t in turns]}],
+            response_format={"type": "audio"},
+            generation_config={"speech_config": speech_config},
+        )
+        return self._audio_content(interaction, dialogue_transcript(turns))
+
     async def synthesize(self, text: str, *, voice: str | None = None) -> AudioContent:
         """Synthesize the whole text in one request.
 
@@ -332,23 +412,27 @@ class GeminiTTSProvider(TTSProvider):
             RuntimeError: The interaction completed without audio, or with
                 audio that does not decode.
         """
-        from roomkit.models.event import AudioContent as AudioContentModel
-
         if not text.strip():
             raise ValueError("GeminiTTS.synthesize() requires non-empty text")
 
         interaction = await self._create(text, voice, stream=False)
+        return self._audio_content(interaction, text)
+
+    @classmethod
+    def _audio_content(cls, interaction: Any, transcript: str) -> AudioContent:
+        """A non-streamed answer as a WAV ``data:`` URL with its duration."""
+        from roomkit.models.event import AudioContent as AudioContentModel
+
         audio = getattr(interaction, "output_audio", None)
         if audio is None or not audio.data:
             raise RuntimeError(
                 f"Gemini TTS returned no audio (status={getattr(interaction, 'status', None)})"
             )
-
-        wav, duration = self._as_wav(audio)
+        wav, duration = cls._as_wav(audio)
         return AudioContentModel(
             url=f"data:audio/wav;base64,{base64.b64encode(wav).decode()}",
             mime_type="audio/wav",
-            transcript=text,
+            transcript=transcript,
             duration_seconds=duration,
         )
 
@@ -407,3 +491,11 @@ class GeminiTTSProvider(TTSProvider):
         client, self._client = self._client, None
         http, self._http = self._http, None
         await close_genai_client(client, http)
+
+
+def _dialogue_item(turn: DialogueTurn) -> dict[str, Any]:
+    """One turn as a text item, its speaker and style as ``speech_metadata``."""
+    metadata: dict[str, Any] = {"type": "speech_metadata", "speaker": turn.speaker}
+    if turn.style:
+        metadata["style"] = turn.style
+    return {"type": "text", "text": turn.text, "annotations": [metadata]}

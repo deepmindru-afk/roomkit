@@ -98,3 +98,13 @@ def auto_select_provider(env_var: str, label: str) -> str:
     if has_openai:
         return "openai"
     return "gemini"
+
+
+def voice_language(default: str | None) -> str | None:
+    """The speech language an example uses: ``VOICE_LANGUAGE``, else *default*.
+
+    Not ``LANGUAGE``: that is the system's gettext variable, set on a French
+    Linux desktop to ``fr_CA:fr``, which is no BCP-47 tag and reached the STT
+    and TTS as the language when examples read it.
+    """
+    return os.environ.get("VOICE_LANGUAGE") or default

@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- TTS providers list their voices as `VoiceInfo` and voice a dialogue (RMK-240,
+  RMK-241, RFC §12.2). `TTSProvider` gains `available_voices()` (offline),
+  `list_voices(language=, gender=, query=)` (live) and `synthesize_dialogue(turns,
+  voices)` with `max_dialogue_speakers`. The filters behave alike on every
+  provider (`filter_voices`): a language matches its tag or prefix (`"fr"` finds
+  `fr-CA` and `fr-FR`), a gender exactly, a query the name or description.
+  `VoiceInfo` moves to `roomkit.voice.voices` (the realtime import path still
+  works) and gains `accent` and `attributes`; it and `DialogueTurn` are exported
+  from `roomkit`. `GeminiTTSProvider.list_voices()` reads Google's whole
+  catalog, 2,089 voices on 2026-09-27 with 68 in Québec French, and filters it
+  itself, Google's own filters meaning something else; any id it returns plays.
+  `GeminiTTSProvider.synthesize_dialogue()` voices two speakers in one clip on
+  the 3.8 models, each line with its own direction. Example:
+  `examples/gemini_tts_voices.py`.
+- Custom voices through a `VoiceLibrary` (RMK-242, RFC §12.2.4):
+  `GeminiVoiceLibrary` designs a voice from a description (Google stores every
+  designed voice, for a year; `store=False` is refused) and replicates a
+  person's voice from 10 to 30 s of their speech and their recorded consent,
+  which must read Google's statement word for word (`CONSENT_STATEMENTS`). A
+  refused consent is raised as `VoiceConsentError` with Google's reason, where
+  Google sends a 500 wrapping it. `get_voice()` answers `None` and
+  `delete_voice()` is silent for an id Google does not hold. The recordings are
+  sent for the call and never kept or logged (RFC §17.6). Verified against the
+  live API on 2026-09-27: design, synthesis with the designed voice, listing,
+  deletion, and a refused consent; a successful replication needs a real
+  person's recording and is not verified. Example:
+  `examples/gemini_voice_design.py`.
 - `AIContext.response_schema` constrains an AI provider's answer to a JSON
   Schema (RMK-234, RFC §6.7). `generate()` then returns one JSON document in
   `content`, checked against the schema whatever the server did with it
@@ -192,6 +219,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING — `ElevenLabsTTSProvider.list_voices()` and
+  `GradiumTTSProvider.list_voices()` return `VoiceInfo`** (RMK-241, RFC §12.2),
+  like every catalog. `ElevenLabsVoice` and `GradiumVoice` are removed.
+  Migration: `voice.voice_id` (ElevenLabs) and `voice.uid` (Gradium) become
+  `voice.id`; ElevenLabs' `labels` feed `gender`, `language`, `accent` and
+  `description`, and the rest, with `category`, lands in `voice.attributes`. Both
+  now take the `language`, `gender` and `query` filters.
 - The `anthropic` extra requires `anthropic>=1.8,<2` (was `>=0.30`), the
   current SDK: it takes `output_config`, where a response schema rides
   (RMK-234), and runs on httpx2 (RMK-236).

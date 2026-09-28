@@ -21,10 +21,12 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from roomkit.providers.elevenlabs.voices import VOICES as ELEVENLABS_VOICES
 from roomkit.voice.base import AudioChunk
 from roomkit.voice.tts._elevenlabs_stitching import RequestIdLedger, request_id_of
 from roomkit.voice.tts.base import TTSProvider
 from roomkit.voice.tts.context import TTSContextLevel
+from roomkit.voice.voices import VoiceInfo, filter_voices
 
 if TYPE_CHECKING:
     from roomkit.models.event import AudioContent
@@ -69,16 +71,6 @@ class ElevenLabsConfig:
     use_context: bool = True
 
 
-@dataclass
-class ElevenLabsVoice:
-    """Voice metadata from ElevenLabs."""
-
-    voice_id: str
-    name: str
-    category: str = "premade"
-    labels: dict[str, str] = field(default_factory=dict)
-
-
 class ElevenLabsTTSProvider(TTSProvider):
     """ElevenLabs text-to-speech provider with streaming support.
 
@@ -93,7 +85,7 @@ class ElevenLabsTTSProvider(TTSProvider):
         if config.expressive:
             self._config.model_id = MODEL_V3
         self._client: Any = None  # AsyncElevenLabs (lazy)
-        self._voices_cache: dict[str, ElevenLabsVoice] | None = None
+        self._voices_cache: list[VoiceInfo] | None = None
         self._request_ids = RequestIdLedger()
 
     @property
@@ -156,26 +148,27 @@ class ElevenLabsTTSProvider(TTSProvider):
 
         return VoiceSettings(**self._build_voice_settings())
 
-    async def list_voices(self) -> list[ElevenLabsVoice]:
-        """List available voices from ElevenLabs."""
-        if self._voices_cache is not None:
-            return list(self._voices_cache.values())
+    @classmethod
+    def available_voices(cls) -> list[VoiceInfo]:
+        """The curated ElevenLabs default voices, shared with the realtime provider."""
+        return list(ELEVENLABS_VOICES)
 
-        client = self._get_client()
-        response = await client.voices.get_all()
+    async def list_voices(
+        self,
+        *,
+        language: str | None = None,
+        gender: str | None = None,
+        query: str | None = None,
+    ) -> list[VoiceInfo]:
+        """Voices the account exposes, its own cloned voices included.
 
-        self._voices_cache = {}
-        for voice in response.voices:
-            labels = voice.labels if isinstance(voice.labels, dict) else {}
-            v = ElevenLabsVoice(
-                voice_id=voice.voice_id,
-                name=voice.name,
-                category=getattr(voice, "category", "premade"),
-                labels=labels,
-            )
-            self._voices_cache[v.voice_id] = v
-
-        return list(self._voices_cache.values())
+        The account's list is fetched once and kept; the filters apply to it
+        (RFC §12.2).
+        """
+        if self._voices_cache is None:
+            response = await self._get_client().voices.get_all()
+            self._voices_cache = [_voice_info(voice) for voice in response.voices]
+        return filter_voices(self._voices_cache, language=language, gender=gender, query=query)
 
     async def synthesize(self, text: str, *, voice: str | None = None) -> AudioContent:
         """Synthesize text to audio.
@@ -345,3 +338,25 @@ class ElevenLabsTTSProvider(TTSProvider):
     async def close(self) -> None:  # noqa: B027
         """Release resources."""
         self._client = None
+
+
+def _voice_info(voice: Any) -> VoiceInfo:
+    """An ElevenLabs voice as a :class:`VoiceInfo`: the labels it shares with
+    every catalog become fields, the rest stays under ``attributes``."""
+    labels = dict(voice.labels) if isinstance(getattr(voice, "labels", None), dict) else {}
+    attributes = {str(k): str(v) for k, v in labels.items() if v is not None}
+    category = getattr(voice, "category", None)
+    if isinstance(category, str) and category:
+        attributes["category"] = category
+    description = getattr(voice, "description", None)
+    return VoiceInfo(
+        id=voice.voice_id,
+        name=voice.name or None,
+        language=attributes.pop("language", None),
+        gender=attributes.pop("gender", None),
+        accent=attributes.pop("accent", None),
+        description=(description if isinstance(description, str) and description else None)
+        or attributes.pop("description", None),
+        # Last: the fields above take their labels out of it first.
+        attributes=attributes,
+    )

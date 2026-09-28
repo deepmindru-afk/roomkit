@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import TYPE_CHECKING
 
 from roomkit.voice.tts.context import TTSContextLevel
+from roomkit.voice.voices import DialogueTurn, VoiceInfo, check_dialogue, filter_voices
 
 if TYPE_CHECKING:
     from roomkit.models.event import AudioContent
@@ -26,6 +27,69 @@ class TTSProvider(ABC):
     def default_voice(self) -> str | None:
         """Default voice ID. Override in subclasses."""
         return None
+
+    @property
+    def max_dialogue_speakers(self) -> int:
+        """Distinct speakers one :meth:`synthesize_dialogue` call can voice.
+
+        0, the default, means no dialogue at all (RFC §12.2).
+        """
+        return 0
+
+    @classmethod
+    def available_voices(cls) -> list[VoiceInfo]:
+        """Curated, offline catalog of the voices this provider offers.
+
+        No credentials or network: call it on the class. The base returns an
+        empty list; a provider with a fixed or curated set overrides it.
+        """
+        return []
+
+    async def list_voices(
+        self,
+        *,
+        language: str | None = None,
+        gender: str | None = None,
+        query: str | None = None,
+    ) -> list[VoiceInfo]:
+        """Voices the vendor reports, custom voices the caller owns included.
+
+        Every provider applies the filters the same way, server side or on
+        the results (:func:`~roomkit.voice.voices.filter_voices`). The base
+        filters :meth:`available_voices`, for a vendor with no voices endpoint.
+
+        Args:
+            language: BCP-47 tag or prefix (``"fr"`` matches ``fr-CA``).
+            gender: ``"male"``, ``"female"`` or ``"neutral"``.
+            query: Case-insensitive text found in the name or description.
+        """
+        return filter_voices(
+            self.available_voices(), language=language, gender=gender, query=query
+        )
+
+    async def synthesize_dialogue(
+        self, turns: Sequence[DialogueTurn], voices: Mapping[str, str]
+    ) -> AudioContent:
+        """Voice a scripted exchange in one clip (RFC §12.2).
+
+        Args:
+            turns: The lines, in order, each naming its speaker.
+            voices: Voice id per speaker.
+
+        Returns:
+            AudioContent whose ``transcript`` holds each turn as
+            ``"<speaker>: <text>"`` on its own line.
+
+        Raises:
+            NotImplementedError: The provider voices no dialogue
+                (:attr:`max_dialogue_speakers` is 0).
+            ValueError: A turn names an unmapped speaker, or more speakers
+                than :attr:`max_dialogue_speakers`.
+        """
+        check_dialogue(turns, voices, max_speakers=self.max_dialogue_speakers, provider=self.name)
+        raise NotImplementedError(
+            f"{self.name} announces dialogue but does not implement synthesize_dialogue"
+        )
 
     @abstractmethod
     async def synthesize(self, text: str, *, voice: str | None = None) -> AudioContent:

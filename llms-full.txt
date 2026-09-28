@@ -2671,6 +2671,27 @@ tts = ElevenLabsTTSProvider(ElevenLabsConfig(
 ))
 ```
 
+### Voices, dialogue and custom voices
+
+Every TTS lists its voices as `VoiceInfo` (`available_voices()` offline,
+`list_voices(language=, gender=, query=)` live); `VoiceInfo.id` is what
+`synthesize(voice=...)` takes, and the filters behave the same on every
+provider (`"fr"` finds `fr-CA` and `fr-FR`). Gemini voices a two-speaker
+dialogue in one clip, and `GeminiVoiceLibrary` designs or replicates custom
+voices, replication requiring the person's recorded consent.
+
+```python
+from roomkit.voice.tts.gemini import GeminiTTSConfig, GeminiTTSProvider
+from roomkit.voice.voices import DialogueTurn
+
+tts = GeminiTTSProvider(GeminiTTSConfig(api_key="..."))
+quebec = await tts.list_voices(language="fr-CA", gender="female")   # 37 voices
+audio = await tts.synthesize_dialogue(
+    [DialogueTurn(speaker="A", text="Bonjour!"), DialogueTurn(speaker="B", text="Salut!")],
+    {"A": quebec[0].id, "B": "fr-ca-advisor-2"},
+)
+```
+
 ## Voice Backends
 
 Backends handle audio transport between the framework and participants:
