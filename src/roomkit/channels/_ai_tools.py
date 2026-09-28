@@ -499,14 +499,7 @@ class AIToolsMixin:
                 # BEFORE eviction — the string below may become a placeholder,
                 # but UI surfaces need the structured payload verbatim.
                 structured_content = _tc_ctx.structured_content
-                # A skill's instructions are binding rules the model must hold
-                # whole — never a head/tail preview behind a read_stored_result
-                # pointer, which is what eviction would make of a body over the
-                # threshold (a 20 KB skill crosses it). Every other tool still
-                # evicts, references included: those are data, and paginating
-                # data is exactly what eviction is for.
-                if tc.name != TOOL_ACTIVATE_SKILL:
-                    result = self._maybe_truncate_result(result, tc.id)
+                result = self._bound_tool_result(tc.name, result, tc.id)
 
                 # Fire unified ON_TOOL_CALL hook (if framework injected callback)
                 if self._tool_call_hook is not None:
@@ -521,7 +514,9 @@ class AIToolsMixin:
                     )
                     override = await self._tool_call_hook(event)
                     if override is not None:
-                        result = override
+                        # The hook saw the bounded result; what it hands back
+                        # is bounded in turn before the model reads it.
+                        result = self._bound_tool_result(tc.name, override, tc.id)
                         recorded_result = override
 
                 telemetry.end_span(tool_span_id)
@@ -535,22 +530,23 @@ class AIToolsMixin:
                 # with its own sentence, which is how the reason gets lost.
                 telemetry.end_span(tool_span_id, status="error", error_message=refusal.message)
                 logger.info("Tool %s refused: %s", tc.name, refusal.message)
-                result = refusal.message
-                recorded_result = None
+                recorded_result = refusal.message
                 tool_failed = True
-                await self._fire_tool_refusal(tc, arguments, result, room_id)
+                await self._fire_tool_refusal(tc, arguments, refusal.message, room_id)
+                result = self._bound_tool_result(tc.name, refusal.message, tc.id)
             except Exception as exc:
                 telemetry.end_span(tool_span_id, status="error", error_message=str(exc))
                 logger.warning("Tool %s raised %s: %s", tc.name, type(exc).__name__, exc)
-                result = f"Error executing tool '{tc.name}': {exc}"
+                error = f"Error executing tool '{tc.name}': {exc}"
                 # The model saw the error, so the memory records it, not a
                 # success the handler returned before a hook raised.
-                recorded_result = None
+                recorded_result = error
                 tool_failed = True
                 # Fired here, on the raw sentence: the hook sees what the
-                # handler produced, before the repeated-result note annotates
-                # the model's copy of it — same as on the success path above.
-                await self._fire_tool_refusal(tc, arguments, result, room_id)
+                # handler produced, before eviction and the repeated-result
+                # note shape the model's copy of it.
+                await self._fire_tool_refusal(tc, arguments, error, room_id)
+                result = self._bound_tool_result(tc.name, error, tc.id)
             # Remember this call (final result, success or error) so later turns
             # can show "tools you've already used" and re-reveal it under Tool
             # Search. Infra/discovery tools are filtered inside record().
@@ -859,6 +855,22 @@ class AIToolsMixin:
         category = str(arguments.get("category", "")).strip()
         catalogue = self._tool_search_catalogue(loop_ctx)
         return render_list_payload(catalogue, category, exclude_names=TOOL_SEARCH_INFRA_TOOL_NAMES)
+
+    def _bound_tool_result(self, name: str, result: Any, tool_call_id: str) -> Any:
+        """The copy of a tool's outcome the model reads, evicted when oversized.
+
+        Every outcome goes through it (a result, a hook's override, a refusal,
+        an error): whichever path a 500 KB body takes, it must not reach the
+        provider whole. A skill's instructions are the exception: binding
+        rules the model must hold whole, never a head/tail preview behind a
+        read_stored_result pointer, which is what eviction would make of a
+        body over the threshold (a 20 KB skill crosses it). Every other tool
+        still evicts, references included: those are data, and paginating
+        data is exactly what eviction is for.
+        """
+        if name == TOOL_ACTIVATE_SKILL:
+            return result
+        return self._maybe_truncate_result(result, tool_call_id)
 
     # -- Extracted tool handlers (delegate to focused modules) -----------------
 

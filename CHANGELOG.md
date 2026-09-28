@@ -42,6 +42,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   along with every round of the tool loop. The text parts are measured
   joined; over `evict_threshold_tokens` they are stored as one text and
   replaced by a single placeholder part, and the images stay where they were.
+- A refusal, an error and an `ON_TOOL_CALL` override are evicted like a
+  tool's own result (RMK-259). Only the handler's result used to be measured,
+  so a 500 KB error page from an MCP server, an exception carrying an HTTP
+  body, or a hook's rewrite reached the provider whole. Hooks still receive
+  what they did: the refusal observer gets the full message, and
+  `ON_TOOL_CALL` gets the bounded result; only the model's copy changes.
 
 ## [0.92.0] — 2026-09-27
 
