@@ -20,7 +20,7 @@ from roomkit.providers.ai.base import (
     StreamTextDelta,
     StreamToolCall,
 )
-from roomkit.providers.ai.json_schema import schema_mismatch
+from roomkit.providers.ai.json_schema import check_portable_schema, schema_mismatch
 from roomkit.providers.utils import _aclose_stream
 
 ResponseSchemaFailure = Literal["unsupported", "refusal", "truncated", "invalid_json"]
@@ -131,6 +131,27 @@ def check_schema_answer(
         raise ResponseSchemaError(
             f"the answer does not satisfy the response schema ({mismatch})",
             reason="invalid_json",
+            provider=provider,
+        )
+
+
+def check_schema_request(schema: Mapping[str, Any], *, supported: bool, provider: str) -> None:
+    """Refuse a response schema a caller passes outside an :class:`AIContext`.
+
+    The same rules as a context's field (RFC §6.7): the schema stays within the
+    portable subset, and a provider that cannot honour one says so before any
+    request.
+
+    Raises:
+        ValueError: The schema is outside the portable subset.
+        ResponseSchemaError: ``unsupported``, when the provider cannot honour it.
+    """
+    check_portable_schema(schema)
+    if not supported:
+        raise ResponseSchemaError(
+            f"{provider} does not support a response schema; check "
+            "supports_response_schema before passing one",
+            reason="unsupported",
             provider=provider,
         )
 

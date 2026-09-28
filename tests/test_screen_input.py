@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import json
 from unittest.mock import patch
 
+from roomkit.video.video_frame import VideoFrame
+from roomkit.video.vision.mock import MockVisionProvider
 from roomkit.video.vision.screen_input import (
     _build_press_key_tool,
     _get_scale_factor,
+    _locate,
     _parse_json_response,
 )
 
@@ -119,3 +123,41 @@ def test_scale_factor_linux_with_gdk_scale() -> None:
             sx, sy = _get_scale_factor()
     assert sx == 0.5
     assert sy == 0.5
+
+
+# ---------------------------------------------------------------------------
+# _locate: a provider that constrains its output is read as it is
+# ---------------------------------------------------------------------------
+
+_FRAME = VideoFrame(data=b"\x00" * (64 * 48 * 3), codec="raw_rgb24", width=64, height=48)
+_FOUND = json.dumps(
+    {
+        "found": True,
+        "cx": 10,
+        "cy": 12,
+        "box": {"x1": 5, "y1": 6, "x2": 15, "y2": 18},
+        "label": "OK",
+    }
+)
+
+
+async def test_locate_passes_the_schema_to_a_provider_that_takes_one() -> None:
+    vision = MockVisionProvider([_FOUND], response_schema=True)
+
+    answer = await _locate(vision, _FRAME, "find OK")
+
+    assert answer is not None and answer["label"] == "OK" and answer["cx"] == 10
+
+
+async def test_locate_reports_no_answer_when_the_constrained_one_is_not_the_shape() -> None:
+    vision = MockVisionProvider(["an OK button, top left"], response_schema=True)
+
+    assert await _locate(vision, _FRAME, "find OK") is None
+
+
+async def test_locate_repairs_a_free_answer_from_a_provider_without_schemas() -> None:
+    vision = MockVisionProvider(['Here: {"found": true, "cx": 3, "cy": 4, "label": "OK"}'])
+
+    answer = await _locate(vision, _FRAME, "find OK")
+
+    assert answer is not None and answer["cx"] == 3

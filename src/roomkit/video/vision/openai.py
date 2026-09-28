@@ -34,6 +34,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from roomkit.providers.ai.response_schema import check_schema_answer, check_schema_request
 from roomkit.providers.utils import http_timeout
 from roomkit.video.video_frame import VideoFrame
 from roomkit.video.vision.base import DEFAULT_VISION_PROMPT, VisionProvider, VisionResult
@@ -56,6 +57,9 @@ class OpenAIVisionConfig:
         timeout: HTTP timeout in seconds.
         detail: Image detail level (``low``, ``high``, ``auto``).
         connect_timeout: TCP connect timeout in seconds, apart from ``timeout``.
+        supports_response_schema: Whether the server applies a ``json_schema``
+            response format (RFC §6.7). OpenAI and Ollama's ``/v1`` do; set
+            ``False`` for a server that does not.
     """
 
     api_key: str = field(default="ollama", repr=False)
@@ -67,6 +71,7 @@ class OpenAIVisionConfig:
     timeout: float = 30.0
     detail: Literal["low", "high", "auto"] = "low"
     connect_timeout: float = 5.0
+    supports_response_schema: bool = True
 
 
 class OpenAIVisionProvider(VisionProvider):
@@ -126,11 +131,18 @@ class OpenAIVisionProvider(VisionProvider):
             )
         return self._client
 
+    @property
+    def supports_response_schema(self) -> bool:
+        """The config's answer: a ``json_schema`` response format, when the
+        server behind ``base_url`` applies one."""
+        return self._config.supports_response_schema
+
     async def analyze_frame(
         self,
         frame: VideoFrame,
         *,
         prompt: str | None = None,
+        response_schema: dict[str, Any] | None = None,
     ) -> VisionResult:
         """Analyze a video frame via the OpenAI-compatible vision API.
 
@@ -140,13 +152,24 @@ class OpenAIVisionProvider(VisionProvider):
         Args:
             frame: The video frame (raw_rgb24, raw_bgr24, or encoded).
             prompt: Optional prompt override (defaults to config prompt).
+            response_schema: JSON Schema the description must satisfy.
 
         Returns:
             VisionResult with the model's description.
         """
+        if response_schema is not None:
+            check_schema_request(
+                response_schema, supported=self.supports_response_schema, provider="openai-vision"
+            )
         client = self._get_client()
         image_b64 = frame_to_jpeg_base64(frame)
         effective_prompt = prompt or self._config.prompt
+        extra: dict[str, Any] = {}
+        if response_schema is not None:
+            extra["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {"name": "response", "schema": response_schema, "strict": True},
+            }
 
         response = await client.chat.completions.create(
             model=self._config.model,
@@ -167,12 +190,22 @@ class OpenAIVisionProvider(VisionProvider):
             ],
             max_tokens=self._config.max_tokens,
             temperature=self._config.temperature,
+            **extra,
         )
 
-        description = response.choices[0].message.content or ""
+        choice = response.choices[0]
+        description = choice.message.content or ""
         # Strip thinking blocks that leak through (Qwen3, DeepSeek-R1)
         description = re.sub(r"<think>.*?</think>", "", description, flags=re.DOTALL)
         description = description.strip()
+        if response_schema is not None:
+            check_schema_answer(
+                description,
+                schema=response_schema,
+                provider="openai-vision",
+                refusal=getattr(choice.message, "refusal", None) or None,
+                truncated=choice.finish_reason == "length",
+            )
 
         return VisionResult(
             description=description,

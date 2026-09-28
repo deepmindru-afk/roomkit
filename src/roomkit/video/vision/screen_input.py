@@ -32,6 +32,7 @@ import re
 import subprocess  # nosec B404
 from typing import TYPE_CHECKING, Any
 
+from roomkit.providers.ai.response_schema import ResponseSchemaError
 from roomkit.telemetry.redaction import redact
 from roomkit.video.vision.screen_tool import capture_screen_frame
 
@@ -197,6 +198,28 @@ If not found:
 "box": {{"x1": 0, "y1": 0, "x2": 0, "y2": 0}}, "label": ""}}\
 """
 
+_INT = {"type": "integer"}
+
+#: The shape of a locate answer, for a provider that constrains its output to
+#: it (RFC §6.7): the answer is then parsed as it is, with no repair.
+_LOCATE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "found": {"type": "boolean"},
+        "cx": {"type": "integer", "description": "Center x in absolute pixels."},
+        "cy": {"type": "integer", "description": "Center y in absolute pixels."},
+        "box": {
+            "type": "object",
+            "properties": {"x1": _INT, "y1": _INT, "x2": _INT, "y2": _INT},
+            "required": ["x1", "y1", "x2", "y2"],
+            "additionalProperties": False,
+        },
+        "label": {"type": "string", "description": "The element's visible name."},
+    },
+    "required": ["found", "cx", "cy", "box", "label"],
+    "additionalProperties": False,
+}
+
 
 _dpi_initialized = False
 
@@ -300,6 +323,28 @@ def _parse_json_response(text: str) -> dict[str, Any] | None:
     return None
 
 
+async def _locate(vision: VisionProvider, frame: Any, prompt: str) -> dict[str, Any] | None:
+    """The locate answer as a dict, or ``None`` when there is no usable one.
+
+    A provider that constrains its output returns the document the schema
+    describes, parsed as it is; any other gets the prompt alone, and its answer
+    goes through the repairs of :func:`_parse_json_response`.
+    """
+    if vision.supports_response_schema:
+        try:
+            result = await vision.analyze_frame(
+                frame, prompt=prompt, response_schema=_LOCATE_SCHEMA
+            )
+        except ResponseSchemaError as exc:
+            logger.warning("Vision locate gave no answer in the locate shape: %s", exc)
+            return None
+        return json.loads(result.description)
+    result = await vision.analyze_frame(frame, prompt=prompt)
+    raw = result.description or ""
+    logger.debug("Vision locate raw: %s", raw[:500])
+    return _parse_json_response(raw)
+
+
 async def _find_element(
     vision: VisionProvider,
     element: str,
@@ -315,13 +360,9 @@ async def _find_element(
         return None
 
     prompt = _LOCATE_PROMPT.format(w=frame.width, h=frame.height, element=element)
-    result = await vision.analyze_frame(frame, prompt=prompt)
-    raw = result.description or ""
-    logger.debug("Vision locate raw for '%s': %s", element, raw[:500])
-
-    parsed = _parse_json_response(raw)
+    parsed = await _locate(vision, frame, prompt)
     if parsed is None or not parsed.get("found"):
-        logger.warning("Element not found: %s (raw: %s)", element, raw[:300])
+        logger.warning("Element not found: %s (answer: %s)", element, str(parsed)[:300])
         return None
 
     parsed = _denormalize(parsed, frame.width, frame.height)

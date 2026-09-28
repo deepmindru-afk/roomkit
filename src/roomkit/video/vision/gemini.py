@@ -18,6 +18,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from roomkit.providers.ai.response_schema import check_schema_answer, check_schema_request
+from roomkit.providers.gemini.errors import REFUSAL_FINISH_REASONS
 from roomkit.providers.gemini.sdk import build_genai_client, close_genai_client
 from roomkit.video.video_frame import VideoFrame
 from roomkit.video.vision.base import DEFAULT_VISION_PROMPT, VisionProvider, VisionResult
@@ -85,11 +87,17 @@ class GeminiVisionProvider(VisionProvider):
             )
         return self._client
 
+    @property
+    def supports_response_schema(self) -> bool:
+        """Controlled generation, through ``response_json_schema``."""
+        return True
+
     async def analyze_frame(
         self,
         frame: VideoFrame,
         *,
         prompt: str | None = None,
+        response_schema: dict[str, Any] | None = None,
     ) -> VisionResult:
         """Analyze a video frame via the Gemini API.
 
@@ -98,10 +106,13 @@ class GeminiVisionProvider(VisionProvider):
         Args:
             frame: The video frame (raw_rgb24, raw_bgr24, or encoded).
             prompt: Optional prompt override (defaults to config prompt).
+            response_schema: JSON Schema the description must satisfy.
 
         Returns:
             VisionResult with the model's description.
         """
+        if response_schema is not None:
+            check_schema_request(response_schema, supported=True, provider="gemini-vision")
         client = self._get_client()
         types = self._types
         jpeg_bytes = frame_to_jpeg(frame)
@@ -110,7 +121,9 @@ class GeminiVisionProvider(VisionProvider):
             data=jpeg_bytes,
             mime_type="image/jpeg",
         )
-        response = await self._generate(client, types, [prompt or self._config.prompt, image_part])
+        response = await self._generate(
+            client, types, [prompt or self._config.prompt, image_part], response_schema
+        )
 
         # Extract text from all parts (Gemini 2.5 may include thinking parts)
         description = ""
@@ -122,6 +135,8 @@ class GeminiVisionProvider(VisionProvider):
         # Fallback to response.text if parts extraction is empty
         if not description and response.text:
             description = response.text.strip()
+        if response_schema is not None:
+            _check_answer(response, description, response_schema)
 
         usage_meta: dict[str, Any] = {"model": self._config.model}
         if response.usage_metadata:
@@ -139,7 +154,9 @@ class GeminiVisionProvider(VisionProvider):
             metadata=usage_meta,
         )
 
-    def _generation_config(self, types: Any) -> tuple[dict[str, Any], bool]:
+    def _generation_config(
+        self, types: Any, response_schema: dict[str, Any] | None = None
+    ) -> tuple[dict[str, Any], bool]:
         """The config for one frame, and whether it carries the thinking-off
         setting this provider added (rather than the caller's own)."""
         gen_config: dict[str, Any] = {
@@ -147,6 +164,9 @@ class GeminiVisionProvider(VisionProvider):
             "temperature": self._config.temperature,
             **self._config.extra_config,
         }
+        if response_schema is not None:
+            gen_config["response_mime_type"] = "application/json"
+            gen_config["response_json_schema"] = response_schema
         # Disable thinking for vision — we want direct descriptions,
         # not reasoning chains that consume the token budget.
         # Only models that support thinking_config (2.5+, 3.x).
@@ -167,7 +187,13 @@ class GeminiVisionProvider(VisionProvider):
         )
         return gen_config, added_thinking
 
-    async def _generate(self, client: Any, types: Any, contents: list[Any]) -> Any:
+    async def _generate(
+        self,
+        client: Any,
+        types: Any,
+        contents: list[Any],
+        response_schema: dict[str, Any] | None = None,
+    ) -> Any:
         """Ask for the description, without the thinking-off setting where the
         model refuses it.
 
@@ -179,7 +205,7 @@ class GeminiVisionProvider(VisionProvider):
         retry succeeds, the model is not sent it again. A failing retry raises
         its own error, the one about the request itself.
         """
-        gen_config, added_thinking = self._generation_config(types)
+        gen_config, added_thinking = self._generation_config(types, response_schema)
         try:
             return await client.aio.models.generate_content(
                 model=self._config.model,
@@ -207,3 +233,16 @@ class GeminiVisionProvider(VisionProvider):
         http, self._http = self._http, None
         self._types = None
         await close_genai_client(client, http)
+
+
+def _check_answer(response: Any, description: str, schema: dict[str, Any]) -> None:
+    """Refuse a constrained description that did not deliver its JSON document."""
+    raw_reason = response.candidates[0].finish_reason if response.candidates else None
+    finish = getattr(raw_reason, "name", None) or (str(raw_reason) if raw_reason else None)
+    check_schema_answer(
+        description,
+        schema=schema,
+        provider="gemini-vision",
+        refusal=finish if finish in REFUSAL_FINISH_REASONS else None,
+        truncated=finish == "MAX_TOKENS",
+    )

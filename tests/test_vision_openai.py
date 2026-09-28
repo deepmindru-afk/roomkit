@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from roomkit.providers.ai.response_schema import ResponseSchemaError
 from roomkit.video.video_frame import VideoFrame
 from roomkit.video.vision.encode import frame_to_jpeg
 from roomkit.video.vision.openai import (
@@ -163,3 +164,65 @@ class TestExports:
 
         assert OpenAIVisionProvider is not None
         assert OpenAIVisionConfig is not None
+
+
+_BUTTON: dict[str, object] = {
+    "type": "object",
+    "properties": {"found": {"type": "boolean"}, "label": {"type": "string"}},
+    "required": ["found", "label"],
+    "additionalProperties": False,
+}
+
+
+def _openai_vision(
+    content: str, *, finish: str = "stop", **config: object
+) -> OpenAIVisionProvider:
+    provider = OpenAIVisionProvider(OpenAIVisionConfig(model="gpt-4o", **config))  # type: ignore[arg-type]
+    response = MagicMock()
+    response.choices = [MagicMock()]
+    response.choices[0].message.content = content
+    response.choices[0].message.refusal = None
+    response.choices[0].finish_reason = finish
+    client = AsyncMock()
+    client.chat.completions.create = AsyncMock(return_value=response)
+    provider._client = client
+    return provider
+
+
+def _frame() -> VideoFrame:
+    return VideoFrame(data=b"\x00" * (64 * 48 * 3), codec="raw_rgb24", width=64, height=48)
+
+
+class TestResponseSchema:
+    """RFC §6.7 for vision: the description answers the schema, or the call raises."""
+
+    async def test_the_schema_rides_a_strict_json_schema_format(self) -> None:
+        provider = _openai_vision('{"found": false, "label": ""}')
+
+        result = await provider.analyze_frame(_frame(), response_schema=_BUTTON)
+
+        assert result.description == '{"found": false, "label": ""}'
+        kwargs = provider._client.chat.completions.create.call_args.kwargs
+        assert kwargs["response_format"]["json_schema"] == {
+            "name": "response",
+            "schema": _BUTTON,
+            "strict": True,
+        }
+
+    async def test_a_length_stop_raises_truncated(self) -> None:
+        provider = _openai_vision('{"found": fa', finish="length")
+
+        with pytest.raises(ResponseSchemaError) as exc:
+            await provider.analyze_frame(_frame(), response_schema=_BUTTON)
+
+        assert exc.value.reason == "truncated"
+
+    async def test_a_server_declared_without_support_refuses_before_the_call(self) -> None:
+        provider = _openai_vision("{}", supports_response_schema=False)
+
+        assert provider.supports_response_schema is False
+        with pytest.raises(ResponseSchemaError) as exc:
+            await provider.analyze_frame(_frame(), response_schema=_BUTTON)
+
+        assert exc.value.reason == "unsupported"
+        provider._client.chat.completions.create.assert_not_called()

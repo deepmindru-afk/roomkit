@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
+from roomkit.providers.ai.response_schema import ResponseSchemaError
 from roomkit.video.video_frame import VideoFrame
 from roomkit.video.vision.gemini import GeminiVisionConfig, GeminiVisionProvider
 
@@ -241,3 +242,50 @@ class TestExports:
 
         assert GeminiVisionProvider is not None
         assert GeminiVisionConfig is not None
+
+
+_BUTTON: dict[str, object] = {
+    "type": "object",
+    "properties": {"found": {"type": "boolean"}, "label": {"type": "string"}},
+    "required": ["found", "label"],
+    "additionalProperties": False,
+}
+
+
+class TestResponseSchema:
+    """RFC §6.7 for vision: the description answers the schema, or the call raises."""
+
+    async def test_the_schema_rides_controlled_generation(self) -> None:
+        provider, types = _vision([_answer('{"found": true, "label": "OK"}')])
+
+        result = await provider.analyze_frame(_frame(), response_schema=_BUTTON)
+
+        assert result.description == '{"found": true, "label": "OK"}'
+        config = types.GenerateContentConfig.call_args.kwargs
+        assert config["response_mime_type"] == "application/json"
+        assert config["response_json_schema"] == _BUTTON
+
+    async def test_prose_raises_invalid_json(self) -> None:
+        provider, _types = _vision([_answer("There is an OK button.")])
+
+        with pytest.raises(ResponseSchemaError) as exc:
+            await provider.analyze_frame(_frame(), response_schema=_BUTTON)
+
+        assert exc.value.reason == "invalid_json"
+
+    async def test_a_max_tokens_stop_raises_truncated(self) -> None:
+        cut = _answer('{"found": tr')
+        cut.candidates.__getitem__.return_value.finish_reason = "MAX_TOKENS"
+        provider, _types = _vision([cut])
+
+        with pytest.raises(ResponseSchemaError) as exc:
+            await provider.analyze_frame(_frame(), response_schema=_BUTTON)
+
+        assert exc.value.reason == "truncated"
+
+    async def test_no_schema_sends_no_constraint(self) -> None:
+        provider, types = _vision([_answer()])
+
+        await provider.analyze_frame(_frame())
+
+        assert "response_json_schema" not in types.GenerateContentConfig.call_args.kwargs

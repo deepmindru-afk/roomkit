@@ -29,7 +29,7 @@ from roomkit.providers.ai.base import (
 )
 from roomkit.providers.ai.response_schema import checked_stream, schema_for_generate
 from roomkit.providers.gemini.config import GeminiConfig
-from roomkit.providers.gemini.errors import wrap_gemini_error
+from roomkit.providers.gemini.errors import REFUSAL_FINISH_REASONS, wrap_gemini_error
 from roomkit.providers.gemini.models import MODELS
 from roomkit.providers.gemini.request import (
     build_gen_config,
@@ -41,16 +41,10 @@ from roomkit.providers.utils import _aclose_stream
 
 logger = logging.getLogger(__name__)
 
-# Finish reasons that mean the model withheld the answer rather than wrote it:
-# a constrained answer ending on one of these is a refusal, not bad JSON.
-_REFUSAL_FINISH_REASONS = frozenset(
-    {"SAFETY", "RECITATION", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII"}
-)
-
 
 def _refusal(done: StreamDone) -> str | None:
     """A refusal stop reason, or the reason the prompt itself was blocked."""
-    if done.finish_reason in _REFUSAL_FINISH_REASONS:
+    if done.finish_reason in REFUSAL_FINISH_REASONS:
         return done.finish_reason
     return done.metadata.get("prompt_block_reason")
 

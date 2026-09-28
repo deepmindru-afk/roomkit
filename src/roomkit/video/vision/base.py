@@ -98,12 +98,23 @@ class VisionProvider(ABC):
         """Whether this provider supports streaming frame analysis."""
         return False
 
+    @property
+    def supports_response_schema(self) -> bool:
+        """Whether :meth:`analyze_frame` honours a ``response_schema``.
+
+        The contract is the AI providers' (RFC §6.7): the description is then
+        one JSON document satisfying the schema, or the call raises
+        :class:`~roomkit.providers.ai.response_schema.ResponseSchemaError`.
+        """
+        return False
+
     @abstractmethod
     async def analyze_frame(
         self,
         frame: VideoFrame,
         *,
         prompt: str | None = None,
+        response_schema: dict[str, Any] | None = None,
     ) -> VisionResult:
         """Analyze a single video frame.
 
@@ -116,6 +127,9 @@ class VisionProvider(ABC):
                 ``None``, the provider uses its configured default
                 prompt.  Useful for on-demand queries like the
                 ``describe_screen`` tool.
+            response_schema: A JSON Schema, within the portable subset of RFC
+                §6.7, that the description must satisfy. Pass one only when
+                :attr:`supports_response_schema` is true.
 
         Returns:
             VisionResult with description, labels, and optional faces/OCR.

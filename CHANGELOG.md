@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A vision provider may answer a frame in a JSON Schema (RMK-250, RFC
+  §12.8.7 under the rules of §6.7): `VisionProvider.analyze_frame(...,
+  response_schema=)` and `supports_response_schema`. `GeminiVisionProvider`
+  (`response_json_schema`) and `OpenAIVisionProvider` (a strict `json_schema`
+  format; `supports_response_schema=False` on its config for a server that
+  does not apply one) check the description before returning it;
+  `MockVisionProvider(response_schema=True)` follows the same contract. The
+  screen input tools' element locate passes its schema where the provider
+  takes one and reads the answer as it is, keeping the repair of free text for
+  the others. Verified live on Gemini: a red rectangle located at its exact
+  center.
+
 - An `AIChannel` turn may answer in a JSON Schema (RMK-249, RFC §6.7 and A.9):
   `AIChannel(response_schema=)` for every turn, `AIChannelTurnConfig.response_schema`
   from the config provider, or `response_schema` in the binding metadata for one

@@ -6,6 +6,12 @@ from roomkit.providers.ai.base import RETRYABLE_STATUS_CODES, ProviderError
 
 _RETRYABLE_TERMS = ("rate", "limit", "429", "500", "502", "503")
 
+#: Finish reasons that mean the model withheld the answer rather than wrote it:
+#: a constrained answer ending on one of these is a refusal, not bad JSON.
+REFUSAL_FINISH_REASONS = frozenset(
+    {"SAFETY", "RECITATION", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII"}
+)
+
 
 def wrap_gemini_error(exc: Exception) -> ProviderError:
     """Wrap a ``google-genai`` exception into a :class:`ProviderError`.
