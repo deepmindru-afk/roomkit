@@ -530,6 +530,62 @@ class TestToolCallEphemeralEvents:
         assert start.arguments == {"q": "token"}
         assert end.arguments == {"q": "redacted-value"}
 
+    async def test_non_streaming_end_event_records_post_hook_arguments_that_executed(
+        self,
+    ) -> None:
+        """The batch loop persists the same pair as the markers: what the model
+        asked for on the start, what ran on the end."""
+        from roomkit.models.enums import EventType
+
+        seen: list[dict[str, Any]] = []
+
+        async def tool_handler(name: str, args: dict[str, Any]) -> str:
+            seen.append(args)
+            return "ok"
+
+        async def rewrite(_event: Any) -> BeforeToolDecision:
+            return BeforeToolDecision(allowed=True, arguments={"q": "redacted-value"})
+
+        provider = MockAIProvider(
+            ai_responses=[
+                AIResponse(
+                    content="",
+                    finish_reason="tool_calls",
+                    tool_calls=[AIToolCall(id="tc1", name="search", arguments={"q": "token"})],
+                ),
+                AIResponse(content="done", finish_reason="stop"),
+            ],
+        )
+        ch = AIChannel(
+            "ai1",
+            provider=provider,
+            tool_handler=tool_handler,
+            tools=[
+                AITool(
+                    name="search",
+                    description="Search",
+                    parameters={
+                        "type": "object",
+                        "properties": {"q": {"type": "string"}},
+                        "required": ["q"],
+                    },
+                )
+            ],
+        )
+        ch._before_tool_call_hook = rewrite
+
+        output = await ch.on_event(
+            make_event(body="search", channel_id="sms1"),
+            _binding(),
+            _ctx(),
+        )
+        start = next(e for e in output.response_events if e.type == EventType.TOOL_CALL_START)
+        end = next(e for e in output.response_events if e.type == EventType.TOOL_CALL_END)
+
+        assert seen == [{"q": "redacted-value"}]
+        assert start.content.arguments == {"q": "token"}
+        assert end.content.arguments == {"q": "redacted-value"}
+
     async def test_non_streaming_returns_tool_events(self) -> None:
         """Non-streaming tool loop returns tool call events in response_events."""
         from roomkit.models.enums import EventType

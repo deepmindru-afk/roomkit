@@ -91,6 +91,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The non-streaming tool loop stores the arguments a call ran with on its
+  `TOOL_CALL_END` event, as the streaming loop does (RMK-270). It stored
+  what the model asked for, so a call folded back into shape or rewritten by
+  a `BEFORE_TOOL_USE` hook was recorded with arguments its handler never
+  received. The `TOOL_CALL_START` event still carries the model's request.
 - ElevenLabs `optimize_streaming_latency` reaches the API again (RMK-264).
   It had not been sent since the move to the official SDK, whatever its
   value. It now goes to the models that take it, the v2 and v2.5 families;

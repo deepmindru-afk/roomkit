@@ -47,12 +47,18 @@ if TYPE_CHECKING:
 
 @dataclass
 class ToolRound:
-    """Record of one tool execution round in the non-streaming tool loop."""
+    """Record of one tool execution round in the non-streaming tool loop.
+
+    ``executed_arguments`` maps a call id to the arguments its handler ran
+    with, once folds and a ``BEFORE_TOOL_USE`` rewrite applied; the calls keep
+    what the model asked for.
+    """
 
     text_before: str
     tool_calls: list[AIToolCall]
     results: list[AIToolResultPart]
     duration_ms: int
+    executed_arguments: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 @dataclass
@@ -414,7 +420,8 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
 
             # Tool call start + end events
             for tc, rp in zip(rnd.tool_calls, rnd.results, strict=False):
-                events.extend(_tool_call_events(tc, rp, rnd.duration_ms, event_fields))
+                executed = rnd.executed_arguments.get(tc.id, tc.arguments)
+                events.extend(_tool_call_events(tc, rp, executed, rnd.duration_ms, event_fields))
 
         # Final text segment (the last response after all tool rounds)
         if response.content:
@@ -561,7 +568,7 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
                 )
                 context.messages.append(AIMessage(role="assistant", content=parts))
 
-                result_parts, duration_ms, _executed_arguments = await self._execute_round_tools(
+                result_parts, duration_ms, executed_arguments = await self._execute_round_tools(
                     context,
                     round_calls,
                     telemetry,
@@ -586,6 +593,7 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
                         tool_calls=round_calls,
                         results=result_parts,
                         duration_ms=duration_ms,
+                        executed_arguments=executed_arguments,
                     )
                 )
 
@@ -683,9 +691,17 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
 
 
 def _tool_call_events(
-    tc: Any, rp: Any, duration_ms: int, event_fields: dict[str, Any]
+    tc: Any,
+    rp: Any,
+    executed: dict[str, Any],
+    duration_ms: int,
+    event_fields: dict[str, Any],
 ) -> list[RoomEvent]:
-    """The TOOL_CALL_START and TOOL_CALL_END events of one call of a round."""
+    """The TOOL_CALL_START and TOOL_CALL_END events of one call of a round.
+
+    The start carries what the model asked for, the end what the handler ran
+    with, as the streaming loop's markers do.
+    """
     result, structured = tool_event_payload(
         getattr(rp, "result", None), getattr(rp, "structured_content", None)
     )
@@ -700,7 +716,7 @@ def _tool_call_events(
     end = ToolCallContent(
         tool_name=tc.name,
         tool_id=tc.id,
-        arguments=tc.arguments,
+        arguments=executed,
         result=result,
         status="failed" if is_error else "completed",
         duration_ms=duration_ms,
