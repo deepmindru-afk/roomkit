@@ -42,12 +42,12 @@ from roomkit.providers.ai.base import (
 from roomkit.providers.ai.image_parts import image_part_base64
 from roomkit.providers.ai.response_schema import (
     check_schema_answer,
-    refuse_streamed_schema,
+    checked_stream,
     schema_for_generate,
 )
 from roomkit.providers.ollama.config import OllamaConfig
 from roomkit.providers.ollama.models import MODELS
-from roomkit.providers.utils import http_timeout
+from roomkit.providers.utils import _aclose_stream, http_timeout
 
 # Bounded parallelism for the per-model ``/api/show`` fan-out in
 # ``list_models``. Local Ollama serialises heavy work anyway; 8 keeps the
@@ -418,10 +418,27 @@ class OllamaAIProvider(AIProvider):
         plus an optional final ``message.tool_calls``. We pass these
         straight through as the corresponding ``StreamThinkingDelta``,
         ``StreamTextDelta``, and ``StreamToolCall`` events — no tag
-        parsing, no field reordering. A response schema is refused here: only
-        :meth:`generate` honours one (RFC §6.7).
+        parsing, no field reordering. A response schema is checked before the
+        done event (RFC §6.7).
         """
-        refuse_streamed_schema(context, provider=self._provider_name)
+        stream = checked_stream(
+            self._stream_events(context),
+            context,
+            provider=self._provider_name,
+            refusal=lambda _done: None,
+            truncated=lambda done: done.finish_reason == "length",
+        )
+        try:
+            async for event in stream:
+                yield event
+        finally:
+            await _aclose_stream(stream)
+
+    async def _stream_events(self, context: AIContext) -> AsyncIterator[StreamEvent]:
+        """The streamed call itself."""
+        schema_for_generate(
+            context, supported=self.supports_response_schema, provider=self._provider_name
+        )
         kwargs = self._build_kwargs(context, stream=True)
         t0 = time.monotonic()
         first_token = True

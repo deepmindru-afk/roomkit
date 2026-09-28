@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator
 from typing import ClassVar
 
 from roomkit.providers.ai.base import AIContext, AIResponse, ModelInfo, StreamEvent
-from roomkit.providers.ai.response_schema import refuse_streamed_schema, schema_for_generate
+from roomkit.providers.ai.response_schema import schema_for_generate
 from roomkit.providers.llamacpp.config import LlamaCppConfig
 from roomkit.providers.llamacpp.server import LlamaServer
 from roomkit.providers.vllm import _openai_config, _VLLMProvider
@@ -78,7 +78,9 @@ class LlamaCppAIProvider(_VLLMProvider):
         return await super().generate(context)
 
     async def generate_structured_stream(self, context: AIContext) -> AsyncIterator[StreamEvent]:
-        refuse_streamed_schema(context, provider=self._provider_name)
+        schema_for_generate(
+            context, supported=self.supports_response_schema, provider=self._provider_name
+        )
         await self.start()
         async for event in super().generate_structured_stream(context):
             yield event

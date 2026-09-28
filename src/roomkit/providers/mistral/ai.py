@@ -29,11 +29,7 @@ from roomkit.providers.ai.base import (
 )
 from roomkit.providers.ai.image_parts import image_part_uri
 from roomkit.providers.ai.openai_dialect import ThinkTagParser, fold_tool_call_fragment
-from roomkit.providers.ai.response_schema import (
-    check_schema_answer,
-    refuse_streamed_schema,
-    schema_for_generate,
-)
+from roomkit.providers.ai.response_schema import checked_stream, schema_for_generate
 from roomkit.providers.mistral.config import MistralConfig
 from roomkit.providers.mistral.models import MODELS
 from roomkit.providers.utils import _aclose_stream
@@ -311,16 +307,22 @@ class MistralAIProvider(AIProvider):
         Text inside ``<think>...</think>`` is yielded as
         :class:`StreamThinkingDelta`; everything else as
         :class:`StreamTextDelta`.  Tool calls are accumulated from deltas
-        and yielded as :class:`StreamToolCall`. A response schema is refused
-        here: only :meth:`generate` honours one (RFC §6.7).
+        and yielded as :class:`StreamToolCall`. A response schema is checked
+        before the done event (RFC §6.7).
         """
-        refuse_streamed_schema(context, provider="mistral")
-        events = self._events(context)
+        schema_for_generate(context, supported=self.supports_response_schema, provider="mistral")
+        stream = checked_stream(
+            self._events(context),
+            context,
+            provider="mistral",
+            refusal=lambda _done: None,
+            truncated=lambda done: done.finish_reason == "length",
+        )
         try:
-            async for event in events:
+            async for event in stream:
                 yield event
         finally:
-            await _aclose_stream(events)
+            await _aclose_stream(stream)
 
     async def _events(self, context: AIContext) -> AsyncIterator[StreamEvent]:
         """The streamed call itself, shared by :meth:`generate`."""
@@ -424,14 +426,13 @@ class MistralAIProvider(AIProvider):
             raise self._wrap_error(exc) from exc
 
     async def generate(self, context: AIContext) -> AIResponse:
-        """Generate by consuming the streamed call."""
-        schema_for_generate(context, supported=self.supports_response_schema, provider="mistral")
+        """Generate by consuming the structured stream."""
         thinking_parts: list[str] = []
         text_parts: list[str] = []
         tool_calls: list[AIToolCall] = []
         done_event: StreamDone | None = None
 
-        async for event in self._events(context):
+        async for event in self.generate_structured_stream(context):
             if isinstance(event, StreamThinkingDelta):
                 thinking_parts.append(event.thinking)
             elif isinstance(event, StreamTextDelta):
@@ -444,13 +445,6 @@ class MistralAIProvider(AIProvider):
                 done_event = event
 
         finish_reason = done_event.finish_reason if done_event else None
-        if context.response_schema is not None:
-            check_schema_answer(
-                "".join(text_parts),
-                schema=context.response_schema,
-                provider="mistral",
-                truncated=finish_reason == "length",
-            )
         return AIResponse(
             content="".join(text_parts),
             thinking="".join(thinking_parts) if thinking_parts else None,

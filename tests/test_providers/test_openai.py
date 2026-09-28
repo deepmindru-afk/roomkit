@@ -14,6 +14,7 @@ from roomkit.providers.ai.base import (
     AIThinkingPart,
     AITool,
     AIToolCallPart,
+    StreamDone,
     StreamTextDelta,
     StreamThinkingDelta,
     StreamToolCall,
@@ -1199,6 +1200,20 @@ _VERDICT: dict[str, Any] = {
 }
 
 
+async def _openai_chunks(text: str, *, refusal: str | None = None) -> Any:
+    """A Chat Completions stream: the text in one delta, then the stop."""
+    delta = SimpleNamespace(content=text or None, tool_calls=None, refusal=refusal)
+    yield SimpleNamespace(choices=[SimpleNamespace(delta=delta, finish_reason=None)], usage=None)
+    yield SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                delta=SimpleNamespace(content=None, tool_calls=None), finish_reason="stop"
+            )
+        ],
+        usage=None,
+    )
+
+
 class TestOpenAIResponseSchema:
     """RFC §6.7: the schema rides a strict ``json_schema`` response format."""
 
@@ -1281,12 +1296,56 @@ class TestOpenAIResponseSchema:
         assert exc.value.reason == "unsupported"
         provider._client.chat.completions.create.assert_not_called()
 
-    async def test_a_streaming_call_is_refused_before_the_call(self) -> None:
+    @staticmethod
+    async def _drain(stream: Any) -> tuple[list[Any], ResponseSchemaError | None]:
+        events: list[Any] = []
+        try:
+            async for event in stream:
+                events.append(event)
+        except ResponseSchemaError as exc:
+            return events, exc
+        return events, None
+
+    async def test_a_streamed_answer_is_checked_before_its_done_event(self) -> None:
         provider = self._provider()
+        provider._client.chat.completions.create = AsyncMock(
+            return_value=_openai_chunks('{"label": "yes"}')
+        )
 
-        with pytest.raises(ResponseSchemaError) as exc:
-            async for _ in provider.generate_structured_stream(_context(response_schema=_VERDICT)):
-                pass
+        events, error = await self._drain(
+            provider.generate_structured_stream(_context(response_schema=_VERDICT))
+        )
 
-        assert exc.value.reason == "unsupported"
-        provider._client.chat.completions.create.assert_not_called()
+        assert error is None
+        assert isinstance(events[-1], StreamDone)
+        assert (
+            "".join(e.text for e in events if isinstance(e, StreamTextDelta)) == '{"label": "yes"}'
+        )
+        kwargs = provider._client.chat.completions.create.call_args.kwargs
+        assert kwargs["response_format"]["json_schema"]["schema"] == _VERDICT
+
+    async def test_a_streamed_answer_that_is_not_the_document_raises_instead_of_done(
+        self,
+    ) -> None:
+        provider = self._provider()
+        provider._client.chat.completions.create = AsyncMock(return_value=_openai_chunks("Yes."))
+
+        events, error = await self._drain(
+            provider.generate_structured_stream(_context(response_schema=_VERDICT))
+        )
+
+        assert error is not None and error.reason == "invalid_json"
+        assert not any(isinstance(e, StreamDone) for e in events)
+
+    async def test_a_streamed_refusal_is_a_refusal(self) -> None:
+        provider = self._provider()
+        provider._client.chat.completions.create = AsyncMock(
+            return_value=_openai_chunks("", refusal="I can't help with that.")
+        )
+
+        _events, error = await self._drain(
+            provider.generate_structured_stream(_context(response_schema=_VERDICT))
+        )
+
+        assert error is not None and error.reason == "refusal"
+        assert "can't help" in str(error)

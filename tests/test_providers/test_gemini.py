@@ -1001,11 +1001,39 @@ class TestGeminiResponseSchema:
 
         assert exc.value.reason == "refusal"
 
-    async def test_a_streaming_call_is_refused_before_the_call(self) -> None:
-        provider = self._provider(_chunks_ending("{}", "STOP"))
+    @staticmethod
+    async def _drain(stream: Any) -> tuple[list[Any], ResponseSchemaError | None]:
+        events: list[Any] = []
+        try:
+            async for event in stream:
+                events.append(event)
+        except ResponseSchemaError as exc:
+            return events, exc
+        return events, None
 
-        with pytest.raises(ResponseSchemaError):
-            async for _ in provider.generate_structured_stream(_context(response_schema=_VERDICT)):
-                pass
+    async def test_a_streamed_answer_is_checked_before_its_done_event(self) -> None:
+        provider = self._provider(_chunks_ending('{"label": "yes"}', "STOP"))
 
-        provider._client.aio.models.generate_content_stream.assert_not_called()
+        events, error = await self._drain(
+            provider.generate_structured_stream(_context(response_schema=_VERDICT))
+        )
+
+        assert error is None
+        assert isinstance(events[-1], StreamDone)
+        assert (
+            "".join(e.text for e in events if isinstance(e, StreamTextDelta)) == '{"label": "yes"}'
+        )
+        config = provider._client.aio.models.generate_content_stream.call_args.kwargs["config"]
+        assert config.response_json_schema == _VERDICT
+
+    async def test_a_streamed_answer_that_is_not_the_document_raises_instead_of_done(
+        self,
+    ) -> None:
+        provider = self._provider(_chunks_ending("Yes.", "STOP"))
+
+        events, error = await self._drain(
+            provider.generate_structured_stream(_context(response_schema=_VERDICT))
+        )
+
+        assert error is not None and error.reason == "invalid_json"
+        assert not any(isinstance(e, StreamDone) for e in events)

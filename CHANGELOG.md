@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A response schema streams (RMK-247, RFC §6.7): `generate_stream()` and
+  `generate_structured_stream()` send it like `generate()` on every provider
+  that supports it, the text deltas are the JSON as it is written, and the
+  document is checked before the done event, which the error replaces when the
+  check fails. A consumer acts on the streamed text only once the done event
+  arrives. On Anthropic, Gemini and Mistral, `generate()` is again the
+  structured stream consumed, so the check lives in one place; OpenAI's stream
+  now reads `delta.refusal`. Verified live on Gemini (a truncated stream
+  included) and Anthropic.
+
 - `MetaAIProvider` converses on Meta's Muse Spark (`muse-spark-1.3`, 1.2, 1.1;
   Meta Model API) (RMK-252). It subclasses `OpenAIAIProvider` on Meta's Chat
   Completions, so tools, streaming and usage (reasoning and cached tokens) are
@@ -78,14 +88,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deletion, and a refused consent; a successful replication needs a real
   person's recording and is not verified. Example:
   `examples/gemini_voice_design.py`.
+
 - `AIContext.response_schema` constrains an AI provider's answer to a JSON
   Schema (RMK-234, RFC §6.7). `generate()` then returns one JSON document in
   `content`, checked against the schema whatever the server did with it
   (`schema_mismatch`), or raises `ResponseSchemaError` with its `reason`:
   `refusal` (a blocked prompt included), `truncated`, `invalid_json` (not JSON,
   or JSON of another shape), or `unsupported` before any request when the
-  provider cannot take a schema, the turn also carries tools, or a streaming
-  method receives it. A provider never ignores the schema. The schema must stay
+  provider cannot take a schema or the turn also carries tools. A provider
+  never ignores the schema. The schema must stay
   within a portable subset, checked on construction, on assignment and through
   `model_copy(update=)`: every object lists all its properties in `required`
   and sets `additionalProperties` to false, only strings carry `enum`, no null,
@@ -3318,7 +3329,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   inventory is now sampled at a regular stride across the whole catalogue,
   keeping the original order, and reports the real total (`Showing 60 of 87`)
   so the model knows how much it is not seeing.
-
 
 ## [0.47.0] — 2026-08-10
 

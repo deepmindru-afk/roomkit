@@ -27,11 +27,7 @@ from roomkit.providers.ai.base import (
     StreamThinkingDelta,
     StreamToolCall,
 )
-from roomkit.providers.ai.response_schema import (
-    check_schema_answer,
-    refuse_streamed_schema,
-    schema_for_generate,
-)
+from roomkit.providers.ai.response_schema import checked_stream, schema_for_generate
 from roomkit.providers.gemini.config import GeminiConfig
 from roomkit.providers.gemini.errors import wrap_gemini_error
 from roomkit.providers.gemini.models import MODELS
@@ -50,6 +46,17 @@ logger = logging.getLogger(__name__)
 _REFUSAL_FINISH_REASONS = frozenset(
     {"SAFETY", "RECITATION", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII"}
 )
+
+
+def _refusal(done: StreamDone) -> str | None:
+    """A refusal stop reason, or the reason the prompt itself was blocked."""
+    if done.finish_reason in _REFUSAL_FINISH_REASONS:
+        return done.finish_reason
+    return done.metadata.get("prompt_block_reason")
+
+
+def _truncated(done: StreamDone) -> bool:
+    return done.finish_reason == "MAX_TOKENS"
 
 
 def _prompt_block_reason(chunk: Any) -> str | None:
@@ -182,16 +189,21 @@ class GeminiAIProvider(AIProvider):
     async def generate_structured_stream(self, context: AIContext) -> AsyncIterator[StreamEvent]:
         """Yield structured events from the Gemini streaming API.
 
-        A response schema is refused here: only :meth:`generate` honours one
-        (RFC §6.7).
+        A response schema is checked before the done event (RFC §6.7).
         """
-        refuse_streamed_schema(context, provider="gemini")
-        events = self._events(context)
+        schema_for_generate(context, supported=self.supports_response_schema, provider="gemini")
+        stream = checked_stream(
+            self._events(context),
+            context,
+            provider="gemini",
+            refusal=_refusal,
+            truncated=_truncated,
+        )
         try:
-            async for event in events:
+            async for event in stream:
                 yield event
         finally:
-            await _aclose_stream(events)
+            await _aclose_stream(stream)
 
     async def _events(self, context: AIContext) -> AsyncIterator[StreamEvent]:
         """The streamed call itself, shared by :meth:`generate`."""
@@ -362,14 +374,13 @@ class GeminiAIProvider(AIProvider):
             raise self._wrap_error(exc) from exc
 
     async def generate(self, context: AIContext) -> AIResponse:
-        """Generate by consuming the streamed call."""
-        schema_for_generate(context, supported=self.supports_response_schema, provider="gemini")
+        """Generate by consuming the structured stream."""
         text_parts: list[str] = []
         thinking_parts: list[str] = []
         tool_calls: list[AIToolCall] = []
         done_event: StreamDone | None = None
 
-        async for event in self._events(context):
+        async for event in self.generate_structured_stream(context):
             if isinstance(event, StreamThinkingDelta):
                 thinking_parts.append(event.thinking)
             elif isinstance(event, StreamTextDelta):
@@ -387,16 +398,6 @@ class GeminiAIProvider(AIProvider):
                 done_event = event
 
         finish_reason = done_event.finish_reason if done_event else None
-        done_metadata = done_event.metadata if done_event else {}
-        if context.response_schema is not None:
-            refused = finish_reason in _REFUSAL_FINISH_REASONS
-            check_schema_answer(
-                "".join(text_parts),
-                schema=context.response_schema,
-                provider="gemini",
-                refusal=finish_reason if refused else done_metadata.get("prompt_block_reason"),
-                truncated=finish_reason == "MAX_TOKENS",
-            )
         return AIResponse(
             content="".join(text_parts),
             thinking="".join(thinking_parts) if thinking_parts else None,

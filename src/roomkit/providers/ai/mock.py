@@ -18,11 +18,7 @@ from roomkit.providers.ai.base import (
     StreamToolCall,
     StreamToolCallDelta,
 )
-from roomkit.providers.ai.response_schema import (
-    check_schema_answer,
-    refuse_streamed_schema,
-    schema_for_generate,
-)
+from roomkit.providers.ai.response_schema import check_schema_answer, schema_for_generate
 
 _MOCK_MODELS = [
     ModelInfo(id="mock", display_name="Mock", context_window=8192, supports_vision=False),
@@ -36,8 +32,8 @@ class MockAIProvider(AIProvider):
     """Round-robin response provider for tests.
 
     With ``response_schema=True`` it honours :attr:`AIContext.response_schema`
-    the way a real provider must (RFC §6.7): the scripted answer has to be a
-    JSON document, and an :class:`AIResponse` scripted with
+    the way a real provider must (RFC §6.7), streaming included: the scripted
+    answer has to be a JSON document satisfying it, and an :class:`AIResponse` scripted with
     ``finish_reason="refusal"`` or ``"length"`` raises the matching
     :class:`~roomkit.providers.ai.response_schema.ResponseSchemaError`.
     """
@@ -117,14 +113,12 @@ class MockAIProvider(AIProvider):
 
     async def generate_stream(self, context: AIContext) -> AsyncIterator[str]:
         """Yield text from generate() as a single delta."""
-        refuse_streamed_schema(context, provider="mock")
         response = await self.generate(context)
         if response.content:
             yield response.content
 
     async def generate_structured_stream(self, context: AIContext) -> AsyncIterator[StreamEvent]:
         """Yield structured events from generate() result."""
-        refuse_streamed_schema(context, provider="mock")
         response = await self.generate(context)
         if response.thinking:
             yield StreamThinkingDelta(thinking=response.thinking)

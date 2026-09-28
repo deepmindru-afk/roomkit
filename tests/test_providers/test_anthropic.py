@@ -1334,15 +1334,44 @@ class TestAnthropicResponseSchema:
         assert exc.value.reason == "unsupported"
         provider._client.messages.stream.assert_not_called()
 
-    @pytest.mark.parametrize("method", ["generate_stream", "generate_structured_stream"])
-    async def test_a_streaming_call_is_refused_before_the_call(self, method: str) -> None:
-        provider = self._provider(_mock_stream())
+    @staticmethod
+    async def _drain(stream: Any) -> tuple[list[Any], ResponseSchemaError | None]:
+        events: list[Any] = []
+        try:
+            async for event in stream:
+                events.append(event)
+        except ResponseSchemaError as exc:
+            return events, exc
+        return events, None
 
-        with pytest.raises(ResponseSchemaError):
-            async for _ in getattr(provider, method)(_context(response_schema=_VERDICT)):
-                pass
+    async def test_a_streamed_answer_is_checked_before_its_done_event(self) -> None:
+        provider = self._provider(_mock_stream(text='{"label": "yes"}'))
 
-        provider._client.messages.stream.assert_not_called()
+        events, error = await self._drain(
+            provider.generate_structured_stream(_context(response_schema=_VERDICT))
+        )
+
+        assert error is None
+        assert isinstance(events[-1], StreamDone)
+        assert (
+            "".join(e.text for e in events if isinstance(e, StreamTextDelta)) == '{"label": "yes"}'
+        )
+        assert (
+            provider._client.messages.stream.call_args.kwargs["output_config"]["format"]["schema"]
+            == _VERDICT
+        )
+
+    async def test_a_streamed_answer_that_is_not_the_document_raises_instead_of_done(
+        self,
+    ) -> None:
+        provider = self._provider(_mock_stream(text="Yes."))
+
+        events, error = await self._drain(
+            provider.generate_structured_stream(_context(response_schema=_VERDICT))
+        )
+
+        assert error is not None and error.reason == "invalid_json"
+        assert not any(isinstance(e, StreamDone) for e in events)
 
     async def test_streaming_without_a_schema_still_streams(self) -> None:
         provider = self._provider(_mock_stream(text="Hi"))

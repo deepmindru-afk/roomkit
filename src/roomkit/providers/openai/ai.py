@@ -50,12 +50,12 @@ from roomkit.providers.ai.openai_dialect import (
 )
 from roomkit.providers.ai.response_schema import (
     check_schema_answer,
-    refuse_streamed_schema,
+    checked_stream,
     schema_for_generate,
 )
 from roomkit.providers.openai.config import OpenAIConfig
 from roomkit.providers.openai.models import MODELS
-from roomkit.providers.utils import http_timeout
+from roomkit.providers.utils import _aclose_stream, http_timeout
 
 # Fallback only, for ids the catalog does not carry — a snapshot newer than
 # this release, or an OpenAI-compatible server behind ``base_url`` naming its
@@ -70,6 +70,15 @@ _VISION_PREFIXES = (
     "o3",
     "o4",
 )
+
+
+def _streamed_refusal(done: StreamDone) -> str | None:
+    """Why a streamed answer was refused: the refusal text the deltas carried,
+    or Azure's content filter stop."""
+    refusal = done.metadata.get("refusal")
+    if refusal:
+        return refusal
+    return "content_filter" if done.finish_reason == "content_filter" else None
 
 
 class OpenAIAIProvider(AIProvider):
@@ -511,9 +520,24 @@ class OpenAIAIProvider(AIProvider):
         Text inside ``<think>...</think>`` is yielded as
         :class:`StreamThinkingDelta`; everything else as
         :class:`StreamTextDelta`.  Tool calls are collected from the final
-        chunks and yielded as :class:`StreamToolCall`.
+        chunks and yielded as :class:`StreamToolCall`. A response schema is
+        checked before the done event (RFC §6.7).
         """
-        refuse_streamed_schema(context, provider=self._provider_name)
+        stream = checked_stream(
+            self._stream_events(context),
+            context,
+            provider=self._provider_name,
+            refusal=_streamed_refusal,
+            truncated=lambda done: done.finish_reason == "length",
+        )
+        try:
+            async for event in stream:
+                yield event
+        finally:
+            await _aclose_stream(stream)
+
+    async def _stream_events(self, context: AIContext) -> AsyncIterator[StreamEvent]:
+        """The streamed call itself."""
         messages = self._build_messages(context.messages, context.system_prompt)
         kwargs: dict[str, Any] = {
             "model": self._config.model,
@@ -524,6 +548,7 @@ class OpenAIAIProvider(AIProvider):
             kwargs["stream_options"] = {"include_usage": True}
         self._apply_sampling_kwargs(kwargs, context)
         self._apply_extra_body(kwargs)
+        self._apply_response_format(kwargs, context)
         kwargs.update(self._token_limit_kwarg(context.max_tokens or self._config.max_tokens))
         if context.tools:
             kwargs["tools"] = [
@@ -546,6 +571,7 @@ class OpenAIAIProvider(AIProvider):
         tool_call_accum: dict[int, dict[str, Any]] = {}
         finish_reason: str | None = None
         usage: dict[str, int] = {}
+        refusal_parts: list[str] = []
 
         try:
             response = await self._client.chat.completions.create(**kwargs)
@@ -557,6 +583,9 @@ class OpenAIAIProvider(AIProvider):
                     continue
                 delta = chunk.choices[0].delta
                 finish_reason = chunk.choices[0].finish_reason or finish_reason
+                refusal = getattr(delta, "refusal", None)
+                if isinstance(refusal, str):
+                    refusal_parts.append(refusal)
 
                 # Accumulate streamed tool call deltas
                 if hasattr(delta, "tool_calls") and delta.tool_calls:
@@ -625,7 +654,11 @@ class OpenAIAIProvider(AIProvider):
                     args = {"raw": acc["arguments"]}
                 yield StreamToolCall(id=acc["id"], name=acc["name"], arguments=args)
 
-            yield StreamDone(finish_reason=finish_reason, usage=usage)
+            yield StreamDone(
+                finish_reason=finish_reason,
+                usage=usage,
+                metadata={"refusal": "".join(refusal_parts)} if refusal_parts else {},
+            )
 
         except self._api_connection_error as exc:
             raise ProviderError(

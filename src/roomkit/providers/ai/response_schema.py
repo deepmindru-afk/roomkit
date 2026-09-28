@@ -9,11 +9,19 @@ answer came back without the JSON document it was constrained to.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from typing import Any, Literal
 
-from roomkit.providers.ai.base import AIContext, ProviderError
+from roomkit.providers.ai.base import (
+    AIContext,
+    ProviderError,
+    StreamDone,
+    StreamEvent,
+    StreamTextDelta,
+    StreamToolCall,
+)
 from roomkit.providers.ai.json_schema import schema_mismatch
+from roomkit.providers.utils import _aclose_stream
 
 ResponseSchemaFailure = Literal["unsupported", "refusal", "truncated", "invalid_json"]
 
@@ -71,20 +79,6 @@ def schema_for_generate(
     return schema
 
 
-def refuse_streamed_schema(context: AIContext, *, provider: str) -> None:
-    """Refuse a schema on a streaming call, which this contract does not cover yet.
-
-    Raises:
-        ResponseSchemaError: ``unsupported``, when the context carries a schema.
-    """
-    if context.response_schema is not None:
-        raise ResponseSchemaError(
-            "a response schema is honoured by generate() only, not by a streaming call",
-            reason="unsupported",
-            provider=provider,
-        )
-
-
 def check_schema_answer(
     content: str,
     *,
@@ -136,3 +130,49 @@ def check_schema_answer(
             reason="invalid_json",
             provider=provider,
         )
+
+
+async def checked_stream(
+    events: AsyncIterator[StreamEvent],
+    context: AIContext,
+    *,
+    provider: str,
+    refusal: Callable[[StreamDone], str | None],
+    truncated: Callable[[StreamDone], bool],
+) -> AsyncIterator[StreamEvent]:
+    """Pass a provider's stream through, checking a constrained answer before
+    its done event (RFC §6.7).
+
+    The text deltas go out as they come: partial JSON, provisional until the
+    end. When the stream reaches :class:`StreamDone` without a tool call, the
+    whole text is checked like a ``generate()`` answer, and the error replaces
+    the done event when it fails. Without a schema, the stream is untouched.
+
+    Args:
+        events: The provider's own event stream, closed when this one is.
+        context: The turn's context, whose ``response_schema`` is checked.
+        provider: The provider's name, carried by the error.
+        refusal: Reads, from the done event, why the model declined, if it did.
+        truncated: Reads, from the done event, whether the answer was cut.
+    """
+    schema = context.response_schema
+    text: list[str] = []
+    tool_called = False
+    try:
+        async for event in events:
+            if schema is not None:
+                if isinstance(event, StreamTextDelta):
+                    text.append(event.text)
+                elif isinstance(event, StreamToolCall):
+                    tool_called = True
+                elif isinstance(event, StreamDone) and not tool_called:
+                    check_schema_answer(
+                        "".join(text),
+                        schema=schema,
+                        provider=provider,
+                        refusal=refusal(event),
+                        truncated=truncated(event),
+                    )
+            yield event
+    finally:
+        await _aclose_stream(events)

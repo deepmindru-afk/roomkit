@@ -17,6 +17,7 @@ from roomkit.providers.ai import (
     AITool,
     MockAIProvider,
     ProviderError,
+    StreamDone,
     check_portable_schema,
     schema_mismatch,
 )
@@ -203,16 +204,17 @@ class TestMockHonoursTheContract:
         assert exc.value.reason == "unsupported"
         assert "tools" in str(exc.value)
 
-    @pytest.mark.parametrize("method", ["generate_stream", "generate_structured_stream"])
-    async def test_a_streaming_call_is_refused(self, method: str) -> None:
-        provider = MockAIProvider([ANSWER], response_schema=True, streaming=True)
+    async def test_streaming_carries_the_schema_and_checks_the_answer(self) -> None:
+        provider = MockAIProvider([ANSWER, "Sure."], response_schema=True, streaming=True)
+        context = _context(response_schema=VERDICT)
 
+        streamed = [event async for event in provider.generate_structured_stream(context)]
         with pytest.raises(ResponseSchemaError) as exc:
-            async for _ in getattr(provider, method)(_context(response_schema=VERDICT)):
+            async for _ in provider.generate_stream(context):
                 pass
 
-        assert exc.value.reason == "unsupported"
-        assert provider.calls == []
+        assert isinstance(streamed[-1], StreamDone)
+        assert exc.value.reason == "invalid_json"
 
     @pytest.mark.parametrize(
         ("scripted", "reason"),

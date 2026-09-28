@@ -69,7 +69,7 @@ from roomkit.providers.ai.openai_dialect import (
 )
 from roomkit.providers.ai.response_schema import (
     check_schema_answer,
-    refuse_streamed_schema,
+    checked_stream,
     schema_for_generate,
 )
 from roomkit.providers.polargrid.config import PolarGridConfig
@@ -79,9 +79,13 @@ from roomkit.providers.polargrid.models import (
     REGIONS,
     PolarGridRegion,
 )
-from roomkit.providers.utils import http_timeout
+from roomkit.providers.utils import _aclose_stream, http_timeout
 
 logger = logging.getLogger("roomkit.providers.polargrid")
+
+
+def _content_filtered(done: StreamDone) -> str | None:
+    return "content_filter" if done.finish_reason == "content_filter" else None
 
 
 class PolarGridAIProvider(AIProvider):
@@ -548,9 +552,27 @@ class PolarGridAIProvider(AIProvider):
         ``arguments`` concatenated from each fragment's ``function``
         dict. We accumulate by index and emit one :class:`StreamToolCall`
         per call after the text, so the consumer sees
-        thinking-then-text-then-tools in natural order.
+        thinking-then-text-then-tools in natural order. A response schema is
+        checked before the done event (RFC §6.7).
         """
-        refuse_streamed_schema(context, provider=self._provider_name)
+        stream = checked_stream(
+            self._stream_events(context),
+            context,
+            provider=self._provider_name,
+            refusal=_content_filtered,
+            truncated=lambda done: done.finish_reason == "length",
+        )
+        try:
+            async for event in stream:
+                yield event
+        finally:
+            await _aclose_stream(stream)
+
+    async def _stream_events(self, context: AIContext) -> AsyncIterator[StreamEvent]:
+        """The streamed call itself."""
+        schema_for_generate(
+            context, supported=self.supports_response_schema, provider=self._provider_name
+        )
         client = await self._ensure_client()
         request = self._build_request(context, stream=True)
 

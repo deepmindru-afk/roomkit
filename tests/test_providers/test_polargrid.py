@@ -1136,11 +1136,45 @@ class TestPolarGridResponseSchema:
 
         assert exc.value.reason == "invalid_json"
 
-    async def test_a_streaming_call_is_refused_before_the_call(self) -> None:
+    @staticmethod
+    async def _drain(stream: Any) -> tuple[list[Any], ResponseSchemaError | None]:
+        events: list[Any] = []
+        try:
+            async for event in stream:
+                events.append(event)
+        except ResponseSchemaError as exc:
+            return events, exc
+        return events, None
+
+    async def test_a_streamed_answer_is_checked_before_its_done_event(self) -> None:
         provider, mod = _provider()
+        mod._client.chat_completion_stream.return_value = _FakeStream(
+            [_stream_chunk(content='{"label": "yes"}'), _stream_chunk(finish_reason="stop")]
+        )
 
-        with pytest.raises(ResponseSchemaError):
-            async for _ in provider.generate_stream(_context(response_schema=_VERDICT)):
-                pass
+        events, error = await self._drain(
+            provider.generate_structured_stream(_context(response_schema=_VERDICT))
+        )
 
-        mod._client.chat_completion_stream.assert_not_called()
+        assert error is None
+        assert isinstance(events[-1], StreamDone)
+        assert (
+            "".join(e.text for e in events if isinstance(e, StreamTextDelta)) == '{"label": "yes"}'
+        )
+        request = mod._client.chat_completion_stream.call_args.args[0]
+        assert request["response_format"]["json_schema"]["schema"] == _VERDICT
+
+    async def test_a_streamed_answer_that_is_not_the_document_raises_instead_of_done(
+        self,
+    ) -> None:
+        provider, mod = _provider()
+        mod._client.chat_completion_stream.return_value = _FakeStream(
+            [_stream_chunk(content="Yes."), _stream_chunk(finish_reason="stop")]
+        )
+
+        events, error = await self._drain(
+            provider.generate_structured_stream(_context(response_schema=_VERDICT))
+        )
+
+        assert error is not None and error.reason == "invalid_json"
+        assert not any(isinstance(e, StreamDone) for e in events)
