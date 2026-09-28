@@ -266,6 +266,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   returned unchanged, its C2PA chunk included. The 3.1 and 2.5 models keep
   the request they had.
 
+### Removed
+
+- `temperature` on the AI provider configs (`AnthropicConfig`, `OpenAIConfig` and
+  the configs that inherit it, `AzureAIConfig`, `MistralConfig`, `OllamaConfig`,
+  `PolarGridConfig`, `GeminiConfig`, `VLLMConfig`, `LlamaCppConfig`), which
+  nothing read (RMK-243): every provider sends the turn's
+  `AIContext.temperature`, which `AIChannel` always sets, from its own
+  `temperature=`, the binding metadata or the turn config. Setting it on a
+  config changed nothing and said so nowhere. Passing it is still accepted and
+  ignored, as before; code reading `config.temperature` now fails. Set the
+  temperature on the `AIChannel` instead.
+
 ### Changed
 
 - **BREAKING — `ElevenLabsTTSProvider.list_voices()` and

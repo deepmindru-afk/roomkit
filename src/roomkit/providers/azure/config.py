@@ -65,7 +65,6 @@ class AzureAIConfig(BaseModel):
         api_version: Azure API version string.
         model: Deployment name (no default — user must specify).
         max_tokens: Maximum tokens in the response.
-        temperature: Sampling temperature.
         timeout: HTTP request timeout in seconds.
         connect_timeout: TCP connect timeout in seconds, kept apart from
             ``timeout`` so a host that no longer accepts connections is given
@@ -77,7 +76,6 @@ class AzureAIConfig(BaseModel):
     api_version: str = "2024-12-01-preview"
     model: str
     max_tokens: int = 1024
-    temperature: float = 0.7
     timeout: float = 30.0
     connect_timeout: float = 5.0
     max_retries: int = 0

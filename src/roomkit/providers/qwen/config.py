@@ -10,8 +10,8 @@ class QwenConfig(OpenAIConfig):
 
     Alibaba Cloud Model Studio serves the Qwen lineup behind an
     OpenAI-compatible Chat Completions API, so this **subclasses**
-    :class:`OpenAIConfig` and inherits every request field (``temperature``,
-    ``include_stream_usage``, ``use_max_completion_tokens``,
+    :class:`OpenAIConfig` and inherits every request field
+    (``include_stream_usage``, ``use_max_completion_tokens``,
     ``supports_custom_temperature``, ``extra_body`` …). Inheriting — rather
     than re-declaring them — keeps the two configs from drifting apart: any
     field the inherited

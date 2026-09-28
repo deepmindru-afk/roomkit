@@ -29,8 +29,6 @@ class OllamaConfig(BaseModel):
         max_tokens: Maximum tokens to generate in the response. Maps
             to Ollama's ``options.num_predict``. ``None`` lets the
             server pick its default.
-        temperature: Sampling temperature. Maps to
-            ``options.temperature``.
         timeout: HTTP request timeout in seconds. Long default because
             local models cold-start on first request and reasoning
             models can take 30-60s before the first token.
@@ -89,7 +87,6 @@ class OllamaConfig(BaseModel):
     host: str = "http://localhost:11434"
     model: str = "llama3.2"
     max_tokens: int | None = None
-    temperature: float = 0.7
     timeout: float = 120.0
     connect_timeout: float = 5.0
     max_retries: int = 0

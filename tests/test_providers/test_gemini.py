@@ -459,7 +459,6 @@ class TestGeminiAIProvider:
         cfg = _config()
         assert cfg.model == "gemini-3.8-flash"
         assert cfg.max_tokens == 1024
-        assert cfg.temperature == 1.0
 
     def test_supports_vision(self) -> None:
         mock_genai = _mock_genai_module()

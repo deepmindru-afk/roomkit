@@ -20,7 +20,6 @@ class VLLMConfig(BaseModel):
             Matches ``vllm serve --api-key``; default ``"none"`` for the
             common no-auth local server.
         max_tokens: Maximum tokens in the response.
-        temperature: Sampling temperature.
         timeout: HTTP request timeout in seconds. Increase for vLLM servers that
             load models lazily on first request.
         connect_timeout: TCP connect timeout in seconds, kept apart from
@@ -63,7 +62,6 @@ class VLLMConfig(BaseModel):
     base_url: str = "http://localhost:8000/v1"
     api_key: SecretStr = SecretStr("none")
     max_tokens: int = 1024
-    temperature: float = 0.7
     timeout: float = 30.0
     connect_timeout: float = 5.0
     max_retries: int = 0

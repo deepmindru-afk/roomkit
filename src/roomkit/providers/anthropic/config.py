@@ -30,7 +30,6 @@ class AnthropicConfig(BaseModel):
     """Model identifier. Required so upgrading RoomKit cannot silently change
     a caller's model, cost, latency, or behavior."""
     max_tokens: int = 1024
-    temperature: float = 0.7
     timeout: float = 60.0
     """Request timeout in seconds (default 60s)."""
     connect_timeout: float = 5.0

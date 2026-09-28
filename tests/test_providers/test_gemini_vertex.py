@@ -60,7 +60,6 @@ class TestGeminiVertexConfig:
         cfg = _vconfig()
         assert cfg.model == "gemini-3.8-flash"
         assert cfg.max_tokens == 1024
-        assert cfg.temperature == 1.0
 
     def test_custom_values(self) -> None:
         cfg = _vconfig(project="p2", location="europe-west1", model="gemini-3.5-flash")

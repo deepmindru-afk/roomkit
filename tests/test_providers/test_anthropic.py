@@ -320,7 +320,6 @@ class TestAnthropicAIProvider:
         cfg = _config()
         assert cfg.model == "claude-opus-5"
         assert cfg.max_tokens == 1024
-        assert cfg.temperature == 0.7
         assert cfg.use_adaptive_thinking is True
         assert cfg.supports_custom_temperature is False
 

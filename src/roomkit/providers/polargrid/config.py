@@ -32,7 +32,6 @@ class PolarGridConfig(BaseModel):
             dev, but pin a region in production when residency matters.
         max_tokens: Maximum tokens in the response. ``None`` lets the
             server pick its default (the API caps at 4096).
-        temperature: Sampling temperature (0.0-2.0).
         top_p: Nucleus sampling probability (0.0-1.0).
         thinking: Toggle qwen's reasoning via the ``enable_thinking``
             request flag (polargrid-sdk 0.8.5+). ``True`` turns reasoning
@@ -56,7 +55,6 @@ class PolarGridConfig(BaseModel):
     model: str = "qwen-3.8-27b"
     region: str | None = None
     max_tokens: int | None = None
-    temperature: float = 0.7
     top_p: float = 0.9
     thinking: bool | None = None
     timeout: float = 30.0

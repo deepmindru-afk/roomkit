@@ -742,7 +742,6 @@ class TestOllamaConfig:
         assert config.host == "http://localhost:11434"
         assert config.model == "llama3.2"
         assert config.max_tokens is None
-        assert config.temperature == 0.7
         assert config.timeout == 120.0
         assert config.think is None
         assert config.keep_alive is None

@@ -127,7 +127,6 @@ ai_provider = AnthropicAIProvider(
         api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
         model="claude-opus-5",
         max_tokens=256,
-        temperature=0.7,
     )
 )
 

@@ -19,7 +19,6 @@ class OpenAIConfig(BaseModel):
             Azure OpenAI, or other providers). If None, uses the default OpenAI API.
         model: Model identifier to use.
         max_tokens: Maximum tokens in the response.
-        temperature: Sampling temperature.
     """
 
     api_key: SecretStr
@@ -28,7 +27,6 @@ class OpenAIConfig(BaseModel):
     """Model identifier. Required so upgrading RoomKit cannot silently change
     a caller's model, cost, latency, or behavior."""
     max_tokens: int = 1024
-    temperature: float = 0.7
     timeout: float = 30.0
     """HTTP request timeout in seconds. Override for servers that need
     longer (e.g. Ollama cold-starting a model on first request)."""

@@ -65,7 +65,6 @@ async def main() -> None:
             base_url=BASE_URL,
             api_key=API_KEY,
             max_tokens=256,
-            temperature=0.8,
             # vLLM-native sampling params the OpenAI schema omits, forwarded
             # verbatim in the request body. headers={"X-Proxy": "..."} would
             # ride alongside for a reverse proxy.
@@ -80,6 +79,7 @@ async def main() -> None:
     ai = AIChannel(
         "ai-assistant",
         provider=provider,
+        temperature=0.8,
         system_prompt=(
             "Tu es un assistant francophone passionne de gastronomie francaise. "
             "Tu adores debattre de la question 'pain au chocolat vs chocolatine' "

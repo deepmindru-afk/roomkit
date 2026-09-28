@@ -11,7 +11,6 @@ class GeminiConfig(BaseModel):
     api_key: SecretStr
     model: str = "gemini-3.8-flash"
     max_tokens: int = 1024
-    temperature: float = 1.0  # Gemini default
     thinking_level: str | None = None
     """Thinking level for Gemini 3 models: minimal, low, medium, high.
     ``gemini-3.8-flash``, the default, refuses ``minimal`` with a 400:
@@ -32,7 +31,7 @@ class GeminiImageConfig(BaseModel):
     Separate from :class:`GeminiConfig` because it configures a disjoint model
     lineup — the ``*-image`` models the chat catalog explicitly excludes — and
     a different set of knobs: geometry and output encoding rather than
-    temperature and thinking level.
+    thinking level.
 
     Attributes:
         api_key: API key for authentication.

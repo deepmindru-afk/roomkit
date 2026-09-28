@@ -144,7 +144,6 @@ def _openai_config(config: VLLMConfig) -> OpenAIConfig:
         base_url=config.base_url,
         model=config.model,
         max_tokens=config.max_tokens,
-        temperature=config.temperature,
         timeout=config.timeout,
         connect_timeout=config.connect_timeout,
         max_retries=config.max_retries,

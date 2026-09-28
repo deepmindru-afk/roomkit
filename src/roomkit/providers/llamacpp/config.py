@@ -25,7 +25,6 @@ class LlamaCppConfig(BaseModel):
         gpu_layers: Layers offloaded to the GPU (``-ngl``). ``None`` lets
             llama.cpp fit as many as the GPU holds; ``0`` runs on the CPU only.
         max_tokens: Maximum tokens in one response.
-        temperature: Sampling temperature.
         enable_thinking: Turn a reasoning model's thinking on or off through
             its chat template. ``None`` keeps the model's default.
         binary: A ``llama-server`` to use instead of the pinned download
@@ -49,7 +48,6 @@ class LlamaCppConfig(BaseModel):
     context_size: int = Field(default=8192, gt=0)
     gpu_layers: int | None = Field(default=None, ge=0)
     max_tokens: int = Field(default=1024, gt=0)
-    temperature: float = 0.7
     enable_thinking: bool | None = None
     binary: str | None = None
     variant: str | None = None

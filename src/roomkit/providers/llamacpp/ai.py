@@ -41,7 +41,6 @@ class LlamaCppAIProvider(_VLLMProvider):
                     model=config.model,
                     base_url=self._server.base_url,
                     max_tokens=config.max_tokens,
-                    temperature=config.temperature,
                     timeout=config.timeout,
                     enable_thinking=config.enable_thinking,
                 )

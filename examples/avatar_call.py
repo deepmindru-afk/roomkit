@@ -130,7 +130,6 @@ async def main() -> None:
             api_key=anthropic_key,
             model=os.environ.get("AI_MODEL", "claude-opus-5"),
             max_tokens=256,
-            temperature=0.7,
         )
     )
 

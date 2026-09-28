@@ -300,7 +300,6 @@ async def main() -> None:
             api_key=env["ANTHROPIC_API_KEY"],
             model="claude-opus-5",
             max_tokens=256,
-            temperature=0.7,
         )
     )
     logger.info("AI: Claude (claude-opus-5)")

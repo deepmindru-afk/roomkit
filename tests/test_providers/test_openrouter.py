@@ -92,7 +92,6 @@ class TestOpenRouterConfig:
         cfg = _config()
         assert cfg.base_url == "https://openrouter.ai/api/v1"
         assert cfg.max_tokens == 1024
-        assert cfg.temperature == 0.7
         assert cfg.timeout == 30.0
         assert cfg.site_url is None
         assert cfg.app_name is None

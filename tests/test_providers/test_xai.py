@@ -80,7 +80,6 @@ class TestXAIConfig:
         assert cfg.reasoning_effort == "low"
         assert cfg.extra_body == {"top_k": 20}
         assert cfg.supports_custom_temperature is True
-        assert cfg.temperature == 0.7
         assert cfg.timeout == 30.0
 
     def test_custom_base_url(self) -> None:

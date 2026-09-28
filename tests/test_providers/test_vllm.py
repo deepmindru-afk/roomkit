@@ -40,7 +40,6 @@ class TestVLLMConfig:
         assert cfg.base_url == "http://localhost:8000/v1"
         assert cfg.api_key.get_secret_value() == "none"
         assert cfg.max_tokens == 1024
-        assert cfg.temperature == 0.7
 
     def test_custom_values(self) -> None:
         cfg = VLLMConfig(
@@ -48,12 +47,10 @@ class TestVLLMConfig:
             base_url="http://gpu-server:9000/v1",
             api_key="secret",
             max_tokens=2048,
-            temperature=0.3,
         )
         assert cfg.base_url == "http://gpu-server:9000/v1"
         assert cfg.api_key.get_secret_value() == "secret"
         assert cfg.max_tokens == 2048
-        assert cfg.temperature == 0.3
 
     def test_headers_and_extra_body_default_none(self) -> None:
         cfg = VLLMConfig(model="m")
@@ -140,7 +137,6 @@ class TestCreateVLLMProvider:
             assert provider._config.base_url == "http://localhost:8000/v1"
             assert provider._config.api_key.get_secret_value() == "none"
             assert provider._config.max_tokens == 1024
-            assert provider._config.temperature == 0.7
 
     def test_custom_config_propagated(self) -> None:
         with patch.dict("sys.modules", {"openai": _mock_openai_module()}):
@@ -155,7 +151,6 @@ class TestCreateVLLMProvider:
                 base_url="http://gpu:9000/v1",
                 api_key="tok",
                 max_tokens=512,
-                temperature=0.1,
             )
             provider = create_vllm_provider(cfg)
 
@@ -163,7 +158,6 @@ class TestCreateVLLMProvider:
             assert provider._config.base_url == "http://gpu:9000/v1"
             assert provider._config.api_key.get_secret_value() == "tok"
             assert provider._config.max_tokens == 512
-            assert provider._config.temperature == 0.1
 
     def test_headers_and_extra_body_propagated(self) -> None:
         # vLLM-tier headers/extra_body map onto the underlying OpenAIConfig

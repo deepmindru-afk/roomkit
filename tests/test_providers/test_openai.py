@@ -395,7 +395,6 @@ class TestOpenAIAIProvider:
         cfg = _config(model=model)
         assert cfg.model == model
         assert cfg.max_tokens == 1024
-        assert cfg.temperature == 0.7
         assert cfg.base_url is None
         assert cfg.use_max_completion_tokens is True
         assert cfg.supports_custom_temperature is False

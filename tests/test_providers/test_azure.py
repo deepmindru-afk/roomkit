@@ -98,7 +98,6 @@ class TestAzureAIConfig:
     def test_defaults(self) -> None:
         cfg = _config()
         assert cfg.max_tokens == 1024
-        assert cfg.temperature == 0.7
         assert cfg.timeout == 30.0
 
     def test_custom_api_version(self) -> None:

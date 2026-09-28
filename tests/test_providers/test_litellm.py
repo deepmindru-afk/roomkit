@@ -74,7 +74,6 @@ class TestLiteLLMConfig:
         cfg = _config()
         assert cfg.base_url == "http://localhost:4000"
         assert cfg.max_tokens == 1024
-        assert cfg.temperature == 0.7
         assert cfg.timeout == 30.0
         assert cfg.max_retries == 0
 

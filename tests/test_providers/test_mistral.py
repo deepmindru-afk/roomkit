@@ -288,7 +288,6 @@ class TestMistralAIProvider:
         cfg = _config()
         assert cfg.model == "mistral-large-latest"
         assert cfg.max_tokens == 1024
-        assert cfg.temperature == 0.7
         assert cfg.server_url is None
 
     def test_supports_vision_advertised_for_any_model(self) -> None:

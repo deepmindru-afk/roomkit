@@ -997,7 +997,6 @@ class TestPolarGridConfig:
         config = PolarGridConfig(api_key="pg_test")
         assert config.model == "qwen-3.8-27b"
         assert config.region is None
-        assert config.temperature == 0.7
         assert config.top_p == 0.9
         assert config.timeout == 30.0
         assert config.max_retries == 0
@@ -1009,13 +1008,11 @@ class TestPolarGridConfig:
             model="qwen-3.5-27b",
             region="vancouver",
             max_tokens=2048,
-            temperature=0.1,
             debug=True,
         )
         assert config.model == "qwen-3.5-27b"
         assert config.region == "vancouver"
         assert config.max_tokens == 2048
-        assert config.temperature == 0.1
         assert config.debug is True
 
     @pytest.mark.parametrize("region", ["yul-02", "toronto", "MONTREAL", "sf", None])

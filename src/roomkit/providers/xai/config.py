@@ -12,7 +12,7 @@ class XAIConfig(OpenAIConfig):
 
     xAI serves an OpenAI-compatible Chat Completions API at
     ``https://api.x.ai/v1``, so this **subclasses** :class:`OpenAIConfig` and
-    inherits every request field (``temperature``, ``reasoning_effort``,
+    inherits every request field (``reasoning_effort``,
     ``include_stream_usage``, ``use_max_completion_tokens``,
     ``supports_custom_temperature``, ``extra_body`` …). Inheriting — rather than
     re-declaring them — keeps the two configs from drifting apart: any field the
