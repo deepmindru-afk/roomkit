@@ -43,6 +43,8 @@ from roomkit.voice.tts.context import TTSContextConfig, TTSContextLevel, TTSCont
 from roomkit.voice.utils import rms_db
 
 if TYPE_CHECKING:
+    from concurrent.futures import Future
+
     from roomkit.core.framework import RoomKit
     from roomkit.models.channel import ChannelBinding, ChannelOutput
     from roomkit.models.context import RoomContext
@@ -347,8 +349,11 @@ class VoiceChannel(
         # the words of it judged a backchannel (SEMANTIC, RFC §12.3.13)
         self._burst_words: dict[str, str] = {}
         self._burst_backchannel: dict[str, str] = {}
-        # Speech segments captured while queueing, replayed once TTS finishes
-        self._queued_speech: dict[str, list[bytes]] = {}
+        # Speech segments captured while queueing, replayed once TTS finishes,
+        # each with its pipeline speaker claim (pipeline_speakers)
+        self._queued_speech: dict[
+            str, list[tuple[bytes, Future[SpeakerAttribution | None] | None]]
+        ] = {}
         # Monotonic timestamp of the current speech onset per session, used to
         # measure sustained speech for the CONFIRMED strategy (RFC §12.6)
         self._speech_started_at: dict[str, float] = {}
@@ -606,6 +611,12 @@ class VoiceChannel(
         # Before the segment is judged, so speech seen then is new speech.
         self._note_turn_speech(session.id, speaking=False)
         self._unheard_turns.note_speech_end(session.id)
+        # Claimed first: the next utterance's SPEECH_START would start a new
+        # count, and a segment queued for after playback keeps its claim.
+        # Answered once the stage has seen this closing frame, which the
+        # pipeline hands SPEECH_END callbacks before its diarization.
+        tally = self._pipeline_speaker_tally
+        speaker_claim = tally.claim(session.id) if tally is not None else None
         # If this speech segment was suppressed (echo during TTS), discard it —
         # unless the strategy is DISABLED, which queues it for after playback
         # (RFC §12.6) rather than throwing it away.
@@ -619,7 +630,7 @@ class VoiceChannel(
             if was_queueing and audio:
                 queue = self._queued_speech.setdefault(session.id, [])
                 if len(queue) < _QUEUED_SPEECH_MAX_SEGMENTS:
-                    queue.append(audio)
+                    queue.append((audio, speaker_claim))
                 else:
                     logger.warning(
                         "Queued speech backlog full for %s — dropping segment",
@@ -663,11 +674,6 @@ class VoiceChannel(
         room_id, _ = binding_info
 
         dtmf_kwargs = {"dtmf_seen": True} if dtmf_seen else {}
-        # Claimed now: the next utterance's SPEECH_START would start a new
-        # count. Answered once the stage has seen this closing frame, which
-        # the pipeline hands SPEECH_END callbacks before its diarization.
-        tally = self._pipeline_speaker_tally
-        speaker_claim = tally.claim(session.id) if tally is not None else None
         self._schedule(
             self._process_speech_end(
                 session, audio, room_id, stream_state, speaker_claim=speaker_claim, **dtmf_kwargs
@@ -1486,8 +1492,10 @@ class VoiceChannel(
         # Any DTMF heard while speech was held goes with every held segment.
         dtmf_seen = self._tts_context is not None and self._tts_context.take_dtmf(session_id)
         dtmf_kwargs = {"dtmf_seen": True} if dtmf_seen else {}
-        for audio in queued:
-            await self._process_speech_end(session, audio, room_id, None, **dtmf_kwargs)
+        for audio, speaker_claim in queued:
+            await self._process_speech_end(
+                session, audio, room_id, None, speaker_claim=speaker_claim, **dtmf_kwargs
+            )
 
     def _arm_barge_in_confirmation(
         self, session: VoiceSession, room_id: str, delay_ms: int, *, from_vad: bool = True

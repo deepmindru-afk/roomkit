@@ -17,10 +17,12 @@ import pytest
 
 from roomkit import HookResult, HookTrigger, RoomKit, VoiceChannel
 from roomkit.channels._voice_speakers import PipelineSpeakerTally
+from roomkit.channels.voice import TTSPlaybackState
 from roomkit.models.enums import EventType
 from roomkit.voice.audio_frame import AudioFrame
 from roomkit.voice.backends.mock import MockVoiceBackend
 from roomkit.voice.base import AudioChunk, SpeakerSegment, TranscriptionResult
+from roomkit.voice.interruption import InterruptionConfig, InterruptionStrategy
 from roomkit.voice.pipeline import AudioPipelineConfig, MockVADProvider
 from roomkit.voice.pipeline.diarization.base import DiarizationProvider, DiarizationResult
 from roomkit.voice.pipeline.diarization.mock import MockDiarizationProvider
@@ -215,6 +217,30 @@ class TestVADMode:
         await room.channel.close()
         assert "sender_name" not in message.metadata
         assert "speaker_label" not in message.metadata
+
+
+class TestSpeechHeldDuringPlayback:
+    async def test_an_utterance_replayed_after_playback_keeps_its_speaker(self) -> None:
+        # DISABLED queues speech heard during playback and replays it once the
+        # bot is done: the stage counted it when it was said, not at replay.
+        room = _vad_room(
+            ["speaker_1"] * 3,
+            1,
+            pipeline_speakers=True,
+            interruption=InterruptionConfig(strategy=InterruptionStrategy.DISABLED),
+        )
+        await room.start()
+        room.channel._playing_sessions[room.session.id] = TTSPlaybackState(
+            session_id=room.session.id, text="a long answer"
+        )
+        await room.frames(3)
+        assert len(room.channel._queued_speech[room.session.id]) == 1
+
+        room.channel._playing_sessions.pop(room.session.id)
+        await room.channel._flush_queued_speech(room.session.id)
+        [message] = await room.messages(1)
+        await room.channel.close()
+        assert message.metadata["speaker_label"] == "1"
 
 
 class _IdentifiesAtSpeechEnd(DiarizationProvider):

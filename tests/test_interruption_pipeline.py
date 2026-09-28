@@ -124,12 +124,12 @@ class TestDisabledStrategyQueuesSpeech:
         # Playback untouched, and the utterance is held rather than dropped.
         assert barge_ins == []
         assert session.id in channel._playing_sessions
-        assert channel._queued_speech[session.id] == [b"\x11\x22" * 160]
+        assert channel._queued_speech[session.id] == [(b"\x11\x22" * 160, None)]
 
         # Once the bot finishes, the held speech gets its turn.
         processed: list[bytes] = []
 
-        async def capture(sess, audio, room_id, stream_state):  # noqa: ANN001
+        async def capture(sess, audio, room_id, stream_state, **kwargs):  # noqa: ANN001
             processed.append(audio)
 
         channel._process_speech_end = capture  # type: ignore[assignment]
