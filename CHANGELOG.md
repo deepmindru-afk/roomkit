@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   back, personal data included, through `read_stored_result`. What the store
   keeps is now what the hook returned. Observers registered ASYNC receive the
   whole result too, where they received the placeholder.
+- A `TOOL_CALL_END` event keeps at most 512 KB of a result's images
+  (RMK-260); each image past that is a note, `[image image/png, 800 KB, not
+  kept in the event]`. The event is persisted, broadcast and handed to the
+  event pipeline's hooks, and it carried every screenshot's base64 whole.
+  The model's copy of the result keeps every image.
 - `MCPToolProvider.as_tool_handler()` hands an MCP image to the model as an
   image (RMK-259): its handler returns `str | list[AITextPart | AIImagePart]`
   where it returned `str`. A result carrying a PNG, JPEG, GIF or WebP image

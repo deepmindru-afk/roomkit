@@ -15,6 +15,7 @@ from roomkit.channels._ai_loop_rules import (
     final_round_reason,
     require_schema_answer,
 )
+from roomkit.channels._tool_event_result import tool_event_result
 from roomkit.models.channel import ChannelOutput
 from roomkit.models.enums import EventType
 from roomkit.models.event import EventSource, RoomEvent, TextContent, ToolCallContent
@@ -438,7 +439,7 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
                             tool_name=tc.name,
                             tool_id=tc.id,
                             arguments=tc.arguments,
-                            result=result_val,
+                            result=tool_event_result(result_val),
                             status="failed" if is_error else "completed",
                             duration_ms=rnd.duration_ms,
                             error=rp.as_text() if is_error else None,

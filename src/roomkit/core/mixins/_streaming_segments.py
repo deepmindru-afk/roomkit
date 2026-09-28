@@ -6,6 +6,7 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
+from roomkit.channels._tool_event_result import tool_event_result
 from roomkit.models.enums import EventStatus, EventType, HookTrigger
 from roomkit.models.event import EventSource, RoomEvent, TextContent, ToolCallContent
 
@@ -138,7 +139,7 @@ class SegmentWriter:
                 tool_name=marker.tool_name,
                 tool_id=marker.tool_id,
                 arguments=marker.arguments,
-                result=marker.result,
+                result=tool_event_result(marker.result),
                 status=marker.status,
                 duration_ms=marker.duration_ms,
                 error=marker.error,

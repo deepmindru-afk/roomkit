@@ -13,6 +13,7 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from roomkit.channels._tool_event_result import tool_event_result
 from roomkit.core.mixins._result_capture import capture_result
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.context import RoomContext
@@ -101,7 +102,7 @@ async def _persist_child_stream(
                         tool_name=delta.tool_name,
                         tool_id=delta.tool_id,
                         arguments=delta.arguments,
-                        result=delta.result,
+                        result=tool_event_result(delta.result),
                         status=delta.status,
                         duration_ms=delta.duration_ms,
                         error=delta.error,
