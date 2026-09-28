@@ -106,8 +106,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   1.x refuses because it runs on httpx2; the refusal only showed in a process
   that had not imported the openai SDK, whose import rewrites
   `httpx.Timeout.__module__` and slipped the object past the check, so a host
-  using Anthropic alone failed at construction. The timeout is now the SDK's own
-  `anthropic.Timeout`, with the same connect/read split. And 1.x dropped
+  using Anthropic alone failed at construction, and an install without `httpx`
+  (which 1.x no longer pulls in) failed on `ImportError`. The timeout is now
+  the SDK's own `anthropic.Timeout`, with the same connect/read split. And 1.x dropped
   `temperature` from `messages.stream()`, so the legacy models that still take
   it (Claude 4.6 and before, Haiku 4.5) and any custom `base_url` raised
   `TypeError` before the request left; it now rides `extra_body`. Tests now

@@ -1361,9 +1361,9 @@ _SCHEMA: dict[str, Any] = {
 }
 
 
-class TestAnthropicSDK1:
-    """Against the installed SDK, not the mock: anthropic 1.x runs on httpx2 and
-    dropped the sampling parameters from ``messages.stream()`` (RMK-236)."""
+class TestAgainstInstalledSDK:
+    """Against the installed SDK, not the mock. anthropic 1.x runs on httpx2 and
+    its ``messages.stream()`` has no sampling parameters (RMK-236)."""
 
     def test_the_client_timeout_is_the_sdks_own_with_the_connect_split(self) -> None:
         anthropic = pytest.importorskip("anthropic")
@@ -1385,6 +1385,7 @@ class TestAnthropicSDK1:
             "from roomkit.providers.anthropic import AnthropicAIProvider, AnthropicConfig\n"
             "AnthropicAIProvider(AnthropicConfig(api_key='k', model='claude-opus-5'))\n"
             "assert 'openai' not in sys.modules\n"
+            "assert 'httpx' not in sys.modules\n"
         )
 
         result = subprocess.run(

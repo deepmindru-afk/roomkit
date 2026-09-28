@@ -132,25 +132,7 @@ def build_kwargs(config: AnthropicConfig, context: AIContext) -> dict[str, Any]:
     }
     if context.system_prompt:
         kwargs["system"] = context.system_prompt
-    if context.thinking_budget is not None and context.thinking_budget > 0:
-        # Extended thinking. Anthropic ignores temperature while thinking,
-        # so it's dropped here regardless of model. Newer models (Opus
-        # 4.7/4.8, Fable 5) reject the budget_tokens shape and want
-        # adaptive thinking instead; ``display: "summarized"`` keeps the
-        # reasoning trace visible (its default is "omitted" on those models).
-        if config.use_adaptive_thinking:
-            kwargs["thinking"] = {"type": "adaptive", "display": "summarized"}
-        else:
-            kwargs["thinking"] = {
-                "type": "enabled",
-                "budget_tokens": context.thinking_budget,
-            }
-        kwargs.pop("temperature", None)
-    elif context.temperature is not None and config.supports_custom_temperature:
-        # anthropic 1.x dropped ``temperature`` from ``messages.stream()``; the
-        # models profiled as taking it still do, so it rides ``extra_body``,
-        # which the SDK merges into the request JSON as it is.
-        kwargs["extra_body"] = {"temperature": context.temperature}
+    kwargs.update(_thinking_or_temperature(config, context))
     if context.tools:
         kwargs["tools"] = [
             {
@@ -167,6 +149,28 @@ def build_kwargs(config: AnthropicConfig, context: AIContext) -> dict[str, Any]:
     if config.enable_prompt_caching:
         _apply_cache_control(kwargs)
     return kwargs
+
+
+def _thinking_or_temperature(config: AnthropicConfig, context: AIContext) -> dict[str, Any]:
+    """The turn's ``thinking`` block, or else its ``temperature``, or nothing.
+
+    Anthropic ignores temperature while thinking, so a thinking turn never
+    sends one. Newer models (Opus 4.7/4.8, Fable 5) reject the
+    ``budget_tokens`` shape and want adaptive thinking instead;
+    ``display: "summarized"`` keeps the reasoning trace visible (its default
+    is "omitted" on those models).
+
+    ``messages.stream()`` has no ``temperature`` parameter in anthropic 1.x,
+    while the models profiled as taking one still do, so it rides
+    ``extra_body``, which the SDK merges into the request JSON as it is.
+    """
+    if context.thinking_budget is not None and context.thinking_budget > 0:
+        if config.use_adaptive_thinking:
+            return {"thinking": {"type": "adaptive", "display": "summarized"}}
+        return {"thinking": {"type": "enabled", "budget_tokens": context.thinking_budget}}
+    if context.temperature is not None and config.supports_custom_temperature:
+        return {"extra_body": {"temperature": context.temperature}}
+    return {}
 
 
 def _apply_cache_control(kwargs: dict[str, Any]) -> None:
