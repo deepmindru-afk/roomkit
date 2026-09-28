@@ -380,6 +380,7 @@ class RealtimeDelegationMixin:
                     session.id,
                 )
                 telemetry.end_span(span_id)
+                await self._fire_tool_refusal(session, call_id, name, arguments, denial, room_id)
                 return denial
 
             try:
@@ -420,4 +421,6 @@ class RealtimeDelegationMixin:
                 delegation_id,
                 session.id,
             )
-            return json.dumps({"error": "Internal error handling tool call", "tool": name})
+            body = json.dumps({"error": "Internal error handling tool call", "tool": name})
+            await self._fire_tool_refusal(session, call_id, name, arguments, body, room_id)
+            return body

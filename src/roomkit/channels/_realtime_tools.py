@@ -808,11 +808,31 @@ class RealtimeToolsMixin:
         return self._tool_policy.resolve(self._session_roles.get(session_id))
 
     def _policy_filter(self, session_id: str, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """The part of *tools* the session's policy admits."""
+        """The part of *tools* the session's policy admits.
+
+        Tool Search's ``call_tool`` transport stays declared: it is no tool of
+        its own, and the policy applies to the tool it names, at the gate.
+        """
         policy = self._session_policy(session_id)
         if policy is None:
             return tools
-        return [t for t in tools if policy_admits(policy, str(t.get("name", "")))]
+        search = self._tool_search_support
+        return [
+            t
+            for t in tools
+            if (search is not None and search.is_search_tool(str(t.get("name", ""))))
+            or policy_admits(policy, str(t.get("name", "")))
+        ]
+
+    async def _refresh_session_role(self, session: VoiceSession, room_id: str | None) -> None:
+        """Read the participant's role again, so a role changed during the
+        session holds at the gate from the next call on (RFC §12.4)."""
+        policy = self._tool_policy
+        if policy is None or not policy.role_overrides or not (self._framework and room_id):
+            return
+        role = await self._resolve_session_role(room_id, session.participant_id)
+        if session.id in self._session_roles:
+            self._session_roles[session.id] = role
 
     async def _resolve_session_role(self, room_id: str | None, participant_id: str) -> str | None:
         """The session participant's role, where a policy has overrides to read."""
@@ -882,6 +902,7 @@ class RealtimeToolsMixin:
 
         # Execution guard: the tool policy (RFC §12.4), resolved for the
         # session's participant, before skill gating as on the classic path.
+        await self._refresh_session_role(session, room_id)
         if not policy_admits(self._session_policy(session.id), name):
             logger.warning("Realtime tool %s blocked by policy", name)
             return arguments, json.dumps({"error": policy_refusal(name)}), None

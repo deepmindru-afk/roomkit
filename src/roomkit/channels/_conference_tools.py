@@ -46,6 +46,19 @@ def declared_tools(config: ConferenceRealtimeConfig) -> list[dict[str, Any]] | N
     return [t for t in config.tools if policy_admits(config.tool_policy, str(t.get("name", "")))]
 
 
+def warn_unused_role_overrides(config: ConferenceRealtimeConfig, channel_id: str) -> None:
+    """Log that a conference policy's role overrides never apply: the mix
+    names no participant, so only the base rules do."""
+    policy = config.tool_policy
+    if policy is not None and policy.role_overrides:
+        logger.warning(
+            "Conference channel %r: tool_policy role_overrides %s never apply; "
+            "the mix names no participant, so only the base rules do",
+            channel_id,
+            sorted(policy.role_overrides),
+        )
+
+
 @dataclass(frozen=True)
 class ToolOutcome:
     """What the gate and the handler made of one call, before ON_TOOL_CALL."""

@@ -8,10 +8,11 @@ applies to the session's participant.
 
 from __future__ import annotations
 
-import asyncio
 import json
 from collections.abc import AsyncIterator
 from typing import Any
+
+import pytest
 
 from roomkit import (
     ConferenceRealtimeConfig,
@@ -52,6 +53,9 @@ class _Calls:
     async def handler(self, name: str, arguments: dict[str, Any]) -> str:
         self.ran.append(name)
         return '{"ok": true}'
+
+    async def conference(self, room_id: str, name: str, arguments: dict[str, Any]) -> str:
+        return await self.handler(name, arguments)
 
 
 async def _channel(
@@ -98,7 +102,7 @@ async def test_a_denied_tool_is_not_declared_and_a_forced_call_is_refused() -> N
     kit, _, provider, session = await _channel(calls)
 
     await provider.simulate_tool_call(session, "c1", "delete_account", {"id": "42"})
-    await asyncio.sleep(0.05)
+    await until(lambda: bool(provider.tool_results) and bool(calls.observed))
 
     assert _declared(provider) == {"lookup_account"}
     assert calls.ran == []
@@ -124,7 +128,7 @@ async def test_a_recovered_spoken_call_is_refused() -> None:
     kit, _, provider, session = await _channel(calls)
 
     await provider.simulate_transcription(session, "call:delete_account{id:42}", "assistant")
-    await asyncio.sleep(0.1)
+    await until(lambda: bool(provider.injected_texts) and bool(calls.observed))
 
     assert calls.ran == []
     assert any("not permitted" in text for _sid, text, _role in provider.injected_texts)
@@ -150,11 +154,12 @@ async def test_a_reasoning_backend_gets_the_admitted_tools_and_is_refused_the_re
     kit, _, provider, session = await _channel(calls, backend=backend)
 
     await provider.simulate_delegation(session, "d1", "integrator")
-    await asyncio.sleep(0.05)
+    await until(lambda: bool(backend.results) and bool(calls.observed))
 
     assert backend.tools == ["lookup_account"]
     assert calls.ran == []
     assert "not permitted" in json.loads(backend.results[0])["error"]
+    assert [(e.name, e.is_error) for e in calls.observed] == [("delete_account", True)]
     await kit.close()
 
 
@@ -177,7 +182,7 @@ async def test_tool_search_never_names_a_denied_tool() -> None:
     session = await channel.start_session("r1", "u1", "ws")
 
     await provider.simulate_tool_call(session, "c1", "find_tools", {"query": "account"})
-    await asyncio.sleep(0.05)
+    await until(lambda: bool(provider.tool_results))
 
     found = {match["name"] for match in json.loads(provider.tool_results[0][2])["matches"]}
     assert "lookup_account" in found
@@ -214,4 +219,81 @@ async def test_a_conference_provider_obeys_its_policy() -> None:
 async def test_an_empty_policy_declares_everything() -> None:
     kit, _, provider, _ = await _channel(_Calls(), policy=ToolPolicy())
     assert _declared(provider) == {"lookup_account", "delete_account"}
+    await kit.close()
+
+
+async def test_a_role_changed_during_the_session_holds_at_the_next_call() -> None:
+    observer_only = ToolPolicy(role_overrides={"observer": RoleOverride(deny=["delete_*"])})
+    calls = _Calls()
+    kit, _, provider, session = await _channel(calls, policy=observer_only, role="member")
+    assert "delete_account" in _declared(provider)
+
+    demoted = await kit.store.get_participant("r1", "u1")
+    assert demoted is not None
+    await kit.store.update_participant(demoted.model_copy(update={"role": "observer"}))
+    await provider.simulate_tool_call(session, "c1", "delete_account", {"id": "42"})
+    await until(lambda: bool(provider.tool_results))
+
+    assert calls.ran == []
+    assert "not permitted" in json.loads(provider.tool_results[0][2])["error"]
+    await kit.close()
+
+
+class _FixedProvider(MockRealtimeProvider):
+    """A provider whose declarations cannot change mid-session."""
+
+    @property
+    def supports_mid_session_reconfigure(self) -> bool:
+        return False
+
+
+async def test_a_whitelist_keeps_the_call_tool_transport_and_gates_what_it_names() -> None:
+    calls = _Calls()
+    provider = _FixedProvider()
+    channel = RealtimeVoiceChannel(
+        "rt",
+        provider=provider,
+        transport=MockRealtimeTransport(),
+        tools=[*TOOLS, *(_tool(f"filler_{i}") for i in range(30))],
+        tool_handler=calls.handler,
+        tool_policy=ToolPolicy(allow=["lookup_*"]),
+        tool_search=True,
+    )
+    kit = RoomKit()
+    kit.register_channel(channel)
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "rt")
+    session = await channel.start_session("r1", "u1", "ws")
+
+    for call_id, name in (("c1", "delete_account"), ("c2", "lookup_account")):
+        arguments = {"name": name, "arguments_json": '{"id": "42"}'}
+        await provider.simulate_tool_call(session, call_id, "call_tool", arguments)
+    await until(lambda: len(provider.tool_results) == 2)
+
+    assert "call_tool" in _declared(provider)
+    results = {call_id: result for _sid, call_id, result in provider.tool_results}
+    assert "not permitted" in json.loads(results["c1"])["error"]
+    assert calls.ran == ["lookup_account"]
+    await kit.close()
+
+
+def test_a_conference_config_keeps_its_positional_order() -> None:
+    provider = MockRealtimeProvider()
+    config = ConferenceRealtimeConfig(provider, None, None, None, None, 0.7)  # type: ignore[misc]
+    assert config.temperature == 0.7
+    assert config.tool_policy is None
+
+
+async def test_a_conference_policy_says_its_role_overrides_never_apply(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    provider = MockRealtimeProvider()
+    policy = ToolPolicy(role_overrides={"observer": RoleOverride(deny=["delete_*"])})
+    kit, _, _, _ = await realtime_kit(
+        provider=provider,
+        config=ConferenceRealtimeConfig(
+            provider=provider, tools=TOOLS, tool_handler=_Calls().conference, tool_policy=policy
+        ),
+    )
+    assert "role_overrides ['observer'] never apply" in caplog.text
     await kit.close()

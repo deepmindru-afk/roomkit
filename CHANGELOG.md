@@ -16,10 +16,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   included) nor to a reasoning backend, is never named by `find_tools`, and
   is refused at the gate, whether the call comes from the provider, from
   spoken text the channel recovered or from a backend; the refusal reaches
-  `ON_TOOL_CALL`'s observers. Role overrides apply to the session's
-  participant, read when the session starts; a conference, whose mix names
-  no participant, applies the base rules. Default `None`: nothing changes.
-  See `examples/realtime_tool_policy.py`.
+  `ON_TOOL_CALL`'s observers. Tool Search's `call_tool` transport stays
+  declared under an allow list, and the policy applies to the tool it names.
+  Role overrides apply to the session's participant, as the store holds it
+  when the session starts and again at each call, so a role changed during
+  the session holds from the next call; a participant the store does not
+  hold gets the base rules, and so does a conference, whose mix names no
+  participant (it logs the overrides it ignores). `tool_policy` is the last
+  field of `ConferenceRealtimeConfig`. Default `None`: nothing changes. See
+  `examples/realtime_tool_policy.py`.
 - ElevenLabs TTS can stream its text input over WebSocket (RMK-265): with
   `ElevenLabsConfig(stream_input=True)` a streaming AI response is spoken
   from its first sentence instead of once it is complete. First audio came

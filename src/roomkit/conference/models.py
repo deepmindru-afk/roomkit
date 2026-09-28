@@ -456,11 +456,6 @@ class ConferenceRealtimeConfig:
     provider's turn waiting on a result that never comes.
     """
 
-    tool_policy: ToolPolicy | None = None
-    """Allow/deny rules for ``tools`` (RFC §21.1, §12.10.12): a denied tool is
-    not declared to the provider and a call to it is refused. The mix names no
-    participant, so the base rules apply and role overrides never do."""
-
     temperature: float | None = None
     """Sampling temperature, where the provider supports one."""
 
@@ -484,3 +479,11 @@ class ConferenceRealtimeConfig:
 
     provider_config: dict[str, Any] | None = None
     """Provider-specific session options, passed through opaquely."""
+
+    tool_policy: ToolPolicy | None = None
+    """Allow/deny rules for ``tools`` (RFC §21.1, §12.10.12): a denied tool is
+    not declared to the provider and a call to it is refused. The mix names no
+    participant, so the base rules apply and role overrides never do.
+
+    Last among the fields, so the positional order the earlier ones had is
+    kept."""

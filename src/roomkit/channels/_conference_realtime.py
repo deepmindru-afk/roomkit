@@ -34,7 +34,11 @@ from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._conference_mixer import ConferenceMixer
 from roomkit.channels._conference_operations import ConferenceResource
-from roomkit.channels._conference_tools import ConferenceToolGate, declared_tools
+from roomkit.channels._conference_tools import (
+    ConferenceToolGate,
+    declared_tools,
+    warn_unused_role_overrides,
+)
 from roomkit.core.task_utils import log_task_exception
 from roomkit.models.event import TextContent
 from roomkit.models.tool_call import ToolCallEvent
@@ -176,6 +180,7 @@ class ConferenceRealtime:
             provider.on_response_end(self._on_response_end)
             provider.on_tool_call(self._on_tool_call)
             provider.on_tool_call_cancelled(self._on_tool_call_cancelled)
+        warn_unused_role_overrides(config, self._channel_id)
         self._config = config
         self.mixer.configure(input_sample_rate=config.input_sample_rate)
         self._voice.set_on_interrupted(self.interrupt)
