@@ -386,14 +386,26 @@ async def _gated_kit(
 
 
 async def _call(
-    channel: ConferenceChannel, provider: MockRealtimeProvider, name: str, arguments: dict
-) -> Any:  # type: ignore[type-arg]
+    channel: ConferenceChannel,
+    provider: MockRealtimeProvider,
+    observed: list[ToolCallEvent],
+    name: str,
+    arguments: dict[str, Any],
+) -> Any:
+    """Issue one call; the model's answer, once ON_TOOL_CALL's observers saw it."""
     session = await channel._realtime.ensure_session(ROOM)
     assert session is not None
     await provider.simulate_tool_call(session, "call-1", name, arguments)
-    await until(lambda: bool(provider.tool_results))
-    await asyncio.sleep(0.05)  # the ASYNC observers are fire-and-forget
+    await until(lambda: bool(provider.tool_results) and bool(observed))
     return json.loads(provider.tool_results[0][2])
+
+
+async def _never_run(room_id: str, tool: str, args: dict[str, Any]) -> str:
+    raise AssertionError(f"the handler ran {tool}")
+
+
+async def _found(room_id: str, tool: str, args: dict[str, Any]) -> str:
+    return '{"ssn": "123-45-6789"}'
 
 
 class TestToolCallGate:
@@ -407,79 +419,82 @@ class TestToolCallGate:
         ],
     )
     async def test_a_refused_call_never_reaches_the_handler(
-        self,
-        name: str,
-        arguments: dict,
-        error: str,  # type: ignore[type-arg]
+        self, name: str, arguments: dict[str, Any], error: str
     ) -> None:
-        ran: list[str] = []
+        kit, channel, provider, observed = await _gated_kit(_never_run)
 
-        async def handler(room_id: str, tool: str, args: dict) -> str:  # type: ignore[type-arg]
-            ran.append(tool)
-            return "{}"
+        result = await _call(channel, provider, observed, name, arguments)
 
-        kit, channel, provider, observed = await _gated_kit(handler)
-
-        result = await _call(channel, provider, name, arguments)
-
-        assert ran == []
         assert error in result["error"]
         assert [(e.name, e.is_error) for e in observed] == [(name, True)]
         await kit.close()
 
-    async def test_on_tool_call_rewrites_and_observers_see_the_final_result(self) -> None:
-        async def handler(room_id: str, tool: str, args: dict) -> str:  # type: ignore[type-arg]
-            return '{"ssn": "123-45-6789"}'
+    async def test_a_refusal_is_reported_once_it_is_on_the_wire(self) -> None:
+        kit, channel, provider, observed = await _gated_kit(_never_run)
+        sent_when_observed: list[int] = []
 
-        kit, channel, provider, observed = await _gated_kit(handler)
+        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="order")
+        async def order(event: ToolCallEvent, ctx: RoomContext) -> None:
+            sent_when_observed.append(len(provider.tool_results))
+
+        await _call(channel, provider, observed, "delete_everything", {})
+
+        assert sent_when_observed == [1]
+        await kit.close()
+
+    async def test_on_tool_call_rewrites_and_observers_see_the_final_result(self) -> None:
+        kit, channel, provider, observed = await _gated_kit(_found)
 
         @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="redact")
         async def redact(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             return HookResult(action="allow", metadata={"result": '{"ssn": "[REDACTED]"}'})
 
-        result = await _call(channel, provider, "lookup", {"email": "a@b.example"})
+        result = await _call(channel, provider, observed, "lookup", {"email": "a@b.example"})
 
         assert result == {"ssn": "[REDACTED]"}
         assert [e.result for e in observed] == ['{"ssn": "[REDACTED]"}']
         await kit.close()
 
     async def test_a_block_withholds_the_result_and_is_observed(self) -> None:
-        async def handler(room_id: str, tool: str, args: dict) -> str:  # type: ignore[type-arg]
-            return '{"ssn": "123-45-6789"}'
-
-        kit, channel, provider, observed = await _gated_kit(handler)
+        kit, channel, provider, observed = await _gated_kit(_found)
 
         @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="withhold")
         async def withhold(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             return HookResult.block("restricted")
 
-        result = await _call(channel, provider, "lookup", {"email": "a@b.example"})
+        result = await _call(channel, provider, observed, "lookup", {"email": "a@b.example"})
 
         assert result == {"error": "restricted"}
         assert [e.is_error for e in observed] == [True]
         await kit.close()
 
     async def test_before_tool_use_denies_before_the_handler(self) -> None:
-        ran: list[str] = []
-
-        async def handler(room_id: str, tool: str, args: dict) -> str:  # type: ignore[type-arg]
-            ran.append(tool)
-            return "{}"
-
-        kit, channel, provider, _ = await _gated_kit(handler)
+        kit, channel, provider, observed = await _gated_kit(_never_run)
 
         @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="deny")
         async def deny(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             return HookResult.block("not here")
 
-        result = await _call(channel, provider, "lookup", {"email": "a@b.example"})
+        result = await _call(channel, provider, observed, "lookup", {"email": "a@b.example"})
 
-        assert ran == []
         assert "denied" in result["error"]
         await kit.close()
 
+    async def test_arguments_before_tool_use_edited_in_place_are_validated_again(self) -> None:
+        kit, channel, provider, observed = await _gated_kit(_never_run)
+
+        @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="edit")
+        async def edit(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
+            event.arguments["email"] = 3
+            return HookResult.allow()
+
+        result = await _call(channel, provider, observed, "lookup", {"email": "a@b.example"})
+
+        assert "Invalid rewritten arguments for 'lookup'" in result["error"]
+        await kit.close()
+
     async def test_the_result_is_bounded(self) -> None:
-        async def handler(room_id: str, tool: str, args: dict) -> str:  # type: ignore[type-arg]
+        async def handler(room_id: str, tool: str, args: dict[str, Any]) -> str:
             return "x" * 100_000
 
         kit, channel, provider, _ = await _gated_kit(handler)
@@ -495,9 +510,9 @@ class TestToolCallGate:
         await kit.close()
 
     async def test_an_abandoned_call_interrupts_its_handler(self) -> None:
-        started, interrupted = asyncio.Event(), asyncio.Event()
+        started, interrupted, released = asyncio.Event(), asyncio.Event(), asyncio.Event()
 
-        async def handler(room_id: str, tool: str, args: dict) -> str:  # type: ignore[type-arg]
+        async def handler(room_id: str, tool: str, args: dict[str, Any]) -> str:
             started.set()
             try:
                 await asyncio.sleep(30)
@@ -507,17 +522,53 @@ class TestToolCallGate:
             return "{}"
 
         kit, channel, provider, observed = await _gated_kit(handler)
+        reported: list[dict[str, Any]] = []
+
+        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="slow")
+        async def slow(event: ToolCallEvent, ctx: RoomContext) -> None:
+            await released.wait()
+
+        @kit.on("tool_call")
+        async def framework_event(event: Any) -> None:
+            reported.append(event.data)
+
+        session = await channel._realtime.ensure_session(ROOM)
+        assert session is not None
+        await provider.simulate_tool_call(session, "call-1", "lookup", {"email": "a@b.example"})
+        await asyncio.wait_for(started.wait(), 2)
+        # A slow audit hook does not hold up the provider's cancellation.
+        await asyncio.wait_for(provider.simulate_tool_call_cancellation(session, ["call-1"]), 1)
+        await asyncio.wait_for(interrupted.wait(), 2)
+        released.set()
+        await until(lambda: bool(observed) and bool(reported))
+
+        assert provider.tool_results == []
+        assert [(e.cancelled, e.is_error) for e in observed] == [(True, True)]
+        assert reported[0]["cancelled"] is True
+        await kit.close()
+
+    async def test_a_cancellation_after_the_outcome_adds_no_second_one(self) -> None:
+        kit, channel, provider, observed = await _gated_kit(_found)
+        sending, release = asyncio.Event(), asyncio.Event()
+        submit = provider.submit_tool_result
+
+        async def slow_submit(session: Any, call_id: str, result: str) -> None:
+            sending.set()
+            await release.wait()
+            await submit(session, call_id, result)
+
+        provider.submit_tool_result = slow_submit  # type: ignore[method-assign]
         session = await channel._realtime.ensure_session(ROOM)
         assert session is not None
 
         await provider.simulate_tool_call(session, "call-1", "lookup", {"email": "a@b.example"})
-        await asyncio.wait_for(started.wait(), 2)
+        await asyncio.wait_for(sending.wait(), 2)
         await provider.simulate_tool_call_cancellation(session, ["call-1"])
-        await asyncio.wait_for(interrupted.wait(), 2)
+        release.set()
+        await until(lambda: bool(provider.tool_results))
         await asyncio.sleep(0.05)
 
-        assert provider.tool_results == []
-        assert [(e.cancelled, e.is_error) for e in observed] == [(True, True)]
+        assert [(e.is_error, e.cancelled) for e in observed] == [(False, False)]
         await kit.close()
 
 

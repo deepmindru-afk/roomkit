@@ -962,16 +962,16 @@ class HelpersMixin:
                 skip_event_filter=True,
             )
 
+            data: dict[str, Any] = {
+                "tool_name": event.name,
+                "tool_call_id": event.tool_call_id,
+                "channel_type": str(event.channel_type),
+                "is_error": True,
+            }
+            if event.cancelled:
+                data["cancelled"] = True
             await kit_ref._emit_framework_event(
-                "tool_call",
-                room_id=event.room_id,
-                channel_id=channel_id,
-                data={
-                    "tool_name": event.name,
-                    "tool_call_id": event.tool_call_id,
-                    "channel_type": str(event.channel_type),
-                    "is_error": True,
-                },
+                "tool_call", room_id=event.room_id, channel_id=channel_id, data=data
             )
 
         return _callback

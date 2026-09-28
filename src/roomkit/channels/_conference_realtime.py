@@ -85,6 +85,15 @@ class _Utterance:
 
 
 @dataclass
+class _ToolCall:
+    """One call in flight, and whether ON_TOOL_CALL already has its outcome."""
+
+    task: asyncio.Task[None]
+    event: ToolCallEvent
+    reported: bool = False
+
+
+@dataclass
 class _RoomRealtime:
     """One room's share of the provider: its session, and the response in flight."""
 
@@ -93,7 +102,7 @@ class _RoomRealtime:
     next_connect_at: float = 0.0
     utterance: _Utterance | None = None
     tasks: set[asyncio.Task[None]] = field(default_factory=set)
-    tool_calls: dict[str, tuple[asyncio.Task[None], ToolCallEvent]] = field(default_factory=dict)
+    tool_calls: dict[str, _ToolCall] = field(default_factory=dict)
     """Calls in flight, by call id: what a provider cancellation interrupts."""
 
     def spawn(self, coro: Awaitable[None]) -> asyncio.Task[None]:
@@ -485,43 +494,75 @@ class ConferenceRealtime:
         if room is None:
             return
         event = self._tools.event(session, call_id, name, arguments)
-        task = room.spawn(self._answer_tool(session, event))
-        room.tool_calls[call_id] = (task, event)
+        task = room.spawn(self._answer_tool(room, session, event))
+        room.tool_calls[call_id] = _ToolCall(task, event)
         task.add_done_callback(lambda done: _forget_call(room, call_id, done))
 
     async def _on_tool_call_cancelled(self, session: VoiceSession, call_ids: list[str]) -> None:
         """The model abandoned these calls: interrupt their handlers, send
-        nothing, and report them to ON_TOOL_CALL's observers as cancelled."""
+        nothing, and report them to ON_TOOL_CALL's observers as cancelled.
+
+        A call whose outcome ON_TOOL_CALL already has is left to finish: a
+        second report would put two outcomes on one call, and the result it
+        is submitting is the provider's to drop.
+        """
         room = self._guarded(session)
         if room is None:
             return
         for call_id in call_ids:
-            entry = room.tool_calls.pop(call_id, None)
-            if entry is None:
+            call = room.tool_calls.get(call_id)
+            if call is None or call.reported or call.task.done():
                 continue
-            task, event = entry
-            if task.done():
-                continue
-            task.cancel()
+            del room.tool_calls[call_id]
+            call.task.cancel()
             body = json.dumps(
                 {
                     "error": "Tool call cancelled",
-                    "tool": event.name,
+                    "tool": call.event.name,
                     "hint": "The model abandoned this call before its result; nothing was sent.",
                 }
             )
-            await self._tools.refuse(event, body, cancelled=True)
+            # Off the provider's callback: an audit hook must not hold up the
+            # interruption it reports.
+            room.spawn(self._tools.report_refusal(call.event, body, cancelled=True))
 
-    async def _answer_tool(self, session: VoiceSession, event: ToolCallEvent) -> None:
+    async def _answer_tool(
+        self, room: _RoomRealtime, session: VoiceSession, event: ToolCallEvent
+    ) -> None:
         """Answer one tool call through the gate, with an error rather than silence.
 
         A refused or failing call still submits a result: the provider's turn
         is waiting on it, and a turn nothing answers wedges the conversation.
+        A refusal is reported once it is on the wire, never before (RFC 12.4).
         """
         config = self._config
         if config is None:
             return
-        result = await self._tools.answer(config, event)
+        try:
+            outcome = await self._tools.execute(config, event)
+        except Exception:
+            logger.exception(
+                "Conference channel %r: the tool gate failed on %r in room %s",
+                self._channel_id,
+                event.name,
+                session.room_id,
+            )
+            outcome = self._tools.failure(event)
+        call = room.tool_calls.get(event.tool_call_id)
+        if call is not None:
+            call.reported = True
+        result = await self._tools.result(outcome)
+        await self._submit_tool_result(config, session, event, result)
+        if not outcome.served:
+            await self._tools.report_refusal(outcome.event, outcome.body)
+
+    async def _submit_tool_result(
+        self,
+        config: ConferenceRealtimeConfig,
+        session: VoiceSession,
+        event: ToolCallEvent,
+        result: str,
+    ) -> None:
         try:
             with self._operations.use(
                 ConferenceResource.REALTIME, what=f"tool result for room {session.room_id}"
@@ -635,6 +676,6 @@ class ConferenceRealtime:
 
 def _forget_call(room: _RoomRealtime, call_id: str, task: asyncio.Task[None]) -> None:
     """Drop a finished call from the room's in-flight calls, if it is still that one."""
-    entry = room.tool_calls.get(call_id)
-    if entry is not None and entry[0] is task:
+    call = room.tool_calls.get(call_id)
+    if call is not None and call.task is task:
         del room.tool_calls[call_id]
