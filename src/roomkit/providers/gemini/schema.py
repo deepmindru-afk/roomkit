@@ -23,6 +23,14 @@ that list used to survive the cleaning untouched and fail inside
 ``FunctionDeclaration``, whose ``type`` is a single-valued enum. It is
 folded down the same way, so both spellings of "optional string" reach
 Gemini as one.
+
+Not every union is a choice between types. ``{"type": "object",
+"properties": {...}, "oneOf": [{"required": ["url"]}, {"required":
+["path"]}]}`` says "give url or path": its branches narrow the object they
+sit on. Folding it to its first branch replaced the object with an untyped
+fragment requiring a property it no longer declared, and Gemini refused the
+whole request. Such a union is kept out of the fold: the object stays, and
+the union goes the way of every other constraint Gemini cannot express.
 """
 
 from __future__ import annotations
@@ -58,10 +66,12 @@ def clean_gemini_schema(schema: dict[str, Any] | None) -> dict[str, Any] | None:
        ``allOf`` are handled the same way for symmetry. When the union
        has multiple non-null branches, we keep the first one and add
        ``nullable`` if any branch was null — Gemini's schema dialect
-       does not support full union types.
+       does not support full union types. A union that only narrows its
+       node (see :func:`_refines_node`) is not folded.
     2. **Strip unknown keys.** Anything not in :data:`_GEMINI_ALLOWED_KEYS`
        (e.g. ``$schema``, ``additionalProperties``, ``default``, ``title``)
-       is dropped at every nesting level.
+       is dropped at every nesting level, and ``required`` keeps only the
+       properties that survived.
 
     Args:
         schema: A JSON Schema dict (e.g. tool parameter schema), or None.
@@ -90,6 +100,8 @@ def _collapse_union(obj: dict[str, Any]) -> dict[str, Any]:
         return obj
 
     branches: list[dict[str, Any]] = [b for b in obj[union_key] if isinstance(b, dict)]
+    if _refines_node(obj, branches):
+        return obj
     has_null = any(b.get("type") == "null" for b in branches)
     non_null = [b for b in branches if b.get("type") != "null"]
 
@@ -108,6 +120,20 @@ def _collapse_union(obj: dict[str, Any]) -> dict[str, Any]:
         if key in obj and key not in merged:
             merged[key] = obj[key]
     return merged
+
+
+def _refines_node(obj: dict[str, Any], branches: list[dict[str, Any]]) -> bool:
+    """Whether a union narrows *obj* rather than offering alternative types.
+
+    A node that declares its own ``properties`` is the object; a union beside
+    them can only add constraints to it (``required`` alternatives, a
+    conditional field). So is a union none of whose branches names a
+    ``type``: ``{"type": "string", "anyOf": [{"format": "date"}, ...]}`` is
+    still a string. Only a union of typed branches on a node without
+    properties of its own, ``Optional[X]`` being the common one, is a choice
+    to fold.
+    """
+    return "properties" in obj or not any("type" in b for b in branches)
 
 
 def _collapse_type_list(obj: dict[str, Any]) -> dict[str, Any]:
@@ -154,4 +180,10 @@ def _clean(obj: dict[str, Any]) -> dict[str, Any]:
             result[key] = _clean(value)
         else:
             result[key] = value
+    if isinstance(result.get("required"), list):
+        # Gemini refuses a ``required`` name its ``properties`` do not define,
+        # and the pass above drops a property whose schema is not an object.
+        declared = result.get("properties")
+        declared = declared if isinstance(declared, dict) else {}
+        result["required"] = [name for name in result["required"] if name in declared]
     return result

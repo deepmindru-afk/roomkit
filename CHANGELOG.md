@@ -78,6 +78,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Gemini accepts a tool whose schema narrows an object with a `oneOf` /
+  `anyOf` (RMK-266). The schema cleaner folded every union to its first
+  branch, so `{"type": "object", "properties": {url, path}, "oneOf":
+  [{"required": ["url"]}, {"required": ["path"]}]}` ("give url or path")
+  reached Gemini as `{"required": ["url"]}`, with no type and no properties,
+  and the whole request failed with a 400, text and Live alike, whatever
+  tool the model needed. A union beside an object's own `properties`, or
+  one whose branches name no `type`, now leaves the node whole and is
+  dropped like any constraint Gemini cannot express; `Optional[X]` and
+  other typed unions fold as before. An object's `required` also keeps only
+  the properties that survived the cleaning.
 - A fail-closed `ON_TOOL_CALL` hook withholds a tool's result when the
   room's context cannot be built (RMK-262). The dispatch then ran no hook at
   all and let the result through, so a redaction hook declared
