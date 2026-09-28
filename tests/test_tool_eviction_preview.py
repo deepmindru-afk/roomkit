@@ -1,9 +1,9 @@
 """ToolEviction preview bound.
 
 The preview that stands in for an evicted result is what reaches the provider;
-the full text stays stored for ``read_stored_result``. The preview used to bound
-the number of lines (5 head, 5 tail) but not their length, so one giant line in
-a result of more than ten lines reached the provider whole (RMK-258).
+the full text stays stored for ``read_stored_result``. The preview is bounded
+in lines (5 head, 5 tail) and in chars, so one giant line cannot carry the
+whole result to the provider (RMK-258).
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ def _evict(result: str, threshold_tokens: int = 5000) -> tuple[ToolEviction, str
 
 class TestGiantLine:
     def test_giant_line_in_a_long_result_is_clipped(self) -> None:
-        """The card's case: 12 lines, the third one 500 KB."""
+        """A 12-line result whose third line is 500 KB."""
         lines = [f"line {i}" for i in range(12)]
         lines[2] = "x" * 500_000
         result = "\n".join(lines)
@@ -43,6 +43,8 @@ class TestGiantLine:
         preview = _preview(out)
 
         assert len(preview) <= _budget(5000)
+        # The head uses what the short tail leaves, not only half the budget.
+        assert len(preview) > _budget(5000) - 100
         match = _TRUNCATED.search(preview)
         assert match is not None
         kept = preview[: match.start()].split("\n")[-1]
@@ -56,7 +58,7 @@ class TestGiantLine:
         assert ev._store[("", "evicted_tc1")] == result
 
     def test_giant_line_in_a_short_result_is_marked(self) -> None:
-        """Up to ten lines the preview was cut at 8000 chars with no marker."""
+        """A result of ten lines or fewer is clipped with a marker too."""
         result = "first\n" + "y" * 100_000 + "\nlast"
 
         _, out = _evict(result)
@@ -65,6 +67,17 @@ class TestGiantLine:
         assert len(preview) <= _budget(5000)
         assert preview.startswith("first\n")
         assert _TRUNCATED.search(preview) is not None
+
+    def test_short_result_still_shows_its_last_line(self) -> None:
+        """A giant line does not hide the end of a result of a few lines."""
+        result = "HEADER\n" + "x" * 50_000 + "\nSTATUS: done"
+
+        _, out = _evict(result, threshold_tokens=100)
+        preview = _preview(out)
+
+        assert len(preview) <= _budget(100)
+        assert preview.startswith("HEADER\n")
+        assert preview.endswith("STATUS: done")
 
     def test_single_line_uses_the_whole_budget(self) -> None:
         """With no tail to share with, the head gets the whole budget."""
@@ -87,7 +100,7 @@ class TestGiantLine:
 
 class TestShortLines:
     def test_short_lines_keep_the_head_tail_format(self) -> None:
-        """Results made of ordinary lines preview exactly as before."""
+        """Results made of ordinary lines keep the head/tail format."""
         lines = [f"line {i} " + "x" * 50 for i in range(5000)]
         _, out = _evict("\n".join(lines))
 
@@ -96,8 +109,8 @@ class TestShortLines:
         assert _preview(out) == f"{head}\n\n[... 4990 lines omitted ...]\n\n{tail}"
 
     def test_small_threshold_shrinks_the_preview(self) -> None:
-        """At 1000 tokens (eviction past 4000 chars), a 5000-char result of a
-        few lines used to come back whole in its preview."""
+        """At 1000 tokens (eviction past 4000 chars), the preview of a
+        5000-char result of a few lines is shorter than the result."""
         result = "\n".join("v" * 999 for _ in range(5))
         _, out = _evict(result, threshold_tokens=1000)
 

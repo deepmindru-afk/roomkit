@@ -2,7 +2,7 @@
 
 When a tool returns more tokens than ``evict_threshold_tokens``, AIChannel
 stores the full output and replaces it with a preview. The AI can then
-paginate through the full result using the ``_read_tool_result`` tool.
+paginate through the full result using the ``read_stored_result`` tool.
 
 Run with:
     ANTHROPIC_API_KEY=sk-... uv run python examples/ai_eviction.py

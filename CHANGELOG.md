@@ -30,8 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   provider whole. The preview now holds at most 8000 characters, or twice
   `evict_threshold_tokens` when that is smaller; a line too long for it is
   clipped with a `[... N chars truncated ...]` marker, and the lines left out
-  are counted. The stored result is unchanged and `read_stored_result` still
-  paginates all of it.
+  are counted. A result of a few lines shows its last line too, where a giant
+  line used to hide everything after it. The stored result is unchanged and
+  `read_stored_result` still paginates all of it.
 - `read_stored_result` advertises the line limit it applies when the model
   gives none (RMK-258): its schema said `default: 200` while the handler has
   read 800 lines since the page budget was raised.

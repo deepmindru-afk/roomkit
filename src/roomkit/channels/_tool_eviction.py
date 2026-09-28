@@ -41,14 +41,18 @@ def _omission_marker(count: int) -> str:
     return f"[... {count} lines omitted ...]"
 
 
+def _truncation_marker(count: int) -> str:
+    return f" [... {count} chars truncated ...]"
+
+
 def _clip_line(line: str, room: int) -> str | None:
     """*line* cut to fit *room* chars, the cut stated in a marker; ``None``
     when the marker leaves no room for any of the line."""
     # Sized for the widest count, so the real marker is never longer.
-    keep = room - len(f" [... {len(line)} chars truncated ...]")
+    keep = room - len(_truncation_marker(len(line)))
     if keep < 1:
         return None
-    return f"{line[:keep]} [... {len(line) - keep} chars truncated ...]"
+    return line[:keep] + _truncation_marker(len(line) - keep)
 
 
 def _fit_lines(lines: list[str], budget: int) -> list[str]:
@@ -75,11 +79,13 @@ def _fit_lines(lines: list[str], budget: int) -> list[str]:
 def _preview(result: str, budget: int) -> str:
     """Head/tail preview of *result* within *budget* chars.
 
-    Bounding the lines alone let one giant line (minified HTML, a JSON blob)
-    reach the provider whole, which is what eviction exists to prevent. The
-    head takes at most half the budget and the tail the rest, filled from the
-    last line; a line that does not fit is clipped with a marker, and every
-    line not shown is counted in the omission marker.
+    A bound on lines alone would let one giant line (minified HTML, a JSON
+    blob) reach the provider whole, which is what eviction exists to prevent.
+    The head and the tail split the lines, so even a short result shows its
+    last line. The head takes at most half the budget, or what the whole
+    tail leaves; the tail takes the rest, filled from the last line. A line
+    that does not fit is clipped with a marker, and every line not shown is
+    counted in the omission marker.
     """
     lines = result.splitlines()
     # Reserved at its widest, which also covers the newline joining head and
@@ -87,10 +93,12 @@ def _preview(result: str, budget: int) -> str:
     reserve = len(_omission_marker(len(lines))) + 4
     if budget < reserve:
         return ""
-    head_src = lines[:_PREVIEW_HEAD_LINES]
-    tail_src = lines[_PREVIEW_HEAD_LINES:][-_PREVIEW_TAIL_LINES:]
+    head_n = min(_PREVIEW_HEAD_LINES, (len(lines) + 1) // 2)
+    head_src = lines[:head_n]
+    tail_src = lines[max(head_n, len(lines) - _PREVIEW_TAIL_LINES) :]
     lines_budget = budget - reserve
-    head = _fit_lines(head_src, lines_budget // 2 if tail_src else lines_budget)
+    whole_tail = len("\n".join(tail_src))
+    head = _fit_lines(head_src, max(lines_budget // 2, lines_budget - whole_tail))
     head_text = "\n".join(head)
     tail = _fit_lines(tail_src[::-1], lines_budget - len(head_text))[::-1]
     tail_text = "\n".join(tail)
