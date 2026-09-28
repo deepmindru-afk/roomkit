@@ -126,6 +126,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A supervisor serving several rooms keeps their delegations apart (RMK-275,
+  RFC §23.4). With `wait_for_result=False`, a worker busy with room A's task
+  answered room B's delegation "already running"; with a `strategy`, room B's
+  `delegate_workers` waited until room A's whole pipeline had run. The busy
+  set and the lock are now per room.
 - A handoff or a delegation acts on the room of its call (RMK-275, RFC §19.6,
   §23.4). `handoff_conversation`, `delegate_task` and a supervisor's
   `delegate_to_<worker>` and `delegate_workers` read the room from a context

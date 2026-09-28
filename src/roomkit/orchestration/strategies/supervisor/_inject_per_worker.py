@@ -74,7 +74,8 @@ class _PerWorkerToolMixin:
         tool_to_worker = {f"delegate_to_{w.channel_id}": w.channel_id for w in self._workers}
         wait = self._wait_for_result
         share_channels = self._share_channels
-        pending: set[str] = set()
+        # Per room: a worker busy in one room is free in another.
+        pending: set[tuple[str, str]] = set()  # (room_id, worker_id)
 
         async def delegate_to_worker(rid: str, name: str, arguments: dict[str, Any]) -> str:
             worker_id = tool_to_worker[name]
@@ -128,7 +129,7 @@ class _PerWorkerToolMixin:
                         }
                     )
 
-                if worker_id in pending:
+                if (rid, worker_id) in pending:
                     return json.dumps(
                         {
                             "status": "already_running",
@@ -148,7 +149,7 @@ class _PerWorkerToolMixin:
                     notify=self._supervisor.channel_id,
                     share_channels=share_channels,
                 )
-                pending.add(worker_id)
+                pending.add((rid, worker_id))
                 _post_worker_status(
                     kit,
                     worker_id,
@@ -166,8 +167,8 @@ class _PerWorkerToolMixin:
                 _bus_room = rid
                 _bus_task_id = delegated.id
 
-                def _patched_set(r: Any, *, _wid: str = worker_id or "") -> None:
-                    pending.discard(_wid)
+                def _patched_set(r: Any, *, _wid: str = worker_id, _rid: str = rid) -> None:
+                    pending.discard((_rid, _wid))
                     output = _result_output(r)
                     ok = _result_completed(r)
                     _post_worker_status(

@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+import weakref
 from typing import TYPE_CHECKING, Any
 
 from roomkit.core.task_utils import log_task_exception
@@ -91,7 +92,9 @@ class _StrategyToolMixin:
         async_delivery = self._async_delivery
         task_timeout = self._task_timeout
         max_revisions = self._max_revisions
-        _lock = asyncio.Lock()
+        # One lock per room, held while its pipeline runs: another room's call
+        # does not wait on it. A lock lives while a call holds it.
+        _locks: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
         # Per-room dedup: prevents duplicate calls within the same turn
         _dedup_cache: dict[str, tuple[str, float]] = {}  # room_id → (result, timestamp)
         # Per-room running flag for async_delivery mode — prevents re-dispatch
@@ -117,7 +120,10 @@ class _StrategyToolMixin:
                 )
             task_desc = arguments.get("task", "")
 
-            async with _lock:
+            lock = _locks.get(rid)
+            if lock is None:
+                lock = _locks[rid] = asyncio.Lock()
+            async with lock:
                 cached = _dedup_cache.get(rid)
                 if cached is not None and (time.monotonic() - cached[1]) < dedup_window:
                     return cached[0]
