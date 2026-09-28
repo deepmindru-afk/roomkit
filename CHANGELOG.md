@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `MetaImageProvider` draws and edits on Meta's Muse Image (`muse-image-1.0`,
+  Meta Model API) (RMK-251, RFC §25). Meta's generator can search the web,
+  fetch reference images and run code while it draws, and turns all three on
+  when a request says nothing: the provider always sends them off unless
+  `MetaImageConfig.tools` or a call's `ImageOptions.search_types` asks, so a
+  prompt does not leave for the web by default. `reasoning_strength`
+  (`thinking_level` `minimal` per call maps to one pass), `moderation` and
+  `output_format` are supported; edits post the references as JSON, six
+  verified. `size` sets the aspect ratio only (the service draws at its own
+  resolution: `1536x1024` came back 1920x1280) and the default format is WebP,
+  read off the bytes. Verified live on 2026-09-27, ~10 s a drawing at one
+  pass, $0.01 an image. New extra `roomkit[meta]`;
+  `examples/image_generation.py` draws with it when `META_API_KEY` is set;
+  `make check-models` covers the catalog.
 - `DeepgramConfig.diarize_model` (e.g. `"latest"`) gives Deepgram speaker
   segments (RMK-245, RFC §12.2.3): the provider then reports
   `supports_diarization` and every final, batch or streaming, carries

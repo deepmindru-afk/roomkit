@@ -23,6 +23,7 @@ Requires:
     pip install roomkit[openai]    # OPENAI_API_KEY
     pip install roomkit[gemini]    # GEMINI_API_KEY
     pip install roomkit[xai]       # XAI_API_KEY
+    pip install roomkit[meta]      # META_API_KEY
     pip install roomkit[openrouter]  # OPENROUTER_API_KEY
     pip install roomkit[azure]     # AZURE_OPENAI_API_KEY + AZURE_OPENAI_ENDPOINT
 
@@ -30,6 +31,8 @@ Environment variables (first configured provider wins):
     OPENAI_API_KEY — draws with OpenAI (gpt-image-2 by default)
     GEMINI_API_KEY — draws with Gemini (gemini-3.1-flash-image by default)
     XAI_API_KEY    — draws with xAI (grok-imagine-image-2.0 by default)
+    META_API_KEY   — draws with Meta Muse Image (muse-image-1.0), its web and
+                     image search and shell tools off, one refinement pass
     OPENROUTER_API_KEY — draws through OpenRouter's Image API
                          (google/gemini-3.1-flash-image by default)
     AZURE_OPENAI_API_KEY + AZURE_OPENAI_ENDPOINT — draws with an Azure OpenAI
@@ -172,6 +175,16 @@ def build_image_provider() -> ImageProvider:
 
         return XAIImageProvider(
             XAIImageConfig(api_key=api_key, model=model or "grok-imagine-image-2.0")
+        )
+    if api_key := os.environ.get("META_API_KEY"):
+        from roomkit.providers.meta import MetaImageConfig, MetaImageProvider
+
+        # Meta turns its search and shell tools on unless told otherwise;
+        # MetaImageConfig sends them off. One refinement pass draws in ~10 s.
+        return MetaImageProvider(
+            MetaImageConfig(
+                api_key=api_key, model=model or "muse-image-1.0", reasoning_strength="low"
+            )
         )
     if api_key := os.environ.get("OPENROUTER_API_KEY"):
         from roomkit.providers.openrouter import OpenRouterImageConfig, OpenRouterImageProvider

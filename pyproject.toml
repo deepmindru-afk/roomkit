@@ -47,6 +47,7 @@ openrouter = ["openai>=2.28,<3"]
 # gateway); it intentionally does not install the `litellm` package itself.
 litellm = ["openai>=2.28,<3"]
 xai = ["openai>=2.28,<3"]
+meta = ["openai>=2.28,<3"]
 deepseek = ["openai>=2.28,<3"]
 cerebras = ["openai>=2.28,<3"]
 # Named `qwen-ai` rather than `qwen`: the Qwen *voice* extras below install
@@ -156,6 +157,7 @@ providers = [
     "roomkit[openrouter]",
     "roomkit[litellm]",
     "roomkit[xai]",
+    "roomkit[meta]",
     "roomkit[deepseek]",
     "roomkit[cerebras]",
     "roomkit[qwen-ai]",
