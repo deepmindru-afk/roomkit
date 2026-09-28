@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- An `ON_TOOL_CALL` hook sees a tool's whole result, before eviction, and
+  eviction runs on what it hands back (RMK-260). The hook used to receive the
+  evicted preview while the raw text sat in the store, so a redacting hook
+  (PII re-tokenisation) cleaned the preview and the model read the raw text
+  back, personal data included, through `read_stored_result`. What the store
+  keeps is now what the hook returned. Observers registered ASYNC receive the
+  whole result too, where they received the placeholder.
 - `MCPToolProvider.as_tool_handler()` hands an MCP image to the model as an
   image (RMK-259): its handler returns `str | list[AITextPart | AIImagePart]`
   where it returned `str`. A result carrying a PNG, JPEG, GIF or WebP image

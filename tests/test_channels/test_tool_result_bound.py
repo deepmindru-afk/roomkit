@@ -2,12 +2,13 @@
 
 A refusal message, an exception's text and an ON_TOOL_CALL override are
 evicted like a handler's result when oversized (RMK-259), and the hooks see
-the text they are documented to see: the refusal observer the raw message,
-ON_TOOL_CALL the bounded result.
+the outcome before eviction: the refusal observer the raw message, ON_TOOL_CALL
+the handler's whole result, whose rewrite is what gets stored (RMK-260).
 """
 
 from __future__ import annotations
 
+import json
 from unittest.mock import AsyncMock
 
 from roomkit.channels._tool_eviction import is_eviction_placeholder
@@ -72,6 +73,33 @@ async def test_an_oversized_exception_is_evicted() -> None:
     assert part.is_error
     assert isinstance(part.result, str) and is_eviction_placeholder(part.result)
     assert _HUGE in ch._eviction._store[("", "evicted_t1")]
+
+
+async def test_the_hook_sees_the_whole_result_and_the_store_keeps_its_rewrite() -> None:
+    """A redacting ON_TOOL_CALL hook covers the full text: what the model can
+    page back with read_stored_result is what the hook handed back."""
+    body = "row\n" * 10_000 + "client: Julie Belanger, j@acme.ca\n" + "row\n" * 10_000
+    ch, provider = _channel(AsyncMock(return_value=body))
+    seen: list[ToolCallEvent] = []
+
+    async def redact(event: ToolCallEvent) -> str:
+        seen.append(event)
+        return str(event.result).replace("Julie Belanger, j@acme.ca", "[PERSON_1], [EMAIL_1]")
+
+    ch._tool_call_hook = redact
+
+    part = await _model_copy(ch, provider)
+
+    assert seen[0].result == body
+    assert isinstance(part.result, str) and is_eviction_placeholder(part.result)
+    pages, offset = [], 0
+    while offset is not None:
+        page = json.loads(ch._eviction.handle_read({"result_id": "evicted_t1", "offset": offset}))
+        pages.append(page["content"])
+        offset = page["next_offset"]
+    stored = "\n".join(pages)
+    assert "Julie" not in stored
+    assert "[PERSON_1], [EMAIL_1]" in stored
 
 
 async def test_an_oversized_override_is_evicted_and_the_hook_input_is_unchanged() -> None:

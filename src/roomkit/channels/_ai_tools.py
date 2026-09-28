@@ -499,9 +499,12 @@ class AIToolsMixin:
                 # BEFORE eviction — the string below may become a placeholder,
                 # but UI surfaces need the structured payload verbatim.
                 structured_content = _tc_ctx.structured_content
-                result = self._bound_tool_result(tc.name, result, tc.id)
 
-                # Fire unified ON_TOOL_CALL hook (if framework injected callback)
+                # Fire unified ON_TOOL_CALL hook (if framework injected callback).
+                # It sees the handler's whole result, and eviction runs on what
+                # it hands back: everything read_stored_result can page back has
+                # passed through the hook, so a redacting hook covers the full
+                # text, not only the preview.
                 if self._tool_call_hook is not None:
                     event = ToolCallEvent(
                         channel_id=self.channel_id,
@@ -514,10 +517,9 @@ class AIToolsMixin:
                     )
                     override = await self._tool_call_hook(event)
                     if override is not None:
-                        # The hook saw the bounded result; what it hands back
-                        # is bounded in turn before the model reads it.
-                        result = self._bound_tool_result(tc.name, override, tc.id)
+                        result = override
                         recorded_result = override
+                result = self._bound_tool_result(tc.name, result, tc.id)
 
                 telemetry.end_span(tool_span_id)
             except asyncio.CancelledError:
