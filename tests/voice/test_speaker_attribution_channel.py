@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import time
 from collections.abc import AsyncIterator, Callable
 from typing import Any
 
@@ -16,7 +17,9 @@ from roomkit.channels._voice_speakers import (
     SpeakerTracker,
     default_sender_name,
 )
+from roomkit.channels.ai import AIChannel
 from roomkit.models.enums import EventType
+from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.voice.audio_frame import AudioFrame
 from roomkit.voice.backends.mock import MockVoiceBackend
 from roomkit.voice.base import AudioChunk, SpeakerSegment, TranscriptionResult
@@ -27,8 +30,42 @@ from roomkit.voice.pipeline import (
     TurnDecision,
 )
 from roomkit.voice.stt.base import STTProvider
+from roomkit.voice.tts.mock import MockTTSProvider
 
 _FRAME = AudioFrame(data=b"\x01\x00" * 1600)  # 3200 bytes: one STT buffer flush
+
+
+class _SlowAI(MockAIProvider):
+    """An AI that takes a while to answer, so its reply is still pending."""
+
+    def __init__(self, delay: float) -> None:
+        super().__init__(responses=["D'accord."])
+        self._delay = delay
+
+    async def generate(self, context: Any) -> Any:
+        await asyncio.sleep(self._delay)
+        return await super().generate(context)
+
+
+class _PlainSTT(STTProvider):
+    """A continuous STT that does not diarize: one final per chunk."""
+
+    def __init__(self, finals: list[str]) -> None:
+        self._finals = list(finals)
+
+    @property
+    def supports_streaming(self) -> bool:
+        return True
+
+    async def transcribe(self, audio: Any, *, language: str | None = None) -> TranscriptionResult:
+        return TranscriptionResult(text="")
+
+    async def transcribe_stream(
+        self, audio_stream: AsyncIterator[AudioChunk], *, language: str | None = None
+    ) -> AsyncIterator[TranscriptionResult]:
+        async for chunk in audio_stream:
+            if any(chunk.data) and self._finals:
+                yield TranscriptionResult(text=self._finals.pop(0), is_final=True)
 
 
 class _DiarizingSTT(STTProvider):
@@ -85,20 +122,39 @@ async def _eventually(predicate: Callable[[], bool], timeout: float = 3.0) -> No
 class _Room:
     """A kit with one continuous VoiceChannel, and what its hooks saw."""
 
-    def __init__(self, stt: STTProvider, pipeline: AudioPipelineConfig | None = None) -> None:
+    def __init__(
+        self,
+        stt: STTProvider,
+        pipeline: AudioPipelineConfig | None = None,
+        *,
+        ai_delay: float | None = None,
+    ) -> None:
         self.backend = MockVoiceBackend()
         self.channel = VoiceChannel(
-            "voice-1", stt=stt, backend=self.backend, pipeline=pipeline or AudioPipelineConfig()
+            "voice-1",
+            stt=stt,
+            tts=MockTTSProvider() if ai_delay is not None else None,
+            backend=self.backend,
+            pipeline=pipeline or AudioPipelineConfig(),
         )
         self.kit = RoomKit(stt=stt, voice=self.backend)
         self.kit.register_channel(self.channel)
+        self._ai = ai_delay is not None
+        if ai_delay is not None:
+            self.kit.register_channel(AIChannel("ai-1", provider=_SlowAI(ai_delay)))
         self.transcriptions: list[Any] = []
+        self.transcribed_at: list[float] = []
         self.speaker_changes: list[Any] = []
         self.rename: dict[str, str] = {}
+        self.slow_hook: dict[str, float] = {}
+        self.started = time.monotonic()
 
         @self.kit.hook(HookTrigger.ON_TRANSCRIPTION)
         async def on_transcription(event: Any, ctx: Any) -> HookResult:
             self.transcriptions.append(event)
+            self.transcribed_at.append(time.monotonic() - self.started)
+            if event.speaker in self.slow_hook:
+                await asyncio.sleep(self.slow_hook[event.speaker])
             if event.speaker in self.rename:
                 return HookResult.modify(
                     dataclasses.replace(event, sender_name=self.rename[event.speaker])
@@ -113,8 +169,11 @@ class _Room:
         room = await self.kit.create_room()
         self.room_id = room.id
         await self.kit.attach_channel(room.id, "voice-1")
+        if self._ai:
+            await self.kit.attach_channel(room.id, "ai-1")
         self.session = await self.kit.join(room.id, "voice-1", participant_id="owner")
         assert self.channel._continuous_stt
+        self.started = time.monotonic()
 
     async def speak(self) -> None:
         await self.backend.simulate_audio_received(self.session, _FRAME)
@@ -201,10 +260,10 @@ class TestVoiceChannelCarriesLabels:
             ("B", 0, "Speaker B"),
         ]
         await _eventually(lambda: len(room.speaker_changes) == 2)
-        assert [(c.speaker_id, c.is_new_speaker, c.source) for c in room.speaker_changes] == [
-            ("A", True, "stt"),
-            ("B", True, "stt"),
-        ]
+        assert [
+            (c.speaker_id, c.is_new_speaker, c.source, c.speaker_epoch)
+            for c in room.speaker_changes
+        ] == [("A", True, "stt", 0), ("B", True, "stt", 0)]
 
     async def test_a_final_mixing_speakers_becomes_one_message_each_in_order(self) -> None:
         stt = _DiarizingSTT(
@@ -271,23 +330,60 @@ class TestVoiceChannelCarriesLabels:
     ) -> None:
         # A muted mic sends nothing; a provider closes a stream that falls
         # behind real time, which would start a new label epoch.
-        monkeypatch.setattr("roomkit.channels.voice._STT_INACTIVITY_TIMEOUT_S", 0.1)
+        monkeypatch.setattr("roomkit.channels.voice._KEPT_STREAM_PACE_S", 0.1)
         stt = _DiarizingSTT([[SpeakerSegment("A", "Bonjour.")], [SpeakerSegment("B", "Oui.")]])
         room = _Room(stt)
         await room.start()
 
+        opened = time.monotonic()
         await room.speak()
         await _eventually(lambda: len(room.transcriptions) == 1)
-        await asyncio.sleep(0.35)  # no audio: the channel sends silence instead
+        await asyncio.sleep(0.6)  # no audio: the channel sends silence instead
         await room.speak()
         await _eventually(lambda: len(room.transcriptions) == 2)
+        elapsed = time.monotonic() - opened
         await room.channel.close()
 
-        silences = [c for c in stt.chunks if not any(c.data)]
-        assert len(silences) >= 2
-        assert all(len(c.data) == 3200 for c in silences)  # 0.1 s at 16 kHz, 16-bit
+        assert any(not any(c.data) for c in stt.chunks)
         assert stt.streams == 1
         assert [t.speaker_epoch for t in room.transcriptions] == [0, 0]
+        audio = sum(len(c.data) for c in stt.chunks) / (2 * 16000)
+        assert audio >= elapsed - 0.35  # kept within a pacing period or so of the clock
+
+    async def test_a_lossy_stream_is_caught_up_in_its_pauses(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Frames that arrive short of real time, with no long gap: the deficit
+        # of a whole call would otherwise add up until the provider hangs up.
+        monkeypatch.setattr("roomkit.channels.voice._KEPT_STREAM_PACE_S", 0.1)
+        stt = _DiarizingSTT([])
+        room = _Room(stt)
+        await room.start()
+
+        opened = time.monotonic()
+        for _ in range(8):
+            await room.speak()  # 0.1 s of audio...
+            await asyncio.sleep(0.25)  # ...every 0.25 s
+        elapsed = time.monotonic() - opened
+        await room.channel.close()
+
+        audio = sum(len(c.data) for c in stt.chunks) / (2 * 16000)
+        assert audio >= elapsed - 0.35
+        assert stt.streams == 1
+
+    async def test_finals_are_routed_in_order_even_when_a_hook_is_slow(self) -> None:
+        stt = _DiarizingSTT([[SpeakerSegment("A", "Premier.")], [SpeakerSegment("B", "Second.")]])
+        room = _Room(stt)
+        room.slow_hook = {"A": 0.4}  # B's final arrives while A is in its hook
+        await room.start()
+
+        await room.speak()
+        await _eventually(lambda: len(room.transcriptions) == 1)
+        await room.speak()
+        messages = await room.messages(2)
+        await room.channel.close()
+
+        assert _said(messages) == [("Speaker A", "Premier."), ("Speaker B", "Second.")]
 
     async def test_a_speaker_change_closes_the_pending_turn(self) -> None:
         # The detector judges every turn incomplete, and would join both
@@ -307,6 +403,42 @@ class TestVoiceChannelCarriesLabels:
         await room.channel.close()
 
         assert _said(messages) == [("Speaker A", "Je voudrais"), ("Speaker B", "Non.")]
+
+
+class TestTheReplyDoesNotHoldBackTheNextFinal:
+    # A user who adds words while the AI is still answering is heard at once,
+    # not after the reply has played (and then dropped as echo of it).
+
+    async def test_without_diarization(self) -> None:
+        room = _Room(_PlainSTT(["Une table", "pour deux"]), ai_delay=0.8)
+        await room.start()
+
+        await room.speak()
+        await _eventually(lambda: len(room.transcriptions) == 1)
+        await asyncio.sleep(0.2)
+        await room.speak()
+        await _eventually(lambda: len(room.transcriptions) == 2)
+        messages = await room.messages(2)
+        await room.kit.close()
+
+        assert room.transcribed_at[1] < 0.7
+        assert [m.content.body for m in messages] == ["Une table", "pour deux"]
+
+    async def test_with_diarization(self) -> None:
+        stt = _DiarizingSTT([[SpeakerSegment("A", "Une table")], [SpeakerSegment("B", "Non.")]])
+        room = _Room(stt, ai_delay=0.8)
+        await room.start()
+
+        await room.speak()
+        await _eventually(lambda: len(room.transcriptions) == 1)
+        await asyncio.sleep(0.2)
+        await room.speak()
+        await _eventually(lambda: len(room.transcriptions) == 2)
+        messages = await room.messages(2)
+        await room.kit.close()
+
+        assert room.transcribed_at[1] < 0.7
+        assert _said(messages) == [("Speaker A", "Une table"), ("Speaker B", "Non.")]
 
 
 class TestWhereLabelsCannotBeCarried:

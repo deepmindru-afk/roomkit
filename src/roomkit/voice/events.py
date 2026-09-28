@@ -236,6 +236,10 @@ class SpeakerChangeEvent:
     """``"pipeline"`` for the diarization stage, ``"stt"`` for a diarizing
     STT's label."""
 
+    speaker_epoch: int | None = None
+    """For an STT label, which of the session's STT streams it comes from, from
+    0: ``"A"`` in epoch 1 is not ``"A"`` in epoch 0. ``None`` for the pipeline."""
+
 
 @dataclass(frozen=True)
 class DTMFDetectedEvent:

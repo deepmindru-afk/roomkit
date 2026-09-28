@@ -103,6 +103,11 @@ _STT_STREAM_BUFFER_BYTES = 3200  # 100ms at 16kHz mono 16-bit
 # normal intra-utterance pause (~600ms) but short enough to feel responsive.
 _STT_INACTIVITY_TIMEOUT_S = 1.0
 
+# A kept (diarizing) STT stream is checked against the clock whenever its audio
+# queue stays empty this long, and padded with silence when it is behind
+# (RFC §12.2.3): a pause shorter than this is never filled.
+_KEPT_STREAM_PACE_S = 0.25
+
 # How many speech segments the DISABLED strategy holds while the bot is
 # speaking (RFC §12.6 — speech is queued, not discarded). A bounded backlog:
 # a caller who talks through a long answer gets their turn, a stuck playback

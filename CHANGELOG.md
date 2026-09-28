@@ -44,21 +44,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   without the RMK-230 fix and passes with it.
 - A `VoiceChannel` in continuous mode carries a diarizing STT's speakers to
   the room (RMK-237, RFC §12.2.3). It keeps one stream across turns, so the
-  labels compare, and feeds it silence at real-time pace while no audio
-  arrives: Meta Muse ends a stream that falls behind real time (1008 after ~15
-  s, measured 2026-09-27), and a muted microphone during playback sends
-  nothing. Each segment of a final is its own room message: the sender stays
-  the session's participant, and the message carries `speaker_label`,
+  labels compare, and keeps its audio level with the clock, filling a pause
+  with silence when the stream is behind: Meta Muse ends a stream that falls
+  behind real time (1008 after ~15 s, measured 2026-09-27), and a microphone
+  muted during playback sends nothing, as lost packets leave a long call
+  short. Each segment of a final is its own room message: the sender stays the
+  session's participant, and the message carries `speaker_label`,
   `speaker_epoch` and `sender_name` ("Speaker A", "Speaker A#1" once a new
   stream has started, "Unknown speaker" for unattributed words), which the AI
   channel uses to attribute turns. `TranscriptionEvent` gains `speaker`,
   `speaker_epoch` and `sender_name`; an `ON_TRANSCRIPTION` hook returning
   another `sender_name` names the voice. `ON_SPEAKER_CHANGE` fires with the
-  new `SpeakerChangeEvent.source` (`"stt"`, `"pipeline"` by default), whose
-  `confidence` may now be `None`. A turn detector never joins two speakers'
-  segments, and a session's finals are processed in order. Through the live
-  service, a two-voice French dialogue became 5 attributed messages on one
-  stream, and a 20 s gap with no audio kept it. Example
+  new `SpeakerChangeEvent.source` (`"stt"`, `"pipeline"` by default) and
+  `speaker_epoch`; its `confidence` may now be `None`. A turn detector never
+  joins two speakers' segments. A diarized session's segments reach the room
+  in the order they were said, and the reply to one never holds back the next:
+  the ordering covers each message's hooks and commit, not its delivery, and a
+  continuous STT that does not diarize is not ordered at all, as before.
+  Through the live service, a two-voice French dialogue became 5 attributed
+  messages on one stream, and a 20 s gap with no audio kept it. Example
   `examples/voice_meta_diarization.py`.
 - A transcription result can say who spoke (RMK-233, RFC §12.2.3):
   `TranscriptionResult.segments` lists the `SpeakerSegment`s its text is made

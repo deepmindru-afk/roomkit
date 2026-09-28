@@ -62,6 +62,7 @@ class TurnHost(Protocol):
     _session_bindings: dict[str, tuple[str, ChannelBinding]]
     _pending_turns: dict[str, list[TurnEntry]]
     _pending_turn_speakers: dict[str, SpeakerAttribution]
+    _transcript_locks: dict[str, asyncio.Lock]
     _pending_audio: dict[str, bytearray]
     _turn_speech_state: dict[str, tuple[bool, float]]
     _turn_wait_tasks: dict[str, asyncio.Task[None]]
@@ -85,6 +86,7 @@ class VoiceTurnMixin:
     _session_bindings: dict[str, tuple[str, ChannelBinding]]
     _pending_turns: dict[str, list[TurnEntry]]
     _pending_turn_speakers: dict[str, SpeakerAttribution]
+    _transcript_locks: dict[str, asyncio.Lock]
     _pending_audio: dict[str, bytearray]
     _turn_speech_state: dict[str, tuple[bool, float]]
     _turn_wait_tasks: dict[str, asyncio.Task[None]]
@@ -106,18 +108,22 @@ class VoiceTurnMixin:
         *,
         audio_bytes: bytes | None = None,
         speaker: SpeakerAttribution | None = None,
+        await_delivery: bool = True,
     ) -> None:
         """Evaluate turn completion using the configured TurnDetector.
 
         ``speaker`` is who said ``text`` when a diarizing STT labelled it. A
         turn has one speaker (RFC §12.2.3): a pending turn with another is
-        routed first, as its own message.
+        routed first, as its own message. ``await_delivery=False`` returns once
+        a routed turn is committed, without waiting for the reply to it.
         """
         if not self._framework or not self._pipeline_config:
             return
         turn_detector = self._pipeline_config.turn_detector
         if turn_detector is None:
-            await self._route_text(session, text, room_id, speaker=speaker)
+            await self._route_text(
+                session, text, room_id, speaker=speaker, await_delivery=await_delivery
+            )
             return
 
         from roomkit.voice.pipeline.turn.base import TurnContext, TurnEntry
@@ -165,7 +171,9 @@ class VoiceTurnMixin:
             logger.debug("Turn judged complete, but the user is speaking again: holding it")
             self._arm_turn_wait(session, room_id, context, None)
         elif decision.is_complete:
-            await self._complete_turn(session, room_id, context, decision.confidence)
+            await self._complete_turn(
+                session, room_id, context, decision.confidence, await_delivery=await_delivery
+            )
         else:
             # Fire ON_TURN_INCOMPLETE hook
             combined_so_far = " ".join(e.text for e in entries)
@@ -207,10 +215,16 @@ class VoiceTurnMixin:
         task = self._turn_wait_tasks.pop(session.id, None)
         if task is not None:
             task.cancel()
-        await self._complete_turn(session, room_id, context, confidence=0.0)
+        await self._complete_turn(session, room_id, context, confidence=0.0, await_delivery=False)
 
     async def _complete_turn(
-        self, session: VoiceSession, room_id: str, context: RoomContext, confidence: float
+        self,
+        session: VoiceSession,
+        room_id: str,
+        context: RoomContext,
+        confidence: float,
+        *,
+        await_delivery: bool = True,
     ) -> None:
         """Route the session's accumulated turn, after its ON_TURN_COMPLETE hook."""
         if not self._framework:
@@ -235,7 +249,9 @@ class VoiceTurnMixin:
         except Exception:
             logger.exception("Error firing ON_TURN_COMPLETE hook")
 
-        await self._route_text(session, combined, room_id, speaker=speaker)
+        await self._route_text(
+            session, combined, room_id, speaker=speaker, await_delivery=await_delivery
+        )
 
     def _arm_turn_wait(
         self,
@@ -287,9 +303,31 @@ class VoiceTurnMixin:
             "Turn judged incomplete, then %.0f ms of silence: routing it (long_pause)", wait_ms
         )
         try:
-            await self._complete_turn(session, room_id, context, confidence=0.0)
+            lock = self._transcript_locks.get(session.id)
+            if lock is None:
+                await self._complete_turn(session, room_id, context, confidence=0.0)
+            else:
+                await self._complete_waited_turn_in_order(session, room_id, context, lock)
         except Exception:
             logger.exception("Error routing the turn after its wait")
+
+    async def _complete_waited_turn_in_order(
+        self, session: VoiceSession, room_id: str, context: RoomContext, lock: asyncio.Lock
+    ) -> None:
+        """Route a waited turn in its place among a diarized session's finals.
+
+        The session's finals go through ``lock`` in order (RFC §12.2.3). A final
+        that took the lock first may already have routed this turn (a change
+        of voice closes it) and started another: only the turn waited for is
+        routed here, and the reply is not awaited under the lock.
+        """
+        waited = self._pending_turns.get(session.id)
+        async with lock:
+            if waited is None or self._pending_turns.get(session.id) is not waited:
+                return
+            await self._complete_turn(
+                session, room_id, context, confidence=0.0, await_delivery=False
+            )
 
     def _user_speaking_again(self, session_id: str) -> bool:
         """Whether the VAD hears speech that started after the segment being judged."""
@@ -317,12 +355,18 @@ class VoiceTurnMixin:
         room_id: str,
         *,
         speaker: SpeakerAttribution | None = None,
+        await_delivery: bool = True,
     ) -> None:
         """Route transcribed text through the inbound pipeline.
 
         The sender stays the session's participant, the owner of the audio
         stream; ``speaker`` adds who said it when a diarizing STT labelled it
         (``speaker_label``, ``speaker_epoch``, ``sender_name``, RFC §12.2.3).
+
+        ``await_delivery=False`` returns once the message is committed and
+        waits for its delivery (the reply) in a task of its own: a diarized
+        session's finals are routed in order under a lock, and holding it
+        through the whole reply would hold back the next speaker's words.
         """
         if not self._framework:
             return
@@ -359,6 +403,17 @@ class VoiceTurnMixin:
         self._unheard_turns.register(
             session.id, handle, speaking_since=since if speaking else None
         )
+        if await_delivery:
+            await self._await_delivery(session, handle)
+            return
+        task = asyncio.get_running_loop().create_task(
+            self._await_delivery(session, handle), name=f"voice_delivery:{session.id}"
+        )
+        task.add_done_callback(self._task_done)
+        self._scheduled_tasks.add(task)
+
+    async def _await_delivery(self, session: VoiceSession, handle: Any) -> None:
+        """Wait for a committed turn's delivery; giving up on it cancels it."""
         try:
             await handle.wait()
         except asyncio.CancelledError:

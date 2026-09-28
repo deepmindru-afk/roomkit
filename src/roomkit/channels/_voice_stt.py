@@ -50,6 +50,11 @@ def _with_hook_sender_name(speaker: SpeakerAttribution, hook_event: Any) -> Spea
     return speaker
 
 
+def _duration(chunk: AudioChunk) -> float:
+    """Seconds of 16-bit PCM in ``chunk``."""
+    return len(chunk.data) / (2 * max(chunk.channels, 1) * chunk.sample_rate)
+
+
 def _segments_of(result: TranscriptionResult) -> list[SpeakerSegment]:
     """A diarizing STT's final as segments; text it gave none for is nobody's.
 
@@ -564,22 +569,47 @@ class VoiceSTTMixin:
         if len(stream_state.frame_buffer) >= _STT_STREAM_BUFFER_BYTES:
             self._flush_stt_buffer(stream_state, session.id)
 
-    def _silence_through_inactivity(self, state: _STTStreamState) -> list[AudioChunk]:
-        """What a kept stream is sent when no audio arrived for the timeout.
+    async def _kept_stream_audio(
+        self, state: _STTStreamState, queue: asyncio.Queue[Any], first_chunk: AudioChunk
+    ) -> AsyncIterator[AudioChunk]:
+        """The audio of a kept (diarizing) stream, never behind the clock.
 
-        The audio buffered so far, then silence for the rest of the period, so
-        the provider hears time pass at its real pace: a muted microphone
-        during playback sends nothing, and a provider closes a stream whose
-        audio falls behind real time (Meta Muse: 1008 after ~15 s, measured
-        2026-09-27), which would start a new label epoch.
+        A provider closes a stream whose audio falls behind real time (Meta
+        Muse: 1008 ~15 s after the audio stops, measured 2026-09-27), which
+        would start a new label epoch. A muted microphone during playback
+        sends nothing, and lost packets leave a stream short without any
+        pause, over a whole call. So whenever the queue stays empty for a
+        pacing period, the time the stream is behind is filled: the audio
+        buffered so far, then silence. Only a pause is filled, never the
+        middle of speech. The stream ends on the queue's sentinel or when the
+        session's STT is cancelled.
         """
-        from .voice import _STT_INACTIVITY_TIMEOUT_S
+        from .voice import _KEPT_STREAM_PACE_S
 
+        opened = time.monotonic()
+        sent = _duration(first_chunk)
+        yield first_chunk
+        while not state.cancelled:
+            try:
+                chunk = await asyncio.wait_for(queue.get(), timeout=_KEPT_STREAM_PACE_S)
+            except TimeoutError:
+                behind = time.monotonic() - opened - sent
+                if behind >= _KEPT_STREAM_PACE_S:
+                    for pad in self._padding(state, behind):
+                        sent += _duration(pad)
+                        yield pad
+                continue
+            if chunk is None:
+                return
+            sent += _duration(chunk)
+            yield chunk
+
+    def _padding(self, state: _STTStreamState, seconds: float) -> list[AudioChunk]:
+        """``seconds`` of audio: what is buffered, then silence for the rest."""
         rate = state.frame_buffer_rate
         buffered = bytes(state.frame_buffer)
         state.frame_buffer.clear()
-        period = int(rate * _STT_INACTIVITY_TIMEOUT_S) * 2
-        silence = b"\x00" * max(period - len(buffered), 0)
+        silence = b"\x00" * max(int(rate * seconds) * 2 - len(buffered), 0)
         return [AudioChunk(data=data, sample_rate=rate) for data in (buffered, silence) if data]
 
     def _start_continuous_stt(self, session: VoiceSession) -> None:
@@ -647,10 +677,6 @@ class VoiceSTTMixin:
                                 q.get(), timeout=_STT_INACTIVITY_TIMEOUT_S
                             )
                         except TimeoutError:
-                            if keep_stream:
-                                for pad in self._silence_through_inactivity(state):
-                                    yield pad
-                                continue
                             # No audio for timeout period — flush remaining
                             # buffer and close the stream so the provider
                             # can yield accumulated text as final.
@@ -695,13 +721,25 @@ class VoiceSTTMixin:
                     )
                     epoch = state.streams_opened
                     state.streams_opened += 1
+                    barge_in_playback: Any = None
+                    stream_audio = (
+                        self._kept_stream_audio(state, cur_queue, first_chunk)
+                        if keep_stream
+                        else audio_gen(first_chunk)
+                    )
                     async for result in self._stt.transcribe_stream(
-                        audio_gen(first_chunk), **self._stt_call_kwargs(session.id)
+                        stream_audio, **self._stt_call_kwargs(session.id)
                     ):
                         if state.cancelled:
                             break
                         with self._state_lock:
                             playing = session.id in self._playing_sessions
+                            current_playback = self._playing_sessions.get(session.id)
+                        if keep_stream and current_playback is not barge_in_playback:
+                            # A kept stream never starts over: a barge-in holds
+                            # only for the playback it cut, even when no final
+                            # with words followed it (a cough).
+                            barge_in_fired = False
 
                         # Provider signals speech detected (server-side VAD)
                         if result.is_speech_start:
@@ -794,6 +832,7 @@ class VoiceSTTMixin:
                                     )
                                     if decision.should_interrupt:
                                         barge_in_fired = True
+                                        barge_in_playback = playback
                                         self._schedule(
                                             self._handle_barge_in(session, playback, room_id),
                                             name=f"barge_in:{session.id}",
@@ -879,12 +918,18 @@ class VoiceSTTMixin:
         transcript, with its speaker, in its own room message (RFC §12.2.3);
         ``epoch`` numbers the stream the labels come from.
 
-        Finals of one session go through one at a time, in the order they were
-        scheduled: a kept stream can deliver the next speaker's final while
-        the previous one is still in its hooks, and the room must see them in
-        the order they were said.
+        A diarized session's finals go through one at a time, in the order they
+        were scheduled: a kept stream can deliver the next speaker's final
+        while the previous one is still in its hooks, and the room must see
+        them in the order they were said. The lock covers the hooks and the
+        commit of each message, never the reply to it.
         """
         if not self._framework or not text.strip():
+            return
+        if segments is None:
+            await self._process_continuous_final(
+                session, text, room_id, language=language, segments=None, epoch=epoch
+            )
             return
         lock = self._transcript_locks.setdefault(session.id, asyncio.Lock())
         async with lock:
@@ -1022,11 +1067,23 @@ class VoiceSTTMixin:
         # Continuous STT keeps no utterance audio: the turn is text only.
         self._record_user_turn(session, text, final_text)
 
+        # A diarized final is delivered under its session's ordering lock:
+        # the reply is awaited outside it.
+        await_delivery = speaker is None
         turn_detector = self._pipeline_config.turn_detector if self._pipeline_config else None
         if turn_detector is not None:
-            await self._evaluate_turn(session, final_text, room_id, context, speaker=speaker)
+            await self._evaluate_turn(
+                session,
+                final_text,
+                room_id,
+                context,
+                speaker=speaker,
+                await_delivery=await_delivery,
+            )
         else:
-            await self._route_text(session, final_text, room_id, speaker=speaker)
+            await self._route_text(
+                session, final_text, room_id, speaker=speaker, await_delivery=await_delivery
+            )
 
     def _note_stt_speaker(
         self, session: VoiceSession, speaker: SpeakerAttribution, room_id: str
@@ -1042,6 +1099,7 @@ class VoiceSTTMixin:
             confidence=None,
             is_new_speaker=is_new,
             source="stt",
+            speaker_epoch=speaker.epoch,
         )
         self._schedule(
             self._fire_speaker_change_event(session, event, room_id),
