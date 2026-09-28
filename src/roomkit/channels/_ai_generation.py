@@ -388,6 +388,13 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
         # Build interleaved segment events
         correlation_id = uuid4().hex
         events: list[RoomEvent] = []
+        event_fields: dict[str, Any] = {
+            "room_id": room_id,
+            "source": source,
+            "chain_depth": chain_depth,
+            "correlation_id": correlation_id,
+            "parent_event_id": parent_event_id,
+        }
 
         for rnd in loop_result.rounds:
             # Text segment before this tool round
@@ -407,51 +414,7 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
 
             # Tool call start + end events
             for tc, rp in zip(rnd.tool_calls, rnd.results, strict=False):
-                event_result, event_structured = tool_event_payload(
-                    getattr(rp, "result", None), getattr(rp, "structured_content", None)
-                )
-                # Read the outcome, never the body: the tool loop already knows
-                # whether this call failed. Matching the prose sentence it
-                # writes for a raised handler missed every other failure — a
-                # refused call, a multimodal result — and misread a tool whose
-                # own output happened to start that way.
-                is_error = bool(getattr(rp, "is_error", False))
-                events.append(
-                    RoomEvent(
-                        room_id=room_id,
-                        source=source,
-                        type=EventType.TOOL_CALL_START,
-                        content=ToolCallContent(
-                            tool_name=tc.name,
-                            tool_id=tc.id,
-                            arguments=tc.arguments,
-                            status="pending",
-                        ),
-                        chain_depth=chain_depth,
-                        correlation_id=correlation_id,
-                        parent_event_id=parent_event_id,
-                    )
-                )
-                events.append(
-                    RoomEvent(
-                        room_id=room_id,
-                        source=source,
-                        type=EventType.TOOL_CALL_END,
-                        content=ToolCallContent(
-                            tool_name=tc.name,
-                            tool_id=tc.id,
-                            arguments=tc.arguments,
-                            result=event_result,
-                            status="failed" if is_error else "completed",
-                            duration_ms=rnd.duration_ms,
-                            error=rp.as_text() if is_error else None,
-                            structured_content=event_structured,
-                        ),
-                        chain_depth=chain_depth,
-                        correlation_id=correlation_id,
-                        parent_event_id=parent_event_id,
-                    )
-                )
+                events.extend(_tool_call_events(tc, rp, rnd.duration_ms, event_fields))
 
         # Final text segment (the last response after all tool rounds)
         if response.content:
@@ -717,3 +680,34 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
         finally:
             self._active_loops.pop(loop_ctx.loop_id, None)
             _current_loop_ctx.set(enclosing_ctx)
+
+
+def _tool_call_events(
+    tc: Any, rp: Any, duration_ms: int, event_fields: dict[str, Any]
+) -> list[RoomEvent]:
+    """The TOOL_CALL_START and TOOL_CALL_END events of one call of a round."""
+    result, structured = tool_event_payload(
+        getattr(rp, "result", None), getattr(rp, "structured_content", None)
+    )
+    # Read the outcome, never the body: the tool loop already knows whether
+    # this call failed. Matching the prose sentence it writes for a raised
+    # handler missed every other failure — a refused call, a multimodal
+    # result — and misread a tool whose own output happened to start that way.
+    is_error = bool(getattr(rp, "is_error", False))
+    start = ToolCallContent(
+        tool_name=tc.name, tool_id=tc.id, arguments=tc.arguments, status="pending"
+    )
+    end = ToolCallContent(
+        tool_name=tc.name,
+        tool_id=tc.id,
+        arguments=tc.arguments,
+        result=result,
+        status="failed" if is_error else "completed",
+        duration_ms=duration_ms,
+        error=rp.as_text() if is_error else None,
+        structured_content=structured,
+    )
+    return [
+        RoomEvent(type=EventType.TOOL_CALL_START, content=start, **event_fields),
+        RoomEvent(type=EventType.TOOL_CALL_END, content=end, **event_fields),
+    ]

@@ -42,10 +42,11 @@ class ToolCallContext:
 
     ``structured_content`` is the reverse channel: the ToolHandler contract
     returns only text or content parts, but MCP tools can produce a structured result
-    (``CallToolResult.structuredContent``) that UI surfaces need verbatim —
+    (``CallToolResult.structuredContent``) that UI surfaces need as it is —
     the LLM-facing string may be truncated/evicted when large. A handler
     that has one sets it here; ``_run_one()`` reads it back after the call
-    and carries it on the tool-call events untouched by eviction.
+    and carries it on the tool-call events untouched by eviction, its binary
+    payloads bounded like the result's.
     """
 
     room_id: str = ""
@@ -65,7 +66,8 @@ def current_tool_call() -> ToolCallContext | None:
     What ``_run_one`` set before invoking the handler — the call's id, its
     room, its channel — and the reverse channel the handler may fill:
     ``structured_content``, the MCP structured result the tool-call events
-    carry verbatim for UI surfaces. A host that rewrites a result before the
+    carry for UI surfaces, as it is but for binary payloads past the event's
+    bound. A host that rewrites a result before the
     model reads it (a provider's private address turned into its own relay
     link, say) reaches the structured copy here, so the persisted event does
     not keep what the text no longer says.

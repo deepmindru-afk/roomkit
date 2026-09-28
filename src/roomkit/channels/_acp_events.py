@@ -24,6 +24,7 @@ from roomkit.channels._acp_usage import (
     _report_context,
     _transport_usage,
 )
+from roomkit.channels._tool_event_result import tool_event_result
 from roomkit.models.streaming import (
     ThinkingDeltaMarker,
     ToolCallEndMarker,
@@ -376,7 +377,9 @@ class ACPEventsMixin:
         # says why instead: "never returned" and "returned an error" read the
         # same in the timeline otherwise.
         if error is None and marker_status == "failed" and result is not None:
-            error = _result_text(result)
+            # Bounded first: the text of a raw output carrying a screenshot
+            # would put its base64 in the event's error field whole.
+            error = _result_text(tool_event_result(result))
         if turn is not None:
             # ACP's tool content is the display-intended payload (diffs,
             # formatted text); carry it beside the raw result so UI surfaces

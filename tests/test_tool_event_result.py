@@ -82,9 +82,8 @@ class TestJsonShapes:
             },
             {"type": "image", "url": "data:image/png;base64," + _B64, "mime_type": "image/png"},
             {"type": "audio", "data": _B64, "mimeType": "audio/wav"},
-            {"uri": "file:///report.pdf", "blob": _B64, "mimeType": "application/pdf"},
         ],
-        ids=["mcp-acp", "anthropic", "stored-part", "audio", "blob"],
+        ids=["mcp-acp", "anthropic", "stored-part", "audio"],
     )
     def test_binary_blocks_share_the_bound(self, block: dict[str, Any]) -> None:
         kept = tool_event_result({"items": [block, block]})
@@ -93,6 +92,20 @@ class TestJsonShapes:
         assert kept["items"][1]["type"] == "text"
         assert _NOTE in kept["items"][1]["text"]
 
+    def test_a_blob_resource_left_out_stays_a_resource(self) -> None:
+        blob = {"uri": "file:///report.pdf", "blob": _B64, "mimeType": "application/pdf"}
+
+        kept = tool_event_result([blob, blob])
+
+        assert kept[0] is blob
+        assert kept[1]["uri"] == "file:///report.pdf"
+        assert "application/pdf" in kept[1]["text"]
+        assert _NOTE in kept[1]["text"]
+
+    def test_text_under_a_blob_key_without_a_uri_is_left_alone(self) -> None:
+        note = {"path": "a.txt", "blob": "line\n" * 200_000}
+        assert tool_event_result([note, note]) == [note, note]
+
     def test_a_data_uri_string_is_bounded(self) -> None:
         uri = "data:image/jpeg;base64," + _B64
         kept = tool_event_result({"a": uri, "b": uri})
@@ -100,24 +113,46 @@ class TestJsonShapes:
         assert kept["a"] == uri
         assert kept["b"] == "[data URI image/jpeg, 225 KB, not kept in the event]"
 
+    def test_text_that_starts_with_data_is_not_a_data_uri(self) -> None:
+        """An SSE log reads "data: {...}": text, kept once the budget is spent."""
+        uri = "data:image/png;base64," + "A" * (600 * 1024)
+        log = 'data: {"event": "tick"}\n\n' * 30_000
+
+        kept = tool_event_result([uri, log])
+
+        assert _NOTE in kept[0]
+        # Compared cheaply: a failing == on two 780 KB strings has pytest
+        # diff them for minutes.
+        assert kept[1] is log
+
     def test_text_under_a_data_key_is_left_alone(self) -> None:
         """Only an image, audio or blob block carries binary data."""
         rows = {"data": "row," * 400_000}
         assert tool_event_result(rows) == rows
 
-    def test_result_and_structured_copy_share_one_budget(self) -> None:
+    def test_the_structured_copy_is_served_first_from_one_budget(self) -> None:
+        """The UI copy keeps its images; in the result a note is one more
+        text part, where in a widget's payload it would break the schema."""
         block = {"type": "image", "data": _B64, "mimeType": "image/png"}
 
         result, structured = tool_event_payload([block], {"acp_content": [block]})
 
-        assert result == [block]
-        assert _NOTE in structured["acp_content"][0]["text"]
+        assert structured == {"acp_content": [block]}
+        assert _NOTE in result[0]["text"]
 
-    def test_a_deep_json_does_not_exhaust_the_stack(self) -> None:
+    def test_a_deep_json_is_kept_as_it_is_past_the_walk(self) -> None:
         deep: Any = "leaf"
         for _ in range(5_000):
             deep = [deep]
-        assert tool_event_result(deep) is not None
+        below_the_walk = deep
+        for _ in range(40):
+            below_the_walk = below_the_walk[0]
+
+        kept = tool_event_result(deep)
+
+        for _ in range(40):
+            kept = kept[0]
+        assert kept is below_the_walk
 
 
 def _three_screenshots() -> list[AITextPart | AIImagePart]:

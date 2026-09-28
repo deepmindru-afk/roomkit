@@ -30,8 +30,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   output, which reaches the event as JSON, kept a 2 MB screenshot whole, and
   so did a structured copy. Image and audio blocks (`data`, Anthropic's
   `source.data`, a stored part's `url`), blob resources and data URIs are
-  now counted too, in the result and the structured copy together; a text
-  field that merely happens to be named `data` is left alone.
+  now counted too, in the result and the structured copy together, the
+  structured copy served first (it is the one UI surfaces render, where a
+  note in place of an image would break the payload's schema). A text that
+  merely starts with `data:` (an SSE log) or a field named `data` or `blob`
+  without a resource `uri` is left alone, and a failed ACP call's `error`,
+  the text of its output, is bounded before it is written.
 - `MCPToolProvider.as_tool_handler()` hands an MCP image to the model as an
   image (RMK-259): its handler returns `str | list[AITextPart | AIImagePart]`
   where it returned `str`. A result carrying a PNG, JPEG, GIF or WebP image

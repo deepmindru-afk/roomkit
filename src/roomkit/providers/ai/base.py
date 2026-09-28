@@ -90,7 +90,7 @@ class AIToolResultPart(BaseModel):
     # MCP CallToolResult.structuredContent, captured before the LLM-facing
     # string is flattened and possibly evicted. Never rendered to providers —
     # it rides the part so tool-call events can hand it to UI surfaces
-    # (MCP Apps widgets) verbatim.
+    # (MCP Apps widgets), unevicted; the event bounds its binary payloads.
     structured_content: dict[str, Any] | None = None
 
     def as_text(self) -> str:

@@ -12,6 +12,7 @@ structured copy take. Both are walked with one budget per event.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from roomkit.providers.ai.base import AIImagePart, AITextPart
@@ -20,6 +21,11 @@ from roomkit.providers.ai.base import AIImagePart, AITextPart
 # the MCP provider puts on structuredContent, the other payload these events
 # carry.
 TOOL_EVENT_IMAGE_MAX_CHARS = 512 * 1024
+
+# An RFC 2397 data URI's header, matched on the first characters only: text
+# that merely starts with "data:" (an SSE log, "data: {...}") is not one.
+_DATA_URI = re.compile(r"data:([\w.+-]+/[\w.+-]+)?(?:;[\w.+-]+=[^;,\s]*)*(?:;base64)?,", re.ASCII)
+_DATA_URI_HEADER_MAX = 256
 
 # JSON deeper than this is kept as it is: no binary block hides that deep in
 # a real tool result, and the walk must not recurse without bound.
@@ -51,7 +57,8 @@ def _binary_block(node: dict[str, Any]) -> tuple[str, str | None, str] | None:
 
     An image or audio block (MCP and ACP put the base64 in ``data``, Anthropic
     in ``source.data``, a stored :class:`AIImagePart` in ``url``) or a blob
-    resource. A ``data`` field in any other dict is somebody's text.
+    resource (``blob`` beside its ``uri``, MCP's ``BlobResourceContents``). A
+    ``data`` or ``blob`` field in any other dict is somebody's text.
     """
     kind = node.get("type")
     if kind in ("image", "audio"):
@@ -59,7 +66,7 @@ def _binary_block(node: dict[str, Any]) -> tuple[str, str | None, str] | None:
         source: dict[str, Any] = raw_source if isinstance(raw_source, dict) else {}
         payload = node.get("data") or node.get("url") or source.get("data")
         mime = node.get("mimeType") or node.get("mime_type") or source.get("media_type")
-    elif isinstance(node.get("blob"), str):
+    elif isinstance(node.get("blob"), str) and isinstance(node.get("uri"), str):
         kind, payload, mime = "resource", node["blob"], node.get("mimeType")
     else:
         return None
@@ -76,10 +83,10 @@ def _walk(node: Any, budget: _Budget, depth: int = 0) -> Any:
             return node
         return AITextPart(text=_note("image", node.mime_type, len(node.url)))
     if isinstance(node, str):
-        if not node.startswith("data:") or budget.keep(len(node)):
+        header = _DATA_URI.match(node, 0, _DATA_URI_HEADER_MAX)
+        if header is None or budget.keep(len(node)):
             return node
-        mime = node[len("data:") :].split(",", 1)[0].split(";", 1)[0]
-        return _note("data URI", mime or None, len(node))
+        return _note("data URI", header.group(1), len(node))
     if isinstance(node, list):
         return [_walk(item, budget, depth + 1) for item in node]
     if not isinstance(node, dict):
@@ -90,7 +97,11 @@ def _walk(node: Any, budget: _Budget, depth: int = 0) -> Any:
     kind, mime, payload = block
     if budget.keep(len(payload)):
         return node
-    return {"type": "text", "text": _note(kind, mime, len(payload))}
+    note = _note(kind, mime, len(payload))
+    if kind == "resource":
+        # Still a resource: its uri, and the note as its text.
+        return {"uri": node["uri"], "mimeType": "text/plain", "text": note}
+    return {"type": "text", "text": note}
 
 
 def tool_event_payload(result: Any, structured_content: Any) -> tuple[Any, Any]:
@@ -102,9 +113,14 @@ def tool_event_payload(result: Any, structured_content: Any) -> tuple[Any, Any]:
     fields; one that would pass the bound becomes a note naming its kind,
     type and size, and a later, smaller one may still be kept. Everything
     else is returned as it is.
+
+    The structured copy is walked first: it is the one written for UI
+    surfaces, where a note in place of an image breaks the payload's schema,
+    while in the result a note is one more text part.
     """
     budget = _Budget()
-    return _walk(result, budget), _walk(structured_content, budget)
+    structured = _walk(structured_content, budget)
+    return _walk(result, budget), structured
 
 
 def tool_event_result(result: Any) -> Any:
