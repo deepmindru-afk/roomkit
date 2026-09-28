@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.92.0] — 2026-09-27
+
 ### Added
 
 - A vision provider may answer a frame in a JSON Schema (RMK-250, RFC
@@ -26,18 +28,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   center.
 
 - An `AIChannel` turn may answer in a JSON Schema (RMK-249, RFC §6.7 and A.9):
-  `AIChannel(response_schema=)` for every turn, `AIChannelTurnConfig.response_schema`
-  from the config provider, or `response_schema` in the binding metadata for one
-  room, resolved like the other per-turn settings (binding, then config
-  provider, then channel). The answer reaches the room only once checked: a
-  streamed answer is held until its check passes, and one that fails is never
-  delivered nor stored. A tool loop that stops before its final answer fails
-  the turn with `truncated`, and the tools the channel adds itself (skills,
-  sandbox, planning, orchestration) count as the turn's tools. A provider that
-  cannot honour the schema, or cannot honour it beside the turn's tools, fails
-  the turn before any request, through `ON_ERROR`. A channel default outside
-  the portable subset fails at construction. Verified live on Gemini through a room, the channel's schema in
-  one room and a binding's in another.
+  `AIChannel(response_schema=)` for every turn,
+  `AIChannelTurnConfig.response_schema` from the config provider, or
+  `response_schema` in the binding metadata for one room, resolved like the
+  other per-turn settings (binding, then config provider, then channel). The
+  answer reaches the room only once checked: a streamed answer is held until
+  its check passes, and one that fails is never delivered nor stored. A tool
+  loop that stops before its final answer fails the turn with `truncated`, and
+  the tools the channel adds itself (skills, sandbox, planning, orchestration)
+  count as the turn's tools. A provider that cannot honour the schema, or
+  cannot honour it beside the turn's tools, fails the turn before any request,
+  through `ON_ERROR`. A channel default outside the portable subset fails at
+  construction. Verified live on Gemini through a room, the channel's schema
+  in one room and a binding's in another.
 
 - A response schema may share a turn with tools (RMK-248, RFC §6.7) where
   `AIProvider.supports_response_schema_with_tools` says the provider can
@@ -78,6 +81,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `search_threshold=0.4` (2026-09-27); on a laptop microphone the wrong voice
   never scored above 0.21. `examples/voice_pipeline_speakers.py` enrolls
   voices from the microphone and runs it live.
+
 - `GeminiSTTConfig.speaker_segments` puts Gemini's speaker turns on
   `transcribe()`'s result as the shared `SpeakerSegment`s (RMK-253, RFC
   §12.2.3), and the provider then reports `supports_diarization`. It needs
@@ -92,6 +96,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Gemini model kinds attributed the two-voice French dialogue's 5 turns
   correctly (2026-09-27); `examples/meeting_transcription.py` prints the
   shared segments.
+
 - `MetaAIProvider` converses on Meta's Muse Spark (`muse-spark-1.3`, 1.2, 1.1;
   Meta Model API) (RMK-252). It subclasses `OpenAIAIProvider` on Meta's Chat
   Completions, so tools, streaming and usage (reasoning and cached tokens) are
@@ -104,6 +109,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `-contributor` ids, cheaper because Meta trains on their traffic, are never
   a default. `make check-models` covers it against the mirror's `meta/`
   namespace. Example `examples/meta_ai.py`.
+
 - `MetaImageProvider` draws and edits on Meta's Muse Image (`muse-image-1.0`,
   Meta Model API) (RMK-251, RFC §25). Meta's generator can search the web,
   fetch reference images and run code while it draws, and turns all three on
@@ -118,6 +124,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pass, $0.01 an image. New extra `roomkit[meta]`;
   `examples/image_generation.py` draws with it when `META_API_KEY` is set;
   `make check-models` covers the catalog.
+
 - `DeepgramConfig.diarize_model` (e.g. `"latest"`) gives Deepgram speaker
   segments (RMK-245, RFC §12.2.3): the provider then reports
   `supports_diarization` and every final, batch or streaming, carries
@@ -134,10 +141,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   existing configuration behind a VAD still works. Example
   `examples/stt_deepgram_diarization.py` records the microphone (or reads
   `--wav`) and prints the speaker turns.
+
 - TTS providers list their voices as `VoiceInfo` and voice a dialogue (RMK-240,
   RMK-241, RFC §12.2). `TTSProvider` gains `available_voices()` (offline),
-  `list_voices(language=, gender=, query=)` (live) and `synthesize_dialogue(turns,
-  voices)` with `max_dialogue_speakers`. The filters behave alike on every
+  `list_voices(language=, gender=, query=)` (live) and
+  `synthesize_dialogue(turns, voices)` with `max_dialogue_speakers`. The
+  filters behave alike on every
   provider (`filter_voices`): a language matches its tag or prefix (`"fr"` finds
   `fr-CA` and `fr-FR`), a gender exactly, a query the name or description.
   `VoiceInfo` moves to `roomkit.voice.voices` (the realtime import path still
@@ -148,6 +157,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `GeminiTTSProvider.synthesize_dialogue()` voices two speakers in one clip on
   the 3.8 models, each line with its own direction. Example:
   `examples/gemini_tts_voices.py`.
+
 - Custom voices through a `VoiceLibrary` (RMK-242, RFC §12.2.4):
   `GeminiVoiceLibrary` designs a voice from a description (Google stores every
   designed voice, for a year; `store=False` is refused) and replicates a
@@ -195,6 +205,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every frame never showed a continuous STT stream the silence a local mic
   gives it while the bot answers; on this setting a two-turn scenario stalls
   without the RMK-230 fix and passes with it.
+
 - A `VoiceChannel` in continuous mode carries a diarizing STT's speakers to
   the room (RMK-237, RFC §12.2.3). It keeps one stream across turns, so the
   labels compare, and keeps its audio level with the clock, filling a pause
@@ -217,6 +228,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Through the live service, a two-voice French dialogue became 5 attributed
   messages on one stream, and a 20 s gap with no audio kept it. Example
   `examples/voice_meta_diarization.py`.
+
 - A transcription result can say who spoke (RMK-233, RFC §12.2.3):
   `TranscriptionResult.segments` lists the `SpeakerSegment`s its text is made
   of (speaker label, text, start and end offsets),
@@ -231,12 +243,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it opens a stream per utterance or per flush and every turn would restart at
   the first label; so does a `ConferenceChannel`, at construction and in
   `plug_stt()`, since it attributes speech by participant track.
+
 - `examples/voice_gemini.py`, a voice assistant that is Gemini end to end
   (RMK-229): `gemini-3.5-transcribe-live` hears the microphone,
   `gemini-3.8-flash` answers, `gemini-3.8-flash-lite-tts` speaks, on one API
   key. Its system prompt lets the model write audio tags (`<laugh>`,
   `<sigh>`, `[whispers]`…) that the voice performs. Run against a recorded
   French question, the reply was ready 1.0 to 1.4 s after the transcript.
+
 - `MetaSTTProvider` transcribes on Meta's Muse Voice Transcribe
   (`muse-voice-transcribe-1.0`, Meta Model API), streaming over its realtime
   WebSocket and batch over its REST endpoint (RMK-231). `MetaSTTConfig.mode`
@@ -254,6 +268,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `examples/stt_meta_mic.py` (speak into the microphone) and
   `examples/stt_meta_live.py` (a WAV file, for a machine with no audio
   device).
+
 - `GeminiSTTProvider` transcribes recordings on Google's dedicated recogniser,
   `gemini-3.5-transcribe` (RMK-228). Pass it as `model`: the provider sends a
   `transcription_config` in place of the prompt and JSON schema the model
@@ -271,114 +286,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   recogniser takes 30 minutes at most once it labels speakers or times words.
   `examples/meeting_transcription.py` runs on it with
   `GEMINI_STT_MODEL=gemini-3.5-transcribe`.
-
-### Fixed
-
-- Two delegations to the same agent in two rooms at once no longer cross
-  (RMK-246). The forced result tool and its capture handler are installed on
-  the agent's channel, which every room shares: a second room could read the
-  first room's `submit_result` or `submit_verdict`, the tool was offered twice
-  in a turn, and a stale handler stayed on the channel once both ended. The
-  capture is now scoped to the child room the call runs in, the tool is
-  injected once however many delegations need it, and the last one out restores
-  the channel. Overlapping supervisor sub-runs likewise no longer lose
-  `delegate_workers` for good: the tool leaves the list when the first sub-run
-  starts and comes back when the last one ends.
-
-- The Gemini recogniser's word timing no longer drags a turn back ten seconds
-  (RMK-253). On a change of speaker, `gemini-3.5-transcribe` sent the first
-  word's start ten seconds early (`"4.300s"` for a word ending at `"14.900s"`,
-  right after one ending at `"14.100s"`; measured 2026-09-27), so `Transcript`
-  gave that turn a start of `00:04`; a start that goes back before the
-  previous word's is now taken as that word's end.
-- The voice examples read their speech language from `VOICE_LANGUAGE`
-  (RMK-238). They read `LANGUAGE`, which is the system's gettext variable: a
-  French Linux desktop sets it to `fr_CA:fr`, so `voice_gemini.py`,
-  `voice_cloud.py`, `voice_gradium.py`, `voice_deepgram_grok.py`,
-  `rtp_gradium_stt.py` and `avatar_call.py` sent that, no BCP-47 tag, to their
-  STT and TTS as the language. The shared `voice_language()` helper reads the
-  new variable.
-
-- `AnthropicAIProvider` works on the `anthropic` 1.x SDK the lock has carried
-  since 2026-09-24 (RMK-236). The client's timeout was an `httpx.Timeout`, which
-  1.x refuses because it runs on httpx2; the refusal only showed in a process
-  that had not imported the openai SDK, whose import rewrites
-  `httpx.Timeout.__module__` and slipped the object past the check, so a host
-  using Anthropic alone failed at construction, and an install without `httpx`
-  (which 1.x no longer pulls in) failed on `ImportError`. The timeout is now
-  the SDK's own `anthropic.Timeout`, with the same connect/read split. And 1.x dropped
-  `temperature` from `messages.stream()`, so the legacy models that still take
-  it (Claude 4.6 and before, Haiku 4.5) and any custom `base_url` raised
-  `TypeError` before the request left; it now rides `extra_body`. Tests now
-  hold the installed SDK to every request shape the provider builds, and build
-  the provider in a fresh process without openai.
-
-- `GeminiVisionProvider` works on the models that refuse to reason with a
-  zero budget (RMK-232). It sends `thinking_budget=0` to every 2.5 and 3.x
-  model to keep descriptions direct, and `gemini-3.5-flash-lite` and
-  `gemini-3.1-pro-preview` answer that with a 400, so every frame failed on
-  them. A 400 to that setting is now answered by one retry without it, and
-  the provider stops sending it to that model, logging it once. The models
-  that take it keep it: measured on 2026-09-27, it holds reasoning to zero
-  tokens on 2.5 Flash, 3.1 Flash-Lite and 3.5/3.6 Flash, where no setting
-  costs 100 or more. A `thinking_config` given in `extra_config` is never
-  dropped.
-- `thinking_budget=0` turns reasoning off on `GeminiAIProvider`, as it does on
-  every other provider (RMK-232). Gemini read `0` as "not set" and sent no
-  thinking config, so the model reasoned anyway. The models that cannot run
-  without reasoning now answer 400 instead of ignoring the request: measured
-  on 2026-09-27, `gemini-3.1-pro-preview` and `gemini-3.5-flash-lite`;
-  `gemini-3.7-flash` accepts `0` and reasons regardless. A configured
-  `thinking_level` still wins over a turn's budget.
-- `GeminiAIProvider` and `GeminiVisionProvider` turn off the SDK's automatic
-  function calling (RMK-232). RoomKit runs its own tool loop from the
-  declarations it sends, and the SDK logged "AFC is enabled" and a warning on
-  every call. A `GeminiVisionConfig.extra_config` that sets
-  `automatic_function_calling` keeps its own.
-- A `VoiceChannel` on `GeminiTranscribeProvider` keeps transcribing after the
-  bot's first answer (RMK-230). The mic is muted while the bot speaks, so the
-  channel's continuous stream closes its input on silence, and
-  `transcribe_stream` then waited for the server to close its turn. Having
-  heard no speech, the server never does: it answers nothing after
-  `audio_stream_end` and keeps the socket open (measured 2026-09-27), so the
-  stream never ended, the channel never reconnected, and every later
-  sentence was lost. Once the input is over, a server quiet for 2 s now ends
-  the stream; with speech, the last final and `generation_complete` arrive
-  within about 0.3 s. Reproduced end to end with `examples/voice_gemini.py`'s
-  channels: the second question went untranscribed before the fix and is
-  answered after it.
-- `GeminiSTTProvider` sends raw PCM (`AudioChunk`, `AudioFrame`) as WAV, and
-  uploads a large recording with its normalised mime type (RMK-228). The
-  dedicated recogniser refuses bare `audio/l16` however its rate is spelled,
-  and a Files API upload whose mime differs from the request's; the
-  multimodal models take both forms.
-- `examples/meeting_transcription.py` and
-  `examples/stt_gemini_transcribe_live.py` read Gemini TTS audio through the
-  WAV chunks instead of dropping a 44-byte header (RMK-228). Since RMK-227 a
-  3.8 answer carries a C2PA chunk after its audio, which the old slicing
-  played as noise at the end of every line.
-- `GeminiTTSProvider` works on `gemini-3.8-flash-tts` and
-  `gemini-3.8-flash-lite-tts` (RMK-227). Two things broke there.
-  `synthesize()` wrapped the WAV file 3.8 answers in a second WAV header, so
-  the inner header played as a click and the file's C2PA manifest as 125 ms
-  of full-scale noise after the speech. And the model read aloud the
-  instructions the provider wraps around the text, in place of or on top of
-  it: 3 runs in 6 on Flash, 6 in 6 on Flash-Lite. From 3.8 on, the text goes
-  out alone, `style_prompt` rides as `speech_metadata`, and a WAV answer is
-  returned unchanged, its C2PA chunk included. The 3.1 and 2.5 models keep
-  the request they had.
-
-### Removed
-
-- `temperature` on the AI provider configs (`AnthropicConfig`, `OpenAIConfig` and
-  the configs that inherit it, `AzureAIConfig`, `MistralConfig`, `OllamaConfig`,
-  `PolarGridConfig`, `GeminiConfig`, `VLLMConfig`, `LlamaCppConfig`), which
-  nothing read (RMK-243): every provider sends the turn's
-  `AIContext.temperature`, which `AIChannel` always sets, from its own
-  `temperature=`, the binding metadata or the turn config. Setting it on a
-  config changed nothing and said so nowhere. Passing it is still accepted and
-  ignored, as before; code reading `config.temperature` now fails. Set the
-  temperature on the `AIChannel` instead.
 
 ### Changed
 
@@ -399,8 +306,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   like every catalog. `ElevenLabsVoice` and `GradiumVoice` are removed.
   Migration: `voice.voice_id` (ElevenLabs) and `voice.uid` (Gradium) become
   `voice.id`; ElevenLabs' `labels` feed `gender`, `language`, `accent` and
-  `description`, and the rest, with `category`, lands in `voice.attributes`. Both
-  now take the `language`, `gender` and `query` filters.
+  `description`, and the rest, with `category`, lands in `voice.attributes`.
+  Both now take the `language`, `gender` and `query` filters.
+
 - The `anthropic` extra requires `anthropic>=1.8,<2` (was `>=0.30`), the
   current SDK: it takes `output_config`, where a response schema rides
   (RMK-234), and runs on httpx2 (RMK-236).
@@ -408,9 +316,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `GeminiTTSConfig.model` defaults to `gemini-3.8-flash-tts` (was
   `gemini-3.1-flash-tts-preview`), Google's replacement for it, and
   `GEMINI_TTS_MODELS` lists both 3.8 models (RMK-227).
+
 - The `gemini` and `realtime-gemini` extras require `google-genai>=2.25.0`
   (was `>=2.24.0`): 2.24.0 sends the 3.8 `speech_metadata` annotation as
   `UNKNOWN`, which the API refuses (RMK-227).
+
 - Every Gemini default is a 3.8 model where Google serves one (RMK-227):
   `GeminiConfig.model` (and so `GeminiVertexConfig.model`) and
   `GeminiVisionConfig.model` move from `gemini-3.1-flash-lite` to
@@ -422,6 +332,123 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   default (`gemini-3.1-flash-image`) and `GeminiTranscribeConfig`
   (`gemini-3.5-transcribe-live`) are unchanged: Google has no 3.8 model for
   either. Examples and docs follow.
+
+### Removed
+
+- **BREAKING — `temperature` is gone from the AI provider configs**
+  (`AnthropicConfig`, `OpenAIConfig` and the configs that inherit it,
+  `AzureAIConfig`, `MistralConfig`, `OllamaConfig`, `PolarGridConfig`,
+  `GeminiConfig`, `VLLMConfig`, `LlamaCppConfig`), which nothing read
+  (RMK-243): every provider sends the turn's `AIContext.temperature`, which
+  `AIChannel` always sets, from its own `temperature=`, the binding metadata or
+  the turn config. Setting it on a config changed nothing and said so nowhere.
+  Passing it is still accepted and ignored, as before; code reading
+  `config.temperature` now raises `AttributeError`. Migration: set the
+  temperature on the `AIChannel` (`temperature=`, the binding metadata or the
+  turn config).
+
+### Fixed
+
+- Two delegations to the same agent in two rooms at once no longer cross
+  (RMK-246). The forced result tool and its capture handler are installed on
+  the agent's channel, which every room shares: a second room could read the
+  first room's `submit_result` or `submit_verdict`, the tool was offered twice
+  in a turn, and a stale handler stayed on the channel once both ended. The
+  capture is now scoped to the child room the call runs in, the tool is
+  injected once however many delegations need it, and the last one out restores
+  the channel. Overlapping supervisor sub-runs likewise no longer lose
+  `delegate_workers` for good: the tool leaves the list when the first sub-run
+  starts and comes back when the last one ends.
+
+- The Gemini recogniser's word timing no longer drags a turn back ten seconds
+  (RMK-253). On a change of speaker, `gemini-3.5-transcribe` sent the first
+  word's start ten seconds early (`"4.300s"` for a word ending at `"14.900s"`,
+  right after one ending at `"14.100s"`; measured 2026-09-27), so `Transcript`
+  gave that turn a start of `00:04`; a start that goes back before the
+  previous word's is now taken as that word's end.
+
+- The voice examples read their speech language from `VOICE_LANGUAGE`
+  (RMK-238). They read `LANGUAGE`, which is the system's gettext variable: a
+  French Linux desktop sets it to `fr_CA:fr`, so `voice_gemini.py`,
+  `voice_cloud.py`, `voice_gradium.py`, `voice_deepgram_grok.py`,
+  `rtp_gradium_stt.py` and `avatar_call.py` sent that, no BCP-47 tag, to their
+  STT and TTS as the language. The shared `voice_language()` helper reads the
+  new variable.
+
+- `AnthropicAIProvider` works on the `anthropic` 1.x SDK the lock has carried
+  since 2026-09-24 (RMK-236). The client's timeout was an `httpx.Timeout`, which
+  1.x refuses because it runs on httpx2; the refusal only showed in a process
+  that had not imported the openai SDK, whose import rewrites
+  `httpx.Timeout.__module__` and slipped the object past the check, so a host
+  using Anthropic alone failed at construction, and an install without `httpx`
+  (which 1.x no longer pulls in) failed on `ImportError`. The timeout is now
+  the SDK's own `anthropic.Timeout`, with the same connect/read split. And 1.x
+  dropped `temperature` from `messages.stream()`, so the legacy models that
+  still take it (Claude 4.6 and before, Haiku 4.5) and any custom `base_url`
+  raised `TypeError` before the request left; it now rides `extra_body`. Tests
+  now hold the installed SDK to every request shape the provider builds, and
+  build the provider in a fresh process without openai.
+
+- `GeminiVisionProvider` works on the models that refuse to reason with a
+  zero budget (RMK-232). It sends `thinking_budget=0` to every 2.5 and 3.x
+  model to keep descriptions direct, and `gemini-3.5-flash-lite` and
+  `gemini-3.1-pro-preview` answer that with a 400, so every frame failed on
+  them. A 400 to that setting is now answered by one retry without it, and
+  the provider stops sending it to that model, logging it once. The models
+  that take it keep it: measured on 2026-09-27, it holds reasoning to zero
+  tokens on 2.5 Flash, 3.1 Flash-Lite and 3.5/3.6 Flash, where no setting
+  costs 100 or more. A `thinking_config` given in `extra_config` is never
+  dropped.
+
+- `thinking_budget=0` turns reasoning off on `GeminiAIProvider`, as it does on
+  every other provider (RMK-232). Gemini read `0` as "not set" and sent no
+  thinking config, so the model reasoned anyway. The models that cannot run
+  without reasoning now answer 400 instead of ignoring the request: measured
+  on 2026-09-27, `gemini-3.1-pro-preview` and `gemini-3.5-flash-lite`;
+  `gemini-3.7-flash` accepts `0` and reasons regardless. A configured
+  `thinking_level` still wins over a turn's budget.
+
+- `GeminiAIProvider` and `GeminiVisionProvider` turn off the SDK's automatic
+  function calling (RMK-232). RoomKit runs its own tool loop from the
+  declarations it sends, and the SDK logged "AFC is enabled" and a warning on
+  every call. A `GeminiVisionConfig.extra_config` that sets
+  `automatic_function_calling` keeps its own.
+
+- A `VoiceChannel` on `GeminiTranscribeProvider` keeps transcribing after the
+  bot's first answer (RMK-230). The mic is muted while the bot speaks, so the
+  channel's continuous stream closes its input on silence, and
+  `transcribe_stream` then waited for the server to close its turn. Having
+  heard no speech, the server never does: it answers nothing after
+  `audio_stream_end` and keeps the socket open (measured 2026-09-27), so the
+  stream never ended, the channel never reconnected, and every later
+  sentence was lost. Once the input is over, a server quiet for 2 s now ends
+  the stream; with speech, the last final and `generation_complete` arrive
+  within about 0.3 s. Reproduced end to end with `examples/voice_gemini.py`'s
+  channels: the second question went untranscribed before the fix and is
+  answered after it.
+
+- `GeminiSTTProvider` sends raw PCM (`AudioChunk`, `AudioFrame`) as WAV, and
+  uploads a large recording with its normalised mime type (RMK-228). The
+  dedicated recogniser refuses bare `audio/l16` however its rate is spelled,
+  and a Files API upload whose mime differs from the request's; the
+  multimodal models take both forms.
+
+- `examples/meeting_transcription.py` and
+  `examples/stt_gemini_transcribe_live.py` read Gemini TTS audio through the
+  WAV chunks instead of dropping a 44-byte header (RMK-228). Since RMK-227 a
+  3.8 answer carries a C2PA chunk after its audio, which the old slicing
+  played as noise at the end of every line.
+
+- `GeminiTTSProvider` works on `gemini-3.8-flash-tts` and
+  `gemini-3.8-flash-lite-tts` (RMK-227). Two things broke there.
+  `synthesize()` wrapped the WAV file 3.8 answers in a second WAV header, so
+  the inner header played as a click and the file's C2PA manifest as 125 ms
+  of full-scale noise after the speech. And the model read aloud the
+  instructions the provider wraps around the text, in place of or on top of
+  it: 3 runs in 6 on Flash, 6 in 6 on Flash-Lite. From 3.8 on, the text goes
+  out alone, `style_prompt` rides as `speech_metadata`, and a WAV answer is
+  returned unchanged, its C2PA chunk included. The 3.1 and 2.5 models keep
+  the request they had.
 
 ## [0.91.1] — 2026-09-27
 
@@ -9050,7 +9077,8 @@ See entries `0.7.0a1` through `0.7.0a18` below.
 - `STTProvider.transcribe()` returns `TranscriptionResult` (Phase 3.1)
 - Framework event names enriched with payloads (Phase 4)
 
-[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.91.1...HEAD
+[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.92.0...HEAD
+[0.92.0]: https://github.com/roomkit-live/roomkit/compare/v0.91.1...v0.92.0
 [0.91.1]: https://github.com/roomkit-live/roomkit/compare/v0.91.0...v0.91.1
 [0.91.0]: https://github.com/roomkit-live/roomkit/compare/v0.90.0...v0.91.0
 [0.90.0]: https://github.com/roomkit-live/roomkit/compare/v0.89.0...v0.90.0
