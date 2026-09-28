@@ -70,6 +70,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   call, so a tool returning the same oversized result (or the same oversized
   error) for different arguments was never flagged. The hash is now taken on
   what the tool gave; the note still rides on the model's copy.
+- The tool-usage digest keeps the text of a content-part result rebuilt from
+  history (RMK-259). `TOOL_CALL_END` persists the parts as JSON, and seeded
+  back as dicts they read `[non-text part]` each, so a screenshot tool's page
+  text was gone from the digest after a restart.
 - The token estimate counts the images of a tool result (RMK-259): 1000
   tokens each, as for an image in a message. They counted nothing, so a turn
   carrying ten screenshots read some ten thousand tokens lighter than it

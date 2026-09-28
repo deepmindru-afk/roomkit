@@ -93,6 +93,12 @@ class _RoomMemory:
     hydrated: bool = False
 
 
+def _part_text(part: Any) -> str | None:
+    """A content part's text: a live part's, or its JSON form's once seeded."""
+    text = part.get("text") if isinstance(part, dict) else getattr(part, "text", None)
+    return text if isinstance(text, str) else None
+
+
 class ToolUsageMemory:
     """In-memory, room-scoped record of recent tool calls for a channel."""
 
@@ -253,10 +259,8 @@ class ToolUsageMemory:
     def _result_text(result: Any) -> str:
         """The text of a result, whitespace collapsed; parts other than text are named."""
         if isinstance(result, list):
-            text = " ".join(
-                part.text if isinstance(getattr(part, "text", None), str) else "[non-text part]"
-                for part in result
-            )
+            texts = (_part_text(part) for part in result)
+            text = " ".join("[non-text part]" if t is None else t for t in texts)
         else:
             text = str(result)
         return " ".join(text.split())

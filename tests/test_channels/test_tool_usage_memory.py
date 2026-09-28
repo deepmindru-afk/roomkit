@@ -196,6 +196,18 @@ class TestToolUsageMemory:
         assert "\n<tool_result>\n" not in digest  # no data block, only the line
         assert "z" * 500 not in digest
 
+    def test_a_hydrated_part_list_keeps_its_text(self) -> None:
+        """TOOL_CALL_END persists a part list as JSON: its parts come back as
+        dicts, and their text is still the data a later turn asks about."""
+        parts = [
+            {"type": "text", "text": "Board 7 has 3 cards"},
+            {"type": "image", "url": "data:image/png;base64,AAAA", "mime_type": "image/png"},
+        ]
+        mem = ToolUsageMemory()
+        mem.seed("r1", [{"name": "snapshot", "arguments": {}, "result": parts}])
+        digest = mem.render_digest("r1") or ""
+        assert "Board 7 has 3 cards [non-text part]" in digest
+
     def test_kept_result_is_bounded_by_the_configured_size(self) -> None:
         mem = ToolUsageMemory(result_keep_chars=100)
         mem.record("r1", "dump", {}, "w" * 300)
