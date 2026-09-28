@@ -19,7 +19,7 @@ The same optionality also arrives as a plain type list — ``{"type":
 ["string", "null"]}`` — which is what JSON Schema itself says and what
 non-Pydantic generators emit (a TypeScript MCP server going through
 ``zod-to-json-schema``, for one). ``type`` is a key Gemini accepts, so
-that list used to survive the cleaning untouched and fail inside
+that list would survive the cleaning untouched and fail inside
 ``FunctionDeclaration``, whose ``type`` is a single-valued enum. It is
 folded down the same way, so both spellings of "optional string" reach
 Gemini as one.
@@ -62,21 +62,25 @@ _GEMINI_ALLOWED_KEYS = frozenset(
     }
 )
 
+_UNION_KEYS = ("anyOf", "oneOf", "allOf")
+
 
 def clean_gemini_schema(schema: dict[str, Any] | None) -> dict[str, Any] | None:
     """Recursively prepare a JSON Schema for Gemini ``FunctionDeclaration``.
 
-    Performs two passes per node:
+    Performs three passes per node:
 
-    1. **Collapse Pydantic-style Optionals.** ``{"anyOf": [{...}, {"type":
-       "null"}]}`` becomes ``{..., "nullable": true}``. ``oneOf`` /
-       ``allOf`` are handled the same way for symmetry. When the union
-       has multiple non-null branches, we keep the first one and add
-       ``nullable`` if any branch was null — Gemini's schema dialect
-       does not support full union types. A union that only narrows its
-       node (see :func:`_refines_node`) is not folded; the node keeps the
-       fields its branches add (see :func:`_keep_node`).
-    2. **Strip unknown keys.** Anything not in :data:`_GEMINI_ALLOWED_KEYS`
+    1. **Fold what Gemini cannot say.** A type list and a union become one
+       type: ``{"anyOf": [{...}, {"type": "null"}]}`` and ``{"type": [...,
+       "null"]}`` become ``{..., "nullable": true}``. A wider ``anyOf`` /
+       ``oneOf`` keeps its first non-null branch, an ``allOf`` gathers the
+       fields of all of them. A union that only narrows its node (see
+       :func:`_refines_node`) is not folded; the node keeps the fields its
+       branches add (see :func:`_keep_node`).
+    2. **Spell out the shape** JSON Schema leaves implied: the type an
+       untyped node's ``properties`` or ``items`` imply, ``items`` on an
+       array, and no key the type cannot carry (see :func:`_complete_shape`).
+    3. **Strip unknown keys.** Anything not in :data:`_GEMINI_ALLOWED_KEYS`
        (e.g. ``$schema``, ``additionalProperties``, ``default``, ``title``)
        is dropped at every nesting level, and ``required`` keeps only the
        properties that survived.
@@ -98,13 +102,11 @@ def _collapse_union(obj: dict[str, Any]) -> dict[str, Any]:
     Handles ``anyOf``, ``oneOf``, ``allOf``. ``Optional[X]`` (the
     Pydantic shape ``[{type: X}, {type: null}]``) collapses to
     ``{type: X, nullable: True}``. Wider unions keep the first
-    non-null branch and mark ``nullable`` if any branch was null.
-    A union that narrows *obj* instead leaves it whole.
+    non-null branch and mark ``nullable`` if any branch was null; an
+    ``allOf``, whose branches all apply, gathers their fields instead.
+    A union that narrows *obj* leaves it whole.
     """
-    union_key = next(
-        (k for k in ("anyOf", "oneOf", "allOf") if k in obj and isinstance(obj[k], list)),
-        None,
-    )
+    union_key = next((k for k in _UNION_KEYS if isinstance(obj.get(k), list)), None)
     if union_key is None:
         return obj
 
@@ -119,16 +121,17 @@ def _collapse_union(obj: dict[str, Any]) -> dict[str, Any]:
         # property remains valid; should not happen in practice.
         merged: dict[str, Any] = {"type": "string", "nullable": True}
     else:
-        # First non-null branch wins. Merge in description + nullable.
-        merged = dict(non_null[0])
+        merged = _intersect(non_null) if union_key == "allOf" else dict(non_null[0])
         if has_null:
             merged["nullable"] = True
 
     # Preserve description / other allowed keys from the parent.
-    for key in ("description", "title"):
+    for key in ("description", "title", "nullable"):
         if key in obj and key not in merged:
             merged[key] = obj[key]
-    return merged
+    # The branch can be a union itself: an Optional discriminated union is an
+    # ``anyOf`` whose first branch is a ``oneOf``.
+    return _collapse_union(merged)
 
 
 def _refines_node(obj: dict[str, Any], branches: list[dict[str, Any]]) -> bool:
@@ -137,16 +140,22 @@ def _refines_node(obj: dict[str, Any], branches: list[dict[str, Any]]) -> bool:
     A node that declares its own ``properties`` or ``items`` has its shape; a
     union beside them can only add constraints to it (``required``
     alternatives, a conditional field, a ``minItems``). So is a union none of
-    whose branches names a ``type``: ``{"type": "string", "anyOf":
+    whose non-null branches names a shape: ``{"type": "string", "anyOf":
     [{"format": "date"}, ...]}`` is still a string. Only a union of typed
     branches on a node without a structure of its own, ``Optional[X]`` being
     the common one, is a choice to fold.
     """
     if "properties" in obj or "items" in obj:
         return True
-    # An empty union names no type either, but it narrows nothing: it takes
-    # the fold's typed fallback rather than leaving the node typeless.
-    return bool(branches) and not any("type" in b for b in branches)
+    alternatives = [b for b in branches if b.get("type") != "null"]
+    # An empty union, or null alone, narrows nothing either: it takes the
+    # fold's typed fallback rather than leaving the node typeless.
+    return bool(alternatives) and not any(_names_a_shape(b) for b in alternatives)
+
+
+def _names_a_shape(branch: dict[str, Any]) -> bool:
+    """A branch with a ``type``, or one that is a union itself."""
+    return "type" in branch or any(isinstance(branch.get(k), list) for k in _UNION_KEYS)
 
 
 def _keep_node(obj: dict[str, Any], branches: list[dict[str, Any]]) -> dict[str, Any]:
@@ -157,21 +166,53 @@ def _keep_node(obj: dict[str, Any], branches: list[dict[str, Any]]) -> dict[str,
     offers ``url`` or ``path`` beside ``mode``. Gemini cannot say "one of", so
     every field a branch adds is declared and no branch's ``required`` is:
     only one of them applies. A field the node declares itself wins over a
-    branch's narrowing of it. Only an object gains fields, or an untyped node,
-    which they make one (see :func:`_complete_shape`).
+    branch's narrowing of it. Only an object gains fields, or an untyped node
+    without ``items``, which they make one (see :func:`_complete_shape`). A
+    null branch keeps the node nullable, as the fold would.
     """
-    own = obj.get("properties", {})
-    if obj.get("type", "object") != "object" or not isinstance(own, dict):
-        return obj
+    kept = obj
+    if any(b.get("type") == "null" for b in branches):
+        kept = {**obj, "nullable": True}
+    own = kept.get("properties", {})
+    if kept.get("type", "object") != "object" or "items" in kept or not isinstance(own, dict):
+        return kept
+    properties = _gather_properties(own, branches)
+    if len(properties) == len(own):
+        return kept
+    return {**kept, "properties": properties}
+
+
+def _intersect(branches: list[dict[str, Any]]) -> dict[str, Any]:
+    """The first branch of an ``allOf``, with every other branch's fields.
+
+    All the branches of an ``allOf`` apply at once (a zod intersection, a
+    model extending a mixin), so their properties and their ``required``
+    both hold, where an ``anyOf`` offers one branch among several.
+    """
+    merged = dict(branches[0])
+    own = merged.get("properties", {})
+    properties = _gather_properties(own if isinstance(own, dict) else {}, branches)
+    required: list[Any] = []
+    for branch in branches:
+        names = branch.get("required")
+        if isinstance(names, list):
+            required.extend(name for name in names if name not in required)
+    if properties:
+        merged["properties"] = properties
+    if required:
+        merged["required"] = required
+    return merged
+
+
+def _gather_properties(own: dict[str, Any], branches: list[dict[str, Any]]) -> dict[str, Any]:
+    """*own* plus the properties *branches* add; a name *own* has wins."""
     properties = dict(own)
     for branch in branches:
         added = branch.get("properties")
         if isinstance(added, dict):
             for name, schema in added.items():
                 properties.setdefault(name, schema)
-    if len(properties) == len(own):
-        return obj
-    return {**obj, "properties": properties}
+    return properties
 
 
 def _collapse_type_list(obj: dict[str, Any]) -> dict[str, Any]:
@@ -203,27 +244,39 @@ def _collapse_type_list(obj: dict[str, Any]) -> dict[str, Any]:
 def _complete_shape(obj: dict[str, Any]) -> dict[str, Any]:
     """Spell out the type and ``items`` JSON Schema leaves implied.
 
-    Gemini refuses ``properties`` on an untyped node ("only allowed for
-    OBJECT type"), ``items`` on one ("$type == Type.ARRAY"), and an array
-    without ``items`` ("items: missing field") or with a tuple-style list of
-    them, each with a 400 for the whole request.
+    Gemini refuses ``properties`` on a node that is not an object ("only
+    allowed for OBJECT type"), ``items`` on one that is not an array
+    ("$type == Type.ARRAY"), and an array without ``items`` ("items: missing
+    field") or with a tuple-style list of them, each with a 400 for the whole
+    request. An untyped node takes the type its keys imply; a typed one loses
+    the keys its type cannot carry.
     """
-    if "type" not in obj:
-        if "properties" in obj:
-            return {**obj, "type": "object"}
-        if "items" in obj:
-            obj = {**obj, "type": "array"}
-    if obj.get("type") == "array" and not isinstance(obj.get("items"), dict):
-        return {**obj, "items": {}}
-    return obj
+    kind = obj.get("type")
+    if kind is None:
+        kind = "object" if "properties" in obj else "array" if "items" in obj else None
+    if kind is None:
+        return obj
+    shaped = {
+        key: value
+        for key, value in obj.items()
+        if not (key == "items" and kind != "array")
+        and not (key == "properties" and kind != "object")
+    }
+    shaped["type"] = kind
+    if kind == "array" and not isinstance(shaped.get("items"), dict):
+        shaped["items"] = {}
+    return shaped
 
 
 def _clean(obj: dict[str, Any]) -> dict[str, Any]:
+    # A type list first, so a union sees the node's own single type (an
+    # ``["object", "null"]`` node still gains the fields its union adds).
+    obj = _collapse_type_list(obj)
     # Collapse union shapes BEFORE stripping unknown keys, so the union
     # members get inspected rather than silently discarded.
     obj = _collapse_union(obj)
-    # And the type-list spelling of the same thing, which survives the strip
-    # untouched (``type`` is allowed) and would fail inside Gemini's own model.
+    # And again for the branch the fold picked, whose own type list survives
+    # the strip untouched (``type`` is allowed) and would fail inside Gemini.
     obj = _collapse_type_list(obj)
     obj = _complete_shape(obj)
 

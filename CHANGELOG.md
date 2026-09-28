@@ -103,8 +103,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `items` (an array), and an array with no `items` or a tuple-style list of
   them each failed the whole request with a 400. The cleaner now writes the
   type and gives such an array `items: {}`, any value, what Pydantic sends
-  for `list[Any]`. An array's own `items` also survives a typed union beside
-  it, where the fold to the first branch dropped it.
+  for `list[Any]`, and drops a key the type cannot carry (`items` on an
+  object, `properties` on a string). An array's own `items` also survives a
+  typed union beside it, where the fold to the first branch dropped it.
+- The Gemini schema cleaner gathers every branch of an `allOf` (RMK-266):
+  its branches all apply (a zod intersection, a model extending a mixin),
+  but the fold kept the first one and dropped the other fields. An Optional
+  discriminated union, an `anyOf` whose first branch is a `oneOf`, now folds
+  to its first member where it reached Gemini as a typeless
+  `{"nullable": true}`.
 - Gemini accepts a tool whose schema narrows an object with a union
   (`oneOf`, `anyOf`, `allOf`) (RMK-266). The schema cleaner folded every
   union to its first branch, so `{"type": "object", "properties": {url,

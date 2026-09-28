@@ -491,13 +491,73 @@ class TestRefiningUnion:
 
     def test_array_keeps_its_items_under_a_typed_union(self) -> None:
         """The node's own ``items`` is its shape: folding to the first branch
-        dropped it, and Gemini refuses an array without ``items``."""
+        would drop it, and Gemini refuses an array without ``items``. The null
+        branch still makes it nullable, as the fold would."""
         schema = {
             "type": "array",
             "items": {"type": "string"},
             "anyOf": [{"type": "array", "minItems": 1}, {"type": "null"}],
         }
-        assert clean_gemini_schema(schema) == {"type": "array", "items": {"type": "string"}}
+        assert clean_gemini_schema(schema) == {
+            "type": "array",
+            "items": {"type": "string"},
+            "nullable": True,
+        }
+
+    def test_a_null_branch_beside_untyped_ones_keeps_the_scalar_nullable(self) -> None:
+        schema = {"type": "string", "anyOf": [{"format": "date"}, {"type": "null"}]}
+        assert clean_gemini_schema(schema) == {"type": "string", "nullable": True}
+
+    def test_a_nullable_object_type_list_still_gains_the_union_fields(self) -> None:
+        schema = {
+            "type": ["object", "null"],
+            "properties": {"a": {"type": "string"}},
+            "oneOf": [{"properties": {"b": {"type": "string"}}, "required": ["b"]}],
+        }
+        assert clean_gemini_schema(schema) == {
+            "type": "object",
+            "nullable": True,
+            "properties": {"a": {"type": "string"}, "b": {"type": "string"}},
+        }
+
+    def test_all_of_intersection_gathers_every_branch(self) -> None:
+        """Every branch of an ``allOf`` applies: their fields and their
+        ``required`` all hold, where an ``anyOf`` offers one of them."""
+        schema = {
+            "allOf": [
+                {"type": "object", "properties": {"a": {"type": "string"}}, "required": ["a"]},
+                {"type": "object", "properties": {"b": {"type": "integer"}}, "required": ["b"]},
+            ],
+        }
+        assert clean_gemini_schema(schema) == {
+            "type": "object",
+            "properties": {"a": {"type": "string"}, "b": {"type": "integer"}},
+            "required": ["a", "b"],
+        }
+
+    def test_optional_discriminated_union_folds_to_its_first_member(self) -> None:
+        """Pydantic's ``Optional[Annotated[Cat | Dog, Field(discriminator=...)]]``:
+        an ``anyOf`` whose first branch is a ``oneOf``. Folding the outer
+        union alone left ``{"nullable": true}``, with no type."""
+        schema = {
+            "description": "The pet",
+            "anyOf": [
+                {
+                    "oneOf": [
+                        {"type": "object", "properties": {"meows": {"type": "boolean"}}},
+                        {"type": "object", "properties": {"barks": {"type": "boolean"}}},
+                    ],
+                    "discriminator": {"propertyName": "kind"},
+                },
+                {"type": "null"},
+            ],
+        }
+        assert clean_gemini_schema(schema) == {
+            "type": "object",
+            "properties": {"meows": {"type": "boolean"}},
+            "nullable": True,
+            "description": "The pet",
+        }
 
     def test_untyped_all_of_mixin_becomes_an_object(self) -> None:
         schema = {
@@ -626,6 +686,32 @@ class TestImpliedShape:
     def test_optional_array_without_items_after_the_fold(self) -> None:
         cleaned = clean_gemini_schema({"anyOf": [{"type": "array"}, {"type": "null"}]})
         assert cleaned == {"type": "array", "nullable": True, "items": {}}
+
+    def test_keys_the_type_cannot_carry_are_dropped(self) -> None:
+        schema = {
+            "type": "object",
+            "properties": {
+                "both": {"properties": {"a": {"type": "string"}}, "items": {"type": "string"}},
+                "listed": {"type": ["string", "array"], "items": {"type": "string"}},
+                "array_under_union": {
+                    "items": {"type": "string"},
+                    "anyOf": [{"properties": {"a": {"type": "string"}}}],
+                },
+                "string_with_properties": {
+                    "type": "string",
+                    "properties": {"a": {"type": "string"}},
+                    "required": ["a"],
+                },
+            },
+        }
+        cleaned = clean_gemini_schema(schema)
+        assert cleaned is not None
+        _assert_declarable(cleaned)
+        props = cleaned["properties"]
+        assert props["both"] == {"type": "object", "properties": {"a": {"type": "string"}}}
+        assert props["listed"] == {"type": "string"}
+        assert props["array_under_union"] == {"type": "array", "items": {"type": "string"}}
+        assert props["string_with_properties"] == {"type": "string"}
 
 
 class TestRequiredMatchesProperties:
