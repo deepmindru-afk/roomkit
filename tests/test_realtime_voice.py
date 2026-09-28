@@ -586,6 +586,35 @@ class TestToolCalls:
         assert seen == {"room_id": room.id, "actor": "user-1", "tenant": "acme"}
         assert current_tool_room_id() is None
 
+    async def test_a_recovered_spoken_call_reads_the_same_context(
+        self,
+        provider: MockRealtimeProvider,
+        transport: MockRealtimeTransport,
+    ) -> None:
+        """A call the channel recovered from spoken text runs its handler in
+        the same context as a function call (RFC §21.4): an orchestration tool
+        reading the call's room finds it on this path too."""
+        seen: dict[str, Any] = {}
+
+        async def handler(name: str, arguments: dict[str, Any]) -> str:
+            seen.update(room_id=current_tool_room_id(), actor=current_tool_actor_id())
+            return "ok"
+
+        whoami = {"name": "whoami", "description": "Who is calling", "parameters": {}}
+        ch = RealtimeVoiceChannel(
+            "rt-ctx", provider=provider, transport=transport, tools=[whoami], tool_handler=handler
+        )
+        kit = RoomKit()
+        kit.register_channel(ch)
+        room = await kit.create_room()
+        await kit.attach_channel(room.id, "rt-ctx")
+        session = await ch.start_session(room.id, "user-1", "fake-ws")
+
+        await provider.simulate_transcription(session, "call:whoami{}", "assistant")
+        await asyncio.sleep(0.1)
+
+        assert seen == {"room_id": room.id, "actor": "user-1"}
+
     async def test_tool_context_with_a_gate_hook_and_the_ai_only_accessors(
         self,
         provider: MockRealtimeProvider,

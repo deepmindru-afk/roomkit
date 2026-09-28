@@ -131,6 +131,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   answered room B's delegation "already running"; with a `strategy`, room B's
   `delegate_workers` waited until room A's whole pipeline had run. The busy
   set and the lock are now per room.
+- A tool call a `RealtimeVoiceChannel` recovered from spoken text runs its
+  handler in the tool call context too (RMK-275, RFC §21.4):
+  `current_tool_room_id()`, `current_tool_room()` and
+  `current_tool_actor_id()` answered `None` there, so a handler shared with
+  the function-calling path, an orchestration tool included, found no room.
 - A handoff or a delegation acts on the room of its call (RMK-275, RFC §19.6,
   §23.4). `handoff_conversation`, `delegate_task` and a supervisor's
   `delegate_to_<worker>` and `delegate_workers` read the room from a context

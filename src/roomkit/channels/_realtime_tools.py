@@ -10,6 +10,7 @@ import time
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.channels._ai_policy import policy_admits, policy_refusal
+from roomkit.channels._realtime_context import _current_voice_session
 from roomkit.channels._skill_constants import TOOL_ACTIVATE_SKILL
 from roomkit.channels._tool_search_constants import TOOL_CALL_TOOL
 from roomkit.channels.ai import _current_loop_ctx, _ToolLoopContext
@@ -531,21 +532,12 @@ class RealtimeToolsMixin:
                 call_id,
                 session.id,
             )
-            from roomkit.channels._realtime_context import _current_voice_session
-
-            loop_ctx = await self._realtime_loop_context(session, room_id, gate_context)
             t_seg = time.perf_counter()
-            token = _current_voice_session.set(session)
-            loop_token = _current_loop_ctx.set(loop_ctx)
-            try:
-                # ``ToolRefusedError`` travels out of here on purpose. Flattening
-                # it into the returned string would put the outcome back in the
-                # body, which is what this whole mechanism removes, and both
-                # callers below own a span and a log line that have to know.
-                raw = await self._tool_handler(name, arguments)
-            finally:
-                _current_loop_ctx.reset(loop_token)
-                _current_voice_session.reset(token)
+            # ``ToolRefusedError`` travels out of here on purpose. Flattening
+            # it into the returned string would put the outcome back in the
+            # body, which is what this whole mechanism removes, and both
+            # callers below own a span and a log line that have to know.
+            raw = await self._call_tool_handler(session, name, arguments, room_id, gate_context)
             logger.debug(
                 "tool %s handler segment: %.0fms wall",
                 name,
@@ -593,6 +585,25 @@ class RealtimeToolsMixin:
         if len(result_str) > self._tool_result_max_length:
             result_str = self._truncate_tool_result(result_str, name, call_id, session.id)
         return result_str
+
+    async def _call_tool_handler(
+        self,
+        session: VoiceSession,
+        name: str,
+        arguments: dict[str, Any],
+        room_id: str | None,
+        gate_context: RoomContext | None,
+    ) -> Any:
+        """The host handler's answer to one call, run inside the tool call
+        context (RFC §21.4), whichever path brought the call."""
+        loop_ctx = await self._realtime_loop_context(session, room_id, gate_context)
+        token = _current_voice_session.set(session)
+        loop_token = _current_loop_ctx.set(loop_ctx)
+        try:
+            return await self._tool_handler(name, arguments)
+        finally:
+            _current_loop_ctx.reset(loop_token)
+            _current_voice_session.reset(token)
 
     async def _realtime_loop_context(
         self, session: VoiceSession, room_id: str | None, gate_context: RoomContext | None

@@ -87,6 +87,15 @@ class RealtimeToolRecoveryHost(Protocol):
         carrying: Any = None,
     ) -> str: ...
 
+    async def _call_tool_handler(
+        self,
+        session: VoiceSession,
+        name: str,
+        arguments: dict[str, Any],
+        room_id: str | None,
+        gate_context: Any,
+    ) -> Any: ...
+
     def _truncate_tool_result(
         self, result_str: str, name: str, call_id: str, session_id: str
     ) -> str: ...
@@ -114,6 +123,7 @@ class RealtimeToolRecoveryMixin:
     _authorize_realtime_tool: Any  # cross-mixin (RealtimeToolsMixin)
     _fire_tool_hook: Any  # cross-mixin (RealtimeToolsMixin)
     _fire_tool_refusal: Any  # cross-mixin (RealtimeToolsMixin)
+    _call_tool_handler: Any  # cross-mixin (RealtimeToolsMixin)
     _truncate_tool_result: Any  # cross-mixin (RealtimeToolsMixin)
 
     # ------------------------------------------------------------------
@@ -301,16 +311,13 @@ class RealtimeToolRecoveryMixin:
             # Run tool_handler.
             handler_result: str | None = None
             if self._tool_handler is not None:
-                from roomkit.channels._realtime_context import _current_voice_session
-
-                token = _current_voice_session.set(session)
                 refused: str | None = None
                 try:
-                    raw = await self._tool_handler(tool_name, arguments)
+                    raw = await self._call_tool_handler(
+                        session, tool_name, arguments, room_id, gate_context
+                    )
                 except ToolRefusedError as refusal:
                     refused = refusal.message
-                finally:
-                    _current_voice_session.reset(token)
                 if refused is not None:
                     # Ends the call the way the pre-execution denial above
                     # does, and for the same reason: the model reads why it was
