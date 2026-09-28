@@ -13,6 +13,7 @@ import re
 import pytest
 
 from roomkit.channels._tool_eviction import ToolEviction, is_eviction_placeholder
+from roomkit.providers.ai.base import AIImagePart, AITextPart
 
 _PREVIEW_LABEL = "\n\nPreview:\n"
 _TRUNCATED = re.compile(r" \[\.\.\. (\d+) chars truncated \.\.\.\]")
@@ -147,3 +148,74 @@ def test_preview_never_exceeds_the_budget(layout: str, threshold_tokens: int) ->
     assert is_eviction_placeholder(out)
     assert len(_preview(out)) <= _budget(threshold_tokens)
     assert ev._store[("", "evicted_tc1")] == result
+
+
+_IMAGE = AIImagePart(url="data:image/png;base64," + "A" * 400_000, mime_type="image/png")
+
+
+class TestContentParts:
+    """A multimodal result: its text is evicted, its images are kept."""
+
+    def test_small_text_leaves_the_parts_untouched(self) -> None:
+        parts = [AITextPart(text="caption"), _IMAGE]
+        ev = ToolEviction()
+
+        assert ev.maybe_evict_parts(parts, "tc1") is parts
+        assert not ev._store
+
+    def test_images_do_not_count_towards_the_threshold(self) -> None:
+        """An image's base64 is not text the model reads."""
+        parts = [_IMAGE, _IMAGE]
+        assert ToolEviction().maybe_evict_parts(parts, "tc1") is parts
+
+    def test_oversized_text_is_replaced_by_one_placeholder(self) -> None:
+        big = "x" * 150_000
+        parts = [AITextPart(text="header"), _IMAGE, AITextPart(text=big), _IMAGE]
+        ev = ToolEviction()
+
+        out = ev.maybe_evict_parts(parts, "tc1")
+
+        assert [type(p) for p in out] == [AITextPart, AIImagePart, AIImagePart]
+        assert out[1] is _IMAGE and out[2] is _IMAGE
+        assert is_eviction_placeholder(out[0].text)
+        assert len(_preview(out[0].text)) <= _budget(5000)
+        assert ev._store[("", "evicted_tc1")] == f"header\n{big}"
+
+    def test_medium_parts_adding_up_are_evicted(self) -> None:
+        """Measured joined: ten parts under the threshold each, over it together."""
+        parts = [AITextPart(text="y" * 3_000) for _ in range(10)]
+        out = ToolEviction().maybe_evict_parts(parts, "tc1")
+
+        assert len(out) == 1
+        assert is_eviction_placeholder(out[0].text)
+
+
+def _part_layouts() -> dict[str, list[AITextPart | AIImagePart]]:
+    giant = "g" * 150_000
+    return {
+        "text-then-image": [AITextPart(text=giant), _IMAGE],
+        "image-then-text": [_IMAGE, AITextPart(text=giant)],
+        "interleaved": [AITextPart(text=giant[:40_000]), _IMAGE] * 4,
+        "many-lines": [AITextPart(text="\n".join(f"r{i}" for i in range(40_000))), _IMAGE],
+    }
+
+
+@pytest.mark.parametrize("threshold_tokens", [10, 100, 1000, 5000, 20_000])
+@pytest.mark.parametrize("layout", sorted(_part_layouts()))
+def test_part_preview_never_exceeds_the_budget(layout: str, threshold_tokens: int) -> None:
+    """The budget sweep, over content-part results: the text preview stays
+    within the budget, every image is kept in order, the joined text is stored."""
+    parts = _part_layouts()[layout]
+    ev = ToolEviction(threshold_tokens=threshold_tokens)
+
+    out = ev.maybe_evict_parts(parts, "tc1")
+
+    texts = [p for p in out if isinstance(p, AITextPart)]
+    assert len(texts) == 1
+    assert is_eviction_placeholder(texts[0].text)
+    assert len(_preview(texts[0].text)) <= _budget(threshold_tokens)
+    assert [p for p in out if isinstance(p, AIImagePart)] == [
+        p for p in parts if isinstance(p, AIImagePart)
+    ]
+    joined = "\n".join(p.text for p in parts if isinstance(p, AITextPart))
+    assert ev._store[("", "evicted_tc1")] == joined

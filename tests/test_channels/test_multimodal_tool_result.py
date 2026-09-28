@@ -9,6 +9,7 @@ tests pin the whole path: dispatcher → tool loop → provider context.
 
 from __future__ import annotations
 
+from roomkit.channels._tool_eviction import is_eviction_placeholder
 from roomkit.channels.ai import AIChannel
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.context import RoomContext
@@ -100,3 +101,31 @@ async def test_streaming_loop_carries_the_part_list_too() -> None:
     result_part = tool_messages[-1].content[0]
     assert isinstance(result_part, AIToolResultPart)
     assert result_part.result == _PARTS
+
+
+async def test_an_oversized_part_list_is_evicted_with_its_images_kept() -> None:
+    """The text of a part list is bounded like a string result; the images
+    still reach the provider, and the full text reads back."""
+    big = "node " * 30_000  # an accessibility tree, ~150 KB
+    image = AIImagePart(url="data:image/png;base64,AAAA", mime_type="image/png")
+
+    async def handler(name: str, arguments: dict) -> list[AITextPart | AIImagePart]:
+        return [AITextPart(text=big), image]
+
+    provider = MockAIProvider(ai_responses=_responses())
+    ch = AIChannel("ai1", provider=provider, tool_handler=handler)
+
+    await ch.on_event(
+        make_event(body="go", channel_id="sms1"),
+        _binding(),
+        RoomContext(room=Room(id="r1")),
+    )
+
+    tool_messages = [m for m in provider.calls[-1].messages if m.role == "tool"]
+    result_part = tool_messages[-1].content[0]
+    assert isinstance(result_part, AIToolResultPart)
+    text, kept = result_part.result
+    assert isinstance(text, AITextPart) and is_eviction_placeholder(text.text)
+    assert len(text.text) < 9_000
+    assert kept == image
+    assert big in ch._eviction._store.values()

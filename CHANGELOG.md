@@ -36,6 +36,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `read_stored_result` advertises the line limit it applies when the model
   gives none (RMK-258): its schema said `default: 200` while the handler has
   read 800 lines since the page budget was raised.
+- A tool result made of content parts (text and images, e.g. a screenshot
+  with its page text) has its text evicted like a string result (RMK-259).
+  The list used to reach the provider unmeasured, so 150 KB of page text rode
+  along with every round of the tool loop. The text parts are measured
+  joined; over `evict_threshold_tokens` they are stored as one text and
+  replaced by a single placeholder part, and the images stay where they were.
 
 ## [0.92.0] — 2026-09-27
 

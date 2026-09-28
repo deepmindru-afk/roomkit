@@ -7,7 +7,7 @@ import logging
 from collections import OrderedDict
 from typing import Any
 
-from roomkit.providers.ai.base import AITool
+from roomkit.providers.ai.base import AIImagePart, AITextPart, AITool
 
 logger = logging.getLogger("roomkit.channels.ai")
 
@@ -142,9 +142,12 @@ class ToolEviction:
         room = self._room_scope()
         return any(key[0] == room for key in self._store)
 
+    def _estimate(self, text: str) -> int:
+        return len(text) // 4 + 1
+
     def maybe_evict(self, result: str, tool_call_id: str = "") -> str:
         """Evict large results to the store, returning a preview."""
-        estimated = len(result) // 4 + 1
+        estimated = self._estimate(result)
         if estimated <= self.threshold_tokens:
             return result
 
@@ -158,6 +161,28 @@ class ToolEviction:
             f"'{result_id}'. Use read_stored_result to read it with pagination.\n\n"
             f"Preview:\n{_preview(result, self._preview_budget())}"
         )
+
+    def maybe_evict_parts(
+        self, parts: list[AITextPart | AIImagePart], tool_call_id: str = ""
+    ) -> list[AITextPart | AIImagePart]:
+        """Evict the text of a content-part result, keeping its images in place.
+
+        The text parts are measured joined, so many medium parts cannot add up
+        past the threshold unseen. Over it, they are stored as one text and
+        replaced by a single placeholder part where the first text part was.
+        """
+        text = "\n".join(p.text for p in parts if isinstance(p, AITextPart))
+        if self._estimate(text) <= self.threshold_tokens:
+            return parts
+        placeholder: AITextPart | None = AITextPart(text=self.maybe_evict(text, tool_call_id))
+        kept: list[AITextPart | AIImagePart] = []
+        for part in parts:
+            if not isinstance(part, AITextPart):
+                kept.append(part)
+            elif placeholder is not None:
+                kept.append(placeholder)
+                placeholder = None
+        return kept
 
     def _preview_budget(self) -> int:
         """Chars the preview may use: the ceiling, or half of what evicts (the

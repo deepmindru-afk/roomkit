@@ -327,11 +327,13 @@ class AIResilienceMixin:
     def _maybe_truncate_result(
         self, result: str | list[AITextPart | AIImagePart], tool_call_id: str = ""
     ) -> str | list[AITextPart | AIImagePart]:
-        """Delegate to ToolEviction for large (string) result handling.
+        """Delegate to ToolEviction for large result handling.
 
-        Multimodal results (a list of parts — e.g. a tool that returned an
-        image) are passed through untouched; only string results are evicted.
+        A multimodal result (a list of parts, e.g. a tool that returned a
+        screenshot) has its text evicted and its images kept.
         """
-        if not isinstance(result, str):
-            return result
-        return str(self._eviction.maybe_evict(result, tool_call_id))
+        if isinstance(result, str):
+            return str(self._eviction.maybe_evict(result, tool_call_id))
+        if isinstance(result, list):
+            return self._eviction.maybe_evict_parts(result, tool_call_id)
+        return result
