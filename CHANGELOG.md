@@ -126,6 +126,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A handoff or a delegation acts on the room of its call (RMK-275, RFC §19.6,
+  §23.4). `handoff_conversation`, `delegate_task` and a supervisor's
+  `delegate_to_<worker>` and `delegate_workers` read the room from a context
+  variable the `ConversationRouter` hook set, which the delivery lane does not
+  carry: on the non-streaming loop a Swarm handoff answered "No orchestration
+  context", `setup_delegation()` without a router always did, a supervisor
+  shared by two rooms delegated tenant B's turn under tenant A (the room that
+  installed it first), and a worker delegating in turn filed its task under
+  its grandparent's room. They now read `current_tool_room_id()`, so a child
+  room's parent is the room whose call asked for it; outside a tool call they
+  refuse instead of guessing. The private `_room_id_var` is gone.
+
 - A conference's realtime tool calls go through the tool gate (RMK-274,
   RFC §12.10.12). They went straight to `tool_handler`: an undeclared name
   or invalid arguments reached it, `BEFORE_TOOL_USE` and `ON_TOOL_CALL` never

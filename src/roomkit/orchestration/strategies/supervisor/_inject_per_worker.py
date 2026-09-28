@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from roomkit.orchestration.status_bus import StatusLevel
 from roomkit.orchestration.strategies.supervisor._common import (
+    _NO_CALL_ROOM,
     _fallthrough,
     _post_worker_status,
     logger,
@@ -21,6 +22,7 @@ from roomkit.orchestration.strategies.supervisor.results import (
     _result_output,
 )
 from roomkit.providers.ai.base import AITool
+from roomkit.tools.context import current_tool_room_id
 
 if TYPE_CHECKING:
     from roomkit.channels.agent import Agent
@@ -35,10 +37,13 @@ class _PerWorkerToolMixin:
     _wait_for_result: bool
     _share_channels: list[str]
 
-    def _inject_per_worker_tools(self, kit: RoomKit, room_id: str) -> None:
-        """Inject per-worker ``delegate_to_<id>`` tools (AI decides)."""
-        from roomkit.orchestration.handoff import _room_id_var
+    def _inject_per_worker_tools(self, kit: RoomKit) -> None:
+        """Inject per-worker ``delegate_to_<id>`` tools (AI decides).
 
+        The supervisor serves every room it is installed in, so a call
+        delegates from the room of the call (RFC §23.4), never from the room
+        that happened to install the tools first.
+        """
         any_new = False
         for worker in self._workers:
             tool_name = f"delegate_to_{worker.channel_id}"
@@ -76,7 +81,9 @@ class _PerWorkerToolMixin:
         async def delegation_handler(name: str, arguments: dict[str, Any]) -> str:
             worker_id = tool_to_worker.get(name)
             if worker_id is not None:
-                rid = _room_id_var.get() or room_id
+                rid = current_tool_room_id()
+                if rid is None:
+                    return _NO_CALL_ROOM
                 task_desc = arguments.get("task", "")
                 try:
                     if wait:

@@ -12,7 +12,6 @@ from roomkit.channels.realtime_voice import (
     RealtimeVoiceChannel,
     _current_voice_session,
 )
-from roomkit.orchestration.handoff import _room_id_var
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.tasks.delegate import (
     DELEGATE_TOOL,
@@ -23,6 +22,7 @@ from roomkit.tasks.delegate import (
 )
 from roomkit.tasks.models import DelegatedTask
 from roomkit.voice.base import VoiceSession
+from tests.tool_room import tool_call_in
 
 # -- Tool definition ----------------------------------------------------------
 
@@ -156,15 +156,11 @@ class TestSetupDelegation:
         handler = DelegateHandler(kit, notify="ai-main")
         setup_delegation(channel, handler)
 
-        # Set room_id context
-        token = _room_id_var.set("room-1")
-        try:
+        with tool_call_in("room-1"):
             result_str = await channel._tool_handler(
                 "delegate_task",
                 {"agent": "pr-reviewer", "task": "review PR"},
             )
-        finally:
-            _room_id_var.reset(token)
 
         result = json.loads(result_str)
         assert result["status"] == "delegated"
@@ -176,14 +172,11 @@ class TestSetupDelegation:
         handler = DelegateHandler(kit)
         setup_delegation(channel, handler)
 
-        token = _room_id_var.set(None)
-        try:
-            result_str = await channel._tool_handler(
-                "delegate_task",
-                {"agent": "a", "task": "b"},
-            )
-        finally:
-            _room_id_var.reset(token)
+        # Called directly, outside any tool loop: no call names a room.
+        result_str = await channel._tool_handler(
+            "delegate_task",
+            {"agent": "a", "task": "b"},
+        )
 
         result = json.loads(result_str)
         assert "error" in result

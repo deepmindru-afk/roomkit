@@ -19,6 +19,7 @@ from roomkit.models.enums import HookExecution, HookTrigger
 from roomkit.models.event import RoomEvent
 from roomkit.orchestration.strategies.supervisor import WorkerStrategy
 from roomkit.providers.ai.mock import MockAIProvider
+from tests.tool_room import tool_call_in
 
 # -- Helpers ------------------------------------------------------------------
 
@@ -99,17 +100,15 @@ class TestParallelStrategy:
             [_agent("tech", "Tech analysis."), _agent("biz", "Biz analysis.")],
         )
 
-        from roomkit.orchestration.handoff import _room_id_var
+        with tool_call_in("room"):
+            review = await supervisor.tool_handler("delegate_workers", {"task": "Analyze X"})
 
-        _room_id_var.set("room")
-        review = await supervisor.tool_handler("delegate_workers", {"task": "Analyze X"})
-
-        # Both workers ran and their outputs are surfaced in the review brief.
-        assert "tech" in review
-        assert "biz" in review
-        assert "Tech analysis." in review
-        assert "Biz analysis." in review
-        await kit.close()
+            # Both workers ran and their outputs are surfaced in the review brief.
+            assert "tech" in review
+            assert "biz" in review
+            assert "Tech analysis." in review
+            assert "Biz analysis." in review
+            await kit.close()
 
     async def test_parallel_all_receive_same_task(self) -> None:
         """All workers receive the same task description."""
@@ -128,25 +127,21 @@ class TestParallelStrategy:
 
         kit.delegate = tracking_delegate  # type: ignore[assignment]
 
-        from roomkit.orchestration.handoff import _room_id_var
+        with tool_call_in("room"):
+            await supervisor.tool_handler("delegate_workers", {"task": "Same task"})
 
-        _room_id_var.set("room")
-        await supervisor.tool_handler("delegate_workers", {"task": "Same task"})
-
-        # Both workers should get the exact same task
-        assert all(t == "Same task" for t in received_tasks)
-        await kit.close()
+            # Both workers should get the exact same task
+            assert all(t == "Same task" for t in received_tasks)
+            await kit.close()
 
     async def test_parallel_single_worker(self) -> None:
         kit, supervisor = await _setup("parallel", [_agent("solo", "Result.")])
 
-        from roomkit.orchestration.handoff import _room_id_var
+        with tool_call_in("room"):
+            review = await supervisor.tool_handler("delegate_workers", {"task": "Do it"})
 
-        _room_id_var.set("room")
-        review = await supervisor.tool_handler("delegate_workers", {"task": "Do it"})
-
-        assert "Result." in review
-        await kit.close()
+            assert "Result." in review
+            await kit.close()
 
 
 # -- Hooks fire for strategy mode ---------------------------------------------
@@ -170,19 +165,17 @@ class TestStrategyHooks:
         async def on_done(event: RoomEvent, _ctx: object) -> None:
             events.append(("completed", event.metadata.get("agent_id", "")))
 
-        from roomkit.orchestration.handoff import _room_id_var
+        with tool_call_in("room"):
+            await supervisor.tool_handler("delegate_workers", {"task": "test"})
 
-        _room_id_var.set("room")
-        await supervisor.tool_handler("delegate_workers", {"task": "test"})
+            delegated = [e for e in events if e[0] == "delegated"]
+            completed = [e for e in events if e[0] == "completed"]
 
-        delegated = [e for e in events if e[0] == "delegated"]
-        completed = [e for e in events if e[0] == "completed"]
-
-        assert len(delegated) == 2
-        assert len(completed) == 2
-        assert {d[1] for d in delegated} == {"w1", "w2"}
-        assert {c[1] for c in completed} == {"w1", "w2"}
-        await kit.close()
+            assert len(delegated) == 2
+            assert len(completed) == 2
+            assert {d[1] for d in delegated} == {"w1", "w2"}
+            assert {c[1] for c in completed} == {"w1", "w2"}
+            await kit.close()
 
 
 # -- Dedup guard --------------------------------------------------------------
@@ -203,17 +196,14 @@ class TestStrategyDedup:
 
         kit.delegate = counting_delegate  # type: ignore[assignment]
 
-        from roomkit.orchestration.handoff import _room_id_var
+        with tool_call_in("room"):
+            r1 = await supervisor.tool_handler("delegate_workers", {"task": "test"})
+            # Second call — even with different task, blocked within dedup window
+            r2 = await supervisor.tool_handler("delegate_workers", {"task": "different task"})
 
-        _room_id_var.set("room")
-
-        r1 = await supervisor.tool_handler("delegate_workers", {"task": "test"})
-        # Second call — even with different task, blocked within dedup window
-        r2 = await supervisor.tool_handler("delegate_workers", {"task": "different task"})
-
-        assert r1 == r2
-        assert call_count == 1
-        await kit.close()
+            assert r1 == r2
+            assert call_count == 1
+            await kit.close()
 
 
 # -- Recursion guard ----------------------------------------------------------
@@ -237,17 +227,15 @@ class TestSubTaskRecursionGuard:
 
         kit.delegate = counting_delegate  # type: ignore[assignment]
 
-        from roomkit.orchestration.handoff import _room_id_var
-
         # Simulate the handler firing while the supervisor runs in a dispatch/review
         # child room of the supervised flow.
-        _room_id_var.set("room::task-abc123")
-        result = json.loads(await supervisor.tool_handler("delegate_workers", {"task": "go"}))
+        with tool_call_in("room::task-abc123"):
+            result = json.loads(await supervisor.tool_handler("delegate_workers", {"task": "go"}))
 
-        assert "error" in result
-        # The pipeline never ran — no delegation happened, recursion prevented.
-        assert call_count == 0
-        await kit.close()
+            assert "error" in result
+            # The pipeline never ran — no delegation happened, recursion prevented.
+            assert call_count == 0
+            await kit.close()
 
 
 # -- Error handling -----------------------------------------------------------
@@ -264,14 +252,14 @@ class TestSequentialWorkerFailure:
 
         kit.delegate = failing_delegate  # type: ignore[assignment]
 
-        from roomkit.orchestration.handoff import _room_id_var
+        with tool_call_in("room"):
+            result = json.loads(
+                await supervisor.tool_handler("delegate_workers", {"task": "fail"})
+            )
 
-        _room_id_var.set("room")
-        result = json.loads(await supervisor.tool_handler("delegate_workers", {"task": "fail"}))
-
-        assert "error" in result
-        assert "boom" in result["error"]
-        await kit.close()
+            assert "error" in result
+            assert "boom" in result["error"]
+            await kit.close()
 
 
 class TestParallelWorkerFailure:
@@ -284,14 +272,14 @@ class TestParallelWorkerFailure:
 
         kit.delegate = failing_delegate  # type: ignore[assignment]
 
-        from roomkit.orchestration.handoff import _room_id_var
+        with tool_call_in("room"):
+            result = json.loads(
+                await supervisor.tool_handler("delegate_workers", {"task": "fail"})
+            )
 
-        _room_id_var.set("room")
-        result = json.loads(await supervisor.tool_handler("delegate_workers", {"task": "fail"}))
-
-        assert "error" in result
-        assert "parallel boom" in result["error"]
-        await kit.close()
+            assert "error" in result
+            assert "parallel boom" in result["error"]
+            await kit.close()
 
 
 # -- Background dedup (pending set) ------------------------------------------
@@ -317,19 +305,16 @@ class TestBackgroundDedup:
         await kit.create_room(room_id="room")
         await kit.attach_channel("room", "ws")
 
-        from roomkit.orchestration.handoff import _room_id_var
+        with tool_call_in("room"):
+            # First call — delegates
+            r1 = json.loads(await supervisor.tool_handler("delegate_to_w1", {"task": "first"}))
+            assert r1["status"] == "delegated"
 
-        _room_id_var.set("room")
+            # Second call — blocked by pending guard
+            r2 = json.loads(await supervisor.tool_handler("delegate_to_w1", {"task": "second"}))
+            assert r2["status"] == "already_running"
 
-        # First call — delegates
-        r1 = json.loads(await supervisor.tool_handler("delegate_to_w1", {"task": "first"}))
-        assert r1["status"] == "delegated"
-
-        # Second call — blocked by pending guard
-        r2 = json.loads(await supervisor.tool_handler("delegate_to_w1", {"task": "second"}))
-        assert r2["status"] == "already_running"
-
-        await kit.close()
+            await kit.close()
 
     async def test_pending_clears_after_completion(self) -> None:
         """After a background task completes, the worker can be delegated again."""
@@ -349,21 +334,18 @@ class TestBackgroundDedup:
         await kit.create_room(room_id="room")
         await kit.attach_channel("room", "ws")
 
-        from roomkit.orchestration.handoff import _room_id_var
+        with tool_call_in("room"):
+            # First delegation
+            r1 = json.loads(await supervisor.tool_handler("delegate_to_w1", {"task": "first"}))
+            assert r1["status"] == "delegated"
 
-        _room_id_var.set("room")
+            # Wait for background task to complete (CI can be slow)
+            import asyncio
 
-        # First delegation
-        r1 = json.loads(await supervisor.tool_handler("delegate_to_w1", {"task": "first"}))
-        assert r1["status"] == "delegated"
+            await asyncio.sleep(2.0)
 
-        # Wait for background task to complete (CI can be slow)
-        import asyncio
+            # Now should be able to delegate again
+            r2 = json.loads(await supervisor.tool_handler("delegate_to_w1", {"task": "second"}))
+            assert r2["status"] == "delegated"
 
-        await asyncio.sleep(2.0)
-
-        # Now should be able to delegate again
-        r2 = json.loads(await supervisor.tool_handler("delegate_to_w1", {"task": "second"}))
-        assert r2["status"] == "delegated"
-
-        await kit.close()
+            await kit.close()

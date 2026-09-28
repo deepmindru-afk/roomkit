@@ -45,6 +45,7 @@ from roomkit.orchestration.strategies.supervisor.prompts import SUBMIT_VERDICT
 from roomkit.orchestration.strategies.supervisor.supervised import _supervisor_review
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.tasks.models import DelegatedTaskResult
+from tests.tool_room import tool_call_in
 
 # -- Helpers ------------------------------------------------------------------
 
@@ -386,7 +387,8 @@ class TestPerWorkerDelegation:
         s = Supervisor(supervisor=boss, workers=[w1], wait_for_result=True)
         await s.install(kit, "r1")
 
-        result = await boss.tool_handler("delegate_to_w1", {"task": "Do work"})
+        with tool_call_in("r1"):
+            result = await boss.tool_handler("delegate_to_w1", {"task": "Do work"})
         parsed = json.loads(result)
         assert parsed["result"] == "Worker result"
         assert parsed["worker"] == "w1"
@@ -400,7 +402,8 @@ class TestPerWorkerDelegation:
         s = Supervisor(supervisor=boss, workers=[w1], wait_for_result=True)
         await s.install(kit, "r1")
 
-        result = await boss.tool_handler("delegate_to_w1", {"task": "Do work"})
+        with tool_call_in("r1"):
+            result = await boss.tool_handler("delegate_to_w1", {"task": "Do work"})
         parsed = json.loads(result)
         assert parsed["result"] == "Something went wrong"
 
@@ -413,7 +416,8 @@ class TestPerWorkerDelegation:
         s = Supervisor(supervisor=boss, workers=[w1], wait_for_result=True)
         await s.install(kit, "r1")
 
-        result = await boss.tool_handler("delegate_to_w1", {"task": "Do work"})
+        with tool_call_in("r1"):
+            result = await boss.tool_handler("delegate_to_w1", {"task": "Do work"})
         parsed = json.loads(result)
         assert parsed["status"] == "failed"
 
@@ -429,7 +433,8 @@ class TestPerWorkerDelegation:
         s = Supervisor(supervisor=boss, workers=[w1], wait_for_result=False)
         await s.install(kit, "r1")
 
-        result = await boss.tool_handler("delegate_to_w1", {"task": "Do work"})
+        with tool_call_in("r1"):
+            result = await boss.tool_handler("delegate_to_w1", {"task": "Do work"})
         parsed = json.loads(result)
         assert parsed["status"] == "delegated"
         assert parsed["task_id"] == "task-123"
@@ -447,10 +452,12 @@ class TestPerWorkerDelegation:
         await s.install(kit, "r1")
 
         # First call succeeds
-        await boss.tool_handler("delegate_to_w1", {"task": "Do work"})
+        with tool_call_in("r1"):
+            await boss.tool_handler("delegate_to_w1", {"task": "Do work"})
 
         # Second call should detect already running
-        result = await boss.tool_handler("delegate_to_w1", {"task": "Do more"})
+        with tool_call_in("r1"):
+            result = await boss.tool_handler("delegate_to_w1", {"task": "Do more"})
         parsed = json.loads(result)
         assert parsed["status"] == "already_running"
 
@@ -463,7 +470,8 @@ class TestPerWorkerDelegation:
         s = Supervisor(supervisor=boss, workers=[w1], wait_for_result=True)
         await s.install(kit, "r1")
 
-        result = await boss.tool_handler("delegate_to_w1", {"task": "Do work"})
+        with tool_call_in("r1"):
+            result = await boss.tool_handler("delegate_to_w1", {"task": "Do work"})
         parsed = json.loads(result)
         assert "error" in parsed
         assert "Connection lost" in parsed["error"]
@@ -497,7 +505,8 @@ class TestStrategyToolHandler:
         )
         await s.install(kit, "r1")
 
-        result = await boss.tool_handler("delegate_workers", {"task": "analyze"})
+        with tool_call_in("r1"):
+            result = await boss.tool_handler("delegate_workers", {"task": "analyze"})
         # The handler hands the supervisor a review brief (prose), not raw JSON:
         # the request, the worker output, and an instruction to verify + deliver.
         assert "analyze" in result
@@ -523,7 +532,8 @@ class TestStrategyToolHandler:
         )
         await s.install(kit, "r1")
 
-        result = await boss.tool_handler("delegate_workers", {"task": "analyze"})
+        with tool_call_in("r1"):
+            result = await boss.tool_handler("delegate_workers", {"task": "analyze"})
         # Review brief carries both workers' outputs for the supervisor to verify.
         assert "analyze" in result
         assert "result 1" in result
@@ -556,7 +566,8 @@ class TestStrategyToolHandler:
         )
         await s.install(kit, "r1")
 
-        result = await boss.tool_handler("delegate_workers", {"task": "x"})
+        with tool_call_in("r1"):
+            result = await boss.tool_handler("delegate_workers", {"task": "x"})
         parsed = json.loads(result)
         assert "error" in parsed
 
@@ -573,9 +584,11 @@ class TestStrategyToolHandler:
         )
         await s.install(kit, "r1")
 
-        result1 = await boss.tool_handler("delegate_workers", {"task": "analyze"})
+        with tool_call_in("r1"):
+            result1 = await boss.tool_handler("delegate_workers", {"task": "analyze"})
         calls_after_first = kit.delegate.call_count
-        result2 = await boss.tool_handler("delegate_workers", {"task": "analyze again"})
+        with tool_call_in("r1"):
+            result2 = await boss.tool_handler("delegate_workers", {"task": "analyze again"})
 
         # Both should return the same cached result
         assert result1 == result2

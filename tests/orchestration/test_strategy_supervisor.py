@@ -15,6 +15,7 @@ from roomkit.models.room import Room
 from roomkit.orchestration.state import get_conversation_state
 from roomkit.orchestration.strategies.supervisor import Supervisor
 from roomkit.providers.ai.mock import MockAIProvider
+from tests.tool_room import tool_call_in
 
 # -- Helpers ------------------------------------------------------------------
 
@@ -134,7 +135,8 @@ class TestSupervisorInstall:
         await s.install(kit, "r1")
 
         # Call the delegation tool handler
-        result = await boss.tool_handler("delegate_to_w1", {"task": "Do something"})
+        with tool_call_in("r1"):
+            result = await boss.tool_handler("delegate_to_w1", {"task": "Do something"})
         parsed = json.loads(result)
 
         assert parsed["status"] == "delegated"
@@ -193,7 +195,8 @@ class TestSupervisorShareChannels:
         )
         await s.install(kit, "r1")
 
-        await boss.tool_handler("delegate_to_w1", {"task": "Do something"})
+        with tool_call_in("r1"):
+            await boss.tool_handler("delegate_to_w1", {"task": "Do something"})
 
         _, kwargs = kit.delegate.call_args
         assert kwargs["share_channels"] == ["system", "ws-status"]
@@ -217,7 +220,8 @@ class TestSupervisorShareChannels:
         )
         await s.install(kit, "r1")
 
-        await boss.tool_handler("delegate_to_w1", {"task": "Do something"})
+        with tool_call_in("r1"):
+            await boss.tool_handler("delegate_to_w1", {"task": "Do something"})
 
         _, kwargs = kit.delegate.call_args
         assert kwargs["share_channels"] == ["email-out"]
@@ -240,7 +244,8 @@ class TestSupervisorShareChannels:
         )
         await s.install(kit, "r1")
 
-        await boss.tool_handler("delegate_workers", {"task": "Analyze this"})
+        with tool_call_in("r1"):
+            await boss.tool_handler("delegate_workers", {"task": "Analyze this"})
 
         _, kwargs = kit.delegate.call_args
         assert kwargs["share_channels"] == ["system"]
@@ -264,7 +269,8 @@ class TestSupervisorShareChannels:
         )
         await s.install(kit, "r1")
 
-        await boss.tool_handler("delegate_workers", {"task": "Analyze this"})
+        with tool_call_in("r1"):
+            await boss.tool_handler("delegate_workers", {"task": "Analyze this"})
 
         assert kit.delegate.call_count == 2
         for call in kit.delegate.call_args_list:
@@ -284,7 +290,8 @@ class TestSupervisorShareChannels:
         s = Supervisor(supervisor=boss, workers=[w1], wait_for_result=False)
         await s.install(kit, "r1")
 
-        await boss.tool_handler("delegate_to_w1", {"task": "Do something"})
+        with tool_call_in("r1"):
+            await boss.tool_handler("delegate_to_w1", {"task": "Do something"})
 
         _, kwargs = kit.delegate.call_args
         assert not kwargs["share_channels"]
@@ -391,7 +398,8 @@ class TestSupervisorShareChannels:
         channels.append("hacked")
 
         await s.install(kit, "r1")
-        await boss.tool_handler("delegate_to_w1", {"task": "Do something"})
+        with tool_call_in("r1"):
+            await boss.tool_handler("delegate_to_w1", {"task": "Do something"})
 
         _, kwargs = kit.delegate.call_args
         assert kwargs["share_channels"] == ["system"]

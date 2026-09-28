@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 from roomkit.core.task_utils import log_task_exception
 from roomkit.orchestration.strategies.supervisor._common import (
+    _NO_CALL_ROOM,
     _STRATEGY_TOOL_NAME,
     WorkerStrategy,
     _fallthrough,
@@ -32,6 +33,7 @@ from roomkit.orchestration.strategies.supervisor.supervised import (
     _run_supervised_sequential,
 )
 from roomkit.providers.ai.base import AITool
+from roomkit.tools.context import current_tool_room_id
 
 if TYPE_CHECKING:
     from roomkit.channels.agent import Agent
@@ -49,10 +51,13 @@ class _StrategyToolMixin:
     _task_timeout: float
     _max_revisions: int
 
-    def _inject_strategy_tool(self, kit: RoomKit, room_id: str) -> None:
-        """Inject a single ``delegate_workers`` tool for deterministic execution."""
-        from roomkit.orchestration.handoff import _room_id_var
+    def _inject_strategy_tool(self, kit: RoomKit) -> None:
+        """Inject a single ``delegate_workers`` tool for deterministic execution.
 
+        The supervisor serves every room it is installed in, so a call
+        delegates from the room of the call (RFC §23.4), never from the room
+        that happened to install the tool first.
+        """
         tool_name = _STRATEGY_TOOL_NAME
 
         if any(t.name == tool_name for t in self._supervisor._injected_tools):
@@ -100,7 +105,9 @@ class _StrategyToolMixin:
             if name != tool_name:
                 return await _fallthrough(original, name, arguments)
 
-            rid = _room_id_var.get() or room_id
+            rid = current_tool_room_id()
+            if rid is None:
+                return _NO_CALL_ROOM
             # The supervisor owns this tool, but the supervised flow re-invokes the
             # SAME supervisor for dispatch/review inside its own ``::task-`` child
             # rooms. There it must answer the dispatch/review prompt directly —

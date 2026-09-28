@@ -11,9 +11,9 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
-from roomkit.orchestration.handoff import _room_id_var
 from roomkit.providers.ai.base import AITool
 from roomkit.tasks.cache import CompletedTaskCache
+from roomkit.tools.context import current_tool_room_id
 
 if TYPE_CHECKING:
     from roomkit.channels.ai import AIChannel
@@ -253,7 +253,9 @@ def setup_delegation(
     """Wire delegation into an AIChannel's tool chain.
 
     Injects the delegate tool and wraps the tool handler to intercept
-    ``delegate_task`` calls. Same pattern as ``setup_handoff()``.
+    ``delegate_task`` calls. Same pattern as ``setup_handoff()``: the task is
+    delegated from the room of the call, read from the tool call context
+    (RFC §23.4), so one agent serving several rooms delegates from each.
 
     Args:
         channel: The AI channel to wire delegation into.
@@ -270,7 +272,7 @@ def setup_delegation(
 
     async def delegate_aware_handler(name: str, arguments: dict[str, Any]) -> str:
         if name == "delegate_task":
-            room_id = _room_id_var.get()
+            room_id = current_tool_room_id()
             if room_id is None:
                 return json.dumps({"error": "No orchestration context (room_id unavailable)"})
             result = await handler.handle(

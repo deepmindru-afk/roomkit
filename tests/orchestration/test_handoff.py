@@ -16,7 +16,6 @@ from roomkit.orchestration.handoff import (
     HandoffMemoryProvider,
     HandoffRequest,
     HandoffResult,
-    _room_id_var,
     build_handoff_tool,
     setup_handoff,
 )
@@ -27,6 +26,7 @@ from roomkit.orchestration.state import (
 )
 from roomkit.providers.ai.base import AIMessage
 from tests.conftest import make_event
+from tests.tool_room import tool_call_in
 
 # -- Helpers ------------------------------------------------------------------
 
@@ -439,9 +439,7 @@ class TestSetupHandoff:
         setup_handoff(channel, handler)
         wrapped = channel.tool_handler
 
-        # Set the ContextVar as the routing hook would
-        token = _room_id_var.set("r1")
-        try:
+        with tool_call_in("r1"):
             result_json = await wrapped(
                 "handoff_conversation",
                 {
@@ -450,8 +448,6 @@ class TestSetupHandoff:
                     "summary": "test",
                 },
             )
-        finally:
-            _room_id_var.reset(token)
 
         result = json.loads(result_json)
         assert result["accepted"] is True
@@ -488,12 +484,8 @@ class TestSetupHandoff:
         setup_handoff(channel, handler)
         wrapped = channel.tool_handler
 
-        # Don't set _room_id_var
-        token = _room_id_var.set(None)
-        try:
-            result_json = await wrapped("handoff_conversation", {"target": "x"})
-        finally:
-            _room_id_var.reset(token)
+        # Called directly, outside any tool loop: no call names a room.
+        result_json = await wrapped("handoff_conversation", {"target": "x"})
 
         result = json.loads(result_json)
         assert "error" in result

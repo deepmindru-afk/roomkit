@@ -7,7 +7,6 @@ preserves context, and optionally escalates channels.
 
 from __future__ import annotations
 
-import contextvars
 import json
 import logging
 from typing import TYPE_CHECKING, Any
@@ -26,6 +25,7 @@ from roomkit.orchestration.state import (
 )
 from roomkit.orchestration.status_bus import StatusLevel, post_agent_lifecycle
 from roomkit.providers.ai.base import AIMessage, AITool
+from roomkit.tools.context import current_tool_room_id
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -35,13 +35,6 @@ if TYPE_CHECKING:
     from roomkit.orchestration.router import ConversationRouter
 
 logger = logging.getLogger("roomkit.orchestration.handoff")
-
-# ContextVar set by the routing hook, read by the handoff tool handler.
-# Safe across concurrent asyncio tasks because each task inherits a copy
-# of the parent context at creation time.
-_room_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
-    "_orchestration_room_id", default=None
-)
 
 
 # -- Models ------------------------------------------------------------------
@@ -692,7 +685,8 @@ def setup_handoff(
 
     - Injects the handoff tool into the channel's tool definitions
     - Wraps the tool handler to intercept ``handoff_conversation`` calls
-    - Uses ``_room_id_var`` ContextVar for room_id (set by routing hook)
+    - Hands off in the room of the call, read from the tool call context
+      (RFC §19.6): one agent serves every room it is attached to
 
     Args:
         channel: The AI channel to wire handoff into.
@@ -713,7 +707,7 @@ def setup_handoff(
 
     async def handoff_aware_handler(name: str, arguments: dict[str, Any]) -> ToolResult:
         if name == "handoff_conversation":
-            room_id = _room_id_var.get()
+            room_id = current_tool_room_id()
             if room_id is None:
                 return json.dumps({"error": "No orchestration context (room_id unavailable)"})
             result = await handler.handle(

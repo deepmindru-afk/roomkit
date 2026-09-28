@@ -23,6 +23,7 @@ from roomkit.orchestration.state import get_conversation_state
 from roomkit.orchestration.strategies.loop import Loop
 from roomkit.orchestration.strategies.supervisor import Supervisor
 from roomkit.providers.ai.mock import MockAIProvider
+from tests.tool_room import tool_call_in
 
 # -- Helpers ------------------------------------------------------------------
 
@@ -130,7 +131,8 @@ class TestSupervisorHandlerIdempotency:
         assert len(delegate_tools) == 1
 
         # Handler should still work — call delegation tool
-        result = await boss.tool_handler("delegate_to_w1", {"task": "do it"})
+        with tool_call_in("r2"):
+            result = await boss.tool_handler("delegate_to_w1", {"task": "do it"})
         parsed = json.loads(result)
         assert parsed["status"] == "delegated"
 
@@ -148,7 +150,8 @@ class TestSupervisorHandlerIdempotency:
         s = Supervisor(supervisor=boss, workers=[w1])
         await s.install(kit, "r1")
 
-        result = await boss.tool_handler("delegate_to_w1", {"task": "fail"})
+        with tool_call_in("r1"):
+            result = await boss.tool_handler("delegate_to_w1", {"task": "fail"})
         parsed = json.loads(result)
         assert "error" in parsed
         assert "boom" in parsed["error"]

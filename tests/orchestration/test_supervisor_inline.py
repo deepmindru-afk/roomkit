@@ -14,6 +14,7 @@ from roomkit.models.enums import HookExecution, HookTrigger
 from roomkit.models.event import RoomEvent
 from roomkit.orchestration.state import get_conversation_state
 from roomkit.providers.ai.mock import MockAIProvider
+from tests.tool_room import tool_call_in
 
 # -- Helpers ------------------------------------------------------------------
 
@@ -67,17 +68,15 @@ class TestWaitForResultBasic:
         await kit.attach_channel("room", "ws")
 
         # Call the delegation tool directly
-        from roomkit.orchestration.handoff import _room_id_var
+        with tool_call_in("room"):
+            result = await supervisor.tool_handler("delegate_to_worker", {"task": "Do the thing"})
+            parsed = json.loads(result)
 
-        _room_id_var.set("room")
-        result = await supervisor.tool_handler("delegate_to_worker", {"task": "Do the thing"})
-        parsed = json.loads(result)
+            assert parsed["status"] == "completed"
+            assert parsed["worker"] == "worker"
+            assert "Worker result." in parsed["result"]
 
-        assert parsed["status"] == "completed"
-        assert parsed["worker"] == "worker"
-        assert "Worker result." in parsed["result"]
-
-        await kit.close()
+            await kit.close()
 
     async def test_child_room_has_no_orchestration(self) -> None:
         """Child rooms must not inherit the parent's orchestration."""
@@ -107,19 +106,17 @@ class TestWaitForResultBasic:
         await kit.create_room(room_id="room")
         await kit.attach_channel("room", "ws")
 
-        from roomkit.orchestration.handoff import _room_id_var
+        with tool_call_in("room"):
+            result = await supervisor.tool_handler("delegate_to_worker", {"task": "test"})
+            parsed = json.loads(result)
 
-        _room_id_var.set("room")
-        result = await supervisor.tool_handler("delegate_to_worker", {"task": "test"})
-        parsed = json.loads(result)
+            # If orchestration leaked to child room, the supervisor would
+            # respond instead of the worker, causing infinite recursion.
+            # A successful "completed" status proves isolation works.
+            assert parsed["status"] == "completed"
+            assert parsed["worker"] == "worker"
 
-        # If orchestration leaked to child room, the supervisor would
-        # respond instead of the worker, causing infinite recursion.
-        # A successful "completed" status proves isolation works.
-        assert parsed["status"] == "completed"
-        assert parsed["worker"] == "worker"
-
-        await kit.close()
+            await kit.close()
 
 
 class TestWaitForResultHooks:
@@ -162,32 +159,30 @@ class TestWaitForResultHooks:
         async def on_completed(event: RoomEvent, _ctx: object) -> None:
             hook_events.append(("completed", event.metadata))
 
-        from roomkit.orchestration.handoff import _room_id_var
+        with tool_call_in("room"):
+            await supervisor.tool_handler("delegate_to_worker", {"task": "test"})
 
-        _room_id_var.set("room")
-        await supervisor.tool_handler("delegate_to_worker", {"task": "test"})
+            assert len(hook_events) == 2
 
-        assert len(hook_events) == 2
+            # ON_TASK_DELEGATED — enriched metadata
+            delegated_meta = hook_events[0][1]
+            assert hook_events[0][0] == "delegated"
+            assert delegated_meta["agent_id"] == "worker"
+            assert delegated_meta["parent_room_id"] == "room"
+            assert "child_room_id" in delegated_meta
+            assert "task_id" in delegated_meta
+            assert delegated_meta["task_input"] == "test"
 
-        # ON_TASK_DELEGATED — enriched metadata
-        delegated_meta = hook_events[0][1]
-        assert hook_events[0][0] == "delegated"
-        assert delegated_meta["agent_id"] == "worker"
-        assert delegated_meta["parent_room_id"] == "room"
-        assert "child_room_id" in delegated_meta
-        assert "task_id" in delegated_meta
-        assert delegated_meta["task_input"] == "test"
+            # ON_TASK_COMPLETED — enriched metadata
+            completed_meta = hook_events[1][1]
+            assert hook_events[1][0] == "completed"
+            assert completed_meta["agent_id"] == "worker"
+            assert completed_meta["parent_room_id"] == "room"
+            assert completed_meta["task_status"] == "completed"
+            assert "duration_ms" in completed_meta
+            assert "child_room_id" in completed_meta
 
-        # ON_TASK_COMPLETED — enriched metadata
-        completed_meta = hook_events[1][1]
-        assert hook_events[1][0] == "completed"
-        assert completed_meta["agent_id"] == "worker"
-        assert completed_meta["parent_room_id"] == "room"
-        assert completed_meta["task_status"] == "completed"
-        assert "duration_ms" in completed_meta
-        assert "child_room_id" in completed_meta
-
-        await kit.close()
+            await kit.close()
 
 
 class TestWaitForResultMultipleWorkers:
@@ -226,25 +221,22 @@ class TestWaitForResultMultipleWorkers:
         await kit.create_room(room_id="room")
         await kit.attach_channel("room", "ws")
 
-        from roomkit.orchestration.handoff import _room_id_var
+        with tool_call_in("room"):
+            # Delegate to researcher
+            r1 = json.loads(
+                await supervisor.tool_handler("delegate_to_researcher", {"task": "Research AI"})
+            )
+            assert r1["status"] == "completed"
+            assert "Research findings." in r1["result"]
 
-        _room_id_var.set("room")
+            # Delegate to writer
+            r2 = json.loads(
+                await supervisor.tool_handler("delegate_to_writer", {"task": "Write about AI"})
+            )
+            assert r2["status"] == "completed"
+            assert "Article text." in r2["result"]
 
-        # Delegate to researcher
-        r1 = json.loads(
-            await supervisor.tool_handler("delegate_to_researcher", {"task": "Research AI"})
-        )
-        assert r1["status"] == "completed"
-        assert "Research findings." in r1["result"]
-
-        # Delegate to writer
-        r2 = json.loads(
-            await supervisor.tool_handler("delegate_to_writer", {"task": "Write about AI"})
-        )
-        assert r2["status"] == "completed"
-        assert "Article text." in r2["result"]
-
-        await kit.close()
+            await kit.close()
 
 
 class TestWaitForResultFalse:
@@ -277,17 +269,17 @@ class TestWaitForResultFalse:
         await kit.create_room(room_id="room")
         await kit.attach_channel("room", "ws")
 
-        from roomkit.orchestration.handoff import _room_id_var
+        with tool_call_in("room"):
+            result = json.loads(
+                await supervisor.tool_handler("delegate_to_worker", {"task": "Do it"})
+            )
 
-        _room_id_var.set("room")
-        result = json.loads(await supervisor.tool_handler("delegate_to_worker", {"task": "Do it"}))
+            # Async delegation returns immediately with task_id
+            assert result["status"] == "delegated"
+            assert "task_id" in result
+            assert result["worker"] == "worker"
 
-        # Async delegation returns immediately with task_id
-        assert result["status"] == "delegated"
-        assert "task_id" in result
-        assert result["worker"] == "worker"
-
-        await kit.close()
+            await kit.close()
 
 
 class TestInlineDelegationState:
@@ -324,16 +316,14 @@ class TestInlineDelegationState:
         room = await kit.get_room("room")
         state_before = get_conversation_state(room)
 
-        from roomkit.orchestration.handoff import _room_id_var
+        with tool_call_in("room"):
+            await supervisor.tool_handler("delegate_to_worker", {"task": "test"})
 
-        _room_id_var.set("room")
-        await supervisor.tool_handler("delegate_to_worker", {"task": "test"})
+            # State after delegation — should be unchanged
+            room = await kit.get_room("room")
+            state_after = get_conversation_state(room)
 
-        # State after delegation — should be unchanged
-        room = await kit.get_room("room")
-        state_after = get_conversation_state(room)
+            assert state_after.active_agent_id == state_before.active_agent_id
+            assert state_after.phase == state_before.phase
 
-        assert state_after.active_agent_id == state_before.active_agent_id
-        assert state_after.phase == state_before.phase
-
-        await kit.close()
+            await kit.close()
