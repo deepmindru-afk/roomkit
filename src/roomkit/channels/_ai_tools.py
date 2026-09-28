@@ -499,26 +499,11 @@ class AIToolsMixin:
                 # BEFORE eviction — the string below may become a placeholder,
                 # but UI surfaces need the structured payload verbatim.
                 structured_content = _tc_ctx.structured_content
-
-                # Fire unified ON_TOOL_CALL hook (if framework injected callback).
-                # It sees the handler's whole result, and eviction runs on what
-                # it hands back: everything read_stored_result can page back has
-                # passed through the hook, so a redacting hook covers the full
-                # text, not only the preview.
-                if self._tool_call_hook is not None:
-                    event = ToolCallEvent(
-                        channel_id=self.channel_id,
-                        channel_type=ChannelType.AI,
-                        tool_call_id=tc.id,
-                        name=tc.name,
-                        arguments=arguments,
-                        result=result,
-                        room_id=room_id,
-                    )
-                    override = await self._tool_call_hook(event)
-                    if override is not None:
-                        result = override
-                        recorded_result = override
+                result, overridden = await self._apply_tool_call_hook(
+                    tc, arguments, result, room_id
+                )
+                if overridden:
+                    recorded_result = result
                 result = self._bound_tool_result(tc.name, result, tc.id)
 
                 telemetry.end_span(tool_span_id)
@@ -861,6 +846,42 @@ class AIToolsMixin:
         catalogue = self._tool_search_catalogue(loop_ctx)
         return render_list_payload(catalogue, category, exclude_names=TOOL_SEARCH_INFRA_TOOL_NAMES)
 
+    async def _apply_tool_call_hook(
+        self, tc: Any, arguments: dict[str, Any], result: ToolResult, room_id: str | None
+    ) -> tuple[ToolResult, bool]:
+        """Run ON_TOOL_CALL on the outcome the model will read, whole.
+
+        After a text-only model's flattening, so the hook sees the shape the
+        model reads; before eviction, so everything read_stored_result can
+        page back has passed through the hook and a redacting hook covers the
+        full text, not a preview of it. Returns the result to carry on with,
+        and whether the hook replaced it.
+        """
+        result = self._shape_for_model(tc.name, result, tc.id)
+        if self._tool_call_hook is None:
+            return result, False
+        event = ToolCallEvent(
+            channel_id=self.channel_id,
+            channel_type=ChannelType.AI,
+            tool_call_id=tc.id,
+            name=tc.name,
+            arguments=arguments,
+            result=result,
+            room_id=room_id,
+        )
+        override = await self._tool_call_hook(event)
+        if override is None:
+            return result, False
+        return override, True
+
+    def _shape_for_model(self, name: str, result: ToolResult, tool_call_id: str) -> ToolResult:
+        """A text-only model gets the text of a content-part result, the way it
+        gets a message's (``_extract_content``): an image it cannot take would
+        fail the request."""
+        if isinstance(result, list) and not self._provider.supports_vision:
+            return AIToolResultPart(tool_call_id=tool_call_id, name=name, result=result).as_text()
+        return result
+
     def _bound_tool_result(self, name: str, result: ToolResult, tool_call_id: str) -> ToolResult:
         """The copy of a tool's outcome the model reads, evicted when oversized.
 
@@ -872,14 +893,8 @@ class AIToolsMixin:
         body over the threshold (a 20 KB skill crosses it). Every other tool
         still evicts, references included: those are data, and paginating
         data is exactly what eviction is for.
-
-        A text-only model gets the text of a content-part result, the way it
-        gets a message's (``_extract_content``): an image it cannot take would
-        fail the request.
         """
-        if isinstance(result, list) and not self._provider.supports_vision:
-            flat = AIToolResultPart(tool_call_id=tool_call_id, name=name, result=result)
-            result = flat.as_text()
+        result = self._shape_for_model(name, result, tool_call_id)
         if name == TOOL_ACTIVATE_SKILL:
             return result
         return self._maybe_truncate_result(result, tool_call_id)

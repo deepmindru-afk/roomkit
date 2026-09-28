@@ -13,9 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   eviction runs on what it hands back (RMK-260). The hook used to receive the
   evicted preview while the raw text sat in the store, so a redacting hook
   (PII re-tokenisation) cleaned the preview and the model read the raw text
-  back, personal data included, through `read_stored_result`. What the store
-  keeps is now what the hook returned. Observers registered ASYNC receive the
-  whole result too, where they received the placeholder.
+  back, personal data included, through `read_stored_result`, wherever a
+  datum straddled two pages. What the store keeps is now what the hook
+  returned. The hook sees the shape the model reads: for a model without
+  vision, the flattened text of a content-part result. Observers registered
+  ASYNC receive the whole result too, where they received the placeholder. A
+  redacting hook should be declared `fail_closed=True`: `ON_TOOL_CALL` fails
+  open, and a hook that times out on a large result lets the raw text through.
 - A `TOOL_CALL_END` event keeps at most 512 KB of a result's images
   (RMK-260); each image past that is a note, `[image image/png, 800 KB, not
   kept in the event]`. The event is persisted, broadcast and handed to the

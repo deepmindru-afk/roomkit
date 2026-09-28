@@ -17,26 +17,32 @@ from roomkit.providers.ai.base import AIImagePart, AITextPart
 TOOL_EVENT_IMAGE_MAX_CHARS = 512 * 1024
 
 
+def _left_out(part: AIImagePart) -> AITextPart:
+    """The note standing for an image the event does not keep."""
+    kind = f"image {part.mime_type}" if part.mime_type else "image"
+    decoded_kb = max(1, len(part.url) * 3 // 4 // 1024)
+    return AITextPart(text=f"[{kind}, {decoded_kb} KB, not kept in the event]")
+
+
 def tool_event_result(result: Any) -> Any:
     """*result* as a ``TOOL_CALL_END`` event keeps it.
 
-    Images are kept in order while their data URLs add up to
-    :data:`TOOL_EVENT_IMAGE_MAX_CHARS`; each one past it becomes a note naming
-    its type and size. A result that is not a content-part list is returned
-    as it is.
+    Each image is kept if the data URLs kept so far, its own included, stay
+    within :data:`TOOL_EVENT_IMAGE_MAX_CHARS`; one that would pass the bound
+    becomes a note naming its type and size, and a later, smaller one may
+    still be kept. A result that is not a content-part list is returned as it
+    is.
     """
     if not isinstance(result, list):
         return result
     kept: list[Any] = []
     used = 0
     for part in result:
-        if isinstance(part, AIImagePart):
-            size = len(part.url)
-            if used + size > TOOL_EVENT_IMAGE_MAX_CHARS:
-                mime = part.mime_type or "image"
-                note = f"[image {mime}, {size // 1024} KB, not kept in the event]"
-                kept.append(AITextPart(text=note))
-                continue
-            used += size
-        kept.append(part)
+        if not isinstance(part, AIImagePart):
+            kept.append(part)
+        elif used + len(part.url) > TOOL_EVENT_IMAGE_MAX_CHARS:
+            kept.append(_left_out(part))
+        else:
+            used += len(part.url)
+            kept.append(part)
     return kept

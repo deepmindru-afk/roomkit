@@ -78,13 +78,13 @@ async def test_an_oversized_exception_is_evicted() -> None:
 async def test_the_hook_sees_the_whole_result_and_the_store_keeps_its_rewrite() -> None:
     """A redacting ON_TOOL_CALL hook covers the full text: what the model can
     page back with read_stored_result is what the hook handed back."""
-    body = "row\n" * 10_000 + "client: Julie Belanger, j@acme.ca\n" + "row\n" * 10_000
+    body = "row\n" * 10_000 + "client: Jane Doe, jane@example.com\n" + "row\n" * 10_000
     ch, provider = _channel(AsyncMock(return_value=body))
     seen: list[ToolCallEvent] = []
 
     async def redact(event: ToolCallEvent) -> str:
         seen.append(event)
-        return str(event.result).replace("Julie Belanger, j@acme.ca", "[PERSON_1], [EMAIL_1]")
+        return str(event.result).replace("Jane Doe, jane@example.com", "[PERSON_1], [EMAIL_1]")
 
     ch._tool_call_hook = redact
 
@@ -98,7 +98,7 @@ async def test_the_hook_sees_the_whole_result_and_the_store_keeps_its_rewrite() 
         pages.append(page["content"])
         offset = page["next_offset"]
     stored = "\n".join(pages)
-    assert "Julie" not in stored
+    assert "Jane Doe" not in stored
     assert "[PERSON_1], [EMAIL_1]" in stored
 
 

@@ -18,6 +18,7 @@ from roomkit.models.enums import ChannelType, EventType
 from roomkit.models.event import EventSource, RoomEvent, TextContent, ToolCallContent
 from roomkit.models.room import Room
 from roomkit.models.streaming import ThinkingDeltaMarker, ToolCallEndMarker, ToolCallStartMarker
+from roomkit.providers.ai.base import AIImagePart
 
 
 def _recording_store() -> MagicMock:
@@ -82,6 +83,26 @@ class TestPersistChildStream:
         assert end.content.result == "standings..."
         assert end.content.duration_ms == 42
         assert end.content.status == "completed"
+
+    async def test_a_tool_end_keeps_a_bounded_share_of_its_images(self) -> None:
+        """The child room is persisted like any room: its TOOL_CALL_END events
+        keep at most 512 KB of a result's images (RMK-260)."""
+        kit = MagicMock()
+        kit.store = _recording_store()
+        kit._commit_indexed = kit.store.commit_event
+        header = "data:image/png;base64,"
+        shot = AIImagePart(url=header + "A" * (300 * 1024 - len(header)), mime_type="image/png")
+
+        async def _stream() -> Any:
+            yield ToolCallStartMarker(tool_name="shoot", tool_id="t1", arguments={})
+            yield ToolCallEndMarker(
+                tool_name="shoot", tool_id="t1", result=[shot, shot, shot], status="completed"
+            )
+
+        await _persist_child_stream(kit, "parent::task-9", _sr(_stream()), chain_depth=1)
+
+        end = next(e for e in kit.store.added if e.type == EventType.TOOL_CALL_END)
+        assert sum(isinstance(p, AIImagePart) for p in end.content.result) == 1
 
     async def test_thinking_markers_are_not_persisted(self) -> None:
         kit = MagicMock()

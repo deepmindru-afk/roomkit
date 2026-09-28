@@ -147,3 +147,25 @@ async def test_a_text_only_model_gets_the_text_of_a_part_list() -> None:
     result_part = tool_messages[-1].content[0]
     assert isinstance(result_part, AIToolResultPart)
     assert result_part.result == "here\n[image]"
+
+
+async def test_the_hook_sees_the_text_a_text_only_model_reads() -> None:
+    """ON_TOOL_CALL sees the shape the model reads: for a text-only model, the
+    flattened text, so a redacting hook written for text covers it."""
+    provider = MockAIProvider(ai_responses=_responses(), vision=False)
+    ch = AIChannel("ai1", provider=provider, tool_handler=_handler)
+    seen: list[object] = []
+
+    async def observe(event: object) -> None:
+        seen.append(event.result)  # type: ignore[attr-defined]
+        return None
+
+    ch._tool_call_hook = observe
+
+    await ch.on_event(
+        make_event(body="go", channel_id="sms1"),
+        _binding(),
+        RoomContext(room=Room(id="r1")),
+    )
+
+    assert seen == ["here\n[image]"]

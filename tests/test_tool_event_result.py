@@ -44,7 +44,7 @@ class TestToolEventResult:
         kept = tool_event_result(result)
 
         assert kept[:2] == [AITextPart(text="page"), first]
-        assert kept[2] == AITextPart(text="[image image/png, 300 KB, not kept in the event]")
+        assert kept[2] == AITextPart(text="[image image/png, 225 KB, not kept in the event]")
         # A later image that still fits is kept: the bound is on the total.
         assert kept[3] is third
         assert sum(len(p.url) for p in kept if isinstance(p, AIImagePart)) <= (
