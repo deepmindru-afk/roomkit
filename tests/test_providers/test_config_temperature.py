@@ -14,6 +14,7 @@ from roomkit.providers.anthropic.config import AnthropicConfig
 from roomkit.providers.azure.config import AzureAIConfig
 from roomkit.providers.gemini.config import GeminiConfig
 from roomkit.providers.llamacpp.config import LlamaCppConfig
+from roomkit.providers.meta.config import MetaConfig
 from roomkit.providers.mistral.config import MistralConfig
 from roomkit.providers.ollama.config import OllamaConfig
 from roomkit.providers.openai.config import OpenAIConfig
@@ -25,6 +26,7 @@ CONFIGS: list[type[BaseModel]] = [
     AzureAIConfig,
     GeminiConfig,
     LlamaCppConfig,
+    MetaConfig,
     MistralConfig,
     OllamaConfig,
     OpenAIConfig,

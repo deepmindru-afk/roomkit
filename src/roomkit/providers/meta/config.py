@@ -55,7 +55,7 @@ class MetaConfig(OpenAIConfig):
     The Meta Model API serves an OpenAI-compatible Chat Completions API at
     ``https://api.meta.ai/v1``, so this subclasses :class:`OpenAIConfig` and
     inherits every request field the inherited provider reads
-    (``temperature``, ``reasoning_effort``, ``extra_body`` …). Only the
+    (``reasoning_effort``, ``extra_body`` …). Only the
     endpoint, the model and two defaults change.
 
     ``reasoning_effort`` takes ``minimal``, ``low``, ``medium``, ``high`` or
