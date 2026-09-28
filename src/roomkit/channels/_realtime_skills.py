@@ -269,6 +269,16 @@ class RealtimeSkillSupport:
             if self._delivery_mode == "on_demand":
                 self._activated_bodies[session_id].append((skill.name, skill.instructions))
 
+    @staticmethod
+    def missing_required_tools(skill: Skill, tools: list[dict[str, Any]]) -> list[str]:
+        """The tools *skill* requires that the catalogue *tools* lacks."""
+        names = {tool["name"] for tool in tools}
+        return [name for name in skill.metadata.required_tool_names if name not in names]
+
+    @staticmethod
+    def missing_tools_error(missing: list[str]) -> str:
+        return json.dumps({"error": f"Required tools not available: {', '.join(missing)}"})
+
     async def prepare_activation(
         self, arguments: dict[str, Any], session_id: str, tools: list[dict[str, Any]]
     ) -> tuple[str, Skill | None]:
@@ -283,11 +293,9 @@ class RealtimeSkillSupport:
                 }
             ), None
         catalogue = {tool["name"]: tool for tool in tools}
-        missing = [name for name in skill.metadata.required_tool_names if name not in catalogue]
+        missing = self.missing_required_tools(skill, tools)
         if missing:
-            return json.dumps(
-                {"error": f"Required tools not available: {', '.join(missing)}"}
-            ), None
+            return self.missing_tools_error(missing), None
 
         if self.uses_tool_result:
             result = await asyncio.to_thread(activation_content, skill)

@@ -379,3 +379,24 @@ async def test_a_hook_may_reconfigure_the_session_during_an_activation(tmp_path)
         )
 
         assert not channel._skill_support.is_gated("calendar", session.id)
+
+
+async def test_an_activation_rechecks_its_required_tools_before_delivery(tmp_path):
+    """The hooks run outside the configuration lock: a handoff landing
+    meanwhile may take a required tool away, and the activation must not then
+    be delivered as if it were still there."""
+    registry = _registry_with_skill(tmp_path, body="Rules.", allowed_tools="calendar")
+    registry.get_skill("test-skill").metadata.extra_metadata["requires"] = "['calendar']"
+    async with running(registry, provider=MockRealtimeProvider()) as ctx:
+        channel, provider, session, _ = ctx
+
+        @channel._framework.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC)
+        async def handoff(event, context):
+            if event.name == "activate_skill":
+                await channel.reconfigure_session(session, tools=[tool("agenda")])
+            return HookResult.allow()
+
+        result = await call(channel, provider, session, "activate_skill", {"name": "test-skill"})
+
+        assert result == {"error": "Required tools not available: calendar"}
+        assert channel._skill_support.is_gated("calendar", session.id)

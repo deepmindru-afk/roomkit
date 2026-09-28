@@ -704,8 +704,8 @@ def _adopt_hook_toolset(
     """Make what BEFORE_AI_GENERATION left of the first declaration the turn's base.
 
     Every later round re-filters from ``all_context_tools``: without this, a
-    tool the hook withdrew came back from round 1 (and ran), and one it added
-    vanished. The hook only sees the first round's declaration, so a tool it
+    tool the hook withdrew would come back from round 1 (and run), and one it
+    added would vanish. The hook only sees the first round's declaration, so a tool it
     never saw (deferred by Tool Search, gated by a skill) stays in the base.
     """
     if loop_ctx.all_context_tools is None:

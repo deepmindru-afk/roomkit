@@ -191,3 +191,99 @@ async def test_a_served_activation_still_opens_its_gate(tmp_path: Path, streamin
     assert "wire_money" in _declared(provider.calls[1])
     assert calls.ran == ["wire_money"]
     assert ch._skill_activation.is_active("r1", "payments")
+
+
+async def test_a_channel_tool_the_hook_withdrew_is_refused_too(
+    tmp_path: Path, streaming: bool
+) -> None:
+    """The channel's own tools skip the undeclared-tool check; a withdrawal
+    must hold for them as well: a withdrawn activate_skill opens nothing."""
+    provider = MockAIProvider(
+        ai_responses=[
+            _round("c0", "activate_skill", {"name": "payments"}),
+            _round("c1", "wire_money"),
+            _DONE,
+        ],
+        streaming=streaming,
+    )
+    calls = _Recorder()
+    ch = AIChannel(
+        "ai1",
+        provider=provider,
+        tool_handler=calls.handler,
+        tools=[_WIRE],
+        skills=_payments_skill(tmp_path),
+    )
+
+    async def no_skills(gen_event: AIGenerationEvent) -> SyncPipelineResult:
+        tools = [t for t in gen_event.ai_context.tools if t.name != "activate_skill"]
+        gen_event.ai_context = gen_event.ai_context.model_copy(update={"tools": tools})
+        return SyncPipelineResult(allowed=True)
+
+    ch._before_generation_hook = no_skills
+
+    run = await _turn(ch)
+
+    assert run.calls[0].failed
+    assert all("wire_money" not in _declared(call) for call in provider.calls)
+    assert calls.ran == []
+    assert not ch._skill_activation.is_active("r1", "payments")
+
+
+async def test_a_tool_the_hook_edited_keeps_its_edit(streaming: bool) -> None:
+    provider = MockAIProvider(ai_responses=[_round("c0", "safe_read"), _DONE], streaming=streaming)
+    calls = _Recorder()
+    ch = AIChannel("ai1", provider=provider, tool_handler=calls.handler, tools=[_READ])
+
+    async def reword(gen_event: AIGenerationEvent) -> SyncPipelineResult:
+        tools = [
+            t.model_copy(update={"description": "Read a record (audited)"})
+            for t in gen_event.ai_context.tools
+        ]
+        gen_event.ai_context = gen_event.ai_context.model_copy(update={"tools": tools})
+        return SyncPipelineResult(allowed=True)
+
+    ch._before_generation_hook = reword
+
+    await _turn(ch)
+
+    for call in provider.calls:
+        read = next(t for t in call.tools or [] if t.name == "safe_read")
+        assert read.description == "Read a record (audited)"
+
+
+async def test_a_withdrawn_eviction_re_read_is_neither_declared_nor_served(
+    streaming: bool,
+) -> None:
+    """Once a result was evicted the channel offers ``read_stored_result``
+    each round; a hook that withdraws it keeps it out of every round."""
+    large = "\n".join(f"ROW-{i} " + "x" * 80 for i in range(200))
+    provider = MockAIProvider(
+        ai_responses=[
+            _round("c0", "safe_read"),
+            _DONE,
+            _round("c1", "read_stored_result", {"result_id": "evicted_c0"}),
+            _DONE,
+        ],
+        streaming=streaming,
+    )
+
+    async def handler(name: str, arguments: dict[str, Any]) -> str:
+        return large
+
+    ch = AIChannel(
+        "ai1", provider=provider, tool_handler=handler, tools=[_READ], evict_threshold_tokens=100
+    )
+    await _turn(ch)  # evicts the large result
+
+    async def no_re_read(gen_event: AIGenerationEvent) -> SyncPipelineResult:
+        tools = [t for t in gen_event.ai_context.tools if t.name != "read_stored_result"]
+        gen_event.ai_context = gen_event.ai_context.model_copy(update={"tools": tools})
+        return SyncPipelineResult(allowed=True)
+
+    ch._before_generation_hook = no_re_read
+    run = await _turn(ch)
+
+    assert all("read_stored_result" not in _declared(call) for call in provider.calls[2:])
+    assert run.calls[0].failed
+    assert "ROW-0" not in str(run.calls[0].result)

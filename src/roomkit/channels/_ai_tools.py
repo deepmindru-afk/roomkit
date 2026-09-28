@@ -347,6 +347,14 @@ class AIToolsMixin:
                     tool_call_id=tc.id, name=tc.name, result=body, is_error=True
                 )
 
+            # A tool BEFORE_AI_GENERATION withdrew is gone for the turn, the
+            # channel's own included: no exemption below may bring it back.
+            if tc.name in self._get_loop_ctx().withdrawn_tools:
+                logger.warning("Provider called %s, withdrawn for this turn", tc.name)
+                return await rejected(
+                    {"error": f"Tool '{tc.name}' is not available in this turn."}
+                )
+
             # Execution guard: argument validation against the declared schema
             # (fail-closed) — reject malformed calls before any other gate.
             params = self._tool_parameters(tc.name, declared_tools)
