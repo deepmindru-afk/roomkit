@@ -6,7 +6,7 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
-from roomkit.channels._tool_event_result import tool_event_result
+from roomkit.channels._tool_event_result import tool_event_payload
 from roomkit.models.enums import EventStatus, EventType, HookTrigger
 from roomkit.models.event import EventSource, RoomEvent, TextContent, ToolCallContent
 
@@ -133,17 +133,18 @@ class SegmentWriter:
         return await self._write(event, exclude=set(self._streamed_to))
 
     async def tool_end(self, marker: ToolCallEndMarker) -> RoomEvent | None:
+        result, structured = tool_event_payload(marker.result, marker.structured_content)
         event = self._build(
             EventType.TOOL_CALL_END,
             ToolCallContent(
                 tool_name=marker.tool_name,
                 tool_id=marker.tool_id,
                 arguments=marker.arguments,
-                result=tool_event_result(marker.result),
+                result=result,
                 status=marker.status,
                 duration_ms=marker.duration_ms,
                 error=marker.error,
-                structured_content=marker.structured_content,
+                structured_content=structured,
             ),
         )
         # Excluded like a text segment, and for the same reason: the channel

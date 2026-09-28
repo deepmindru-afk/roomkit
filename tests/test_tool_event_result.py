@@ -9,7 +9,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from roomkit.channels._tool_event_result import TOOL_EVENT_IMAGE_MAX_CHARS, tool_event_result
+import pytest
+
+from roomkit.channels._tool_event_result import (
+    TOOL_EVENT_IMAGE_MAX_CHARS,
+    tool_event_payload,
+    tool_event_result,
+)
 from roomkit.channels.ai import AIChannel
 from roomkit.core.framework import RoomKit
 from roomkit.models.channel import ChannelBinding
@@ -57,6 +63,61 @@ class TestToolEventResult:
 
     def test_a_string_result_is_unchanged(self) -> None:
         assert tool_event_result("x" * 2_000_000) == "x" * 2_000_000
+
+
+_B64 = "A" * (300 * 1024)
+_NOTE = "not kept in the event"
+
+
+class TestJsonShapes:
+    """Results that reach the event as JSON: ACP output, structured copies."""
+
+    @pytest.mark.parametrize(
+        "block",
+        [
+            {"type": "image", "data": _B64, "mimeType": "image/png"},
+            {
+                "type": "image",
+                "source": {"type": "base64", "media_type": "image/png", "data": _B64},
+            },
+            {"type": "image", "url": "data:image/png;base64," + _B64, "mime_type": "image/png"},
+            {"type": "audio", "data": _B64, "mimeType": "audio/wav"},
+            {"uri": "file:///report.pdf", "blob": _B64, "mimeType": "application/pdf"},
+        ],
+        ids=["mcp-acp", "anthropic", "stored-part", "audio", "blob"],
+    )
+    def test_binary_blocks_share_the_bound(self, block: dict[str, Any]) -> None:
+        kept = tool_event_result({"items": [block, block]})
+
+        assert kept["items"][0] is block
+        assert kept["items"][1]["type"] == "text"
+        assert _NOTE in kept["items"][1]["text"]
+
+    def test_a_data_uri_string_is_bounded(self) -> None:
+        uri = "data:image/jpeg;base64," + _B64
+        kept = tool_event_result({"a": uri, "b": uri})
+
+        assert kept["a"] == uri
+        assert kept["b"] == "[data URI image/jpeg, 225 KB, not kept in the event]"
+
+    def test_text_under_a_data_key_is_left_alone(self) -> None:
+        """Only an image, audio or blob block carries binary data."""
+        rows = {"data": "row," * 400_000}
+        assert tool_event_result(rows) == rows
+
+    def test_result_and_structured_copy_share_one_budget(self) -> None:
+        block = {"type": "image", "data": _B64, "mimeType": "image/png"}
+
+        result, structured = tool_event_payload([block], {"acp_content": [block]})
+
+        assert result == [block]
+        assert _NOTE in structured["acp_content"][0]["text"]
+
+    def test_a_deep_json_does_not_exhaust_the_stack(self) -> None:
+        deep: Any = "leaf"
+        for _ in range(5_000):
+            deep = [deep]
+        assert tool_event_result(deep) is not None
 
 
 def _three_screenshots() -> list[AITextPart | AIImagePart]:

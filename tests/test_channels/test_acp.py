@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import socket
 import sys
@@ -207,6 +208,11 @@ class _FakeACPConnection:
     def __init__(self, client: Any, *, emit_updates: bool = True) -> None:
         self.client = client
         self.emit_updates = emit_updates
+        # What the scripted tool call completes with; a test may swap them.
+        self.tool_raw_output: Any = {"content": "RoomKit"}
+        self.tool_content: list[Any] = [
+            {"type": "diff", "path": "/tmp/README.md", "old_text": "old", "new_text": "new"}
+        ]
         self.config_options: list[Any] = [_model_option("opus")]
         self.set_config_calls: list[dict[str, Any]] = []
         self.initialize_calls: list[dict[str, Any]] = []
@@ -335,15 +341,8 @@ class _FakeACPConnection:
                 acp.update_tool_call(
                     "tool-1",
                     status="completed",
-                    raw_output={"content": "RoomKit"},
-                    content=[
-                        {
-                            "type": "diff",
-                            "path": "/tmp/README.md",
-                            "old_text": "old",
-                            "new_text": "new",
-                        }
-                    ],
+                    raw_output=self.tool_raw_output,
+                    content=self.tool_content,
                 ),
             )
             await self.client.session_update(session_id, acp.update_agent_message_text("done"))
@@ -1047,6 +1046,39 @@ class TestACPChannel:
         fresh = asyncio.create_task(critical("took-the-new-lock"))
         await asyncio.gather(retired, fresh)
         assert len(inside) == 2
+        await channel.close()
+
+    async def test_a_tool_end_keeps_a_bounded_share_of_acp_images(self, tmp_path: Any) -> None:
+        """An ACP tool output is JSON: its image blocks, in the raw output and
+        in the display content alike, share the event's 512 KB (RMK-261)."""
+        kit = RoomKit()
+        channel, connection, _ = _channel(tmp_path)
+        shot = "A" * (300 * 1024)
+        connection.tool_raw_output = [
+            {"type": "image", "data": shot, "mimeType": "image/png"} for _ in range(3)
+        ]
+        connection.tool_content = [
+            {
+                "type": "content",
+                "content": {"type": "image", "data": shot, "mimeType": "image/png"},
+            }
+        ]
+        kit.register_channel(SimpleChannel("sms"))
+        kit.register_channel(channel)
+        await kit.create_room(room_id="room-1")
+        await kit.attach_channel("room-1", "sms")
+        await kit.attach_channel("room-1", "acp-agent", category=ChannelCategory.INTELLIGENCE)
+
+        await kit.process_inbound(
+            InboundMessage(channel_id="sms", sender_id="user", content=TextContent(body="Look"))
+        )
+
+        timeline = await kit.get_timeline("room-1", limit=20)
+        tool_end = next(e for e in timeline if e.type == EventType.TOOL_CALL_END)
+        assert isinstance(tool_end.content, ToolCallContent)
+        stored = json.dumps([tool_end.content.result, tool_end.content.structured_content])
+        assert stored.count(shot) == 1
+        assert stored.count("not kept in the event") == 3
         await channel.close()
 
     async def test_skips_own_and_tool_activity_events(self, tmp_path: Any) -> None:

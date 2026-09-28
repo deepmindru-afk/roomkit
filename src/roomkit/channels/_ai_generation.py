@@ -15,7 +15,7 @@ from roomkit.channels._ai_loop_rules import (
     final_round_reason,
     require_schema_answer,
 )
-from roomkit.channels._tool_event_result import tool_event_result
+from roomkit.channels._tool_event_result import tool_event_payload
 from roomkit.models.channel import ChannelOutput
 from roomkit.models.enums import EventType
 from roomkit.models.event import EventSource, RoomEvent, TextContent, ToolCallContent
@@ -407,7 +407,9 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
 
             # Tool call start + end events
             for tc, rp in zip(rnd.tool_calls, rnd.results, strict=False):
-                result_val = getattr(rp, "result", None)
+                event_result, event_structured = tool_event_payload(
+                    getattr(rp, "result", None), getattr(rp, "structured_content", None)
+                )
                 # Read the outcome, never the body: the tool loop already knows
                 # whether this call failed. Matching the prose sentence it
                 # writes for a raised handler missed every other failure — a
@@ -439,11 +441,11 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
                             tool_name=tc.name,
                             tool_id=tc.id,
                             arguments=tc.arguments,
-                            result=tool_event_result(result_val),
+                            result=event_result,
                             status="failed" if is_error else "completed",
                             duration_ms=rnd.duration_ms,
                             error=rp.as_text() if is_error else None,
-                            structured_content=getattr(rp, "structured_content", None),
+                            structured_content=event_structured,
                         ),
                         chain_depth=chain_depth,
                         correlation_id=correlation_id,
