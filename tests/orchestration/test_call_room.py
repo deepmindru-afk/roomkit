@@ -13,12 +13,15 @@ import json
 from collections.abc import Callable
 from typing import Any
 
+import pytest
+
 from roomkit import RoomKit
 from roomkit.channels.agent import Agent
 from roomkit.channels.ai import AIChannel
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelCategory
 from roomkit.models.event import TextContent
+from roomkit.orchestration._call_room import NO_CALL_ROOM
 from roomkit.orchestration.state import get_conversation_state
 from roomkit.orchestration.strategies.supervisor import Supervisor
 from roomkit.orchestration.strategies.swarm import Swarm
@@ -130,12 +133,15 @@ async def test_setup_delegation_without_a_router_delegates_from_the_call_room(
     await kit.close()
 
 
+@pytest.mark.parametrize(
+    ("tool", "strategy"),
+    [("delegate_to_researcher", None), ("delegate_workers", "sequential")],
+    ids=["per-worker", "strategy"],
+)
 async def test_a_supervisor_shared_by_two_rooms_delegates_from_the_room_that_asked(
-    streaming: bool,
+    tool: str, strategy: str | None, streaming: bool
 ) -> None:
-    supervisor_model = _calling(
-        "delegate_to_researcher", {"task": "look into B's account"}, streaming=streaming
-    )
+    supervisor_model = _calling(tool, {"task": "look into B's account"}, streaming=streaming)
     supervisor = Agent("sup", provider=supervisor_model, tool_search=False)
     researcher = Agent(
         "researcher", provider=_answering("findings", streaming=streaming), tool_search=False
@@ -146,7 +152,8 @@ async def test_a_supervisor_shared_by_two_rooms_delegates_from_the_room_that_ask
     kit.register_channel(supervisor)
     kit.register_channel(researcher)
     for tenant, channel_id in (("tenant-A", "sms-a"), ("tenant-B", "sms-b")):
-        await kit.create_room(room_id=tenant, orchestration=Supervisor(supervisor, [researcher]))
+        orchestration = Supervisor(supervisor, [researcher], strategy=strategy)
+        await kit.create_room(room_id=tenant, orchestration=orchestration)
         await kit.attach_channel(tenant, channel_id)
 
     # Only tenant B's user speaks; tenant A installed the supervisor first.
@@ -199,16 +206,24 @@ async def test_a_worker_delegating_in_turn_hangs_its_task_off_its_own_room(
     await kit.close()
 
 
-async def test_a_supervisor_tool_called_outside_a_tool_call_refuses() -> None:
+@pytest.mark.parametrize(
+    ("tool", "strategy"),
+    [("delegate_to_researcher", None), ("delegate_workers", "sequential")],
+    ids=["per-worker", "strategy"],
+)
+async def test_a_supervisor_tool_called_outside_a_tool_call_refuses(
+    tool: str, strategy: str | None
+) -> None:
     supervisor = Agent("sup", provider=_answering("hi", streaming=False), tool_search=False)
     researcher = Agent("researcher", provider=_answering("findings", streaming=False))
     kit = RoomKit()
     kit.register_channel(supervisor)
     kit.register_channel(researcher)
-    await kit.create_room(room_id="r1", orchestration=Supervisor(supervisor, [researcher]))
+    orchestration = Supervisor(supervisor, [researcher], strategy=strategy)
+    await kit.create_room(room_id="r1", orchestration=orchestration)
 
-    result = await supervisor.tool_handler("delegate_to_researcher", {"task": "x"})
+    result = await supervisor.tool_handler(tool, {"task": "x"})
 
-    assert "No orchestration context" in json.loads(result)["error"]
+    assert result == NO_CALL_ROOM
     assert await _children(kit) == {}
     await kit.close()

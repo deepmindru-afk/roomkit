@@ -10,10 +10,9 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
+from roomkit.orchestration._call_room import call_room_handler
 from roomkit.orchestration.status_bus import StatusLevel
 from roomkit.orchestration.strategies.supervisor._common import (
-    _NO_CALL_ROOM,
-    _fallthrough,
     _post_worker_status,
     logger,
 )
@@ -22,7 +21,6 @@ from roomkit.orchestration.strategies.supervisor.results import (
     _result_output,
 )
 from roomkit.providers.ai.base import AITool
-from roomkit.tools.context import current_tool_room_id
 
 if TYPE_CHECKING:
     from roomkit.channels.agent import Agent
@@ -78,138 +76,133 @@ class _PerWorkerToolMixin:
         share_channels = self._share_channels
         pending: set[str] = set()
 
-        async def delegation_handler(name: str, arguments: dict[str, Any]) -> str:
-            worker_id = tool_to_worker.get(name)
-            if worker_id is not None:
-                rid = current_tool_room_id()
-                if rid is None:
-                    return _NO_CALL_ROOM
-                task_desc = arguments.get("task", "")
-                try:
-                    if wait:
-                        _post_worker_status(
-                            kit,
-                            worker_id,
-                            StatusLevel.PENDING,
-                            detail=task_desc,
-                            metadata={"room_id": rid, "mode": "per_worker_wait"},
-                        )
-                        try:
-                            delegated = await kit.delegate(
-                                rid,
-                                worker_id,
-                                task_desc,
-                                wait=True,
-                                notify=self._supervisor.channel_id,
-                                share_channels=share_channels,
-                            )
-                        except Exception as exc:
-                            _post_worker_status(
-                                kit,
-                                worker_id,
-                                StatusLevel.FAILED,
-                                detail=str(exc),
-                                metadata={"room_id": rid, "mode": "per_worker_wait"},
-                            )
-                            raise
-                        result = delegated.result
-                        result_status = result.status if result else "failed"
-                        result_output = _result_output(result)
-                        _post_worker_status(
-                            kit,
-                            worker_id,
-                            StatusLevel.COMPLETED
-                            if _result_completed(result)
-                            else StatusLevel.FAILED,
-                            detail=result_output,
-                            metadata={
-                                "room_id": rid,
-                                "mode": "per_worker_wait",
-                                "task_id": delegated.id,
-                            },
-                        )
-                        return json.dumps(
-                            {
-                                "status": result_status,
-                                "worker": worker_id,
-                                "result": result_output,
-                            }
-                        )
-
-                    if worker_id in pending:
-                        return json.dumps(
-                            {
-                                "status": "already_running",
-                                "worker": worker_id,
-                                "message": (
-                                    f"{worker_id} is already working on this. "
-                                    "Do NOT call this tool again. "
-                                    "Tell the user to ask again shortly."
-                                ),
-                            }
-                        )
-
-                    delegated = await kit.delegate(
-                        rid,
-                        worker_id,
-                        task_desc,
-                        notify=self._supervisor.channel_id,
-                        share_channels=share_channels,
-                    )
-                    pending.add(worker_id)
+        async def delegate_to_worker(rid: str, name: str, arguments: dict[str, Any]) -> str:
+            worker_id = tool_to_worker[name]
+            task_desc = arguments.get("task", "")
+            try:
+                if wait:
                     _post_worker_status(
                         kit,
                         worker_id,
                         StatusLevel.PENDING,
                         detail=task_desc,
+                        metadata={"room_id": rid, "mode": "per_worker_wait"},
+                    )
+                    try:
+                        delegated = await kit.delegate(
+                            rid,
+                            worker_id,
+                            task_desc,
+                            wait=True,
+                            notify=self._supervisor.channel_id,
+                            share_channels=share_channels,
+                        )
+                    except Exception as exc:
+                        _post_worker_status(
+                            kit,
+                            worker_id,
+                            StatusLevel.FAILED,
+                            detail=str(exc),
+                            metadata={"room_id": rid, "mode": "per_worker_wait"},
+                        )
+                        raise
+                    result = delegated.result
+                    result_status = result.status if result else "failed"
+                    result_output = _result_output(result)
+                    _post_worker_status(
+                        kit,
+                        worker_id,
+                        StatusLevel.COMPLETED if _result_completed(result) else StatusLevel.FAILED,
+                        detail=result_output,
                         metadata={
                             "room_id": rid,
-                            "mode": "per_worker_async",
+                            "mode": "per_worker_wait",
                             "task_id": delegated.id,
                         },
                     )
-
-                    original_set = delegated._set_result
-                    _bus_kit = kit
-                    _bus_room = rid
-                    _bus_task_id = delegated.id
-
-                    def _patched_set(r: Any, *, _wid: str = worker_id or "") -> None:
-                        pending.discard(_wid)
-                        output = _result_output(r)
-                        ok = _result_completed(r)
-                        _post_worker_status(
-                            _bus_kit,
-                            _wid,
-                            StatusLevel.COMPLETED if ok else StatusLevel.FAILED,
-                            detail=output,
-                            metadata={
-                                "room_id": _bus_room,
-                                "mode": "per_worker_async",
-                                "task_id": _bus_task_id,
-                            },
-                        )
-                        original_set(r)
-
-                    delegated._set_result = _patched_set  # ty: ignore[invalid-assignment]
-
                     return json.dumps(
                         {
-                            "status": "delegated",
-                            "task_id": delegated.id,
+                            "status": result_status,
+                            "worker": worker_id,
+                            "result": result_output,
+                        }
+                    )
+
+                if worker_id in pending:
+                    return json.dumps(
+                        {
+                            "status": "already_running",
                             "worker": worker_id,
                             "message": (
-                                f"Task dispatched to {worker_id}. "
-                                "It is running in the background. "
+                                f"{worker_id} is already working on this. "
                                 "Do NOT call this tool again. "
-                                "Tell the user to ask again shortly "
-                                "for results."
+                                "Tell the user to ask again shortly."
                             ),
                         }
                     )
-                except Exception as exc:
-                    logger.exception("Delegation to %s failed", worker_id)
-                    return json.dumps({"error": str(exc)})
-            return await _fallthrough(original, name, arguments)
 
-        self._supervisor.tool_handler = delegation_handler
+                delegated = await kit.delegate(
+                    rid,
+                    worker_id,
+                    task_desc,
+                    notify=self._supervisor.channel_id,
+                    share_channels=share_channels,
+                )
+                pending.add(worker_id)
+                _post_worker_status(
+                    kit,
+                    worker_id,
+                    StatusLevel.PENDING,
+                    detail=task_desc,
+                    metadata={
+                        "room_id": rid,
+                        "mode": "per_worker_async",
+                        "task_id": delegated.id,
+                    },
+                )
+
+                original_set = delegated._set_result
+                _bus_kit = kit
+                _bus_room = rid
+                _bus_task_id = delegated.id
+
+                def _patched_set(r: Any, *, _wid: str = worker_id or "") -> None:
+                    pending.discard(_wid)
+                    output = _result_output(r)
+                    ok = _result_completed(r)
+                    _post_worker_status(
+                        _bus_kit,
+                        _wid,
+                        StatusLevel.COMPLETED if ok else StatusLevel.FAILED,
+                        detail=output,
+                        metadata={
+                            "room_id": _bus_room,
+                            "mode": "per_worker_async",
+                            "task_id": _bus_task_id,
+                        },
+                    )
+                    original_set(r)
+
+                delegated._set_result = _patched_set  # ty: ignore[invalid-assignment]
+
+                return json.dumps(
+                    {
+                        "status": "delegated",
+                        "task_id": delegated.id,
+                        "worker": worker_id,
+                        "message": (
+                            f"Task dispatched to {worker_id}. "
+                            "It is running in the background. "
+                            "Do NOT call this tool again. "
+                            "Tell the user to ask again shortly "
+                            "for results."
+                        ),
+                    }
+                )
+            except Exception as exc:
+                logger.exception("Delegation to %s failed", worker_id)
+                return json.dumps({"error": str(exc)})
+
+        self._supervisor.tool_handler = call_room_handler(
+            set(tool_to_worker), delegate_to_worker, original
+        )

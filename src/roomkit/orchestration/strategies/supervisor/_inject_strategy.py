@@ -14,11 +14,10 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from roomkit.core.task_utils import log_task_exception
+from roomkit.orchestration._call_room import call_room_handler
 from roomkit.orchestration.strategies.supervisor._common import (
-    _NO_CALL_ROOM,
     _STRATEGY_TOOL_NAME,
     WorkerStrategy,
-    _fallthrough,
     _is_subtask_room,
     logger,
 )
@@ -33,7 +32,6 @@ from roomkit.orchestration.strategies.supervisor.supervised import (
     _run_supervised_sequential,
 )
 from roomkit.providers.ai.base import AITool
-from roomkit.tools.context import current_tool_room_id
 
 if TYPE_CHECKING:
     from roomkit.channels.agent import Agent
@@ -101,13 +99,7 @@ class _StrategyToolMixin:
         _running: set[str] = set()
         dedup_window = 30.0
 
-        async def strategy_handler(name: str, arguments: dict[str, Any]) -> str:
-            if name != tool_name:
-                return await _fallthrough(original, name, arguments)
-
-            rid = current_tool_room_id()
-            if rid is None:
-                return _NO_CALL_ROOM
+        async def delegate_workers(rid: str, name: str, arguments: dict[str, Any]) -> str:
             # The supervisor owns this tool, but the supervised flow re-invokes the
             # SAME supervisor for dispatch/review inside its own ``::task-`` child
             # rooms. There it must answer the dispatch/review prompt directly —
@@ -245,4 +237,4 @@ class _StrategyToolMixin:
                     logger.exception("Strategy delegation failed")
                     return json.dumps({"error": str(exc)})
 
-        self._supervisor.tool_handler = strategy_handler
+        self._supervisor.tool_handler = call_room_handler({tool_name}, delegate_workers, original)

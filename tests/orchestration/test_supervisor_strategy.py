@@ -11,6 +11,7 @@ review-brief contract.
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 from roomkit import Agent, RoomKit, Supervisor, WebSocketChannel
@@ -103,12 +104,12 @@ class TestParallelStrategy:
         with tool_call_in("room"):
             review = await supervisor.tool_handler("delegate_workers", {"task": "Analyze X"})
 
-            # Both workers ran and their outputs are surfaced in the review brief.
-            assert "tech" in review
-            assert "biz" in review
-            assert "Tech analysis." in review
-            assert "Biz analysis." in review
-            await kit.close()
+        # Both workers ran and their outputs are surfaced in the review brief.
+        assert "tech" in review
+        assert "biz" in review
+        assert "Tech analysis." in review
+        assert "Biz analysis." in review
+        await kit.close()
 
     async def test_parallel_all_receive_same_task(self) -> None:
         """All workers receive the same task description."""
@@ -130,9 +131,9 @@ class TestParallelStrategy:
         with tool_call_in("room"):
             await supervisor.tool_handler("delegate_workers", {"task": "Same task"})
 
-            # Both workers should get the exact same task
-            assert all(t == "Same task" for t in received_tasks)
-            await kit.close()
+        # Both workers should get the exact same task
+        assert all(t == "Same task" for t in received_tasks)
+        await kit.close()
 
     async def test_parallel_single_worker(self) -> None:
         kit, supervisor = await _setup("parallel", [_agent("solo", "Result.")])
@@ -140,8 +141,8 @@ class TestParallelStrategy:
         with tool_call_in("room"):
             review = await supervisor.tool_handler("delegate_workers", {"task": "Do it"})
 
-            assert "Result." in review
-            await kit.close()
+        assert "Result." in review
+        await kit.close()
 
 
 # -- Hooks fire for strategy mode ---------------------------------------------
@@ -168,14 +169,14 @@ class TestStrategyHooks:
         with tool_call_in("room"):
             await supervisor.tool_handler("delegate_workers", {"task": "test"})
 
-            delegated = [e for e in events if e[0] == "delegated"]
-            completed = [e for e in events if e[0] == "completed"]
+        delegated = [e for e in events if e[0] == "delegated"]
+        completed = [e for e in events if e[0] == "completed"]
 
-            assert len(delegated) == 2
-            assert len(completed) == 2
-            assert {d[1] for d in delegated} == {"w1", "w2"}
-            assert {c[1] for c in completed} == {"w1", "w2"}
-            await kit.close()
+        assert len(delegated) == 2
+        assert len(completed) == 2
+        assert {d[1] for d in delegated} == {"w1", "w2"}
+        assert {c[1] for c in completed} == {"w1", "w2"}
+        await kit.close()
 
 
 # -- Dedup guard --------------------------------------------------------------
@@ -198,12 +199,13 @@ class TestStrategyDedup:
 
         with tool_call_in("room"):
             r1 = await supervisor.tool_handler("delegate_workers", {"task": "test"})
-            # Second call — even with different task, blocked within dedup window
+        # Second call — even with different task, blocked within dedup window
+        with tool_call_in("room"):
             r2 = await supervisor.tool_handler("delegate_workers", {"task": "different task"})
 
-            assert r1 == r2
-            assert call_count == 1
-            await kit.close()
+        assert r1 == r2
+        assert call_count == 1
+        await kit.close()
 
 
 # -- Recursion guard ----------------------------------------------------------
@@ -232,10 +234,10 @@ class TestSubTaskRecursionGuard:
         with tool_call_in("room::task-abc123"):
             result = json.loads(await supervisor.tool_handler("delegate_workers", {"task": "go"}))
 
-            assert "error" in result
-            # The pipeline never ran — no delegation happened, recursion prevented.
-            assert call_count == 0
-            await kit.close()
+        assert "error" in result
+        # The pipeline never ran — no delegation happened, recursion prevented.
+        assert call_count == 0
+        await kit.close()
 
 
 # -- Error handling -----------------------------------------------------------
@@ -257,9 +259,9 @@ class TestSequentialWorkerFailure:
                 await supervisor.tool_handler("delegate_workers", {"task": "fail"})
             )
 
-            assert "error" in result
-            assert "boom" in result["error"]
-            await kit.close()
+        assert "error" in result
+        assert "boom" in result["error"]
+        await kit.close()
 
 
 class TestParallelWorkerFailure:
@@ -277,9 +279,9 @@ class TestParallelWorkerFailure:
                 await supervisor.tool_handler("delegate_workers", {"task": "fail"})
             )
 
-            assert "error" in result
-            assert "parallel boom" in result["error"]
-            await kit.close()
+        assert "error" in result
+        assert "parallel boom" in result["error"]
+        await kit.close()
 
 
 # -- Background dedup (pending set) ------------------------------------------
@@ -305,16 +307,17 @@ class TestBackgroundDedup:
         await kit.create_room(room_id="room")
         await kit.attach_channel("room", "ws")
 
+        # First call — delegates
         with tool_call_in("room"):
-            # First call — delegates
             r1 = json.loads(await supervisor.tool_handler("delegate_to_w1", {"task": "first"}))
-            assert r1["status"] == "delegated"
+        assert r1["status"] == "delegated"
 
-            # Second call — blocked by pending guard
+        # Second call — blocked by pending guard
+        with tool_call_in("room"):
             r2 = json.loads(await supervisor.tool_handler("delegate_to_w1", {"task": "second"}))
-            assert r2["status"] == "already_running"
+        assert r2["status"] == "already_running"
 
-            await kit.close()
+        await kit.close()
 
     async def test_pending_clears_after_completion(self) -> None:
         """After a background task completes, the worker can be delegated again."""
@@ -334,18 +337,17 @@ class TestBackgroundDedup:
         await kit.create_room(room_id="room")
         await kit.attach_channel("room", "ws")
 
+        # First delegation
         with tool_call_in("room"):
-            # First delegation
             r1 = json.loads(await supervisor.tool_handler("delegate_to_w1", {"task": "first"}))
-            assert r1["status"] == "delegated"
+        assert r1["status"] == "delegated"
 
-            # Wait for background task to complete (CI can be slow)
-            import asyncio
+        # Wait for background task to complete (CI can be slow)
+        await asyncio.sleep(2.0)
 
-            await asyncio.sleep(2.0)
-
-            # Now should be able to delegate again
+        # Now should be able to delegate again
+        with tool_call_in("room"):
             r2 = json.loads(await supervisor.tool_handler("delegate_to_w1", {"task": "second"}))
-            assert r2["status"] == "delegated"
+        assert r2["status"] == "delegated"
 
-            await kit.close()
+        await kit.close()

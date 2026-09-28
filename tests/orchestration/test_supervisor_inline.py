@@ -70,13 +70,13 @@ class TestWaitForResultBasic:
         # Call the delegation tool directly
         with tool_call_in("room"):
             result = await supervisor.tool_handler("delegate_to_worker", {"task": "Do the thing"})
-            parsed = json.loads(result)
+        parsed = json.loads(result)
 
-            assert parsed["status"] == "completed"
-            assert parsed["worker"] == "worker"
-            assert "Worker result." in parsed["result"]
+        assert parsed["status"] == "completed"
+        assert parsed["worker"] == "worker"
+        assert "Worker result." in parsed["result"]
 
-            await kit.close()
+        await kit.close()
 
     async def test_child_room_has_no_orchestration(self) -> None:
         """Child rooms must not inherit the parent's orchestration."""
@@ -108,15 +108,15 @@ class TestWaitForResultBasic:
 
         with tool_call_in("room"):
             result = await supervisor.tool_handler("delegate_to_worker", {"task": "test"})
-            parsed = json.loads(result)
+        parsed = json.loads(result)
 
-            # If orchestration leaked to child room, the supervisor would
-            # respond instead of the worker, causing infinite recursion.
-            # A successful "completed" status proves isolation works.
-            assert parsed["status"] == "completed"
-            assert parsed["worker"] == "worker"
+        # If orchestration leaked to child room, the supervisor would
+        # respond instead of the worker, causing infinite recursion.
+        # A successful "completed" status proves isolation works.
+        assert parsed["status"] == "completed"
+        assert parsed["worker"] == "worker"
 
-            await kit.close()
+        await kit.close()
 
 
 class TestWaitForResultHooks:
@@ -162,27 +162,27 @@ class TestWaitForResultHooks:
         with tool_call_in("room"):
             await supervisor.tool_handler("delegate_to_worker", {"task": "test"})
 
-            assert len(hook_events) == 2
+        assert len(hook_events) == 2
 
-            # ON_TASK_DELEGATED — enriched metadata
-            delegated_meta = hook_events[0][1]
-            assert hook_events[0][0] == "delegated"
-            assert delegated_meta["agent_id"] == "worker"
-            assert delegated_meta["parent_room_id"] == "room"
-            assert "child_room_id" in delegated_meta
-            assert "task_id" in delegated_meta
-            assert delegated_meta["task_input"] == "test"
+        # ON_TASK_DELEGATED — enriched metadata
+        delegated_meta = hook_events[0][1]
+        assert hook_events[0][0] == "delegated"
+        assert delegated_meta["agent_id"] == "worker"
+        assert delegated_meta["parent_room_id"] == "room"
+        assert "child_room_id" in delegated_meta
+        assert "task_id" in delegated_meta
+        assert delegated_meta["task_input"] == "test"
 
-            # ON_TASK_COMPLETED — enriched metadata
-            completed_meta = hook_events[1][1]
-            assert hook_events[1][0] == "completed"
-            assert completed_meta["agent_id"] == "worker"
-            assert completed_meta["parent_room_id"] == "room"
-            assert completed_meta["task_status"] == "completed"
-            assert "duration_ms" in completed_meta
-            assert "child_room_id" in completed_meta
+        # ON_TASK_COMPLETED — enriched metadata
+        completed_meta = hook_events[1][1]
+        assert hook_events[1][0] == "completed"
+        assert completed_meta["agent_id"] == "worker"
+        assert completed_meta["parent_room_id"] == "room"
+        assert completed_meta["task_status"] == "completed"
+        assert "duration_ms" in completed_meta
+        assert "child_room_id" in completed_meta
 
-            await kit.close()
+        await kit.close()
 
 
 class TestWaitForResultMultipleWorkers:
@@ -221,22 +221,23 @@ class TestWaitForResultMultipleWorkers:
         await kit.create_room(room_id="room")
         await kit.attach_channel("room", "ws")
 
+        # Delegate to researcher
         with tool_call_in("room"):
-            # Delegate to researcher
             r1 = json.loads(
                 await supervisor.tool_handler("delegate_to_researcher", {"task": "Research AI"})
             )
-            assert r1["status"] == "completed"
-            assert "Research findings." in r1["result"]
+        assert r1["status"] == "completed"
+        assert "Research findings." in r1["result"]
 
-            # Delegate to writer
+        # Delegate to writer
+        with tool_call_in("room"):
             r2 = json.loads(
                 await supervisor.tool_handler("delegate_to_writer", {"task": "Write about AI"})
             )
-            assert r2["status"] == "completed"
-            assert "Article text." in r2["result"]
+        assert r2["status"] == "completed"
+        assert "Article text." in r2["result"]
 
-            await kit.close()
+        await kit.close()
 
 
 class TestWaitForResultFalse:
@@ -274,12 +275,12 @@ class TestWaitForResultFalse:
                 await supervisor.tool_handler("delegate_to_worker", {"task": "Do it"})
             )
 
-            # Async delegation returns immediately with task_id
-            assert result["status"] == "delegated"
-            assert "task_id" in result
-            assert result["worker"] == "worker"
+        # Async delegation returns immediately with task_id
+        assert result["status"] == "delegated"
+        assert "task_id" in result
+        assert result["worker"] == "worker"
 
-            await kit.close()
+        await kit.close()
 
 
 class TestInlineDelegationState:
@@ -319,11 +320,11 @@ class TestInlineDelegationState:
         with tool_call_in("room"):
             await supervisor.tool_handler("delegate_to_worker", {"task": "test"})
 
-            # State after delegation — should be unchanged
-            room = await kit.get_room("room")
-            state_after = get_conversation_state(room)
+        # State after delegation — should be unchanged
+        room = await kit.get_room("room")
+        state_after = get_conversation_state(room)
 
-            assert state_after.active_agent_id == state_before.active_agent_id
-            assert state_after.phase == state_before.phase
+        assert state_after.active_agent_id == state_before.active_agent_id
+        assert state_after.phase == state_before.phase
 
-            await kit.close()
+        await kit.close()

@@ -22,8 +22,9 @@ logging.getLogger("roomkit").setLevel(logging.ERROR)
 from roomkit import Agent, InboundMessage, RoomKit, Swarm, TextContent, WebSocketChannel
 from roomkit.memory.sliding_window import SlidingWindowMemory
 from roomkit.models.event import RoomEvent
-from roomkit.orchestration.handoff import HandoffMemoryProvider, _room_id_var
+from roomkit.orchestration.handoff import HandoffMemoryProvider
 from roomkit.orchestration.state import get_conversation_state
+from roomkit.providers.ai.base import AIResponse, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 
 # --- Helpers -----------------------------------------------------------------
@@ -37,6 +38,25 @@ def find_reply(events: list[RoomEvent], agent_id: str, start: int = 0) -> RoomEv
     return None
 
 
+def handing_off(target: str, reason: str, summary: str, then: str) -> list[AIResponse]:
+    """A scripted model turn: call ``handoff_conversation``, then say *then*.
+
+    A real model decides to hand off; the mock is told to. Either way the call
+    goes through the agent's tool loop, which is what tells the handoff tool
+    which room it acts on.
+    """
+    arguments = {"target": target, "reason": reason, "summary": summary}
+    return [
+        AIResponse(
+            content="",
+            tool_calls=[
+                AIToolCall(id=f"to-{target}", name="handoff_conversation", arguments=arguments)
+            ],
+        ),
+        AIResponse(content=then),
+    ]
+
+
 # --- Main --------------------------------------------------------------------
 
 
@@ -44,7 +64,18 @@ async def main() -> None:
     # Three specialist agents — any can hand off to any other
     ai_sales = Agent(
         "agent-sales",
-        provider=MockAIProvider(responses=["Great choice! Let me help with pricing."]),
+        provider=MockAIProvider(
+            ai_responses=[
+                AIResponse(content="Great choice! Let me help with pricing."),
+                *handing_off(
+                    "agent-support",
+                    reason="User also has a technical issue",
+                    summary="User wants Pro plan but has a setup problem.",
+                    then="Let me bring in support for that.",
+                ),
+                AIResponse(content="We offer SSO and audit-log add-ons."),
+            ]
+        ),
         role="Sales agent",
         description="Handles product inquiries and pricing",
         system_prompt="You are a sales agent.",
@@ -52,7 +83,14 @@ async def main() -> None:
     )
     ai_support = Agent(
         "agent-support",
-        provider=MockAIProvider(responses=["I'll troubleshoot that for you."]),
+        provider=MockAIProvider(
+            ai_responses=handing_off(
+                "agent-billing",
+                reason="API key issue was billing-related (expired trial)",
+                summary="User's trial expired. Needs Pro plan activation.",
+                then="Your trial expired; billing will activate your plan.",
+            )
+        ),
         role="Support agent",
         description="Handles technical issues and troubleshooting",
         system_prompt="You handle support requests.",
@@ -60,7 +98,14 @@ async def main() -> None:
     )
     ai_billing = Agent(
         "agent-billing",
-        provider=MockAIProvider(responses=["Let me check your invoice."]),
+        provider=MockAIProvider(
+            ai_responses=handing_off(
+                "agent-sales",
+                reason="Plan activated, back to sales for upsell",
+                summary="Pro plan active. User may want add-ons.",
+                then="Your Pro plan is active.",
+            )
+        ),
         role="Billing agent",
         description="Handles billing, invoices, and payment issues",
         system_prompt="You handle billing questions.",
@@ -91,92 +136,38 @@ async def main() -> None:
     await kit.attach_channel("swarm-room", "ws-user")
 
     # --- Simulate conversation ------------------------------------------------
+    # Each agent's model hands off by calling handoff_conversation in its turn;
+    # the next message goes to whoever it handed off to.
+
+    async def say(body: str, expected_agent: str) -> None:
+        mark = len(inbox)
+        await kit.process_inbound(
+            InboundMessage(channel_id="ws-user", sender_id="user", content=TextContent(body=body))
+        )
+        reply = find_reply(inbox, expected_agent, mark)
+        print(f"  User: {body}")
+        print(f"  {expected_agent}: {reply.content.body}")  # type: ignore[union-attr]
+        state = get_conversation_state(await kit.get_room("swarm-room"))
+        print(f"  Active agent now: {state.active_agent_id}")
 
     # 1. Initial message → sales (entry agent)
     print("=== Sales handles initial message ===")
-    mark = len(inbox)
-    await kit.process_inbound(
-        InboundMessage(
-            channel_id="ws-user",
-            sender_id="user",
-            content=TextContent(body="Hi, I want to buy the Pro plan."),
-        )
-    )
-    reply = find_reply(inbox, "agent-sales", mark)
-    print(f"  Sales: {reply.content.body}")  # type: ignore[union-attr]
+    await say("Hi, I want to buy the Pro plan.", "agent-sales")
 
     # 2. Sales → Support (bidirectional handoff)
     print("\n=== Handoff: sales -> support ===")
-    _room_id_var.set("swarm-room")
-    await ai_sales.tool_handler(
-        "handoff_conversation",
-        {
-            "target": "agent-support",
-            "reason": "User also has a technical issue",
-            "summary": "User wants Pro plan but has a setup problem.",
-        },
-    )
-
-    room = await kit.get_room("swarm-room")
-    state = get_conversation_state(room)
-    print(f"  Active agent: {state.active_agent_id}")
-
-    mark = len(inbox)
-    await kit.process_inbound(
-        InboundMessage(
-            channel_id="ws-user",
-            sender_id="user",
-            content=TextContent(body="My API key doesn't work."),
-        )
-    )
-    reply = find_reply(inbox, "agent-support", mark)
-    print(f"  Support: {reply.content.body}")  # type: ignore[union-attr]
+    await say("My API key doesn't work, though.", "agent-sales")
 
     # 3. Support → Billing (support can reach billing directly)
     print("\n=== Handoff: support -> billing ===")
-    _room_id_var.set("swarm-room")
-    await ai_support.tool_handler(
-        "handoff_conversation",
-        {
-            "target": "agent-billing",
-            "reason": "API key issue was billing-related (expired trial)",
-            "summary": "User's trial expired. Needs Pro plan activation.",
-        },
-    )
-
-    mark = len(inbox)
-    await kit.process_inbound(
-        InboundMessage(
-            channel_id="ws-user",
-            sender_id="user",
-            content=TextContent(body="Can you activate my Pro plan?"),
-        )
-    )
-    reply = find_reply(inbox, "agent-billing", mark)
-    print(f"  Billing: {reply.content.body}")  # type: ignore[union-attr]
+    await say("It stopped working this morning.", "agent-support")
 
     # 4. Billing → Sales (back to sales — bidirectional!)
     print("\n=== Handoff: billing -> sales (back!) ===")
-    _room_id_var.set("swarm-room")
-    await ai_billing.tool_handler(
-        "handoff_conversation",
-        {
-            "target": "agent-sales",
-            "reason": "Plan activated, back to sales for upsell",
-            "summary": "Pro plan active. User may want add-ons.",
-        },
-    )
+    await say("Can you activate my Pro plan?", "agent-billing")
 
-    mark = len(inbox)
-    await kit.process_inbound(
-        InboundMessage(
-            channel_id="ws-user",
-            sender_id="user",
-            content=TextContent(body="What add-ons do you have?"),
-        )
-    )
-    reply = find_reply(inbox, "agent-sales", mark)
-    print(f"  Sales: {reply.content.body}")  # type: ignore[union-attr]
+    print("\n=== Sales again ===")
+    await say("What add-ons do you have?", "agent-sales")
 
     # --- Results -------------------------------------------------------------
 

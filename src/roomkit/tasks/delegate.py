@@ -11,9 +11,9 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
+from roomkit.orchestration._call_room import call_room_handler
 from roomkit.providers.ai.base import AITool
 from roomkit.tasks.cache import CompletedTaskCache
-from roomkit.tools.context import current_tool_room_id
 
 if TYPE_CHECKING:
     from roomkit.channels.ai import AIChannel
@@ -270,22 +270,15 @@ def setup_delegation(
 
     original = channel._tool_handler
 
-    async def delegate_aware_handler(name: str, arguments: dict[str, Any]) -> str:
-        if name == "delegate_task":
-            room_id = current_tool_room_id()
-            if room_id is None:
-                return json.dumps({"error": "No orchestration context (room_id unavailable)"})
-            result = await handler.handle(
-                room_id=room_id,
-                calling_agent_id=channel.channel_id,
-                arguments=arguments,
-            )
-            return json.dumps(result)
-        if original:
-            return await original(name, arguments)
-        return json.dumps({"error": f"Unknown tool: {name}"})
+    async def delegate(room_id: str, name: str, arguments: dict[str, Any]) -> str:
+        result = await handler.handle(
+            room_id=room_id,
+            calling_agent_id=channel.channel_id,
+            arguments=arguments,
+        )
+        return json.dumps(result)
 
-    channel._tool_handler = delegate_aware_handler
+    channel._tool_handler = call_room_handler({"delegate_task"}, delegate, original)
 
 
 def _aitool_to_dict(tool: AITool) -> dict[str, Any]:

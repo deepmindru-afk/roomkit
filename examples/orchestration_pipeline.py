@@ -22,8 +22,9 @@ logging.getLogger("roomkit").setLevel(logging.ERROR)
 from roomkit import Agent, InboundMessage, Pipeline, RoomKit, TextContent, WebSocketChannel
 from roomkit.memory.sliding_window import SlidingWindowMemory
 from roomkit.models.event import RoomEvent
-from roomkit.orchestration.handoff import HandoffMemoryProvider, _room_id_var
+from roomkit.orchestration.handoff import HandoffMemoryProvider
 from roomkit.orchestration.state import get_conversation_state
+from roomkit.providers.ai.base import AIResponse, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 
 # --- Helpers -----------------------------------------------------------------
@@ -37,6 +38,25 @@ def find_reply(events: list[RoomEvent], agent_id: str, start: int = 0) -> RoomEv
     return None
 
 
+def handing_off(target: str, reason: str, summary: str, then: str) -> list[AIResponse]:
+    """A scripted model turn: call ``handoff_conversation``, then say *then*.
+
+    A real model decides to hand off; the mock is told to. Either way the call
+    goes through the agent's tool loop, which is what tells the handoff tool
+    which room it acts on.
+    """
+    arguments = {"target": target, "reason": reason, "summary": summary}
+    return [
+        AIResponse(
+            content="",
+            tool_calls=[
+                AIToolCall(id=f"to-{target}", name="handoff_conversation", arguments=arguments)
+            ],
+        ),
+        AIResponse(content=then),
+    ]
+
+
 # --- Main --------------------------------------------------------------------
 
 
@@ -44,7 +64,14 @@ async def main() -> None:
     # AI agents — each with a distinct mock response
     ai_triage = Agent(
         "agent-triage",
-        provider=MockAIProvider(responses=["I'll transfer you to our specialist."]),
+        provider=MockAIProvider(
+            ai_responses=handing_off(
+                "agent-handler",
+                reason="Billing issue needs specialist",
+                summary="User has a billing question about their account.",
+                then="I'll transfer you to our specialist.",
+            )
+        ),
         role="Triage agent",
         description="Routes incoming requests to the right specialist",
         system_prompt="You triage incoming requests.",
@@ -52,7 +79,14 @@ async def main() -> None:
     )
     ai_handler = Agent(
         "agent-handler",
-        provider=MockAIProvider(responses=["Let me resolve this for you."]),
+        provider=MockAIProvider(
+            ai_responses=handing_off(
+                "agent-resolver",
+                reason="Invoice corrected, needs final confirmation",
+                summary="Adjusted invoice #4521. User confirmed the new amount.",
+                then="I corrected invoice #4521; our resolution team will confirm.",
+            )
+        ),
         role="Request handler",
         description="Handles and resolves customer requests",
         system_prompt="You handle requests.",
@@ -106,21 +140,8 @@ async def main() -> None:
     reply = find_reply(inbox, "agent-triage", mark)
     print(f"  Triage replied: {reply.content.body}")  # type: ignore[union-attr]
 
-    # Handoff: triage -> handler
-    # In production, the AI would call handoff_conversation via tool use.
-    # Here we invoke the tool handler directly for demonstration.
+    # Triage's model called handoff_conversation during that turn.
     print("\n=== Handoff: triage -> handler ===")
-    _room_id_var.set("support-room")
-    result_json = await ai_triage.tool_handler(
-        "handoff_conversation",
-        {
-            "target": "agent-handler",
-            "reason": "Billing issue needs specialist",
-            "summary": "User has a billing question about their account.",
-        },
-    )
-    print(f"  Result: {result_json}")
-
     room = await kit.get_room("support-room")
     state = get_conversation_state(room)
     print(
@@ -128,7 +149,7 @@ async def main() -> None:
         f"handoffs={state.handoff_count}"
     )
 
-    # User message — now routes to handler
+    # User message — now routes to handler, whose model hands off to resolver
     print("\n=== Phase 2: Handling ===")
     mark = len(inbox)
     await kit.process_inbound(
@@ -141,18 +162,7 @@ async def main() -> None:
     reply = find_reply(inbox, "agent-handler", mark)
     print(f"  Handler replied: {reply.content.body}")  # type: ignore[union-attr]
 
-    # Handoff: handler -> resolver
     print("\n=== Handoff: handler -> resolver ===")
-    _room_id_var.set("support-room")
-    await ai_handler.tool_handler(
-        "handoff_conversation",
-        {
-            "target": "agent-resolver",
-            "reason": "Invoice corrected, needs final confirmation",
-            "summary": "Adjusted invoice #4521. User confirmed the new amount.",
-        },
-    )
-
     room = await kit.get_room("support-room")
     state = get_conversation_state(room)
     print(

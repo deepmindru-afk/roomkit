@@ -23,17 +23,17 @@ logging.getLogger("roomkit").setLevel(logging.ERROR)
 from roomkit import Agent, InboundMessage, RoomKit, Supervisor, TextContent, WebSocketChannel
 from roomkit.memory.sliding_window import SlidingWindowMemory
 from roomkit.models.event import RoomEvent
-from roomkit.orchestration.handoff import _room_id_var
 from roomkit.orchestration.state import get_conversation_state
+from roomkit.providers.ai.base import AIResponse, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 
 # --- Helpers -----------------------------------------------------------------
 
 
 def find_reply(events: list[RoomEvent], agent_id: str, start: int = 0) -> RoomEvent | None:
-    """Find the first event from a specific agent after ``start`` index."""
+    """Find the first text event from a specific agent after ``start`` index."""
     for event in events[start:]:
-        if event.source.channel_id == agent_id:
+        if event.source.channel_id == agent_id and isinstance(event.content, TextContent):
             return event
     return None
 
@@ -43,14 +43,27 @@ def find_reply(events: list[RoomEvent], agent_id: str, start: int = 0) -> RoomEv
 
 async def main() -> None:
     # Supervisor — talks to the user
+    # A real model decides to delegate; the mock is told to. Either way the
+    # call goes through the manager's tool loop, which is what tells the
+    # delegation tool which room it delegates from.
+    manager_model = MockAIProvider(
+        ai_responses=[
+            AIResponse(
+                content="",
+                tool_calls=[
+                    AIToolCall(
+                        id="d1",
+                        name="delegate_to_agent-researcher",
+                        arguments={"task": "Research the latest trends in AI for 2025."},
+                    )
+                ],
+            ),
+            AIResponse(content="The research is complete. Here's what we found."),
+        ]
+    )
     manager = Agent(
         "agent-manager",
-        provider=MockAIProvider(
-            responses=[
-                "I'll have our researcher look into that.",
-                "The research is complete. Here's what we found.",
-            ]
-        ),
+        provider=manager_model,
         role="Project manager",
         system_prompt="You coordinate work across your team.",
         memory=SlidingWindowMemory(max_events=50),
@@ -108,17 +121,21 @@ async def main() -> None:
     reply = find_reply(inbox, "agent-manager", mark)
     print(f"  Manager: {reply.content.body}")  # type: ignore[union-attr]
 
-    # 2. Manager delegates to researcher (inline by default)
-    print("\n=== Manager delegates to researcher ===")
-    _room_id_var.set("project-room")
-    result = await manager.tool_handler(
-        "delegate_to_agent-researcher",
-        {"task": "Research the latest trends in AI for 2025."},
-    )
-    parsed = json.loads(result)
+    # 2. The manager's model called delegate_to_agent-researcher in that turn
+    print("\n=== Manager delegated to researcher ===")
+    tool_results = [
+        part.result
+        for message in manager_model.calls[-1].messages
+        if message.role == "tool"
+        for part in message.content
+    ]
+    parsed = json.loads(tool_results[0])
     print(f"  Status: {parsed['status']}")
     print(f"  Worker: {parsed['worker']}")
     print(f"  Result: {parsed['result'][:80]}...")
+    for child in await kit.store.list_rooms():
+        if child.metadata.get("parent_room_id") == "project-room":
+            print(f"  Child room: {child.id} (parent: project-room)")
 
     # 3. Show that workers are NOT in the main room
     print("\n=== Room bindings ===")

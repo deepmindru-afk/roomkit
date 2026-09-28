@@ -29,10 +29,6 @@ _post_worker_status = post_agent_lifecycle
 #: it can't re-delegate from inside its own sub-tasks.
 _STRATEGY_TOOL_NAME = "delegate_workers"
 
-#: What a delegation tool answers when no tool call names its room (RFC §23.4):
-#: called directly, outside a tool loop, it has no room to delegate from.
-_NO_CALL_ROOM = json.dumps({"error": "No orchestration context (room_id unavailable)"})
-
 
 def _is_subtask_room(room_id: str) -> bool:
     """A delegated child room (``::task-`` segment). The supervisor must run

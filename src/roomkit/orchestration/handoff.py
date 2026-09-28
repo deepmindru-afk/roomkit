@@ -7,7 +7,6 @@ preserves context, and optionally escalates channels.
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -19,18 +18,18 @@ from roomkit.models.context import RoomContext
 from roomkit.models.enums import ChannelType, EventStatus, EventType, HookTrigger, Visibility
 from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.models.room import Room
+from roomkit.orchestration._call_room import call_room_handler
 from roomkit.orchestration.state import (
     get_conversation_state,
     set_conversation_state,
 )
 from roomkit.orchestration.status_bus import StatusLevel, post_agent_lifecycle
 from roomkit.providers.ai.base import AIMessage, AITool
-from roomkit.tools.context import current_tool_room_id
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-    from roomkit.channels.ai import AIChannel, ToolResult
+    from roomkit.channels.ai import AIChannel
     from roomkit.core.framework import RoomKit
     from roomkit.orchestration.router import ConversationRouter
 
@@ -705,19 +704,12 @@ def setup_handoff(
     # Wrap the tool handler chain
     original = channel.tool_handler
 
-    async def handoff_aware_handler(name: str, arguments: dict[str, Any]) -> ToolResult:
-        if name == "handoff_conversation":
-            room_id = current_tool_room_id()
-            if room_id is None:
-                return json.dumps({"error": "No orchestration context (room_id unavailable)"})
-            result = await handler.handle(
-                room_id=room_id,
-                calling_agent_id=channel.channel_id,
-                arguments=arguments,
-            )
-            return result.model_dump_json()
-        if original:
-            return await original(name, arguments)
-        return json.dumps({"error": f"Unknown tool: {name}"})
+    async def hand_off(room_id: str, name: str, arguments: dict[str, Any]) -> str:
+        result = await handler.handle(
+            room_id=room_id,
+            calling_agent_id=channel.channel_id,
+            arguments=arguments,
+        )
+        return result.model_dump_json()
 
-    channel.tool_handler = handoff_aware_handler
+    channel.tool_handler = call_room_handler({"handoff_conversation"}, hand_off, original)
