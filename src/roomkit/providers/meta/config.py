@@ -1,10 +1,12 @@
-"""Meta Model API provider configuration — images (Muse Image)."""
+"""Meta Model API provider configuration — chat (Muse Spark) and images (Muse Image)."""
 
 from __future__ import annotations
 
 from typing import Literal
 
 from pydantic import BaseModel, SecretStr
+
+from roomkit.providers.openai.config import OpenAIConfig
 
 MetaImageTool = Literal["web_search", "image_search", "shell"]
 
@@ -45,3 +47,34 @@ class MetaImageConfig(BaseModel):
     timeout: float = 120.0
     connect_timeout: float = 5.0
     max_retries: int = 0
+
+
+class MetaConfig(OpenAIConfig):
+    """Meta Muse Spark chat provider configuration.
+
+    The Meta Model API serves an OpenAI-compatible Chat Completions API at
+    ``https://api.meta.ai/v1``, so this subclasses :class:`OpenAIConfig` and
+    inherits every request field the inherited provider reads
+    (``temperature``, ``reasoning_effort``, ``extra_body`` …). Only the
+    endpoint, the model and two defaults change.
+
+    ``reasoning_effort`` takes ``minimal``, ``low``, ``medium``, ``high`` or
+    ``xhigh``. Muse Spark always reasons: ``"none"`` is refused by the service
+    and sent as ``"minimal"``, its lightest effort.
+
+    The ``-contributor`` model ids cost a fraction of the standard ones because
+    Meta trains its models on their prompts and completions. They are never a
+    default; choose one knowingly.
+    """
+
+    base_url: str = "https://api.meta.ai/v1"
+    """Meta Model API endpoint. Override only to point at a proxy."""
+
+    model: str = "muse-spark-1.3"
+    """Muse Spark model id — see :mod:`roomkit.providers.meta.models`."""
+
+    use_max_completion_tokens: bool = True
+    """Meta documents ``max_completion_tokens`` for Chat Completions."""
+
+    include_stream_usage: bool = True
+    """Meta reports usage on the last streamed chunk, reasoning tokens included."""

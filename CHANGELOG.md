@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `MetaAIProvider` converses on Meta's Muse Spark (`muse-spark-1.3`, 1.2, 1.1;
+  Meta Model API) (RMK-252). It subclasses `OpenAIAIProvider` on Meta's Chat
+  Completions, so tools, streaming and usage (reasoning and cached tokens) are
+  inherited. Muse Spark cannot turn reasoning off: `reasoning_effort` rides
+  every request, tool turns included, and `"none"`, which the service answers
+  with a 400, is sent as `"minimal"` (3.0 s against 4.6 s at `"low"` on a
+  one-line answer, 2026-09-27). `list_models()` keeps the `muse-spark-*` ids
+  of a `/v1/models` that also lists Meta's image, speech and segmentation
+  models. The catalog carries the 1M-token window and both price tiers; the
+  `-contributor` ids, cheaper because Meta trains on their traffic, are never
+  a default. `make check-models` covers it against the mirror's `meta/`
+  namespace. Example `examples/meta_ai.py`.
 - `MetaImageProvider` draws and edits on Meta's Muse Image (`muse-image-1.0`,
   Meta Model API) (RMK-251, RFC §25). Meta's generator can search the web,
   fetch reference images and run code while it draws, and turns all three on

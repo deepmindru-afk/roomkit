@@ -110,6 +110,7 @@ CATALOGS: list[Catalog] = [
     Catalog("gemini", "roomkit.providers.gemini.models", "google/"),
     Catalog("mistral", "roomkit.providers.mistral.models", "mistralai/"),
     Catalog("xai", "roomkit.providers.xai.models", "x-ai/"),
+    Catalog("meta", "roomkit.providers.meta.models", "meta/"),
     # Both namespaces upstream are dominated by open-weight checkpoints and
     # legacy lines the vendors' own hosted APIs no longer answer to — 13
     # deepseek ids for a two-model lineup, 47 qwen ids for five hosted ones — so
@@ -230,6 +231,10 @@ MIRROR_ONLY: dict[str, str] = {
     # The images mirror routes Muse Image under a product slug; the Meta Model
     # API answers only to muse-image-1.0 (GET /v1/models, 2026-09-27).
     "meta/muse-image": "mirror-side slug; Meta's API id is muse-image-1.0",
+    # Open weights (Apache 2.0) that the mirror hosts; the Meta Model API does
+    # not serve them (GET /v1/models, 2026-09-27). roomkit reaches Glimmer
+    # through a self-hosted server: vLLM, llama.cpp, Ollama.
+    "meta/muse-glimmer-30b": "open-weight model the Meta Model API does not serve",
 }
 
 # Catalog ids where roomkit's value is deliberately not the mirror's. Each one
