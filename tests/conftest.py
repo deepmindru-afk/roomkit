@@ -6,7 +6,7 @@ import asyncio
 import collections
 import os
 import traceback
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Iterator
 from typing import Any
 
 import pytest
@@ -23,6 +23,7 @@ from roomkit.models.event import (
 from roomkit.models.event import EventContent as EventContentType
 from roomkit.models.room import Room
 from roomkit.store.memory import InMemoryStore
+from tests.tool_loop_modes import expect_streaming
 
 
 @pytest.fixture
@@ -54,13 +55,14 @@ def room() -> Room:
 
 
 @pytest.fixture(params=[False, True], ids=["non-streaming", "streaming"])
-def streaming(request: pytest.FixtureRequest) -> bool:
+def streaming(request: pytest.FixtureRequest) -> Iterator[bool]:
     """Run a tool-loop test once per AIChannel generation mode.
 
     Every in-repo provider streams, so production runs the streaming tool
-    loop; a test written against one loop only is blind to the other. Pass
-    the value to ``MockAIProvider(streaming=...)`` and drive the turn with
-    ``tests/tool_loop_modes.py``.
+    loop; a test written against one loop only is blind to the other. Drive
+    the turn with ``tests/tool_loop_modes.py``: through ``respond`` the
+    provider picks the loop (pass the value to ``MockAIProvider(streaming=...)``,
+    which ``respond`` checks), through ``run_tool_loop`` its argument does.
 
     A known divergence between the loops is marked on the test with
     ``@pytest.mark.xfail_streaming("RMK-…: …")`` (or ``xfail_non_streaming``):
@@ -72,7 +74,30 @@ def streaming(request: pytest.FixtureRequest) -> bool:
     )
     if marker is not None:
         request.applymarker(pytest.mark.xfail(strict=True, reason=marker.args[0]))
-    return request.param
+    expect_streaming(request.param)
+    yield request.param
+    expect_streaming(None)
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """A divergence mark needs its reason and the ``streaming`` fixture.
+
+    Without the fixture the mark would be ignored and the divergence hidden;
+    without a reason nobody knows which card owns it.
+    """
+    for item in items:
+        for name in ("xfail_streaming", "xfail_non_streaming"):
+            marker = item.get_closest_marker(name)
+            if marker is None:
+                continue
+            if not marker.args or not isinstance(marker.args[0], str):
+                raise pytest.UsageError(
+                    f"{item.nodeid}: @{name} needs the reason, naming its card"
+                )
+            if "streaming" not in getattr(item, "fixturenames", ()):
+                raise pytest.UsageError(
+                    f"{item.nodeid}: @{name} applies only to a test that takes `streaming`"
+                )
 
 
 class PoolCheckoutRecorder:

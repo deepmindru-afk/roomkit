@@ -450,7 +450,7 @@ class TestActivationTracking:
         _set_loop_ctx(activated_skills={"s1"})
         try:
             context = AIContext(messages=[AIMessage(role="user", content="go")])
-            # _run_tool_loop creates a fresh _ToolLoopContext, so "s1" is NOT inherited
+            # The tool loop creates a fresh _ToolLoopContext, so "s1" is NOT inherited
             await run_tool_loop(ch, context, streaming=streaming)
             # After tool loop, active_loops should be empty
             assert len(ch._active_loops) == 0

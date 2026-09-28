@@ -21,7 +21,7 @@ from roomkit.models.enums import (
 )
 from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.models.hook import HookResult
-from roomkit.providers.ai.base import AIContext, AIProvider, AIResponse
+from roomkit.providers.ai.base import AIContext, AIProvider, AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.telemetry import (
     Attr,
@@ -493,8 +493,6 @@ class TestLLMTelemetry:
         kit = RoomKit(telemetry=mock)
 
         from roomkit.channels.ai import AIChannel
-        from roomkit.providers.ai.base import AITool, AIToolCall
-        from roomkit.providers.ai.mock import MockAIProvider
 
         provider = MockAIProvider(
             ai_responses=[

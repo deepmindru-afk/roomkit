@@ -484,8 +484,8 @@ class AIToolsMixin:
             recorded_result: Any = None
             if executed_arguments is not None:
                 # Snapshot the post-hook payload before handing it to user
-                # code. Streaming persistence can then distinguish what the
-                # model requested from what actually executed.
+                # code. Persistence can then distinguish what the model
+                # requested from what actually executed, in both loops.
                 executed_arguments[tc.id] = dict(arguments)
             try:
                 # Set contextvar so HumanInputToolHandler can read

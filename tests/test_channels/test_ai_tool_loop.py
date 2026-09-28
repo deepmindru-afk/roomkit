@@ -120,8 +120,7 @@ class TestToolLoopTimeout:
 
         # At most 1 round completes (the one in-flight when timeout is checked)
         assert handler.call_count <= 1
-        # Response should exist (may be partial or timeout message)
-        assert run is not None
+        assert run.reason == "timeout"
 
     async def test_loop_completes_current_round_before_timeout(self, streaming: bool) -> None:
         """Timeout check happens after round finishes, not mid-tool-execution."""

@@ -1,4 +1,9 @@
-"""Tests for the streaming tool loop in AIChannel."""
+"""Tests for AIChannel's tool loop, most of them in both generation modes.
+
+Born for the streaming loop; the tests whose subject both loops share take
+the ``streaming`` fixture, the rest (markers, progressive delivery, stream
+tokens) stay on the stream.
+"""
 
 from __future__ import annotations
 
@@ -25,6 +30,16 @@ from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.tools.external import BeforeToolDecision
 from tests.conftest import make_event
 from tests.tool_loop_modes import LoopCall, respond
+
+_SEARCH_TOOL = AITool(
+    name="search",
+    description="Search",
+    parameters={
+        "type": "object",
+        "properties": {"q": {"type": "string"}},
+        "required": ["q"],
+    },
+)
 
 
 def _binding() -> ChannelBinding:
@@ -458,10 +473,10 @@ class TestToolCallEphemeralEvents:
         assert ends[0].status == "completed"
         assert ends[0].duration_ms >= 0
 
-    async def test_end_marker_records_post_hook_arguments_that_executed(self) -> None:
-        """Persistence keeps the request marker and the actual execution distinct."""
-        from roomkit.models.streaming import ToolCallStartMarker
-
+    async def test_the_call_reports_its_request_and_what_executed(self, streaming: bool) -> None:
+        """Persistence keeps the request and the execution distinct, in both
+        loops: the start carries what the model asked for, the end what the
+        handler ran with after a BEFORE_TOOL_USE rewrite."""
         seen: list[dict[str, Any]] = []
 
         async def tool_handler(name: str, args: dict[str, Any]) -> str:
@@ -480,95 +495,16 @@ class TestToolCallEphemeralEvents:
                 ),
                 AIResponse(content="done", finish_reason="stop"),
             ],
-            streaming=True,
+            streaming=streaming,
         )
-        ch = AIChannel(
-            "ai1",
-            provider=provider,
-            tool_handler=tool_handler,
-            tools=[
-                AITool(
-                    name="search",
-                    description="Search",
-                    parameters={
-                        "type": "object",
-                        "properties": {"q": {"type": "string"}},
-                        "required": ["q"],
-                    },
-                )
-            ],
-        )
+        ch = AIChannel("ai1", provider=provider, tool_handler=tool_handler, tools=[_SEARCH_TOOL])
         ch._before_tool_call_hook = rewrite
 
-        output = await ch.on_event(
-            make_event(body="search", channel_id="sms1"),
-            _binding(),
-            _ctx(),
-        )
-        assert output.response_stream is not None
-        items = [item async for item in output.response_stream]
-        start = next(item for item in items if isinstance(item, ToolCallStartMarker))
-        end = next(item for item in items if isinstance(item, ToolCallEndMarker))
+        run = await respond(ch, make_event(body="search", channel_id="sms1"), _binding(), _ctx())
 
         assert seen == [{"q": "redacted-value"}]
-        assert start.arguments == {"q": "token"}
-        assert end.arguments == {"q": "redacted-value"}
-
-    async def test_non_streaming_end_event_records_post_hook_arguments_that_executed(
-        self,
-    ) -> None:
-        """The batch loop persists the same pair as the markers: what the model
-        asked for on the start, what ran on the end."""
-        from roomkit.models.enums import EventType
-
-        seen: list[dict[str, Any]] = []
-
-        async def tool_handler(name: str, args: dict[str, Any]) -> str:
-            seen.append(args)
-            return "ok"
-
-        async def rewrite(_event: Any) -> BeforeToolDecision:
-            return BeforeToolDecision(allowed=True, arguments={"q": "redacted-value"})
-
-        provider = MockAIProvider(
-            ai_responses=[
-                AIResponse(
-                    content="",
-                    finish_reason="tool_calls",
-                    tool_calls=[AIToolCall(id="tc1", name="search", arguments={"q": "token"})],
-                ),
-                AIResponse(content="done", finish_reason="stop"),
-            ],
-        )
-        ch = AIChannel(
-            "ai1",
-            provider=provider,
-            tool_handler=tool_handler,
-            tools=[
-                AITool(
-                    name="search",
-                    description="Search",
-                    parameters={
-                        "type": "object",
-                        "properties": {"q": {"type": "string"}},
-                        "required": ["q"],
-                    },
-                )
-            ],
-        )
-        ch._before_tool_call_hook = rewrite
-
-        output = await ch.on_event(
-            make_event(body="search", channel_id="sms1"),
-            _binding(),
-            _ctx(),
-        )
-        start = next(e for e in output.response_events if e.type == EventType.TOOL_CALL_START)
-        end = next(e for e in output.response_events if e.type == EventType.TOOL_CALL_END)
-
-        assert seen == [{"q": "redacted-value"}]
-        assert start.content.arguments == {"q": "token"}
-        assert end.content.arguments == {"q": "redacted-value"}
+        assert run.calls[0].requested == {"q": "token"}
+        assert run.calls[0].arguments == {"q": "redacted-value"}
 
     async def test_non_streaming_returns_tool_events(self) -> None:
         """Non-streaming tool loop returns tool call events in response_events."""
@@ -759,11 +695,12 @@ class TestStreamingTokenAccumulation:
         }
 
 
-class TestStreamingToolOutcome:
-    """The streaming loop states a call's outcome the way the batch loop does.
+class TestToolOutcome:
+    """Both loops state a call's outcome the same way.
 
-    ``ToolCallEndMarker.status`` and ``.error`` are read off ``is_error``, not
-    matched against the result text; nothing asserted it on this loop.
+    The end's status and error (``ToolCallEndMarker`` on the stream, the
+    TOOL_CALL_END event otherwise) are read off ``is_error``, not matched
+    against the result text.
     """
 
     @staticmethod
@@ -784,9 +721,7 @@ class TestStreamingToolOutcome:
         assert len(run.calls) == 1
         return run.calls[0]
 
-    async def test_a_refusal_is_a_failed_marker_in_the_handlers_words(
-        self, streaming: bool
-    ) -> None:
+    async def test_a_refusal_is_a_failed_call_in_the_handlers_words(self, streaming: bool) -> None:
         async def declines(name: str, args: dict[str, Any]) -> str:
             raise ToolRefusedError(f"Error: Tool '{name}' is temporarily unavailable.")
 
@@ -795,7 +730,7 @@ class TestStreamingToolOutcome:
         assert end.failed
         assert end.error == "Error: Tool 'search' is temporarily unavailable."
 
-    async def test_a_handler_that_raised_is_a_failed_marker(self, streaming: bool) -> None:
+    async def test_a_handler_that_raised_is_a_failed_call(self, streaming: bool) -> None:
         async def boom(name: str, args: dict[str, Any]) -> str:
             raise RuntimeError("upstream down")
 
@@ -805,7 +740,7 @@ class TestStreamingToolOutcome:
         assert end.error is not None
         assert end.error.startswith("Error executing tool 'search'")
 
-    async def test_a_served_call_is_a_completed_marker(self, streaming: bool) -> None:
+    async def test_a_served_call_is_a_completed_call(self, streaming: bool) -> None:
         async def ok(name: str, args: dict[str, Any]) -> str:
             return "ok"
 

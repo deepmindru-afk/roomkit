@@ -2,9 +2,15 @@
 
 Every in-repo provider streams, so an AIChannel with tools runs the streaming
 tool loop in production; the non-streaming loop serves a provider that cannot
-stream. A tool-loop test takes the ``streaming`` fixture (``tests/conftest.py``),
-passes it to ``MockAIProvider(streaming=...)``, and drives the turn through the
-helpers below, which read either loop's outcome into the same :class:`LoopRun`.
+stream. A tool-loop test takes the ``streaming`` fixture (``tests/conftest.py``)
+and drives the turn through the helpers below, which read either loop's
+outcome into the same :class:`LoopRun`:
+
+- :func:`respond` goes through ``on_event``, where the provider picks the
+  loop: pass the fixture's value to ``MockAIProvider(streaming=...)``. Under
+  the fixture it checks that the reply came in the mode the test runs in.
+- :func:`run_tool_loop` calls a loop directly, picked by its ``streaming``
+  argument; the provider's flag plays no part.
 """
 
 from __future__ import annotations
@@ -18,8 +24,23 @@ from roomkit.models.channel import ChannelBinding
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import EventType
 from roomkit.models.event import RoomEvent, TextContent, ToolCallContent
-from roomkit.models.streaming import LoopEndMarker, ToolCallEndMarker, ToolCallStartMarker
+from roomkit.models.streaming import (
+    LoopEndMarker,
+    LoopEndReason,
+    ToolCallEndMarker,
+    ToolCallStartMarker,
+)
 from roomkit.providers.ai.base import AIContext
+
+# The mode the running test was parametrised with, set by the ``streaming``
+# fixture for the length of one test; ``None`` outside it.
+_expected_streaming: bool | None = None
+
+
+def expect_streaming(value: bool | None) -> None:
+    """Record the mode the running test runs in (the ``streaming`` fixture)."""
+    global _expected_streaming
+    _expected_streaming = value
 
 
 @dataclass
@@ -56,13 +77,8 @@ class LoopRun:
     text: str = ""
     said: list[str] = field(default_factory=list)
     calls: list[LoopCall] = field(default_factory=list)
-    reason: str | None = None
+    reason: LoopEndReason | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
-
-    @property
-    def results(self) -> list[Any]:
-        """Each call's result, in call order."""
-        return [call.result for call in self.calls]
 
 
 def open_tool_calls(events: list[RoomEvent]) -> list[str]:
@@ -96,7 +112,7 @@ async def run_tool_loop(channel: AIChannel, context: AIContext, *, streaming: bo
                     name=call.name,
                     id=call.id,
                     requested=call.arguments,
-                    arguments=rnd.executed_arguments.get(call.id, call.arguments),
+                    arguments=rnd.arguments_ran(call),
                     result=part.result,
                     failed=part.is_error,
                     error=part.as_text() if part.is_error else None,
@@ -113,6 +129,12 @@ async def respond(
 ) -> LoopRun:
     """Deliver ``event`` to the channel and read its reply, streamed or not."""
     output = await channel.on_event(event, binding, context)
+    streamed = output.response_stream is not None
+    if _expected_streaming is not None and streamed != _expected_streaming:
+        raise AssertionError(
+            f"the test runs streaming={_expected_streaming} but the reply came "
+            f"streaming={streamed}: pass the fixture to the provider"
+        )
     if output.response_stream is not None:
         run = await _read_stream(output.response_stream)
     else:

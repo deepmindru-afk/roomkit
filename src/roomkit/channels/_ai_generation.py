@@ -60,6 +60,10 @@ class ToolRound:
     duration_ms: int
     executed_arguments: dict[str, dict[str, Any]] = field(default_factory=dict)
 
+    def arguments_ran(self, call: AIToolCall) -> dict[str, Any]:
+        """What *call*'s handler ran with; the request when it never ran."""
+        return self.executed_arguments.get(call.id, call.arguments)
+
 
 @dataclass
 class ToolLoopResult:
@@ -420,8 +424,9 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
 
             # Tool call start + end events
             for tc, rp in zip(rnd.tool_calls, rnd.results, strict=False):
-                executed = rnd.executed_arguments.get(tc.id, tc.arguments)
-                events.extend(_tool_call_events(tc, rp, executed, rnd.duration_ms, event_fields))
+                events.extend(
+                    _tool_call_events(tc, rp, rnd.arguments_ran(tc), rnd.duration_ms, event_fields)
+                )
 
         # Final text segment (the last response after all tool rounds)
         if response.content:
@@ -691,8 +696,8 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
 
 
 def _tool_call_events(
-    tc: Any,
-    rp: Any,
+    tc: AIToolCall,
+    rp: AIToolResultPart,
     executed: dict[str, Any],
     duration_ms: int,
     event_fields: dict[str, Any],

@@ -206,10 +206,10 @@ async def test_a_block_without_a_reason_never_serves_the_original(streaming: boo
     assert part.structured_content is None
 
 
-async def test_a_fail_closed_hook_that_cannot_run_withholds_the_result(streaming: bool) -> None:
+async def test_a_fail_closed_hook_that_cannot_run_withholds_the_result() -> None:
     """The room's context would not build, so no ON_TOOL_CALL hook runs: a
     fail-closed one withholds, as its own failure would."""
-    kit, _ = await _kit(streaming=streaming)
+    kit, _ = await _kit(streaming=True)
 
     @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="pii", fail_closed=True)
     async def pii(event: ToolCallEvent, ctx: Any) -> HookResult:
@@ -233,8 +233,8 @@ async def test_a_fail_closed_hook_that_cannot_run_withholds_the_result(streaming
     assert "hook_error:pii" in str(verdict.result)
 
 
-async def test_without_a_fail_closed_hook_the_result_stands(streaming: bool) -> None:
-    kit, _ = await _kit(streaming=streaming)
+async def test_without_a_fail_closed_hook_the_result_stands() -> None:
+    kit, _ = await _kit(streaming=True)
     callback = kit._build_tool_call_hook("ai1")
     kit._build_context = AsyncMock(side_effect=RuntimeError("store down"))  # type: ignore[method-assign]
     event = ToolCallEvent(

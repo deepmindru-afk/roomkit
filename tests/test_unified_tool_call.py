@@ -1423,10 +1423,8 @@ class TestRefusedAIToolCallsAreObserved:
         # effect, it does not hide it.
         assert served == []
 
-    async def test_a_handler_refusal_persists_as_a_failed_tool_call_event(
-        self, streaming: bool
-    ) -> None:
-        """The stored event agrees with the hook, so the transcript does too.
+    async def test_a_handler_refusal_is_reported_as_a_failed_call(self, streaming: bool) -> None:
+        """The reported end agrees with the hook, so the transcript does too.
 
         This is the half a person sees: a refused call used to render as a
         green ``completed`` step with no error to show.
@@ -1456,8 +1454,8 @@ class TestRefusedAIToolCallsAreObserved:
         assert json.loads(observed[0].result) == {"temp": 22}
         assert len(served) == 1
 
-    async def test_a_refusal_persists_as_a_failed_tool_call_event(self, streaming: bool) -> None:
-        """The stored event agrees with the hook.
+    async def test_a_refusal_is_reported_as_a_failed_call(self, streaming: bool) -> None:
+        """The reported end agrees with the hook.
 
         It used to read the result body for a prose prefix, so a refusal — a
         JSON error envelope — was persisted as ``completed``.

@@ -190,10 +190,9 @@ class TestToolLoopCancellation:
     async def test_cancel_before_first_round(self, streaming: bool) -> None:
         """Pre-queued cancel stops the tool loop immediately.
 
-        We register a loop before calling _run_tool_loop so the steer() call
-        targets the pre-registered context, then _run_tool_loop creates its own
-        context and drains nothing — but the tool handler is never called because
-        the first generate returns tool calls and the loop inherits the cancel.
+        The steer() lands during the first generation, in the context the tool
+        loop created for itself: the handler is never called although that
+        generation asks for tools, because the loop honours the cancel first.
         """
         responses = [_tool_response()] * 5 + [_final_response()]
         provider = MockAIProvider(ai_responses=responses)
@@ -224,7 +223,7 @@ class TestToolLoopCancellation:
 
         # Tool execution should be skipped because cancel was set
         assert handler.call_count == 0
-        assert run is not None
+        assert run.reason == "cancelled"
 
     async def test_cancel_mid_loop(self, streaming: bool) -> None:
         """Cancel injected during tool execution stops subsequent rounds."""
@@ -253,7 +252,7 @@ class TestToolLoopCancellation:
 
         # Tool handler runs once, then drain catches the cancel
         assert call_count == 1
-        assert run is not None
+        assert run.reason == "cancelled"
 
     async def test_inject_message_during_tool_loop(self, streaming: bool) -> None:
         """Injected message appears in context for the next generate call."""

@@ -591,8 +591,8 @@ class TestLoopContextRestoration:
     async def test_the_turn_context_outlives_the_loop_within_the_turn(
         self, streaming: bool
     ) -> None:
-        """Non-streaming: the loop ends before the turn does, and what runs
-        after it (the after-response hook) reads the turn's context, not None."""
+        """The loop ends before the turn does, and what runs after it (the
+        after-response hook) reads the turn's context, not None."""
         seen: list[str | None] = []
 
         async def after_response(event: Any) -> None:
