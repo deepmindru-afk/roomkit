@@ -400,6 +400,18 @@ class TestEvictedResultReading:
         assert out["has_more"] is True
         assert out["next_offset"] == 15
 
+    def test_advertised_default_limit_is_the_one_applied(self) -> None:
+        """The tool schema tells the model the line limit it gets when it
+        omits one; the handler must apply that same limit."""
+        provider = MockAIProvider()
+        ch = AIChannel("ai1", provider=provider, evict_threshold_tokens=5000)
+        large = "\n".join("a" for _ in range(30_000))
+        ch._maybe_truncate_result(large, "tc1")
+
+        out = json.loads(ch._eviction.handle_read({"result_id": "evicted_tc1"}))
+        schema = ch._eviction.tool_definition().parameters["properties"]["limit"]
+        assert out["lines_returned"] == schema["default"]
+
     def test_partial_page_carries_explicit_warning_final_page_does_not(self) -> None:
         """A partial page must warn in prose — small models skip the bare
         pagination fields and conclude absence from one page; the final page

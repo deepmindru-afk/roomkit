@@ -32,6 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   clipped with a `[... N chars truncated ...]` marker, and the lines left out
   are counted. The stored result is unchanged and `read_stored_result` still
   paginates all of it.
+- `read_stored_result` advertises the line limit it applies when the model
+  gives none (RMK-258): its schema said `default: 200` while the handler has
+  read 800 lines since the page budget was raised.
 
 ## [0.92.0] — 2026-09-27
 

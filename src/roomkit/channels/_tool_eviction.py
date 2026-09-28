@@ -255,7 +255,7 @@ class ToolEviction:
                     },
                     "limit": {
                         "type": "integer",
-                        "default": 200,
+                        "default": 800,
                         "description": "Maximum number of lines to return.",
                     },
                 },
