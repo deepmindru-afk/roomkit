@@ -89,7 +89,9 @@ class BeforeToolDecision:
 
 # Callback type injected by the framework.
 BeforeToolCallback = Callable[[ToolCallEvent], Awaitable["BeforeToolDecision"]]
-OnToolCallback = Callable[[ToolCallEvent], Awaitable[str | None]]
+# Its return is discarded: an external call already ran outside the channel,
+# and its firing is a report, whose override a hook cannot apply (RFC §9.3).
+OnToolCallback = Callable[[ToolCallEvent], Awaitable[Any]]
 
 
 class ExternalToolHandler(ABC):
@@ -110,7 +112,8 @@ class ExternalToolHandler(ABC):
     Attributes set by the framework (do not override):
         _before_tool_hook: Fires BEFORE_TOOL_USE sync hooks. Returns a truthy
             :class:`BeforeToolDecision` when allowed, optionally with arguments.
-        _on_tool_hook: Fires ON_TOOL_CALL sync hooks. Returns optional result override.
+        _on_tool_hook: Fires ON_TOOL_CALL sync hooks, as a report: its return
+            is discarded.
         _channel_id: Channel ID this handler is attached to.
     """
 

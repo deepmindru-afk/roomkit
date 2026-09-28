@@ -506,13 +506,7 @@ class AIToolsMixin:
                     (time.monotonic() - started) * 1000,
                 )
                 logger.debug("Tool %s result: %s", tc.name, redact(_preview(result)))
-                # Capture the handler's structured result (MCP structuredContent)
-                # BEFORE eviction — the string below may become a placeholder,
-                # but UI surfaces need the structured payload verbatim.
-                structured_content = _tc_ctx.structured_content
-                hook = await self._apply_tool_call_hook(
-                    tc, arguments, result, structured_content, room_id
-                )
+                hook = await self._apply_tool_call_hook(tc, arguments, result, _tc_ctx, room_id)
                 recorded_result, tool_failed = hook.recorded, hook.failed
                 structured_content = hook.structured
                 result = self._bound_tool_result(tc.name, hook.result, tc.id)
@@ -563,9 +557,7 @@ class AIToolsMixin:
                 tool_call_id=tc.id,
                 name=tc.name,
                 result=result,
-                # A failed call's payload is not published: it is withheld,
-                # or it never finished.
-                structured_content=None if tool_failed else structured_content,
+                structured_content=structured_content,
                 is_error=tool_failed,
             )
 
@@ -864,7 +856,7 @@ class AIToolsMixin:
         tc: Any,
         arguments: dict[str, Any],
         result: ToolResult,
-        structured: dict[str, Any] | None,
+        call_ctx: ToolCallContext,
         room_id: str | None,
     ) -> _HookOutcome:
         """Run ON_TOOL_CALL on the outcome the model will read, whole.
@@ -872,11 +864,18 @@ class AIToolsMixin:
         After a text-only model's flattening, so the hook sees the shape the
         model reads; before eviction, so everything read_stored_result can
         page back has passed through the hook and a redacting hook covers the
-        full text, not a preview of it. The hook sees the structured copy too,
-        and may replace it; a BLOCK withholds the result and drops the copy.
+        full text, not a preview of it.
+
+        The call's structured copy (MCP structuredContent, which the handler
+        left on *call_ctx*) is read here, once the handler returned, and only
+        the outcome carries it on: a call that fails before or during this
+        step keeps none. The hook sees the copy and may replace it; a BLOCK
+        withholds the result and drops the copy. Eviction never touches it:
+        UI surfaces need the payload whole.
         """
         shaped = self._shape_for_model(tc.name, result, tc.id)
-        kept = _HookOutcome(shaped, result, False, structured)
+        structured = call_ctx.structured_content
+        kept = _HookOutcome(result=shaped, recorded=result, failed=False, structured=structured)
         if self._tool_call_hook is None:
             return kept
         event = ToolCallEvent(
@@ -894,11 +893,19 @@ class AIToolsMixin:
             return kept
         if not isinstance(verdict, ToolCallVerdict):
             verdict = ToolCallVerdict(result=verdict)  # a bare override
+        if verdict.blocked:
+            reason = verdict.result or json.dumps({"error": "blocked"})
+            return _HookOutcome(result=reason, recorded=reason, failed=True, structured=None)
         if verdict.replaces_structured:
             structured = verdict.structured_content
-        if verdict.result is None:
-            return _HookOutcome(shaped, result, verdict.blocked, structured)
-        return _HookOutcome(verdict.result, verdict.result, verdict.blocked, structured)
+        override = verdict.result
+        if override is None:
+            return _HookOutcome(
+                result=shaped, recorded=result, failed=False, structured=structured
+            )
+        return _HookOutcome(
+            result=override, recorded=override, failed=False, structured=structured
+        )
 
     def _shape_for_model(self, name: str, result: ToolResult, tool_call_id: str) -> ToolResult:
         """A text-only model gets the text of a content-part result, the way it

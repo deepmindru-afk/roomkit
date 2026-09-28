@@ -22,6 +22,7 @@ from roomkit import (
     TextContent,
     ToolCallContent,
     ToolCallEvent,
+    ToolCallVerdict,
 )
 from roomkit.channels.ai import AIChannel
 from roomkit.models.enums import EventType
@@ -159,4 +160,40 @@ async def test_a_call_that_fails_after_its_copy_was_captured_keeps_none() -> Non
     tool_message = next(m for m in provider.calls[-1].messages if m.role == "tool")
     part = tool_message.content[0]
     assert part.is_error
+    assert part.structured_content is None
+
+
+async def test_a_copy_that_is_not_a_mapping_is_dropped_and_the_turn_goes_on() -> None:
+    kit, provider = await _kit()
+
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="broken")
+    async def broken(event: ToolCallEvent, ctx: Any) -> HookResult:
+        return HookResult(action="allow", metadata={"structured_content": ["not", "a", "dict"]})
+
+    end = await _tool_end(kit)
+
+    assert end.structured_content is None
+    assert end.status == "completed"
+    assert provider.calls[-1].messages[-1].role == "tool"
+
+
+async def test_a_block_without_a_reason_never_serves_the_original() -> None:
+    provider = MockAIProvider(
+        ai_responses=[
+            AIResponse(
+                content="",
+                finish_reason="tool_calls",
+                tool_calls=[AIToolCall(id="c1", name="hr_lookup", arguments={})],
+            ),
+            AIResponse(content="done", finish_reason="stop"),
+        ]
+    )
+    ch = AIChannel("ai1", provider=provider, tool_handler=_publishing_handler)
+    ch._tool_call_hook = AsyncMock(return_value=ToolCallVerdict(blocked=True))
+
+    await ch._run_tool_loop(AIContext(messages=[AIMessage(role="user", content="go")]))
+
+    part = next(m for m in provider.calls[-1].messages if m.role == "tool").content[0]
+    assert part.is_error
+    assert "Jane Doe" not in str(part.result)
     assert part.structured_content is None

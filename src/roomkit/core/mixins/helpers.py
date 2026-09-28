@@ -22,8 +22,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Mapping
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 from uuid import uuid4
 
@@ -48,6 +49,7 @@ from roomkit.models.participant import Participant
 from roomkit.models.plan_event import PlanUpdatedEvent
 from roomkit.models.task import Observation, Task
 from roomkit.models.thinking_event import ThinkingEvent
+from roomkit.models.tool_call import ToolCallEvent, ToolCallVerdict
 
 _RECENT_EVENTS_LIMIT = 2_000
 """Hard ceiling on events kept in ``RoomContext.recent_events`` in memory."""
@@ -809,14 +811,9 @@ class HelpersMixin:
 
         The returned callback runs ON_TOOL_CALL sync hooks against the
         framework's hook engine and emits a ``tool_call`` framework event.
-        Returns the hooks' :class:`ToolCallVerdict`, or None to keep the
-        original: a BLOCK is told apart from a rewrite, since a blocked call
-        must not keep its structured copy, and ``metadata["structured_content"]``
-        replaces that copy.
+        Returns the hooks' :class:`ToolCallVerdict` (see
+        :func:`_tool_call_verdict`), or None to keep the original.
         """
-        from roomkit.models.enums import HookTrigger
-        from roomkit.models.tool_call import ToolCallEvent, ToolCallVerdict
-
         kit_ref = self
 
         async def _callback(event: ToolCallEvent) -> ToolCallVerdict | None:
@@ -851,17 +848,7 @@ class HelpersMixin:
                 },
             )
 
-            if not hook_result.allowed:
-                import json
-
-                reason = json.dumps({"error": hook_result.reason or "blocked"})
-                return ToolCallVerdict(result=reason, blocked=True)
-            metadata = hook_result.metadata
-            return ToolCallVerdict(
-                result=metadata.get("result"),
-                replaces_structured="structured_content" in metadata,
-                structured_content=metadata.get("structured_content"),
-            )
+            return _tool_call_verdict(hook_result)
 
         return _callback
 
@@ -873,9 +860,6 @@ class HelpersMixin:
         nothing. A refused call has no result for a hook to provide or correct,
         and must not reach a hook that would serve it.
         """
-        from roomkit.models.enums import HookTrigger
-        from roomkit.models.tool_call import ToolCallEvent
-
         kit_ref = self
 
         async def _callback(event: ToolCallEvent) -> None:
@@ -986,8 +970,6 @@ class HelpersMixin:
         ``metadata["arguments"]`` — the mirror of what ON_TOOL_CALL already
         does with ``metadata["result"]`` on the way out.
         """
-        from roomkit.models.enums import HookTrigger
-        from roomkit.models.tool_call import ToolCallEvent
         from roomkit.tools.external import BeforeToolDecision
 
         kit_ref = self
@@ -1322,3 +1304,30 @@ class HelpersMixin:
             event_id=event_id,
             data={"dimension": dimension, "rating": rating},
         )
+
+
+def _tool_call_verdict(hook_result: Any) -> ToolCallVerdict:
+    """ON_TOOL_CALL's SYNC hooks' result as the verdict the channel applies.
+
+    A BLOCK is told apart from a rewrite, since a blocked call must not keep
+    its structured copy. ``metadata["structured_content"]`` replaces the copy
+    and ``None`` clears it; a value that is not a mapping is no copy a surface
+    can render, so it clears the copy too rather than publish the original.
+    """
+    if not hook_result.allowed:
+        reason = json.dumps({"error": hook_result.reason or "blocked"})
+        return ToolCallVerdict(result=reason, blocked=True)
+    metadata = hook_result.metadata
+    copy = metadata.get("structured_content")
+    if copy is not None and not isinstance(copy, Mapping):
+        logger.warning(
+            "ON_TOOL_CALL hook returned a structured_content of type %s, not a mapping; "
+            "the call's structured copy is dropped",
+            type(copy).__name__,
+        )
+        copy = None
+    return ToolCallVerdict(
+        result=metadata.get("result"),
+        replaces_structured="structured_content" in metadata,
+        structured_content=dict(copy) if copy is not None else None,
+    )

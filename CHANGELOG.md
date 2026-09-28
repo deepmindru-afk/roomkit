@@ -17,9 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   marked the call `completed`. `ToolCallEvent.structured_content` now shows
   the copy, `HookResult(metadata={"structured_content": ...})` replaces it
   and `None` clears it, a result rewritten alone keeps it, and a blocked call
-  is `failed` with no copy, like any failed call. The framework's
+  is `failed` with no copy, like any failed call. A copy that is not a
+  mapping is dropped rather than published, and a block that states no reason
+  hands the model a generic error, never the result. The framework's
   `ToolCallCallback` returns a `ToolCallVerdict` (a bare result is still
-  accepted), which tells a block apart from a rewrite.
+  accepted), which tells a block apart from a rewrite. This is the AI
+  channel's tool loop; an external handler's firing stays a report.
 - An `ON_TOOL_CALL` hook sees a tool's whole result, before eviction, and
   eviction runs on what it hands back (RMK-260). The hook used to receive the
   evicted preview while the raw text sat in the store, so a redacting hook
