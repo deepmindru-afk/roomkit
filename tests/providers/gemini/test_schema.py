@@ -364,15 +364,19 @@ class TestTypeListCollapse:
 
 
 def _assert_declarable(node: dict[str, Any], path: str = "parameters") -> None:
-    """The two shapes Gemini refuses, measured 2026-09-28 with a real call.
+    """The shapes Gemini refuses, measured 2026-09-28 with a real call.
 
-    ``FunctionDeclaration`` builds either without complaint, so the check has
+    ``FunctionDeclaration`` builds them without complaint, so the check has
     to read the cleaned dict: ``properties`` / ``required`` on a node that is
-    not ``type: object`` ("only allowed for OBJECT type"), and a ``required``
-    name that ``properties`` does not define ("property is not defined").
+    not ``type: object`` ("only allowed for OBJECT type"), a ``required``
+    name that ``properties`` does not define ("property is not defined"), and
+    an array without ``items``, or ``items`` on a non-array.
     """
     if "properties" in node or "required" in node:
         assert node.get("type") == "object", f"{path}: properties on a non-object"
+    if "items" in node or node.get("type") == "array":
+        assert node.get("type") == "array", f"{path}: items on a non-array"
+        assert isinstance(node.get("items"), dict), f"{path}: array without items"
     missing = set(node.get("required", [])) - set(node.get("properties", {}))
     assert not missing, f"{path}: required names undefined properties {missing}"
     for name, child in node.get("properties", {}).items():
@@ -485,6 +489,31 @@ class TestRefiningUnion:
             },
         }
 
+    def test_array_keeps_its_items_under_a_typed_union(self) -> None:
+        """The node's own ``items`` is its shape: folding to the first branch
+        dropped it, and Gemini refuses an array without ``items``."""
+        schema = {
+            "type": "array",
+            "items": {"type": "string"},
+            "anyOf": [{"type": "array", "minItems": 1}, {"type": "null"}],
+        }
+        assert clean_gemini_schema(schema) == {"type": "array", "items": {"type": "string"}}
+
+    def test_untyped_all_of_mixin_becomes_an_object(self) -> None:
+        schema = {
+            "description": "Filters",
+            "allOf": [
+                {"properties": {"a": {"type": "string"}}},
+                {"properties": {"b": {"type": "integer"}}},
+            ],
+        }
+        cleaned = clean_gemini_schema(schema)
+        assert cleaned == {
+            "description": "Filters",
+            "type": "object",
+            "properties": {"a": {"type": "string"}, "b": {"type": "integer"}},
+        }
+
     def test_untyped_branches_keep_a_scalar(self) -> None:
         schema = {"type": "string", "anyOf": [{"format": "date"}, {"format": "date-time"}]}
         assert clean_gemini_schema(schema) == {"type": "string"}
@@ -550,6 +579,53 @@ class TestRefiningUnion:
     def test_empty_root_is_left_alone(self) -> None:
         schema = {"type": "object", "properties": {}}
         assert clean_gemini_schema(schema) == schema
+
+
+class TestImpliedShape:
+    """What JSON Schema leaves implied and Gemini refuses unless spelled out,
+    each a 400 for the whole request (measured 2026-09-28)."""
+
+    def test_properties_without_type_make_an_object(self) -> None:
+        schema = {
+            "type": "object",
+            "properties": {
+                "opts": {"properties": {"a": {"type": "string"}}, "required": ["a"]},
+            },
+        }
+        cleaned = clean_gemini_schema(schema)
+        assert cleaned is not None
+        assert cleaned["properties"]["opts"] == {
+            "type": "object",
+            "properties": {"a": {"type": "string"}},
+            "required": ["a"],
+        }
+        _assert_declarable(cleaned)
+
+    def test_untyped_either_or_object_keeps_its_properties(self) -> None:
+        schema = {
+            "properties": {"a": {"type": "string"}, "b": {"type": "string"}},
+            "oneOf": [{"required": ["a"]}, {"required": ["b"]}],
+        }
+        assert clean_gemini_schema(schema) == {
+            "type": "object",
+            "properties": {"a": {"type": "string"}, "b": {"type": "string"}},
+        }
+
+    def test_items_without_type_make_an_array(self) -> None:
+        cleaned = clean_gemini_schema({"items": {"type": "string"}})
+        assert cleaned == {"type": "array", "items": {"type": "string"}}
+
+    def test_array_without_items_takes_any_value(self) -> None:
+        """``items: {}`` is what Pydantic sends for ``list[Any]``."""
+        assert clean_gemini_schema({"type": "array"}) == {"type": "array", "items": {}}
+
+    def test_tuple_items_become_any_value(self) -> None:
+        schema = {"type": "array", "items": [{"type": "string"}, {"type": "integer"}]}
+        assert clean_gemini_schema(schema) == {"type": "array", "items": {}}
+
+    def test_optional_array_without_items_after_the_fold(self) -> None:
+        cleaned = clean_gemini_schema({"anyOf": [{"type": "array"}, {"type": "null"}]})
+        assert cleaned == {"type": "array", "nullable": True, "items": {}}
 
 
 class TestRequiredMatchesProperties:

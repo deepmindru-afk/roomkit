@@ -32,6 +32,12 @@ untyped fragment requiring a property it does not declare, and Gemini
 refuses the whole request over one such tool. Such a union is kept out of
 the fold: the object stays, with any field its branches add, and the union
 goes the way of every other constraint Gemini cannot express.
+
+JSON Schema also leaves things implied that Gemini needs spelled out: an
+untyped node with ``properties`` is an object and one with ``items`` an
+array, and an array may omit ``items``. Gemini refuses all three, so the
+cleaner writes the type and gives a bare array ``items: {}``, "any value",
+which is what Pydantic already sends for ``list[Any]``.
 """
 
 from __future__ import annotations
@@ -128,15 +134,15 @@ def _collapse_union(obj: dict[str, Any]) -> dict[str, Any]:
 def _refines_node(obj: dict[str, Any], branches: list[dict[str, Any]]) -> bool:
     """Whether a union narrows *obj* rather than offering alternative types.
 
-    A node that declares its own ``properties`` is the object; a union beside
-    them can only add constraints to it (``required`` alternatives, a
-    conditional field). So is a union none of whose branches names a
-    ``type``: ``{"type": "string", "anyOf": [{"format": "date"}, ...]}`` is
-    still a string. Only a union of typed branches on a node without
-    properties of its own, ``Optional[X]`` being the common one, is a choice
-    to fold.
+    A node that declares its own ``properties`` or ``items`` has its shape; a
+    union beside them can only add constraints to it (``required``
+    alternatives, a conditional field, a ``minItems``). So is a union none of
+    whose branches names a ``type``: ``{"type": "string", "anyOf":
+    [{"format": "date"}, ...]}`` is still a string. Only a union of typed
+    branches on a node without a structure of its own, ``Optional[X]`` being
+    the common one, is a choice to fold.
     """
-    if "properties" in obj:
+    if "properties" in obj or "items" in obj:
         return True
     # An empty union names no type either, but it narrows nothing: it takes
     # the fold's typed fallback rather than leaving the node typeless.
@@ -151,10 +157,11 @@ def _keep_node(obj: dict[str, Any], branches: list[dict[str, Any]]) -> dict[str,
     offers ``url`` or ``path`` beside ``mode``. Gemini cannot say "one of", so
     every field a branch adds is declared and no branch's ``required`` is:
     only one of them applies. A field the node declares itself wins over a
-    branch's narrowing of it, and only an object gains fields.
+    branch's narrowing of it. Only an object gains fields, or an untyped node,
+    which they make one (see :func:`_complete_shape`).
     """
     own = obj.get("properties", {})
-    if obj.get("type") != "object" or not isinstance(own, dict):
+    if obj.get("type", "object") != "object" or not isinstance(own, dict):
         return obj
     properties = dict(own)
     for branch in branches:
@@ -193,6 +200,24 @@ def _collapse_type_list(obj: dict[str, Any]) -> dict[str, Any]:
     return collapsed
 
 
+def _complete_shape(obj: dict[str, Any]) -> dict[str, Any]:
+    """Spell out the type and ``items`` JSON Schema leaves implied.
+
+    Gemini refuses ``properties`` on an untyped node ("only allowed for
+    OBJECT type"), ``items`` on one ("$type == Type.ARRAY"), and an array
+    without ``items`` ("items: missing field") or with a tuple-style list of
+    them, each with a 400 for the whole request.
+    """
+    if "type" not in obj:
+        if "properties" in obj:
+            return {**obj, "type": "object"}
+        if "items" in obj:
+            obj = {**obj, "type": "array"}
+    if obj.get("type") == "array" and not isinstance(obj.get("items"), dict):
+        return {**obj, "items": {}}
+    return obj
+
+
 def _clean(obj: dict[str, Any]) -> dict[str, Any]:
     # Collapse union shapes BEFORE stripping unknown keys, so the union
     # members get inspected rather than silently discarded.
@@ -200,6 +225,7 @@ def _clean(obj: dict[str, Any]) -> dict[str, Any]:
     # And the type-list spelling of the same thing, which survives the strip
     # untouched (``type`` is allowed) and would fail inside Gemini's own model.
     obj = _collapse_type_list(obj)
+    obj = _complete_shape(obj)
 
     result: dict[str, Any] = {}
     for key, value in obj.items():

@@ -98,6 +98,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   warning. Its default is `None`, which sends nothing: the default was `3`
   but never sent, so a configuration that left it alone synthesizes as
   before.
+- Gemini accepts a tool whose schema leaves a type implied (RMK-266): an
+  untyped node with `properties` (an object to JSON Schema), one with
+  `items` (an array), and an array with no `items` or a tuple-style list of
+  them each failed the whole request with a 400. The cleaner now writes the
+  type and gives such an array `items: {}`, any value, what Pydantic sends
+  for `list[Any]`. An array's own `items` also survives a typed union beside
+  it, where the fold to the first branch dropped it.
 - Gemini accepts a tool whose schema narrows an object with a union
   (`oneOf`, `anyOf`, `allOf`) (RMK-266). The schema cleaner folded every
   union to its first branch, so `{"type": "object", "properties": {url,
