@@ -10,7 +10,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from roomkit.voice.base import AudioChunk, TranscriptionResult
+from roomkit.voice.base import AudioChunk, SpeakerSegment, TranscriptionResult
 from roomkit.voice.stt.base import STTProvider
 
 if TYPE_CHECKING:
@@ -69,6 +69,37 @@ def _reported_language(alt: Any, channel: Any = None) -> str | None:
     return detected if isinstance(detected, str) and detected else None
 
 
+def _word_field(word: Any, name: str) -> Any:
+    """A field of a word, whether the SDK handed an object or a dict."""
+    return word.get(name) if isinstance(word, dict) else getattr(word, name, None)
+
+
+def _speaker_segments(words: Any, text: str) -> list[SpeakerSegment]:
+    """A final's words as speaker segments: one per run of words sharing a label.
+
+    Deepgram labels each word (``speaker``, an integer), so one final can hold
+    two voices (RFC §12.2.3). Labels become strings; a word with no label is
+    unattributed. Offsets are Deepgram's word times from the start of the
+    stream. Text with no words at all is one unattributed segment.
+    """
+    runs: list[tuple[str | None, list[str], int | None, int | None]] = []
+    for word in words or []:
+        speaker = _word_field(word, "speaker")
+        label = None if speaker is None else str(speaker)
+        token = _word_field(word, "punctuated_word") or _word_field(word, "word") or ""
+        start, end = _word_field(word, "start"), _word_field(word, "end")
+        start_ms = None if start is None else round(start * 1000)
+        end_ms = None if end is None else round(end * 1000)
+        if runs and runs[-1][0] == label:
+            last = runs[-1]
+            runs[-1] = (label, [*last[1], token], last[2], end_ms)
+        else:
+            runs.append((label, [token], start_ms, end_ms))
+    if not runs:
+        return [SpeakerSegment(None, text)] if text else []
+    return [SpeakerSegment(label, " ".join(tokens), a, b) for label, tokens, a, b in runs]
+
+
 @dataclass
 class DeepgramConfig:
     """Configuration for Deepgram STT provider.
@@ -98,6 +129,11 @@ class DeepgramConfig:
 
     # Speech features
     diarize: bool = False
+    # Speaker segments (RFC §12.2.3): Deepgram's diarizer by model, e.g.
+    # "latest". Replaces ``diarize`` (the service refuses both together), and
+    # makes every final carry ``TranscriptionResult.segments``. ``diarize=True``
+    # alone keeps its old behaviour: the labels stay in ``words``.
+    diarize_model: str | None = None
     filler_words: bool = False
     multichannel: bool = False
 
@@ -116,6 +152,13 @@ class DeepgramConfig:
     tag: str | None = None
     extra: list[str] = field(default_factory=list)
     mip_opt_out: bool = False
+
+    def __post_init__(self) -> None:
+        if self.diarize and self.diarize_model:
+            raise ValueError(
+                "diarize and diarize_model are exclusive (Deepgram refuses both): "
+                "diarize_model replaces diarize and gives speaker segments"
+            )
 
 
 class DeepgramSTTProvider(STTProvider):
@@ -140,6 +183,20 @@ class DeepgramSTTProvider(STTProvider):
     @property
     def supports_language_override(self) -> bool:
         return True
+
+    @property
+    def supports_diarization(self) -> bool:
+        """True with ``diarize_model``: every final then carries speaker segments."""
+        return self._config.diarize_model is not None
+
+    def _diarize_query(self) -> dict[str, str]:
+        """``diarize_model`` as a query parameter.
+
+        Sent through ``request_options`` rather than as a keyword: SDK 6, which
+        the ``deepgram`` extra still allows, has no ``diarize_model`` argument.
+        """
+        model = self._config.diarize_model
+        return {"diarize_model": model} if model else {}
 
     def _build_connect_options(
         self, sample_rate: int = 16000, language: str | None = None
@@ -192,7 +249,16 @@ class DeepgramSTTProvider(STTProvider):
             opts["redact"] = c.redact
         if c.replace:
             opts["replace"] = c.replace
+        if c.diarize_model:
+            # The service refuses diarize next to diarize_model, even "false".
+            del opts["diarize"]
+            opts["request_options"] = {"additional_query_parameters": self._diarize_query()}
         return opts
+
+    def _diarize_request_options(self) -> dict[str, Any]:
+        """``request_options`` for a call that carries nothing else in it."""
+        query = self._diarize_query()
+        return {"request_options": {"additional_query_parameters": query}} if query else {}
 
     async def transcribe(
         self,
@@ -219,6 +285,7 @@ class DeepgramSTTProvider(STTProvider):
                 language=effective_language,
                 smart_format=self._config.smart_format,
                 punctuate=self._config.punctuate,
+                **self._diarize_request_options(),
             )
         else:
             audio_data = audio.data
@@ -237,6 +304,7 @@ class DeepgramSTTProvider(STTProvider):
                     "additional_query_parameters": {
                         "sample_rate": str(sample_rate),
                         "channels": str(channels),
+                        **self._diarize_query(),
                     },
                 },
             )
@@ -247,10 +315,17 @@ class DeepgramSTTProvider(STTProvider):
         try:
             channel = response.results.channels[0]
             alt = channel.alternatives[0]
+            text = alt.transcript.strip()
+            segments = (
+                _speaker_segments(getattr(alt, "words", None), text)
+                if self.supports_diarization
+                else []
+            )
             return TranscriptionResult(
-                text=alt.transcript.strip(),
+                text=text,
                 confidence=alt.confidence,
                 language=_reported_language(alt, channel),
+                segments=segments,
             )
         except (AttributeError, IndexError):
             logger.warning("No transcript in Deepgram response")
@@ -317,6 +392,11 @@ class DeepgramSTTProvider(STTProvider):
                 is_final = getattr(message, "is_final", False)
                 confidence = getattr(alt, "confidence", None)
                 words = getattr(alt, "words", [])
+                segments = (
+                    _speaker_segments(words, transcript)
+                    if is_final and self.supports_diarization
+                    else []
+                )
                 result_queue.put_nowait(
                     TranscriptionResult(
                         text=transcript,
@@ -324,6 +404,7 @@ class DeepgramSTTProvider(STTProvider):
                         confidence=confidence,
                         language=_reported_language(alt),
                         words=words,
+                        segments=segments,
                     )
                 )
             except (AttributeError, IndexError):

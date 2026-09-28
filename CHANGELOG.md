@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `DeepgramConfig.diarize_model` (e.g. `"latest"`) gives Deepgram speaker
+  segments (RMK-245, RFC §12.2.3): the provider then reports
+  `supports_diarization` and every final, batch or streaming, carries
+  `TranscriptionResult.segments`, one per run of words with the same label
+  (`"0"`, `"1"`…), with Deepgram's word times as offsets, so a final spanning
+  a change of voice becomes two segments and a continuous `VoiceChannel` two
+  messages. It travels as a query parameter, which every SDK the `deepgram`
+  extra allows accepts (SDK 6 has no keyword for it), and it is exclusive with
+  `diarize`, as the service requires. Measured on a two-voice French dialogue
+  (2026-09-27): batch attributed the 5 turns correctly; streaming labelled
+  every word `0` for about 30 s, then told the voices apart; the older
+  `diarize=True` labelled every word `0` in both modes. `diarize=True` is
+  unchanged — ids in `words`, no segments, no `supports_diarization` — so an
+  existing configuration behind a VAD still works. Example
+  `examples/stt_deepgram_diarization.py` records the microphone (or reads
+  `--wav`) and prints the speaker turns.
 - TTS providers list their voices as `VoiceInfo` and voice a dialogue (RMK-240,
   RMK-241, RFC §12.2). `TTSProvider` gains `available_voices()` (offline),
   `list_voices(language=, gender=, query=)` (live) and `synthesize_dialogue(turns,
