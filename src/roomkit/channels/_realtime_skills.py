@@ -11,6 +11,7 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
+from roomkit.channels._ai_policy import POLICY_EXEMPT_TOOL_NAMES
 from roomkit.channels._skill_constants import (
     ACTIVATE_SKILL_SCHEMA,
     READ_REFERENCE_SCHEMA,
@@ -30,7 +31,6 @@ from roomkit.channels._skill_handlers import (
     handle_run_script,
     missing_skill_error,
 )
-from roomkit.channels._tool_search_constants import TOOL_SEARCH_INFRA_TOOL_NAMES
 from roomkit.skills.registry import SkillRegistry
 from roomkit.tools.policy import matches_any_pattern
 
@@ -214,15 +214,17 @@ class RealtimeSkillSupport:
         transcript — can still call it. Callers ask this at execution time as
         well as at listing time.
 
-        Infrastructure tools are never gated: skill tools are how a skill gets
-        activated, and the Tool Search tools are how a gated name is found in
-        the first place. Gating them would leave the model told to activate a
-        skill it has no way left to name.
+        The tools that only read or unlock are never gated (RFC §21.1,
+        ``POLICY_EXEMPT_TOOL_NAMES``): activation and reference reading are how
+        a skill gets unlocked, and the Tool Search tools are how a gated name is
+        found in the first place. Gating them would leave the model told to
+        activate a skill it has no way left to name. ``run_skill_script`` acts,
+        and is gated like any other tool.
 
         *gated* lets a caller filtering a whole catalogue compute the gated set
         once instead of once per tool.
         """
-        if name in SKILL_INFRA_TOOL_NAMES or name in TOOL_SEARCH_INFRA_TOOL_NAMES:
+        if name in POLICY_EXEMPT_TOOL_NAMES:
             return False
         if gated is None:
             gated = self._gated_tool_names(session_id)

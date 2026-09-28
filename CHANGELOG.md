@@ -29,6 +29,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `ToolPolicy` governs the tools the channel injects itself (RMK-271,
+  RFC §21.1). Sandbox commands (`sandbox_*`), `run_skill_script` and
+  `plan_tasks` escaped it: `deny=["*"]` still declared and ran
+  `sandbox_bash`. They are now allowed or denied like a host tool, and so is
+  a host tool whose name starts with `sandbox_`. Only `activate_skill`,
+  `read_skill_reference`, `read_stored_result`, `find_tools` and `list_tools`
+  stay exempt, by exact name. A host with an allow list that relied on the
+  sandbox exemption adds its sandbox tools to it (`allow=[..., "sandbox_*"]`).
+  The same names alone escape skill gating, in the declared list and at
+  execution alike (a skill gating `sandbox_*` hid nothing and refused the
+  call), `run_skill_script` included on RealtimeVoiceChannel. `find_tools`,
+  `list_tools` and the tool hint of `activate_skill` no longer name a tool
+  the policy denies or a skill gates.
 - ElevenLabs `expressive=True` selects Eleven v4 Turbo (`eleven_v4_turbo`)
   where it forced `eleven_v3` (RMK-263). v4 Turbo renders the same inline
   audio tags, stacked if need be, at conversational latency, and unlike v3

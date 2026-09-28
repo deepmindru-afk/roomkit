@@ -1187,7 +1187,10 @@ class TestRealtimeGateParityWithTheAIPath:
         assert ch._skill_support.is_gated("find_tools", session.id) is False
         assert ch._skill_support.is_gated("list_tools", session.id) is False
         assert ch._skill_support.is_gated("activate_skill", session.id) is False
+        assert ch._skill_support.is_gated("read_skill_reference", session.id) is False
         assert ch._skill_support.is_gated("refund", session.id) is True
+        # A skill script acts: it is gated like any other tool (RFC §21.1).
+        assert ch._skill_support.is_gated("run_skill_script", session.id) is True
 
     async def test_invalid_arguments_are_named_before_the_gating_verdict(
         self,

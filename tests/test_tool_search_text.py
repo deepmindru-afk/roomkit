@@ -297,7 +297,7 @@ class TestPolicyExemption:
 
 
 # ---------------------------------------------------------------------------
-# Sandbox tools defer behind Tool Search (but skip the user policy / gating)
+# Sandbox tools defer behind Tool Search and obey the tool policy (RFC §21.1)
 # ---------------------------------------------------------------------------
 
 
@@ -330,16 +330,55 @@ class _FakeSandbox(SandboxExecutor):
 
 
 class TestSandboxToolSearch:
-    async def test_sandbox_tools_deferred_then_revealed_under_policy(
-        self, streaming: bool
-    ) -> None:
-        """Sandbox tools defer behind find_tools AND skip a whitelist policy.
+    async def test_allowed_sandbox_tools_are_deferred_then_revealed(self, streaming: bool) -> None:
+        """Sandbox tools defer behind find_tools like any discretionary tool.
 
         With Tool Search active they are hidden round 0 (not pinned), even
         though a sandbox is attached. find_tools surfaces the match, and round 1
-        exposes it — the restrictive tool policy (which omits every sandbox
-        tool) never blocks it, because sandbox tools are policy-exempt.
+        exposes it; the unmatched one stays deferred.
         """
+        provider = MockAIProvider(
+            ai_responses=[
+                AIResponse(
+                    content="",
+                    finish_reason="tool_calls",
+                    tool_calls=[
+                        AIToolCall(
+                            id="t1", name="find_tools", arguments={"query": "read file contents"}
+                        )
+                    ],
+                ),
+                AIResponse(content="done", finish_reason="stop"),
+            ],
+            streaming=streaming,
+        )
+        ch = AIChannel(
+            "ai1",
+            provider=provider,
+            tool_search=True,
+            tool_policy=ToolPolicy(allow=["send_sms", "sandbox_*"]),
+            sandbox=_FakeSandbox(),
+            tool_handler=_noop_handler,
+        )
+        await _run(ch, _binding())
+
+        # Round 0: sandbox tools deferred behind the discovery tools.
+        round0 = _tool_names(provider.calls[0])
+        assert round0 == {"find_tools", "list_tools"}
+
+        result = _tool_result(provider.calls[1])
+        assert "error" not in result
+        assert [m["name"] for m in result["matches"]] == ["sandbox_read"]
+
+        round1 = _tool_names(provider.calls[1])
+        assert "sandbox_read" in round1
+        assert "sandbox_grep" not in round1
+
+    async def test_a_policy_that_omits_sandbox_tools_hides_them_from_find_tools(
+        self, streaming: bool
+    ) -> None:
+        """Sandbox tools obey the policy (RFC §21.1): a whitelist that omits
+        them keeps them out of the search results and out of every round."""
         provider = MockAIProvider(
             ai_responses=[
                 AIResponse(
@@ -365,36 +404,26 @@ class TestSandboxToolSearch:
         )
         await _run(ch, _binding())
 
-        # Round 0: sandbox tools deferred behind the discovery tools.
-        round0 = _tool_names(provider.calls[0])
-        assert round0 == {"find_tools", "list_tools"}
-
-        # find_tools surfaced sandbox_read — not a policy-denied error.
         result = _tool_result(provider.calls[1])
-        assert "error" not in result
-        assert [m["name"] for m in result["matches"]] == ["sandbox_read"]
-
-        # Round 1: revealed + visible despite the whitelist policy; the
-        # unmatched sandbox tool stays deferred.
-        round1 = _tool_names(provider.calls[1])
-        assert "sandbox_read" in round1
-        assert "sandbox_grep" not in round1
+        assert not any(m["name"].startswith("sandbox_") for m in result["matches"])
+        assert not any(n.startswith("sandbox_") for n in _tool_names(provider.calls[1]))
 
     async def test_sandbox_tools_visible_when_search_off(self, streaming: bool) -> None:
-        """Tool Search off → sandbox tools stay visible AND policy-exempt."""
+        """Tool Search off → the sandbox tools the policy allows are declared."""
         provider = MockAIProvider(responses=["hi"], streaming=streaming)
         ch = AIChannel(
             "ai1",
             provider=provider,
             tool_search=False,
-            tool_policy=ToolPolicy(allow=["send_sms"]),  # omits every sandbox tool
+            tool_policy=ToolPolicy(allow=["send_sms", "sandbox_read"]),
             sandbox=_FakeSandbox(),
             tool_handler=_noop_handler,
         )
         await _run(ch, _binding())
 
         names = _tool_names(provider.calls[0])
-        assert {"sandbox_read", "sandbox_grep"} <= names
+        assert "sandbox_read" in names
+        assert "sandbox_grep" not in names
         assert "find_tools" not in names
 
 

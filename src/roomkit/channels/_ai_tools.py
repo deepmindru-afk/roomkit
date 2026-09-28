@@ -10,6 +10,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from roomkit.channels._ai_policy import POLICY_EXEMPT_TOOL_NAMES
 from roomkit.channels._sandbox_handlers import handle_sandbox_command
 from roomkit.channels._skill_constants import (
     ACTIVATE_SKILL_SCHEMA,
@@ -56,7 +57,7 @@ from roomkit.tools.policy import matches_any_pattern
 from roomkit.tools.validation import fold_hoisted_arguments, validate_tool_arguments
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Iterable
 
     from roomkit.channels._skill_activation import SkillActivationMemory
     from roomkit.channels._task_planner import TaskPlanner
@@ -114,6 +115,8 @@ class AIToolsHost(Protocol):
         _get_loop_ctx: ``AISteeringMixin`` — returns current tool-loop context.
         _apply_tool_filters: ``AIToolPolicyMixin`` — policy / skill-gating /
             Tool Search visibility filter.
+        _reachable_tools: ``AIToolPolicyMixin`` — the tools policy and skill
+            gating admit, Tool Search's window aside.
     """
 
     _provider: AIProvider
@@ -151,6 +154,7 @@ class AIToolsHost(Protocol):
     ) -> str | list[AITextPart | AIImagePart]: ...
     def _get_loop_ctx(self) -> _ToolLoopContext: ...
     def _apply_tool_filters(self, tools: list[AITool]) -> list[AITool]: ...
+    def _reachable_tools(self, tools: Iterable[AITool]) -> list[AITool]: ...
 
 
 class AIToolsMixin:
@@ -187,6 +191,7 @@ class AIToolsMixin:
     _maybe_truncate_result: Any  # see AIToolsHost
     _get_loop_ctx: Any  # see AIToolsHost
     _apply_tool_filters: Any  # see AIToolsHost
+    _reachable_tools: Any  # see AIToolsHost
     extra_tools: Any  # AIChannel property: user + orchestration-injected tools
 
     def _tool_parameters(
@@ -386,13 +391,13 @@ class AIToolsMixin:
                         {"error": f"Invalid arguments for '{tc.name}': {arg_error}"}
                     )
 
-            # Execution guard: policy deny (defense-in-depth, role-aware)
-            # Sandbox tools are exempt — they are channel-managed, not user-managed.
+            # Execution guard: policy deny (defense-in-depth, role-aware). The
+            # listing filter's exemption, by exact name (RFC §21.1): the tools
+            # the channel injects are governed like the host's, sandbox
+            # commands and skill scripts included.
             effective_policy = self._effective_tool_policy
             if (
-                tc.name not in self._SKILL_INFRA_TOOLS
-                and tc.name not in TOOL_SEARCH_INFRA_TOOL_NAMES
-                and not tc.name.startswith(SANDBOX_TOOL_PREFIX)
+                tc.name not in POLICY_EXEMPT_TOOL_NAMES
                 and effective_policy
                 and not effective_policy.is_allowed(tc.name)
             ):
@@ -403,13 +408,11 @@ class AIToolsMixin:
 
             # Execution guard: skill gating. The gated entries are ToolPolicy
             # globs (RFC §24.2), so they are matched, never tested for
-            # membership — ``search_*`` gates ``search_web``. Tool Search's own
-            # tools are exempt with the skill tools, as in the listing filter:
-            # they are how a gated name is found and its skill activated.
-            if (
-                tc.name not in self._SKILL_INFRA_TOOLS
-                and tc.name not in TOOL_SEARCH_INFRA_TOOL_NAMES
-                and matches_any_pattern(tc.name, self._gated_tool_names)
+            # membership — ``search_*`` gates ``search_web``. The same exact
+            # names as the policy guard are exempt, as in the listing filter:
+            # activation and discovery are how a gated name is unlocked.
+            if tc.name not in POLICY_EXEMPT_TOOL_NAMES and matches_any_pattern(
+                tc.name, self._gated_tool_names
             ):
                 logger.warning("Tool %s blocked by skill gating", tc.name)
                 return await rejected(
@@ -759,9 +762,8 @@ class AIToolsMixin:
                 # Spotify skill" when SpotifySearch/... are tools). Turn the dead
                 # end into the right outcome: reveal the matching tools and say so.
                 wanted = skill_name.lower()
-                matching = sorted(
-                    t.name for t in loop_ctx.all_context_tools or () if wanted in t.name.lower()
-                )
+                reachable = self._reachable_tools(loop_ctx.all_context_tools or ())
+                matching = sorted(t.name for t in reachable if wanted in t.name.lower())
                 if matching:
                     loop_ctx.revealed_tools.update(matching)
                     data = json.loads(result_str)
@@ -795,16 +797,20 @@ class AIToolsMixin:
             return json.dumps({"error": "No skills registry configured"})
         return await handle_run_script(arguments, self._skills, self._script_executor)
 
-    @staticmethod
-    def _tool_search_catalogue(loop_ctx: _ToolLoopContext) -> list[dict[str, Any]]:
-        """The turn's full tool list as score-able dicts (name + description + tags)."""
+    def _tool_search_catalogue(self, loop_ctx: _ToolLoopContext) -> list[dict[str, Any]]:
+        """The turn's reachable tools as score-able dicts (name + description + tags).
+
+        Only what the policy allows and no skill gates (RFC §21.1): a match
+        the model can never call is a false promise, and listing it discloses
+        what the policy hides.
+        """
         return [
             {
                 "name": t.name,
                 "description": getattr(t, "description", "") or "",
                 "tags": getattr(t, "tags", []) or [],
             }
-            for t in loop_ctx.all_context_tools or ()
+            for t in self._reachable_tools(loop_ctx.all_context_tools or ())
         ]
 
     async def _handle_find_tools(self, arguments: dict[str, Any]) -> str:

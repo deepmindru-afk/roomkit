@@ -5,19 +5,44 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
-from roomkit.channels._skill_constants import SKILL_INFRA_TOOL_NAMES
-from roomkit.channels._tool_search_constants import TOOL_SEARCH_INFRA_TOOL_NAMES
+from roomkit.channels._skill_constants import (
+    SKILL_INFRA_TOOL_NAMES,
+    TOOL_ACTIVATE_SKILL,
+    TOOL_READ_REFERENCE,
+)
+from roomkit.channels._tool_search_constants import (
+    TOOL_FIND_TOOLS,
+    TOOL_LIST_TOOLS,
+    TOOL_SEARCH_INFRA_TOOL_NAMES,
+)
 from roomkit.models.tool_call import DeclaredTool, ToolDeclarationOrigin
 from roomkit.providers.ai.base import AITool
-from roomkit.sandbox.tools import SANDBOX_TOOL_PREFIX
 from roomkit.tools.policy import ToolPolicy, matches_any_pattern
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from roomkit.channels._skill_activation import SkillActivationMemory
     from roomkit.channels.ai import _ToolLoopContext
     from roomkit.models.context import RoomContext
     from roomkit.models.event import RoomEvent
     from roomkit.skills.registry import SkillRegistry
+
+
+# RFC §21.1: the tools a channel provides that only read or unlock and never
+# act. They escape the tool policy and skill gating, by exact name, wherever
+# either is applied: the declared list, the execution guards, the Tool Search
+# catalogue. Every other tool the channel injects (sandbox commands,
+# run_skill_script, plan_tasks) is governed like a host tool.
+POLICY_EXEMPT_TOOL_NAMES: frozenset[str] = frozenset(
+    {
+        TOOL_ACTIVATE_SKILL,
+        TOOL_READ_REFERENCE,
+        "read_stored_result",
+        TOOL_FIND_TOOLS,
+        TOOL_LIST_TOOLS,
+    }
+)
 
 
 @runtime_checkable
@@ -71,8 +96,9 @@ class AIToolPolicyMixin:
             return None
         return self._tool_policy.resolve(self._get_loop_ctx().current_participant_role)
 
-    # Infrastructure tool names — never filtered by policy or gating.
-    # Includes skill tools and channel-managed tools (eviction, planning).
+    # Channel-managed tool names: dispatched by the channel itself and never
+    # deferred by Tool Search. Not an exemption from the policy — that is
+    # POLICY_EXEMPT_TOOL_NAMES, a narrower set.
     _SKILL_INFRA_TOOLS: frozenset[str] = SKILL_INFRA_TOOL_NAMES | frozenset(
         {"read_stored_result", "plan_tasks"}
     )
@@ -142,30 +168,48 @@ class AIToolPolicyMixin:
             return "revealed"
         return "always"
 
+    def _reachable_tools(self, tools: Iterable[AITool]) -> list[AITool]:
+        """The tools the policy and skill gating let this turn reach (RFC §21.1).
+
+        What ``find_tools`` and ``list_tools`` search and hint from: a name the
+        model could never call is a false promise, and naming it discloses
+        what the policy hides. Tool Search's reveal window does not apply.
+        """
+        policy = self._effective_tool_policy
+        gated = self._gated_tool_names
+        return [tool for tool in tools if self._is_reachable(tool.name, policy, gated)]
+
+    @staticmethod
+    def _is_reachable(name: str, policy: ToolPolicy | None, gated: set[str]) -> bool:
+        """Whether the role-resolved *policy* and skill gating admit *name*."""
+        if name in POLICY_EXEMPT_TOOL_NAMES:
+            return True
+        if policy is not None and not policy.is_allowed(name):
+            return False
+        # ``gated`` holds ToolPolicy globs, not names (RFC §24.2): an
+        # exact-membership test would let ``search_*`` gate nothing at all.
+        return not matches_any_pattern(name, gated)
+
     def _apply_tool_filters(self, tools: list[AITool]) -> list[AITool]:
         """Apply tool policy, skill gating, and Tool Search to a list of tools.
 
-        Skill infrastructure tools and Tool Search discovery tools are *never*
-        filtered — they ARE the skill/discovery mechanism and must stay
-        reachable while the discretionary catalogue is hidden (the model still
-        needs ``activate_skill`` and ``find_tools``).
-
-        Sandbox tools are channel-attached rather than user-selected, so they
-        are exempt from the user **tool policy** and skill **gating** — but they
-        still participate in **Tool Search**. A sandbox can expose ~10 tools
-        (read/write/edit/ls/grep/find/git/diff/delete/bash); on a small model
-        those would otherwise crowd the context window, so they are deferred
-        behind ``find_tools`` like any other discretionary tool and revealed on
-        demand. A host that wants an always-visible entry point pins specific
-        sandbox tool names via ``tool_search_pinned``.
+        The policy-exempt tools (``POLICY_EXEMPT_TOOL_NAMES``: skill activation
+        and reference reading, the eviction re-read, Tool Search's discovery
+        tools) always pass: they ARE the skill/discovery mechanism and must
+        stay reachable while the discretionary catalogue is hidden. Every
+        other tool, the ones the channel injects included, passes the
+        role-aware policy and skill gating first (RFC §21.1).
 
         When Tool Search is active for the turn (``loop_ctx.tool_search_active``,
         set in ``_build_context``), the discretionary catalogue is collapsed to
         the pinned set plus the tools already revealed by ``find_tools`` this
         loop. The re-filter runs every round, so a tool revealed in round N
         becomes visible in round N+1 — the same mechanism as skill gating.
-
-        Uses ``_effective_tool_policy`` which incorporates role-based overrides.
+        Channel-managed tools (``run_skill_script``, ``plan_tasks``) are never
+        deferred. Sandbox tools are: a sandbox can expose ~10 tools, which on a
+        small model would crowd the context window, so they wait behind
+        ``find_tools`` like any other discretionary tool unless the host pins
+        them via ``tool_search_pinned``.
         """
         gated = self._gated_tool_names
         policy = self._effective_tool_policy
@@ -180,26 +224,12 @@ class AIToolPolicyMixin:
         result: list[AITool] = []
         for tool in tools:
             name = tool.name
-            # Skill infra + Tool Search discovery tools always pass
-            if name in self._SKILL_INFRA_TOOLS or name in TOOL_SEARCH_INFRA_TOOL_NAMES:
-                result.append(tool)
+            if not self._is_reachable(name, policy, gated):
                 continue
-            # Sandbox tools are channel-attached, not user-managed: skip the
-            # user tool policy + skill gating. They still flow through the Tool
-            # Search ``keep`` filter below so a large sandbox toolset can be
-            # deferred behind find_tools on small models.
-            if not name.startswith(SANDBOX_TOOL_PREFIX):
-                # Tool policy filter (role-aware)
-                if policy and not policy.is_allowed(name):
-                    continue
-                # Skill gating filter. ``gated`` holds ToolPolicy globs, not
-                # names (RFC §24.2) — an exact-membership test would let
-                # ``search_*`` gate nothing at all.
-                if matches_any_pattern(name, gated):
-                    continue
-            # Tool Search: hide the discretionary catalogue (sandbox included)
-            # behind find_tools, exposing only pinned + already-revealed tools.
-            if keep is not None and name not in keep:
+            deferrable = (
+                name not in self._SKILL_INFRA_TOOLS and name not in TOOL_SEARCH_INFRA_TOOL_NAMES
+            )
+            if keep is not None and deferrable and name not in keep:
                 continue
             result.append(tool)
         return result
