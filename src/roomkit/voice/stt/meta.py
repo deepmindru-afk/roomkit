@@ -164,6 +164,12 @@ class MetaSTTConfig:
     def __post_init__(self) -> None:
         if not self.api_key:
             raise ValueError("MetaSTTConfig.api_key is required")
+        if not self.api_key.isascii():
+            # Refused here, not as a UnicodeEncodeError from the HTTP client.
+            raise ValueError(
+                "MetaSTTConfig.api_key holds a non-ASCII character (a placeholder such as "
+                "'…' copied as is?): an HTTP Authorization header cannot carry it"
+            )
         if self.mode not in ("ENDPOINTING", "PUSH_TO_TALK", "DIARIZATION"):
             raise ValueError(
                 f"mode must be 'ENDPOINTING', 'PUSH_TO_TALK' or 'DIARIZATION', got {self.mode!r}"

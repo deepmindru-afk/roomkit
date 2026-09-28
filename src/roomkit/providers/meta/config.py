@@ -4,11 +4,25 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, SecretStr
+from pydantic import BaseModel, ConfigDict, SecretStr, field_validator
 
 from roomkit.providers.openai.config import OpenAIConfig
 
 MetaImageTool = Literal["web_search", "image_search", "shell"]
+
+
+# A validation error echoes its input: with the key among the fields, never.
+_KEEP_KEY_OUT_OF_ERRORS = ConfigDict(hide_input_in_errors=True)
+
+
+def _header_safe(key: SecretStr) -> SecretStr:
+    """The key, if an HTTP header can carry it: a ``Bearer`` value is ASCII."""
+    if not key.get_secret_value().isascii():
+        raise ValueError(
+            "api_key holds a non-ASCII character (a placeholder such as '…' copied "
+            "as is?): an HTTP Authorization header cannot carry it"
+        )
+    return key
 
 
 class MetaImageConfig(BaseModel):
@@ -48,6 +62,9 @@ class MetaImageConfig(BaseModel):
     connect_timeout: float = 5.0
     max_retries: int = 0
 
+    model_config = _KEEP_KEY_OUT_OF_ERRORS
+    _check_api_key = field_validator("api_key")(_header_safe)
+
 
 class MetaConfig(OpenAIConfig):
     """Meta Muse Spark chat provider configuration.
@@ -78,3 +95,6 @@ class MetaConfig(OpenAIConfig):
 
     include_stream_usage: bool = True
     """Meta reports usage on the last streamed chunk, reasoning tokens included."""
+
+    model_config = _KEEP_KEY_OUT_OF_ERRORS
+    _check_api_key = field_validator("api_key")(_header_safe)

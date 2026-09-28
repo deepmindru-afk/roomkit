@@ -150,6 +150,13 @@ class TestConfig:
         with pytest.raises(ValueError, match="api_key"):
             MetaSTTConfig(api_key="")
 
+    def test_a_key_no_header_can_carry_is_refused_without_echoing_it(self) -> None:
+        # A placeholder "…" pasted as the key failed later, as a UnicodeEncodeError
+        # from the HTTP client on the REST path.
+        with pytest.raises(ValueError, match="non-ASCII") as info:
+            MetaSTTConfig(api_key="sk-secret…")
+        assert "sk-secret" not in str(info.value)
+
     def test_language_override_is_not_claimed(self) -> None:
         # languageBias biases, it does not pin (RFC §12.2).
         assert _provider("ws://unused").supports_language_override is False

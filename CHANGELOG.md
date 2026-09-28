@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `UU`, `PENDING`, empty — the label rule a diarizing STT follows) now neither
   fires nor resets; it still reaches the frame, where `pipeline_speakers`
   counts it as `"Unknown speaker"`.
+- A Meta Model API key with a non-ASCII character is refused when the config
+  is built (RMK-257): `MetaSTTConfig`, `MetaConfig` and `MetaImageConfig` say
+  an HTTP header cannot carry it, where a placeholder `…` pasted as the key
+  used to surface as a `UnicodeEncodeError` from the HTTP client on the REST
+  path. The error never repeats the key: the two pydantic configs hide their
+  input in validation errors.
 
 ## [0.92.0] — 2026-09-27
 

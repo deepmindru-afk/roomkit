@@ -205,6 +205,12 @@ class TestErrors:
         assert info.value.retryable is True
 
 
+def test_a_key_no_header_can_carry_is_refused_without_echoing_it() -> None:
+    with pytest.raises(ValueError, match="non-ASCII") as info:
+        MetaImageConfig(api_key=SecretStr("sk-secret…"))
+    assert "sk-secret" not in str(info.value)
+
+
 def test_catalog_describes_muse_image() -> None:
     provider = _provider()
     entry = provider.catalog_entry()

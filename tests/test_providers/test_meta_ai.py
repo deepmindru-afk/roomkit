@@ -77,6 +77,11 @@ class TestConfig:
         assert cfg.use_max_completion_tokens is True
         assert cfg.include_stream_usage is True
 
+    def test_a_key_no_header_can_carry_is_refused_without_echoing_it(self) -> None:
+        with pytest.raises(ValueError, match="non-ASCII") as info:
+            MetaConfig(api_key="sk-secret…")
+        assert "sk-secret" not in str(info.value)
+
     def test_client_points_at_meta(self) -> None:
         stub = _openai_stub()
         _provider(stub)
