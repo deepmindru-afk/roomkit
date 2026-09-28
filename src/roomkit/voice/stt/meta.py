@@ -20,9 +20,9 @@ is set up, which the provider cannot see, so it is configuration:
 * ``DIARIZATION`` — ``ENDPOINTING`` plus who spoke: each final carries its
   turn as one :class:`~roomkit.voice.base.SpeakerSegment` labelled ``"A"``,
   ``"B"``… (RFC §12.2.3). A change of voice also ends a turn, even without a
-  pause. Labels hold within one stream only, so read ``transcribe_stream()``
-  directly: a ``VoiceChannel`` refuses a diarizing provider until it can carry
-  labels across turns.
+  pause. Labels hold within one stream only: a ``VoiceChannel`` carries them
+  in continuous mode, where it keeps the stream across turns, and refuses the
+  provider behind a VAD.
 """
 
 from __future__ import annotations

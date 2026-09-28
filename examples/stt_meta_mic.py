@@ -16,9 +16,9 @@ is committed.
 ``--diarize`` switches the model to ``DIARIZATION``: each committed turn says
 who spoke (``> A: ...``, ``> B: ...``), and a change of voice ends a turn even
 without a pause. Try it with two people talking in turn near the microphone.
-The labels hold for the life of the stream, which is why the example reads the
-provider directly: a ``VoiceChannel`` does not carry speaker labels across
-turns yet (RFC §12.2.3).
+The labels hold for the life of the stream. This example reads the provider
+directly; ``voice_meta_diarization.py`` runs the same model through a
+``VoiceChannel``, where each turn becomes a room message with its speaker.
 
 Requires:
     pip install roomkit[meta-stt,local-audio]

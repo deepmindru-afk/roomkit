@@ -42,6 +42,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every frame never showed a continuous STT stream the silence a local mic
   gives it while the bot answers; on this setting a two-turn scenario stalls
   without the RMK-230 fix and passes with it.
+- A `VoiceChannel` in continuous mode carries a diarizing STT's speakers to
+  the room (RMK-237, RFC §12.2.3). It keeps one stream across turns, so the
+  labels compare, and feeds it silence at real-time pace while no audio
+  arrives: Meta Muse ends a stream that falls behind real time (1008 after ~15
+  s, measured 2026-09-27), and a muted microphone during playback sends
+  nothing. Each segment of a final is its own room message: the sender stays
+  the session's participant, and the message carries `speaker_label`,
+  `speaker_epoch` and `sender_name` ("Speaker A", "Speaker A#1" once a new
+  stream has started, "Unknown speaker" for unattributed words), which the AI
+  channel uses to attribute turns. `TranscriptionEvent` gains `speaker`,
+  `speaker_epoch` and `sender_name`; an `ON_TRANSCRIPTION` hook returning
+  another `sender_name` names the voice. `ON_SPEAKER_CHANGE` fires with the
+  new `SpeakerChangeEvent.source` (`"stt"`, `"pipeline"` by default), whose
+  `confidence` may now be `None`. A turn detector never joins two speakers'
+  segments, and a session's finals are processed in order. Through the live
+  service, a two-voice French dialogue became 5 attributed messages on one
+  stream, and a 20 s gap with no audio kept it. Example
+  `examples/voice_meta_diarization.py`.
 - A transcription result can say who spoke (RMK-233, RFC §12.2.3):
   `TranscriptionResult.segments` lists the `SpeakerSegment`s its text is made
   of (speaker label, text, start and end offsets),
@@ -51,13 +69,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one stream only. `MetaSTTProvider` gains `mode="DIARIZATION"`: each final
   carries its turn as one segment, over the WebSocket and over REST alike; on
   a two-voice French dialogue both attributed 5 turns out of 5.
-  `examples/stt_meta_mic.py --diarize` shows it live. A `VoiceChannel` refuses
-  a diarizing provider at construction, since it opens a stream per utterance
-  or per turn and every turn would restart at the first label; keeping one
-  stream across turns and carrying the label to the room message and the AI
-  context are the Planned parts of §12.2.3. A `ConferenceChannel` refuses one
-  too, at construction and in `plug_stt()`: it attributes speech by
-  participant track and transcribes each utterance on its own.
+  `examples/stt_meta_mic.py --diarize` shows it live. A `VoiceChannel` behind
+  a VAD or in batch mode refuses a diarizing provider at construction, since
+  it opens a stream per utterance or per flush and every turn would restart at
+  the first label; so does a `ConferenceChannel`, at construction and in
+  `plug_stt()`, since it attributes speech by participant track.
 - `examples/voice_gemini.py`, a voice assistant that is Gemini end to end
   (RMK-229): `gemini-3.5-transcribe-live` hears the microphone,
   `gemini-3.8-flash` answers, `gemini-3.8-flash-lite-tts` speaks, on one API

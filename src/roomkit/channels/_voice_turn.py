@@ -15,6 +15,7 @@ from roomkit.models.delivery import SUPERSEDED, InboundResult
 from roomkit.models.enums import EventType, HookTrigger
 
 if TYPE_CHECKING:
+    from roomkit.channels._voice_speakers import SpeakerAttribution
     from roomkit.core.framework import RoomKit
     from roomkit.models.channel import ChannelBinding
     from roomkit.models.context import RoomContext
@@ -60,6 +61,7 @@ class TurnHost(Protocol):
     _pipeline_config: AudioPipelineConfig | None
     _session_bindings: dict[str, tuple[str, ChannelBinding]]
     _pending_turns: dict[str, list[TurnEntry]]
+    _pending_turn_speakers: dict[str, SpeakerAttribution]
     _pending_audio: dict[str, bytearray]
     _turn_speech_state: dict[str, tuple[bool, float]]
     _turn_wait_tasks: dict[str, asyncio.Task[None]]
@@ -82,6 +84,7 @@ class VoiceTurnMixin:
     _pipeline_config: AudioPipelineConfig | None
     _session_bindings: dict[str, tuple[str, ChannelBinding]]
     _pending_turns: dict[str, list[TurnEntry]]
+    _pending_turn_speakers: dict[str, SpeakerAttribution]
     _pending_audio: dict[str, bytearray]
     _turn_speech_state: dict[str, tuple[bool, float]]
     _turn_wait_tasks: dict[str, asyncio.Task[None]]
@@ -102,20 +105,29 @@ class VoiceTurnMixin:
         context: RoomContext,
         *,
         audio_bytes: bytes | None = None,
+        speaker: SpeakerAttribution | None = None,
     ) -> None:
-        """Evaluate turn completion using the configured TurnDetector."""
+        """Evaluate turn completion using the configured TurnDetector.
+
+        ``speaker`` is who said ``text`` when a diarizing STT labelled it. A
+        turn has one speaker (RFC §12.2.3): a pending turn with another is
+        routed first, as its own message.
+        """
         if not self._framework or not self._pipeline_config:
             return
         turn_detector = self._pipeline_config.turn_detector
         if turn_detector is None:
-            await self._route_text(session, text, room_id)
+            await self._route_text(session, text, room_id, speaker=speaker)
             return
 
         from roomkit.voice.pipeline.turn.base import TurnContext, TurnEntry
 
+        await self._close_turn_of_another_speaker(session, room_id, context, speaker)
         # Accumulate entry
         entries = self._pending_turns.setdefault(session.id, [])
         entries.append(TurnEntry(text=text, role="user"))
+        if speaker is not None:
+            self._pending_turn_speakers[session.id] = speaker
 
         # Accumulate audio for audio-native turn detectors
         if audio_bytes:
@@ -176,6 +188,27 @@ class VoiceTurnMixin:
                 logger.exception("Error firing ON_TURN_INCOMPLETE hook")
             self._arm_turn_wait(session, room_id, context, decision.suggested_wait_ms)
 
+    async def _close_turn_of_another_speaker(
+        self,
+        session: VoiceSession,
+        room_id: str,
+        context: RoomContext,
+        speaker: SpeakerAttribution | None,
+    ) -> None:
+        """Route the pending turn now if someone else said it (RFC §12.2.3).
+
+        Its wait is dropped: the turn ended when the other voice started.
+        """
+        pending = self._pending_turn_speakers.get(session.id)
+        if pending is None or speaker is None or pending.same_voice(speaker):
+            return
+        if not self._pending_turns.get(session.id):
+            return
+        task = self._turn_wait_tasks.pop(session.id, None)
+        if task is not None:
+            task.cancel()
+        await self._complete_turn(session, room_id, context, confidence=0.0)
+
     async def _complete_turn(
         self, session: VoiceSession, room_id: str, context: RoomContext, confidence: float
     ) -> None:
@@ -183,6 +216,7 @@ class VoiceTurnMixin:
         if not self._framework:
             return
         entries = self._pending_turns.pop(session.id, [])
+        speaker = self._pending_turn_speakers.pop(session.id, None)
         self._pending_audio.pop(session.id, None)
         if not entries:
             return
@@ -201,7 +235,7 @@ class VoiceTurnMixin:
         except Exception:
             logger.exception("Error firing ON_TURN_COMPLETE hook")
 
-        await self._route_text(session, combined, room_id)
+        await self._route_text(session, combined, room_id, speaker=speaker)
 
     def _arm_turn_wait(
         self,
@@ -276,19 +310,34 @@ class VoiceTurnMixin:
         with self._state_lock:
             self._turn_speech_state.pop(session_id, None)
 
-    async def _route_text(self, session: VoiceSession, text: str, room_id: str) -> None:
-        """Route transcribed text through the inbound pipeline."""
+    async def _route_text(
+        self,
+        session: VoiceSession,
+        text: str,
+        room_id: str,
+        *,
+        speaker: SpeakerAttribution | None = None,
+    ) -> None:
+        """Route transcribed text through the inbound pipeline.
+
+        The sender stays the session's participant, the owner of the audio
+        stream; ``speaker`` adds who said it when a diarizing STT labelled it
+        (``speaker_label``, ``speaker_epoch``, ``sender_name``, RFC §12.2.3).
+        """
         if not self._framework:
             return
         from roomkit.models.delivery import InboundMessage
         from roomkit.models.event import TextContent
         from roomkit.telemetry.context import reset_span, set_current_span
 
+        metadata: dict[str, Any] = {"voice_session_id": session.id, "source": "voice"}
+        if speaker is not None:
+            metadata.update(speaker.metadata())
         inbound = InboundMessage(
             channel_id=self.channel_id,
             sender_id=session.participant_id,
             content=TextContent(body=text),
-            metadata={"voice_session_id": session.id, "source": "voice"},
+            metadata=metadata,
         )
         # Set voice session span as parent so INBOUND_PIPELINE is a child
         session_span = getattr(self, "_voice_session_spans", {}).get(session.id)

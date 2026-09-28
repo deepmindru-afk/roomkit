@@ -92,6 +92,21 @@ class TranscriptionEvent:
     timestamp: datetime = field(default_factory=_utcnow)
     """When the transcription was produced."""
 
+    speaker: str | None = None
+    """The STT's label for who said ``text`` (RFC §12.2.3), ``None`` when the
+    STT does not diarize or could not attribute it. Holds within one stream:
+    compare it only with labels of the same ``speaker_epoch``."""
+
+    speaker_epoch: int | None = None
+    """Which of the session's STT streams the label comes from, from 0.
+    ``None`` when the STT does not diarize."""
+
+    sender_name: str | None = None
+    """The name the room message will carry (``"Speaker A"``,
+    ``"Speaker A#1"`` after a reconnect, ``"Unknown speaker"``). A hook may
+    return the event with another name — a label matched to a known voice.
+    ``None`` when the STT does not diarize."""
+
 
 @dataclass(frozen=True)
 class PartialTranscriptionEvent:
@@ -194,8 +209,10 @@ class AudioLevelEvent:
 class SpeakerChangeEvent:
     """Speaker change detected by diarization.
 
-    This event is fired when the audio pipeline's diarization
-    stage detects a different speaker than the previous frame.
+    Fired when the audio pipeline's diarization stage detects a different
+    speaker than the previous frame (``source="pipeline"``), or when a
+    diarizing STT labels a routed transcript with a new speaker
+    (``source="stt"``, RFC §12.2.3).
     """
 
     session: VoiceSession
@@ -204,14 +221,20 @@ class SpeakerChangeEvent:
     speaker_id: str
     """The new speaker's identifier."""
 
-    confidence: float
-    """Confidence score for the speaker identification (0.0 to 1.0)."""
+    confidence: float | None
+    """Confidence score for the speaker identification (0.0 to 1.0), ``None``
+    when the source reports none (an STT label)."""
 
     is_new_speaker: bool
-    """True if this speaker has not been seen before in this session."""
+    """True if this speaker has not been seen before — in this session for
+    the pipeline, in this STT stream (epoch) for an STT label."""
 
     timestamp: datetime = field(default_factory=_utcnow)
     """When the speaker change was detected."""
+
+    source: str = "pipeline"
+    """``"pipeline"`` for the diarization stage, ``"stt"`` for a diarizing
+    STT's label."""
 
 
 @dataclass(frozen=True)

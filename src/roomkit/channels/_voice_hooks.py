@@ -13,6 +13,7 @@ from roomkit.telemetry.context import reset_span, set_current_span
 if TYPE_CHECKING:
     from roomkit.core.framework import RoomKit
     from roomkit.voice.base import VoiceSession
+    from roomkit.voice.events import SpeakerChangeEvent
     from roomkit.voice.pipeline.diarization.base import DiarizationResult
 
 logger = logging.getLogger("roomkit.voice")
@@ -321,19 +322,26 @@ class VoiceHooksMixin:
     async def _fire_speaker_change_hook(
         self, session: VoiceSession, result: DiarizationResult, room_id: str
     ) -> None:
+        """ON_SPEAKER_CHANGE from the pipeline's diarization stage."""
+        from roomkit.voice.events import SpeakerChangeEvent
+
+        event = SpeakerChangeEvent(
+            session=session,
+            speaker_id=result.speaker_id,
+            confidence=result.confidence,
+            is_new_speaker=result.is_new_speaker,
+        )
+        await self._fire_speaker_change_event(session, event, room_id)
+
+    async def _fire_speaker_change_event(
+        self, session: VoiceSession, event: SpeakerChangeEvent, room_id: str
+    ) -> None:
+        """Run the ON_SPEAKER_CHANGE hooks, whatever the source of the change."""
         if not self._framework:
             return
         try:
-            from roomkit.voice.events import SpeakerChangeEvent
-
             with self._voice_span_ctx(session):
                 context = await self._framework._build_context(room_id)
-                event = SpeakerChangeEvent(
-                    session=session,
-                    speaker_id=result.speaker_id,
-                    confidence=result.confidence,
-                    is_new_speaker=result.is_new_speaker,
-                )
                 await self._framework.hook_engine.run_async_hooks(
                     room_id,
                     HookTrigger.ON_SPEAKER_CHANGE,

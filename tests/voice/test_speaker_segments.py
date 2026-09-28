@@ -60,35 +60,19 @@ class TestProviderDefault:
         assert MockSTTProvider().supports_diarization is False
 
 
-class TestVoiceChannelRefusesDiarizingSTT:
-    @pytest.mark.parametrize(
-        "pipeline",
-        [AudioPipelineConfig(), AudioPipelineConfig(vad=MockVADProvider(events=[]))],
-        ids=["continuous", "vad"],
-    )
-    def test_refused_at_construction(self, pipeline: AudioPipelineConfig) -> None:
-        # Labels compare within one stream only, and the channel opens one per
-        # utterance or per turn: every turn would restart at the first label.
-        with pytest.raises(ValueError, match="supports_diarization"):
-            VoiceChannel(
-                "voice-1", stt=_DiarizingSTT(), backend=MockVoiceBackend(), pipeline=pipeline
-            )
-
-    def test_a_non_diarizing_provider_is_accepted(self) -> None:
-        VoiceChannel(
-            "voice-1",
-            stt=MockSTTProvider(),
-            backend=MockVoiceBackend(),
-            pipeline=AudioPipelineConfig(),
-        )
+class TestVoiceChannelAcceptsOnlyAnExplicitClaim:
+    # Where a diarizing STT is refused or carried: test_speaker_attribution_channel.
 
     @pytest.mark.parametrize("stt", [MagicMock(), _LegacySTT()], ids=["mock", "duck-typed"])
-    def test_only_an_explicit_claim_is_refused(self, stt: object) -> None:
+    def test_only_an_explicit_claim_counts(self, stt: object) -> None:
         # A mock's auto-attribute and a provider predating the property are
-        # not claims to label speakers.
+        # not claims to label speakers, even behind a VAD.
         VoiceChannel(
-            "voice-1", stt=stt, backend=MockVoiceBackend(), pipeline=AudioPipelineConfig()
-        )  # type: ignore[arg-type]
+            "voice-1",
+            stt=stt,  # type: ignore[arg-type]
+            backend=MockVoiceBackend(),
+            pipeline=AudioPipelineConfig(vad=MockVADProvider(events=[])),
+        )
 
 
 class TestConferenceRefusesDiarizingSTT:

@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._voice_hooks import VoiceHooksMixin
 from roomkit.channels._voice_pipeline import VoicePipelineMixin
+from roomkit.channels._voice_speakers import SpeakerAttribution, SpeakerTracker
 from roomkit.channels._voice_stt import VoiceSTTMixin
 from roomkit.channels._voice_tts import VoiceTTSMixin
 from roomkit.channels._voice_turn import VoiceTurnMixin
@@ -60,19 +61,28 @@ if TYPE_CHECKING:
 logger = logging.getLogger("roomkit.voice")
 
 
-def _refuse_diarizing_stt(stt: STTProvider | None) -> None:
-    """Refuse an STT that labels speakers: the channel cannot carry its labels yet.
+def _refuse_diarizing_stt(
+    stt: STTProvider | None, pipeline: AudioPipelineConfig | None, *, batch_mode: bool
+) -> None:
+    """Refuse an STT that labels speakers unless the channel runs continuous STT.
 
-    Labels compare only within one stream (RFC §12.2.3), and the channel opens
-    a new stream per utterance or per turn, so every turn would restart at the
-    first label. Keeping one stream across turns is the part of §12.2.3 not
-    implemented here yet; until it is, a diarizing provider is used directly.
+    Labels compare only within one stream (RFC §12.2.3). Continuous mode keeps
+    one stream across turns for such a provider; VAD mode opens a stream per
+    utterance and batch mode one per flush, so every turn would restart at
+    the first label.
     """
-    if stt is not None and diarizes(stt):
+    if stt is None or not diarizes(stt):
+        return
+    continuous = (
+        not batch_mode
+        and (pipeline is None or pipeline.vad is None)
+        and getattr(stt, "supports_streaming", False) is True
+    )
+    if not continuous:
         raise ValueError(
-            f"{stt.name} labels speakers (supports_diarization=True), and VoiceChannel "
-            "does not carry speaker labels to the room yet (RFC §12.2.3): configure the "
-            "provider without diarization, or read its transcribe_stream() directly"
+            f"{stt.name} labels speakers (supports_diarization=True), and speaker labels "
+            "hold within one STT stream: VoiceChannel carries them only in continuous "
+            "mode, a streaming STT with no pipeline VAD and no batch_mode (RFC §12.2.3)"
         )
 
 
@@ -114,6 +124,7 @@ class _STTStreamState:
     partial_result: TranscriptionResult | None = None
     error: bool = False
     cancelled: bool = False
+    streams_opened: int = 0  # continuous mode: the next stream's label epoch (RFC §12.2.3)
 
 
 @dataclass
@@ -256,7 +267,7 @@ class VoiceChannel(
         tts_context: TTSContextConfig | None = None,
     ) -> None:
         super().__init__(channel_id)
-        _refuse_diarizing_stt(stt)
+        _refuse_diarizing_stt(stt, pipeline, batch_mode=batch_mode)
         self._stt = stt
         self._tts = tts
         # The dialogue a context-aware TTS hears (RFC §12.2.2); absent for a
@@ -313,6 +324,12 @@ class VoiceChannel(
         self._pipeline: AudioPipeline | None = None
         # Pending turns for turn detection (session_id -> list of TurnEntry)
         self._pending_turns: dict[str, list[TurnEntry]] = {}
+        # Who said the pending turn, when a diarizing STT labelled it (RFC §12.2.3)
+        self._pending_turn_speakers: dict[str, SpeakerAttribution] = {}
+        # The speaker-change rule per session for a diarizing STT's labels
+        self._speaker_trackers: dict[str, SpeakerTracker] = {}
+        # Continuous-mode finals of a session are processed one at a time
+        self._transcript_locks: dict[str, asyncio.Lock] = {}
         # Pending audio for audio-native turn detectors (session_id -> accumulated PCM)
         self._pending_audio: dict[str, bytearray] = {}
         self._turn_speech_state: dict[str, tuple[bool, float]] = {}
@@ -1222,6 +1239,9 @@ class VoiceChannel(
         self._release_tts_context(session.id)
         # Clear pending turns, audio, and interrupt cooldown
         self._pending_turns.pop(session.id, None)
+        self._pending_turn_speakers.pop(session.id, None)
+        self._speaker_trackers.pop(session.id, None)
+        self._transcript_locks.pop(session.id, None)
         self._pending_audio.pop(session.id, None)
         self._cancel_turn_wait(session.id)
         self._unheard_turns.release(session.id)

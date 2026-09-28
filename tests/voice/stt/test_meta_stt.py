@@ -25,6 +25,7 @@ import pytest
 from websockets.asyncio.server import ServerConnection, serve
 
 from roomkit import HookExecution, HookResult, HookTrigger, RoomKit, VoiceChannel
+from roomkit.models.enums import EventType
 from roomkit.models.event import AudioContent
 from roomkit.voice.audio_frame import AudioFrame
 from roomkit.voice.backends.mock import MockVoiceBackend
@@ -671,14 +672,67 @@ async def _eventually(predicate: Callable[[], bool], timeout: float = 3.0) -> No
 
 
 class TestVoiceChannelContinuous:
-    def test_diarizing_provider_is_refused_until_labels_can_be_carried(self) -> None:
-        with pytest.raises(ValueError, match="RFC §12.2.3"):
-            VoiceChannel(
-                "voice-1",
-                stt=_provider("ws://unused", mode="DIARIZATION"),
-                backend=MockVoiceBackend(),
-                pipeline=AudioPipelineConfig(),
+    async def test_diarized_turns_reach_the_room_on_one_stream(self) -> None:
+        # Two turns, two voices, one WebSocket: the channel keeps the stream,
+        # so "A" and "B" compare, and each turn is its own message.
+        record = _Record()
+        turn_b = [
+            {"type": "speechStart", "audioProcessedMs": 4300, "turnId": 1},
+            {"type": "speaker", "label": "B"},
+            {"type": "speechEnd", "audioProcessedMs": 9580, "turnId": 1},
+            {"type": "speechComplete", "turnId": 1, "transcript": " Oui, je l'ai lu. "},
+        ]
+
+        async def handler(ws: ServerConnection) -> None:
+            record.connections += 1
+            record.handshake = json.loads(await ws.recv())
+            await ws.send(json.dumps(_ACK))
+            await ws.recv()
+            for event in _ENDPOINTING_TURN[:-1]:
+                await ws.send(json.dumps(event))
+            await ws.recv()
+            for event in turn_b:
+                await ws.send(json.dumps(event))
+            await ws.wait_closed()
+
+        async with _server(handler) as url:
+            stt = _provider(url, mode="DIARIZATION")
+            backend = MockVoiceBackend()
+            channel = VoiceChannel(
+                "voice-1", stt=stt, backend=backend, pipeline=AudioPipelineConfig()
             )
+            kit = RoomKit(stt=stt, voice=backend)
+            kit.register_channel(channel)
+            room = await kit.create_room()
+            await kit.attach_channel(room.id, "voice-1")
+            session = await kit.join(room.id, "voice-1", participant_id="owner")
+
+            await backend.simulate_audio_received(session, AudioFrame(data=_PCM_16K * 2))
+            await asyncio.sleep(0.3)
+            await backend.simulate_audio_received(session, AudioFrame(data=_PCM_16K * 2))
+
+            async def said() -> list[tuple[Any, str]]:
+                events = await kit.store.list_events(room.id, offset=0, limit=20)
+                return [
+                    (e.metadata.get("sender_name"), e.content.body)
+                    for e in events
+                    if e.source.channel_id == "voice-1" and e.type == EventType.MESSAGE
+                ]
+
+            await _eventually(lambda: record.connections >= 1)
+            for _ in range(150):
+                messages = await said()
+                if len(messages) == 2:
+                    break
+                await asyncio.sleep(0.02)
+            await channel.close()
+
+        assert messages == [
+            ("Speaker A", "Bonjour Julie, ça va?"),
+            ("Speaker B", "Oui, je l'ai lu."),
+        ]
+        assert record.connections == 1
+        assert record.handshake["mode"] == "DIARIZATION"
 
     async def test_model_endpointing_drives_the_turn(self) -> None:
         # No pipeline VAD: the channel streams everything and the model's
