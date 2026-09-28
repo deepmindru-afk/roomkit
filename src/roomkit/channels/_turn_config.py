@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from roomkit.models.channel import ChannelBinding
@@ -33,6 +33,9 @@ class AIChannelTurnConfig:
     thinking_budget: int | None = None
     enable_thinking: bool | None = None
     reasoning_effort: str | None = None
+    response_schema: dict[str, Any] | None = None
+    """JSON Schema the turn's answer must satisfy (RFC §6.7): the final message
+    is then one JSON document, or the turn fails with ``ResponseSchemaError``."""
 
 
 ConfigProvider = Callable[["ChannelBinding", "RoomContext"], Awaitable[AIChannelTurnConfig | None]]

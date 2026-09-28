@@ -77,6 +77,7 @@ from roomkit.providers.ai.base import (
     AIToolCallPart,
     AIToolResultPart,
 )
+from roomkit.providers.ai.json_schema import check_portable_schema
 from roomkit.realtime.base import RealtimeBackend
 from roomkit.tools.compose import compose_tool_handlers, extract_tools
 from roomkit.tools.policy import ToolPolicy
@@ -292,6 +293,7 @@ class AIChannel(
         thinking_budget: int | None = None,
         enable_thinking: bool | None = None,
         reasoning_effort: str | None = None,
+        response_schema: dict[str, Any] | None = None,
         evict_threshold_tokens: int = 5000,
         enable_planning: bool = False,
         config_provider: ConfigProvider | None = None,
@@ -314,6 +316,13 @@ class AIChannel(
         self._thinking_budget = thinking_budget
         self._enable_thinking = enable_thinking
         self._reasoning_effort = reasoning_effort
+        # Every turn's answer is constrained to this schema unless the binding
+        # or the config provider says otherwise (RFC §6.7). Checked now, so a
+        # schema outside the portable subset fails at construction, not on the
+        # first message.
+        if response_schema is not None:
+            check_portable_schema(response_schema)
+        self._response_schema = response_schema
         self._max_tool_rounds = max_tool_rounds
         self._tool_loop_timeout_seconds = tool_loop_timeout_seconds
         self._tool_loop_warn_after = tool_loop_warn_after

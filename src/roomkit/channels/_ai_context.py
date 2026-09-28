@@ -100,6 +100,7 @@ class AIContextHost(Protocol):
     _thinking_budget: int | None
     _enable_thinking: bool | None
     _reasoning_effort: str | None
+    _response_schema: dict[str, Any] | None
     _skills: SkillRegistry | None
     _skills_in_prompt: bool
     _script_executor: ScriptExecutor | None
@@ -140,6 +141,7 @@ class AIContextMixin:
     _thinking_budget: int | None
     _enable_thinking: bool | None
     _reasoning_effort: str | None
+    _response_schema: dict[str, Any] | None
     _skills: SkillRegistry | None
     _skills_in_prompt: bool
     _script_executor: ScriptExecutor | None
@@ -204,7 +206,8 @@ class AIContextMixin:
         Config precedence per field:
         1. ``binding.metadata`` explicit overrides (system_prompt,
            temperature, max_tokens, thinking_budget, enable_thinking,
-           reasoning_effort) — per-room operator intent, always wins.
+           reasoning_effort, response_schema) — per-room operator intent,
+           always wins.
         2. The channel's ``config_provider`` result, resolved fresh at the
            start of every turn (see channels/_turn_config.py).
         3. The channel's constructor defaults.
@@ -237,6 +240,9 @@ class AIContextMixin:
         )
         reasoning_effort = _pick(
             "reasoning_effort", turn.reasoning_effort if turn else None, self._reasoning_effort
+        )
+        response_schema = _pick(
+            "response_schema", turn.response_schema if turn else None, self._response_schema
         )
 
         if turn is not None and turn.tools is not None:
@@ -563,6 +569,7 @@ class AIContextMixin:
             enable_thinking=enable_thinking,
             reasoning_effort=reasoning_effort,
             tools=tools,
+            response_schema=response_schema,
             room=context,
             target_capabilities=target_caps,
             target_media_types=target_media,
