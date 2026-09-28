@@ -1,8 +1,9 @@
 """Every outcome of a tool call is bounded before the model reads it.
 
-Eviction used to run on the handler's result only: a refusal message, an
-exception's text and an ON_TOOL_CALL override reached the provider whole,
-whatever their size (RMK-259). Hooks still see the text they saw before.
+A refusal message, an exception's text and an ON_TOOL_CALL override are
+evicted like a handler's result when oversized (RMK-259), and the hooks see
+the text they are documented to see: the refusal observer the raw message,
+ON_TOOL_CALL the bounded result.
 """
 
 from __future__ import annotations
@@ -15,8 +16,10 @@ from roomkit.core.exceptions import ToolRefusedError
 from roomkit.models.tool_call import ToolCallEvent
 from roomkit.providers.ai.base import (
     AIContext,
+    AIImagePart,
     AIMessage,
     AIResponse,
+    AITextPart,
     AIToolCall,
     AIToolResultPart,
 )
@@ -25,8 +28,9 @@ from roomkit.providers.ai.mock import MockAIProvider
 _HUGE = "<html>" + "x" * 500_000 + "</html>"
 
 
-def _channel(handler: AsyncMock) -> tuple[AIChannel, MockAIProvider]:
+def _channel(handler: AsyncMock, *, vision: bool = False) -> tuple[AIChannel, MockAIProvider]:
     provider = MockAIProvider(
+        vision=vision,
         ai_responses=[
             AIResponse(
                 content="",
@@ -34,7 +38,7 @@ def _channel(handler: AsyncMock) -> tuple[AIChannel, MockAIProvider]:
                 tool_calls=[AIToolCall(id="t1", name="fetch", arguments={})],
             ),
             AIResponse(content="done", finish_reason="stop"),
-        ]
+        ],
     )
     return AIChannel("ai1", provider=provider, tool_handler=handler), provider
 
@@ -93,3 +97,20 @@ async def test_a_small_error_reaches_the_model_unchanged() -> None:
     part = await _model_copy(ch, provider)
 
     assert part.result == "Missing tenant header"
+
+
+async def test_an_oversized_part_list_override_keeps_its_images() -> None:
+    ch, provider = _channel(AsyncMock(return_value="small result"), vision=True)
+    image = AIImagePart(url="data:image/png;base64,AAAA", mime_type="image/png")
+
+    async def rewrite(event: ToolCallEvent) -> list[AITextPart | AIImagePart]:
+        return [AITextPart(text=_HUGE), image]
+
+    ch._tool_call_hook = rewrite
+
+    part = await _model_copy(ch, provider)
+
+    assert isinstance(part.result, list)
+    text, kept = part.result
+    assert isinstance(text, AITextPart) and is_eviction_placeholder(text.text)
+    assert kept == image

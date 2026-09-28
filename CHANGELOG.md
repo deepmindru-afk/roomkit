@@ -64,7 +64,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so a 500 KB error page from an MCP server, an exception carrying an HTTP
   body, or a hook's rewrite reached the provider whole. Hooks still receive
   what they did: the refusal observer gets the full message, and
-  `ON_TOOL_CALL` gets the bounded result; only the model's copy changes.
+  `ON_TOOL_CALL` gets the bounded result. The model's copy changes, and with
+  it the `result`/`error` a `TOOL_CALL_END` event records.
 - The identical-result note fires for an evicted answer (RMK-259). It hashed
   the model's copy, and an evicted copy carries a placeholder id unique per
   call, so a tool returning the same oversized result (or the same oversized
@@ -74,11 +75,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   history (RMK-259). `TOOL_CALL_END` persists the parts as JSON, and seeded
   back as dicts they read `[non-text part]` each, so a screenshot tool's page
   text was gone from the digest after a restart.
-- The token estimate counts the images of a tool result (RMK-259): 1000
-  tokens each, as for an image in a message. They counted nothing, so a turn
-  carrying ten screenshots read some ten thousand tokens lighter than it
-  was billed, and compaction started late. Compaction now starts earlier in
-  conversations rich in tool screenshots.
+- `estimate_message_tokens` and `estimate_context_tokens` count the images of
+  a tool result (RMK-259): 1000 tokens each, as for an image in a message.
+  They counted nothing, so a memory or a budget built on them read a turn
+  carrying ten screenshots some ten thousand tokens lighter than it was
+  billed.
 
 ## [0.92.0] — 2026-09-27
 

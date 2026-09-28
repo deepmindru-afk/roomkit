@@ -7,6 +7,7 @@ import logging
 from collections import OrderedDict
 from typing import Any
 
+from roomkit.memory.token_estimator import estimate_tokens
 from roomkit.providers.ai.base import AIImagePart, AITextPart, AITool
 
 logger = logging.getLogger("roomkit.channels.ai")
@@ -142,13 +143,15 @@ class ToolEviction:
         room = self._room_scope()
         return any(key[0] == room for key in self._store)
 
-    def _estimate(self, text: str) -> int:
-        return len(text) // 4 + 1
-
     def maybe_evict(self, result: str, tool_call_id: str = "") -> str:
-        """Evict large results to the store, returning a preview."""
-        estimated = self._estimate(result)
-        if estimated <= self.threshold_tokens:
+        """Evict large results to the store, returning a preview.
+
+        A placeholder is returned as it is: evicted again (a hook handing the
+        bounded copy back, at a threshold below the placeholder's own size) it
+        would overwrite the text it points to.
+        """
+        estimated = estimate_tokens(result)
+        if estimated <= self.threshold_tokens or is_eviction_placeholder(result):
             return result
 
         result_id = f"evicted_{tool_call_id}" if tool_call_id else f"evicted_{id(result)}"
@@ -171,8 +174,11 @@ class ToolEviction:
         past the threshold unseen. Over it, they are stored as one text and
         replaced by a single placeholder part where the first text part was.
         """
-        text = "\n".join(p.text for p in parts if isinstance(p, AITextPart))
-        if self._estimate(text) <= self.threshold_tokens:
+        texts = [p.text for p in parts if isinstance(p, AITextPart)]
+        text = "\n".join(texts)
+        if estimate_tokens(text) <= self.threshold_tokens:
+            return parts
+        if any(is_eviction_placeholder(t) for t in texts):
             return parts
         placeholder: AITextPart | None = AITextPart(text=self.maybe_evict(text, tool_call_id))
         kept: list[AITextPart | AIImagePart] = []

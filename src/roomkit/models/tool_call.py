@@ -83,9 +83,10 @@ class ToolCallEvent:
     external provider reporting its own failure (``is_error`` on
     :meth:`~roomkit.tools.external.ExternalToolHandler.on_tool_result`).
 
-    The body stays verbatim in :attr:`result` — it is what the model reads, and
-    its wording is tuned for that reader. This flag carries the one thing prose
-    cannot: that the call did not succeed.
+    The body stays verbatim in :attr:`result` — it is what the model is told,
+    and its wording is tuned for that reader; an oversized one reaches the
+    model through the same eviction as any result. This flag carries the one
+    thing prose cannot: that the call did not succeed.
     """
 
     cancelled: bool = False

@@ -124,8 +124,13 @@ class ToolUsageMemory:
 
         text = self._result_text(result)
         # An eviction placeholder is not data: kept whole it would show a stored
-        # id that may no longer resolve. It stays a one-line preview.
-        excerpt = "" if is_eviction_placeholder(text) else text[: self._result_keep_chars]
+        # id that may no longer resolve. It stays a one-line preview, wherever
+        # it sits in a part list (an image may come first).
+        evicted = is_eviction_placeholder(text) or (
+            isinstance(result, list)
+            and any(is_eviction_placeholder(_part_text(p) or "") for p in result)
+        )
+        excerpt = "" if evicted else text[: self._result_keep_chars]
         entry = _Call(
             name,
             dict(arguments),

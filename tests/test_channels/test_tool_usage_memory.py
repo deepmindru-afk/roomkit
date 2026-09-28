@@ -208,6 +208,23 @@ class TestToolUsageMemory:
         digest = mem.render_digest("r1") or ""
         assert "Board 7 has 3 cards [non-text part]" in digest
 
+    def test_a_hydrated_placeholder_behind_an_image_stays_one_line(self) -> None:
+        """Eviction keeps a part list's images in place, so the placeholder may
+        follow one; it is recognised all the same."""
+        placeholder = (
+            "Result too large (48000 tokens). Full output saved as 'evicted_t1'. "
+            "Use read_stored_result to read it with pagination.\n\nPreview:\n" + "z" * 5000
+        )
+        parts = [
+            {"type": "image", "url": "data:image/png;base64,AAAA", "mime_type": "image/png"},
+            {"type": "text", "text": placeholder},
+        ]
+        mem = ToolUsageMemory()
+        mem.seed("r1", [{"name": "snapshot", "arguments": {}, "result": parts}])
+        digest = mem.render_digest("r1") or ""
+        assert "\n<tool_result>\n" not in digest
+        assert "z" * 500 not in digest
+
     def test_kept_result_is_bounded_by_the_configured_size(self) -> None:
         mem = ToolUsageMemory(result_keep_chars=100)
         mem.record("r1", "dump", {}, "w" * 300)

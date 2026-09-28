@@ -190,6 +190,25 @@ class TestContentParts:
         assert is_eviction_placeholder(out[0].text)
 
 
+class TestPlaceholderIsNotEvictedAgain:
+    """A hook may hand the bounded copy back; below the placeholder's own size
+    a second eviction would overwrite the text the first one stored."""
+
+    def test_a_placeholder_string_is_kept(self) -> None:
+        ev = ToolEviction(threshold_tokens=10)
+        placeholder = ev.maybe_evict("x" * 10_000, "tc1")
+
+        assert ev.maybe_evict(placeholder, "tc1") == placeholder
+        assert ev._store[("", "evicted_tc1")] == "x" * 10_000
+
+    def test_a_placeholder_part_is_kept(self) -> None:
+        ev = ToolEviction(threshold_tokens=10)
+        bounded = ev.maybe_evict_parts([AITextPart(text="x" * 10_000), _IMAGE], "tc1")
+
+        assert ev.maybe_evict_parts(bounded, "tc1") is bounded
+        assert ev._store[("", "evicted_tc1")] == "x" * 10_000
+
+
 def _part_layouts() -> dict[str, list[AITextPart | AIImagePart]]:
     giant = "g" * 150_000
     return {
