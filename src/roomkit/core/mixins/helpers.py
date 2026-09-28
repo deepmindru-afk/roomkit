@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import json
 import logging
 from collections.abc import Callable, Coroutine, Mapping
@@ -835,7 +836,22 @@ class HelpersMixin:
                 event,
                 context,
                 skip_event_filter=True,
+                fold=fold_tool_call_rewrite,
             )
+            verdict = _tool_call_verdict(hook_result, event)
+            if verdict.blocked:
+                # The engine stops at a block, before its observers: a call
+                # still fires them with its outcome (RFC §9.3), the failure.
+                failed = dataclasses.replace(
+                    event, result=verdict.result, is_error=True, structured_content=None
+                )
+                await kit_ref._hook_engine.run_observers(
+                    event.room_id,
+                    HookTrigger.ON_TOOL_CALL,
+                    failed,
+                    context,
+                    skip_event_filter=True,
+                )
 
             await kit_ref._emit_framework_event(
                 "tool_call",
@@ -848,7 +864,7 @@ class HelpersMixin:
                 },
             )
 
-            return _tool_call_verdict(hook_result)
+            return verdict
 
         return _callback
 
@@ -1319,28 +1335,49 @@ class HelpersMixin:
         )
 
 
-def _tool_call_verdict(hook_result: Any) -> ToolCallVerdict:
+def fold_tool_call_rewrite(event: Any, metadata: dict[str, Any]) -> Any:
+    """An ON_TOOL_CALL hook's override, written into the event it leaves.
+
+    The engine's ``fold`` for ON_TOOL_CALL (RFC §9.3): the next SYNC hook,
+    the ASYNC observers and the channel then read the outcome as the chain
+    left it, whether a hook replaced it with ``modify`` or through
+    ``metadata``. ``metadata["result"]`` replaces the result;
+    ``metadata["structured_content"]`` replaces the structured copy, and a
+    value that is not a mapping is no copy a surface can render, so it clears
+    the copy rather than publish the original.
+    """
+    if not isinstance(event, ToolCallEvent):
+        return event
+    changes: dict[str, Any] = {}
+    if "result" in metadata:
+        changes["result"] = metadata["result"]
+    if "structured_content" in metadata:
+        copy = metadata["structured_content"]
+        if copy is not None and not isinstance(copy, Mapping):
+            logger.warning(
+                "ON_TOOL_CALL hook returned a structured_content of type %s, not a mapping; "
+                "the call's structured copy is dropped",
+                type(copy).__name__,
+            )
+            copy = None
+        changes["structured_content"] = dict(copy) if copy is not None else None
+    return dataclasses.replace(event, **changes) if changes else event
+
+
+def _tool_call_verdict(hook_result: Any, event: ToolCallEvent) -> ToolCallVerdict:
     """ON_TOOL_CALL's SYNC hooks' result as the verdict the channel applies.
 
     A BLOCK is told apart from a rewrite, since a blocked call must not keep
-    its structured copy. ``metadata["structured_content"]`` replaces the copy
-    and ``None`` clears it; a value that is not a mapping is no copy a surface
-    can render, so it clears the copy too rather than publish the original.
+    its structured copy. Otherwise the verdict is the event the chain left
+    (``fold_tool_call_rewrite``): its result and structured copy, where a
+    hook replaced them.
     """
     if not hook_result.allowed:
         reason = json.dumps({"error": hook_result.reason or "blocked"})
         return ToolCallVerdict(result=reason, blocked=True)
-    metadata = hook_result.metadata
-    copy = metadata.get("structured_content")
-    if copy is not None and not isinstance(copy, Mapping):
-        logger.warning(
-            "ON_TOOL_CALL hook returned a structured_content of type %s, not a mapping; "
-            "the call's structured copy is dropped",
-            type(copy).__name__,
-        )
-        copy = None
+    final = hook_result.event if isinstance(hook_result.event, ToolCallEvent) else event
     return ToolCallVerdict(
-        result=metadata.get("result"),
-        replaces_structured="structured_content" in metadata,
-        structured_content=dict(copy) if copy is not None else None,
+        result=final.result if final.result is not event.result else None,
+        replaces_structured=final.structured_content is not event.structured_content,
+        structured_content=final.structured_content,
     )

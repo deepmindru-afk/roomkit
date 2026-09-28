@@ -352,6 +352,7 @@ class HookEngine:
         *,
         skip_event_filter: bool = False,
         needs_lock: bool | None = None,
+        fold: Callable[[Any, dict[str, Any]], Any] | None = None,
     ) -> SyncPipelineResult:
         """Run sync hooks sequentially. Stops on block, passes modified events.
 
@@ -367,6 +368,12 @@ class HookEngine:
                 off-lock ones (RFC §9.5.1) and fires no ASYNC observer — the
                 locked pass that follows fires them once, on the final event.
                 ``True`` runs only the hooks that need the lock.
+            fold: For a trigger whose hooks may also rewrite the payload
+                through ``metadata`` (ON_TOOL_CALL's result override),
+                ``fold(event, metadata)`` returns the event as that rewrite
+                left it, so the next hook, the ASYNC observers and the caller
+                all see the chain's latest state. ``None`` leaves metadata
+                beside the event.
         """
         filter_event = None if skip_event_filter else event
         hooks = self._get_hooks(room_id, trigger, HookExecution.SYNC, event=filter_event)
@@ -513,6 +520,10 @@ class HookEngine:
                     )
                     return result
                 result.event = hook_result.event
+
+            if fold is not None and hook_result.metadata:
+                latest = result.event if result.event is not None else event
+                result.event = fold(latest, hook_result.metadata)
 
         # Fire ASYNC observers for the same trigger (fire-and-forget).
         # This allows ASYNC hooks to observe events from triggers that

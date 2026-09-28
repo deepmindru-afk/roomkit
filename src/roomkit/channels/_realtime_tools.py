@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import logging
 import threading
@@ -13,6 +14,7 @@ from roomkit.channels._skill_constants import TOOL_ACTIVATE_SKILL
 from roomkit.channels._tool_search_constants import TOOL_CALL_TOOL
 from roomkit.channels.ai import _current_loop_ctx, _ToolLoopContext
 from roomkit.core.exceptions import ToolRefusedError
+from roomkit.core.mixins.helpers import fold_tool_call_rewrite
 from roomkit.models.enums import ChannelType, HookTrigger
 from roomkit.models.tool_call import ToolCallEvent
 from roomkit.providers.ai.base import AIImagePart, AITextPart
@@ -1008,7 +1010,10 @@ class RealtimeToolsMixin:
             tool_event,
             context,
             skip_event_filter=True,
+            fold=fold_tool_call_rewrite,
         )
+        # The outcome as the SYNC chain left it, a MODIFY included (RFC §9.3).
+        final = hook_result.event if isinstance(hook_result.event, ToolCallEvent) else tool_event
         if handler_result is not None:
             # The firing carried the handler's result: that was the report. A
             # cancellation landing between here and the wire must not add a
@@ -1025,8 +1030,21 @@ class RealtimeToolsMixin:
         if not hook_result.allowed:
             failed = True
             result_str = json.dumps({"error": hook_result.reason or "Tool call blocked by hook"})
-        elif "result" in hook_result.metadata:
-            hook_val = hook_result.metadata["result"]
+            if handler_result is not None:
+                # The engine stops at a block, before its observers; the call
+                # still fires them with its outcome, the failure. (Nothing
+                # served, the refusal below reports it instead.)
+                await self._framework.hook_engine.run_observers(
+                    room_id,
+                    HookTrigger.ON_TOOL_CALL,
+                    dataclasses.replace(
+                        final, result=result_str, is_error=True, structured_content=None
+                    ),
+                    context,
+                    skip_event_filter=True,
+                )
+        elif final.result is not tool_event.result:
+            hook_val = final.result
             result_str = hook_val if isinstance(hook_val, str) else json.dumps(hook_val)
         elif handler_result is not None:
             result_str = handler_result

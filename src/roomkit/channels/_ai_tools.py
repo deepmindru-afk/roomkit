@@ -521,7 +521,11 @@ class AIToolsMixin:
             # can show "tools you've already used" and re-reveal it under Tool
             # Search. Infra/discovery tools are filtered inside record().
             outcome = recorded_result if recorded_result is not None else result
-            self._tool_usage.record(room_id, tc.name, arguments, outcome)
+            # The model's own arguments, never a BEFORE_TOOL_USE rewrite: the
+            # digest goes back into the next turn's prompt, and a hook that
+            # de-tokenises (``<EMAIL_1>`` to the real address) would put there
+            # the very value it kept from the model.
+            self._tool_usage.record(room_id, tc.name, call_arguments, outcome)
             # Annotate an answer this tool already gave this turn. The hash is
             # taken on the recorded outcome, so the memory above keeps the
             # tool's own output and only the model's copy carries the note, and

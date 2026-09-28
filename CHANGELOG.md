@@ -109,6 +109,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ON_TOOL_CALL`'s sync hooks chain on one result (RMK-273, RFC §9.3): each
+  sees the result as the previous one left it, and a `HookResult.modify(event)`
+  carrying a new result now counts, where only `metadata={"result": ...}` did.
+  A second hook used to receive the original and its rewrite won, so "redact"
+  then "cite the source" handed the model the unredacted text. The async
+  observers see the final result instead of the original, and a blocked call,
+  or one a failing fail-closed hook withheld, now fires them with `is_error`
+  and the reason instead of skipping them. Same on RealtimeVoiceChannel.
+  `HookEngine.run_sync_hooks` takes a `fold` for this; other triggers are
+  unchanged.
+- The tool-usage digest of the next turn's prompt records the arguments the
+  model sent, not the ones a `BEFORE_TOOL_USE` hook rewrote (RMK-273): a
+  de-tokenising hook put the real values back into the prompt it kept them
+  from.
 - A tool a `BEFORE_AI_GENERATION` hook removes stays removed for the whole
   turn (RMK-272). Every later round re-filtered from the toolset built before
   the hook ran, so the tool came back from round 1 and could run; a tool the
