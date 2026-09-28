@@ -859,7 +859,7 @@ class AIToolsMixin:
         catalogue = self._tool_search_catalogue(loop_ctx)
         return render_list_payload(catalogue, category, exclude_names=TOOL_SEARCH_INFRA_TOOL_NAMES)
 
-    def _bound_tool_result(self, name: str, result: Any, tool_call_id: str) -> Any:
+    def _bound_tool_result(self, name: str, result: ToolResult, tool_call_id: str) -> ToolResult:
         """The copy of a tool's outcome the model reads, evicted when oversized.
 
         Every outcome goes through it (a result, a hook's override, a refusal,
@@ -870,7 +870,14 @@ class AIToolsMixin:
         body over the threshold (a 20 KB skill crosses it). Every other tool
         still evicts, references included: those are data, and paginating
         data is exactly what eviction is for.
+
+        A text-only model gets the text of a content-part result, the way it
+        gets a message's (``_extract_content``): an image it cannot take would
+        fail the request.
         """
+        if isinstance(result, list) and not self._provider.supports_vision:
+            flat = AIToolResultPart(tool_call_id=tool_call_id, name=name, result=result)
+            result = flat.as_text()
         if name == TOOL_ACTIVATE_SKILL:
             return result
         return self._maybe_truncate_result(result, tool_call_id)

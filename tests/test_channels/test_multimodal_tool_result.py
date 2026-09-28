@@ -63,7 +63,7 @@ def _responses() -> list[AIResponse]:
 
 
 async def test_a_part_list_result_reaches_the_provider_intact() -> None:
-    provider = MockAIProvider(ai_responses=_responses())
+    provider = MockAIProvider(ai_responses=_responses(), vision=True)
     ch = AIChannel("ai1", provider=provider, tool_handler=_handler)
 
     await ch.on_event(
@@ -83,7 +83,7 @@ async def test_a_part_list_result_reaches_the_provider_intact() -> None:
 
 
 async def test_streaming_loop_carries_the_part_list_too() -> None:
-    provider = MockAIProvider(ai_responses=_responses(), streaming=True)
+    provider = MockAIProvider(ai_responses=_responses(), streaming=True, vision=True)
     ch = AIChannel("ai1", provider=provider, tool_handler=_handler)
 
     output = await ch.on_event(
@@ -112,7 +112,7 @@ async def test_an_oversized_part_list_is_evicted_with_its_images_kept() -> None:
     async def handler(name: str, arguments: dict) -> list[AITextPart | AIImagePart]:
         return [AITextPart(text=big), image]
 
-    provider = MockAIProvider(ai_responses=_responses())
+    provider = MockAIProvider(ai_responses=_responses(), vision=True)
     ch = AIChannel("ai1", provider=provider, tool_handler=handler)
 
     await ch.on_event(
@@ -129,3 +129,21 @@ async def test_an_oversized_part_list_is_evicted_with_its_images_kept() -> None:
     assert len(text.text) < 9_000
     assert kept == image
     assert big in ch._eviction._store.values()
+
+
+async def test_a_text_only_model_gets_the_text_of_a_part_list() -> None:
+    """Like a message's images: an image a text-only model cannot take would
+    fail the request, so it reads the parts' text and an [image] mark."""
+    provider = MockAIProvider(ai_responses=_responses(), vision=False)
+    ch = AIChannel("ai1", provider=provider, tool_handler=_handler)
+
+    await ch.on_event(
+        make_event(body="go", channel_id="sms1"),
+        _binding(),
+        RoomContext(room=Room(id="r1")),
+    )
+
+    tool_messages = [m for m in provider.calls[-1].messages if m.role == "tool"]
+    result_part = tool_messages[-1].content[0]
+    assert isinstance(result_part, AIToolResultPart)
+    assert result_part.result == "here\n[image]"
