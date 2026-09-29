@@ -62,6 +62,7 @@ from roomkit.tools.result import (
     as_tool_result,
     failure_detail,
     is_unknown_tool_answer,
+    pre_execution_denial,
     tool_failure,
     unserved_tool_error,
 )
@@ -424,13 +425,15 @@ class AIToolsMixin:
             )
             logger.debug("Tool %s arguments: %s", tc.name, redact(_preview(tc.arguments)))
 
-            async def rejected(error: dict[str, Any]) -> AIToolResultPart:
+            async def rejected(
+                error: dict[str, Any], detail: str | None = None
+            ) -> AIToolResultPart:
                 # Refusals never reach the handler's guard. Count their raw
                 # attempts here; successful calls are counted only by the
                 # handler, using the effective payload after folds and hooks.
                 guard = self._repeated_call_guard(tc.name, tc.arguments)
                 body = guard or json.dumps(error)
-                await self._fire_tool_refusal(tc, tc.arguments, body, room_id)
+                await self._fire_tool_refusal(tc, tc.arguments, body, room_id, detail=detail)
                 return AIToolResultPart(
                     tool_call_id=tc.id, name=tc.name, result=body, is_error=True
                 )
@@ -503,7 +506,7 @@ class AIToolsMixin:
                 if not decision:
                     logger.info("Tool %s denied by BEFORE_TOOL_USE hook", tc.name)
                     return await rejected(
-                        {"error": f"Tool '{tc.name}' denied by pre-execution hook."}
+                        {"error": pre_execution_denial(tc.name)}, detail=decision.detail
                     )
                 if decision.arguments is not None:
                     arguments = decision.arguments

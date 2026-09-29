@@ -386,8 +386,10 @@ class RealtimeDelegationMixin:
                     session.id,
                 )
                 telemetry.end_span(span_id)
-                await self._fire_tool_refusal(session, call_id, name, arguments, denial, room_id)
-                return denial
+                await self._fire_tool_refusal(
+                    session, call_id, name, arguments, denial.body, room_id, detail=denial.detail
+                )
+                return denial.body
 
             try:
                 result_str = await self._serve_gated_tool_call(

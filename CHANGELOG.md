@@ -91,6 +91,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `BEFORE_TOOL_USE` fails closed (RMK-313, RFC §9.3), like `BEFORE_TTS` and
+  `ON_TRANSCRIPTION`: a hook that raises, times out or returns something
+  unusable refuses the call before it runs, where the tool used to run. It
+  is where an approval hook sits, and one that cannot answer must not let the
+  call through. The model reads the same refusal on every channel (`Tool 'x'
+  denied by pre-execution hook.`), never the hook's error: on the realtime
+  channel that error would otherwise have reached the model. The hook's name
+  and error go to ON_TOOL_CALL's observers on `error_detail`
+  (`BeforeToolDecision.detail` carries it). An approval hook that waits for
+  a person longer than its `timeout` (30 s by default) now refuses the call:
+  set the timeout it needs.
 - `include_stream_usage` defaults to `True` on `OpenAIConfig` (and the
   providers built on it: DeepSeek, Qwen, OpenRouter, LiteLLM), `AzureAIConfig`
   and `VLLMConfig` (RMK-312): every tool round streams, and without

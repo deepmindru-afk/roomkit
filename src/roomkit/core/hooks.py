@@ -293,13 +293,14 @@ class HookEngine:
         return all_hooks
 
     #: Triggers whose payload is content that a hook may be there to withhold —
-    #: redacting a transcript, holding back speech. On those, a hook that raises
-    #: blocks rather than letting the original payload through: logging the
-    #: error and carrying on would publish exactly what the hook existed to
-    #: suppress. Everywhere else a failing hook stays non-fatal, so a broken
-    #: hook cannot take a room down.
+    #: redacting a transcript, holding back speech — or an action it may be
+    #: there to prevent: a tool call behind an approval hook. On those, a hook
+    #: that raises blocks rather than letting the payload through: logging the
+    #: error and carrying on would publish, or run, exactly what the hook
+    #: existed to stop (RFC §9.3). Everywhere else a failing hook stays
+    #: non-fatal, so a broken hook cannot take a room down.
     FAIL_CLOSED_TRIGGERS: ClassVar[frozenset[HookTrigger]] = frozenset(
-        {HookTrigger.BEFORE_TTS, HookTrigger.ON_TRANSCRIPTION}
+        {HookTrigger.BEFORE_TTS, HookTrigger.ON_TRANSCRIPTION, HookTrigger.BEFORE_TOOL_USE}
     )
 
     def _apply_rewrite(

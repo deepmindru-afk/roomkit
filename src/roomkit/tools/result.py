@@ -99,11 +99,30 @@ def failure_detail(exc: BaseException) -> str:
 
 
 def hook_errors_detail(hook_result: Any) -> str | None:
-    """What the ON_TOOL_CALL hooks that failed said, for logs and observers only."""
+    """What the hooks that failed said, for logs and observers only."""
     errors = hook_result.hook_errors
     if not errors:
         return None
     return "; ".join(f"{e['hook']}: {e['error']}" for e in errors)
+
+
+def pre_execution_denial(name: str) -> str:
+    """What the model reads of a call BEFORE_TOOL_USE refused, a failed hook's
+    included: never the hook's error (RFC §9.3)."""
+    return f"Tool '{name}' denied by pre-execution hook."
+
+
+@dataclasses.dataclass(frozen=True)
+class GateRefusal:
+    """Why the pre-execution gate refused a call.
+
+    *body* is what the model reads; *detail*, the error of a BEFORE_TOOL_USE
+    hook that failed closed, is for the log and the observers only
+    (``ToolCallEvent.error_detail``).
+    """
+
+    body: str
+    detail: str | None = None
 
 
 def unserved_tool_error(name: str) -> str:

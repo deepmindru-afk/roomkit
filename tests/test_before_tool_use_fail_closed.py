@@ -1,0 +1,178 @@
+"""BEFORE_TOOL_USE fails closed on every path (RFC §9.3, RMK-313).
+
+It is the gate of a tool call, where an approval hook sits: a hook that
+raises or times out refuses the call before it runs. The model reads the
+same refusal on every channel, never the hook's error; the hook's name and
+error reach ON_TOOL_CALL's observers on ``error_detail``.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from typing import Any
+
+import pytest
+
+from roomkit import (
+    ConferenceRealtimeConfig,
+    HookExecution,
+    HookResult,
+    HookTrigger,
+    RoomContext,
+    RoomKit,
+    ToolCallEvent,
+)
+from roomkit.tools.external import PolicyExternalToolHandler
+from roomkit.tools.policy import ToolPolicy
+from roomkit.voice.realtime.mock import MockRealtimeProvider
+from tests.conference.test_conference_realtime import ROOM, realtime_kit, until
+from tests.test_realtime_tool_policy import TOOLS, _Backend, _Calls, _channel
+from tests.test_unified_tool_call import _ai_room, _call_one_tool
+
+SECRET = "postgres://admin:hunter2@approvals/internal"
+DENIED = "Tool 'delete_account' denied by pre-execution hook."
+
+
+def _gate(kit: RoomKit, failure: str) -> None:
+    """An approval hook that cannot answer: it raises, or it outlives its timeout."""
+
+    @kit.hook(HookTrigger.BEFORE_TOOL_USE, name="approval", timeout=0.05)
+    async def approval(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
+        if failure == "raises":
+            raise ConnectionError(f"cannot reach {SECRET}")
+        await asyncio.sleep(1)
+        return HookResult.allow()
+
+
+def _observed_detail(failure: str) -> str:
+    if failure == "raises":
+        return f"approval: cannot reach {SECRET}"
+    return "approval: timeout (0.05s)"
+
+
+FAILURES = pytest.mark.parametrize("failure", ["raises", "times_out"])
+
+
+@FAILURES
+async def test_the_ai_loop_refuses_the_call(streaming: bool, failure: str) -> None:
+    ran: list[str] = []
+
+    async def handler(name: str, arguments: dict[str, Any]) -> str:
+        ran.append(name)
+        return "{}"
+
+    kit, ch, room_id, observed, _ = await _ai_room(streaming=streaming, tool_handler=handler)
+    _gate(kit, failure)
+
+    run = await _call_one_tool(kit, ch, room_id, "get_weather")
+
+    assert ran == []
+    assert run.calls[0].result == json.dumps(
+        {"error": "Tool 'get_weather' denied by pre-execution hook."}
+    )
+    assert [(e.is_error, e.error_detail) for e in observed] == [(True, _observed_detail(failure))]
+    await kit.close()
+
+
+@FAILURES
+async def test_a_realtime_call_is_refused(failure: str) -> None:
+    calls = _Calls()
+    kit, _, provider, session = await _channel(calls, policy=ToolPolicy())
+    _gate(kit, failure)
+
+    await provider.simulate_tool_call(session, "c1", "delete_account", {"id": "42"})
+    await until(lambda: bool(provider.tool_results) and bool(calls.observed))
+
+    assert calls.ran == []
+    assert json.loads(provider.tool_results[0][2]) == {"error": DENIED}
+    assert [e.error_detail for e in calls.observed] == [_observed_detail(failure)]
+    await kit.close()
+
+
+@FAILURES
+async def test_a_recovered_spoken_call_is_refused(failure: str) -> None:
+    calls = _Calls()
+    kit, _, provider, session = await _channel(calls, policy=ToolPolicy())
+    _gate(kit, failure)
+
+    await provider.simulate_transcription(session, "call:delete_account{id:42}", "assistant")
+    await until(lambda: bool(provider.injected_texts) and bool(calls.observed))
+
+    assert calls.ran == []
+    told = " ".join(text for _sid, text, _role in provider.injected_texts)
+    assert "denied" in told and "hunter2" not in told
+    assert [e.error_detail for e in calls.observed] == [_observed_detail(failure)]
+    await kit.close()
+
+
+@FAILURES
+async def test_a_reasoning_backend_call_is_refused(failure: str) -> None:
+    calls, backend = _Calls(), _Backend()
+    kit, _, provider, session = await _channel(calls, policy=ToolPolicy(), backend=backend)
+    _gate(kit, failure)
+
+    await provider.simulate_delegation(session, "d1", "integrator")
+    await until(lambda: bool(backend.results) and bool(calls.observed))
+
+    assert calls.ran == []
+    assert json.loads(backend.results[0]) == {"error": DENIED}
+    assert [e.error_detail for e in calls.observed] == [_observed_detail(failure)]
+    await kit.close()
+
+
+@FAILURES
+async def test_a_conference_call_is_refused(failure: str) -> None:
+    calls = _Calls()
+    provider = MockRealtimeProvider()
+    kit, channel, _, _ = await realtime_kit(
+        provider=provider,
+        config=ConferenceRealtimeConfig(
+            provider=provider, tools=TOOLS, tool_handler=calls.conference
+        ),
+    )
+    _gate(kit, failure)
+
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    async def audit(event: ToolCallEvent, ctx: RoomContext) -> None:
+        calls.observed.append(event)
+
+    session = await channel._realtime.ensure_session(ROOM)
+    assert session is not None
+    await provider.simulate_tool_call(session, "c1", "delete_account", {"id": "42"})
+    await until(lambda: bool(provider.tool_results) and bool(calls.observed))
+
+    assert calls.ran == []
+    assert json.loads(provider.tool_results[0][2]) == {"error": DENIED}
+    assert [e.error_detail for e in calls.observed] == [_observed_detail(failure)]
+    await kit.close()
+
+
+@FAILURES
+async def test_an_external_handler_denies_the_call(failure: str) -> None:
+    kit = RoomKit()
+    await kit.create_room(room_id="r1")
+    handler = PolicyExternalToolHandler()
+    kit._wire_external_tool_handler("agent", handler)
+    _gate(kit, failure)
+
+    decision = await handler.process_tool_call("delete_account", {"id": "42"}, room_id="r1")
+
+    assert not decision.approved
+    assert "hunter2" not in decision.reason
+    await kit.close()
+
+
+async def test_a_hook_that_answers_still_lets_the_call_run() -> None:
+    calls = _Calls()
+    kit, _, provider, session = await _channel(calls, policy=ToolPolicy())
+
+    @kit.hook(HookTrigger.BEFORE_TOOL_USE, name="approval")
+    async def approval(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
+        return HookResult.allow()
+
+    await provider.simulate_tool_call(session, "c1", "delete_account", {"id": "42"})
+    await until(lambda: bool(provider.tool_results))
+
+    assert calls.ran == ["delete_account"]
+    await kit.close()

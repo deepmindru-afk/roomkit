@@ -233,7 +233,7 @@ class TestEveryEntryReadsTheSameDeclaration:
         finally:
             await kit.close()
 
-        assert denial is not None and "not declared" in denial
+        assert denial is not None and "not declared" in denial.body
 
     async def test_the_gate_validates_against_the_declared_duplicate(self) -> None:
         schema_a = {"type": "object", "properties": {"a": {"type": "string"}}, "required": ["a"]}

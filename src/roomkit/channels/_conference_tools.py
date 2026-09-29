@@ -26,7 +26,12 @@ from roomkit.models.tool_call import (
     ToolCallObserver,
     ToolCallVerdict,
 )
-from roomkit.tools.result import failure_detail, tool_failure
+from roomkit.tools.result import (
+    GateRefusal,
+    failure_detail,
+    pre_execution_denial,
+    tool_failure,
+)
 from roomkit.tools.validation import fold_hoisted_arguments, validate_tool_arguments
 
 if TYPE_CHECKING:
@@ -128,7 +133,7 @@ class ConferenceToolGate:
         arguments, denial = await self._authorize(config, event)
         event = replace(event, arguments=arguments)
         if denial is not None:
-            return self._refused(event, _error(denial))
+            return self._refused(replace(event, error_detail=denial.detail), _error(denial.body))
         if config.tool_handler is None:
             reason = f"no handler is configured for tool {event.name!r}"
             return self._refused(event, _error(reason))
@@ -182,13 +187,13 @@ class ConferenceToolGate:
 
     async def _authorize(
         self, config: ConferenceRealtimeConfig, event: ToolCallEvent
-    ) -> tuple[dict[str, Any], str | None]:
+    ) -> tuple[dict[str, Any], GateRefusal | None]:
         """The pre-execution gate (RFC 12.4): the arguments to run with, or why not."""
         name, arguments = event.name, event.arguments
         declared = {t.get("name"): t for t in config.tools or [] if isinstance(t, dict)}
         if declared and name not in declared:
             logger.warning("Conference provider requested undeclared tool %s", name)
-            return arguments, f"Tool '{name}' is not declared"
+            return arguments, GateRefusal(f"Tool '{name}' is not declared")
         params = declared.get(name, {}).get("parameters")
         schema = params if isinstance(params, dict) else None
         if schema is not None:
@@ -196,15 +201,15 @@ class ConferenceToolGate:
             arguments = folded if folded is not None else arguments
             error = fold_error or validate_tool_arguments(schema, arguments)
             if error is not None:
-                return arguments, f"Invalid arguments for '{name}': {error}"
+                return arguments, GateRefusal(f"Invalid arguments for '{name}': {error}")
         if not policy_admits(config.tool_policy, name, _NO_CHANNEL_TOOLS):
             logger.warning("Conference tool %s blocked by policy", name)
-            return arguments, policy_refusal(name)
+            return arguments, GateRefusal(policy_refusal(name))
         return await self._before_tool_use(event, arguments, schema)
 
     async def _before_tool_use(
         self, event: ToolCallEvent, arguments: dict[str, Any], schema: dict[str, Any] | None
-    ) -> tuple[dict[str, Any], str | None]:
+    ) -> tuple[dict[str, Any], GateRefusal | None]:
         """BEFORE_TOOL_USE, when a hook listens; what it leaves is validated again.
 
         A hook may return new arguments or edit the event's own in place:
@@ -217,12 +222,12 @@ class ConferenceToolGate:
         name = event.name
         decision = await self._before(replace(event, arguments=arguments))
         if not decision:
-            return arguments, f"Tool '{name}' denied by pre-execution hook."
+            return arguments, GateRefusal(pre_execution_denial(name), decision.detail)
         if decision.arguments is not None:
             arguments = decision.arguments
         error = validate_tool_arguments(schema, arguments) if schema is not None else None
         if error is not None:
-            return arguments, f"Invalid rewritten arguments for '{name}': {error}"
+            return arguments, GateRefusal(f"Invalid rewritten arguments for '{name}': {error}")
         return arguments, None
 
 

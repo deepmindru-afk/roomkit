@@ -83,6 +83,10 @@ class BeforeToolDecision:
     arguments: dict[str, Any] | None = None
     """Rewritten arguments, or ``None`` to keep the model's own."""
 
+    detail: str | None = None
+    """The error of a hook that failed closed and so refused the call, for the
+    observers only (``ToolCallEvent.error_detail``), never for the model."""
+
     def __bool__(self) -> bool:
         return self.allowed
 

@@ -31,10 +31,12 @@ from roomkit.models.tool_call import (
 from roomkit.providers.ai.base import AITextPart
 from roomkit.telemetry.base import Attr, SpanKind
 from roomkit.tools.result import (
+    GateRefusal,
     as_tool_result,
     failure_detail,
     hook_errors_detail,
     is_unknown_tool_answer,
+    pre_execution_denial,
     tool_call_verdict,
     tool_failure,
     unserved_tool_error,
@@ -449,7 +451,7 @@ class RealtimeToolsMixin:
                 telemetry.end_span(tool_span_id, status="cancelled")
                 return
             if denial is not None:
-                await self._submit_realtime_tool_result(session, call_id, denial)
+                await self._submit_realtime_tool_result(session, call_id, denial.body)
                 telemetry.end_span(tool_span_id)
                 logger.info(
                     "Realtime tool %s(%s) denied before execution for session %s",
@@ -457,7 +459,9 @@ class RealtimeToolsMixin:
                     call_id,
                     session.id,
                 )
-                await self._fire_tool_refusal(session, call_id, name, arguments, denial, room_id)
+                await self._fire_tool_refusal(
+                    session, call_id, name, arguments, denial.body, room_id, detail=denial.detail
+                )
                 return
 
             # Tool Search infrastructure tools — handle internally
@@ -918,7 +922,7 @@ class RealtimeToolsMixin:
         session: VoiceSession,
         *,
         channel_serves: bool = True,
-    ) -> tuple[dict[str, Any], str | None, RoomContext | None]:
+    ) -> tuple[dict[str, Any], GateRefusal | None, RoomContext | None]:
         """Pre-execution gate for realtime tool calls (parity with the classic
         AI path), in RFC §12.4's order.
 
@@ -942,15 +946,16 @@ class RealtimeToolsMixin:
         served = self._channel_tool_names() if channel_serves else frozenset()
         if not self._is_declared_realtime_tool(name, session, served):
             logger.warning("Realtime provider requested undeclared tool %s", name)
-            return arguments, json.dumps({"error": f"Tool '{name}' is not declared"}), None
+            undeclared = json.dumps({"error": f"Tool '{name}' is not declared"})
+            return arguments, GateRefusal(undeclared), None
         params = self._tool_parameters(name, session)
         arguments, invalid = self._validated_realtime_arguments(name, arguments, params)
         if invalid is not None:
-            return arguments, invalid, None
+            return arguments, GateRefusal(invalid), None
         await self._refresh_session_role(session, room_id)
         refusal = self._access_refusal(name, session.id, served)
         if refusal is not None:
-            return arguments, refusal, None
+            return arguments, GateRefusal(refusal), None
         return await self._before_realtime_tool_use(
             name, arguments, params, call_id, room_id, session
         )
@@ -1013,7 +1018,7 @@ class RealtimeToolsMixin:
         call_id: str,
         room_id: str | None,
         session: VoiceSession,
-    ) -> tuple[dict[str, Any], str | None, RoomContext | None]:
+    ) -> tuple[dict[str, Any], GateRefusal | None, RoomContext | None]:
         """BEFORE_TOOL_USE, which needs a framework and a room to run room
         hooks; the arguments it leaves are validated again."""
         framework = self._framework
@@ -1050,10 +1055,15 @@ class RealtimeToolsMixin:
         )
         if not hook_result.allowed:
             logger.info("Realtime tool %s denied by BEFORE_TOOL_USE hook", name)
-            reason = hook_result.reason or f"Tool '{name}' denied by pre-execution hook."
-            return arguments, json.dumps({"error": reason}), context
+            # A hook that failed closed: the plain denial for the model, its
+            # error for the observers (RFC §9.3). A BLOCK's reason is the
+            # hook's own words.
+            detail = hook_errors_detail(hook_result)
+            reason = hook_result.reason if detail is None else None
+            body = json.dumps({"error": reason or pre_execution_denial(name)})
+            return arguments, GateRefusal(body, detail), context
         arguments, invalid = _rewritten_arguments(name, arguments, params, hook_result.metadata)
-        return arguments, invalid, context
+        return arguments, GateRefusal(invalid) if invalid is not None else None, context
 
     async def _report_raised_call(
         self,

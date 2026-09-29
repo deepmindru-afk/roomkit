@@ -293,7 +293,7 @@ class RealtimeToolRecoveryMixin:
                 return
             if denial is not None:
                 await self._inject_recovered_result(
-                    session, tool_name, call_id, denial, verb="denied"
+                    session, tool_name, call_id, denial.body, verb="denied"
                 )
                 # The recovery span is the only signal this path emits, so a
                 # refusal has to be legible in a trace, not just in the logs.
@@ -307,7 +307,13 @@ class RealtimeToolRecoveryMixin:
                 # Observed like a denial on the function-calling path: an audit
                 # hook sees the refusal, and nothing that could serve it does.
                 await self._fire_tool_refusal(
-                    session, call_id, tool_name, arguments, denial, room_id
+                    session,
+                    call_id,
+                    tool_name,
+                    arguments,
+                    denial.body,
+                    room_id,
+                    detail=denial.detail,
                 )
                 return
 

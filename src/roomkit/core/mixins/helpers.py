@@ -1124,6 +1124,9 @@ class HelpersMixin:
             return BeforeToolDecision(
                 allowed=hook_result.allowed,
                 arguments=rewritten if isinstance(rewritten, dict) else None,
+                # A hook that failed closed refused the call (RFC §9.3): its
+                # error is for the observers, never the model.
+                detail=None if hook_result.allowed else hook_errors_detail(hook_result),
             )
 
         return _callback
