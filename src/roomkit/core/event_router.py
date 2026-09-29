@@ -387,6 +387,10 @@ class EventRouter:
                 # on_event — all channels react.
                 output = await channel.on_event(transcoded_event, binding, context)
                 tr.output = output
+                if output.error is not None:
+                    # Delivered and failed at once: the output goes on, and
+                    # the error surfaces as a raised one would.
+                    tr.error, tr.error_exc = str(output.error), output.error
 
                 # Streaming response: capture handle, skip reentry logic
                 if output.response_stream is not None:

@@ -70,11 +70,12 @@ class ThinkingDeltaMarker:
 #: its own name — that text is a summary of a turn the platform cut short, not
 #: an answer, and a caller that reads ``completed`` delivers it as one.
 #:
-#: ``error`` is the non-streaming loop's provider-error salvage: a mid-loop
-#: provider failure with accumulated text worth keeping ends the turn with
-#: that partial answer instead of raising. Like ``force_stopped``, the exit
-#: carries text that is not a finished answer. The streaming loop never emits
-#: it — there the exception itself reaches the consumer.
+#: ``error`` is a turn the provider interrupted after a tool round, on the
+#: non-streaming loop: the rounds are kept, each round's text as its own
+#: message, the turn ends on the ``[Response interrupted]`` marker alone, and it
+#: is an error too (``ChannelOutput.error``: ON_ERROR fires, the caller reads it
+#: on ``InboundResult.error``). RFC §6.4. The streaming loop never emits it:
+#: there the exception itself reaches the consumer.
 LoopEndReason = Literal[
     "completed",
     "max_rounds",

@@ -528,22 +528,22 @@ class TestContextOverflowRecovery:
         # still overflows.
         return AIContext(messages=[AIMessage(role="user", content=f"msg{i}") for i in range(10)])
 
-    async def test_compaction_still_overflowing_ends_the_turn_on_the_marker(self) -> None:
+    @pytest.mark.xfail_streaming(
+        "RMK-282: the streaming loop raises on an overflow after a round and "
+        "delivers no [Response interrupted] marker (RFC §6.4)"
+    )
+    async def test_compaction_still_overflowing_ends_the_turn_on_the_marker(
+        self, streaming: bool
+    ) -> None:
         """After a round, an overflow compaction does not cure interrupts the
         turn: the round is kept and the turn ends on the marker (RFC §6.4)."""
         channel, context = self._overflowing_channel(), self._long_context()
 
-        run = await run_tool_loop(channel, context, streaming=False)
+        run = await run_tool_loop(channel, context, streaming=streaming)
 
         assert run.text == "[Response interrupted]"
         assert run.reason == "error"
         assert [call.failed for call in run.calls] == [False]
-
-    async def test_compaction_still_overflowing_raises_on_the_streaming_loop(self) -> None:
-        """The streaming loop raises instead, and delivers no marker: a
-        divergence from the loop above, reported with RMK-156."""
-        with pytest.raises(ProviderError, match="context length exceeded"):
-            await run_tool_loop(self._overflowing_channel(), self._long_context(), streaming=True)
 
     def test_is_context_overflow_matches_known_patterns(self) -> None:
         """_is_context_overflow detects known error messages."""

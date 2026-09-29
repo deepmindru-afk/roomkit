@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ChannelOutput.error` (RMK-156): an error a channel met while producing an
+  output it still delivers. The router records it as it records a raised
+  one, so `ON_ERROR` fires and the caller's `InboundResult.error` carries it,
+  while the output's events are delivered. An `AIChannel` turn the provider
+  interrupts after a tool round uses it (RFC §6.4).
 - `RealtimeVoiceChannel(tool_policy=...)` and `ConferenceRealtimeConfig(tool_policy=...)`
   (RMK-286, RFC §12.4, §12.10.12): the `ToolPolicy` an `AIChannel` takes,
   with the same exempt names. A denied tool is not declared to the session
@@ -135,16 +140,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - A turn cut short no longer replays the room's history (RMK-156, RFC §6.4).
-  When the provider failed after a tool round on the non-streaming loop,
-  the `[Response interrupted]` message carried the text of every assistant
-  message in the model's context, earlier turns included, and repeated the
-  round's own text, already delivered as its own message; the `ON_AI_RESPONSE`
-  transcript repeated it too. The terminal message is now the marker alone,
-  and it is delivered as soon as a round ran, so the calls that ran are kept:
-  a round without text, or an overflow compaction did not cure, used to
-  raise and lose them. A turn cancelled between rounds no longer repeats the
-  round's text as a final message. The streaming loop, which never replayed
-  the history, still ends such a turn without the marker.
+  When the provider failed after a tool round on the non-streaming loop and
+  any assistant text was in the model's context, the `[Response interrupted]`
+  message carried all of it, the room's earlier turns included, and repeated
+  the round's own text, already delivered as its own message; the
+  `ON_AI_RESPONSE` transcript repeated it too. With no such text the turn
+  raised and lost the calls that ran, and so did a failure of the re-prompt
+  after an empty answer or of the anti-loop ripcord's final generation. Now
+  every generation after a round is interrupted the same way: the rounds are
+  kept, the terminal message is the marker alone, and the turn is an error
+  too, surfaced as the streaming loop surfaces it (`ON_ERROR`, the caller's
+  `InboundResult.error`, the `llm.generate` span in error). A turn cancelled
+  between rounds no longer repeats the round's text as a final message, and
+  a turn without final text carries `loop_end_reason` and `ai_usage` on its
+  last message. The streaming loop still ends an interrupted turn without the
+  marker (RMK-282).
 - What a tool handler returns reaches the model as JSON, and the outcomes the
   channel decides carry the failure marker (RMK-278, RFC §9.3, §21.4). On
   `AIChannel` a handler returning `[{"id": 1}]` failed the whole turn with a

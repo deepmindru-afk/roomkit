@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from roomkit.models.delivery import ProviderResult
 from roomkit.models.enums import (
@@ -117,6 +117,8 @@ class ChannelBinding(BaseModel):
 class ChannelOutput(BaseModel):
     """Output produced by a channel after receiving an event."""
 
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     responded: bool = False
     response_events: list[RoomEvent] = Field(default_factory=list)
     response_stream: Any = Field(default=None, exclude=True)
@@ -139,6 +141,14 @@ class ChannelOutput(BaseModel):
     tasks: list[Task] = Field(default_factory=list)
     observations: list[Observation] = Field(default_factory=list)
     metadata_updates: dict[str, Any] = Field(default_factory=dict)
+    error: Exception | None = Field(default=None, exclude=True)
+    """An error the channel met while producing this output.
+
+    The output is still delivered (an AI turn the provider interrupted after a
+    tool round keeps its rounds, RFC §6.4), and the error surfaces as for a
+    channel that raised: ON_ERROR fires and the caller's
+    ``InboundResult.error`` carries it.
+    """
 
     @classmethod
     def empty(cls) -> ChannelOutput:

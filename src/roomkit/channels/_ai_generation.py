@@ -80,12 +80,24 @@ class ToolLoopResult:
     response: AIResponse
     rounds: list[ToolRound] = field(default_factory=list)
     reason: LoopEndReason = "completed"
+    # The provider error that interrupted the turn after a round (reason
+    # ``error``): the turn is delivered, and it is an error too (RFC §6.4).
+    error: Exception | None = None
     # The union of what every round declared to the provider, for the turn's
     # ``AIResponseEvent`` (see ``AIResponseEvent.declared_tools``).
     declared_tools: list[DeclaredTool] = field(default_factory=list)
 
 
 logger = logging.getLogger("roomkit.channels.ai")
+
+
+class _TurnInterruptedError(Exception):
+    """A generation failed once a tool round had run: the turn is interrupted."""
+
+    def __init__(self, error: ProviderError) -> None:
+        super().__init__(str(error))
+        self.error = error
+
 
 #: The terminal message of a turn the provider interrupted after a round: the
 #: rounds already reached the room, so this is all it has not read (RFC §6.4).
@@ -294,8 +306,11 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
         response = loop_result.response
         tool_calls_count = sum(len(rnd.tool_calls) for rnd in loop_result.rounds)
         usage = response.usage or {}
+        interrupted = loop_result.error
         telemetry.end_span(
             span_id,
+            status="ok" if interrupted is None else "error",
+            error_message=None if interrupted is None else str(interrupted),
             attributes={
                 Attr.LLM_INPUT_TOKENS: usage.get("input_tokens", 0),
                 Attr.LLM_OUTPUT_TOKENS: usage.get("output_tokens", 0),
@@ -342,6 +357,7 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
             responded=True,
             response_events=response_events,
             response_metadata=ai_context.response_metadata,
+            error=loop_result.error,
         )
 
     def _build_response_events(
@@ -446,9 +462,22 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
                 )
             )
 
+        # With no final text (a cancelled turn, an empty answer), the turn's
+        # own record rides its last message instead: a consumer reads the end
+        # reason and the usage off the reply whichever way the turn ended.
+        last_message = next(
+            (i for i in reversed(range(len(events))) if events[i].type == EventType.MESSAGE),
+            None,
+        )
+        if not response.content and last_message is not None:
+            last = events[last_message]
+            events[last_message] = last.model_copy(
+                update={"metadata": {**last.metadata, **message_metadata}}
+            )
+
         # Ensure at least one MESSAGE event exists so the response is not
         # silently dropped (some models return tool calls with no text).
-        has_message = any(e.type == EventType.MESSAGE for e in events)
+        has_message = last_message is not None
         if not has_message:
             events.append(
                 RoomEvent(
@@ -500,6 +529,16 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
             _accumulate_usage(total_usage, resp.usage or {})
             return resp
 
+        async def _generate_after_round(ctx: AIContext) -> AIResponse:
+            # Once a round ran, a provider failure interrupts the turn rather
+            # than losing it: the rounds are kept (RFC §6.4). Overflow
+            # recovery (compact and replay once) already ran inside
+            # ``_generate_with_retry``: whatever reaches here is spent.
+            try:
+                return await _generate(ctx)
+            except ProviderError as exc:
+                raise _TurnInterruptedError(exc) from exc
+
         try:
             context, should_cancel = self._drain_steering_queue(context, loop_ctx)
             if should_cancel:
@@ -533,7 +572,7 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
                         final_text=response.content or "",
                         finish_reason=response.finish_reason,
                     ):
-                        response = await _generate(context)
+                        response = await _generate_after_round(context)
                         continue
                     reason = final_round_reason(
                         had_tool_round=bool(rounds),
@@ -618,35 +657,11 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
                 # generation so the model must answer in plain text, then stop.
                 context = self._prepare_round_context(context, loop_ctx, state, round_idx)
                 if loop_ctx.force_stop:
-                    response = await _generate(context)
+                    response = await _generate_after_round(context)
                     reason = "force_stopped"
                     break
 
-                try:
-                    response = await _generate(context)
-                except ProviderError:
-                    # Overflow recovery (compact and replay once) already ran
-                    # inside ``_generate_with_retry``; whatever reaches here
-                    # is spent, whichever kind it is. The rounds that ran are
-                    # kept, each round's text as its own segment: the terminal
-                    # message adds only the marker, never the history the
-                    # model was given nor this turn's text again (RFC §6.4).
-                    # The error is the provider SDK's own string (status
-                    # codes, request ids, model and organisation names), not
-                    # for the room: it goes to the log, where an operator can
-                    # correlate it, as the delivery pipeline does with its
-                    # provider errors (`providers/http_errors.py`).
-                    logger.exception(
-                        "Tool loop interrupted by provider error at round %d", round_idx
-                    )
-                    return ToolLoopResult(
-                        response=AIResponse(
-                            content=INTERRUPTED_MARKER, tool_calls=[], usage=dict(total_usage)
-                        ),
-                        rounds=rounds,
-                        reason="error",
-                        declared_tools=list(loop_ctx.declared_tools.values()),
-                    )
+                response = await _generate_after_round(context)
 
                 if response.thinking and room_id:
                     await self._publish_thinking_event(
@@ -689,6 +704,23 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
                 rounds=rounds,
                 reason=reason,
                 declared_tools=list(loop_ctx.declared_tools.values()),
+            )
+        except _TurnInterruptedError as interrupted:
+            # The provider's error is its SDK's own string (status codes,
+            # request ids, model and organisation names), not for the room:
+            # it goes to the log, where an operator can correlate it, as the
+            # delivery pipeline does (`providers/http_errors.py`). The room
+            # gets the marker alone: each round's text is already its own
+            # message (RFC §6.4).
+            logger.exception("Tool loop interrupted by a provider error after a round")
+            return ToolLoopResult(
+                response=AIResponse(
+                    content=INTERRUPTED_MARKER, tool_calls=[], usage=dict(total_usage)
+                ),
+                rounds=rounds,
+                reason="error",
+                declared_tools=list(loop_ctx.declared_tools.values()),
+                error=interrupted.error,
             )
         finally:
             self._active_loops.pop(loop_ctx.loop_id, None)

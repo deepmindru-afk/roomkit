@@ -292,8 +292,9 @@ class AIResponseEvent:
     multi-round answer and one guillotined by the round cap both report a
     positive count. Read this instead: ``"completed"`` is a turn that ended on
     its own terms, and ``"max_rounds"``, ``"timeout"``, ``"cancelled"``,
-    ``"force_stopped"``, ``"truncated"`` and ``"empty_response"`` each name the
-    rule that stopped it.
+    ``"force_stopped"``, ``"truncated"``, ``"empty_response"`` and ``"error"``
+    each name the rule that stopped it (``"error"``: the provider interrupted
+    the turn after a tool round, RFC §6.4).
 
     None means the path that fired the hook reported no reason, not that the
     turn completed.

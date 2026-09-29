@@ -1773,19 +1773,26 @@ ripcord on a model re-issuing an already-blocked call, which strips the tools
 and asks for a plain-text answer. That text summarises an interrupted turn, so
 a consumer treating "the model produced prose" as "the model answered" will
 deliver a cut run as a finished one — which is precisely why the reason is
-named rather than folded into `completed`. `error` ends with text on the same
-terms: a mid-loop provider failure salvaged as a partial answer (non-streaming
-only — a streaming failure reaches the consumer as the exception itself).
+named rather than folded into `completed`. `error` is a turn the provider
+interrupted after a tool round (non-streaming): the rounds are kept, each
+round's text as its own message, the turn ends on the `[Response interrupted]`
+marker alone, and it is an error too, surfaced through `ON_ERROR` and the
+caller's `InboundResult.error`. A streaming failure reaches the consumer as the
+exception itself.
 
 ### Why a non-streaming tool loop stopped
 
 The non-streaming loop returns `RoomEvent`s rather than a stream, so its
-reason travels on them: every response MESSAGE event's metadata carries
+reason travels on them: the turn's last MESSAGE event carries
 `loop_end_reason` with the same values, next to `ai_usage` (which sums every
-generation round of the turn, not just the last).
+generation round of the turn, not just the last). That is the final answer, or,
+for a turn that ended without one (a cancellation between rounds), the last
+round's text.
 
 ```python
-reply = output.response_events[-1]
+from roomkit.models.enums import EventType
+
+reply = [e for e in output.response_events if e.type == EventType.MESSAGE][-1]
 if reply.metadata["loop_end_reason"] != "completed":
     logger.warning("agent stopped: %s", reply.metadata["loop_end_reason"])
 ```

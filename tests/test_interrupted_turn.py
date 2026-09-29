@@ -25,6 +25,16 @@ from tests.test_framework import SimpleChannel
 
 T = AITool(name="t", description="a tool", parameters={"type": "object", "properties": {}})
 MARKER = "[Response interrupted]"
+HISTORY = [
+    AIResponse(content="Earlier answer."),
+    AIResponse(content="Second answer."),
+    AIResponse(
+        content="Looking.",
+        finish_reason="tool_calls",
+        tool_calls=[AIToolCall(id="c1", name="t", arguments={})],
+    ),
+    AIResponse(content="never"),
+]
 
 
 class _FailingAt(MockAIProvider):
@@ -44,12 +54,15 @@ class _FailingAt(MockAIProvider):
         return await super().generate(context)
 
 
-async def _room(provider: MockAIProvider, **channel: Any) -> tuple[RoomKit, AIChannel, list[Any]]:
-    async def handler(name: str, arguments: dict[str, Any]) -> str:
-        return "ok"
+async def _ok(name: str, arguments: dict[str, Any]) -> str:
+    return "ok"
 
+
+async def _room(
+    provider: MockAIProvider, tool_handler: Any = _ok
+) -> tuple[RoomKit, AIChannel, list[Any]]:
     ai = AIChannel(
-        "ai1", provider=provider, tools=[T], tool_handler=handler, tool_search=False, **channel
+        "ai1", provider=provider, tools=[T], tool_handler=tool_handler, tool_search=False
     )
     kit = RoomKit()
     kit.register_channel(SimpleChannel("sms1"))
@@ -94,33 +107,37 @@ def _looking(content: str = "Looking.") -> AIResponse:
 
 
 async def test_an_interrupted_turn_replays_nothing(streaming: bool) -> None:
-    answers = [AIResponse(content="Earlier answer."), _looking(), AIResponse(content="never")]
-    kit, _, _ = await _room(_FailingAt(3, answers, streaming=streaming))
+    kit, _, _ = await _room(_FailingAt(4, HISTORY, streaming=streaming))
 
-    await _say(kit, "first", "second")
+    await _say(kit, "first", "second", "third")
 
     messages = await _ai_messages(kit)
-    assert messages[0] == "Earlier answer."
-    assert all("Earlier answer." not in m for m in messages[1:])
+    assert messages[:2] == ["Earlier answer.", "Second answer."]
+    assert all("answer." not in m for m in messages[2:])
     assert sum(m.count("Looking.") for m in messages) == 1
     await kit.close()
 
 
-@pytest.mark.parametrize("streaming", [False], ids=["non-streaming"])
+@pytest.mark.xfail_streaming(
+    "RMK-282: the streaming loop ends a turn the provider interrupted after a round "
+    "without the [Response interrupted] marker (RFC §6.4)"
+)
 async def test_an_interrupted_turn_ends_on_the_marker_alone(streaming: bool) -> None:
-    answers = [AIResponse(content="Earlier answer."), _looking(), AIResponse(content="never")]
-    kit, _, responses = await _room(_FailingAt(3, answers, streaming=streaming))
+    kit, _, responses = await _room(_FailingAt(4, HISTORY, streaming=streaming))
 
-    await _say(kit, "first", "second")
+    await _say(kit, "first", "second", "third")
 
-    assert await _ai_messages(kit) == ["Earlier answer.", "Looking.", MARKER]
+    assert await _ai_messages(kit) == ["Earlier answer.", "Second answer.", "Looking.", MARKER]
     # The hook's transcript is the turn's segments, once each.
     assert responses[-1].response_content == f"Looking.\n\n{MARKER}"
     assert "req_abc123" not in responses[-1].response_content
     await kit.close()
 
 
-@pytest.mark.parametrize("streaming", [False], ids=["non-streaming"])
+@pytest.mark.xfail_streaming(
+    "RMK-282: the streaming loop ends a turn the provider interrupted after a round "
+    "without the [Response interrupted] marker (RFC §6.4)"
+)
 async def test_an_interrupted_round_without_text_keeps_its_calls(streaming: bool) -> None:
     kit, _, _ = await _room(
         _FailingAt(2, [_looking(""), AIResponse(content="never")], streaming=streaming)
@@ -136,23 +153,104 @@ async def test_an_interrupted_round_without_text_keeps_its_calls(streaming: bool
     await kit.close()
 
 
-@pytest.mark.parametrize("streaming", [False], ids=["non-streaming"])
 async def test_a_turn_cancelled_between_rounds_adds_no_terminal_text(streaming: bool) -> None:
-    holder: dict[str, AIChannel] = {}
+    ai: AIChannel | None = None
+
+    async def cancelling(name: str, arguments: dict[str, Any]) -> str:
+        assert ai is not None
+        ai.steer(Cancel())
+        return "ok"
+
     provider = MockAIProvider(
         ai_responses=[_looking(), AIResponse(content="never")], streaming=streaming
     )
-    kit, ai, responses = await _room(provider)
-    holder["ai"] = ai
-
-    async def cancelling(name: str, arguments: dict[str, Any]) -> str:
-        holder["ai"].steer(Cancel())
-        return "ok"
-
-    ai._user_tool_handler = cancelling
+    kit, ai, responses = await _room(provider, tool_handler=cancelling)
 
     await _say(kit, "go")
 
     assert await _ai_messages(kit) == ["Looking."]
     assert responses[-1].response_content == "Looking."
+    await kit.close()
+
+
+@pytest.mark.xfail_streaming(
+    "RMK-282: a cancelled streamed turn carries no loop_end_reason on its messages"
+)
+async def test_a_turn_without_final_text_keeps_its_record_on_its_last_message(
+    streaming: bool,
+) -> None:
+    """The end reason and the usage ride the turn's last message when the
+    turn has no final text to carry them (here, a cancel between rounds)."""
+    ai: AIChannel | None = None
+
+    async def cancelling(name: str, arguments: dict[str, Any]) -> str:
+        assert ai is not None
+        ai.steer(Cancel())
+        return "ok"
+
+    provider = MockAIProvider(
+        ai_responses=[_looking(), AIResponse(content="never")], streaming=streaming
+    )
+    kit, ai, _ = await _room(provider, tool_handler=cancelling)
+
+    await _say(kit, "go")
+
+    events = await kit.store.list_events("r1")
+    last = [e for e in events if e.type == EventType.MESSAGE and e.source.channel_id == "ai1"][-1]
+    assert last.metadata["loop_end_reason"] == "cancelled"
+    assert "ai_usage" in last.metadata
+    await kit.close()
+
+
+@pytest.mark.parametrize(
+    "answers",
+    [
+        # The round's answer comes back empty, and its re-prompt fails.
+        [_looking(), AIResponse(content="")],
+        # Six identical calls pull the anti-loop ripcord; its final
+        # generation fails.
+        [_looking() for _ in range(6)],
+    ],
+    ids=["empty-answer-retry", "force-stop"],
+)
+@pytest.mark.xfail_streaming(
+    "RMK-282: the streaming loop ends a turn the provider interrupted after a round "
+    "without the [Response interrupted] marker (RFC §6.4)"
+)
+async def test_every_generation_after_a_round_keeps_the_round(
+    answers: list[AIResponse], streaming: bool
+) -> None:
+    fail_at = len(answers) + 1
+    provider = _FailingAt(fail_at, answers, streaming=streaming)
+    kit, _, _ = await _room(provider)
+
+    await _say(kit, "go")
+
+    events = await kit.store.list_events("r1")
+    kinds = [e.type for e in events if e.source.channel_id == "ai1"]
+    assert EventType.TOOL_CALL_END in kinds
+    assert (await _ai_messages(kit))[-1] == MARKER
+    await kit.close()
+
+
+async def test_an_interrupted_turn_is_an_error(streaming: bool) -> None:
+    """The turn is delivered and it is an error: ON_ERROR fires and the
+    caller reads the provider's error, on both loops."""
+    kit, _, _ = await _room(
+        _FailingAt(2, [_looking(), AIResponse(content="never")], streaming=streaming)
+    )
+    errors: list[Any] = []
+
+    @kit.hook(HookTrigger.ON_ERROR, execution=HookExecution.ASYNC, name="card")
+    async def card(event: Any, ctx: Any) -> None:
+        errors.append(event)
+
+    result = await kit.process_inbound(
+        InboundMessage(channel_id="sms1", sender_id="u", content=TextContent(body="go"))
+    )
+    await asyncio.sleep(0.05)
+
+    assert isinstance(result.error, ProviderError)
+    assert len(errors) == 1
+    assert "Looking." in await _ai_messages(kit)
     await kit.close()
