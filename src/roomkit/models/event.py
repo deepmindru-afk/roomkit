@@ -259,7 +259,9 @@ class RoomEvent(BaseModel):
 
 #: Metadata key marking the terminal message of a turn the provider
 #: interrupted after a round (RFC §6.4): the interruption marker, not an answer.
-INTERRUPTED_KEY = "interrupted"
+#: Distinct from ``interrupted``, which marks a spoken reply a barge-in cut
+#: (RFC §12.3.13).
+INTERRUPTION_MARKER_KEY = "interruption_marker"
 
 
 def is_interruption_marker(event: RoomEvent) -> bool:
@@ -268,7 +270,18 @@ def is_interruption_marker(event: RoomEvent) -> bool:
     It says an agent's turn was cut: it solicits no agent (RFC §19.3), and
     nothing that reads an agent's answer takes it for one.
     """
-    return event.metadata.get(INTERRUPTED_KEY) is True
+    return event.metadata.get(INTERRUPTION_MARKER_KEY) is True
+
+
+def answer_text(event: RoomEvent) -> str | None:
+    """The text *event* carries as an agent's answer, or ``None``.
+
+    ``None`` for anything but a non-empty text, and for the interruption
+    marker, which is no answer (RFC §6.4).
+    """
+    if isinstance(event.content, TextContent) and event.content.body:
+        return None if is_interruption_marker(event) else event.content.body
+    return None
 
 
 class ThreadSummary(BaseModel):

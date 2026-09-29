@@ -14,6 +14,7 @@ from roomkit.channels._ai_loop_rules import (
     AIToolLoopRulesMixin,
     _accumulate_usage,
     final_round_reason,
+    interrupts_turn,
     require_schema_answer,
     turn_span_status,
 )
@@ -21,7 +22,7 @@ from roomkit.channels._tool_event_result import tool_event_payload
 from roomkit.models.channel import ChannelOutput
 from roomkit.models.enums import EventType
 from roomkit.models.event import (
-    INTERRUPTED_KEY,
+    INTERRUPTION_MARKER_KEY,
     EventSource,
     RoomEvent,
     TextContent,
@@ -40,7 +41,6 @@ from roomkit.providers.ai.base import (
     AIResponse,
     ProviderError,
 )
-from roomkit.providers.ai.response_schema import ResponseSchemaError
 from roomkit.realtime.base import EphemeralEventType
 from roomkit.telemetry.base import Attr, SpanKind
 from roomkit.telemetry.context import get_current_span
@@ -417,13 +417,7 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
             "ai_usage": usage,
             "loop_end_reason": loop_result.reason,
         }
-        # The interruption marker says the turn was cut; it is no answer
-        # (RFC §6.4), and readers tell it from one by this key.
-        final_metadata = (
-            {**message_metadata, INTERRUPTED_KEY: True}
-            if loop_result.error is not None
-            else message_metadata
-        )
+        final_metadata = _final_message_metadata(message_metadata, loop_result)
 
         if not loop_result.rounds:
             # No tool calls — single text event (existing behavior)
@@ -560,11 +554,9 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
             # ``_generate_with_retry``: whatever reaches here is spent.
             try:
                 return await _generate(ctx)
-            except ResponseSchemaError:
-                # The answer failed its own check: the turn fails with it, it
-                # was not interrupted (RFC A.9)
-                raise
             except ProviderError as exc:
+                if not interrupts_turn(exc, after_round=True):
+                    raise
                 raise _TurnInterruptedError(exc) from exc
 
         try:
@@ -753,6 +745,19 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
         finally:
             self._active_loops.pop(loop_ctx.loop_id, None)
             _current_loop_ctx.set(enclosing_ctx)
+
+
+def _final_message_metadata(
+    message_metadata: dict[str, Any], loop_result: ToolLoopResult
+) -> dict[str, Any]:
+    """The metadata of the turn's final message.
+
+    The interruption marker says the turn was cut; it is no answer (RFC
+    §6.4), and readers tell it from one by its key.
+    """
+    if loop_result.error is None:
+        return message_metadata
+    return {**message_metadata, INTERRUPTION_MARKER_KEY: True}
 
 
 def _adopt_hook_toolset(

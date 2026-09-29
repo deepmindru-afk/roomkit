@@ -15,6 +15,7 @@ from roomkit.channels._ai_loop_rules import (
     AIToolLoopRulesMixin,
     _accumulate_usage,
     final_round_reason,
+    interrupts_turn,
     require_schema_answer,
     turn_span_status,
 )
@@ -40,7 +41,6 @@ from roomkit.providers.ai.base import (
     StreamTextDelta,
     StreamThinkingDelta,
 )
-from roomkit.providers.ai.response_schema import ResponseSchemaError
 from roomkit.providers.utils import _aclose_stream
 from roomkit.realtime.base import EphemeralEventType
 from roomkit.telemetry.base import Attr, SpanKind, TelemetryProvider
@@ -77,13 +77,10 @@ class _StreamTurnState:
     # ``error``): the turn reaches its end on it, then it is raised (RFC §6.4).
     error: Exception | None = None
 
-    def usage_record(self) -> dict[str, int]:
-        return {"input_tokens": 0, "output_tokens": 0, **self.usage}
-
     def end(self, reason: LoopEndReason, rounds: int) -> LoopEndMarker:
         """End the loop on *reason*: the marker the consumer reads it from."""
         self.reason = reason
-        return LoopEndMarker(reason=reason, rounds=rounds, usage=self.usage_record())
+        return LoopEndMarker(reason=reason, rounds=rounds, usage=dict(self.usage))
 
 
 def _turn_span_attributes(turn: _StreamTurnState) -> dict[str, Any]:
@@ -402,6 +399,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                         yield chunk
                 for chunk in text_parts if held else ():
                     yield chunk
+                # Text only, as this path always was: no marker, so no record
                 completed = True
                 return
 
@@ -444,6 +442,8 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                 await self._close_thinking_window(
                     coalescer, room_id, thinking_parts, 0, published=thinking_published
                 )
+            # No tool loop, but the turn's record all the same (RFC §6.4)
+            yield LoopEndMarker(reason="completed", usage=dict(usage))
             completed = True
         finally:
             try:
@@ -563,17 +563,21 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
             try:
                 yield turn
             except BaseException as exc:
-                if exc is turn.error:
-                    # Interrupted after a round: it reached its end (RFC §6.4)
-                    await self._finish_streaming_tool_turn(turn)
-                else:
-                    _end_unfinished_turn(turn, exc)
+                await self._end_raised_turn(turn, exc)
                 raise
             await self._finish_streaming_tool_turn(turn)
         finally:
             # Finalization may itself be cancelled while publishing a hook.
             self._active_loops.pop(loop_ctx.loop_id, None)
             _current_loop_ctx.set(enclosing_ctx)
+
+    async def _end_raised_turn(self, turn: _StreamTurnState, exc: BaseException) -> None:
+        """End a turn left by an exception: reported when the provider interrupted
+        it after a round, since it reached its end on that error (RFC §6.4)."""
+        if exc is turn.error:
+            await self._finish_streaming_tool_turn(turn)
+        else:
+            _end_unfinished_turn(turn, exc)
 
     async def _finish_streaming_tool_turn(self, turn: _StreamTurnState) -> None:
         """Report the delivered transcript and the counters accumulated by this turn."""
@@ -596,7 +600,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                         round_count=turn.tool_rounds_count,
                         loop_end_reason=turn.reason,
                         declared_tools=list(turn.loop_ctx.declared_tools.values()),
-                        usage=turn.usage_record(),
+                        usage={"input_tokens": 0, "output_tokens": 0, **turn.usage},
                         latency_ms=int((time.monotonic() - turn.started_at) * 1000),
                         streaming=True,
                     )
@@ -687,11 +691,10 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
             ) as deltas:
                 async for delta in deltas:
                     yield delta
-        except ResponseSchemaError:
-            raise  # the answer failed its own check, it was not interrupted
         except ProviderError as exc:
-            if not turn.saw_tool_call:
+            if not interrupts_turn(exc, after_round=turn.saw_tool_call):
                 raise
+            logger.warning("Streaming tool loop interrupted by a provider error after a round")
             turn.error = exc
             yield turn.end("error", index)
             raise

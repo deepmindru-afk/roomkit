@@ -23,7 +23,13 @@ from roomkit.core.mixins._child_execution import _persist_response_events
 from roomkit.models.channel import ChannelOutput
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelCategory, ChannelType, EventType
-from roomkit.models.event import EventSource, RoomEvent, TextContent, is_interruption_marker
+from roomkit.models.event import (
+    INTERRUPTION_MARKER_KEY,
+    EventSource,
+    RoomEvent,
+    TextContent,
+    is_interruption_marker,
+)
 from roomkit.models.steering import Cancel
 from roomkit.orchestration.strategies.supervisor import _extract_output_text
 from roomkit.providers.ai.base import AIContext, AIResponse, AITool, AIToolCall, ProviderError
@@ -156,8 +162,8 @@ async def test_an_interrupted_streamed_turn_keeps_what_it_streamed() -> None:
 
 
 async def test_an_interrupted_turn_is_reported_then_raised(streaming: bool) -> None:
-    """RMK-289, decision B: both loops report the turn on ON_AI_RESPONSE with
-    ``error`` and what its rounds used, then ON_ERROR fires (RFC §6.4)."""
+    """RMK-289: both loops report the turn on ON_AI_RESPONSE with ``error``
+    and what its rounds used, then ON_ERROR fires (RFC §6.4)."""
     used = {"input_tokens": 120, "output_tokens": 7}
     answers = [_looking().model_copy(update={"usage": used}), AIResponse(content="never")]
     kit, _, responses = await _room(_FailingAt(2, answers, streaming=streaming))
@@ -357,7 +363,7 @@ class TestTheMarkerIsNoAnswer:
             source=EventSource(channel_id="ai1", channel_type=ChannelType.AI),
             content=TextContent(body=MARKER),
             addressed_to=["ai2"],
-            metadata={"interrupted": True, "_always_process": ["supervisor"]},
+            metadata={INTERRUPTION_MARKER_KEY: True, "_always_process": ["supervisor"]},
         )
         for channel_id in ("ai2", "supervisor", "ai3"):
             assert _solicits(marker, channel_id, source_is_agent=True) is False
@@ -384,31 +390,171 @@ class TestTheMarkerIsNoAnswer:
         assert watcher.asked == []
         await kit.close()
 
+    def test_a_voice_barge_in_record_is_not_one(self) -> None:
+        """RFC §12.3.13's ``interrupted`` marks a spoken reply cut by a barge-in:
+        a different record, which is no interruption marker."""
+        spoken = RoomEvent(
+            room_id="r1",
+            source=EventSource(channel_id="voice", channel_type=ChannelType.VOICE),
+            content=TextContent(body="Your balance is"),
+            metadata={"interrupted": True, "played_ms": 800},
+        )
+
+        assert is_interruption_marker(spoken) is False
+
     async def test_a_supervisor_does_not_hand_it_on_as_a_task(self) -> None:
+        source = EventSource(channel_id="ai1", channel_type=ChannelType.AI)
+        narration = RoomEvent(room_id="r1", source=source, content=TextContent(body="Looking."))
         marker = RoomEvent(
             room_id="r1",
-            source=EventSource(channel_id="ai1", channel_type=ChannelType.AI),
+            source=source,
             content=TextContent(body=MARKER),
-            metadata={"interrupted": True},
+            metadata={INTERRUPTION_MARKER_KEY: True},
         )
-        output = ChannelOutput(responded=True, response_events=[marker])
 
-        assert await _extract_output_text(output) == ""
+        assert await _extract_output_text(ChannelOutput(response_events=[marker])) == ""
+        # An output that carries an error has no answer, its narration included
+        interrupted = ChannelOutput(
+            response_events=[narration, marker], error=ProviderError("upstream 500")
+        )
+        assert await _extract_output_text(interrupted) == ""
 
-    async def test_a_delegated_turn_does_not_return_it(self) -> None:
+
+class TestADelegatedTurn:
+    """RMK-289: a delegated turn reads the same whichever loop ran it."""
+
+    async def test_an_interrupted_worker_fails_the_task(self, streaming: bool) -> None:
+        answers = [_looking(), AIResponse(content="never")]
+        worker = AIChannel(
+            "worker",
+            provider=_FailingAt(2, answers, streaming=streaming),
+            tools=[T],
+            tool_handler=_ok,
+            tool_search=False,
+        )
+        kit = RoomKit()
+        kit.register_channel(worker)
+        await kit.create_room(room_id="parent")
+
+        task = await kit.delegate("parent", "worker", "do the task", wait=True)
+
+        assert task.result.status == "failed"
+        assert "upstream 500" in (task.result.error or "")
+        await kit.close()
+
+    async def test_a_worker_returns_its_answer_and_records_its_end(self, streaming: bool) -> None:
+        answers = [
+            _looking().model_copy(update={"usage": {"input_tokens": 3, "output_tokens": 1}}),
+            AIResponse(content="Done.", usage={"input_tokens": 5, "output_tokens": 2}),
+        ]
+        worker = AIChannel(
+            "worker",
+            provider=MockAIProvider(ai_responses=answers, streaming=streaming),
+            tools=[T],
+            tool_handler=_ok,
+            tool_search=False,
+        )
+        kit = RoomKit()
+        kit.register_channel(worker)
+        await kit.create_room(room_id="parent")
+
+        task = await kit.delegate("parent", "worker", "do the task", wait=True)
+
+        assert task.result.output == "Done."
+        events = await kit.store.list_events(task.child_room_id)
+        rows = [
+            e for e in events if e.type == EventType.MESSAGE and e.source.channel_id == "worker"
+        ]
+        assert rows[-1].metadata["loop_end_reason"] == "completed"
+        assert rows[-1].metadata["ai_usage"] == {"input_tokens": 8, "output_tokens": 3}
+        await kit.close()
+
+    async def test_the_marker_alone_is_no_result(self) -> None:
         kit = RoomKit()
         await kit.create_room(room_id="child")
-        source = EventSource(channel_id="ai1", channel_type=ChannelType.AI)
-        rows = [
-            RoomEvent(room_id="child", source=source, content=TextContent(body="Looking.")),
-            RoomEvent(
-                room_id="child",
-                source=source,
-                content=TextContent(body=MARKER),
-                metadata={"interrupted": True},
-            ),
-        ]
+        marker = RoomEvent(
+            room_id="child",
+            source=EventSource(channel_id="ai1", channel_type=ChannelType.AI),
+            content=TextContent(body=MARKER),
+            metadata={INTERRUPTION_MARKER_KEY: True},
+        )
 
-        assert await _persist_response_events(kit, "child", rows[1:]) is None
-        assert await _persist_response_events(kit, "child", rows) == "Looking."
+        assert await _persist_response_events(kit, "child", [marker]) is None
+        await kit.close()
+
+
+class TestTheTurnRecord:
+    """RMK-289: every turn records its end on its last message (RFC §6.4)."""
+
+    async def test_a_turn_without_tools_records_it(self, streaming: bool) -> None:
+        provider = MockAIProvider(
+            ai_responses=[
+                AIResponse(content="Hi.", usage={"input_tokens": 5, "output_tokens": 1})
+            ],
+            streaming=streaming,
+        )
+        kit, _, _ = await _room(provider)
+
+        result = await kit.process_inbound(
+            InboundMessage(channel_id="sms1", sender_id="u", content=TextContent(body="go"))
+        )
+
+        [reply] = [e for e in result.response_events if e.type == EventType.MESSAGE]
+        assert reply.metadata["loop_end_reason"] == "completed"
+        assert reply.metadata["ai_usage"] == {"input_tokens": 5, "output_tokens": 1}
+        await kit.close()
+
+    async def test_the_update_of_a_written_message_is_seen(self) -> None:
+        """A streamed turn with no final text updates its last stored message:
+        ON_EVENT_UPDATED sees it, as any change to a stored event."""
+        ai: AIChannel | None = None
+
+        async def cancelling(name: str, arguments: dict[str, Any]) -> str:
+            assert ai is not None
+            ai.steer(Cancel())
+            return "ok"
+
+        provider = MockAIProvider(
+            ai_responses=[_looking(), AIResponse(content="never")], streaming=True
+        )
+        kit, ai, _ = await _room(provider, tool_handler=cancelling)
+        updated: list[Any] = []
+
+        @kit.hook(HookTrigger.ON_EVENT_UPDATED, execution=HookExecution.ASYNC, name="seen")
+        async def seen(event: Any, ctx: Any) -> None:
+            updated.append(event)
+
+        await _say(kit, "go")
+
+        [event] = updated
+        assert event.content.body == "Looking."
+        assert event.metadata["loop_end_reason"] == "cancelled"
+        await kit.close()
+
+    async def test_a_record_that_cannot_be_written_does_not_fail_the_turn(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        ai: AIChannel | None = None
+
+        async def cancelling(name: str, arguments: dict[str, Any]) -> str:
+            assert ai is not None
+            ai.steer(Cancel())
+            return "ok"
+
+        async def broken(*args: Any, **kwargs: Any) -> Any:
+            raise RuntimeError("store down")
+
+        provider = MockAIProvider(
+            ai_responses=[_looking(), AIResponse(content="never")], streaming=True
+        )
+        kit, ai, responses = await _room(provider, tool_handler=cancelling)
+        monkeypatch.setattr(kit, "update_event", broken)
+
+        result = await kit.process_inbound(
+            InboundMessage(channel_id="sms1", sender_id="u", content=TextContent(body="go"))
+        )
+
+        assert result.error is None
+        assert await _ai_messages(kit) == ["Looking."]
+        assert "store down" in caplog.text
         await kit.close()

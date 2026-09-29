@@ -29,6 +29,7 @@ from roomkit.providers.ai.base import (
     AIThinkingPart,
     AIToolCallPart,
     AIToolResultPart,
+    ProviderError,
 )
 from roomkit.providers.ai.response_schema import ResponseSchemaError
 from roomkit.providers.ai.tool_calls import is_truncation
@@ -104,6 +105,17 @@ def require_schema_answer(context: AIContext, reason: LoopEndReason) -> None:
             f"the tool loop stopped ({reason}) before a final answer in the response schema",
             reason="truncated",
         )
+
+
+def interrupts_turn(exc: ProviderError, *, after_round: bool) -> bool:
+    """Whether a provider error interrupts the turn rather than failing it.
+
+    Once a round ran, its calls and text already reached the room: the turn
+    is kept, ends ``error`` and is reported (RFC §6.4). A schema check that
+    refuses the final answer is the answer failing, not an interruption
+    (RFC A.9).
+    """
+    return after_round and not isinstance(exc, ResponseSchemaError)
 
 
 def turn_span_status(reason: LoopEndReason) -> str:

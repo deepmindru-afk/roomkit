@@ -11,7 +11,7 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from roomkit.models.channel import ChannelOutput
-from roomkit.models.event import TextContent, is_interruption_marker
+from roomkit.models.event import answer_text
 
 if TYPE_CHECKING:
     from roomkit.channels.agent import Agent
@@ -98,16 +98,15 @@ async def _extract_output_text(output: ChannelOutput) -> str:
     Handles both synchronous response_events and streaming responses.
     For streaming, drains the stream to collect the full text.
     """
-    # Check synchronous response first. An interruption marker is no answer
-    # to hand on as a task (RFC §6.4).
+    # An output that carries an error (a turn interrupted after a round) has
+    # no answer to hand on as a task, and the marker never is one (RFC §6.4).
+    if output.error is not None:
+        return ""
+    # Check synchronous response first.
     if output.response_events:
         for resp in output.response_events:
-            if (
-                isinstance(resp.content, TextContent)
-                and resp.content.body
-                and not is_interruption_marker(resp)
-            ):
-                return resp.content.body
+            if (text := answer_text(resp)) is not None:
+                return text
 
     # Drain streaming response if present
     if output.response_stream is not None:

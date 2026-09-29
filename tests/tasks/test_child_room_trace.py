@@ -65,8 +65,9 @@ class TestPersistChildStream:
 
         text = await _persist_child_stream(kit, "parent::task-1", _sr(_stream()), chain_depth=1)
 
-        # Return value is the full concatenated text (the worker's output).
-        assert text == "Let me search. Here is the answer."
+        # Return value is the last segment, the worker's answer, as a
+        # non-streaming worker's last message is (RMK-289).
+        assert text == "Here is the answer."
 
         # Order: text segment, tool start, tool end, final text segment.
         seq = [(e.type, getattr(e.content, "tool_name", None)) for e in kit.store.added]
@@ -157,7 +158,9 @@ class TestRunAgentNonStreaming:
             type=EventType.MESSAGE,
             content=TextContent(body="the answer"),
         )
-        output = SimpleNamespace(responded=True, response_events=[tool_event, msg_event])
+        output = SimpleNamespace(
+            responded=True, error=None, response_events=[tool_event, msg_event]
+        )
         broadcast_result = SimpleNamespace(outputs={"w1": output}, streaming_responses=[])
 
         router = MagicMock()

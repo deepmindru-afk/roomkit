@@ -10,6 +10,7 @@ from roomkit.channels._tool_event_result import tool_event_payload
 from roomkit.core.event_router import chain_depth_exceeded
 from roomkit.models.enums import EventStatus, EventType, HookTrigger
 from roomkit.models.event import EventSource, RoomEvent, TextContent, ToolCallContent
+from roomkit.models.streaming import LoopEndMarker, ToolCallEndMarker, ToolCallStartMarker
 
 if TYPE_CHECKING:
     from roomkit.core.event_router import StreamingResponse
@@ -17,7 +18,6 @@ if TYPE_CHECKING:
     from roomkit.core.lanes import DeliveryCascade
     from roomkit.core.mixins.lane_execution import DeliverySource
     from roomkit.models.context import RoomContext
-    from roomkit.models.streaming import LoopEndMarker, ToolCallEndMarker, ToolCallStartMarker
 
 logger = logging.getLogger("roomkit.inbound")
 
@@ -99,8 +99,9 @@ class SegmentWriter:
         """Write a record no final text carried on the last MESSAGE already stored.
 
         Run once the turn's deliveries are done, so no delivery record is
-        written to the same row meanwhile; the stored row is read again and
-        only its metadata changes. It is not delivered again.
+        written to the same row meanwhile. Only the row's metadata changes,
+        through ``update_event``, so ON_EVENT_UPDATED sees it; it is not
+        delivered again. Best effort: the turn's outcome stands without it.
         """
         if not self._record_owed or self._turn_record is None:
             return
@@ -108,12 +109,23 @@ class SegmentWriter:
         last = next((e for e in reversed(self.persisted) if e.type == EventType.MESSAGE), None)
         if last is None:
             return
-        stored = await self._kit._store.get_event(last.id)
-        if stored is None:
+        try:
+            stored = await self._kit.store.get_event(last.id)
+            if stored is None:
+                return
+            updated = await self._kit.update_event(
+                self._room_id, last.id, metadata={**stored.metadata, **self._turn_record}
+            )
+        except Exception:
+            logger.warning(
+                "Could not record the turn's end on message %s (room %s)",
+                last.id,
+                self._room_id,
+                exc_info=True,
+            )
             return
-        updated = await self._kit._store.update_event(
-            stored.model_copy(update={"metadata": {**stored.metadata, **self._turn_record}})
-        )
+        if updated is None:
+            return
         for rows in (self.persisted, self._response_events):
             if rows is not None and last in rows:
                 rows[rows.index(last)] = updated
@@ -163,6 +175,21 @@ class SegmentWriter:
     def started(self, tool_id: str) -> bool:
         """Whether this call's start row was handed to the writer."""
         return tool_id in self._started
+
+    async def take(self, marker: Any) -> list[RoomEvent]:
+        """Handle a stream marker; the rows it committed, in order.
+
+        A call's start ends the text before it, which is its own segment. The
+        loop's end is recorded, and written with the turn's last message.
+        """
+        rows: list[RoomEvent | None] = []
+        if isinstance(marker, ToolCallStartMarker):
+            rows = [await self.flush_text(), await self.tool_start(marker)]
+        elif isinstance(marker, ToolCallEndMarker):
+            rows = [await self.tool_end(marker)]
+        elif isinstance(marker, LoopEndMarker):
+            self.end_turn(marker)
+        return [row for row in rows if row is not None]
 
     async def tool_start(self, marker: ToolCallStartMarker) -> RoomEvent | None:
         return await self._write(self._start_row(marker), exclude=set(self._streamed_to))

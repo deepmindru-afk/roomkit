@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator
 import pytest
 
 from roomkit import AIChannel
+from roomkit.models.streaming import LoopEndMarker
 from roomkit.models.tool_call import AIResponseEvent
 from roomkit.providers.ai.base import AIContext, AIResponse, ProviderError, StreamEvent
 from roomkit.providers.ai.mock import MockAIProvider
@@ -89,5 +90,8 @@ async def test_plain_stream_hook_failure_does_not_break_delivery() -> None:
         raise RuntimeError("observer unavailable")
 
     channel._after_response_hook = observe
-    assert [item async for item in channel._stream_text_with_thinking(AIContext())] == ["ok"]
+    items = [item async for item in channel._stream_text_with_thinking(AIContext())]
+    assert items[:-1] == ["ok"]
+    # The turn's record closes the structured stream (RMK-289)
+    assert isinstance(items[-1], LoopEndMarker) and items[-1].reason == "completed"
     assert channel.active_turns == 0

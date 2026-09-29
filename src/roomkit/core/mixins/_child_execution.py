@@ -23,10 +23,10 @@ from roomkit.models.event import (
     RoomEvent,
     TextContent,
     ToolCallContent,
-    is_interruption_marker,
+    answer_text,
 )
 from roomkit.models.store_filter import EventFilter
-from roomkit.models.streaming import ToolCallEndMarker, ToolCallStartMarker
+from roomkit.models.streaming import LoopEndMarker, ToolCallEndMarker, ToolCallStartMarker
 
 if TYPE_CHECKING:
     from roomkit.core.framework import RoomKit
@@ -34,6 +34,42 @@ if TYPE_CHECKING:
 
 
 _tasks_logger = logging.getLogger("roomkit.tasks")
+
+
+def _child_tool_row(
+    child_room_id: str,
+    source: EventSource,
+    marker: ToolCallStartMarker | ToolCallEndMarker,
+    chain_depth: int,
+) -> RoomEvent:
+    """The TOOL_CALL_{START,END} row a streamed call marker leaves in the child room."""
+    if isinstance(marker, ToolCallStartMarker):
+        event_type = EventType.TOOL_CALL_START
+        content = ToolCallContent(
+            tool_name=marker.tool_name,
+            tool_id=marker.tool_id,
+            arguments=marker.arguments,
+            status="pending",
+        )
+    else:
+        event_type = EventType.TOOL_CALL_END
+        content = ToolCallContent(
+            tool_name=marker.tool_name,
+            tool_id=marker.tool_id,
+            arguments=marker.arguments,
+            result=tool_event_result(marker.result),
+            status=marker.status,
+            duration_ms=marker.duration_ms,
+            error=marker.error,
+        )
+    return RoomEvent(
+        room_id=child_room_id,
+        source=source,
+        type=event_type,
+        content=content,
+        status=EventStatus.DELIVERED,
+        chain_depth=chain_depth,
+    )
 
 
 async def _persist_child_stream(
@@ -51,19 +87,25 @@ async def _persist_child_stream(
     trace (what it searched/ran, with arguments and results), not just its
     final answer. Unlike that path, the rows are committed directly: they
     ride no delivery lane and cross no BEFORE_BROADCAST hook, because nobody
-    is delivered them — they are the record of a delegated turn.
-    Returns the full concatenated text (the worker's output for the caller).
+    is delivered them — they are the record of a delegated turn. The turn's
+    record (``loop_end_reason``, ``ai_usage``) rides its last message, as a
+    non-streaming worker's does (RFC §6.4).
+    Returns the last segment's text: the worker's answer, as a non-streaming
+    worker's last message is.
     """
     source = EventSource(channel_id=sr.source_channel_id, channel_type=sr.source_channel_type)
-    text_parts: list[str] = []
     segment: list[str] = []
+    record: dict[str, Any] = {}
+    last: RoomEvent | None = None
+    answer = ""
 
     async def _flush_segment() -> None:
+        nonlocal last, answer
         if not segment:
             return
-        body = "".join(segment)
+        body = answer = "".join(segment)
         segment.clear()
-        await kit._commit_indexed(
+        last = await kit._commit_indexed(
             child_room_id,
             RoomEvent(
                 room_id=child_room_id,
@@ -72,54 +114,30 @@ async def _persist_child_stream(
                 content=TextContent(body=body),
                 status=EventStatus.DELIVERED,
                 chain_depth=chain_depth,
+                metadata=dict(record),
             ),
         )
 
     async for delta in sr.stream:
         if isinstance(delta, str):
-            text_parts.append(delta)
             segment.append(delta)
-        elif isinstance(delta, ToolCallStartMarker):
-            await _flush_segment()
+        elif isinstance(delta, ToolCallStartMarker | ToolCallEndMarker):
+            if isinstance(delta, ToolCallStartMarker):
+                await _flush_segment()
             await kit._commit_indexed(
-                child_room_id,
-                RoomEvent(
-                    room_id=child_room_id,
-                    source=source,
-                    type=EventType.TOOL_CALL_START,
-                    content=ToolCallContent(
-                        tool_name=delta.tool_name,
-                        tool_id=delta.tool_id,
-                        arguments=delta.arguments,
-                        status="pending",
-                    ),
-                    status=EventStatus.DELIVERED,
-                    chain_depth=chain_depth,
-                ),
+                child_room_id, _child_tool_row(child_room_id, source, delta, chain_depth)
             )
-        elif isinstance(delta, ToolCallEndMarker):
-            await kit._commit_indexed(
-                child_room_id,
-                RoomEvent(
-                    room_id=child_room_id,
-                    source=source,
-                    type=EventType.TOOL_CALL_END,
-                    content=ToolCallContent(
-                        tool_name=delta.tool_name,
-                        tool_id=delta.tool_id,
-                        arguments=delta.arguments,
-                        result=tool_event_result(delta.result),
-                        status=delta.status,
-                        duration_ms=delta.duration_ms,
-                        error=delta.error,
-                    ),
-                    status=EventStatus.DELIVERED,
-                    chain_depth=chain_depth,
-                ),
-            )
+        elif isinstance(delta, LoopEndMarker):
+            record = {"ai_usage": dict(delta.usage), "loop_end_reason": delta.reason}
         # ThinkingDeltaMarker (and any other marker): transient, not persisted.
+    carried = bool(segment)
     await _flush_segment()
-    return "".join(text_parts)
+    if last is not None and record and not carried:
+        # No final text: the record rides the last message already written
+        await kit.store.update_event(
+            last.model_copy(update={"metadata": {**last.metadata, **record}})
+        )
+    return answer
 
 
 async def _persist_response_events(
@@ -133,12 +151,8 @@ async def _persist_response_events(
             child_room_id, resp.model_copy(update={"status": EventStatus.DELIVERED})
         )
         # An interruption marker is not the worker's answer (RFC §6.4)
-        if (
-            isinstance(resp.content, TextContent)
-            and resp.content.body
-            and not is_interruption_marker(resp)
-        ):
-            final_text = resp.content.body
+        if (text := answer_text(resp)) is not None:
+            final_text = text
     return final_text
 
 
@@ -190,6 +204,11 @@ async def _broadcast_and_collect(
         if not (output.responded and output.response_events):
             continue
         final_text = await _persist_response_events(kit, child_room_id, output.response_events)
+        if output.error is not None:
+            # A turn the provider interrupted after a round kept its trace and
+            # has no answer: the delegated turn fails, as a streamed one does
+            # (RFC §6.4).
+            raise output.error
         if final_text is not None:
             return final_text
 

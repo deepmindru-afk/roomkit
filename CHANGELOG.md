@@ -9,12 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `LoopEndMarker.usage` and `roomkit.models.event.is_interruption_marker`
-  (RMK-289, RFC §6.4). The marker carries what the turn's generations used,
-  summed over its rounds, so the streamed turn's record can ride its last
-  message. The terminal `[Response interrupted]` message of a turn the
-  provider interrupted after a round carries `metadata["interrupted"] = True`,
-  and `is_interruption_marker` tells it from an answer.
+- `LoopEndMarker.usage`, `roomkit.models.event.is_interruption_marker` and
+  `answer_text` (RMK-289, RFC §6.4). The marker carries what the turn's
+  generations used, summed over its rounds, so the streamed turn's record can
+  ride its last message; a response without tools yields it too, unless its
+  provider streams text only (no structured streaming). The terminal
+  `[Response interrupted]` message of a turn the provider interrupted after a
+  round carries `metadata["interruption_marker"] = True` (distinct from the
+  `interrupted` of a spoken reply a barge-in cut), `is_interruption_marker`
+  tells it from an answer, and `answer_text` reads an agent's answer off a
+  message, the marker excluded.
 - `roomkit.core.task_utils.cancel_and_wait(*tasks)` (RMK-288): cancels tasks
   and waits for their end without eating the caller's own cancellation,
   which it raises once they have ended; and `await_interruptible(task)`, which
@@ -79,8 +83,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   does (RMK-289, RFC §6.4): `loop_end_reason` and `ai_usage` in the metadata
   of the message of its final text, or, when it has none (a cancellation
   between rounds, an interruption), of the last message it wrote, whose
-  stored row is updated once the turn's deliveries are done. The documented
-  read of `loop_end_reason` off the reply now works on the streaming path.
+  stored row is updated once the turn's deliveries are done, through
+  `update_event` (so `ON_EVENT_UPDATED` fires), best effort. A response
+  without tools records it too, and so does a delegated turn's last message in
+  its child room. The documented read of `loop_end_reason` off the reply now
+  works on the streaming path.
+- A streamed delegated turn returns its worker's last message as the task's
+  output, as a buffered one does (RMK-289); it returned every segment's text
+  run together, the narration of the tool rounds included.
 - Calling a tool handler directly, outside a tool loop, may now raise where
   it returned a JSON error body (RMK-278): `HumanInputToolHandler` raises
   `ToolRefusedError` on a timeout or a rejection, and `AIChannel.tool_handler`
@@ -179,9 +189,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it for an interruption, delivered the marker and reported the turn.
 - The interruption marker is never read as an agent's answer (RMK-289, RFC
   §6.4, §19.3): it solicits no intelligence channel (it asked the other
-  agents of an `AGENT_CHAIN` room to answer it), a supervisor does not hand
-  it to its workers as their task, and a delegated turn does not return it
-  as its result.
+  agents of an `AGENT_CHAIN` room to answer it), and an interrupted turn has
+  no answer to hand on. A delegated worker interrupted after a round fails
+  with the provider's error in both loops: the buffered one was reported
+  `completed` with the marker as its output. A supervisor whose task-writing
+  pass was interrupted hands its workers nothing, its narration included.
 - A cancellation reaches the task it is aimed at (RMK-288). Thirty-six sites
   cancelled a task and awaited it under `suppress(CancelledError)`, which
   also swallowed a cancellation of the caller: a Gemini `reconfigure` called

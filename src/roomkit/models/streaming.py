@@ -90,20 +90,23 @@ LoopEndReason = Literal[
 
 @dataclass(slots=True)
 class LoopEndMarker:
-    """Yielded once, last, saying why the tool loop stopped.
+    """Yielded once as an AI channel's streamed response ends, saying why.
 
-    The loop knows exactly which of its rules fired — the round cap, the
+    The tool loop knows exactly which of its rules fired: the round cap, the
     wall-clock deadline, a round truncated at the output cap, a model that
-    answered nothing after its tools, a cancellation. Before this marker it
-    logged that reason and returned, so the stream simply ended: a consumer
-    could not tell a finished answer from a loop cut mid-work, and had to
-    re-derive it by counting tool calls and reading a clock. Every consumer
-    that cared reimplemented the same guess, and a guess is what reports a
-    stopped agent as a model that returned nothing.
+    answered nothing after its tools, a cancellation. Without the marker a
+    consumer could not tell a finished answer from a loop cut mid-work, and
+    would re-derive it by counting tool calls and reading a clock.
 
-    Emitted on **every** exit, ``completed`` included, so "the stream ended"
-    is never itself the signal. A consumer that only renders text keeps
-    filtering on ``isinstance(chunk, str)`` and is unaffected.
+    Emitted on **every** exit, ``completed`` included, and by a response
+    without tools too (``rounds`` 0), so "the stream ended" is never itself
+    the signal. The one exception is a provider that streams text only (no
+    structured streaming): its response without tools stays a stream of
+    ``str``, and carries no record. It is the stream's last item, except on ``error``: the
+    provider's exception follows it, and a consumer that stops reading at
+    the marker closes the stream before the error reaches it. A consumer that
+    only renders text keeps filtering on ``isinstance(chunk, str)`` and is
+    unaffected.
 
     ``rounds`` is how many tool rounds ran before the stop. The limits the
     reason refers to are the caller's own configuration, so they are not

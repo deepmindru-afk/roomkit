@@ -21,12 +21,7 @@ from roomkit.models.enums import (
 )
 from roomkit.models.event import RoomEvent
 from roomkit.models.response_metadata import ResponseMetadata
-from roomkit.models.streaming import (
-    LoopEndMarker,
-    ThinkingDeltaMarker,
-    ToolCallEndMarker,
-    ToolCallStartMarker,
-)
+from roomkit.models.streaming import ThinkingDeltaMarker
 from roomkit.providers.ai.base import ProviderError
 from roomkit.providers.utils import _aclose_stream
 
@@ -209,17 +204,9 @@ class InboundStreamingMixin(HelpersMixin):
                     yield delta
                 elif isinstance(delta, ThinkingDeltaMarker):
                     yield delta
-                elif isinstance(delta, ToolCallStartMarker):
-                    # The text before the tool call is its own segment.
-                    for row in (await writer.flush_text(), await writer.tool_start(delta)):
-                        if row is not None:
-                            yield row
-                elif isinstance(delta, ToolCallEndMarker):
-                    row = await writer.tool_end(delta)
-                    if row is not None:
+                else:
+                    for row in await writer.take(delta):
                         yield row
-                elif isinstance(delta, LoopEndMarker):
-                    writer.end_turn(delta)
 
             exhausted = True
             row = await writer.flush_text()

@@ -59,7 +59,9 @@ def _make_kit(
                 tool_name,
                 payload or {"status": "completed", "summary": "done", "data": {"x": 1}},
             )
-        out = SimpleNamespace(responded=True, response_events=[_text_event("raw text")])
+        out = SimpleNamespace(
+            responded=True, error=None, response_events=[_text_event("raw text")]
+        )
         return SimpleNamespace(outputs={"w1": out}, streaming_responses=[])
 
     kit._get_router = MagicMock(
@@ -123,7 +125,7 @@ def _make_cc_kit(events: list[RoomEvent]):
 
     async def _broadcast(_event, _binding, _context):
         # The gateway handled submit_result; tool_handler is not called here.
-        out = SimpleNamespace(responded=True, response_events=[_text_event("done")])
+        out = SimpleNamespace(responded=True, error=None, response_events=[_text_event("done")])
         return SimpleNamespace(outputs={"w1": out}, streaming_responses=[])
 
     kit._get_router = MagicMock(

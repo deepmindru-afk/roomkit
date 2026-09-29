@@ -21,6 +21,7 @@ class _MockBroadcastResult:
         if response_text:
             output = MagicMock()
             output.responded = True
+            output.error = None
             resp_event = RoomEvent(
                 room_id="child-1",
                 source=EventSource(
@@ -34,6 +35,7 @@ class _MockBroadcastResult:
         else:
             output = MagicMock()
             output.responded = False
+            output.error = None
             output.response_events = []
             self.outputs["agent-a"] = output
 
