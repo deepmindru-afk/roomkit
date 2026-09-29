@@ -255,6 +255,27 @@ class XAIRealtimeProvider(OpenAIRealtimeBase):
         )
         return session_config
 
+    def _reconfigure_patch(
+        self,
+        *,
+        system_prompt: str | None,
+        voice: str | None,
+        tools: list[dict[str, Any]] | None,
+        temperature: float | None,
+        pc: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """xAI's flat ``session`` patch: only the fields that change."""
+        patch: dict[str, Any] = {}
+        if system_prompt is not None:
+            patch["instructions"] = system_prompt
+        if voice is not None:
+            patch["voice"] = voice
+        if tools is not None:
+            patch["tools"] = self._format_session_tools(tools)
+        if temperature is not None:
+            patch["temperature"] = temperature
+        return patch or None
+
     # -- Provider-specific logging ------------------------------------------
 
     async def _on_session_created(self, session: VoiceSession, event: dict[str, Any]) -> None:

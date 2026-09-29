@@ -110,6 +110,18 @@ class AnamRealtimeProvider(RealtimeAudioVideoProvider):
         return "AnamRealtimeProvider"
 
     @property
+    def supports_mid_session_reconfigure(self) -> bool:
+        """Anam sessions cannot be reconfigured in place.
+
+        Anam takes its persona and system prompt when the session starts, and
+        has no in-band update: the base ``reconfigure`` would disconnect and
+        reconnect, which starts a new conversation with none of the previous
+        one. It has no tool calling either, so Tool Search and skills have
+        nothing to expose on it mid-session.
+        """
+        return False
+
+    @property
     def model_name(self) -> str:
         """The LLM driving the avatar, when this side of the wire knows it.
 

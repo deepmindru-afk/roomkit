@@ -39,8 +39,9 @@ class OpenAIRealtimeBase(OpenAIRealtimeEventHandlersMixin):
 
     Subclasses must implement: :attr:`name`, :meth:`available_voices`,
     :attr:`_log_tag`, :attr:`_recv_task_prefix`, :attr:`_websockets_install_hint`,
-    :meth:`_connect_url`, :meth:`_auth_headers`, and :meth:`_build_session_config`,
-    and set ``_model`` to the realtime model id they connect to.
+    :meth:`_connect_url`, :meth:`_auth_headers`, :meth:`_build_session_config`
+    and :meth:`_reconfigure_patch`, and set ``_model`` to the realtime model id
+    they connect to.
     """
 
     _model: str = ""
@@ -468,6 +469,66 @@ class OpenAIRealtimeBase(OpenAIRealtimeEventHandlersMixin):
     async def _retire_lost_connection(self, session: VoiceSession, ws: Any, message: str) -> None:
         """Handle exceptional and clean peer closes with identical teardown."""
         await self._discard_connection(session, ws, error_message=message)
+
+    async def reconfigure(
+        self,
+        session: VoiceSession,
+        *,
+        system_prompt: str | None = None,
+        voice: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        temperature: float | None = None,
+        provider_config: dict[str, Any] | None = None,
+    ) -> None:
+        """Apply a partial, in-band ``session.update``; never reconnect.
+
+        Tool Search, skill activation and a handoff call ``reconfigure``
+        mid-conversation. The base implementation disconnects and reconnects,
+        which on this protocol throws away the conversation *and* the
+        in-flight tool call (its ``call_id`` is connection-scoped). The
+        protocol accepts a partial ``session.update`` at any time, so only the
+        changed fields are sent, in each provider's shape
+        (:meth:`_reconfigure_patch`), and the live session keeps its history.
+        Fields left at ``None`` stay unchanged; an empty ``tools`` list clears
+        them.
+        """
+        ws = self._connections.get(session.id)
+        if ws is None:
+            logger.debug("reconfigure skipped: no live connection (session %s)", session.id)
+            return
+        pc = provider_config or {}
+        patch = self._reconfigure_patch(
+            system_prompt=system_prompt, voice=voice, tools=tools, temperature=temperature, pc=pc
+        )
+        if patch:
+            logger.info(
+                "%s → session.update (reconfigure): %s (session %s)",
+                self._log_tag,
+                sorted(key for key in patch if key != "type"),
+                session.id,
+            )
+            await ws.send(json.dumps({"type": "session.update", "session": patch}))
+        if pc:
+            merged = dict(self._provider_configs.get(session.id, {}))
+            for key, value in pc.items():
+                if value is None:
+                    merged.pop(key, None)
+                else:
+                    merged[key] = value
+            self._provider_configs[session.id] = merged
+
+    def _reconfigure_patch(
+        self,
+        *,
+        system_prompt: str | None,
+        voice: str | None,
+        tools: list[dict[str, Any]] | None,
+        temperature: float | None,
+        pc: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """The ``session`` payload of an in-band update; ``None`` when nothing
+        changes on the wire."""
+        raise NotImplementedError
 
     async def disconnect(self, session: VoiceSession) -> None:
         # Cancel receive task

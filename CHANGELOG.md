@@ -80,6 +80,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- xAI realtime reconfigures a live session in band, with a partial
+  `session.update`, as OpenAI does (RMK-311): `find_tools`, a skill
+  activation and a handoff disconnected and reconnected, and the agent lost
+  the conversation. PersonaPlex and Anam declare
+  `supports_mid_session_reconfigure = False`: their protocols take the prompt
+  and persona only when the session opens, so the channel no longer
+  reconnects them for Tool Search or a skill.
 - A tool whose handler raised reads the same on every channel, without the
   exception's message: `{"error": "Tool 'x' failed (<ExceptionClass>)"}`
   (RMK-295, RFC §9.3, decision D9). The message can hold anything the failing

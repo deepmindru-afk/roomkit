@@ -194,38 +194,22 @@ class OpenAIRealtimeProvider(OpenAIRealtimeBase):
 
     # -- Mid-session reconfigure --------------------------------------------
 
-    async def reconfigure(
+    def _reconfigure_patch(
         self,
-        session: VoiceSession,
         *,
-        system_prompt: str | None = None,
-        voice: str | None = None,
-        tools: list[dict[str, Any]] | None = None,
-        temperature: float | None = None,
-        provider_config: dict[str, Any] | None = None,
-    ) -> None:
-        """Apply a partial, in-band ``session.update`` — never reconnect.
+        system_prompt: str | None,
+        voice: str | None,
+        tools: list[dict[str, Any]] | None,
+        temperature: float | None,
+        pc: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """The GA ``session`` patch: nested audio, no temperature.
 
-        Tool Search and skill activation call ``reconfigure`` mid-conversation
-        to expose newly matched tools. The inherited base implementation
-        disconnects and reconnects the socket, which on the OpenAI Realtime
-        wire throws away the conversation *and* the in-flight tool call (its
-        ``call_id`` is connection-scoped), so discovery silently breaks. The
-        Realtime API accepts partial ``session.update`` events at any time, so
-        we patch only the changed fields in place and leave the live session
-        (audio format, turn detection, history) untouched.
-
-        Fields left at ``None`` are omitted from the payload and stay
-        unchanged (passing an empty list for ``tools`` does clear them).
         ``temperature`` is ignored (the GA API rejects it). ``voice`` is
         best-effort: the GA API refuses a voice change once the model has
-        produced audio.
+        produced audio. ``image_detail`` is local input policy, validated
+        here and kept with the session's provider config, never sent.
         """
-        ws = self._connections.get(session.id)
-        if ws is None:
-            logger.debug("reconfigure skipped — no live connection (session %s)", session.id)
-            return
-
         session_patch: dict[str, Any] = {"type": "realtime"}
         if system_prompt is not None:
             session_patch["instructions"] = system_prompt
@@ -237,34 +221,11 @@ class OpenAIRealtimeProvider(OpenAIRealtimeBase):
             logger.warning(
                 "OpenAI Realtime GA API does not support temperature; ignoring on reconfigure"
             )
-
-        pc = provider_config or {}
         reasoning_effort = self._validate_reasoning_effort(pc.get("reasoning_effort"))
-        image_detail = self._validate_image_detail(pc.get("image_detail"))
+        self._validate_image_detail(pc.get("image_detail"))
         if reasoning_effort is not None:
             session_patch["reasoning"] = {"effort": reasoning_effort}
-
-        # ``image_detail`` is local input policy, not a session.update field.
-        # Keep it even when there is no wire-level patch to send.
-        if len(session_patch) == 1 and "image_detail" not in pc:
-            return
-
-        if len(session_patch) > 1:
-            logger.info(
-                "[OpenAI →] session.update (reconfigure): instructions=%s tools=%s "
-                "voice=%s (session %s)",
-                system_prompt is not None,
-                len(session_patch["tools"]) if "tools" in session_patch else "unchanged",
-                voice,
-                session.id,
-            )
-            await ws.send(json.dumps({"type": "session.update", "session": session_patch}))
-        if pc:
-            merged_config = dict(self._provider_configs.get(session.id, {}))
-            merged_config.update(pc)
-            if "image_detail" in pc and image_detail is None:
-                merged_config.pop("image_detail", None)
-            self._provider_configs[session.id] = merged_config
+        return session_patch if len(session_patch) > 1 else None
 
     # -- Image injection -----------------------------------------------------
 

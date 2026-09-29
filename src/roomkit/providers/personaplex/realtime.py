@@ -132,6 +132,18 @@ class PersonaPlexRealtimeProvider(RealtimeVoiceProvider):
     def name(self) -> str:
         return "PersonaPlexRealtimeProvider"
 
+    @property
+    def supports_mid_session_reconfigure(self) -> bool:
+        """PersonaPlex sessions cannot be reconfigured in place.
+
+        PersonaPlex takes its text prompt and voice when the connection opens, and has no
+        in-band update: the base ``reconfigure`` would disconnect and reconnect,
+        which starts a new conversation with none of the previous one. It has
+        no tool calling either, so Tool Search and skills have nothing to
+        expose on it mid-session.
+        """
+        return False
+
     @classmethod
     def available_voices(cls) -> list[VoiceInfo]:
         """Curated, offline catalog of NVIDIA PersonaPlex voice prompts."""
