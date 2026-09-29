@@ -99,7 +99,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the conversation. PersonaPlex and Anam declare
   `supports_mid_session_reconfigure = False`: their protocols take the prompt
   and persona only when the session opens, so the channel no longer
-  reconnects them for Tool Search or a skill.
+  reconnects them for Tool Search or a skill. On these two, skills default to
+  `inline_full` delivery, and a channel that asks `skill_delivery_mode=
+  "on_demand"`, or `tool_search=False` with a skill that gates tools, now
+  raises `ValueError` at construction, as on ElevenLabs. A live reconfigure on
+  OpenAI or xAI keeps only the `provider_config` keys it applies (OpenAI's
+  `reasoning_effort` and `image_detail`); any other key is named in a warning
+  and takes effect with the next session, instead of being recorded as if it
+  were in effect.
 - A tool whose handler raised reads the same on every channel, without the
   exception's message: `{"error": "Tool 'x' failed (<ExceptionClass>)"}`
   (RMK-295, RFC §9.3). The message can hold anything the failing

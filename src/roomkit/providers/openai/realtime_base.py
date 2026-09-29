@@ -41,7 +41,8 @@ class OpenAIRealtimeBase(OpenAIRealtimeEventHandlersMixin):
     :attr:`_log_tag`, :attr:`_recv_task_prefix`, :attr:`_websockets_install_hint`,
     :meth:`_connect_url`, :meth:`_auth_headers`, :meth:`_build_session_config`
     and :meth:`_reconfigure_patch`, and set ``_model`` to the realtime model id
-    they connect to.
+    they connect to. :attr:`_reconfigurable_provider_config` names the
+    provider config keys a live reconfigure applies.
     """
 
     _model: str = ""
@@ -502,21 +503,48 @@ class OpenAIRealtimeBase(OpenAIRealtimeEventHandlersMixin):
         )
         if patch:
             logger.info(
-                "%s → session.update (reconfigure): %s (session %s)",
+                "[%s →] session.update (reconfigure): fields=%s tools=%s (session %s)",
                 self._log_tag,
                 sorted(key for key in patch if key != "type"),
+                len(tools) if tools is not None else "unchanged",
                 session.id,
             )
             await ws.send(json.dumps({"type": "session.update", "session": patch}))
-        if pc:
-            merged = dict(self._provider_configs.get(session.id, {}))
-            for key, value in pc.items():
-                if value is None:
-                    merged.pop(key, None)
-                else:
-                    merged[key] = value
-            self._provider_configs[session.id] = merged
+        self._remember_provider_config(session.id, pc)
 
+    def _remember_provider_config(self, session_id: str, pc: dict[str, Any]) -> None:
+        """Keep the provider config keys a reconfigure applied; name the others.
+
+        A key the in-band update cannot change (turn detection, transcription,
+        audio format) takes effect only when a session opens: recording it
+        would claim a setting the live session does not have.
+        """
+        applied = self._reconfigurable_provider_config
+        ignored = sorted(key for key in pc if key not in applied)
+        if ignored:
+            logger.warning(
+                "[%s] reconfigure cannot change %s mid-session; they take effect on the "
+                "next session (session %s)",
+                self._log_tag,
+                ignored,
+                session_id,
+            )
+        kept = {key: value for key, value in pc.items() if key in applied}
+        if not kept:
+            return
+        merged = dict(self._provider_configs.get(session_id, {}))
+        for key, value in kept.items():
+            if value is None:
+                merged.pop(key, None)
+            else:
+                merged[key] = value
+        self._provider_configs[session_id] = merged
+
+    #: The ``provider_config`` keys a live reconfigure applies (sent, or local
+    #: policy). Every other key takes effect only when a session opens.
+    _reconfigurable_provider_config: frozenset[str] = frozenset()
+
+    @abstractmethod
     def _reconfigure_patch(
         self,
         *,
@@ -528,7 +556,6 @@ class OpenAIRealtimeBase(OpenAIRealtimeEventHandlersMixin):
     ) -> dict[str, Any] | None:
         """The ``session`` payload of an in-band update; ``None`` when nothing
         changes on the wire."""
-        raise NotImplementedError
 
     async def disconnect(self, session: VoiceSession) -> None:
         # Cancel receive task

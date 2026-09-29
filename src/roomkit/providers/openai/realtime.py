@@ -194,6 +194,9 @@ class OpenAIRealtimeProvider(OpenAIRealtimeBase):
 
     # -- Mid-session reconfigure --------------------------------------------
 
+    # ``reasoning_effort`` is sent; ``image_detail`` is local input policy.
+    _reconfigurable_provider_config = frozenset({"reasoning_effort", "image_detail"})
+
     def _reconfigure_patch(
         self,
         *,
