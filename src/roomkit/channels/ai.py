@@ -486,6 +486,10 @@ class AIChannel(
         self._tool_usage_loader: Any = None
         # External tool handler for provider-executed tools (e.g. Claude Code)
         self._external_tool_handler = external_tool_handler
+        # Host tool names already reported as not declared (RFC §21.1): a
+        # wiring diagnostic, not a per-turn event.
+        self._warned_tool_collisions: set[str] = set()
+        self._refuse_reserved_names(self._user_tools)
 
     @property
     def tool_handler(self) -> ToolHandler | None:

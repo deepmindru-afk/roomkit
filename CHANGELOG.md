@@ -80,6 +80,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A name a channel serves itself is declared once, with the channel's
+  definition (RMK-294, RFC §21.1). `AIChannel(tools=...)` and
+  `RealtimeVoiceChannel(tools=...)` raise `ValueError` for a host tool under
+  such a name (`read_stored_result`, `list_tools`, `find_tools`, a skill tool,
+  a sandbox command, a human-input tool; `tool_search=False` frees
+  `find_tools` and `list_tools`): it was declared with the host's schema and
+  served by the channel. One that arrives later (a binding's or a turn's
+  tools, orchestration, a realtime session's tools) is not declared, and a
+  warning names it once. A name given twice is declared once, with the later
+  definition, the one of whoever serves the call (orchestration's over the
+  host's): a host `delegate_task` or `submit_result` beside orchestration's
+  was declared twice, which a provider rejects.
 - Under Tool Search, a `BEFORE_AI_GENERATION` hook sees the turn's whole
   catalogue (every tool the tool policy and skill gating let the turn reach),
   not only the first round's declaration (RMK-293, RFC §6.4). Tool Search

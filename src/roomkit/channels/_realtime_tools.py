@@ -113,6 +113,7 @@ class RealtimeToolsHost(Protocol):
     _skill_support: Any
     _tool_policy: ToolPolicy | None
     _session_roles: dict[str, str | None]
+    _warned_tool_collisions: set[str]
     _tool_search_support: Any
     _provider: RealtimeVoiceProvider
     _transport: VoiceBackend
@@ -176,6 +177,7 @@ class RealtimeToolsMixin:
     _skill_support: Any
     _tool_policy: ToolPolicy | None
     _session_roles: dict[str, str | None]
+    _warned_tool_collisions: set[str]
     _tool_search_support: Any
     _provider: RealtimeVoiceProvider
     _transport: VoiceBackend
@@ -858,6 +860,45 @@ class RealtimeToolsMixin:
         if self._skill_support is not None:
             names |= SKILL_INFRA_TOOL_NAMES
         return names
+
+    def _refuse_reserved_names(self, tools: list[dict[str, Any]]) -> None:
+        """Refuse a host tool given at construction under a name the channel serves."""
+        served = self._channel_tool_names()
+        for tool in tools:
+            name = tool.get("name") if isinstance(tool, dict) else None
+            if name in served:
+                raise ValueError(
+                    f"Tool {name!r} is a tool channel {self.channel_id!r} serves itself: "
+                    "rename it (RFC §21.1)"
+                )
+
+    def _declared_once(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """A session's host tools, each name declared once and none the channel serves.
+
+        The channel's own tools are composed in afterwards; a name given twice
+        keeps its later definition (RFC §21.1). What is dropped is named once
+        per channel in a warning.
+        """
+        served = self._channel_tool_names()
+        kept: dict[Any, dict[str, Any]] = {}
+        for tool in tools:
+            name = tool.get("name") if isinstance(tool, dict) else None
+            if name in served:
+                self._warn_tool_collision(str(name), "the channel serves it itself")
+                continue
+            if name in kept:
+                self._warn_tool_collision(str(name), "it is declared twice; the later is kept")
+                del kept[name]
+            kept[name] = tool
+        return list(kept.values())
+
+    def _warn_tool_collision(self, name: str, why: str) -> None:
+        if name in self._warned_tool_collisions:
+            return
+        self._warned_tool_collisions.add(name)
+        logger.warning(
+            "Channel %s does not declare a host tool %r: %s", self.channel_id, name, why
+        )
 
     def _tool_reachable(self, name: str, session_id: str) -> bool:
         """Whether the session may call *name*: its tool policy and skill gating.

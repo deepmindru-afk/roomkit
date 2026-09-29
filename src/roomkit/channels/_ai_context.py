@@ -194,6 +194,7 @@ class AIContextMixin:
     _skill_tools: Any  # see AIContextHost
     _apply_tool_filters: Any  # see AIContextHost
     _reachable_tools: Any  # see AIContextHost
+    _declared_once: Any  # AIToolsMixin: the host's tools, each name once
     _policy_allows: Any  # see AIContextHost
     _get_loop_ctx: Any  # see AIContextHost
 
@@ -269,15 +270,15 @@ class AIContextMixin:
                 for t in raw_tools
             ]
 
-        # Inject extra tools (user-provided + orchestration handoff, etc.)
+        # Inject extra tools (user-provided + orchestration handoff, etc.),
+        # each name declared once and none the channel serves itself: the
+        # channel's own tools are added below (RFC §21.1).
         tools.extend([*self.extra_tools, *self._room_tool_defs(binding.room_id)])
+        tools = self._declared_once(tools)
 
         # Inject human-input tool definitions (e.g. AskUserQuestion)
         if self._human_input_handler is not None:
-            hi_tools = self._human_input_handler.tools
-            if hi_tools:
-                existing_names = {t.name for t in tools}
-                tools.extend(t for t in hi_tools if t.name not in existing_names)
+            tools.extend(self._human_input_handler.tools or ())
 
         # Skill activation is keyed on the tool loop's room — the very id
         # ``activate_skill`` will write under (``handle_event`` stamps it on this

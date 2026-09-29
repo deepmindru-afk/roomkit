@@ -73,6 +73,7 @@ if TYPE_CHECKING:
     from roomkit.sandbox.executor import SandboxExecutor
     from roomkit.skills.executor import ScriptExecutor
     from roomkit.skills.registry import SkillRegistry
+    from roomkit.tools.human_input import HumanInputToolHandler
     from roomkit.tools.policy import ToolPolicy
 
     ToolResult = str | list[AITextPart | AIImagePart]
@@ -146,6 +147,8 @@ class AIToolsHost(Protocol):
     _tool_usage: ToolUsageMemory
     _skill_activation: SkillActivationMemory
     _planner: TaskPlanner | None
+    _human_input_handler: HumanInputToolHandler | None
+    _warned_tool_collisions: set[str]
     _realtime: RealtimeBackend | None
     _plan_updated_hook: Any  # ON_PLAN_UPDATED callback — injected by register_channel
     _tool_call_hook: ToolCallCallback | None
@@ -198,6 +201,8 @@ class AIToolsMixin:
     _tool_usage: ToolUsageMemory
     _skill_activation: SkillActivationMemory
     _planner: TaskPlanner | None
+    _human_input_handler: HumanInputToolHandler | None
+    _warned_tool_collisions: set[str]
     _realtime: RealtimeBackend | None
     _plan_updated_hook: Any  # ON_PLAN_UPDATED callback — injected by register_channel
     _tool_call_hook: ToolCallCallback | None
@@ -730,6 +735,60 @@ class AIToolsMixin:
             tdef["name"]
             for tdef in self._sandbox.tool_definitions()
             if tdef["name"].startswith(SANDBOX_TOOL_PREFIX)
+        )
+
+    def _channel_tool_names(self) -> set[str]:
+        """The tools this channel serves itself, before any host handler.
+
+        Its own dispatch, its sandbox's commands and its human-input tools:
+        a host tool under one of these names would be declared with the
+        host's schema and served by the channel (RFC §21.1).
+        """
+        names = set(self._channel_tool_dispatch) | set(self._sandbox_tool_names())
+        if self._human_input_handler is not None:
+            names |= {tool.name for tool in self._human_input_handler.tools or ()}
+        return names
+
+    def _refuse_reserved_names(self, tools: Iterable[AITool]) -> None:
+        """Refuse a host tool given at construction under a name the channel serves."""
+        served = self._channel_tool_names()
+        for tool in tools:
+            if tool.name not in served:
+                continue
+            hint = (
+                " or pass tool_search=False" if tool.name in TOOL_SEARCH_INFRA_TOOL_NAMES else ""
+            )
+            raise ValueError(
+                f"Tool {tool.name!r} is a tool channel {self.channel_id!r} serves itself: "
+                f"rename it{hint} (RFC §21.1)"
+            )
+
+    def _declared_once(self, tools: list[AITool]) -> list[AITool]:
+        """The host's part of a turn's toolset, each name declared once (RFC §21.1).
+
+        A name the channel serves itself is its own to declare. A name given
+        twice keeps its later definition, the one of whoever serves the call
+        (orchestration's tools are added after the host's). What is dropped is
+        named once per channel in a warning.
+        """
+        served = self._channel_tool_names()
+        kept: dict[str, AITool] = {}
+        for tool in tools:
+            if tool.name in served:
+                self._warn_tool_collision(tool.name, "the channel serves it itself")
+                continue
+            if tool.name in kept:
+                self._warn_tool_collision(tool.name, "it is declared twice; the later is kept")
+                del kept[tool.name]
+            kept[tool.name] = tool
+        return list(kept.values())
+
+    def _warn_tool_collision(self, name: str, why: str) -> None:
+        if name in self._warned_tool_collisions:
+            return
+        self._warned_tool_collisions.add(name)
+        logger.warning(
+            "Channel %s does not declare a host tool %r: %s", self.channel_id, name, why
         )
 
     async def _channel_tool_handler(self, name: str, arguments: dict[str, Any]) -> ToolResult:

@@ -431,6 +431,8 @@ class RealtimeVoiceChannel(
         # Fixed-declaration providers receive schemas through list_tools and
         # carry execution through call_tool into the same channel dispatch.
         self._tool_search_support: RealtimeToolSearchSupport | None = None
+        # Host tool names already reported as not declared (RFC §21.1).
+        self._warned_tool_collisions: set[str] = set()
         catalogue_size = len(tool_defs or [])
         fixed_skill_gates = bool(
             self._skill_support
@@ -455,6 +457,7 @@ class RealtimeVoiceChannel(
             )
             if self._skill_support is not None:
                 self._skill_support.channel_tools |= self._tool_search_support.tool_names
+        self._refuse_reserved_names(tool_defs or [])
 
         # Lock for shared state accessed from both asyncio and audio threads
         self._state_lock = threading.Lock()
@@ -1590,7 +1593,7 @@ class RealtimeVoiceChannel(
         """Compose the same infrastructure and skill gates on connect and handoff."""
         if tools is None and not self._tool_search_support and not self._skill_support:
             return None
-        visible = deepcopy(tools or [])
+        visible = self._declared_once(deepcopy(tools or []))
         if self._tool_search_support:
             visible = self._tool_search_support.visible_tools(
                 session_id, visible, reset_exposure=reset_exposure

@@ -89,3 +89,106 @@ async def test_realtime_a_host_tool_under_an_exempt_name_is_governed() -> None:
 
     handler.assert_not_awaited()
     assert "not permitted" in json.dumps(result)
+
+
+class TestOneDeclarationPerName:
+    """RMK-294: a name the channel serves is declared with its definition only,
+    and no name is declared twice (RFC §21.1)."""
+
+    @pytest.mark.parametrize("name", ["read_stored_result", "list_tools"])
+    def test_a_static_host_tool_under_a_served_name_is_refused(self, name: str) -> None:
+        with pytest.raises(ValueError, match=name):
+            AIChannel(
+                "ai1",
+                provider=MockAIProvider(),
+                tools=[AITool(name=name, description="host tool", parameters={})],
+            )
+
+    def test_turning_tool_search_off_frees_its_names(self) -> None:
+        AIChannel(
+            "ai1",
+            provider=MockAIProvider(),
+            tools=[AITool(name="list_tools", description="host tool", parameters={})],
+            tool_search=False,
+        )
+
+    async def test_a_dynamic_host_tool_under_a_served_name_is_not_declared(
+        self, streaming: bool, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        provider = MockAIProvider(ai_responses=[_DONE], streaming=streaming)
+        ch = AIChannel(
+            "ai1",
+            provider=provider,
+            tools=[AITool(name="search_docs", description="Search", parameters={})],
+        )
+        ch._injected_tools = [AITool(name="read_stored_result", description="host", parameters={})]
+
+        await _turn(ch)
+
+        assert "read_stored_result" not in {t.name for t in provider.calls[0].tools or []}
+        assert "read_stored_result" in caplog.text
+
+    async def test_a_name_given_twice_is_declared_once_with_the_later_definition(
+        self, streaming: bool
+    ) -> None:
+        provider = MockAIProvider(ai_responses=[_DONE], streaming=streaming)
+        ch = AIChannel(
+            "ai1",
+            provider=provider,
+            tools=[AITool(name="delegate_task", description="host", parameters={})],
+        )
+        orchestration = AITool(name="delegate_task", description="orchestration", parameters={})
+        ch._injected_tools = [orchestration]
+
+        await _turn(ch)
+
+        declared = [t for t in provider.calls[0].tools or [] if t.name == "delegate_task"]
+        assert [t.description for t in declared] == ["orchestration"]
+
+    async def test_plan_tasks_is_the_host_s_without_a_planner(self, streaming: bool) -> None:
+        provider = MockAIProvider(
+            ai_responses=[_round("c0", "plan_tasks"), _DONE], streaming=streaming
+        )
+        calls = _Recorder()
+        ch = AIChannel(
+            "ai1",
+            provider=provider,
+            tool_handler=calls.handler,
+            tools=[AITool(name="plan_tasks", description="host planner", parameters={})],
+        )
+
+        await _turn(ch)
+
+        assert calls.ran == ["plan_tasks"]
+
+    def test_realtime_a_static_host_tool_under_a_served_name_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="find_tools"):
+            RealtimeVoiceChannel(
+                "rt",
+                provider=MockRealtimeProvider(),
+                transport=MockRealtimeTransport(),
+                tools=[{"name": "find_tools", "description": "host", "parameters": {}}],
+                tool_search=True,
+            )
+
+    def test_realtime_a_session_s_host_tools_are_declared_once(self) -> None:
+        channel = RealtimeVoiceChannel(
+            "rt",
+            provider=MockRealtimeProvider(),
+            transport=MockRealtimeTransport(),
+            tools=[{"name": "lookup", "description": "Look up", "parameters": {}}],
+            tool_search=True,
+            tool_search_pinned=["lookup"],
+        )
+        composed = channel._compose_session_tools(
+            "s1",
+            [
+                {"name": "find_tools", "description": "host", "parameters": {}},
+                {"name": "lookup", "description": "first", "parameters": {}},
+                {"name": "lookup", "description": "later", "parameters": {}},
+            ],
+        )
+
+        assert [t["name"] for t in composed or []].count("find_tools") == 1
+        assert all(t.get("description") != "host" for t in composed or [])
+        assert [t["description"] for t in composed or [] if t["name"] == "lookup"] == ["later"]
