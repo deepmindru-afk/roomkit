@@ -57,7 +57,7 @@ class InboundHost(Protocol):
     Cross-mixin methods (provided by other mixins in the MRO):
         _resolve_identity: From :class:`InboundIdentityMixin`.
         _process_locked: From :class:`InboundLockedMixin`.
-        _process_streaming_responses: From :class:`InboundStreamingMixin`.
+        _finish_cascade: From :class:`LaneExecutionMixin`.
         create_room: From :class:`RoomLifecycleMixin`.
         get_room: From :class:`RoomLifecycleMixin` (the scoped read, RFC §17.2).
         attach_channel: From :class:`ChannelOpsMixin`.
@@ -101,8 +101,8 @@ class InboundMixin(HelpersMixin):
     # Cross-mixin methods — attribute annotations avoid MRO shadowing
     _resolve_identity: Any  # see InboundHost
     _process_locked: Any  # see InboundHost
-    _process_streaming_responses: Any  # see InboundHost
     _consume_streams_when_cascade_completes: Any  # see LaneExecutionMixin
+    _finish_cascade: Any  # see LaneExecutionMixin
     create_room: Any  # see InboundHost
     get_room: Any  # see InboundHost
     attach_channel: Any  # see InboundHost
@@ -455,42 +455,28 @@ class InboundMixin(HelpersMixin):
             return result
 
         # The caller observes its event's delivery-set completion (RFC §10.1
-        # step 18): wait for the cascade — the trigger's delivery set plus
-        # every reentry pass it transitively spawned. AFTER_BROADCAST,
+        # step 18): the cascade — the trigger's delivery set plus every
+        # reentry pass it transitively spawned — then the streams it started,
+        # read outside the lane (TTS delivery can take seconds). AFTER_BROADCAST,
         # mutation and ON_ERROR hooks fire from the lane executor, off this
-        # room's lock.
-        completed = await cascade.wait()
-        if cascade.cancelled is not None:
-            await cascade.wait_drained()
+        # room's lock. A stream failure is surfaced on the result so a
+        # headless caller can react (interactive callers ignore it — the
+        # ON_ERROR hooks already fired an error card).
+        stream_error, record = await self._finish_cascade(cascade, room_id)
         result.cancellation_reason = cascade.cancelled
         if cascade.error is not None and result.error is None:
             result.error = cascade.error
+        if stream_error is not None and result.error is None:
+            result.error = stream_error
         # Step 18 reports the delivery set the caller waited for.
         result.delivery_results = cascade.delivery_results
         if not result.duplicate:
             result.unavailable_targets = list(cascade.unavailable_targets)
         result.response_metadata.update(cascade.response_metadata)
+        result.response_metadata.update(record)
+        # Read after the streams: what the other agents answered to a
+        # streamed segment re-entered while it was read.
         result.response_events = list(cascade.response_events)
-
-        # Handle streaming responses outside the lane (TTS delivery can take
-        # seconds; the lane must not stall behind it). A failure while
-        # consuming the response stream is surfaced on the result so a
-        # headless caller can react (interactive callers ignore it — the
-        # ON_ERROR hooks already fired an error card). A detached caller (a
-        # reentrant process_inbound issued from a hook or a tool handler)
-        # hands the consumption to a background task instead — a streaming
-        # reply is only generated when its stream is consumed.
-        if not completed:
-            self._consume_streams_when_cascade_completes(cascade, room_id)
-        elif cascade.streams and cascade.cancelled is None:
-            stream_error, record = await cascade.run(
-                self._process_streaming_responses(
-                    cascade, room_id, response_events=result.response_events
-                )
-            )
-            if stream_error is not None and result.error is None:
-                result.error = stream_error
-            result.response_metadata.update(record)
 
         await self._connect_session_if_ready(message, channel, room_id, result)
         return result
@@ -721,7 +707,7 @@ def _apply_message_fields(event: RoomEvent, message: InboundMessage) -> RoomEven
 
     # The chain the message continues (RFC §8.3, §23.3): a transport parses
     # a person's words, which open one, so only the caller sets it.
-    if message.chain_depth:
+    if message.chain_depth and not event.chain_depth:
         event = event.model_copy(update={"chain_depth": message.chain_depth})
 
     # Where this message's answer may go — same central application, same

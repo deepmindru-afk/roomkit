@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+from roomkit.core.event_router import BroadcastResult
 from roomkit.core.mixins._child_execution import _scan_for_submitted_result
 from roomkit.core.mixins.delegation import _run_with_structured_result
 from roomkit.models.enums import ChannelType, EventType
@@ -46,6 +47,8 @@ def _make_kit(
     kit.store.add_event_auto_index = AsyncMock(side_effect=lambda _rid, ev: ev)
     kit.store.commit_event = AsyncMock(side_effect=lambda _rid, ev: ev)
     kit._commit_indexed = AsyncMock(side_effect=lambda _rid, ev: ev)
+    kit._commit_blocked_events = AsyncMock()
+    kit._persist_side_effects = AsyncMock()
 
     channel = SimpleNamespace(_room_tools={}, tool_handler=None, role="Researcher")
     kit.channels = {agent_id: channel}
@@ -62,7 +65,7 @@ def _make_kit(
         out = SimpleNamespace(
             responded=True, error=None, response_events=[_text_event("raw text")]
         )
-        return SimpleNamespace(outputs={"w1": out}, streaming_responses=[])
+        return BroadcastResult(outputs={"w1": out})
 
     kit._get_router = MagicMock(
         return_value=SimpleNamespace(broadcast=AsyncMock(side_effect=_broadcast))
@@ -120,13 +123,15 @@ def _make_cc_kit(events: list[RoomEvent]):
     kit.store.add_event_auto_index = AsyncMock(side_effect=lambda _rid, ev: ev)
     kit.store.commit_event = AsyncMock(side_effect=lambda _rid, ev: ev)
     kit._commit_indexed = AsyncMock(side_effect=lambda _rid, ev: ev)
+    kit._commit_blocked_events = AsyncMock()
+    kit._persist_side_effects = AsyncMock()
     channel = SimpleNamespace(_room_tools={}, tool_handler=None, role="Researcher")
     kit.channels = {"agent:w1": channel}
 
     async def _broadcast(_event, _binding, _context):
         # The gateway handled submit_result; tool_handler is not called here.
         out = SimpleNamespace(responded=True, error=None, response_events=[_text_event("done")])
-        return SimpleNamespace(outputs={"w1": out}, streaming_responses=[])
+        return BroadcastResult(outputs={"w1": out})
 
     kit._get_router = MagicMock(
         return_value=SimpleNamespace(broadcast=AsyncMock(side_effect=_broadcast))

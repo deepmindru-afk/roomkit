@@ -149,3 +149,30 @@ async def test_a_queued_delivery_keeps_the_chain_it_names() -> None:
 
     assert await _depths(kit) == {"sms1": 2, "ai1": 3}
     await kit.close()
+
+
+async def test_a_child_room_keeps_what_its_broadcast_blocked() -> None:
+    """A delegated turn the limit stops leaves its record in the child room,
+    as any broadcast does (RFC §8.3)."""
+    kit = RoomKit(max_chain_depth=1)
+    worker = MockAIProvider(responses=["never"])
+    kit.register_channel(SimpleChannel("sms1"))
+    kit.register_channel(AIChannel("worker", provider=worker))
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "sms1")
+    announced: list[str] = []
+
+    @kit.on("chain_depth_exceeded")
+    async def on_exceeded(event) -> None:  # type: ignore[no-untyped-def]
+        announced.append(event.room_id)
+
+    handle = await kit.delegate("r1", "worker", "look it up", wait=True)
+
+    events = await kit.store.list_events(
+        handle.child_room_id, event_filter=EventFilter(include_blocked=True)
+    )
+    [record] = [e for e in events if e.source.channel_id == "worker"]
+    assert (record.status, record.blocked_by) == (EventStatus.BLOCKED, "event_chain_depth_limit")
+    assert announced == [handle.child_room_id]
+    assert worker.calls == []
+    await kit.close()

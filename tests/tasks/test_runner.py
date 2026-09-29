@@ -18,6 +18,9 @@ from roomkit.tasks.models import DelegatedTask, DelegatedTaskResult
 class _MockBroadcastResult:
     def __init__(self, response_text: str | None = None):
         self.outputs: dict[str, MagicMock] = {}
+        self.blocked_events: list[RoomEvent] = []
+        self.tasks: list[object] = []
+        self.observations: list[object] = []
         if response_text:
             output = MagicMock()
             output.responded = True
@@ -69,6 +72,8 @@ def _make_mock_kit(
     kit.store.add_event_auto_index = AsyncMock(side_effect=lambda room_id, event: event)
     kit.store.commit_event = AsyncMock(side_effect=lambda room_id, event: event)
     kit._commit_indexed = AsyncMock(side_effect=lambda room_id, event: event)
+    kit._commit_blocked_events = AsyncMock()
+    kit._persist_side_effects = AsyncMock()
     kit.store.update_room = AsyncMock()
 
     router = MagicMock()

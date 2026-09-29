@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from roomkit.core.exceptions import RoomClosedError
 from roomkit.core.lanes import DeliveryCascade
 from roomkit.core.mixins.helpers import _REFUSING_STATUSES, HelpersMixin
+from roomkit.core.mixins.lane_execution import scoped
 from roomkit.models.delivery import InboundResult
 from roomkit.models.enums import ChannelCategory, EventStatus
 from roomkit.models.event import EventSource, RoomEvent
@@ -22,6 +23,9 @@ if TYPE_CHECKING:
     from roomkit.store.base import ConversationStore
 
 logger = logging.getLogger("roomkit.framework")
+
+# A regenerated answer is committed as delivered, like any answer.
+_DELIVERED: dict[str, Any] = {"status": EventStatus.DELIVERED}
 
 
 @runtime_checkable
@@ -262,7 +266,7 @@ class RegenerateMixin(HelpersMixin):
             # cursor must not reach a regenerated answer before the room's
             # lane has actually delivered it (RFC §10.2).
             regenerated = [
-                r.model_copy(update={"status": EventStatus.DELIVERED})
+                scoped(r, trigger.response_visibility).model_copy(update=_DELIVERED)
                 for r in broadcast_result.reentry_events
             ]
 

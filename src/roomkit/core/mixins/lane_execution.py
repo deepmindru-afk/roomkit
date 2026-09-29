@@ -80,6 +80,19 @@ def _delivery_results(result: BroadcastResult) -> dict[str, DeliveryResult]:
     return results
 
 
+def scoped(response: RoomEvent, scope: str | None) -> RoomEvent:
+    """*response* within the answer scope its trigger asked for, if any.
+
+    The router's visibility check reads ``visibility``, so the caller's
+    response scope rides the response there; it rides as
+    ``response_visibility`` too, so whatever answers the response, buffered
+    or streamed, is scoped alike down the chain.
+    """
+    if not scope:
+        return response
+    return response.model_copy(update={"visibility": scope, "response_visibility": scope})
+
+
 @dataclass(slots=True, frozen=True)
 class DeliverySource:
     """Planning inputs shared by a run of events from one sender.
@@ -504,14 +517,24 @@ class LaneExecutionMixin(HelpersMixin):
         """Wait for a caller's delivery set, then read every stream it started.
 
         A caller that cannot wait, from inside the room's lane or under its
-        lock, hands the reading to a background task instead: a streaming
-        reply is only generated when its stream is read.
+        lock (a reentrant call from a hook or a tool handler), hands the
+        reading to a background task instead: a streaming reply is only
+        generated when its stream is read. The rows the streams write join
+        ``cascade.response_events``, beside the answers that re-enter while
+        they are read. The reading runs as the cascade's owned work, so a
+        cancelled caller does not leave it half-done.
         """
         completed = await cascade.wait()
+        if cascade.cancelled is not None:
+            await cascade.wait_drained()
         if not completed:
             self._consume_streams_when_cascade_completes(cascade, room_id)
         elif cascade.streams and cascade.cancelled is None:
-            return await self._process_streaming_responses(cascade, room_id)
+            return await cascade.run(
+                self._process_streaming_responses(
+                    cascade, room_id, response_events=cascade.response_events
+                )
+            )
         return None, ResponseMetadata()
 
     # -- Lane executor callbacks (LaneHost) --
@@ -773,18 +796,7 @@ class LaneExecutionMixin(HelpersMixin):
         if plan.injected or not result.reentry_events:
             return
 
-        # Stamp response_visibility from the root trigger onto reentry
-        # events' *visibility* field — the router's visibility check reads
-        # ``visibility``, so the caller's response scope rides the event. It
-        # rides as ``response_visibility`` too, so a stream answering the
-        # reentry is scoped like a buffered answer to it.
-        reentries = result.reentry_events
-        if plan.response_visibility:
-            scope = plan.response_visibility
-            reentries = [
-                r.model_copy(update={"visibility": scope, "response_visibility": scope})
-                for r in reentries
-            ]
+        reentries = [scoped(r, plan.response_visibility) for r in result.reentry_events]
 
         for reentry in reentries:
             if not cascade.consume_reentry_budget():

@@ -84,6 +84,47 @@ async def test_two_agents_chain_to_the_limit_in_every_mode(
     await kit.close()
 
 
+@pytest.mark.parametrize("deferred", [False, True], ids=["waiting", "deferred"])
+async def test_the_caller_is_handed_every_answer_of_its_chain(deferred: bool) -> None:
+    """``InboundResult.response_events`` holds every answer the chain stored,
+    the ones that re-entered while a streamed answer was read included."""
+    pa = MockAIProvider(streaming=True, ai_responses=_answers("A"))
+    pb = MockAIProvider(streaming=False, ai_responses=_answers("B"))
+    kit = RoomKit(max_chain_depth=3)
+    await _room(kit, AIChannel("a", provider=pa), AIChannel("b", provider=pb))
+
+    result = await kit.process_inbound(
+        InboundMessage(channel_id="sms1", sender_id="u1", content=TextContent(body="hi")),
+        defer_delivery=deferred,
+    )
+    if deferred:
+        assert result.delivery is not None
+        await result.delivery.wait()
+
+    stored = [e for e in await _agent_rows(kit, "a", "b") if e.status == EventStatus.DELIVERED]
+    assert len(stored) == 4
+    assert sorted(e.id for e in result.response_events) == sorted(e.id for e in stored)
+    await kit.close()
+
+
+async def test_a_directly_injected_event_chains_too(streaming: bool) -> None:
+    """``send_event`` reads the streams its chain starts, as the inbound path does."""
+    pa = MockAIProvider(streaming=streaming, ai_responses=_answers("A"))
+    pb = MockAIProvider(streaming=streaming, ai_responses=_answers("B"))
+    kit = RoomKit(max_chain_depth=3)
+    await _room(kit, AIChannel("a", provider=pa), AIChannel("b", provider=pb))
+
+    await kit.send_event("r1", "sms1", TextContent(body="hi"))
+
+    delivered = sorted(
+        (e.source.channel_id, e.chain_depth)
+        for e in await _agent_rows(kit, "a", "b")
+        if e.status == EventStatus.DELIVERED
+    )
+    assert delivered == [("a", 1), ("a", 2), ("b", 1), ("b", 2)]
+    await kit.close()
+
+
 async def test_a_buffered_answer_to_a_streamed_segment_is_stored_with_its_tools() -> None:
     """The turn another agent runs on a streamed segment is read, tools included."""
     ran: list[str] = []
@@ -188,6 +229,36 @@ async def test_the_answer_scope_holds_along_a_streamed_chain(streaming: bool) ->
     answers = [e for e in await _agent_rows(kit, "a", "b") if e.status == EventStatus.DELIVERED]
     assert {e.chain_depth for e in answers} == {1, 2}
     assert {e.visibility for e in answers} == {"sms1,a,b"}
+    assert [e for e in outsider.delivered if e.source.channel_id in ("a", "b")] == []
+    await kit.close()
+
+
+async def test_the_answer_scope_holds_along_a_regenerated_chain(streaming: bool) -> None:
+    """A regenerated answer, buffered or streamed, keeps its trigger's scope,
+    and so does what the other agent answers to it."""
+    pa = MockAIProvider(streaming=streaming, ai_responses=_answers("A"))
+    pb = MockAIProvider(streaming=streaming, ai_responses=_answers("B"))
+    kit = RoomKit(max_chain_depth=3)
+    await _room(kit, AIChannel("a", provider=pa), AIChannel("b", provider=pb))
+    outsider = SimpleChannel("sms2")
+    kit.register_channel(outsider)
+    await kit.attach_channel("r1", "sms2")
+    await kit.process_inbound(
+        InboundMessage(
+            channel_id="sms1",
+            sender_id="u1",
+            content=TextContent(body="hi"),
+            response_visibility="sms1,a,b",
+        )
+    )
+    before = {e.id for e in await _agent_rows(kit, "a", "b")}
+
+    await kit.regenerate_response("r1")
+
+    new = [e for e in await _agent_rows(kit, "a", "b") if e.id not in before]
+    delivered = [e for e in new if e.status == EventStatus.DELIVERED]
+    assert {e.chain_depth for e in delivered} == {1, 2}
+    assert {e.visibility for e in delivered} == {"sms1,a,b"}
     assert [e for e in outsider.delivered if e.source.channel_id in ("a", "b")] == []
     await kit.close()
 

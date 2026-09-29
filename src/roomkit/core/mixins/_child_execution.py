@@ -30,6 +30,7 @@ from roomkit.models.streaming import LoopEndMarker, ToolCallEndMarker, ToolCallS
 
 if TYPE_CHECKING:
     from roomkit.core.framework import RoomKit
+    from roomkit.models.room import Room
     from roomkit.orchestration.result import ResultTool
 
 
@@ -156,6 +157,27 @@ async def _persist_response_events(
     return final_text
 
 
+async def _child_context(kit: RoomKit, room: Room, bindings: list[ChannelBinding]) -> RoomContext:
+    """The context a delegated turn reads, built after its message is stored.
+
+    Built AFTER storing so the agent's memory provider can see the message in
+    recent_events — which is the message just committed, so this read must be
+    the room's tail (``newest_first``), not its head. A delegated room that
+    outlives 50 events would otherwise hand the agent the opening turns and
+    never the new one. Read whole, as ``_build_context`` reads it (RFC §7.5
+    rule 8): the per-reader filter drops the refused rows for the channels
+    that read it.
+    """
+    recent = await kit.store.list_events(
+        room.id,
+        offset=0,
+        limit=50,
+        newest_first=True,
+        event_filter=EventFilter(include_blocked=True),
+    )
+    return RoomContext(room=room, bindings=bindings, recent_events=recent)
+
+
 async def _broadcast_and_collect(
     kit: RoomKit, child_room_id: str, message_body: str
 ) -> str | None:
@@ -172,22 +194,7 @@ async def _broadcast_and_collect(
         status=EventStatus.DELIVERED,
     )
     msg_event = await kit._commit_indexed(child_room_id, msg_event)
-
-    # Build context AFTER storing so the agent's memory provider
-    # can see the message in recent_events — which is the message just
-    # committed, so this read must be the room's tail (``newest_first``),
-    # not its head. A delegated room that outlives 50 events would
-    # otherwise hand the agent the opening turns and never the new one.
-    # Read whole, as ``_build_context`` reads it (RFC §7.5 rule 8): the
-    # per-reader filter drops the refused rows for the channels that read it.
-    recent = await kit.store.list_events(
-        child_room_id,
-        offset=0,
-        limit=50,
-        newest_first=True,
-        event_filter=EventFilter(include_blocked=True),
-    )
-    context = RoomContext(room=room, bindings=bindings, recent_events=recent)
+    context = await _child_context(kit, room, bindings)
 
     router = kit._get_router()
     source_binding = ChannelBinding(
@@ -196,6 +203,12 @@ async def _broadcast_and_collect(
         channel_type=ChannelType.SYSTEM,
     )
     result = await router.broadcast(msg_event, source_binding, context)
+    # What the broadcast blocked is stored and announced, and its side effects
+    # kept, whichever path broadcast the trigger (RFC §8.3).
+    await kit._commit_blocked_events(child_room_id, result)
+    await kit._persist_side_effects(
+        child_room_id, result.tasks, result.observations, msg_event, context
+    )
     child_depth = msg_event.chain_depth + 1
 
     # Non-streaming: response_events already include the tool-call events —

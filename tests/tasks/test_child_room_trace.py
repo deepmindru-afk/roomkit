@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+from roomkit.core.event_router import BroadcastResult
 from roomkit.core.mixins.delegation import _persist_child_stream, run_agent_in_child_room
 from roomkit.models.enums import ChannelType, EventType
 from roomkit.models.event import EventSource, RoomEvent, TextContent, ToolCallContent
@@ -47,6 +48,8 @@ class TestPersistChildStream:
         kit = MagicMock()
         kit.store = _recording_store()
         kit._commit_indexed = kit.store.commit_event
+        kit._commit_blocked_events = AsyncMock()
+        kit._persist_side_effects = AsyncMock()
 
         async def _stream() -> Any:
             yield "Let me search. "
@@ -91,6 +94,8 @@ class TestPersistChildStream:
         kit = MagicMock()
         kit.store = _recording_store()
         kit._commit_indexed = kit.store.commit_event
+        kit._commit_blocked_events = AsyncMock()
+        kit._persist_side_effects = AsyncMock()
         header = "data:image/png;base64,"
         shot = AIImagePart(url=header + "A" * (300 * 1024 - len(header)), mime_type="image/png")
 
@@ -109,6 +114,8 @@ class TestPersistChildStream:
         kit = MagicMock()
         kit.store = _recording_store()
         kit._commit_indexed = kit.store.commit_event
+        kit._commit_blocked_events = AsyncMock()
+        kit._persist_side_effects = AsyncMock()
 
         async def _stream() -> Any:
             yield ThinkingDeltaMarker(thinking="hmm")
@@ -123,6 +130,8 @@ class TestPersistChildStream:
         kit = MagicMock()
         kit.store = _recording_store()
         kit._commit_indexed = kit.store.commit_event
+        kit._commit_blocked_events = AsyncMock()
+        kit._persist_side_effects = AsyncMock()
 
         async def _stream() -> Any:
             yield "just "
@@ -139,6 +148,8 @@ class TestRunAgentNonStreaming:
         kit = MagicMock()
         kit.store = _recording_store()
         kit._commit_indexed = kit.store.commit_event
+        kit._commit_blocked_events = AsyncMock()
+        kit._persist_side_effects = AsyncMock()
         kit.get_room = AsyncMock(
             return_value=Room(id="parent::task-1", metadata={"parent_room_id": "parent"})
         )
@@ -161,7 +172,7 @@ class TestRunAgentNonStreaming:
         output = SimpleNamespace(
             responded=True, error=None, response_events=[tool_event, msg_event]
         )
-        broadcast_result = SimpleNamespace(outputs={"w1": output}, streaming_responses=[])
+        broadcast_result = BroadcastResult(outputs={"w1": output})
 
         router = MagicMock()
         router.broadcast = AsyncMock(return_value=broadcast_result)
