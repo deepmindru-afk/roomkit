@@ -11,7 +11,13 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.channels._ai_policy import policy_admits, policy_refusal
-from roomkit.channels._realtime_context import _current_voice_session
+from roomkit.channels._realtime_context import (
+    _current_voice_session,
+    _served_call,
+    _ServedCall,
+    own_call_orphaned,
+    spare_own_orphaned_call,
+)
 from roomkit.channels._skill_constants import TOOL_ACTIVATE_SKILL
 from roomkit.channels._tool_search_constants import TOOL_CALL_TOOL
 from roomkit.channels.ai import _current_loop_ctx, _ToolLoopContext
@@ -237,6 +243,15 @@ class RealtimeToolsMixin:
                     "Cancelled tool call %s is not in flight for session %s", call_id, session.id
                 )
                 continue
+            if spare_own_orphaned_call(session.id, call_id):
+                logger.info(
+                    "Tool call %s(%s) lost its id to the reconnect its own handler caused; "
+                    "the handler runs on and its result stays off the wire (session %s)",
+                    recorded[0],
+                    call_id,
+                    session.id,
+                )
+                continue
             if self._tool_call_reported(session.id, call_id):
                 logger.debug(
                     "Cancelled tool call %s already reported its outcome for session %s",
@@ -313,9 +328,11 @@ class RealtimeToolsMixin:
         if session.state == VoiceSessionState.ENDED:
             return
         self._begin_tool_call(session.id, call_id, name, arguments)
+        served = _served_call.set(_ServedCall(session.id, call_id))
         try:
             await self._execute_tool_call(session, call_id, name, arguments)
         finally:
+            _served_call.reset(served)
             self._finish_tool_call(session.id, call_id)
 
     async def _execute_tool_call(
@@ -755,6 +772,9 @@ class RealtimeToolsMixin:
     ) -> bool:
         """Confirm delivery only while the session remains live."""
         if session.state == VoiceSessionState.ENDED:
+            return False
+        if own_call_orphaned(session.id, call_id):
+            # The new socket never issued this id (RFC §9.3)
             return False
         self._expect_provider_output(session.id)
         await self._provider.submit_tool_result(session, call_id, result)

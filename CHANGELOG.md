@@ -139,6 +139,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A realtime tool handler that reconfigures its own session is no longer
+  treated as abandoned by the reconnect it caused (RMK-280, RFC §9.3). Gemini
+  Live applies a reconfiguration by reconnecting, and a reconnect orphans
+  every call the old socket issued, so a speech-to-speech handoff's own call
+  was reported to ON_TOOL_CALL's observers as cancelled and its handler was
+  interrupted at its next suspension, which could leave the room's other
+  sessions on the old agent; a handler that got through reported a second
+  outcome, served, for the same call. The call whose handler caused the
+  reconnect now runs to its end, its result stays off the wire (the new socket
+  never issued the id), and it is reported once, as served. Every other call
+  the reconnect orphaned is still abandoned.
 - OpenAI Realtime and xAI Realtime ask the model to go on once per response
   (RMK-279, RFC §12.4). Every tool result was followed by its own
   `response.create`: with two calls in parallel, the first went out while the
