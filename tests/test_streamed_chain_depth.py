@@ -148,6 +148,21 @@ async def test_a_room_closed_while_blocked_rows_are_written_takes_no_more(
     assert EventType.TOOL_CALL_END not in [row.type for row in rows]
 
 
+async def test_a_room_closed_mid_stream_takes_no_further_row(streaming: bool) -> None:
+    """Below the limit too, a closed room refuses writes (RFC §5.1)."""
+
+    async def close_the_room(kit: RoomKit) -> None:
+        await kit.close_room("r1")
+
+    kit, _, _, _ = await _turn(streaming, max_chain_depth=5, then=close_the_room)
+
+    await _say(kit)
+
+    kinds = [row.type for row in await _ai_rows(kit)]
+    assert EventType.TOOL_CALL_END not in kinds
+    assert kinds.count(EventType.MESSAGE) <= 1
+
+
 async def test_below_the_limit_nothing_is_blocked(streaming: bool) -> None:
     kit, sms, _, _ = await _turn(streaming, max_chain_depth=5)
 

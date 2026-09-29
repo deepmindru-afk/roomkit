@@ -234,6 +234,11 @@ class LaneExecutionMixin(HelpersMixin):
         """
         from roomkit.core.lanes import DeliveryCascade
 
+        # The status gate holds at every point the timeline grows (RFC §5.1):
+        # a room closed mid-stream takes no further segment.
+        if await self._room_refuses_writes(room_id):
+            logger.debug("Room %s refuses writes; %s not committed", room_id, event.type.value)
+            return None
         own_cascade = cascade is None
         if cascade is None:
             cascade = DeliveryCascade(room_id, reentry_budget=self._max_chain_depth * 10)

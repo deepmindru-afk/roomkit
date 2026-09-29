@@ -146,6 +146,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A room closed mid-stream takes no further streamed row (RMK-283, RFC
+  §5.1). Streamed segments and tool rows were committed through a path that
+  skipped the room's status, so a room closed during a turn kept receiving
+  them as delivered events; every write through `_commit_and_deliver` now
+  checks it.
 - The external tool handler is not asked about a call the response cut
   (RMK-284, RFC §6.4). On the streaming external path, a call marked
   `partial` reached `process_tool_call` like any other; it is now refused
