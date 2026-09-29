@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import logging
 import time
 from collections.abc import Callable, Coroutine
@@ -59,11 +60,18 @@ class GeminiLiveConnectionMixin(RealtimeVoiceProvider):
         return ctxmgr, live_session
 
     def _start_receive_loop(self, state: _GeminiSessionState) -> None:
-        """Start the receive loop of *state*'s session on its own task."""
+        """Start the receive loop of *state*'s session on its own task.
+
+        In a context of its own: ``reconfigure`` runs inside whatever called
+        it, a tool handler for a handoff, and a loop created there would carry
+        that call's context (its voice session, its AI loop, the call it
+        serves) into every event of the new connection.
+        """
         session = state.session
         state.receive_task = asyncio.create_task(
             self._receive_loop(session),
             name=f"gemini_live_recv:{session.id}",
+            context=contextvars.Context(),
         )
 
     _MAX_RECONNECTS = 5

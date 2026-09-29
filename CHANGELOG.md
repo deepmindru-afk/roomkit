@@ -146,6 +146,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A Gemini Live receive loop runs in a context of its own (RMK-280). Started
+  by `reconfigure` from inside a tool handler (a handoff), the new
+  connection's loop inherited that call's context (its voice session, its AI
+  loop, the call it served) and carried it into every event of the session.
 - A stored large tool result stays readable while its room works (RMK-285,
   RFC §21.5). The eviction store held 50 results for every room together, so
   50 evictions elsewhere pushed a room's result out and `read_stored_result`
