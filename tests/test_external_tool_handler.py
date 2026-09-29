@@ -161,7 +161,8 @@ class TestPolicyExternalToolHandler:
 
         decision = await handler.process_tool_call("Read", {})
         assert decision.approved is False
-        assert "BEFORE_TOOL_USE" in decision.reason
+        # The same refusal the model reads on every channel (RFC §9.3).
+        assert decision.reason == "Tool 'Read' denied by pre-execution hook."
 
     async def test_before_hook_allows(self) -> None:
         handler = PolicyExternalToolHandler()

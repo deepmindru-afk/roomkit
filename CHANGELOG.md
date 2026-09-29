@@ -104,12 +104,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unusable refuses the call before it runs, where the tool used to run. It
   is where an approval hook sits, and one that cannot answer must not let the
   call through. The model reads the same refusal on every channel (`Tool 'x'
-  denied by pre-execution hook.`), never the hook's error: on the realtime
-  channel that error would otherwise have reached the model. The hook's name
-  and error go to ON_TOOL_CALL's observers on `error_detail`
-  (`BeforeToolDecision.detail` carries it). An approval hook that waits for
-  a person longer than its `timeout` (30 s by default) now refuses the call:
-  set the timeout it needs.
+  denied by pre-execution hook.`), never the hook's error, which goes to
+  ON_TOOL_CALL's observers on `error_detail` (`BeforeToolDecision.detail`
+  carries it). An external tool handler decides and reports the call itself:
+  `PolicyExternalToolHandler` refuses with the same words (a BLOCK too,
+  where it said `Denied by BEFORE_TOOL_USE hook`) and logs the hook's error.
+  As on a BLOCK, the ASYNC observers of BEFORE_TOOL_USE do not fire when a
+  hook's failure refuses the call; ON_TOOL_CALL still reports it. An approval
+  hook that waits for a person longer than its `timeout` (30 s by default)
+  now refuses the call: set the timeout it needs.
 - `include_stream_usage` defaults to `True` on `OpenAIConfig` (and the
   providers built on it: DeepSeek, Qwen, OpenRouter, LiteLLM), `AzureAIConfig`
   and `VLLMConfig`, and so the managed llama.cpp server (RMK-312): every tool

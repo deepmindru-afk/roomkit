@@ -131,6 +131,7 @@ class RealtimeToolRecoveryMixin:
     _authorize_realtime_tool: Any  # cross-mixin (RealtimeToolsMixin)
     _fire_tool_hook_outcome: Any  # cross-mixin (RealtimeToolsMixin)
     _fire_tool_refusal: Any  # cross-mixin (RealtimeToolsMixin)
+    _fire_gate_refusal: Any  # cross-mixin (RealtimeToolsMixin)
     _report_raised_call: Any  # cross-mixin (RealtimeToolsMixin)
     _call_tool_handler: Any  # cross-mixin (RealtimeToolsMixin)
     _truncate_tool_result: Any  # cross-mixin (RealtimeToolsMixin)
@@ -311,14 +312,8 @@ class RealtimeToolRecoveryMixin:
                 )
                 # Observed like a denial on the function-calling path: an audit
                 # hook sees the refusal, and nothing that could serve it does.
-                await self._fire_tool_refusal(
-                    session,
-                    call_id,
-                    tool_name,
-                    arguments,
-                    denial.body,
-                    room_id,
-                    detail=denial.detail,
+                await self._fire_gate_refusal(
+                    session, call_id, tool_name, arguments, denial, room_id
                 )
                 return
 

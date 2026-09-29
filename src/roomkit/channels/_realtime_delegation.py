@@ -63,7 +63,7 @@ class RealtimeDelegationHost(Protocol):
     Cross-mixin methods (implemented elsewhere in the MRO):
         _track_task, _rt_span_ctx, _update_idle_event, _telemetry_provider,
         _authorize_realtime_tool, _serve_gated_tool_call, _fire_tool_refusal,
-        _tool_reachable.
+        _fire_gate_refusal, _tool_reachable.
     """
 
     _state_lock: threading.Lock
@@ -117,6 +117,7 @@ class RealtimeDelegationMixin:
     _tool_reachable: Any  # see RealtimeToolsMixin
     _serve_gated_tool_call: Any  # see RealtimeToolsMixin
     _fire_tool_refusal: Any  # see RealtimeToolsMixin
+    _fire_gate_refusal: Any  # see RealtimeToolsMixin
 
     # -----------------------------------------------------------------
     # Transcript ledger
@@ -386,9 +387,7 @@ class RealtimeDelegationMixin:
                     session.id,
                 )
                 telemetry.end_span(span_id)
-                await self._fire_tool_refusal(
-                    session, call_id, name, arguments, denial.body, room_id, detail=denial.detail
-                )
+                await self._fire_gate_refusal(session, call_id, name, arguments, denial, room_id)
                 return denial.body
 
             try:

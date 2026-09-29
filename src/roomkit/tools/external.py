@@ -33,6 +33,7 @@ Usage::
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -41,6 +42,9 @@ from typing import Any
 from roomkit.models.enums import ChannelType
 from roomkit.models.tool_call import ToolCallEvent
 from roomkit.tools.policy import ToolPolicy
+from roomkit.tools.result import pre_execution_denial
+
+logger = logging.getLogger("roomkit.tools.external")
 
 
 @dataclass
@@ -311,7 +315,10 @@ class PolicyExternalToolHandler(ExternalToolHandler):
             tool_name, tool_input, tool_call_id=tool_call_id, room_id=room_id
         )
         if not decision:
-            return ToolDecision(approved=False, reason="Denied by BEFORE_TOOL_USE hook")
+            if decision.detail is not None:
+                # A hook that failed closed: its error for the log, never the agent.
+                logger.warning("BEFORE_TOOL_USE refused %s: %s", tool_name, decision.detail)
+            return ToolDecision(approved=False, reason=pre_execution_denial(tool_name))
 
         # Apply policy
         if self._policy and not self._policy.is_allowed(tool_name):

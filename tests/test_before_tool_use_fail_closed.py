@@ -35,23 +35,31 @@ DENIED = "Tool 'delete_account' denied by pre-execution hook."
 
 
 def _gate(kit: RoomKit, failure: str) -> None:
-    """An approval hook that cannot answer: it raises, or it outlives its timeout."""
+    """An approval hook that cannot answer: it raises, outlives its timeout, or
+    returns something that is not a decision."""
 
     @kit.hook(HookTrigger.BEFORE_TOOL_USE, name="approval", timeout=0.05)
-    async def approval(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
+    async def approval(event: ToolCallEvent, ctx: RoomContext) -> Any:
         if failure == "raises":
             raise ConnectionError(f"cannot reach {SECRET}")
+        if failure == "unusable":
+            return None
         await asyncio.sleep(1)
         return HookResult.allow()
 
 
+_DETAILS = {
+    "raises": f"approval: cannot reach {SECRET}",
+    "times_out": "approval: timeout (0.05s)",
+    "unusable": "approval: expected HookResult, got NoneType",
+}
+
+
 def _observed_detail(failure: str) -> str:
-    if failure == "raises":
-        return f"approval: cannot reach {SECRET}"
-    return "approval: timeout (0.05s)"
+    return _DETAILS[failure]
 
 
-FAILURES = pytest.mark.parametrize("failure", ["raises", "times_out"])
+FAILURES = pytest.mark.parametrize("failure", list(_DETAILS))
 
 
 @FAILURES
@@ -158,8 +166,10 @@ async def test_an_external_handler_denies_the_call(failure: str) -> None:
 
     decision = await handler.process_tool_call("delete_account", {"id": "42"}, room_id="r1")
 
+    # The handler decides and reports the call itself (RFC §9.3): the same
+    # refusal for the agent, the hook's error for the log.
     assert not decision.approved
-    assert "hunter2" not in decision.reason
+    assert decision.reason == DENIED
     await kit.close()
 
 
@@ -175,4 +185,27 @@ async def test_a_hook_that_answers_still_lets_the_call_run() -> None:
     await until(lambda: bool(provider.tool_results))
 
     assert calls.ran == ["delete_account"]
+    await kit.close()
+
+
+async def test_a_deliberate_block_keeps_its_reason_beside_a_failed_hook() -> None:
+    """Where a host made the trigger fail open again, a hook that raised did not
+    refuse the call: the one that blocked did, in its own words, with no detail."""
+    calls = _Calls()
+    kit, _, provider, session = await _channel(calls, policy=ToolPolicy())
+    kit.hook_engine.FAIL_CLOSED_TRIGGERS = frozenset()
+
+    @kit.hook(HookTrigger.BEFORE_TOOL_USE, name="logger", priority=0)
+    async def logger(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
+        raise RuntimeError("log sink down")
+
+    @kit.hook(HookTrigger.BEFORE_TOOL_USE, name="approval", priority=1)
+    async def approval(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
+        return HookResult.block("needs a supervisor's approval")
+
+    await provider.simulate_tool_call(session, "c1", "delete_account", {"id": "42"})
+    await until(lambda: bool(provider.tool_results) and bool(calls.observed))
+
+    assert json.loads(provider.tool_results[0][2]) == {"error": "needs a supervisor's approval"}
+    assert [e.error_detail for e in calls.observed] == [None]
     await kit.close()

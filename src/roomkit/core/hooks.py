@@ -97,6 +97,9 @@ class SyncPipelineResult:
     observations: list[Observation] = field(default_factory=list)
     hook_errors: list[dict[str, str]] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+    failed_closed: bool = False
+    """Whether a hook's failure (a raise, a timeout, an unusable result)
+    blocked, as opposed to a hook's deliberate BLOCK (RFC §9.3)."""
 
 
 class HookEngine:
@@ -391,6 +394,7 @@ class HookEngine:
         if not self._fails_closed(hook, trigger):
             return False
         result.allowed = False
+        result.failed_closed = True
         if hook.fail_closed:
             result.reason = f"{outcome}:{hook.name}"
             result.blocked_by = hook.name

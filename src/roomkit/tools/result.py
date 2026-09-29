@@ -112,6 +112,12 @@ def pre_execution_denial(name: str) -> str:
     return f"Tool '{name}' denied by pre-execution hook."
 
 
+def before_tool_use_detail(hook_result: Any) -> str | None:
+    """The error of a BEFORE_TOOL_USE hook that failed closed, for the observers
+    only; ``None`` when the call was allowed or a hook deliberately blocked it."""
+    return hook_errors_detail(hook_result) if hook_result.failed_closed else None
+
+
 @dataclasses.dataclass(frozen=True)
 class GateRefusal:
     """Why the pre-execution gate refused a call.

@@ -33,6 +33,7 @@ from roomkit.telemetry.base import Attr, SpanKind
 from roomkit.tools.result import (
     GateRefusal,
     as_tool_result,
+    before_tool_use_detail,
     failure_detail,
     hook_errors_detail,
     is_unknown_tool_answer,
@@ -459,9 +460,7 @@ class RealtimeToolsMixin:
                     call_id,
                     session.id,
                 )
-                await self._fire_tool_refusal(
-                    session, call_id, name, arguments, denial.body, room_id, detail=denial.detail
-                )
+                await self._fire_gate_refusal(session, call_id, name, arguments, denial, room_id)
                 return
 
             # Tool Search infrastructure tools — handle internally
@@ -1055,13 +1054,7 @@ class RealtimeToolsMixin:
         )
         if not hook_result.allowed:
             logger.info("Realtime tool %s denied by BEFORE_TOOL_USE hook", name)
-            # A hook that failed closed: the plain denial for the model, its
-            # error for the observers (RFC §9.3). A BLOCK's reason is the
-            # hook's own words.
-            detail = hook_errors_detail(hook_result)
-            reason = hook_result.reason if detail is None else None
-            body = json.dumps({"error": reason or pre_execution_denial(name)})
-            return arguments, GateRefusal(body, detail), context
+            return arguments, _hook_refusal(name, hook_result), context
         arguments, invalid = _rewritten_arguments(name, arguments, params, hook_result.metadata)
         return arguments, GateRefusal(invalid) if invalid is not None else None, context
 
@@ -1088,6 +1081,20 @@ class RealtimeToolsMixin:
             session, call_id, name, arguments, body, room_id, detail=failure_detail(exc)
         )
 
+    async def _fire_gate_refusal(
+        self,
+        session: VoiceSession,
+        call_id: str,
+        name: str,
+        arguments: dict[str, Any],
+        denial: GateRefusal,
+        room_id: str | None,
+    ) -> None:
+        """Report a call the pre-execution gate refused, with its detail."""
+        await self._fire_tool_refusal(
+            session, call_id, name, arguments, denial.body, room_id, detail=denial.detail
+        )
+
     async def _fire_tool_refusal(
         self,
         session: VoiceSession,
@@ -1102,7 +1109,8 @@ class RealtimeToolsMixin:
     ) -> None:
         """Fire ON_TOOL_CALL for a call that failed, was refused, or was abandoned.
 
-        *detail* is a raised call's full failure, for the observers only
+        *detail* is a raised call's full failure, or the error of a
+        BEFORE_TOOL_USE hook that failed closed, for the observers only
         (``ToolCallEvent.error_detail``).
 
         The pre-execution gate returns before anything serves the call, and a
@@ -1364,6 +1372,18 @@ class RealtimeToolsMixin:
             "The full content has been delivered to the client.]"
         )
         return result_str[: self._tool_result_max_length - len(notice)] + notice
+
+
+def _hook_refusal(name: str, hook_result: Any) -> GateRefusal:
+    """What the model reads of a call BEFORE_TOOL_USE refused, and the observers' detail.
+
+    A BLOCK's reason is the hook's own words for the model. A hook that failed
+    closed gives it the plain denial, and its error goes to the observers only
+    (RFC §9.3).
+    """
+    detail = before_tool_use_detail(hook_result)
+    reason = hook_result.reason if not hook_result.failed_closed else None
+    return GateRefusal(json.dumps({"error": reason or pre_execution_denial(name)}), detail)
 
 
 def _rewritten_arguments(

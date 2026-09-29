@@ -56,7 +56,8 @@ from roomkit.models.tool_call import (
     fold_tool_call_rewrite,
     observed_call_event,
 )
-from roomkit.tools.result import hook_errors_detail, tool_call_verdict
+from roomkit.tools.external import BeforeToolDecision
+from roomkit.tools.result import before_tool_use_detail, hook_errors_detail, tool_call_verdict
 
 _RECENT_EVENTS_LIMIT = 2_000
 """Hard ceiling on events kept in ``RoomContext.recent_events`` in memory."""
@@ -99,6 +100,27 @@ IdentityHookFn = Callable[
     [RoomEvent, RoomContext, IdentityResult],
     Coroutine[Any, Any, IdentityHookResult | None],
 ]
+
+
+def _before_tool_decision(name: str, hook_result: Any) -> BeforeToolDecision:
+    """What the BEFORE_TOOL_USE chain decided about a call of *name*.
+
+    Rewritten arguments that are not an object refuse the call. A hook that
+    failed closed refused it too (RFC §9.3): its error rides the decision for
+    the observers, never the model.
+    """
+    rewritten = hook_result.metadata.get("arguments")
+    if "arguments" in hook_result.metadata and not isinstance(rewritten, dict):
+        logger.error(
+            "BEFORE_TOOL_USE hook returned non-object arguments for %s — denying tool call",
+            name,
+        )
+        return BeforeToolDecision(allowed=False)
+    return BeforeToolDecision(
+        allowed=hook_result.allowed,
+        arguments=rewritten if isinstance(rewritten, dict) else None,
+        detail=before_tool_use_detail(hook_result),
+    )
 
 
 @runtime_checkable
@@ -1073,8 +1095,6 @@ class HelpersMixin:
         ``metadata["arguments"]`` — the mirror of what ON_TOOL_CALL already
         does with ``metadata["result"]`` on the way out.
         """
-        from roomkit.tools.external import BeforeToolDecision
-
         kit_ref = self
 
         async def _callback(event: ToolCallEvent) -> BeforeToolDecision:
@@ -1113,21 +1133,7 @@ class HelpersMixin:
                 },
             )
 
-            rewritten = hook_result.metadata.get("arguments")
-            if "arguments" in hook_result.metadata and not isinstance(rewritten, dict):
-                logger.error(
-                    "BEFORE_TOOL_USE hook returned non-object arguments for %s — "
-                    "denying tool call",
-                    event.name,
-                )
-                return BeforeToolDecision(allowed=False)
-            return BeforeToolDecision(
-                allowed=hook_result.allowed,
-                arguments=rewritten if isinstance(rewritten, dict) else None,
-                # A hook that failed closed refused the call (RFC §9.3): its
-                # error is for the observers, never the model.
-                detail=None if hook_result.allowed else hook_errors_detail(hook_result),
-            )
+            return _before_tool_decision(event.name, hook_result)
 
         return _callback
 

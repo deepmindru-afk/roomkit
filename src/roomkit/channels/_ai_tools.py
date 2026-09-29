@@ -343,7 +343,8 @@ class AIToolsMixin:
     ) -> None:
         """Fire ON_TOOL_CALL for a call that failed or was refused.
 
-        *detail* is a raised call's full failure, for the observers only
+        *detail* is a raised call's full failure, or the error of a
+        BEFORE_TOOL_USE hook that failed closed, for the observers only
         (``ToolCallEvent.error_detail``).
 
         The refusal paths below return before the handler runs, and a handler

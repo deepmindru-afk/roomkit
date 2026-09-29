@@ -119,10 +119,11 @@ class ToolCallEvent:
     """
 
     error_detail: str | None = None
-    """What failed, in full, when the handler or a hook raised (RFC §9.3).
+    """What failed, in full, when the handler or a hook failed (RFC §9.3).
 
-    A raised call's exception class and message, or what the ON_TOOL_CALL
-    hooks that failed said, for logs and observers only. The model reads
+    A raised call's exception class and message, what the ON_TOOL_CALL hooks
+    that failed said, or the error of a BEFORE_TOOL_USE hook that failed
+    closed and so refused the call, for logs and observers only. The model reads
     :attr:`result`, the failure without the message: that message can hold
     anything the failing code held, a connection string with its password
     included. ``None`` for every other outcome.
