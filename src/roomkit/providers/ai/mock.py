@@ -23,6 +23,7 @@ from roomkit.providers.ai.response_schema import (
     checked_stream,
     schema_for_generate,
 )
+from roomkit.providers.ai.tool_calls import is_malformed_call
 from roomkit.providers.utils import _aclose_stream
 
 _MOCK_MODELS = [
@@ -103,7 +104,12 @@ class MockAIProvider(AIProvider):
         )
         self.calls.append(context)
         response = self._next_response()
-        if context.response_schema is not None and not response.tool_calls:
+        # As a real provider: a call it could not parse is no answer (RFC §6.4).
+        if (
+            context.response_schema is not None
+            and not response.tool_calls
+            and not is_malformed_call(response.finish_reason)
+        ):
             check_schema_answer(
                 response.content,
                 schema=context.response_schema,

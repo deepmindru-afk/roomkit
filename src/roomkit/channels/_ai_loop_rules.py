@@ -161,8 +161,9 @@ def final_round_reason(
     """
     if force_stopped:
         return "force_stopped"
-    if not final_text.strip() and is_malformed_call(finish_reason):
-        return "empty_response"
+    if is_malformed_call(finish_reason):
+        # Its call never ran: no answer, whatever the round said (RFC §6.4).
+        return "timeout" if deadline_exceeded else "empty_response"
     if final_text.strip() or not had_tool_round:
         return "completed"
     if is_truncation(finish_reason):
@@ -175,20 +176,19 @@ def final_round_reason(
 def _empty_round_nudge(
     *, had_tool_round: bool, final_text: str, finish_reason: str | None, log_label: str
 ) -> str | None:
-    """What to tell a model whose round ended with no text, or ``None`` to end there.
+    """What to tell a model whose round ended with no call to run, or ``None``
+    to end the turn there.
 
     A call the provider could not parse never reached the loop: the model is
-    told it did not run, on any round, so it can issue it again (RFC §9.3: a
-    refused call is the model's to read). An empty answer after tool rounds
-    gets the plain nudge. A truncated round is a different failure and is not
-    retried: it ran out of output budget, typically a reasoning model that
-    spent the whole cap thinking, and the same cap truncates again.
+    told it did not run, on any round and whatever the round said, so it can
+    issue it again (RFC §6.4). An empty answer after tool rounds gets the
+    plain nudge. A truncated round is a different failure and is not retried:
+    it ran out of output budget, typically a reasoning model that spent the
+    whole cap thinking, and the same cap truncates again.
     """
-    if final_text.strip():
-        return None
     if is_malformed_call(finish_reason):
         return _MALFORMED_CALL_NUDGE
-    if not had_tool_round:
+    if final_text.strip() or not had_tool_round:
         return None
     if is_truncation(finish_reason):
         logger.warning(
@@ -391,7 +391,7 @@ class AIToolLoopRulesMixin:
         final_text: str,
         finish_reason: str | None = None,
     ) -> bool:
-        """Bounded re-prompt when a round ends with no text and no call to run.
+        """Bounded re-prompt when a round ends with no call to run and no answer.
 
         Returns ``True`` when the caller should re-generate: the nudge has
         been appended and the retry counted. The deadline term is evaluated
@@ -418,6 +418,10 @@ class AIToolLoopRulesMixin:
             state.empty_retries,
             self._max_empty_retries,
         )
+        if final_text.strip():
+            # What the model said before its call failed to parse, so it goes
+            # on from there rather than say it again.
+            context.messages.append(AIMessage(role="assistant", content=final_text))
         context.messages.append(AIMessage(role="user", content=nudge))
         return True
 

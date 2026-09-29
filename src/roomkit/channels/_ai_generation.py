@@ -604,7 +604,10 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
                         final_text=response.content or "",
                         finish_reason=response.finish_reason,
                     ):
-                        response = await _generate_after_round(context)
+                        # Before any round ran, a provider failure is the
+                        # turn's own error, as on the streaming loop (RFC §6.4).
+                        regenerate = _generate_after_round if rounds else _generate
+                        response = await regenerate(context)
                         continue
                     reason = final_round_reason(
                         had_tool_round=bool(rounds),

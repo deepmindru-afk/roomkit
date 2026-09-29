@@ -257,7 +257,9 @@ class RealtimeVoiceChannel(
                 Gemini 3.x Flash Live), ``"on_demand"`` otherwise.
             tool_recovery: If True, detect tool calls that the model speaks
                 as text (e.g. ``call:name{args}``) instead of issuing through
-                the function calling API, and run them. Defaults to True.
+                the function calling API, and run them: a call said as a
+                sentence of its own that ends the utterance, never one a
+                sentence mentions. Defaults to True.
                 Recovered calls pass the same pre-execution gate as any other
                 — declared catalogue, argument schema, ``BEFORE_TOOL_USE`` —
                 and their outcome returns as injected context rather than a

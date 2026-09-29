@@ -22,6 +22,7 @@ from roomkit.providers.ai.base import (
     StreamToolCallDelta,
 )
 from roomkit.providers.ai.json_schema import check_portable_schema, schema_mismatch
+from roomkit.providers.ai.tool_calls import is_malformed_call
 from roomkit.providers.utils import _aclose_stream
 
 ResponseSchemaFailure = Literal["unsupported", "refusal", "truncated", "invalid_json"]
@@ -190,7 +191,13 @@ async def checked_stream(
                     text.append(event.text)
                 elif isinstance(event, StreamToolCall):
                     tool_called = True
-                elif isinstance(event, StreamDone) and not tool_called:
+                elif (
+                    isinstance(event, StreamDone)
+                    and not tool_called
+                    # A call its provider could not parse: the loop asks for it
+                    # again, the round is no answer (RFC §6.4).
+                    and not is_malformed_call(event.finish_reason)
+                ):
                     check_schema_answer(
                         "".join(text),
                         schema=schema,

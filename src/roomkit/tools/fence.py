@@ -13,10 +13,12 @@ import re
 def fence(tag: str, text: str) -> str:
     """*text* inside ``<tag>`` … ``</tag>``, with no closing tag of its own.
 
-    Any closing tag of that name in *text*, in any case and with any spacing
-    (``</TOOL_RESULT >``, ``< / tool_result>``), is neutralised, so the data
+    Any closing tag of that name in *text*, in any case, with any spacing or
+    trailing attributes (``</TOOL_RESULT >``, ``< / tool_result>``,
+    ``</tool_result foo>``, ``</tool_result/>``), is neutralised, so the data
     cannot close the block.
     """
-    closing = re.compile(rf"<\s*/\s*{re.escape(tag)}\s*>", re.IGNORECASE)
-    body = closing.sub(f"</{tag}_>", text)
+    closing = re.compile(rf"<\s*/\s*{re.escape(tag)}\b[^>]*>", re.IGNORECASE)
+    neutral = f"</{tag}_>"
+    body = closing.sub(lambda _match: neutral, text)
     return f"<{tag}>\n{body}\n</{tag}>"

@@ -39,11 +39,16 @@ if TYPE_CHECKING:
 logger = logging.getLogger("roomkit.channels.realtime_voice")
 
 # ``call:tool_name{...}`` said as a sentence of its own that ends the utterance:
-# at the start of the text or of a line, or after a sentence's end, with nothing
-# after its closing brace. Speech before it is kept; a sentence that mentions
-# the form mid-way ("type call:x{...} to search") calls nothing.
+# at the start of the text or of a line, or after a sentence's end (a closing
+# quote allowed, no space needed after a CJK full stop), and nothing after its
+# closing brace but a final stop. Speech before it is kept; a sentence that
+# mentions the form mid-way ("type call:x{...} to search") calls nothing. The
+# arguments admit one level of nested braces, so a later brace in the speech
+# never reads as the call's own.
 _TEXT_TOOL_CALL_RE = re.compile(
-    r"(?:^|(?<=[.!?])[ \t]+)[ \t]*call:(\w+)\s*\{(.*\})\s*\Z", re.DOTALL | re.MULTILINE
+    r"(?:^[ \t]*|(?<=[.!?…])[ \t\u00a0]+|(?<=[.!?…][\"'»”’)])[ \t\u00a0]+|(?<=[。！？]))"
+    r"call:(\w+)\s*\{((?:[^{}]|\{[^{}]*\})*)\}[.!?。]?\s*\Z",
+    re.MULTILINE,
 )
 
 # A ``key:`` token where a key can legitimately start — at the beginning of the

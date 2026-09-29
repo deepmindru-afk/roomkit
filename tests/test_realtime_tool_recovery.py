@@ -24,7 +24,11 @@ from roomkit import (
     ToolCallEvent,
     ToolRefusedError,
 )
-from roomkit.channels._realtime_tool_recovery import _coerce_types, _parse_args
+from roomkit.channels._realtime_tool_recovery import (
+    _TEXT_TOOL_CALL_RE,
+    _coerce_types,
+    _parse_args,
+)
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 from roomkit.models.event import TextContent
 from roomkit.voice.base import VoiceSession
@@ -561,3 +565,31 @@ class TestARefusedRecoveredCallIsObserved:
         assert observed[0].is_error is True
         assert "lookup is off limits" in observed[0].result
         assert served == []
+
+
+@pytest.mark.parametrize(
+    ("said", "recovered"),
+    [
+        ("call:lookup{city:Paris}", "city:Paris"),
+        ("Bien sur, je regarde. call:lookup{city:Paris}", "city:Paris"),
+        ("Je regarde.\ncall:lookup{city:Paris}", "city:Paris"),
+        ("Un instant… call:lookup{city:Paris}", "city:Paris"),
+        ("好的。call:lookup{city:Paris}", "city:Paris"),
+        ('"Done." call:lookup{city:Paris}', "city:Paris"),
+        ("call:lookup{city:Paris}.", "city:Paris"),
+        ("Voilà. call:lookup{q:{a:1}}", "q:{a:1}"),
+        # Mid-sentence, though it ends the utterance: the start anchor.
+        ("You can type call:lookup{city:Paris}", None),
+        # A call followed by speech: the end anchor.
+        ("call:lookup{city:Paris} One moment.", None),
+        # A later brace in the speech is not the call's own.
+        ("call:lookup{city:Paris} is how you write it in {braces}", None),
+        ("call:lookup{city:Paris}. Then call:lookup{city:Rome}", None),
+    ],
+)
+def test_a_spoken_call_is_one_only_when_said_as_its_own_last_sentence(
+    said: str, recovered: str | None
+) -> None:
+    """RMK-314: each anchor and the brace matching are pinned by a case of their own."""
+    match = _TEXT_TOOL_CALL_RE.search(said)
+    assert (match.group(2) if match else None) == recovered
