@@ -62,7 +62,7 @@ from roomkit.models.enums import (
     ChannelType,
     EventType,
 )
-from roomkit.models.event import RoomEvent
+from roomkit.models.event import RoomEvent, is_tool_call_record
 from roomkit.models.response_metadata import ResponseMetadata
 from roomkit.models.tool_call import AfterResponseCallback
 
@@ -369,7 +369,7 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
         """Create a lazy ACP prompt stream for a Room event."""
         if event.source.channel_id == self.channel_id:
             return ChannelOutput.empty()
-        if event.type in (EventType.TOOL_CALL_START, EventType.TOOL_CALL_END):
+        if is_tool_call_record(event):
             return ChannelOutput.empty()
 
         text = event_text(event)

@@ -1,6 +1,6 @@
 """Past the chain-depth limit no agent is asked, streamed or not (RMK-283, RMK-287).
 
-RFC §8.3 (decision B): when a response would reach ``max_chain_depth`` the
+RFC §8.3: when a response would reach ``max_chain_depth`` the
 agent's ``on_event`` is not called, so no model is called and no tool runs.
 One record stands in for the response: stored BLOCKED with ``blocked_by =
 "event_chain_depth_limit"``, observed, and announced as

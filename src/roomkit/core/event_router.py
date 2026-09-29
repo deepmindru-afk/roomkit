@@ -24,7 +24,6 @@ from roomkit.models.enums import (
     ChannelDirection,
     ChannelMediaType,
     EventStatus,
-    EventType,
     Visibility,
 )
 from roomkit.models.event import (
@@ -40,6 +39,7 @@ from roomkit.models.event import (
     TextContent,
     VideoContent,
     is_interruption_marker,
+    is_tool_call_record,
 )
 from roomkit.models.task import Observation, Task
 from roomkit.providers.ai.base import ProviderError
@@ -110,6 +110,23 @@ def _solicits(
 
 # The ``blocked_by`` of a response past ``max_chain_depth`` (RFC §8.3).
 CHAIN_DEPTH_LIMIT = "event_chain_depth_limit"
+
+
+def unanswered(trigger: RoomEvent, channel_id: str, channel_type: Any) -> RoomEvent:
+    """The record that stands in for an answer a guard kept *channel_id* from giving.
+
+    Empty text from the agent, at the depth, scope and thread the answer to
+    *trigger* would have had; the guard that stopped it marks it BLOCKED
+    (RFC §8.3).
+    """
+    return RoomEvent(
+        room_id=trigger.room_id,
+        source=EventSource(channel_id=channel_id, channel_type=channel_type),
+        content=TextContent(body=""),
+        chain_depth=trigger.chain_depth + 1,
+        visibility=trigger.response_visibility or Visibility.ALL,
+        parent_event_id=trigger.parent_event_id,
+    )
 
 
 def chain_depth_exceeded(blocked: RoomEvent, max_chain_depth: int) -> Observation:
@@ -647,17 +664,10 @@ class EventRouter:
         one.
         """
         result = _TargetResult(channel_id=binding.channel_id)
-        if event.type in (EventType.TOOL_CALL_START, EventType.TOOL_CALL_END):
+        if is_tool_call_record(event):
             return result
-        record = RoomEvent(
-            room_id=event.room_id,
-            source=EventSource(channel_id=binding.channel_id, channel_type=binding.channel_type),
-            content=TextContent(body=""),
-            status=EventStatus.BLOCKED,
-            blocked_by=CHAIN_DEPTH_LIMIT,
-            chain_depth=event.chain_depth + 1,
-            visibility=event.response_visibility or Visibility.ALL,
-            parent_event_id=event.parent_event_id,
+        record = unanswered(event, binding.channel_id, binding.channel_type).model_copy(
+            update={"status": EventStatus.BLOCKED, "blocked_by": CHAIN_DEPTH_LIMIT}
         )
         result.blocked_events.append(record)
         result.observations.append(chain_depth_exceeded(record, self._max_chain_depth))

@@ -323,9 +323,9 @@ class ConferenceRealtime:
             with self._operations.use(
                 ConferenceResource.REALTIME, what=f"text injection for room {room_id}"
             ):
-                await config.provider.inject_text(session, text, role=role)
+                result = await config.provider.inject_text(session, text, role=role)
             room = self._rooms.get(room_id)
-            if room is not None:
+            if room is not None and result is not None and result.status == "sent":
                 room.answer_depth.injected(chain_depth)
         except Exception:
             logger.warning(

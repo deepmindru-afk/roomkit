@@ -42,6 +42,7 @@ from roomkit.providers.utils import _aclose_stream
 from roomkit.telemetry.context import restored_span
 
 if TYPE_CHECKING:
+    from roomkit.core.event_router import StreamingResponse
     from roomkit.core.locks import RoomLockManager
     from roomkit.models.channel import ChannelBinding
     from roomkit.models.context import RoomContext
@@ -263,7 +264,7 @@ class DeliveryCascade:
         self._reentry_budget -= 1
         return True
 
-    def add_streams(self, streams: list[Any], *, chained: bool = False) -> None:
+    def add_streams(self, streams: list[StreamingResponse], *, chained: bool = False) -> None:
         """Queue streams for the caller's reader.
 
         ``chained`` marks answers to an answer, started by a pass other than

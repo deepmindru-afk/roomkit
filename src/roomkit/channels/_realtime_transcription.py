@@ -86,6 +86,24 @@ class RealtimeTranscriptionMixin:
     _send_client_message: Any  # see RealtimeTranscriptionHost — cross-mixin
     _rt_span_ctx: Any  # see RealtimeTranscriptionHost — cross-mixin
 
+    def _init_transcription_state(self) -> None:
+        """The per-session state this mixin keeps, empty."""
+        # Last assistant text per session (for barge-in event context)
+        self._last_assistant_text = {}
+        # What each session's model heard last, which its answer's chain
+        # depth follows (RFC §12.4, §8.3).
+        self._answer_depth = {}
+        # FIFO lock per session keeping transcription processing in arrival
+        # order — each event runs in its own task and the partial/final code
+        # paths await a different number of hops (see _process_transcription).
+        self._transcription_order_locks = {}
+
+    def _forget_transcription_state(self, session_id: str) -> None:
+        """Drop an ended session's transcription state. Call under ``_state_lock``."""
+        self._last_assistant_text.pop(session_id, None)
+        self._answer_depth.pop(session_id, None)
+        self._transcription_order_locks.pop(session_id, None)
+
     def _on_provider_transcription(
         self, session: VoiceSession, text: str, role: str, is_final: bool
     ) -> Any:

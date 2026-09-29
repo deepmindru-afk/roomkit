@@ -93,8 +93,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and counts against the reentry budget a buffered answer counts against
   (past it, it is closed unread and stored as a BLOCKED `reentry_loop_cap`
   record); `InboundResult.response_metadata` and `.error` still describe the
-  caller's own answers only. A trigger's `response_visibility` scopes the
-  whole streamed chain, as it scoped a buffered one.
+  caller's own answers only, and `InboundResult.response_events` holds every
+  answer the chain stored. A trigger's `response_visibility` scopes the whole
+  streamed chain, as it scoped a buffered one, and a regenerated answer keeps
+  it, buffered or streamed (a buffered one reached every channel).
 - A streamed turn the provider interrupts after a tool round is reported
   like a buffered one (RMK-289, RFC §6.4): `ON_AI_RESPONSE` fires with
   `loop_end_reason="error"` and the usage of its rounds, then the error
@@ -326,12 +328,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (1 after the user spoke, the injected event's depth plus one after a text
   injection), a `Loop`'s result, and a `Supervisor`'s answer after its
   workers ran. A realtime model and a text agent answering each other looped
-  without end. A supervisor's answer and a loop's result also stay in their
+  without end; the limit now stops the text agent. It does not hold the
+  speech-to-speech model itself, which answers an injection at any depth. A supervisor's answer and a loop's result also stay in their
   trigger's thread (`parent_event_id`).
-- A regeneration stores and announces what its broadcast blocked, and keeps
-  its tasks and observations, as the inbound path does (RMK-287, RFC §8.3).
-  A muted agent's regenerated answer and an agent not asked past the depth
-  limit left nothing in the room.
+- A regeneration and a delegated turn's child room store and announce what
+  their broadcast blocked, and keep its tasks and observations, as the
+  inbound path does (RMK-287, RFC §8.3). A muted agent's regenerated answer
+  and an agent not asked past the depth limit left nothing in the room.
 - A turn that did not complete no longer reports as one, and a stop keeps its
   tools from running (RMK-282, RFC §6.4, §12.2 step 13s, §21.3). On the
   streaming tool loop, the one production uses, a turn whose stream was

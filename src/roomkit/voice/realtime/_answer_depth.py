@@ -11,9 +11,9 @@ class AnswerDepth:
 
     The model answers what it heard last: the user, at depth 0, or an event
     injected into its session at that event's depth. Its transcription carries
-    that depth plus one, so a chain that runs through a realtime model ends at
-    ``max_chain_depth`` like any other instead of restarting from 0 on every
-    utterance.
+    that depth plus one instead of restarting from 0 on every utterance, so an
+    agent that answers it is held by ``max_chain_depth``. The limit does not
+    hold the model itself: it answers an injection at any depth.
     """
 
     heard: int = 0

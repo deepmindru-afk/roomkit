@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from uuid import uuid4
 
+from roomkit.core.event_router import unanswered
 from roomkit.core.lanes import DeliveryCascade
 from roomkit.core.mixins._response_reader import ResponseReader
 from roomkit.core.mixins._streaming_segments import SegmentWriter
@@ -477,18 +478,7 @@ class InboundStreamingMixin(HelpersMixin):
         if cascade.consume_reentry_budget():
             return True
         await _aclose_stream(sr.stream)
-        trigger = sr.trigger_event
         await self._store_past_reentry_cap(
-            room_id,
-            RoomEvent(
-                room_id=room_id,
-                source=EventSource(
-                    channel_id=sr.source_channel_id, channel_type=sr.source_channel_type
-                ),
-                content=TextContent(body=""),
-                chain_depth=trigger.chain_depth + 1,
-                visibility=trigger.response_visibility or "all",
-                parent_event_id=trigger.parent_event_id,
-            ),
+            room_id, unanswered(sr.trigger_event, sr.source_channel_id, sr.source_channel_type)
         )
         return False

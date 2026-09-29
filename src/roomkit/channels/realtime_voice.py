@@ -48,7 +48,6 @@ from roomkit.telemetry.base import Attr, SpanKind
 from roomkit.telemetry.noop import NoopTelemetryProvider
 from roomkit.voice.backends.base import VoiceBackend
 from roomkit.voice.base import VoiceSession, VoiceSessionState
-from roomkit.voice.realtime._answer_depth import AnswerDepth
 
 try:
     from websockets.exceptions import ConnectionClosed as _ConnectionClosed
@@ -503,17 +502,9 @@ class RealtimeVoiceChannel(
         self._preconnect_audio: dict[str, list[tuple[bool, bytes, float]]] = {}
         self._preconnect_audio_bytes: dict[str, int] = {}
         self._preconnect_audio_dropped: set[str] = set()
-        # Last assistant text per session (for barge-in event context)
-        self._last_assistant_text: dict[str, str] = {}
-        # What each session's model heard last, which its answer's chain
-        # depth follows (RFC §12.4, §8.3).
-        self._answer_depth: dict[str, AnswerDepth] = {}
+        self._init_transcription_state()
         # Barge-in state: set when user interrupts AI, cleared on next final transcription
         self._barge_in_active: set[str] = set()
-        # FIFO lock per session keeping transcription processing in arrival
-        # order — each event runs in its own task and the partial/final code
-        # paths await a different number of hops (see _process_transcription).
-        self._transcription_order_locks: dict[str, asyncio.Lock] = {}
         # Playback onset reported by the transport: physical for local audio,
         # estimated from RTP transmission for SIP.
         self._playback_started_at: dict[str, float] = {}
@@ -1489,11 +1480,9 @@ class RealtimeVoiceChannel(
             self._session_transport_rates.pop(session.id, None)
             self._session_transport_output_rates.pop(session.id, None)
             self._audio_forward_count.pop(session.id, None)
-            self._last_assistant_text.pop(session.id, None)
-            self._answer_depth.pop(session.id, None)
+            self._forget_transcription_state(session.id)
             self._recording_tracks.pop(session.id, None)
             self._barge_in_active.discard(session.id)
-            self._transcription_order_locks.pop(session.id, None)
             self._playback_started_at.pop(session.id, None)
             self._playback_position_ms.pop(session.id, None)
             self._playback_buffer.pop(session.id, None)

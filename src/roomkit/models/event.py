@@ -273,6 +273,16 @@ def is_interruption_marker(event: RoomEvent) -> bool:
     return event.metadata.get(INTERRUPTION_MARKER_KEY) is True
 
 
+def is_tool_call_record(event: RoomEvent) -> bool:
+    """Whether *event* is a tool call's start or end row.
+
+    An activity record, not a message: no agent answers one, so a room of
+    agents does not answer another agent's tool calls, and one not asked past
+    the chain-depth limit leaves no record for it (RFC §8.3).
+    """
+    return event.type in (EventType.TOOL_CALL_START, EventType.TOOL_CALL_END)
+
+
 def answer_text(event: RoomEvent) -> str | None:
     """The text *event* carries as an agent's answer, or ``None``.
 
