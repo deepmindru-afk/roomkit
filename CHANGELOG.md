@@ -48,11 +48,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   caller's own cancellation even when the task swallows it.
 - `AIToolCall.partial` and `StreamToolCall.partial` (RMK-284, RFC §6.4): the
   provider marks a call the response cut before its arguments were complete
-  (the output cap, a content filter); no tool loop runs it, the AI channel's
-  or a realtime reasoning backend's, and the model reads that it was cut, so
-  it can call again with less. The shared rules every provider reads a call
-  by are exported from `roomkit.providers.ai` (`tool_arguments`, `call_cut`,
-  `CallIds`, `cut_call_error`, `is_truncation`).
+  (the output cap, Mistral's context cap included, a content filter); no tool
+  loop runs it, the AI channel's or a realtime reasoning backend's, and the
+  model reads that it was cut, so it can call again with less. The shared
+  rules every provider reads a call by are exported from
+  `roomkit.providers.ai` (`tool_arguments`, `call_cut`, `CallIds`,
+  `cut_call_error`, `is_truncation`).
 - `ChannelOutput.error` (RMK-156): an error a channel met while producing an
   output it still delivers. The router records it as it records a raised
   one, so `ON_ERROR` fires and the caller's `InboundResult.error` carries it,
@@ -253,8 +254,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stored row is updated once the turn's deliveries are done, through
   `update_event` (so `ON_EVENT_UPDATED` fires), best effort. A response
   without tools records it too, unless its provider streams text only, and
-  so does a delegated turn's last message in
-  its child room. The documented read of `loop_end_reason` off the reply now
+  so does a delegated turn's last message in its child room. The documented
+  read of `loop_end_reason` off the reply now
   works on the streaming path.
 - A streamed delegated turn returns its worker's last message as the task's
   output, as a buffered one does (RMK-289); it returned every segment's text
@@ -487,7 +488,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   array as a list to the tool-call callbacks, the GPT-Live hosted delegation
   had its own reading, and Deepgram turned unparseable arguments into `{}`;
   all now go through `tool_arguments` (no arguments or `null` is `{}`,
-  anything else unparseable is kept under `raw`).
+  anything that is not a JSON object is kept under `raw`).
 - A Gemini Live receive loop runs in a context of its own (RMK-280). Started
   by `reconfigure` from inside a tool handler (a handoff), the new
   connection's loop inherited that call's context (its voice session, its AI
@@ -513,8 +514,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   object under `raw`), the same in both modes. On Anthropic, whose complete
   `tool_use` block always parses, a call whose arguments are not valid JSON
   is partial whatever the stop reason, `tool_use` included; the other
-  providers mark one only when the response ended on the output cap or a
-  content filter, and otherwise run it with its text under `raw`. Ollama
+  providers mark one only when the response ended on the output cap
+  (Mistral's context cap included) or a content filter, and otherwise hand it
+  to the loop with its text under `raw`, where the argument check refuses it
+  unless the tool's schema admits it. Ollama
   reads arguments sent as a JSON string as the object they encode, where it
   passed the string under `raw`. Calls the server gave no id (OpenAI
   dialect, Mistral, whose SDK fills a missing id with `"null"`) or the same
@@ -527,7 +530,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tell from one.
 - `StreamToolCallDelta.index` is the call's position among the response's
   calls, in the order they first appeared, on OpenAI and the providers built
-  on it, Mistral and PolarGrid (RMK-284, RFC §6.4): it was the server's
+  on it, and on Mistral and PolarGrid (RMK-284, RFC §6.4): it was the server's
   stream index, which two calls may share. Their complete `StreamToolCall`s
   come out in that order too, where they were sorted by stream index.
   Anthropic's index is still its content block's.
@@ -570,8 +573,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   closed early (a barge-in, a transport that stopped reading) fired
   `ON_AI_RESPONSE` as `completed` and closed its `llm.generate` span `ok`; it
   now fires nothing and the span ends `cancelled`. A schema turn whose answer
-  was refused fails inside its loop: it fires no `ON_AI_RESPONSE`, `ON_ERROR`
-  fires, and its span ends `error`, in both loops. A turn cancelled from
+  was refused fails as an error, in both loops: it fires no `ON_AI_RESPONSE`,
+  `ON_ERROR` fires, and its span ends `error`. A turn cancelled from
   outside left the span open on the non-streaming loop; it ends `cancelled`
   there too. A Cancel that arrived while a round's calls were announced,
   after the model's last event, still ran them; none runs now: a call
@@ -582,9 +585,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The `error` of such an end names the outcome, never the exception, which
   goes to the log: `cancelled` for a call a stop or a cancellation kept from
   running or aborted, `turn failed` for a call still open when the turn
-  failed, and `tool round failed` for a round that raised after a barge-in
-  stopped the response, whose end carried the exception's
-  `<Class>: <message>`. A host that counted usage through
+  failed, and `tool round failed` for a round that raised after its
+  transport stopped reading (a barge-in), where the end carried the
+  exception's `<Class>: <message>`. A host that counted usage through
   `ON_AI_RESPONSE` no longer sees a barge-in turn there: its tokens and tool
   count are on its `llm.generate` span, which ends `cancelled`.
 - Gemini declares a tool whose schema has an `enum` of numbers, booleans or
@@ -732,8 +735,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   running. A call must now name one of the configuration's `tools` when it
   declares any, and match its schema; it passes `BEFORE_TOOL_USE`, whose
   arguments, returned or edited in place, meet the schema again; it fires
-  `ON_TOOL_CALL` (sync hooks on a served call, then observers; a refusal
-  reaches the observers only, once it is sent); it is bounded at 16384
+  `ON_TOOL_CALL` (sync hooks on a served call, then observers; a refusal or
+  a failure reaches the observers only, once it is sent); it is bounded at 16384
   characters; and a call the provider cancels is interrupted and observed
   with `cancelled`, once. A handler's exception is logged; the model reads
   `{"error": "Tool 'x' failed (<ExceptionClass>)"}` (RMK-295) instead of its

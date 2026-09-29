@@ -21,7 +21,8 @@ _MAX_EVICTED_TOTAL = 200
 _MAX_EVICTED_CHARS = 64 * 1024 * 1024
 
 # Ids the store has handed out, remembered well past what any context can
-# still name, so a released id is never given to another result.
+# still name, so a released id is not given to another result while it is
+# among the last this many issued.
 _ISSUED_IDS_REMEMBERED = 10_000
 
 # Chars reserved per read_stored_result page for the JSON envelope — fixed
@@ -131,7 +132,8 @@ class ToolEviction:
     """Stores large tool results and provides paginated re-reading.
 
     When a tool result exceeds ``threshold_tokens``, the full result is
-    stored in a FIFO-bounded buffer and replaced with a head/tail preview
+    stored, each room keeping its most recently stored or read results
+    within the store's bounds, and replaced with a head/tail preview
     bounded in lines and in chars.
     The ``read_stored_result`` tool definition is injected into the AI
     context so the agent can paginate back through the full output.
@@ -190,9 +192,11 @@ class ToolEviction:
     def _free_id(self, room: str, base: str) -> str:
         """*base*, numbered when the room was already given it.
 
-        An id is never given again, even once its result left the store: a
-        placeholder still in the model's context would otherwise read another
-        call's data. A call id reused in a later turn gets ``base_2``.
+        An id is not given again while it is among the last
+        ``_ISSUED_IDS_REMEMBERED`` issued, even once its result left the
+        store: a placeholder still in the model's context would otherwise
+        read another call's data. A call id reused in a later turn gets
+        ``base_2``.
         """
         result_id, n = base, 1
         while (room, result_id) in self._issued or (room, result_id) in self._store:

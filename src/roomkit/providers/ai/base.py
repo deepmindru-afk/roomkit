@@ -443,6 +443,9 @@ class StreamToolCallDelta(BaseModel):
     remains the unit of execution and persistence.
 
     ``arguments_delta`` is the raw fragment, not valid JSON on its own.
+    ``index`` tells the response's calls apart: the call's position among
+    them, in the order they first appeared (OpenAI and the providers built on
+    it, Mistral, PolarGrid), or the content block's index (Anthropic).
     Providers that deliver whole tool calls (Gemini, Ollama) never emit this.
     """
 
