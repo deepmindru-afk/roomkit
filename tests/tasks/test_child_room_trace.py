@@ -60,11 +60,7 @@ def _recording_kit() -> MagicMock:
 
 class TestPersistChildStream:
     async def test_persists_tool_calls_and_text_segments_in_order(self) -> None:
-        kit = MagicMock()
-        kit.store = _recording_store()
-        kit._commit_indexed = kit.store.commit_event
-        kit._commit_blocked_events = AsyncMock()
-        kit._persist_side_effects = AsyncMock()
+        kit = _recording_kit()
 
         async def _stream() -> Any:
             yield "Let me search. "
@@ -126,11 +122,7 @@ class TestPersistChildStream:
         assert sum(isinstance(p, AIImagePart) for p in end.content.result) == 1
 
     async def test_thinking_markers_are_not_persisted(self) -> None:
-        kit = MagicMock()
-        kit.store = _recording_store()
-        kit._commit_indexed = kit.store.commit_event
-        kit._commit_blocked_events = AsyncMock()
-        kit._persist_side_effects = AsyncMock()
+        kit = _recording_kit()
 
         async def _stream() -> Any:
             yield ThinkingDeltaMarker(thinking="hmm")
@@ -142,11 +134,7 @@ class TestPersistChildStream:
         assert [e.type for e in kit.store.added] == [EventType.MESSAGE]
 
     async def test_text_only_stream_persists_single_message(self) -> None:
-        kit = MagicMock()
-        kit.store = _recording_store()
-        kit._commit_indexed = kit.store.commit_event
-        kit._commit_blocked_events = AsyncMock()
-        kit._persist_side_effects = AsyncMock()
+        kit = _recording_kit()
 
         async def _stream() -> Any:
             yield "just "
@@ -181,6 +169,66 @@ class TestAChildTraceCutShort:
         end = rows[-1][1]
         assert (end.tool_id, end.status, end.error) == ("t1", "failed", "turn failed")
 
+    async def test_a_cancelled_stream_keeps_its_text_marked_cancelled(self) -> None:
+        kit = _recording_kit()
+        produced = asyncio.Event()
+
+        async def _stream() -> Any:
+            yield "Half an ans"
+            produced.set()
+            await asyncio.sleep(3600)
+            yield "wer."
+
+        task = asyncio.create_task(
+            _persist_child_stream(kit, "parent::task-5", _sr(_stream()), chain_depth=1)
+        )
+        await asyncio.wait_for(produced.wait(), 5)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+        (message,) = kit.store.added
+        assert message.content.body == "Half an ans"
+        assert message.metadata.get("cancelled") is True
+
+    async def test_a_delegation_cancelled_mid_write_closes_its_response(self) -> None:
+        """Nothing else reads a delegated response: a cancelled one is closed,
+        so its generation ends with the delegation (RFC §12.2 step 13s)."""
+        kit = _recording_kit()
+        writing, release = asyncio.Event(), asyncio.Event()
+        closed: list[bool] = []
+
+        async def _slow_commit(room_id: str, event: RoomEvent) -> RoomEvent:
+            writing.set()
+            await release.wait()
+            kit.store.added.append(event)
+            return event
+
+        kit._commit_indexed = AsyncMock(side_effect=_slow_commit)
+
+        async def _stream() -> Any:
+            try:
+                yield "Looking. "
+                yield ToolCallStartMarker(tool_name="search", tool_id="t1", arguments={})
+                yield "never read"
+            finally:
+                closed.append(True)
+
+        task = asyncio.create_task(
+            _persist_child_stream(kit, "parent::task-6", _sr(_stream()), chain_depth=1)
+        )
+        await asyncio.wait_for(writing.wait(), 5)
+        task.cancel()
+        await asyncio.sleep(0)
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+
+        assert closed == [True]
+        assert [e.type for e in kit.store.added] == [
+            EventType.MESSAGE,
+            EventType.TOOL_CALL_START,
+            EventType.TOOL_CALL_END,
+        ]
+
     async def test_a_delegation_cancelled_while_its_tool_runs_leaves_no_call_open(
         self, streaming: bool
     ) -> None:
@@ -212,16 +260,23 @@ class TestAChildTraceCutShort:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
 
-        # Every start has its end: a start row never stays pending (RFC §23.3).
         rows = await _child_rows(kit)
-        starts = {c.tool_id for t, c in rows if t == EventType.TOOL_CALL_START}
-        ends = {c.tool_id: c for t, c in rows if t == EventType.TOOL_CALL_END}
-        assert starts == set(ends)
-        assert all((c.status, c.error) == ("failed", "cancelled") for c in ends.values())
         if streaming:
-            assert starts == {"tc1"}
-            message = next(c for t, c in rows if t == EventType.MESSAGE)
-            assert message.body == "Working."
+            # Every start has its end: a start row never stays pending, and
+            # the text already produced is kept, marked cancelled (RFC §23.3).
+            assert [(t, getattr(c, "status", None)) for t, c in rows] == [
+                (EventType.MESSAGE, None),
+                (EventType.TOOL_CALL_START, "pending"),
+                (EventType.TOOL_CALL_END, "failed"),
+            ]
+            assert rows[2][1].error == "cancelled"
+            assert rows[0][1].body == "Working."
+        else:
+            # The buffered loop writes its rows once the turn ends: a turn
+            # cancelled mid-tool leaves none, so none is left open.
+            assert rows == []
+        # The response is closed, so its generation ends with the delegation.
+        assert not kit.channels["worker"]._active_loops
         await kit.close()
 
     async def test_a_tool_end_keeps_its_structured_copy(self, streaming: bool) -> None:
@@ -267,13 +322,13 @@ def _delegating_kit(provider: MockAIProvider, handler: Any, tool: str) -> RoomKi
     return kit
 
 
-async def _child_rows(kit: RoomKit) -> list[tuple[EventType, Any]]:
+async def _child_events(kit: RoomKit) -> list[RoomEvent]:
     (child,) = [r for r in await kit.store.list_rooms() if r.id != "parent"]
-    return [
-        (e.type, e.content)
-        for e in await kit.store.list_events(child.id)
-        if e.source.channel_id == "worker"
-    ]
+    return [e for e in await kit.store.list_events(child.id) if e.source.channel_id == "worker"]
+
+
+async def _child_rows(kit: RoomKit) -> list[tuple[EventType, Any]]:
+    return [(e.type, e.content) for e in await _child_events(kit)]
 
 
 class TestRunAgentNonStreaming:

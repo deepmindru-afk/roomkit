@@ -268,17 +268,12 @@ class InboundStreamingMixin(HelpersMixin):
             # (which classify + surface it) AND be returned to the caller via
             # ``_StreamingResult.error``, instead of vanishing with no card.
             try:
-                async for _ in segment_stream():
-                    pass
-            except asyncio.CancelledError:
-                await writer.end_cancelled(reader)
-                raise
+                await writer.drain(reader)
             except Exception as exc:
                 stream_error = exc
                 self._log_stream_failure(
                     exc, "stream consumption (no targets)", room_id, headless=True
                 )
-                await writer.end_failed(reader)
                 await self._fire_error_hook(
                     room_id,
                     context,

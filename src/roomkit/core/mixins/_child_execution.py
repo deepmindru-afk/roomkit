@@ -9,10 +9,10 @@ as the structured payload of the result tool the delegation forces.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from uuid import uuid4
 
 from roomkit.core.mixins._response_reader import ResponseReader
 from roomkit.core.mixins._result_capture import capture_result
@@ -27,6 +27,7 @@ from roomkit.models.event import (
     answer_text,
 )
 from roomkit.models.store_filter import EventFilter
+from roomkit.providers.utils import _aclose_stream
 
 if TYPE_CHECKING:
     from roomkit.core.framework import RoomKit
@@ -71,22 +72,28 @@ async def _persist_child_stream(
     answer, as a non-streaming worker's last message is.
     """
     writer = SegmentWriter(
-        kit, sr, _TraceSink(kit, child_room_id), room_id=child_room_id, chain_depth=chain_depth
+        kit,
+        sr,
+        _TraceSink(kit, child_room_id),
+        room_id=child_room_id,
+        chain_depth=chain_depth,
+        correlation_id=uuid4().hex,
     )
-    reader = ResponseReader(sr.stream)
+    failure: Exception | None = None
     try:
-        async for _ in writer.read(reader):
-            pass
-        await writer.flush_text()
-    except asyncio.CancelledError:
-        await writer.end_cancelled(reader)
-        raise
-    except Exception:
-        await writer.end_failed(reader)
-        raise
+        await writer.drain(ResponseReader(sr.stream))
+    except Exception as exc:
+        # A failed turn still records its end, as a room's does (RFC §6.4).
+        failure = exc
+    finally:
+        # Nothing else reads this response: closing it here ends a cut-short
+        # generation (RFC §12.2 step 13s).
+        await _aclose_stream(sr.stream)
     await writer.record_on_last_message()
+    if failure is not None:
+        raise failure
     return next(
-        (e.content.body for e in reversed(writer.persisted) if isinstance(e.content, TextContent)),
+        (text for row in reversed(writer.persisted) if (text := answer_text(row)) is not None),
         "",
     )
 

@@ -440,6 +440,14 @@ class TestADelegatedTurn:
 
         assert task.result.status == "failed"
         assert "upstream 500" in (task.result.error or "")
+        # The child room records the turn's end on its last message, as a
+        # room does, whichever loop ran it (RMK-291).
+        messages = [
+            e
+            for e in await kit.store.list_events(task.child_room_id)
+            if e.type == EventType.MESSAGE and e.source.channel_id == "worker"
+        ]
+        assert messages[-1].metadata.get("loop_end_reason") == "error"
         await kit.close()
 
     async def test_a_worker_returns_its_answer_and_records_its_end(self, streaming: bool) -> None:

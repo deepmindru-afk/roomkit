@@ -5,12 +5,13 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncGenerator
+from contextlib import aclosing
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Protocol
 
 from roomkit.channels._tool_event_result import tool_event_payload
 from roomkit.core.mixins.helpers import _RECENT_EVENTS_LIMIT
-from roomkit.models.enums import EventStatus, EventType, HookTrigger
+from roomkit.models.enums import EventStatus, EventType, HookTrigger, Visibility
 from roomkit.models.event import EventSource, RoomEvent, TextContent, ToolCallContent
 from roomkit.models.streaming import (
     LoopEndMarker,
@@ -45,12 +46,10 @@ class SegmentWriter:
     """The one writer of a streamed turn's timeline rows.
 
     A stream produces three kinds of row — a text segment, a tool call's
-    start, its end — and each used to build its event and decide for itself
-    whether it crossed the ``BEFORE_BROADCAST`` hooks. The text did and the
-    two markers did not, so a hook's decision (a display label, a PII
-    rewrite, a refusal) never reached a stored tool row. They are verbs of
-    one writer here, and the commit is the writer's own step, through its
-    sink: a fourth kind of row cannot be written past it.
+    start, its end — and they are verbs of one writer, whose commit is its
+    own step, through its sink: a hook's decision (a display label, a PII
+    rewrite, a refusal) reaches every kind of row alike, and a fourth kind
+    cannot be written past it.
 
     Each verb returns the row it committed, or ``None`` when there was
     nothing to write, a hook refused it, or the persistence policy excluded
@@ -69,7 +68,7 @@ class SegmentWriter:
         *,
         room_id: str,
         chain_depth: int,
-        visibility: str = "all",
+        visibility: str = Visibility.ALL,
         response_visibility: str | None = None,
         correlation_id: str | None = None,
         parent_event_id: str | None = None,
@@ -181,6 +180,25 @@ class SegmentWriter:
                 for row in await self.take(delta):
                     yield row
 
+    async def drain(self, reader: ResponseReader) -> None:
+        """Read the response to its end, writing its rows, those of a cut-short turn included.
+
+        For a response nobody renders as it streams (a headless turn, a
+        delegated one): a cancellation or a failure writes what the turn
+        leaves (:meth:`end_cancelled`, :meth:`end_failed`), then propagates.
+        """
+        try:
+            async with aclosing(self.read(reader)) as items:
+                async for _ in items:
+                    pass
+            await self.flush_text()
+        except asyncio.CancelledError:
+            await self.end_cancelled(reader)
+            raise
+        except Exception:
+            await self.end_failed(reader)
+            raise
+
     async def end_cancelled(self, reader: ResponseReader) -> None:
         """Write what a cancelled turn leaves: open calls closed, text kept as cancelled.
 
@@ -202,10 +220,9 @@ class SegmentWriter:
 
         ``sr.response_metadata`` (the turn's ``AIContext.response_metadata``,
         the same live record) rides every MESSAGE segment as it stands when
-        the segment is persisted — persisted before broadcast, so turn-level
-        attribution, including what a tool handler wrote mid-loop, lands in
-        the stored row and in the stream_end frame without any post-hoc
-        rewrite.
+        the segment is committed, so turn-level attribution, including what a
+        tool handler wrote mid-loop, lands in the stored row (and, in a room,
+        in the stream_end frame) without any post-hoc rewrite.
 
         ``cancelled`` marks a segment cut short by an interrupted turn, so a
         reader can tell a finished answer from one the user stopped.
@@ -339,7 +356,7 @@ class SegmentWriter:
             await asyncio.wait(set(self._writing))
 
     async def _write(self, event: RoomEvent, *, exclude: set[str] | None) -> RoomEvent | None:
-        """Gate and commit a row, even when the read that produced it is cancelled.
+        """Commit a row through the sink, even when the read that produced it is cancelled.
 
         A barge-in cancels the stream's in-flight read wherever it stands,
         possibly halfway through a commit. The row's text has already left
