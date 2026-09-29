@@ -10,7 +10,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Protocol
 
 from roomkit.channels._tool_event_result import tool_event_payload
-from roomkit.core.mixins.helpers import _RECENT_EVENTS_LIMIT, _refuses_writes
+from roomkit.core.mixins.helpers import _RECENT_EVENTS_LIMIT
 from roomkit.models.enums import EventStatus, EventType, HookTrigger, Visibility
 from roomkit.models.event import EventSource, RoomEvent, TextContent, ToolCallContent
 from roomkit.models.streaming import (
@@ -410,9 +410,10 @@ class LaneSink:
         self._context = context
         self._cascade = cascade
         self._plan_source = plan_source
-        # The room as the run's context read it, and the kit's close count then.
-        self._refusing = _refuses_writes(context.room)
-        self._close_epoch = kit._room_close_epoch
+        # The room's status as last read, and the kit's close count then:
+        # None until the first row reads it.
+        self._refusing = False
+        self._close_epoch: int | None = None
 
     async def commit(self, event: RoomEvent, *, exclude: set[str] | None) -> RoomEvent | None:
         if await self._room_refuses_writes():
@@ -425,17 +426,19 @@ class LaneSink:
         return await self._lane(event, exclude=exclude, hook_result=hook_result)
 
     async def _room_refuses_writes(self) -> bool:
-        """Whether the room refuses this row (RFC §5.1), read once per run.
+        """Whether the room refuses this row (RFC §5.1).
 
         The status gate holds at every point the timeline grows: a room closed
-        mid-stream takes no further row. The run holds the room as its context
-        read it, and reads it again only when the kit closed or archived a
-        room since, so a stream does not cost a store read per row.
+        mid-stream takes no further row. The run reads the status at its first
+        row, and again only once the kit has closed or archived a room since,
+        so a stream does not cost a store read per row. The count is taken
+        before the read and kept only once the read succeeded: a close landing
+        meanwhile, or a read that failed, is read again at the next row.
         """
         epoch = self._kit._room_close_epoch
         if epoch != self._close_epoch:
-            self._close_epoch = epoch
             self._refusing = await self._kit._room_refuses_writes(self._room_id)
+            self._close_epoch = epoch
         return self._refusing
 
     async def _gate(self, event: RoomEvent) -> tuple[RoomEvent, SyncPipelineResult] | None:
@@ -458,6 +461,11 @@ class LaneSink:
         sync_result = await self._kit._hook_engine.run_sync_hooks(
             room_id, HookTrigger.BEFORE_BROADCAST, event, self._context
         )
+        # The hooks ran without the room lock: a close meanwhile refuses the
+        # row, which is then neither committed nor recorded as blocked.
+        if await self._room_refuses_writes():
+            logger.debug("Room %s closed during the hooks; %s not committed", room_id, event.type)
+            return None
         if sync_result.hook_errors:
             logger.warning(
                 "BEFORE_BROADCAST hook error on streamed %s (room %s): %s",

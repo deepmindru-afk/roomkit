@@ -169,7 +169,7 @@ class HelpersMixin:
     _persistence_policy: Any  # PersistencePolicy | None — set by RoomKit.__init__
     _resource_lease: Any  # RoomKit._resource_lease — the close()-ordering hold on the store
     _lanes: Any  # RoomLaneRegistry — set by RoomKit.__init__
-    _room_close_epoch: int  # bumped by _note_room_closed — set by RoomKit.__init__
+    _room_close_epoch: int  # counted by _store_refusing_room — set by RoomKit.__init__
 
     # -- Persistence helpers (policy-aware) --
     #
@@ -197,16 +197,18 @@ class HelpersMixin:
         """
         return _refuses_writes(await self._store.get_room(room_id))
 
-    def _note_room_closed(self) -> None:
-        """Record that this kit closed or archived a room.
+    async def _store_refusing_room(self, room: Room) -> Room:
+        """Store *room* in a status that refuses writes (CLOSED, ARCHIVED).
 
-        A stream checks the room it read at its start before each row and
-        reads it again only when this moved, so a row after a close is
-        refused without a store read per row (RFC §5.1). A room closed by
-        another process, or through the store directly, is seen at the next
-        turn.
+        The one writer of such a status: it counts the change, and a stream,
+        which reads the status once and again only when that count moved,
+        refuses its next row (RFC §5.1). A status changed elsewhere (another
+        process, another kit sharing the store, the store directly) is seen
+        by the next response.
         """
+        stored = await self._store.update_room(room)
         self._room_close_epoch += 1
+        return stored
 
     async def _refuse_closed_room(
         self,

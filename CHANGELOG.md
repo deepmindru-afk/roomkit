@@ -345,13 +345,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- A streamed turn no longer reads the room for each row it writes
-  (RMK-302): the closed-room gate (RMK-283) cost a `store.get_room`, a
-  SELECT on Postgres, per segment and per tool row. The stream holds the
-  room as its context read it and reads it again only when the kit closed
-  or archived a room since, and the gate now runs before `BEFORE_BROADCAST`,
-  as on the inbound pipeline. A room closed by another process, or through
-  the store directly, is seen at the next turn.
 - Data framed for a model cannot close its own block (RMK-314): a tool
   result in the tool-usage digest (system prompt) escaped only the exact
   `</tool_result>`, so `</TOOL_RESULT>`, `</tool_result >` or
@@ -466,11 +459,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   session with no conversation yet now reconnects fresh, and a session with
   one keeps its context and receives the new instruction with its next
   non-silent injection, the handoff greeting in a pipeline handoff.
-- A room closed mid-stream takes no further streamed row (RMK-283, RFC
-  §5.1). Streamed segments and tool rows were committed through a path that
-  skipped the room's status, so a room closed during a turn kept receiving
-  them as delivered events; every write through `_commit_and_deliver` now
-  checks it.
+- A room closed mid-stream takes no further streamed row (RMK-283,
+  RMK-302, RFC §5.1). Streamed segments and tool rows were committed through
+  a path that skipped the room's status, so a room closed during a turn kept
+  receiving them as delivered events, and a hook blocking one wrote a
+  BLOCKED record into the closed room. A stream now reads the room's status
+  at its first row, again only once the kit has closed or archived a room
+  since (one store read per stream, not one per row), and again after a
+  row's `BEFORE_BROADCAST` hooks, which run without the room lock; a refused
+  row is neither committed nor recorded. A status changed elsewhere (another
+  process, another `RoomKit` sharing the store, a direct write to the store,
+  a reopen included) is seen by the next response, not mid-stream.
 - The external tool handler is not asked about a call the response cut
   (RMK-284, RFC §6.4). On the streaming external path, a call marked
   `partial` reached `process_tool_call` like any other; it is now refused

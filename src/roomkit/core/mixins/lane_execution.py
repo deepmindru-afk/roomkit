@@ -244,9 +244,11 @@ class LaneExecutionMixin(HelpersMixin):
         injected events are committed after their triggering event.
 
         The room's status gate (RFC §5.1) reads the room before the commit.
-        A run that gates its rows itself, against the room it read once
-        (a stream's :class:`LaneSink`), passes ``gate_status=False``: with a
-        resolved ``source`` the commit then reads nothing.
+        A run that gates its rows itself (a stream's :class:`LaneSink`, which
+        reads the status once and again after a close) passes
+        ``gate_status=False``. With a resolved ``source`` the commit then
+        takes no lock and reads nothing, but for the anchor of a row the
+        persistence policy excludes; a ``str`` source is resolved per event.
 
         Returns the committed event, or ``None`` when the persistence
         policy excluded it (delivered, unstored — RFC §14.3).

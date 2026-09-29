@@ -216,8 +216,7 @@ class RoomLifecycleMixin(HelpersMixin):
             room = room.model_copy(
                 update={"status": RoomStatus.CLOSED, "closed_at": datetime.now(UTC)}
             )
-            result = await self._store.update_room(room)
-            self._note_room_closed()
+            result = await self._store_refusing_room(room)
             await self._fire_lifecycle_hook(
                 room_id,
                 HookTrigger.ON_ROOM_CLOSED,
@@ -254,8 +253,7 @@ class RoomLifecycleMixin(HelpersMixin):
                     "updated_at": datetime.now(UTC),
                 }
             )
-            result = await self._store.update_room(room)
-            self._note_room_closed()
+            result = await self._store_refusing_room(room)
             await self._emit_framework_event(
                 "room_archived", room_id=room_id, data={"room_id": room_id}
             )
@@ -342,8 +340,7 @@ class RoomLifecycleMixin(HelpersMixin):
                     room = room.model_copy(
                         update={"status": RoomStatus.CLOSED, "closed_at": datetime.now(UTC)}
                     )
-                    await self._store.update_room(room)
-                    self._note_room_closed()
+                    await self._store_refusing_room(room)
                     await self._emit_system_event(
                         room_id,
                         EventType.SYSTEM,
