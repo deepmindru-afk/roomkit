@@ -14,6 +14,7 @@ from roomkit.models.event import EventSource, RoomEvent
 from roomkit.models.response_metadata import ResponseMetadata
 
 if TYPE_CHECKING:
+    from roomkit.core.event_router import BroadcastResult
     from roomkit.core.locks import RoomLockManager
     from roomkit.models.channel import ChannelBinding
     from roomkit.models.context import RoomContext
@@ -259,6 +260,30 @@ class RegenerateMixin(HelpersMixin):
                 for r in broadcast_result.reentry_events
             ]
 
+        return await self._finish_regeneration(
+            room_id,
+            context,
+            trigger,
+            broadcast_result,
+            regenerated,
+            pending_streams,
+            broadcast_error=broadcast_error,
+            error_source=error_source,
+        )
+
+    async def _finish_regeneration(
+        self,
+        room_id: str,
+        context: RoomContext,
+        trigger: RoomEvent,
+        broadcast_result: BroadcastResult,
+        regenerated: list[RoomEvent],
+        pending_streams: list[Any],
+        *,
+        broadcast_error: Exception | None,
+        error_source: EventSource | None,
+    ) -> InboundResult:
+        """Deliver what a regeneration produced, off the room lock, and report it."""
         # Outside the room lock (RFC §10.1): the regenerated answers reach
         # transports through the room's delivery lane — which also fires their
         # AFTER_BROADCAST hooks once each delivery set completes (step 16) —
@@ -268,7 +293,7 @@ class RegenerateMixin(HelpersMixin):
         # A non-streaming regeneration failure fires ON_ERROR here (the streaming
         # path fires its own inside _process_streaming_responses), so the host
         # renders an error card for a failed regenerate on either path.
-        if broadcast_error is not None and error_source is not None and trigger is not None:
+        if broadcast_error is not None and error_source is not None:
             await self._fire_error_hook(
                 room_id,
                 context,
