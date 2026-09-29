@@ -320,7 +320,9 @@ class AIToolLoopRulesMixin:
             return context.model_copy(update={"tools": []})
 
         tools: list[Any] | None = None
-        if loop_ctx.all_context_tools:
+        # An empty resolved toolset is a real one (``None`` means the loop was
+        # built without context): its re-filter declares nothing.
+        if loop_ctx.all_context_tools is not None:
             tools = self._apply_tool_filters(loop_ctx.all_context_tools)
 
         # A result evicted mid-loop replaces itself with a preview that tells

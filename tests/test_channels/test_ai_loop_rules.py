@@ -87,15 +87,12 @@ async def test_prepare_round_context_drives_both_paths(monkeypatch, streaming: b
     )
     await _drain(output)
 
-    # The loop consulted the shared rule at least once...
-    assert invocations["n"] >= 1
-    # ...and honored the context it returned: the generation following the
-    # patched rule ran with tools stripped.
-    assert not provider.calls[-1].tools
-    if not streaming:
-        # Sanity: the pre-loop generation (before any rule ran) had tools,
-        # so the stripped last call proves the rule's effect.
-        assert provider.calls[0].tools
+    # Both loops prepare every round, the first included, with the shared
+    # rule (RMK-293)...
+    assert invocations["n"] == len(provider.calls)
+    # ...and honor the context it returned: every generation ran with the
+    # tools the patched rule stripped.
+    assert all(not call.tools for call in provider.calls)
 
 
 @pytest.mark.parametrize("streaming", [False, True])

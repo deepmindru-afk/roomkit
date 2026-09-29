@@ -132,8 +132,6 @@ class AIGenerationHost(Protocol):
     Methods provided by other mixins:
         _build_context: ``AIContextMixin`` — builds AI context from room state.
         _drain_steering_queue: ``AISteeringMixin`` — drains pending directives.
-        _get_loop_ctx: ``AISteeringMixin`` — the current tool-loop context.
-        _apply_tool_filters: ``AIToolPolicyMixin`` — policy, gating, Tool Search.
         _generate_with_retry: ``AIResilienceMixin`` — generate with retry/fallback.
         _publish_thinking_event: ``AIEventsMixin`` — publish thinking events.
         _publish_tool_event: ``AIEventsMixin`` — publish tool call events.
@@ -208,8 +206,6 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
     # AIContextMixin whose return type must be preserved for subclasses
     # (Agent.super()._build_context()). Call sites use type: ignore instead.
     _drain_steering_queue: Any  # see AIGenerationHost
-    _get_loop_ctx: Any  # see AIGenerationHost
-    _apply_tool_filters: Any  # see AIGenerationHost
     _generate_with_retry: Any  # see AIGenerationHost
     _record_declared_tools: Any  # see AIGenerationHost
     _publish_thinking_event: Any  # see AIGenerationHost
@@ -255,18 +251,6 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
             _adopt_hook_toolset(loop_ctx, declared, gen_event.ai_context.tools)
         return gen_event.ai_context, False
 
-    def _first_round_context(self, ai_context: AIContext) -> AIContext:
-        """The turn's first round: Tool Search's collapse of the toolset the hook left.
-
-        The hook saw the whole catalogue (RFC §6.4); both loops declare the
-        same first round from what it left, as every later round does.
-        """
-        loop_ctx = self._get_loop_ctx()
-        if loop_ctx.all_context_tools is None:
-            return ai_context
-        tools = self._apply_tool_filters(loop_ctx.all_context_tools)
-        return ai_context.model_copy(update={"tools": tools})
-
     def _log_provider_error(self, exc: ProviderError) -> None:
         """One log line for a failed turn, its level by what the status says."""
         if exc.status_code == 404:
@@ -304,7 +288,6 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
         ai_context, blocked = await self._fire_before_generation_hook(ai_context, event)
         if blocked:
             return ChannelOutput.empty()
-        ai_context = self._first_round_context(ai_context)
         telemetry = self._telemetry_provider
         _t0 = time.monotonic()
         span_id = telemetry.start_span(
@@ -582,10 +565,13 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
                 return ToolLoopResult(
                     response=AIResponse(content="", tool_calls=[]), reason="cancelled"
                 )
+            state = self._new_loop_state("Tool loop")
+            # The first round is prepared as every later one, and as the
+            # streaming loop's: Tool Search collapses what the hook left.
+            context = self._prepare_round_context(context, loop_ctx, state, 0)
             response: AIResponse = await _generate(context)
             telemetry = self._telemetry_provider
             room_id = context.room.room.id if context.room else None
-            state = self._new_loop_state("Tool loop")
             reason: LoopEndReason = "completed"
 
             if response.thinking and room_id:

@@ -35,6 +35,8 @@ from roomkit.sandbox.tools import SANDBOX_PREAMBLE as _SANDBOX_PREAMBLE
 from roomkit.sandbox.tools import SANDBOX_TOOL_PREFIX as _SANDBOX_TOOL_PREFIX
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from roomkit.channels._skill_activation import SkillActivationMemory
     from roomkit.channels._tool_usage import ToolUsageMemory
     from roomkit.channels._turn_config import AIChannelTurnConfig
@@ -107,7 +109,7 @@ class AIContextHost(Protocol):
         _room_tool_defs: ``AIChannel`` — the tools declared in one room's turns only.
         _orchestration_tool_names: ``AIChannel`` — what Tool Search never defers.
         _skill_tools: ``AIToolsMixin`` — builds skill tool definitions.
-        _apply_tool_filters: ``AIToolPolicyMixin`` — applies policy + gating.
+        _reachable_tools: ``AIToolPolicyMixin`` — the tools policy and gating admit.
         _policy_allows: ``AIToolPolicyMixin`` — the turn's policy admits a name.
         _get_loop_ctx: ``AISteeringMixin`` — returns the current tool-loop context.
     """
@@ -145,8 +147,7 @@ class AIContextHost(Protocol):
     def _room_tool_defs(self, room_id: str) -> list[AITool]: ...
     def _orchestration_tool_names(self, room_id: str | None) -> set[str]: ...
     def _skill_tools(self) -> list[AITool]: ...
-    def _apply_tool_filters(self, tools: list[AITool]) -> list[AITool]: ...
-    def _reachable_tools(self, tools: list[AITool]) -> list[AITool]: ...
+    def _reachable_tools(self, tools: Iterable[AITool]) -> list[AITool]: ...
     def _policy_allows(self, name: str) -> bool: ...
     def _get_loop_ctx(self) -> _ToolLoopContext: ...
 
@@ -192,7 +193,6 @@ class AIContextMixin:
     _room_tool_defs: Any  # see AIContextHost
     _orchestration_tool_names: Any  # see AIContextHost
     _skill_tools: Any  # see AIContextHost
-    _apply_tool_filters: Any  # see AIContextHost
     _reachable_tools: Any  # see AIContextHost
     _declared_once: Any  # AIToolsMixin: the host's tools, each name once
     _policy_allows: Any  # see AIContextHost

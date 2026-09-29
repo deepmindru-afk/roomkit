@@ -187,6 +187,20 @@ class AIToolPolicyMixin:
                 origin = self._declaration_origin(tool.name, loop_ctx)
                 declared[tool.name] = DeclaredTool.from_tool(tool, origin)
 
+    def _never_deferred(self, loop_ctx: _ToolLoopContext) -> set[str]:
+        """The tools Tool Search never defers, declared at every round.
+
+        The host's pinned, the channel's own, what orchestration injected for
+        the room, and what the generation hook added (RFC §6.4, §21.1): the
+        keep-set's floor, and what ``find_tools`` never names.
+        """
+        return (
+            self._tool_search_pinned
+            | self._NEVER_DEFERRED
+            | self._orchestration_tool_names(loop_ctx.room_id)
+            | loop_ctx.hook_pinned
+        )
+
     def _declaration_origin(self, name: str, loop_ctx: _ToolLoopContext) -> ToolDeclarationOrigin:
         """Why a tool is in this round's declaration (``ToolDeclarationOrigin``).
 
@@ -298,18 +312,10 @@ class AIToolPolicyMixin:
         # discretionary tool names that stay visible this round.
         keep: set[str] | None = None
         if loop_ctx.tool_search_active:
-            # pinned (config) + revealed (find_tools this loop) + sticky (tools
-            # already used this conversation, re-exposed so they stay callable)
-            # + the channel's own, orchestration's and the generation hook's
-            # additions, never deferred.
-            keep = (
-                self._tool_search_pinned
-                | loop_ctx.revealed_tools
-                | loop_ctx.sticky_tools
-                | self._NEVER_DEFERRED
-                | self._orchestration_tool_names(loop_ctx.room_id)
-                | loop_ctx.hook_pinned
-            )
+            # What is never deferred + revealed (find_tools this loop) + sticky
+            # (tools already used this conversation, re-exposed so they stay
+            # callable).
+            keep = self._never_deferred(loop_ctx) | loop_ctx.revealed_tools | loop_ctx.sticky_tools
         result: list[AITool] = []
         for tool in tools:
             name = tool.name

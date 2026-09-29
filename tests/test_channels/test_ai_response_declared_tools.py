@@ -1,10 +1,10 @@
 """``ON_AI_RESPONSE`` reports the tools the provider received, revealed ones included.
 
-``BEFORE_AI_GENERATION`` fires once, with the toolset the turn starts from.
-Under Tool Search that is the pinned floor plus ``find_tools`` / ``list_tools``;
-a tool ``find_tools`` reveals enters the declaration on the next round only,
-and no event carried it: a host recording "what the model was offered" from
-that hook never saw a revealed tool. ``AIResponseEvent.declared_tools`` is the
+``BEFORE_AI_GENERATION`` fires once, with the toolset the turn starts from:
+under Tool Search the whole catalogue, not what a round declares. A tool
+``find_tools`` reveals enters the declaration on the next round only, so a
+host recording "what the model was offered" reads it from
+``AIResponseEvent.declared_tools``, which is the
 union, over the turn's generation rounds, of what each provider call declared,
 each entry naming why Tool Search let it through.
 """

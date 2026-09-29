@@ -396,12 +396,12 @@ async def test_under_tool_search_a_tool_the_hook_added_is_declared_at_every_roun
     assert calls.ran == ["export_report"]
 
 
-async def test_nothing_declared_nothing_callable(streaming: bool) -> None:
+async def test_nothing_declared_nothing_callable() -> None:
     """A handler that would serve any name (an orchestration wrapper) is not
-    reached by a call the turn never declared (RFC §6.4)."""
-    provider = MockAIProvider(
-        ai_responses=[_round("c0", "delegate_to_researcher"), _DONE], streaming=streaming
-    )
+    reached by a call the turn never declared (RFC §6.4). Buffered only: the
+    streaming loop runs no tool round for a turn that declares no tool, and
+    the gate is the one both loops share."""
+    provider = MockAIProvider(ai_responses=[_round("c0", "delegate_to_researcher"), _DONE])
     calls = _Recorder()
     ch = AIChannel("ai1", provider=provider)
     # Installed outside the channel's own dispatch, as orchestration's wrapper is.
@@ -409,6 +409,54 @@ async def test_nothing_declared_nothing_callable(streaming: bool) -> None:
 
     run = await _turn(ch)
 
-    # The streaming loop runs no tool round for a turn that declares none.
-    assert all(call.failed for call in run.calls)
+    assert run.calls[0].failed
     assert calls.ran == []
+
+
+async def test_under_tool_search_find_tools_never_names_a_tool_the_hook_added(
+    streaming: bool,
+) -> None:
+    """Declared at every round already, as a pinned tool is (RFC §6.4, §21.1)."""
+    provider = MockAIProvider(
+        ai_responses=[_round("c0", "find_tools", {"query": "export report"}), _DONE],
+        streaming=streaming,
+    )
+    ch = _searching(provider, _Recorder(), _READ, _WIRE)
+
+    async def hook(gen_event: AIGenerationEvent) -> SyncPipelineResult:
+        tools = [*gen_event.ai_context.tools, _EXPORT]
+        gen_event.ai_context = gen_event.ai_context.model_copy(update={"tools": tools})
+        return SyncPipelineResult(allowed=True)
+
+    ch._before_generation_hook = hook
+
+    run = await _turn(ch)
+
+    assert "export_report" not in str(run.calls[0].result)
+    assert "export_report" not in ch._tool_usage.tool_names("r1")
+
+
+async def test_under_tool_search_a_kept_deferred_tool_is_recovered_at_call_time(
+    streaming: bool,
+) -> None:
+    """A round that declares nothing still admits a deferred tool the hook
+    kept, recovered from the catalogue at call time (RFC §6.4)."""
+    provider = MockAIProvider(
+        ai_responses=[_round("c0", "wire_money"), _DONE], streaming=streaming
+    )
+    calls = _Recorder()
+    ch = _searching(provider, calls, _READ, _WIRE)
+
+    async def hook(gen_event: AIGenerationEvent) -> SyncPipelineResult:
+        kept = [
+            t for t in gen_event.ai_context.tools if t.name not in {"find_tools", "list_tools"}
+        ]
+        gen_event.ai_context = gen_event.ai_context.model_copy(update={"tools": kept})
+        return SyncPipelineResult(allowed=True)
+
+    ch._before_generation_hook = hook
+
+    await _turn(ch)
+
+    assert _declared(provider.calls[0]) == set()
+    assert calls.ran == ["wire_money"]

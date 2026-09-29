@@ -222,6 +222,7 @@ class AIToolsMixin:
     _get_loop_ctx: Any  # see AIToolsHost
     _apply_tool_filters: Any  # see AIToolsHost
     _reachable_tools: Any  # see AIToolsHost
+    _never_deferred: Any  # AIToolPolicyMixin: what Tool Search never defers
     _gate_refusal: Any  # see AIToolsHost
     extra_tools: Any  # AIChannel property: user + orchestration-injected tools
     _orchestration_tool_names: Any  # AIChannel: never deferred behind Tool Search
@@ -272,6 +273,37 @@ class AIToolsMixin:
         # Parity with _handle_find_tools: the reveal persists across turns.
         self._tool_usage.record_revealed(loop_ctx.room_id, {name})
         return tool
+
+    def _declared_schema(
+        self, name: str, declared_tools: list[AITool] | None
+    ) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
+        """The schema a call to *name* is validated against, or why it is undeclared.
+
+        Once the turn's toolset is resolved, a call must name a tool the round
+        declared, an empty declaration included, or one Tool Search recovers
+        from the turn's catalogue (RFC §6.4); the channel's own tools answer
+        for themselves. A loop built without context (``all_context_tools``
+        is ``None``) has no declaration to hold the call to.
+        """
+        params = self._tool_parameters(name, declared_tools)
+        declared_names = {tool.name for tool in declared_tools or []}
+        channel_managed = (
+            name in self._SKILL_INFRA_TOOLS
+            or name in TOOL_SEARCH_INFRA_TOOL_NAMES
+            or name in self._sandbox_tool_names()
+        )
+        resolved = bool(declared_names) or self._get_loop_ctx().all_context_tools is not None
+        if not resolved or name in declared_names or channel_managed:
+            return params, None
+        recovered = self._recover_deferred_tool(name)
+        if recovered is None:
+            logger.warning("Provider requested undeclared tool %s", name)
+            return None, self._undeclared_tool_error(name)
+        # The model skipped find_tools but named a real catalogue tool: the
+        # reveal happened at call time instead of ahead of it, and every
+        # guard after this one still applies.
+        logger.info("Recovered deferred catalogue tool %s at call time", name)
+        return recovered.parameters, None
 
     def _undeclared_tool_error(self, name: str) -> dict[str, str]:
         """Actionable payload for an undeclared call that could not be recovered."""
@@ -389,29 +421,9 @@ class AIToolsMixin:
 
             # Execution guard: argument validation against the declared schema
             # (fail-closed) — reject malformed calls before any other gate.
-            params = self._tool_parameters(tc.name, declared_tools)
-            declared_names = {tool.name for tool in declared_tools or []}
-            channel_managed = (
-                tc.name in self._SKILL_INFRA_TOOLS
-                or tc.name in TOOL_SEARCH_INFRA_TOOL_NAMES
-                or tc.name in self._sandbox_tool_names()
-            )
-            # Once the turn's toolset is resolved, an empty declaration is a
-            # real one: nothing declared, nothing callable (RFC §6.4). A loop
-            # built without context (``all_context_tools`` is ``None``) has
-            # no declaration to hold the call to.
-            resolved = bool(declared_names) or self._get_loop_ctx().all_context_tools is not None
-            undeclared = resolved and tc.name not in declared_names
-            if undeclared and not channel_managed:
-                recovered = self._recover_deferred_tool(tc.name)
-                if recovered is None:
-                    logger.warning("Provider requested undeclared tool %s", tc.name)
-                    return await rejected(self._undeclared_tool_error(tc.name))
-                # The model skipped find_tools but named a real catalogue tool:
-                # the reveal happened at call time instead of ahead of it, and
-                # every guard below still applies.
-                logger.info("Recovered deferred catalogue tool %s at call time", tc.name)
-                params = recovered.parameters
+            params, undeclared = self._declared_schema(tc.name, declared_tools)
+            if undeclared is not None:
+                return await rejected(undeclared)
             call_arguments = tc.arguments
             if params is not None:
                 # Repair before validating: a model that flattened a hub tool's
@@ -940,13 +952,9 @@ class AIToolsMixin:
         max_results = normalize_max_results(
             arguments.get("max_results"), self._tool_search_threshold
         )
-        # Declared already, never named: the pinned, the discovery tools, and
-        # what orchestration injected for this room (RFC §21.1).
-        exclude = (
-            self._tool_search_pinned
-            | TOOL_SEARCH_INFRA_TOOL_NAMES
-            | self._orchestration_tool_names(loop_ctx.room_id)
-        )
+        # Declared already, never named: every tool Tool Search never defers
+        # (RFC §6.4, §21.1).
+        exclude = self._never_deferred(loop_ctx)
         matches = search_catalogue(catalogue, query, max_results, exclude_names=exclude)
         loop_ctx.revealed_tools = {m["name"] for m in matches if m.get("name")}
         # Reveals persist across turns via ToolUsageMemory (the tool's own

@@ -363,11 +363,10 @@ class AIResponseEvent:
     declared_tools: list[DeclaredTool] = field(default_factory=list)
     """The tools the provider received this turn, over every generation round.
 
-    ``BEFORE_AI_GENERATION`` sees the toolset once, as the turn starts. Under
-    Tool Search that is the pinned floor plus ``find_tools`` / ``list_tools``:
-    a tool ``find_tools`` reveals only enters the declaration of the *next*
-    round, and no event carried it, so a host recording "what the model was
-    offered" from that hook never saw a revealed tool. This is the union of
+    ``BEFORE_AI_GENERATION`` sees the turn's toolset once, as the turn starts:
+    under Tool Search the whole catalogue, not what any round declares. A tool
+    ``find_tools`` reveals only enters the declaration of the *next* round, so
+    a host recording "what the model was offered" reads it here. This is the union of
     the toolsets handed to the provider on each round of the turn, in first
     declaration order, one entry per name: a tool declared on several rounds
     keeps its first entry, and since the reveal window slides from one
@@ -396,7 +395,12 @@ class AIGenerationEvent:
     """
 
     ai_context: AIContext
-    """The full built context that will be sent to the AI provider."""
+    """The context the turn starts from; what the hook leaves is the turn's.
+
+    Its ``tools`` are the turn's toolset after the tool policy and skill
+    gating, under Tool Search the whole catalogue: each round declares Tool
+    Search's collapse of what the hook left (RFC §6.4).
+    """
 
     channel_id: str
     """ID of the AI channel about to generate."""

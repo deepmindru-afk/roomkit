@@ -100,14 +100,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the model ran it; `tools=[]` let a deferred tool through the same way. A
   tool the hook removes is now declared at no round, named by no `find_tools`
   or `list_tools`, recovered at no call, and refused. A tool the hook adds is
-  declared at every round of the turn, never deferred: it vanished after the
-  first round of a buffered turn and was never declared in a streamed one.
-  Both loops declare the same first round, taken from what the hook left. A
-  hook that reads `ai_context.tools` under Tool Search now reads the
-  catalogue, not the first round's wire declaration. Once the turn's toolset
-  is resolved, a round that declares no tool makes none callable: a call it
-  never declared reached a handler installed outside the channel's dispatch
-  (an orchestration wrapper).
+  declared at every round of the turn, never deferred and never named by
+  `find_tools`: it vanished after the first round of a buffered turn and was
+  never declared in a streamed one. Both loops prepare their first round as
+  every later one, from what the hook left. A hook that reads
+  `ai_context.tools` under Tool Search now reads the catalogue, not the first
+  round's wire declaration. Once the turn's toolset is resolved, a call must
+  name a tool the round declared, an empty declaration included, or one Tool
+  Search recovers from the catalogue: a call a round declaring nothing never
+  offered reached a handler installed outside the channel's dispatch (an
+  orchestration wrapper).
 - An agent's output wakes the other agents whichever path produced it
   (RMK-287, RFC §8.3, §10.1 step 14, §19.3.1). A streamed text segment, a
   greeting and a regenerated answer now solicit the other agents like a
