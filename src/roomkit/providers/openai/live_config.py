@@ -13,7 +13,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from roomkit.providers.openai.live_events import PendingResponse, TurnGrouper, format_backend_tools
+from roomkit.providers.openai.live_events import TurnGrouper, format_backend_tools
+from roomkit.providers.openai.response_calls import PendingResponse
 from roomkit.voice._g711 import _G711Codec
 from roomkit.voice.base import VoiceSession
 from roomkit.voice.realtime.provider import VoiceInfo

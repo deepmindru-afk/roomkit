@@ -15,7 +15,7 @@ import logging
 from abc import abstractmethod
 from typing import Any
 
-from roomkit.providers.openai.live_events import PendingResponse
+from roomkit.providers.openai.response_calls import PendingResponse
 from roomkit.voice._g711 import _G711Codec
 from roomkit.voice.base import VoiceSession
 from roomkit.voice.realtime.provider import RealtimeVoiceProvider
@@ -56,6 +56,8 @@ class _OutputAudioState:
 class OpenAIRealtimeEventHandlersMixin(RealtimeVoiceProvider):
     """Receive loop + server-event → callback dispatch for the OpenAI wire.
 
+    It also sends the one ``response.create`` that a response's tool calls
+    owe, since a response's end is one of the two events that settle them.
     Mixed into ``OpenAIRealtimeBase``, which supplies the connection state and
     the ``_log_tag``. Subclasses may override :meth:`_log_usage`,
     :meth:`_on_session_created`, and :meth:`_on_session_updated`.
@@ -249,8 +251,12 @@ class OpenAIRealtimeEventHandlersMixin(RealtimeVoiceProvider):
         # completed item after response.done while its buffered audio is still
         # playing, but never carry it into a subsequent response.
         self._output_audio.pop(session.id, None)
-        # A call still open in an earlier response no longer holds this one
-        self._pending_responses[session.id] = PendingResponse()
+        # A call still open in an earlier response does not hold this one. A
+        # result submitted after our request is not part of the response it
+        # starts, so that response owes a continuation of its own.
+        requested = self._pending_responses.get(session.id)
+        owed = requested is not None and requested.requested and requested.had_calls
+        self._pending_responses[session.id] = PendingResponse(had_calls=owed)
         self._responding.add(session.id)
         logger.info("[%s] response_start (session %s)", self._log_tag, session.id)
         await self._fire(self._response_start_callbacks, session, label="response_start")
@@ -311,18 +317,20 @@ class OpenAIRealtimeEventHandlersMixin(RealtimeVoiceProvider):
         """Ask the model to go on once, when its response is done and fully answered.
 
         One ``response.create`` per result would start a second response while
-        the first is active, and the API rejects it (RFC §12.4.1).
+        the first is active, and the API rejects it (RFC §12.4).
         """
         pending = self._pending_responses.get(session.id)
         if pending is None:
             return
         pending.finished = pending.finished or response_ended
-        if not pending.finished or pending.call_ids:
+        if not pending.settled:
             return
-        del self._pending_responses[session.id]
         ws = self._connections.get(session.id)
-        if not pending.had_calls or ws is None:
+        if not pending.ready_to_continue or ws is None:
+            del self._pending_responses[session.id]
             return
+        # Until the server begins it, the requested response is the one in progress
+        self._pending_responses[session.id] = PendingResponse(requested=True)
         logger.debug("[%s →] response.create (after tool results)", self._log_tag)
         await ws.send(json.dumps({"type": "response.create"}))
 

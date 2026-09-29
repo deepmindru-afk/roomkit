@@ -25,8 +25,8 @@ from roomkit.providers.openai.live_events import (
     EVT_RESPONSE_CREATE,
     EVT_RESPONSE_ITEM_CREATE,
     UNCORRELATED_DELEGATION,
-    PendingResponse,
 )
+from roomkit.providers.openai.response_calls import PendingResponse
 from roomkit.telemetry.base import Attr
 from roomkit.voice.base import VoiceSession
 from roomkit.voice.realtime.provider import RealtimeVoiceProvider
@@ -145,10 +145,10 @@ class OpenAILiveHostedDelegationMixin(RealtimeVoiceProvider):
     async def _maybe_continue_response(self, state: _LiveSession, key: str) -> None:
         """Resume the backend once every call of its response has an output."""
         pending = state.pending.get(key)
-        if pending is None or not pending.finished or pending.call_ids:
+        if pending is None or not pending.settled:
             return
         del state.pending[key]
-        if not pending.had_calls:
+        if not pending.ready_to_continue:
             return  # a text-only response needs no continuation
         logger.debug("[%s →] response.create (delegation %s)", _LOG_TAG, key)
         await state.ws.send(json.dumps({"type": EVT_RESPONSE_CREATE}))

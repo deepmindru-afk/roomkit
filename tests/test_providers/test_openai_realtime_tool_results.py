@@ -1,7 +1,7 @@
 """Tool results on the OpenAI Realtime wire: one continuation per response (RMK-279).
 
 The model is asked to go on (``response.create``) once per response, when that
-response is done and every call it emitted has its output (RFC §12.4.1). xAI
+response is done and every call it emitted has its output (RFC §12.4). xAI
 speaks the same wire and inherits the behaviour.
 """
 
@@ -72,9 +72,11 @@ async def _call(provider: OpenAIRealtimeBase, session: VoiceSession, call_id: st
     )
 
 
-async def _response_done(provider: OpenAIRealtimeBase, session: VoiceSession) -> None:
+async def _response_done(
+    provider: OpenAIRealtimeBase, session: VoiceSession, status: str = "completed"
+) -> None:
     await provider._handle_server_event(
-        session, {"type": "response.done", "response": {"status": "completed"}}
+        session, {"type": "response.done", "response": {"status": status}}
     )
 
 
@@ -125,6 +127,39 @@ class TestOneContinuationPerResponse:
 
         assert _wire(ws) == ["item(call_a)", "response.create"]
 
+    @pytest.mark.parametrize("status", ["completed", "cancelled", "failed"])
+    async def test_a_response_ends_the_same_way_whatever_its_status(
+        self, provider: OpenAIRealtimeBase, session: VoiceSession, status: str
+    ) -> None:
+        ws = _attach(provider, session)
+        await _response_created(provider, session)
+        await _call(provider, session, "call_a")
+        await _call(provider, session, "call_b")
+        await _result(provider, session, "call_a")
+        await _response_done(provider, session, status)
+        assert _wire(ws) == ["item(call_a)"]
+
+        await _result(provider, session, "call_b")
+
+        assert _wire(ws) == ["item(call_a)", "item(call_b)", "response.create"]
+
+    async def test_a_result_submitted_inside_the_tool_call_callback(
+        self, provider: OpenAIRealtimeBase, session: VoiceSession
+    ) -> None:
+        ws = _attach(provider, session)
+
+        async def serve_at_once(sess: VoiceSession, call_id: str, name: str, args: dict) -> None:
+            await provider.submit_tool_result(sess, call_id, '{"ok": true}')
+
+        provider.on_tool_call(serve_at_once)
+        await _response_created(provider, session)
+        await _call(provider, session, "call_a")
+        assert _wire(ws) == ["item(call_a)"]
+
+        await _response_done(provider, session)
+
+        assert _wire(ws) == ["item(call_a)", "response.create"]
+
     async def test_a_response_without_calls_asks_nothing(
         self, provider: OpenAIRealtimeBase, session: VoiceSession
     ) -> None:
@@ -141,6 +176,7 @@ class TestOneContinuationPerResponse:
         await _response_created(provider, session)
         await _call(provider, session, "call_a")
         await _result(provider, session, "call_a")
+        assert _wire(ws) == ["item(call_a)"]
         await _response_done(provider, session)
         # The continuation calls a tool of its own
         await _response_created(provider, session)
@@ -217,6 +253,50 @@ class TestAResultTheConversationHasLeft:
         await _result(provider, session, "call_c")
 
         assert _wire(ws) == ["item(call_a)", "item(call_c)", "response.create"]
+
+
+class TestARequestNotYetBegun:
+    async def test_a_result_in_between_waits_for_the_requested_response(
+        self, provider: OpenAIRealtimeBase, session: VoiceSession
+    ) -> None:
+        ws = _attach(provider, session)
+        await _response_created(provider, session)
+        await _call(provider, session, "call_a")
+        await _call(provider, session, "call_b")
+        await _response_done(provider, session)
+        await _response_created(provider, session)  # the user spoke again
+        await _response_done(provider, session)
+        await _result(provider, session, "call_a")
+        assert _wire(ws) == ["item(call_a)", "response.create"]
+
+        # call_b's output lands before the requested response has begun
+        await _result(provider, session, "call_b")
+        assert _wire(ws) == ["item(call_a)", "response.create", "item(call_b)"]
+        await _response_created(provider, session)
+        assert _wire(ws) == ["item(call_a)", "response.create", "item(call_b)"]
+
+        await _response_done(provider, session)
+
+        assert _wire(ws) == [
+            "item(call_a)",
+            "response.create",
+            "item(call_b)",
+            "response.create",
+        ]
+
+    async def test_the_requested_response_owes_nothing_when_nothing_came_in_between(
+        self, provider: OpenAIRealtimeBase, session: VoiceSession
+    ) -> None:
+        ws = _attach(provider, session)
+        await _response_created(provider, session)
+        await _call(provider, session, "call_a")
+        await _response_done(provider, session)
+        await _result(provider, session, "call_a")
+        await _response_created(provider, session)
+
+        await _response_done(provider, session)
+
+        assert _wire(ws) == ["item(call_a)", "response.create"]
 
 
 class TestAnEndedSession:

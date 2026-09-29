@@ -18,11 +18,11 @@ import logging
 from abc import abstractmethod
 from typing import Any
 
-from roomkit.providers.openai.live_events import PendingResponse
 from roomkit.providers.openai.realtime_events import (
     OpenAIRealtimeEventHandlersMixin,
     _OutputAudioState,
 )
+from roomkit.providers.openai.response_calls import PendingResponse
 from roomkit.voice._g711 import _G711Codec, _get_codec
 from roomkit.voice.base import VoiceSession, VoiceSessionState
 from roomkit.voice.realtime.injection import VoiceInjectionResult, say_line_instruction
@@ -53,7 +53,7 @@ class OpenAIRealtimeBase(OpenAIRealtimeEventHandlersMixin):
         # Track active responses per session to avoid inject_text conflicts
         self._responding: set[str] = set()
         # The current response's function calls: the model is asked to go on
-        # once that response is done and every call has its output (RFC §12.4.1)
+        # once that response is done and every call has its output (RFC §12.4)
         self._pending_responses: dict[str, PendingResponse] = {}
         # provider_config as passed to connect, kept so mid-session calls
         # (image injection, for one) can read settings fixed at connect time
@@ -339,7 +339,7 @@ class OpenAIRealtimeBase(OpenAIRealtimeEventHandlersMixin):
         )
 
         # A call of a response the conversation has left joins the one in
-        # progress, or continues at once when none is (RFC §12.4.1)
+        # progress, or continues at once when none is (RFC §12.4)
         pending = self._pending_responses.setdefault(session.id, PendingResponse(finished=True))
         pending.call_ids.discard(call_id)
         pending.had_calls = True

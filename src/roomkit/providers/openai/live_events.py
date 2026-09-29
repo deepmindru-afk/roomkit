@@ -5,8 +5,8 @@ then audio and transcript deltas in both directions, delegations the model
 hands to a backend, and context appends the client returns. This module holds
 what the provider needs to speak it without a session of its own: the event
 names, the turn grouper that synthesizes the response and speech boundaries
-the wire lacks (RFC §12.4.1), the append chunker that honours the per-append
-token bound, and the bookkeeping of a hosted delegation's function calls.
+the wire lacks (RFC §12.4.1), and the append chunker that honours the
+per-append token bound.
 """
 
 from __future__ import annotations
@@ -16,7 +16,6 @@ import logging
 import re
 import threading
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 logger = logging.getLogger("roomkit.providers.openai.live")
@@ -140,29 +139,6 @@ class TurnGrouper:
         self.open = False
         text, self.text = self.text, ""
         await self._on_close(text)
-
-
-# --- Response continuation bookkeeping -------------------------------------
-
-
-@dataclass
-class PendingResponse:
-    """A model response whose function calls are being collected.
-
-    The service rejects ``response.create`` while a response is active or any
-    of its calls is unanswered, so the model resumes only once ``finished`` is
-    set and ``call_ids`` is empty — and only if it asked for a call at all
-    (RFC §12.4.1). Kept per delegated run by the hosted GPT-Live backend, and
-    per session by the classic OpenAI Realtime wire.
-    """
-
-    call_ids: set[str] = field(default_factory=set)
-    had_calls: bool = False
-    finished: bool = False
-
-    @property
-    def ready_to_continue(self) -> bool:
-        return self.finished and self.had_calls and not self.call_ids
 
 
 # --- Payload shaping ---------------------------------------------------------

@@ -140,14 +140,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - OpenAI Realtime and xAI Realtime ask the model to go on once per response
-  (RMK-279, RFC §12.4.1). Every tool result was followed by its own
+  (RMK-279, RFC §12.4). Every tool result was followed by its own
   `response.create`: with two calls in parallel, the first went out while the
   response was still active and the API rejected it, and the second call's
   output then waited, unspoken, for the caller's next turn. The provider now
   counts the calls of the current response and asks once, when that response
   has ended and every call has its result. A result for a call of a response
   the caller has already talked over joins the response in progress, or asks
-  at once when none is.
+  at once when none is; a continuation asked for and not yet begun counts as
+  in progress, and a result that lands before it begins gets the next one.
 - A turn cut short no longer replays the room's history (RMK-156, RFC §6.4).
   When the provider failed after a tool round on the non-streaming loop and
   any assistant text was in the model's context, the `[Response interrupted]`
