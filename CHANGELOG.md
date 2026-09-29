@@ -226,6 +226,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sharing the writer: a child room's streamed rows carry a `correlation_id`
   and the turn's `response_metadata`, and the turn record written on the
   last message fires `ON_EVENT_UPDATED`, as in any room.
+- A delegated turn reads every response its broadcast started (RMK-291, RFC
+  §8.3): it stopped at the first answer, leaving any other agent of the child
+  room generating unread, with no trace. The first answer is still the
+  task's; a response that failed fails it once all are read.
 - A turn ended by a steering `Cancel` closes its `llm.generate` span
   `cancelled`, not `ok`, in both loops (RMK-289, RFC §6.4).
 - A turn constrained to a `response_schema` that the provider interrupts

@@ -19,6 +19,7 @@ import pytest
 from roomkit.channels.ai import AIChannel
 from roomkit.core.event_router import BroadcastResult
 from roomkit.core.framework import RoomKit
+from roomkit.core.mixins._child_execution import _collect_answer
 from roomkit.core.mixins.delegation import _persist_child_stream, run_agent_in_child_room
 from roomkit.models.enums import ChannelType, EventType
 from roomkit.models.event import EventSource, RoomEvent, TextContent, ToolCallContent
@@ -329,6 +330,45 @@ async def _child_events(kit: RoomKit) -> list[RoomEvent]:
 
 async def _child_rows(kit: RoomKit) -> list[tuple[EventType, Any]]:
     return [(e.type, e.content) for e in await _child_events(kit)]
+
+
+class TestEveryResponseIsRead:
+    """RMK-291 review: a delegated broadcast's responses are all read (RFC §8.3)."""
+
+    async def test_a_second_response_is_read_and_the_first_answer_wins(self) -> None:
+        kit = _recording_kit()
+        read: list[str] = []
+
+        def _stream(name: str) -> Any:
+            async def _gen() -> Any:
+                read.append(name)
+                yield f"{name}'s answer"
+
+            return _sr(_gen())
+
+        result = BroadcastResult(streaming_responses=[_stream("w1"), _stream("w2")])
+
+        text = await _collect_answer(kit, "parent::task-7", result, 1)
+
+        assert text == "w1's answer"
+        assert read == ["w1", "w2"]
+        assert [e.content.body for e in kit.store.added] == ["w1's answer", "w2's answer"]
+
+    async def test_a_failed_response_fails_the_turn_once_all_are_read(self) -> None:
+        kit = _recording_kit()
+
+        async def _failing() -> Any:
+            yield "Looking."
+            raise RuntimeError("upstream 500")
+
+        async def _answering() -> Any:
+            yield "Done."
+
+        result = BroadcastResult(streaming_responses=[_sr(_failing()), _sr(_answering())])
+
+        with pytest.raises(RuntimeError, match="upstream 500"):
+            await _collect_answer(kit, "parent::task-8", result, 1)
+        assert [e.content.body for e in kit.store.added] == ["Looking.", "Done."]
 
 
 class TestRunAgentNonStreaming:

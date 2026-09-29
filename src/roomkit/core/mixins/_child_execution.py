@@ -30,6 +30,7 @@ from roomkit.models.store_filter import EventFilter
 from roomkit.providers.utils import _aclose_stream
 
 if TYPE_CHECKING:
+    from roomkit.core.event_router import BroadcastResult
     from roomkit.core.framework import RoomKit
     from roomkit.models.room import Room
     from roomkit.orchestration.result import ResultTool
@@ -166,8 +167,20 @@ async def _broadcast_and_collect(
     await kit._persist_side_effects(
         child_room_id, result.tasks, result.observations, msg_event, context
     )
-    child_depth = msg_event.chain_depth + 1
+    return await _collect_answer(kit, child_room_id, result, msg_event.chain_depth + 1)
 
+
+async def _collect_answer(
+    kit: RoomKit, child_room_id: str, result: BroadcastResult, child_depth: int
+) -> str | None:
+    """Keep the trace of every response a delegated broadcast started; its answer.
+
+    Every response is read to its end (RFC §8.3), so none is left generating
+    unread. The first answer is the delegated turn's; a response that failed
+    fails the turn once they are all read (RFC §6.4).
+    """
+    answers: list[str] = []
+    failure: Exception | None = None
     # Non-streaming: response_events already include the tool-call events —
     # persist them all (not just the final text) so the trace survives.
     for output in result.outputs.values():
@@ -176,19 +189,22 @@ async def _broadcast_and_collect(
         final_text = await _persist_response_events(kit, child_room_id, output.response_events)
         if output.error is not None:
             # A turn the provider interrupted after a round kept its trace and
-            # has no answer: the delegated turn fails, as a streamed one does
-            # (RFC §6.4).
-            raise output.error
-        if final_text is not None:
-            return final_text
-
+            # has no answer.
+            failure = failure or output.error
+        elif final_text is not None:
+            answers.append(final_text)
     # Streaming: drain the marker stream, persisting tool calls + text segments.
     for sr in result.streaming_responses:
-        text = await _persist_child_stream(kit, child_room_id, sr, child_depth)
+        try:
+            text = await _persist_child_stream(kit, child_room_id, sr, child_depth)
+        except Exception as exc:
+            failure = failure or exc
+            continue
         if text:
-            return text
-
-    return None
+            answers.append(text)
+    if failure is not None:
+        raise failure
+    return answers[0] if answers else None
 
 
 #: A cursor larger than any real event index, so ``before_index`` returns the
