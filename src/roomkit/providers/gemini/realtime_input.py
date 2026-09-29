@@ -40,6 +40,23 @@ def _sanitize_gemini_text(text: str) -> str:
     return text
 
 
+def _into_conversation(state: _GeminiSessionState, text: str, silent: bool) -> str:
+    """The text as it enters the session's conversation.
+
+    Sending it gives the session a conversation. A non-silent injection also
+    carries the instruction a resumption left unapplied (RFC §12.4): the
+    model follows an instruction it is handed in a turn.
+    """
+    state.has_conversation = True
+    if silent or state.pending_instructions is None:
+        return text
+    instructions, state.pending_instructions = state.pending_instructions, None
+    return (
+        "Your instructions have been replaced. From now on, follow only these:\n"
+        f"{instructions}\n\n{text}"
+    )
+
+
 class GeminiLiveInputMixin(RealtimeVoiceProvider):
     """Everything that goes to Gemini other than a tool result.
 
@@ -170,12 +187,12 @@ class GeminiLiveInputMixin(RealtimeVoiceProvider):
         silent: bool,
     ) -> None:
         types = genai_types()
-        state.has_conversation = True
 
         if role == "assistant":
             # No turn makes the model speak a given text (a ``model`` turn
             # records it as already said), so the line becomes an instruction.
             role, text = "system", say_line_instruction(text)
+        text = _into_conversation(state, text, silent)
         effective_role = role if role in ("user", "model") else "user"
         if effective_role != role:
             logger.debug(

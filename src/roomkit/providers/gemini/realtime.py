@@ -10,7 +10,7 @@ from typing import Any
 
 from pydantic import SecretStr
 
-from roomkit.core.task_utils import cancel_and_wait
+from roomkit.core.task_utils import _finish_cleanup, cancel_and_wait
 from roomkit.providers.ai.base import ModelInfo
 from roomkit.providers.gemini.realtime_config import (
     blocking_tool_names,
@@ -317,6 +317,12 @@ class GeminiLiveProvider(
         partial update like ``reconfigure(system_prompt=new)`` would
         wipe the existing tools and voice. Passing an empty list /
         empty string explicitly does still clear the field.
+
+        ``gemini-3.8-live`` resumes a session under the instruction it
+        started with, ignoring the new one: a session with no conversation
+        reconnects fresh, and a session with one gets the new instructions
+        with its next non-silent injection (a handoff greeting), which the
+        model follows (RFC §12.4).
         """
         state = self._sessions.get(session.id)
         if state is None:
@@ -374,26 +380,50 @@ class GeminiLiveProvider(
             voice,
         )
 
+        await _finish_cleanup(self._switch_connection(session, state))
+
+    async def _switch_connection(self, session: VoiceSession, state: _GeminiSessionState) -> None:
+        """Stop the old receive loop, reconnect under the new config, read again.
+
+        Run to its end even when the caller is cancelled, whose cancellation
+        is raised afterwards: stopped halfway, the session would hold its new
+        config on the old socket, with nobody reading it.
+        """
         # Cancel the old receive task BEFORE reconnecting to prevent it
         # from detecting the disconnection and triggering a second
         # auto-reconnect (double-reconnect bug).
-        # The caller's own cancellation (a tool handler cancelled mid-handoff)
-        # must reach it here, not resume it into the reconnect below.
         await cancel_and_wait(state.receive_task, log_errors_to=logger)
         state.receive_task = None
-
-        if not state.has_conversation and state.resumption_handle is not None:
-            # Nothing to keep, and a resumed session may keep its original
-            # instruction: gemini-3.8-live does, whatever the new setup says.
-            logger.info(
-                "Gemini session %s has no conversation yet: reconnecting fresh", session.id
-            )
-            state.resumption_handle = None
-
+        self._carry_instructions_past_resumption(state)
         await self._reconnect(session)
-
         # Start a fresh receive loop for the new connection.
         self._start_receive_loop(state)
+
+    def _carry_instructions_past_resumption(self, state: _GeminiSessionState) -> None:
+        """Make the new instruction take effect where resuming would drop it.
+
+        A session with nothing said in it reconnects fresh: nothing to keep.
+        On a model that resumes under the original instruction, a session
+        with a conversation keeps its context, and the new instruction rides
+        its next non-silent injection instead.
+        """
+        state.pending_instructions = None
+        if state.resumption_handle is None:
+            return
+        if not state.has_conversation:
+            logger.info(
+                "Gemini session %s has no conversation yet: reconnecting fresh",
+                state.session.id,
+            )
+            state.resumption_handle = None
+        elif self._resumption_keeps_instructions and state.system_prompt:
+            state.pending_instructions = state.system_prompt
+
+    @property
+    def _resumption_keeps_instructions(self) -> bool:
+        """Measured on gemini-3.8-live: a resumed session keeps the system
+        instruction it started with (3.1 and 2.5 take the new one)."""
+        return self._model.startswith("gemini-3.8")
 
     async def close(self) -> None:
         for session_id in list(self._sessions.keys()):

@@ -2403,8 +2403,11 @@ class TestGeminiLiveProvider:
         state.queued_text_injections.append(("stale text", "user", False))
         state.queued_injections.append((b"\x89PNG", "image/png", "", False))
 
-        # Mock _reconnect to avoid real connection logic
+        # Mock _reconnect to avoid real connection logic, and the new
+        # connection's receive loop, which starts before reconfigure returns
+        # and would spin on the mock session
         provider._reconnect = AsyncMock()
+        provider._receive_loop = AsyncMock()
 
         await provider.reconfigure(session, system_prompt="new prompt")
 

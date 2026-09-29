@@ -129,6 +129,9 @@ class _GeminiSessionState:
     # nothing in it has no context to resume, and ``gemini-3.8-live`` resumes
     # a session under its original instruction, ignoring a new one.
     has_conversation: bool = False
+    # The instruction a resumption did not apply: it rides the session's
+    # next non-silent injection, then clears.
+    pending_instructions: str | None = None
     # Effective config values, kept in sync across connect + reconfigure
     # so partial reconfigures (e.g. system_prompt-only) preserve the
     # other fields. Without these, ``_build_config`` (which treats

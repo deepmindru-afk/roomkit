@@ -239,11 +239,12 @@ class TestReconfigurePreservation:
 
 
 class TestReconfigureCancellation:
-    async def test_a_cancelled_caller_is_not_resumed_into_the_reconnect(
+    async def test_a_cancelled_caller_gets_its_cancellation_after_the_switch(
         self, provider: GeminiLiveProvider
     ) -> None:
         """RMK-288: the caller's cancellation, landing while reconfigure waits
-        for the old receive task, reaches the caller; no reconnect follows."""
+        for the old receive task, reaches the caller once the session is
+        switched, never halfway."""
         session = _make_session()
         state = _populate_session_state(provider, session)
         release = asyncio.Event()
@@ -259,13 +260,19 @@ class TestReconfigureCancellation:
         await asyncio.sleep(0)
         caller = asyncio.create_task(provider.reconfigure(session, system_prompt="New."))
         await asyncio.sleep(0)
+        old_loop = state.receive_task
         caller.cancel()
-        await asyncio.wait({caller}, timeout=1.0)
+        await asyncio.wait({caller}, timeout=0.05)
+        assert not caller.done()  # the switch finishes first
         release.set()
-        await asyncio.wait({caller, state.receive_task}, timeout=1.0)
+        await asyncio.wait({caller, old_loop}, timeout=1.0)
 
+        # Cancelled, and the session is whole: reconnected under its new
+        # config, with a receive loop of its own (RMK-288)
         assert caller.cancelled()
-        provider._reconnect.assert_not_awaited()  # type: ignore[attr-defined]
+        provider._reconnect.assert_awaited_once()  # type: ignore[attr-defined]
+        assert state.system_prompt == "New."
+        assert state.receive_task is not None and state.receive_task is not old_loop
 
 
 class TestReconfigureResumption:
@@ -298,6 +305,38 @@ class TestReconfigureResumption:
         state.has_conversation = True
 
         assert await self._handle_at_reconnect(provider, state) == "handle-1"
+
+    @pytest.mark.parametrize(
+        ("model", "carried"), [("gemini-3.8-live", True), ("gemini-3.1-flash-live-preview", False)]
+    )
+    async def test_the_next_injection_carries_what_resumption_kept_out(
+        self, provider: GeminiLiveProvider, model: str, carried: bool
+    ) -> None:
+        provider._model = model
+        state = _populate_session_state(provider, _make_session())
+        state.resumption_handle = "handle-1"
+        state.has_conversation = True
+        state.live_session = AsyncMock()
+
+        await provider.reconfigure(state.session, system_prompt="You are Bill.")
+        await provider.inject_text(state.session, "Greet the caller.", role="system")
+        await provider.inject_text(state.session, "And again.", role="system")
+
+        sent = [str(c) for c in state.live_session.send_client_content.call_args_list]
+        assert ("You are Bill." in sent[0]) is carried
+        assert "You are Bill." not in sent[1]  # carried once
+
+    async def test_a_fresh_session_carries_no_instructions(
+        self, provider: GeminiLiveProvider
+    ) -> None:
+        provider._model = "gemini-3.8-live"
+        state = _populate_session_state(provider, _make_session())
+        state.resumption_handle = "handle-1"
+        state.live_session = AsyncMock()
+
+        await provider.reconfigure(state.session, system_prompt="You are Bill.")
+
+        assert state.pending_instructions is None
 
     @pytest.mark.parametrize("kind", ["user_text", "model_turn", "tool_call"])
     async def test_what_counts_as_a_conversation(
