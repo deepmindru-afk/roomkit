@@ -25,17 +25,37 @@ from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransp
 
 
 class ReconnectingProvider(MockRealtimeProvider):
-    """Orphans a session's outstanding calls on reconfigure, as Gemini Live does."""
+    """Orphans a session's outstanding calls on reconfigure, as Gemini Live does.
+
+    Like the real socket, it suspends after the report (the new connection's
+    setup), where a cancelled handler would stop. The new connection's receive
+    loop starts inside the reconfiguring task, as Gemini's does, so it
+    inherits that task's context.
+    """
 
     def __init__(self) -> None:
         super().__init__()
         self.outstanding: dict[str, set[str]] = {}
         self.reconfigured: list[str] = []
+        self.inbox: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
+        self.receive_loops: list[asyncio.Task[None]] = []
 
     async def reconfigure(self, session: VoiceSession, **kwargs: Any) -> None:
         self.reconfigured.append(session.id)
         orphaned = sorted(self.outstanding.pop(session.id, set()))
         await self.simulate_tool_call_cancellation(session, orphaned)
+        await asyncio.sleep(0)
+        self.receive_loops.append(asyncio.create_task(self._receive_loop(session)))
+
+    async def _receive_loop(self, session: VoiceSession) -> None:
+        """What the new connection delivers: a call, or its own drop."""
+        while True:
+            kind, call = await self.inbox.get()
+            if kind == "call":
+                await self.simulate_tool_call(session, *call)
+            else:  # the connection dropped and came back on its own
+                orphaned = sorted(self.outstanding.pop(session.id, set()))
+                await self.simulate_tool_call_cancellation(session, orphaned)
 
     async def simulate_tool_call(
         self,
@@ -66,8 +86,8 @@ _TOOLS = [
 
 
 async def _channel(
-    provider: ReconnectingProvider, handler: Any
-) -> tuple[RealtimeVoiceChannel, VoiceSession, list[ToolCallEvent]]:
+    provider: ReconnectingProvider, handler: Any, sessions: int = 1
+) -> tuple[RealtimeVoiceChannel, list[VoiceSession], list[ToolCallEvent]]:
     ch = RealtimeVoiceChannel(
         "rt",
         provider=provider,
@@ -79,7 +99,7 @@ async def _channel(
     kit.register_channel(ch)
     room = await kit.create_room()
     await kit.attach_channel(room.id, "rt")
-    session = await ch.start_session(room.id, "u1", "ws")
+    started = [await ch.start_session(room.id, f"u{i}", "ws") for i in range(sessions)]
     observed: list[ToolCallEvent] = []
 
     @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="observe")
@@ -87,7 +107,7 @@ async def _channel(
         observed.append(event)
         return HookResult.allow()
 
-    return ch, session, observed
+    return ch, started, observed
 
 
 class TestTheCallWhoseHandlerReconnected:
@@ -101,7 +121,7 @@ class TestTheCallWhoseHandlerReconnected:
             await provider.inject_text(session, "Introduce yourself", role="system")
             return '{"accepted": true}'
 
-        ch, session, observed = await _channel(provider, switch_agent)
+        ch, [session], observed = await _channel(provider, switch_agent)
         holder.update(ch=ch, session=session)
 
         await provider.simulate_tool_call(session, "h1", "switch_agent", {})
@@ -127,7 +147,7 @@ class TestTheCallWhoseHandlerReconnected:
             await holder["ch"].reconfigure_session(holder["session"], system_prompt="New.")
             raise ToolRefusedError("The target agent is not available.")
 
-        ch, session, observed = await _channel(provider, switch_agent)
+        ch, [session], observed = await _channel(provider, switch_agent)
         holder.update(ch=ch, session=session)
 
         await provider.simulate_tool_call(session, "h1", "switch_agent", {})
@@ -137,6 +157,27 @@ class TestTheCallWhoseHandlerReconnected:
         assert [(e.tool_call_id, e.cancelled, e.is_error) for e in observed] == [
             ("h1", False, True)
         ]
+
+    async def test_a_reconfigure_it_gathers_spares_it(self) -> None:
+        provider = ReconnectingProvider()
+        holder: dict[str, Any] = {}
+
+        async def switch_agent(name: str, arguments: dict[str, Any]) -> str:
+            ch = holder["ch"]
+            await asyncio.gather(
+                *(ch.reconfigure_session(s, system_prompt="New.") for s in holder["sessions"])
+            )
+            return '{"accepted": true}'
+
+        ch, sessions, observed = await _channel(provider, switch_agent, sessions=2)
+        holder.update(ch=ch, sessions=sessions)
+
+        await provider.simulate_tool_call(sessions[0], "h1", "switch_agent", {})
+        await asyncio.sleep(0.1)
+
+        assert sorted(provider.reconfigured) == sorted(s.id for s in sessions)
+        assert [(e.tool_call_id, e.cancelled) for e in observed] == [("h1", False)]
+        assert provider.tool_results == []
 
 
 class TestTheOtherCallsTheReconnectOrphaned:
@@ -158,7 +199,7 @@ class TestTheOtherCallsTheReconnectOrphaned:
             await holder["ch"].reconfigure_session(holder["session"], system_prompt="New.")
             return '{"accepted": true}'
 
-        ch, session, observed = await _channel(provider, handler)
+        ch, [session], observed = await _channel(provider, handler)
         holder.update(ch=ch, session=session)
         await provider.simulate_tool_call(session, "c1", "lookup", {})
         await asyncio.wait_for(lookup_started.wait(), 1)
@@ -187,7 +228,7 @@ class TestTheOtherCallsTheReconnectOrphaned:
                 raise
             return "too late"
 
-        ch, session, observed = await _channel(provider, lookup)
+        ch, [session], observed = await _channel(provider, lookup)
         await provider.simulate_tool_call(session, "c1", "lookup", {})
         await asyncio.wait_for(started.wait(), 1)
 
@@ -198,6 +239,64 @@ class TestTheOtherCallsTheReconnectOrphaned:
 
         assert provider.tool_results == []
         assert [(e.tool_call_id, e.cancelled) for e in observed] == [("c1", True)]
+
+    async def test_another_sessions_call_with_the_same_id_is_abandoned(self) -> None:
+        provider = ReconnectingProvider()
+        holder: dict[str, Any] = {}
+        started = asyncio.Event()
+
+        async def handler(name: str, arguments: dict[str, Any]) -> str:
+            if name == "lookup":
+                started.set()
+                await asyncio.sleep(30)
+                return "too late"
+            await holder["ch"].reconfigure_session(holder["other"], system_prompt="New.")
+            return '{"accepted": true}'
+
+        ch, [session, other], observed = await _channel(provider, handler, sessions=2)
+        holder.update(ch=ch, other=other)
+        await provider.simulate_tool_call(other, "c", "lookup", {})
+        await asyncio.wait_for(started.wait(), 1)
+
+        await provider.simulate_tool_call(session, "c", "switch_agent", {})
+        await asyncio.sleep(0.1)
+
+        assert sorted((e.session.id == session.id, e.cancelled) for e in observed) == [
+            (False, True),
+            (True, False),
+        ]
+
+    async def test_a_later_call_reusing_the_id_is_abandoned(self) -> None:
+        """The new receive loop inherits the handler's context and outlives it."""
+        provider = ReconnectingProvider()
+        holder: dict[str, Any] = {}
+        started = asyncio.Event()
+
+        async def handler(name: str, arguments: dict[str, Any]) -> str:
+            if name == "switch_agent":
+                await holder["ch"].reconfigure_session(holder["session"], system_prompt="New.")
+                return '{"accepted": true}'
+            started.set()
+            await asyncio.sleep(30)
+            return "too late"
+
+        ch, [session], observed = await _channel(provider, handler)
+        holder.update(ch=ch, session=session)
+        await provider.simulate_tool_call(session, "c1", "switch_agent", {})
+        await asyncio.sleep(0.1)
+        # The new connection issues the same id, then drops while it runs
+        await provider.inbox.put(("call", ("c1", "lookup", {})))
+        await asyncio.wait_for(started.wait(), 1)
+        await provider.inbox.put(("drop", None))
+        await asyncio.sleep(0.1)
+        for loop in provider.receive_loops:
+            loop.cancel()
+
+        assert [(e.name, e.cancelled) for e in observed] == [
+            ("switch_agent", False),
+            ("lookup", True),
+        ]
+        assert provider.tool_results == []
 
 
 class TestSpeechToSpeechHandoff:

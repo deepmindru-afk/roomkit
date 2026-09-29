@@ -147,9 +147,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   interrupted at its next suspension, which could leave the room's other
   sessions on the old agent; a handler that got through reported a second
   outcome, served, for the same call. The call whose handler caused the
-  reconnect now runs to its end, its result stays off the wire (the new socket
-  never issued the id), and it is reported once, as served. Every other call
-  the reconnect orphaned is still abandoned.
+  reconnect (the handler, or a task it started, reconfigured the session) now
+  runs to its end, its result stays off the wire (the new socket never issued
+  the id), and its outcome is reported once, as it would be otherwise: served
+  when the handler returns a result. Every other call the reconnect orphaned
+  is still abandoned.
 - OpenAI Realtime and xAI Realtime ask the model to go on once per response
   (RMK-279, RFC §12.4). Every tool result was followed by its own
   `response.create`: with two calls in parallel, the first went out while the

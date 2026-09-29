@@ -13,9 +13,8 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from roomkit.channels._ai_policy import policy_admits, policy_refusal
 from roomkit.channels._realtime_context import (
     _current_voice_session,
-    _served_call,
-    _ServedCall,
     own_call_orphaned,
+    serving_call,
     spare_own_orphaned_call,
 )
 from roomkit.channels._skill_constants import TOOL_ACTIVATE_SKILL
@@ -227,7 +226,10 @@ class RealtimeToolsMixin:
         dropped the stale result and logged it. A call still in the books whose
         outcome the observers already received is left to finish for the same
         reason: a second event would put two outcomes on one ``tool_call_id``,
-        and the result it is submitting is the provider's to drop.
+        and the result it is submitting is the provider's to drop. A reconnect
+        the call's own handler caused (a handoff reconfiguring its session)
+        orphans that call too, and it is not abandoned: it runs on, its result
+        kept off the wire (RFC §9.3).
         """
         try:
             loop = asyncio.get_running_loop()
@@ -243,14 +245,7 @@ class RealtimeToolsMixin:
                     "Cancelled tool call %s is not in flight for session %s", call_id, session.id
                 )
                 continue
-            if spare_own_orphaned_call(session.id, call_id):
-                logger.info(
-                    "Tool call %s(%s) lost its id to the reconnect its own handler caused; "
-                    "the handler runs on and its result stays off the wire (session %s)",
-                    recorded[0],
-                    call_id,
-                    session.id,
-                )
+            if self._spared_by_own_reconnect(session, call_id, recorded[0]):
                 continue
             if self._tool_call_reported(session.id, call_id):
                 logger.debug(
@@ -271,6 +266,24 @@ class RealtimeToolsMixin:
                 self._report_cancelled_tool_call(session, call_id, name, arguments, room_id),
                 name=f"rt_tool_cancelled:{session.id}:{call_id}",
             )
+
+    @staticmethod
+    def _spared_by_own_reconnect(session: VoiceSession, call_id: str, name: str) -> bool:
+        """Whether the call's own handler caused the reconnect that orphaned it.
+
+        Such a call is not abandoned: its handler runs on, its result stays
+        off the wire, and its outcome is reported as usual (RFC §9.3).
+        """
+        if not spare_own_orphaned_call(session.id, call_id):
+            return False
+        logger.info(
+            "Tool call %s(%s) lost its id to the reconnect its own handler caused; "
+            "the handler runs on and its result stays off the wire (session %s)",
+            name,
+            call_id,
+            session.id,
+        )
+        return True
 
     def _cancel_tool_call_task(self, session_id: str, call_id: str) -> None:
         """Cancel one call's handler task, found by the name it was tracked under."""
@@ -328,11 +341,10 @@ class RealtimeToolsMixin:
         if session.state == VoiceSessionState.ENDED:
             return
         self._begin_tool_call(session.id, call_id, name, arguments)
-        served = _served_call.set(_ServedCall(session.id, call_id))
         try:
-            await self._execute_tool_call(session, call_id, name, arguments)
+            with serving_call(session.id, call_id):
+                await self._execute_tool_call(session, call_id, name, arguments)
         finally:
-            _served_call.reset(served)
             self._finish_tool_call(session.id, call_id)
 
     async def _execute_tool_call(
@@ -770,7 +782,12 @@ class RealtimeToolsMixin:
     async def _submit_realtime_tool_result(
         self, session: VoiceSession, call_id: str, result: str
     ) -> bool:
-        """Confirm delivery only while the session remains live."""
+        """Send a call's result; whether it reached a live session.
+
+        False when the session ended, or when the call lost its id to a
+        reconnect its own handler caused: the new socket never issued it, and
+        no provider output is awaited for it (RFC §9.3).
+        """
         if session.state == VoiceSessionState.ENDED:
             return False
         if own_call_orphaned(session.id, call_id):
