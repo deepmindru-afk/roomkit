@@ -81,6 +81,23 @@ def is_unknown_tool_answer(result: Any) -> bool:
     return False
 
 
+def tool_failure(name: str, exc: BaseException) -> str:
+    """What the model reads of a call that raised: the tool's failure and the
+    exception's class, never its message (RFC §9.3).
+
+    The message can hold anything the failing code held (a connection string
+    with its password, a path, a record); it goes to the log and to the
+    observers (:func:`failure_detail`). A handler that wants the model to read
+    its words raises :class:`~roomkit.core.exceptions.ToolRefusedError`.
+    """
+    return json.dumps({"error": f"Tool '{name}' failed ({type(exc).__name__})"})
+
+
+def failure_detail(exc: BaseException) -> str:
+    """A failure as logs and observers read it, never the model: class and message."""
+    return f"{type(exc).__name__}: {exc}"
+
+
 def unserved_tool_error(name: str) -> str:
     """The failure a call reports when no handler and no hook served it."""
     return json.dumps({"error": f"No handler for tool {name}"})

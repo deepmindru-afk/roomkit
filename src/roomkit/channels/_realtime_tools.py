@@ -32,8 +32,10 @@ from roomkit.providers.ai.base import AITextPart
 from roomkit.telemetry.base import Attr, SpanKind
 from roomkit.tools.result import (
     as_tool_result,
+    failure_detail,
     is_unknown_tool_answer,
     tool_call_verdict,
+    tool_failure,
     unserved_tool_error,
 )
 from roomkit.tools.validation import fold_hoisted_arguments, validate_tool_arguments
@@ -149,14 +151,20 @@ def _hook_outcome(
         return result_text(verdict.result), verdict.blocked
     if handler_result is not None:
         return handler_result, False
-    if hook_result.hook_errors:
-        errors = "; ".join(f"{e['hook']}: {e['error']}" for e in hook_result.hook_errors)
-        return json.dumps({"error": f"Tool call failed: {errors}"}), True
     # Nothing served this call: no handler, and the hooks that could have
-    # answered it did not. Reporting ``{"status": "ok"}`` would be a success
-    # for work nobody did, which the model then acts on and an audit trail
-    # records as a completed call.
+    # answered it did not, a hook that raised included (its message goes to
+    # the observers, never to the model, RFC §9.3). Reporting ``{"status":
+    # "ok"}`` would be a success for work nobody did, which the model then
+    # acts on and an audit trail records as a completed call.
     return unserved_tool_error(name), True
+
+
+def _hook_errors_detail(hook_result: Any) -> str | None:
+    """What the ON_TOOL_CALL hooks that raised said, for the observers only."""
+    errors = getattr(hook_result, "hook_errors", None)
+    if not errors:
+        return None
+    return "; ".join(f"{e['hook']}: {e['error']}" for e in errors)
 
 
 class RealtimeToolsMixin:
@@ -514,19 +522,11 @@ class RealtimeToolsMixin:
         except asyncio.CancelledError:
             telemetry.end_span(tool_span_id, status="cancelled")
             raise
-        except Exception:
+        except Exception as exc:
             telemetry.end_span(tool_span_id, status="error", error_message=f"tool {name} failed")
             logger.exception("Error handling tool call %s for session %s", call_id, session.id)
-            body = json.dumps(
-                {
-                    "error": "Internal error handling tool call",
-                    "tool": name,
-                    "hint": (
-                        "The call did not complete successfully. Do not infer an "
-                        "integration outage or repeat a write automatically."
-                    ),
-                }
-            )
+            # The class, never the message (RFC §9.3): it went to the log above.
+            body = tool_failure(name, exc)
             try:
                 await self._submit_realtime_tool_result(session, call_id, body)
             except Exception:
@@ -534,7 +534,9 @@ class RealtimeToolsMixin:
             if not self._tool_call_reported(session.id, call_id):
                 # A failure past the report — the submission itself — is in
                 # the log above; a refusal event now would be a second outcome.
-                await self._fire_tool_refusal(session, call_id, name, arguments, body, room_id)
+                await self._fire_tool_refusal(
+                    session, call_id, name, arguments, body, room_id, detail=failure_detail(exc)
+                )
         finally:
             if self._mute_on_tool_call and self._transport is not None:
                 self._transport.set_input_muted(session, False)
@@ -1076,8 +1078,12 @@ class RealtimeToolsMixin:
         room_id: str | None,
         *,
         cancelled: bool = False,
+        detail: str | None = None,
     ) -> None:
         """Fire ON_TOOL_CALL for a call that failed, was refused, or was abandoned.
+
+        *detail* is a raised call's full failure, for the observers only
+        (``ToolCallEvent.error_detail``).
 
         The pre-execution gate returns before anything serves the call, and a
         failure inside it lands in the fallback below — neither path reached
@@ -1106,6 +1112,7 @@ class RealtimeToolsMixin:
             session=session,
             is_error=True,
             cancelled=cancelled,
+            error_detail=detail,
         )
         data: dict[str, Any] = {
             "tool_name": name,
@@ -1225,7 +1232,13 @@ class RealtimeToolsMixin:
         engine = self._framework.hook_engine
         if handler_result is None and failed:
             await self._fire_tool_refusal(
-                session, call_id, name, tool_event.arguments, result_str, room_id
+                session,
+                call_id,
+                name,
+                tool_event.arguments,
+                result_str,
+                room_id,
+                detail=_hook_errors_detail(hook_result),
             )
             return
         if handler_result is None and hook_result.allowed:

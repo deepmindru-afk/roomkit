@@ -366,7 +366,9 @@ class TestBackendToolGate:
         _, _, provider, session = await _channel(backend, tools=[LOOKUP], tool_handler=handler)
         await provider.simulate_delegation(session, "d1", "integrator")
         await _settle()
-        assert json.loads(backend.tool_results[0])["tool"] == "lookup"
+        assert json.loads(backend.tool_results[0]) == {
+            "error": "Tool 'lookup' failed (RuntimeError)"
+        }
         assert provider.delegation_outputs[-1][2] == "done"
 
 

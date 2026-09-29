@@ -1412,20 +1412,21 @@ class TestRefusedAIToolCallsAreObserved:
 
         assert len(observed) == 1
         assert observed[0].is_error is True
-        # The body stays the sentence the model reads; the flag carries the
-        # outcome, which no reader of that sentence could be sure of.
-        assert observed[0].result.startswith("Error executing tool 'get_weather'")
-        assert "integration gateway unreachable" in observed[0].result
+        # The body stays what the model reads, the failure without the
+        # message; the message rides error_detail, for observers only
+        # (RMK-295, RFC §9.3).
+        assert observed[0].result == '{"error": "Tool \'get_weather\' failed (RuntimeError)"}'
+        assert observed[0].error_detail == "RuntimeError: integration gateway unreachable"
         assert served == []
 
     async def test_a_handler_that_refused_keeps_its_words(self, streaming: bool) -> None:
         """A refusal the handler *states* is marked, and not rewritten.
 
         Raising anything else hands the model
-        ``Error executing tool '<name>': <exc>`` — the host's wording, tuned
-        for the model that has to act on it, replaced by the loop's own
-        sentence. ``ToolRefusedError`` is the same branch with the message
-        kept, which is the only reason it exists.
+        ``{"error": "Tool '<name>' failed (<ExceptionClass>)"}``, the host's
+        wording withheld with the rest of the message. ``ToolRefusedError`` is
+        the same branch with the message kept, which is the only reason it
+        exists.
         """
 
         async def declines(name: str, arguments: dict[str, Any]) -> str:

@@ -58,7 +58,13 @@ from roomkit.sandbox.tools import SANDBOX_TOOL_PREFIX
 from roomkit.telemetry.base import SpanKind
 from roomkit.telemetry.redaction import redact
 from roomkit.tools.context import ToolCallContext, _current_tool_call
-from roomkit.tools.result import as_tool_result, is_unknown_tool_answer, unserved_tool_error
+from roomkit.tools.result import (
+    as_tool_result,
+    failure_detail,
+    is_unknown_tool_answer,
+    tool_failure,
+    unserved_tool_error,
+)
 from roomkit.tools.validation import fold_hoisted_arguments, validate_tool_arguments
 
 if TYPE_CHECKING:
@@ -331,8 +337,13 @@ class AIToolsMixin:
         arguments: dict[str, Any],
         result: str,
         room_id: str | None,
+        *,
+        detail: str | None = None,
     ) -> None:
         """Fire ON_TOOL_CALL for a call that failed or was refused.
+
+        *detail* is a raised call's full failure, for the observers only
+        (``ToolCallEvent.error_detail``).
 
         The refusal paths below return before the handler runs, and a handler
         that raises jumps past the firing that follows it — so without this,
@@ -358,6 +369,7 @@ class AIToolsMixin:
             result=result,
             room_id=room_id,
             is_error=True,
+            error_detail=detail,
         )
         try:
             await self._tool_observer_hook(event)
@@ -553,15 +565,18 @@ class AIToolsMixin:
             except Exception as exc:
                 telemetry.end_span(tool_span_id, status="error", error_message=str(exc))
                 logger.warning("Tool %s raised %s: %s", tc.name, type(exc).__name__, exc)
-                error = f"Error executing tool '{tc.name}': {exc}"
+                # The class, never the message (RFC §9.3): it goes to the log
+                # above and to the observers, not to the model.
+                error = tool_failure(tc.name, exc)
                 # The model saw the error, so the memory records it, not a
                 # success the handler returned before a hook raised.
                 recorded_result = error
                 tool_failed = True
-                # Fired here, on the raw sentence: the hook sees what the
-                # handler produced, before eviction and the repeated-result
-                # note shape the model's copy of it.
-                await self._fire_tool_refusal(tc, arguments, error, room_id)
+                # Fired here, on the body before eviction and the
+                # repeated-result note shape the model's copy of it.
+                await self._fire_tool_refusal(
+                    tc, arguments, error, room_id, detail=failure_detail(exc)
+                )
                 result = self._bound_tool_result(tc.name, error, tc.id)
             self._settle_activation(tc.id, served=not tool_failed)
             outcome = recorded_result if recorded_result is not None else result

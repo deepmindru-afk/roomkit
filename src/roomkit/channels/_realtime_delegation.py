@@ -24,6 +24,7 @@ from roomkit.core.exceptions import ToolRefusedError
 from roomkit.models.enums import HookTrigger
 from roomkit.telemetry.base import Attr, SpanKind
 from roomkit.telemetry.context import reset_span
+from roomkit.tools.result import failure_detail, tool_failure
 from roomkit.voice.base import VoiceSession, VoiceSessionState
 from roomkit.voice.realtime.events import RealtimeDelegationEvent
 from roomkit.voice.realtime.reasoning import ReasoningBackend, ReasoningRequest, TranscriptLine
@@ -417,7 +418,7 @@ class RealtimeDelegationMixin:
         except asyncio.CancelledError:
             telemetry.end_span(span_id, status="cancelled")
             raise
-        except Exception:
+        except Exception as exc:
             telemetry.end_span(span_id, status="error", error_message=f"tool {name} failed")
             logger.exception(
                 "Error handling backend tool %s (delegation %s, session %s)",
@@ -425,6 +426,9 @@ class RealtimeDelegationMixin:
                 delegation_id,
                 session.id,
             )
-            body = json.dumps({"error": "Internal error handling tool call", "tool": name})
-            await self._fire_tool_refusal(session, call_id, name, arguments, body, room_id)
+            # The class, never the message (RFC §9.3): it went to the log above.
+            body = tool_failure(name, exc)
+            await self._fire_tool_refusal(
+                session, call_id, name, arguments, body, room_id, detail=failure_detail(exc)
+            )
             return body

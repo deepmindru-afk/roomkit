@@ -69,14 +69,16 @@ async def test_an_oversized_refusal_is_evicted_and_the_hook_sees_it_whole(stream
     assert observed[0].result == _HUGE
 
 
-async def test_an_oversized_exception_is_evicted(streaming: bool) -> None:
+async def test_an_oversized_exception_never_reaches_the_model(streaming: bool) -> None:
+    """The model reads a raised call's class, never its message (RMK-295): an
+    oversized message is neither sent nor stored for paging back."""
     ch, provider = _channel(AsyncMock(side_effect=RuntimeError(_HUGE)))
 
     part = await _model_copy(ch, provider, streaming=streaming)
 
     assert part.is_error
-    assert isinstance(part.result, str) and is_eviction_placeholder(part.result)
-    assert _HUGE in ch._eviction._store[("", "evicted_t1")]
+    assert part.result == '{"error": "Tool \'fetch\' failed (RuntimeError)"}'
+    assert all(_HUGE not in str(v) for v in ch._eviction._store.values())
 
 
 async def test_the_hook_sees_the_whole_result_and_the_store_keeps_its_rewrite(

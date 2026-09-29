@@ -26,6 +26,7 @@ from roomkit.models.tool_call import (
     ToolCallObserver,
     ToolCallVerdict,
 )
+from roomkit.tools.result import failure_detail, tool_failure
 from roomkit.tools.validation import fold_hoisted_arguments, validate_tool_arguments
 
 if TYPE_CHECKING:
@@ -136,20 +137,21 @@ class ConferenceToolGate:
         except ToolRefusedError as refusal:
             # A declined call, in the handler's own words.
             return self._refused(event, refusal.message)
-        except Exception:
+        except Exception as exc:
             logger.exception(
                 "Conference channel %r: the tool handler failed on %r in room %s",
                 self._channel_id,
                 event.name,
                 event.room_id,
             )
-            return self.failure(event)
+            return self.failure(event, exc)
         return ToolOutcome(event, result_text(result), served=True)
 
-    def failure(self, event: ToolCallEvent) -> ToolOutcome:
-        """The outcome of a call that failed: the exception is for the log,
-        its text is no answer for a model."""
-        return ToolOutcome(event, _error(f"Tool {event.name!r} failed"), served=False)
+    def failure(self, event: ToolCallEvent, exc: Exception) -> ToolOutcome:
+        """The outcome of a call that raised: the model reads its class, the
+        message rides the event for the observers (RFC §9.3)."""
+        detailed = replace(event, error_detail=failure_detail(exc))
+        return ToolOutcome(detailed, tool_failure(event.name, exc), served=False)
 
     async def result(self, outcome: ToolOutcome) -> str:
         """What the model reads: a served result once ON_TOOL_CALL ran on it

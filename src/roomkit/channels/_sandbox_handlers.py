@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import TYPE_CHECKING, Any
 
 from roomkit.sandbox.tools import SANDBOX_TOOL_PREFIX
+from roomkit.tools.result import tool_failure
 
 if TYPE_CHECKING:
     from roomkit.sandbox.executor import SandboxExecutor
@@ -32,5 +32,6 @@ async def handle_sandbox_command(
         result = await executor.execute(command, arguments)
         return result.model_dump_json()
     except Exception as exc:
+        # The class, never the message (RFC §9.3): it goes to the log.
         logger.exception("Sandbox command failed: %s", tool_name)
-        return json.dumps({"error": f"Sandbox command failed: {exc}"})
+        return tool_failure(tool_name, exc)

@@ -416,7 +416,7 @@ class TestToolUsageInContext:
         ch = self._one_call_channel(AsyncMock(return_value="secret success"), streaming=streaming)
         ch._tool_call_hook = AsyncMock(side_effect=RuntimeError("hook broke"))
         digest = await self._digest_after_one_call(ch, streaming=streaming)
-        assert "Error executing tool 'lookup'" in digest
+        assert "Tool 'lookup' failed (RuntimeError)" in digest
         assert "secret success" not in digest
 
     async def test_called_tool_is_revealed_under_tool_search(self) -> None:

@@ -105,6 +105,15 @@ class ToolCallEvent:
     like a refusal's; :attr:`result` carries a short envelope saying so.
     """
 
+    error_detail: str | None = None
+    """What failed, in full, when the handler or a hook raised (RFC §9.3).
+
+    The exception's class and message, for logs and observers only. The model
+    reads :attr:`result`, the failure without the message: that message can
+    hold anything the failing code held, a connection string with its password
+    included. ``None`` for every other outcome.
+    """
+
     structured_content: dict[str, Any] | None = None
     """The call's structured copy, carried beside :attr:`result` on its
     tool-call event for UI surfaces (MCP ``structuredContent``); never read by

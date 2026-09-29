@@ -7,7 +7,9 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
+from roomkit.channels._skill_constants import TOOL_RUN_SCRIPT
 from roomkit.skills.errors import SkillPathError
+from roomkit.tools.result import tool_failure
 
 if TYPE_CHECKING:
     from roomkit.skills.executor import ScriptExecutor
@@ -135,5 +137,6 @@ async def handle_run_script(
         result = await script_executor.execute(skill, script_name, arguments=script_args)
         return result.model_dump_json()
     except Exception as exc:
+        # The class, never the message (RFC §9.3): it goes to the log.
         logger.exception("Script execution failed: %s/%s", skill_name, script_name)
-        return json.dumps({"error": f"Script execution failed: {exc}"})
+        return tool_failure(TOOL_RUN_SCRIPT, exc)

@@ -178,10 +178,12 @@ async def handle_tools(name: str, arguments: dict) -> str:
     ...
 ```
 
-The message reaches the model verbatim, which is the point: a generic `raise`
-would replace it with `Error executing tool '<name>': <exc>`. The call is marked
-failed, `ON_TOOL_CALL` observers see `event.is_error`, and the stored
-`TOOL_CALL_END` carries the reason.
+The message reaches the model verbatim, which is the point: any other exception
+reads as `{"error": "Tool '<name>' failed (<ExceptionClass>)"}`, its message
+withheld from the model (it can hold a password or a path) and handed to the
+log and to `ON_TOOL_CALL` observers as `event.error_detail`. The call is marked
+failed, observers see `event.is_error`, and the stored `TOOL_CALL_END` carries
+what the model read.
 
 ### Tool Protocol (Tool ABC)
 

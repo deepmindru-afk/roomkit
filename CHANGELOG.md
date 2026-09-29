@@ -80,6 +80,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A tool whose handler raised reads the same on every channel, without the
+  exception's message: `{"error": "Tool 'x' failed (<ExceptionClass>)"}`
+  (RMK-295, RFC §9.3, decision D9). The message can hold anything the failing
+  code held; a realtime model read a hook's `postgres://admin:<password>@...`,
+  and the AI channel sent `Error executing tool 'x': <message>` to the model
+  and stored it on the `TOOL_CALL_END`. It now goes to the log and to
+  ON_TOOL_CALL's observers, on the new `ToolCallEvent.error_detail`. The
+  realtime channel (its four entries), the conference, `run_skill_script` and
+  the sandbox read the same text; a realtime call nothing served whose hook
+  raised reads `No handler for tool x`, as on the AI channel. A spoken call
+  the realtime channel recovered and whose handler raised now tells the
+  model and the observers (it was only logged). `ToolRefusedError` still
+  hands the model its words.
 - A name a channel serves itself is declared once, with the channel's
   definition (RMK-294, RFC §21.1). `AIChannel(tools=...)` and
   `RealtimeVoiceChannel(tools=...)` raise `ValueError` for a host tool under

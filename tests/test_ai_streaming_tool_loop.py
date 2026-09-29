@@ -738,7 +738,7 @@ class TestToolOutcome:
 
         assert end.failed
         assert end.error is not None
-        assert end.error.startswith("Error executing tool 'search'")
+        assert end.error == '{"error": "Tool \'search\' failed (RuntimeError)"}'
 
     async def test_a_served_call_is_a_completed_call(self, streaming: bool) -> None:
         async def ok(name: str, args: dict[str, Any]) -> str:

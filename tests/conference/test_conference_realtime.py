@@ -361,7 +361,7 @@ class TestToolCalls:
         (_, call_id, result) = provider.tool_results[0]
         assert call_id == "call-1"
         # The exception is logged; the model reads that the tool failed.
-        assert json.loads(result) == {"error": "Tool 'x' failed"}
+        assert json.loads(result) == {"error": "Tool 'x' failed (RuntimeError)"}
 
     async def test_a_call_with_no_handler_configured_still_gets_an_answer(self) -> None:
         provider = MockRealtimeProvider()

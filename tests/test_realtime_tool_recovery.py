@@ -329,7 +329,8 @@ class TestRecoveredResultsFollowChannelPolicy:
     async def test_a_serving_hook_that_raises_is_reported_to_the_model(
         self, provider: MockRealtimeProvider
     ) -> None:
-        """Nothing served the call, so the model hears the failure, not "ok"."""
+        """Nothing served the call, so the model hears the failure, not "ok",
+        and never the hook's message (RMK-295, RFC §9.3)."""
         kit, _channel, session = await _session(provider, "rt-rec-hookboom")
 
         @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="boom")
@@ -340,8 +341,8 @@ class TestRecoveredResultsFollowChannelPolicy:
         await asyncio.sleep(0.1)
 
         injected = _injected(provider)[-1]
-        assert "Tool call failed" in injected
-        assert "hook is broken" in injected
+        assert injected.startswith("[Tool lookup failed:")
+        assert "hook is broken" not in injected
 
     async def test_a_handler_result_outranks_a_broken_hook(
         self, provider: MockRealtimeProvider

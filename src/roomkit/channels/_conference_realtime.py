@@ -563,14 +563,14 @@ class ConferenceRealtime:
             return
         try:
             outcome = await self._tools.execute(config, event)
-        except Exception:
+        except Exception as exc:
             logger.exception(
                 "Conference channel %r: the tool gate failed on %r in room %s",
                 self._channel_id,
                 event.name,
                 session.room_id,
             )
-            outcome = self._tools.failure(event)
+            outcome = self._tools.failure(event, exc)
         call = room.tool_calls.get(event.tool_call_id)
         if call is not None:
             call.reported = True

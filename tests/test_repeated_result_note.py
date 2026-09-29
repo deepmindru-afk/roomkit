@@ -110,15 +110,14 @@ async def test_the_note_reaches_the_model_where_the_argument_guard_is_silent(
     assert results[2].startswith('{"success": true, "cards": [], "total": 0}')
 
 
-@pytest.mark.parametrize("fails", [False, True], ids=["result", "error"])
-async def test_an_evicted_answer_is_still_recognised(fails: bool, streaming: bool) -> None:
+async def test_an_evicted_answer_is_still_recognised(streaming: bool) -> None:
     """An oversized answer reaches the model as a placeholder whose id is
-    unique per call; the repeat is counted on what the tool gave, not on it."""
+    unique per call; the repeat is counted on what the tool gave, not on it.
+    (A raised call's message never reaches the model, RMK-295: only an answer
+    can be oversized.)"""
     body = "row " * 20_000
 
     async def same_big_answer(name: str, args: dict) -> str:
-        if fails:
-            raise RuntimeError(body)
         return body
 
     ch = _channel([*[_search(i) for i in range(4)], AIResponse(content="done")], same_big_answer)

@@ -308,8 +308,9 @@ class TestParallelToolExecution:
         assert results[0].result == "ok"
         # Bad tool has error message
         assert results[1].name == "bad_tool"
-        assert "Error executing tool" in results[1].result
-        assert "Tool exploded" in results[1].result
+        assert "Tool 'bad_tool' failed (ValueError)" in results[1].result
+        # The exception's message never reaches the model (RMK-295).
+        assert "Tool exploded" not in results[1].result
 
 
 class TestToolResultTruncation:

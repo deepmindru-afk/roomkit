@@ -222,10 +222,8 @@ async def test_integration_failure_is_returned_without_a_success() -> None:
                 "arguments_json": '{"action":"list"}',
             },
         )
-        assert result["error"] == "Internal error handling tool call"
-        assert result["tool"] == "calendar"
-        assert "do not infer an integration outage" in result["hint"].lower()
-        assert "repeat a write automatically" in result["hint"]
+        # The failure and its class, never its message (RMK-295, RFC §9.3).
+        assert result == {"error": "Tool 'calendar' failed (ConnectionError)"}
         handler.assert_awaited_once()
 
 

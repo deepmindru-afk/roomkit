@@ -28,6 +28,7 @@ from roomkit.channels._realtime_tools import result_text
 from roomkit.core.exceptions import ToolRefusedError
 from roomkit.models.enums import ChannelType
 from roomkit.telemetry.base import Attr, SpanKind
+from roomkit.tools.result import failure_detail, tool_failure
 from roomkit.voice.base import VoiceSessionState
 
 if TYPE_CHECKING:
@@ -78,7 +79,7 @@ class RealtimeToolRecoveryHost(Protocol):
         channel_serves: bool = True,
     ) -> tuple[dict[str, Any], str | None, Any]: ...
 
-    async def _fire_tool_hook(
+    async def _fire_tool_hook_outcome(
         self,
         tool_event: Any,
         room_id: str,
@@ -87,7 +88,7 @@ class RealtimeToolRecoveryHost(Protocol):
         call_id: str,
         session: VoiceSession,
         carrying: Any = None,
-    ) -> str: ...
+    ) -> tuple[str, bool]: ...
 
     async def _call_tool_handler(
         self,
@@ -123,7 +124,7 @@ class RealtimeToolRecoveryMixin:
 
     _track_task: Any  # cross-mixin
     _authorize_realtime_tool: Any  # cross-mixin (RealtimeToolsMixin)
-    _fire_tool_hook: Any  # cross-mixin (RealtimeToolsMixin)
+    _fire_tool_hook_outcome: Any  # cross-mixin (RealtimeToolsMixin)
     _fire_tool_refusal: Any  # cross-mixin (RealtimeToolsMixin)
     _call_tool_handler: Any  # cross-mixin (RealtimeToolsMixin)
     _truncate_tool_result: Any  # cross-mixin (RealtimeToolsMixin)
@@ -226,7 +227,7 @@ class RealtimeToolRecoveryMixin:
         call_id: str,
         result_str: str,
         *,
-        denied: bool = False,
+        verb: str = "completed",
     ) -> None:
         """Hand an outcome back to the model as silent context.
 
@@ -244,7 +245,6 @@ class RealtimeToolRecoveryMixin:
         summary = result_str
         if len(summary) > self._tool_result_max_length:
             summary = self._truncate_tool_result(summary, tool_name, call_id, session.id)
-        verb = "denied" if denied else "completed"
         await self._provider.inject_text(
             session,
             f"[Tool {tool_name} {verb}: {summary}]",
@@ -292,7 +292,7 @@ class RealtimeToolRecoveryMixin:
                 return
             if denial is not None:
                 await self._inject_recovered_result(
-                    session, tool_name, call_id, denial, denied=True
+                    session, tool_name, call_id, denial, verb="denied"
                 )
                 # The recovery span is the only signal this path emits, so a
                 # refusal has to be legible in a trace, not just in the logs.
@@ -325,7 +325,7 @@ class RealtimeToolRecoveryMixin:
                     # does, and for the same reason: the model reads why it was
                     # refused, in the handler's words, and can correct itself.
                     await self._inject_recovered_result(
-                        session, tool_name, call_id, refused, denied=True
+                        session, tool_name, call_id, refused, verb="denied"
                     )
                     telemetry.end_span(span_id, attributes={Attr.REALTIME_TOOL_DENIED: True})
                     logger.info(
@@ -358,8 +358,9 @@ class RealtimeToolRecoveryMixin:
             # raises is reported to the model rather than swallowed, and a
             # recovered call shows up in the framework event feed like any
             # other tool call.
+            failed = False
             if self._framework and room_id:
-                result_str = await self._fire_tool_hook(
+                result_str, failed = await self._fire_tool_hook_outcome(
                     tool_event, room_id, handler_result, tool_name, call_id, session, gate_context
                 )
             elif handler_result is not None:
@@ -367,7 +368,8 @@ class RealtimeToolRecoveryMixin:
             else:
                 result_str = json.dumps({"status": "ok"})
 
-            await self._inject_recovered_result(session, tool_name, call_id, result_str)
+            verb = "failed" if failed else "completed"
+            await self._inject_recovered_result(session, tool_name, call_id, result_str, verb=verb)
 
             telemetry.end_span(span_id)
             logger.info(
@@ -381,13 +383,38 @@ class RealtimeToolRecoveryMixin:
         except asyncio.CancelledError:
             telemetry.end_span(span_id, status="cancelled")
             raise
-        except Exception:
+        except Exception as exc:
             telemetry.end_span(span_id, status="error", error_message=f"recovery:{tool_name}")
             logger.exception(
                 "Error executing recovered tool call %s for session %s",
                 tool_name,
                 session.id,
             )
+            await self._fail_recovered_call(session, tool_name, call_id, arguments, room_id, exc)
+
+    async def _fail_recovered_call(
+        self,
+        session: VoiceSession,
+        tool_name: str,
+        call_id: str,
+        arguments: dict[str, Any],
+        room_id: str | None,
+        exc: Exception,
+    ) -> None:
+        """Tell the model and the observers that a recovered call failed (RFC §9.3).
+
+        Every call fires ON_TOOL_CALL with its outcome, and the model reads the
+        failure without the exception's message, which goes to the observers.
+        Best effort: the failure is already in the log.
+        """
+        body = tool_failure(tool_name, exc)
+        try:
+            await self._inject_recovered_result(session, tool_name, call_id, body, verb="failed")
+            await self._fire_tool_refusal(
+                session, call_id, tool_name, arguments, body, room_id, detail=failure_detail(exc)
+            )
+        except Exception:
+            logger.exception("Could not report the failed recovered call %s", tool_name)
 
 
 # ------------------------------------------------------------------
