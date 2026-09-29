@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -428,7 +429,7 @@ async def test_detached_consumer_runs_lock_free_under_the_callers_span() -> None
 
     kit._process_streaming_responses = observe  # type: ignore[method-assign]
     cascade = DeliveryCascade("r1", reentry_budget=1)
-    cascade.add_streams([object()])
+    cascade.add_streams([SimpleNamespace()])
 
     caller_span = telemetry.start_span(SpanKind.CUSTOM, "caller")
     token = set_current_span(caller_span)

@@ -104,11 +104,6 @@ class DeliveryPlan:
     # fire after its set executes. False preserves the paths that never fired
     # them: injected events and a trigger without a source binding.
     fire_after_broadcast: bool = True
-    # Whether response events collected during execution start their own
-    # commit passes. False for a plan whose caller owns the responses (a
-    # streamed segment, a greeting): the trigger already produced the turn,
-    # and re-entering on its own output would answer the answer.
-    allow_reentry: bool = True
     # Trace continuity across the lane boundary: the caller's current span
     # (and its backend context), captured at plan time. The lane executor
     # runs on a fresh contextvars context, so without these the broadcast
@@ -157,7 +152,8 @@ class DeliveryCascade:
         self._reentry_budget = reentry_budget
         # Streaming responses captured during execution, consumed by the
         # caller after wait() — streaming delivery (TTS, long generations)
-        # must not stall the lane.
+        # must not stall the lane. Every pass adds its own, so the list grows
+        # while the caller reads it (RFC §8.3: a started response is read).
         self.streams: list[Any] = []
         # First intelligence-channel failure, surfaced on InboundResult.error.
         self.error: Exception | None = None
@@ -267,7 +263,15 @@ class DeliveryCascade:
         self._reentry_budget -= 1
         return True
 
-    def add_streams(self, streams: list[Any]) -> None:
+    def add_streams(self, streams: list[Any], *, chained: bool = False) -> None:
+        """Queue streams for the caller's reader.
+
+        ``chained`` marks answers to an answer, started by a pass other than
+        the caller's own: read like the caller's, they count against the
+        reentry budget and their record and failure are not the caller's.
+        """
+        for stream in streams:
+            stream.chained = chained
         self.streams.extend(streams)
 
     def record_error(self, exc: Exception) -> None:

@@ -889,17 +889,11 @@ class RoomKit(
             # The caller observes its event's delivery-set completion (RFC
             # §10.1 step 18) — the wait short-circuits when this call was made
             # from inside the room's own lane or under its lock, where waiting
-            # would deadlock; delivery then follows in lane order.
-            completed = await cascade.wait()
-            # Streaming AI responses to a directly-injected event are consumed
-            # outside the lane, exactly like the inbound path — without this a
-            # streaming provider's reply is generated and then silently
-            # dropped. A detached caller hands the consumption to a
-            # background task once the cascade truly completes.
-            if not completed:
-                self._consume_streams_when_cascade_completes(cascade, room_id)
-            elif cascade.streams:
-                await self._process_streaming_responses(cascade.streams, room_id)
+            # would deadlock; delivery then follows in lane order. Streaming AI
+            # responses to a directly-injected event are consumed outside the
+            # lane, exactly like the inbound path, or a streaming provider's
+            # reply would be generated and then silently dropped.
+            await self._finish_cascade(cascade, room_id)
 
             telemetry.end_span(span_id)
         except Exception as exc:

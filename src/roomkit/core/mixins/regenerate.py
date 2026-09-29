@@ -7,6 +7,7 @@ import logging
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.core.exceptions import RoomClosedError
+from roomkit.core.lanes import DeliveryCascade
 from roomkit.core.mixins.helpers import _REFUSING_STATUSES, HelpersMixin
 from roomkit.models.delivery import InboundResult
 from roomkit.models.enums import ChannelCategory, EventStatus
@@ -31,16 +32,18 @@ class RegenerateHost(Protocol):
         _store: Conversation persistence backend.
         _lock_manager: Per-room lock for serialised mutation.
         _process_timeout: Timeout in seconds for locked processing.
+        _max_chain_depth: Chain depth ceiling, which sizes the reentry budget.
 
     Cross-mixin methods (provided by other mixins in the MRO):
         _get_router: From :class:`InboundLockedMixin`.
         _commit_and_deliver: From :class:`LaneExecutionMixin`.
-        _process_streaming_responses: From :class:`InboundStreamingMixin`.
+        _finish_cascade: From :class:`LaneExecutionMixin`.
     """
 
     _store: ConversationStore
     _lock_manager: RoomLockManager
     _process_timeout: float
+    _max_chain_depth: int
 
 
 class RegenerateMixin(HelpersMixin):
@@ -52,11 +55,12 @@ class RegenerateMixin(HelpersMixin):
     _store: ConversationStore
     _lock_manager: RoomLockManager
     _process_timeout: float
+    _max_chain_depth: int
 
     # Cross-mixin methods — attribute annotations avoid MRO shadowing
     _get_router: Any  # see RegenerateHost
     _commit_and_deliver: Any  # see RegenerateHost
-    _process_streaming_responses: Any  # see RegenerateHost
+    _finish_cascade: Any  # see RegenerateHost
 
     async def regenerate_target(self, room_id: str) -> RoomEvent | None:
         """The event :meth:`regenerate_response` would re-run the agent on.
@@ -287,11 +291,17 @@ class RegenerateMixin(HelpersMixin):
         # Outside the room lock (RFC §10.1): the regenerated answers reach
         # transports through the room's delivery lane — which also fires their
         # AFTER_BROADCAST hooks once each delivery set completes (step 16) —
-        # then streaming delivery (which can take seconds).
+        # then streaming delivery (which can take seconds). One cascade for
+        # the whole regeneration: what the other agents answer to the new
+        # answer is read with it (RFC §8.3), the regenerated stream first.
+        cascade = DeliveryCascade(room_id, reentry_budget=self._max_chain_depth * 10)
+        cascade.add_streams(pending_streams)
         for reentry in regenerated:
-            await self._commit_and_deliver(room_id, reentry, reentry.source.channel_id)
+            await self._commit_and_deliver(
+                room_id, reentry, reentry.source.channel_id, cascade=cascade
+            )
         # A non-streaming regeneration failure fires ON_ERROR here (the streaming
-        # path fires its own inside _process_streaming_responses), so the host
+        # path fires its own while its stream is read), so the host
         # renders an error card for a failed regenerate on either path.
         if broadcast_error is not None and error_source is not None:
             await self._fire_error_hook(
@@ -309,12 +319,8 @@ class RegenerateMixin(HelpersMixin):
         for output in broadcast_result.outputs.values():
             if output.response_stream is None:
                 record.update(output.response_metadata)
-        stream_error: Exception | None = None
-        if pending_streams:
-            stream_error, stream_record = await self._process_streaming_responses(
-                pending_streams, room_id
-            )
-            record.update(stream_record)
+        stream_error, stream_record = await self._finish_cascade(cascade, room_id)
+        record.update(stream_record)
 
         return InboundResult(
             event=trigger,

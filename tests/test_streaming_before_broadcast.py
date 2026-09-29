@@ -19,6 +19,7 @@ from roomkit.channels.ai import AIChannel
 from roomkit.channels.websocket import WebSocketChannel
 from roomkit.core.event_router import StreamingResponse
 from roomkit.core.framework import RoomKit
+from roomkit.core.lanes import DeliveryCascade
 from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
@@ -315,7 +316,11 @@ async def test_stream_hook_effects_without_persistence_or_source_binding(detache
             trigger_event=notice,
         )
         await kit._handle_streaming_response(
-            kit._get_router(), response, "r1", await kit._build_context("r1")
+            kit._get_router(),
+            response,
+            "r1",
+            await kit._build_context("r1"),
+            cascade=DeliveryCascade("r1", reentry_budget=1),
         )
         assert await kit.store.list_tasks("r1") == [task]
         assert await kit.store.list_observations("r1") == [observation]

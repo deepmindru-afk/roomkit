@@ -154,6 +154,10 @@ class StreamingResponse:
     # The turn's live record (``ChannelOutput.response_metadata``), read by the
     # persistence of each segment as it stands then — never copied here.
     response_metadata: Mapping[str, Any] = field(default_factory=dict)
+    # An answer to an answer, started by a reentry pass or a streamed
+    # segment's delivery rather than by the caller's own event. Set when the
+    # stream joins its cascade (``DeliveryCascade.add_streams``).
+    chained: bool = False
 
 
 @dataclass

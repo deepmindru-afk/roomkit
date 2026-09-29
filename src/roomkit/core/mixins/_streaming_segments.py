@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._tool_event_result import tool_event_payload
+from roomkit.core.mixins.helpers import _RECENT_EVENTS_LIMIT
 from roomkit.models.enums import EventStatus, EventType, HookTrigger
 from roomkit.models.event import EventSource, RoomEvent, TextContent, ToolCallContent
 from roomkit.models.streaming import LoopEndMarker, ToolCallEndMarker, ToolCallStartMarker
@@ -48,6 +50,7 @@ class SegmentWriter:
         plan_source: DeliverySource | str,
         chain_depth: int,
         visibility: str,
+        response_visibility: str | None,
         correlation_id: str,
         parent_event_id: str | None,
         streamed_to: set[str],
@@ -61,6 +64,9 @@ class SegmentWriter:
         self._plan_source = plan_source
         self._chain_depth = chain_depth
         self._visibility = visibility
+        # The trigger's answer scope rides every row, so what another agent
+        # answers to a row is scoped as the turn itself is (RFC §8.3).
+        self._response_visibility = response_visibility
         self._correlation_id = correlation_id
         self._parent_event_id = parent_event_id
         # The channel a text segment reaches *as it is produced* — the stream
@@ -262,6 +268,7 @@ class SegmentWriter:
             status=EventStatus.DELIVERED,
             chain_depth=self._chain_depth,
             visibility=self._visibility,
+            response_visibility=self._response_visibility,
             correlation_id=self._correlation_id,
             parent_event_id=self._parent_event_id,
             metadata=metadata or {},
@@ -389,4 +396,19 @@ class SegmentWriter:
             self.persisted.append(stored)
             if self._response_events is not None:
                 self._response_events.append(stored)
+            self._plan_source = _with_row(self._plan_source, stored)
         return stored
+
+
+def _with_row(source: DeliverySource | str, row: RoomEvent) -> DeliverySource | str:
+    """The run's planning inputs with *row* in their history.
+
+    The context is resolved once for the whole stream; without this, the
+    agents a later row reaches would answer it without the rows before it,
+    where a buffered response's segments each re-enter with the ones before
+    them in their context.
+    """
+    if isinstance(source, str):
+        return source
+    recent = [*source.context.recent_events[-(_RECENT_EVENTS_LIMIT - 1) :], row]
+    return replace(source, context=source.context.model_copy(update={"recent_events": recent}))

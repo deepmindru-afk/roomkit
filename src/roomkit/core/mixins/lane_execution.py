@@ -21,6 +21,7 @@ from roomkit.core.mixins.helpers import _RECENT_EVENTS_LIMIT, HelpersMixin, _ref
 from roomkit.models.delivery import DeliveryError, DeliveryResult
 from roomkit.models.enums import ChannelCategory, EventStatus, EventType, HookTrigger
 from roomkit.models.event import EventSource, RoomEvent
+from roomkit.models.response_metadata import ResponseMetadata
 from roomkit.telemetry.base import SpanKind
 from roomkit.telemetry.context import get_current_span, restored_span
 
@@ -192,7 +193,6 @@ class LaneExecutionMixin(HelpersMixin):
         source: str | DeliverySource,
         *,
         exclude_delivery: set[str] | None = None,
-        allow_reentry: bool = False,
         policy_aware: bool = True,
         cascade: DeliveryCascade | None = None,
         hook_result: SyncPipelineResult | None = None,
@@ -216,14 +216,14 @@ class LaneExecutionMixin(HelpersMixin):
         then takes no lock and reads nothing, and the store still assigns the
         index atomically (RFC §8.1), which is what this path always relied on.
 
-        Responses are not re-entered by default: these callers already own
-        the turn's output (they read it off the ``BroadcastResult`` or, for
-        a stream, produced it), and the inline broadcast they replace
-        discarded ``reentry_events`` too.
+        The event is an agent's output like any other (RFC §19.3.1): what
+        the other agents answer to it re-enters, and a stream one of them
+        starts is read (§8.3), never discarded.
 
         Pass ``cascade`` to enqueue without waiting — for a caller emitting
         a run of events that must not block on each one's delivery; that
-        caller owns the single wait at the end.
+        caller owns the single wait at the end, and the reading of the
+        streams the run started.
 
         ``hook_result`` carries effects from an already allowed sync hook
         pipeline. Tasks and observations join the plan's post-delivery work;
@@ -250,7 +250,7 @@ class LaneExecutionMixin(HelpersMixin):
                     room_id,
                     event,
                     cascade,
-                    self._plan_factory(resolved, exclude_delivery, allow_reentry, hook_result),
+                    self._plan_factory(resolved, exclude_delivery, hook_result),
                     policy_aware=policy_aware,
                 )
         else:
@@ -259,7 +259,7 @@ class LaneExecutionMixin(HelpersMixin):
                 room_id,
                 event,
                 cascade,
-                self._plan_factory(resolved, exclude_delivery, allow_reentry, hook_result),
+                self._plan_factory(resolved, exclude_delivery, hook_result),
                 policy_aware=policy_aware,
             )
 
@@ -284,7 +284,7 @@ class LaneExecutionMixin(HelpersMixin):
         # Off the lock: waiting under it would deadlock the lane against its
         # own caller, and ``wait()`` short-circuits rather than hang.
         if own_cascade:
-            await cascade.wait()
+            await self._finish_cascade(cascade, room_id)
         return committed
 
     async def _resolve_delivery_source(
@@ -304,12 +304,14 @@ class LaneExecutionMixin(HelpersMixin):
         self,
         source: DeliverySource | None,
         exclude_delivery: set[str] | None,
-        allow_reentry: bool,
         hook_result: SyncPipelineResult | None = None,
     ) -> Callable[[RoomEvent], DeliveryPlan] | None:
         """The plan builder ``_commit_to_lane`` calls on the committed event.
 
         ``None`` in, ``None`` out — the commit reduces to a cursor entry.
+        The event's ``response_visibility`` scopes what re-enters from its
+        delivery set, as the root plan's does (a streamed segment carries
+        its trigger's).
         """
         if source is None:
             return None
@@ -329,7 +331,7 @@ class LaneExecutionMixin(HelpersMixin):
                 ),
                 exclude_delivery=exclude_delivery,
             )
-            plan.allow_reentry = allow_reentry
+            plan.response_visibility = committed.response_visibility
             if hook_result is not None:
                 plan.hook_tasks = list(hook_result.tasks)
                 plan.hook_observations = list(hook_result.observations)
@@ -447,10 +449,7 @@ class LaneExecutionMixin(HelpersMixin):
                 # to its caller — record it so a DeliveryHandle surfaces it.
                 try:
                     stream_error, record = await self._process_streaming_responses(
-                        cascade.streams,
-                        room_id,
-                        response_events=cascade.response_events,
-                        cascade=cascade,
+                        cascade, room_id, response_events=cascade.response_events
                     )
                 except Exception as exc:
                     logger.exception("Detached stream consumption failed for room %s", room_id)
@@ -498,6 +497,22 @@ class LaneExecutionMixin(HelpersMixin):
         task.add_done_callback(self._pending_hook_tasks.discard)
         self._pending_hook_tasks.add(task)
         return task
+
+    async def _finish_cascade(
+        self, cascade: DeliveryCascade, room_id: str
+    ) -> tuple[Exception | None, ResponseMetadata]:
+        """Wait for a caller's delivery set, then read every stream it started.
+
+        A caller that cannot wait, from inside the room's lane or under its
+        lock, hands the reading to a background task instead: a streaming
+        reply is only generated when its stream is read.
+        """
+        completed = await cascade.wait()
+        if not completed:
+            self._consume_streams_when_cascade_completes(cascade, room_id)
+        elif cascade.streams and cascade.cancelled is None:
+            return await self._process_streaming_responses(cascade, room_id)
+        return None, ResponseMetadata()
 
     # -- Lane executor callbacks (LaneHost) --
 
@@ -674,7 +689,11 @@ class LaneExecutionMixin(HelpersMixin):
             for output in result.outputs.values():
                 if output.response_stream is None:
                     cascade.response_metadata.update(output.response_metadata)
-            cascade.add_streams(result.streaming_responses)
+
+        # A stream any pass started is read by the caller (RFC §8.3); one a
+        # reentry pass or a streamed segment's delivery started answers an
+        # answer, and is chained.
+        cascade.add_streams(result.streaming_responses, chained=not plan.emit_processed)
 
         # Commit blocked responses atomically (RFC §8.1 / §8.3 / §14.3 —
         # blocked events are still indexed): chain-depth enforcement and
@@ -745,39 +764,48 @@ class LaneExecutionMixin(HelpersMixin):
         the RFC's explicit relaxation (index monotonicity and parent
         linkage, never adjacency).
         """
-        if plan.injected or not plan.allow_reentry or not result.reentry_events:
+        if plan.injected or not result.reentry_events:
             return
 
         # Stamp response_visibility from the root trigger onto reentry
         # events' *visibility* field — the router's visibility check reads
-        # ``visibility``, so the caller's response scope rides the event.
+        # ``visibility``, so the caller's response scope rides the event. It
+        # rides as ``response_visibility`` too, so a stream answering the
+        # reentry is scoped like a buffered answer to it.
         reentries = result.reentry_events
         if plan.response_visibility:
+            scope = plan.response_visibility
             reentries = [
-                r.model_copy(update={"visibility": plan.response_visibility}) for r in reentries
+                r.model_copy(update={"visibility": scope, "response_visibility": scope})
+                for r in reentries
             ]
 
         for reentry in reentries:
             if not cascade.consume_reentry_budget():
-                logger.warning(
-                    "Reentry chain hit its cap, storing response as BLOCKED",
-                    extra={"room_id": room_id},
-                )
-                async with self._lock_manager.locked(room_id):
-                    # Same status gate as every other growth point (RFC §5.1):
-                    # a closed room does not take the audit record either.
-                    if not await self._room_refuses_writes(room_id):
-                        await self._commit_indexed(
-                            room_id,
-                            reentry.model_copy(
-                                update={
-                                    "status": EventStatus.BLOCKED,
-                                    "blocked_by": "reentry_loop_cap",
-                                }
-                            ),
-                        )
+                await self._store_past_reentry_cap(room_id, reentry)
                 continue
             await self._run_reentry_pass(room_id, reentry, plan, cascade)
+
+    async def _store_past_reentry_cap(self, room_id: str, response: RoomEvent) -> None:
+        """Store a response past the cascade's reentry budget as its BLOCKED record.
+
+        Shared by a buffered answer and by a chained stream closed unread,
+        so the cap leaves the same trace whichever way the answer came.
+        """
+        logger.warning(
+            "Reentry chain hit its cap, storing response as BLOCKED",
+            extra={"room_id": room_id},
+        )
+        async with self._lock_manager.locked(room_id):
+            # Same status gate as every other growth point (RFC §5.1):
+            # a closed room does not take the audit record either.
+            if not await self._room_refuses_writes(room_id):
+                await self._commit_indexed(
+                    room_id,
+                    response.model_copy(
+                        update={"status": EventStatus.BLOCKED, "blocked_by": "reentry_loop_cap"}
+                    ),
+                )
 
     async def _run_reentry_pass(
         self,

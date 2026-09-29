@@ -19,7 +19,7 @@ from roomkit.models.enums import (
     ChannelCategory,
     ChannelDirection,
 )
-from roomkit.models.event import RoomEvent
+from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.models.response_metadata import ResponseMetadata
 from roomkit.models.streaming import ThinkingDeltaMarker
 from roomkit.providers.ai.base import ProviderError
@@ -96,6 +96,7 @@ class InboundStreamingMixin(HelpersMixin):
     # Cross-mixin method — attribute annotation avoids MRO shadowing
     _commit_and_deliver: Any  # LaneExecutionMixin
     _lane_injected_events: Any  # LaneExecutionMixin
+    _store_past_reentry_cap: Any  # LaneExecutionMixin
     _handle_block: Any  # InboundLockedMixin
 
     # Stub for cross-mixin call — implemented by RoomKit._get_router().
@@ -108,12 +109,10 @@ class InboundStreamingMixin(HelpersMixin):
         room_id: str,
         context: RoomContext,
         *,
+        cascade: DeliveryCascade,
         response_events: list[RoomEvent] | None = None,
-        cascade: DeliveryCascade | None = None,
     ) -> _StreamingResult | None:
         """Consume a streaming response, pipe to streaming channels, store segments."""
-        from roomkit.models.event import EventSource, TextContent
-
         response_vis = sr.trigger_event.response_visibility
         streaming_targets = self._find_streaming_targets(router, sr, context)
 
@@ -126,9 +125,8 @@ class InboundStreamingMixin(HelpersMixin):
         # One cascade for the whole response: each segment's delivery is
         # enqueued without waiting (blocking the generator on an SMS round
         # trip would stall the stream), and the run is awaited once, after
-        # the stream, by the caller.
-        if cascade is None:
-            cascade = DeliveryCascade(room_id, reentry_budget=self._max_chain_depth * 10)
+        # the stream. It is the caller's cascade, so a stream another agent
+        # starts in answer to a segment joins the caller's reading.
         # Only the first target streams (V1, below); any other
         # streaming-capable channel is an ordinary recipient.
         streamed_to: set[str] = (
@@ -167,6 +165,7 @@ class InboundStreamingMixin(HelpersMixin):
             plan_source=plan_source,
             chain_depth=chain_depth,
             visibility=visibility,
+            response_visibility=response_vis,
             correlation_id=correlation_id,
             parent_event_id=parent_event_id,
             streamed_to=streamed_to,
@@ -398,13 +397,14 @@ class InboundStreamingMixin(HelpersMixin):
 
     async def _process_streaming_responses(
         self,
-        pending_streams: list[Any],
+        cascade: DeliveryCascade,
         room_id: str,
         *,
         response_events: list[RoomEvent] | None = None,
-        cascade: DeliveryCascade | None = None,
     ) -> tuple[Exception | None, ResponseMetadata]:
-        """Handle streaming responses outside the room lock.
+        """Read every stream of *cascade*, the ones added while reading included.
+
+        Handles streaming responses outside the room lock.
 
         Streaming delivery (TTS playback) can take seconds. Running it outside
         the lock allows other process_inbound calls to proceed concurrently,
@@ -425,17 +425,31 @@ class InboundStreamingMixin(HelpersMixin):
         segment: a turn that ends on a tool call persists no segment after it,
         and one that ends before writing any text persists none at all, so the
         room is not a place where "how did that turn end" can always be asked.
+
+        A stream a segment's delivery or a reentry pass started (``chained``)
+        is read after the caller's, each in the order it joined, until none
+        is left (RFC §8.3: a started response is read, never discarded). Its
+        failure fires ON_ERROR like any stream's, but neither it nor its
+        record is the caller's, as for a buffered answer to an answer. The
+        context is rebuilt for each stream: a chained one answers events
+        committed after the caller's read began.
         """
         router = self._get_router()
-        context = await self._build_context(room_id)
-
         first_error: Exception | None = None
         record = ResponseMetadata()
+        read = 0
         try:
-            for sr in pending_streams:
+            while read < len(cascade.streams) and cascade.cancelled is None:
+                sr = cascade.streams[read]
+                read += 1
+                if sr.chained and not await self._admit_chained_stream(sr, cascade, room_id):
+                    continue
+                context = await self._build_context(room_id)
                 sr_result = await self._handle_streaming_response(
-                    router, sr, room_id, context, response_events=response_events, cascade=cascade
+                    router, sr, room_id, context, cascade=cascade, response_events=response_events
                 )
+                if sr.chained:
+                    continue
                 if sr_result and sr_result.error and first_error is None:
                     first_error = sr_result.error
                 # Several streams answer one inbound only when several channels
@@ -446,7 +460,35 @@ class InboundStreamingMixin(HelpersMixin):
             # A transport can stop reading between two yields (or fail while
             # rendering one). Async-for alone does not close its generator;
             # finalizers must run before the delivery handle reports cleanup.
-            for sr in pending_streams:
+            for sr in cascade.streams:
                 await _aclose_stream(sr.stream)
 
         return first_error, record
+
+    async def _admit_chained_stream(
+        self, sr: StreamingResponse, cascade: DeliveryCascade, room_id: str
+    ) -> bool:
+        """Whether a chained stream is read, within the cascade's reentry budget.
+
+        Past the budget it is closed unread, so nothing is generated, and its
+        BLOCKED record keeps the trace a buffered answer past the budget
+        leaves.
+        """
+        if cascade.consume_reentry_budget():
+            return True
+        await _aclose_stream(sr.stream)
+        trigger = sr.trigger_event
+        await self._store_past_reentry_cap(
+            room_id,
+            RoomEvent(
+                room_id=room_id,
+                source=EventSource(
+                    channel_id=sr.source_channel_id, channel_type=sr.source_channel_type
+                ),
+                content=TextContent(body=""),
+                chain_depth=trigger.chain_depth + 1,
+                visibility=trigger.response_visibility or "all",
+                parent_event_id=trigger.parent_event_id,
+            ),
+        )
+        return False

@@ -524,10 +524,7 @@ class InboundMixin(HelpersMixin):
         elif cascade.streams and cascade.cancelled is None:
             stream_error, record = await cascade.run(
                 self._process_streaming_responses(
-                    cascade.streams,
-                    room_id,
-                    response_events=result.response_events,
-                    cascade=cascade,
+                    cascade, room_id, response_events=result.response_events
                 )
             )
             if stream_error is not None and result.error is None:
