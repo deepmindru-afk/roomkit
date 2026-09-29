@@ -56,6 +56,9 @@ class OpenAIRealtimeBase(OpenAIRealtimeEventHandlersMixin):
         # Sessions whose caller is speaking: a continuation waits for the
         # floor to come back (RFC §12.4)
         self._floor_held: set[str] = set()
+        # Sessions whose caller's turn met a response in progress and is
+        # still owed a request (RFC §12.4)
+        self._turns_owed: set[str] = set()
         # The current response's function calls: the model is asked to go on
         # once that response is done and every call has its output (RFC §12.4)
         self._pending_responses: dict[str, PendingResponse] = {}
@@ -420,7 +423,18 @@ class OpenAIRealtimeBase(OpenAIRealtimeEventHandlersMixin):
             return
         logger.debug("[%s →] input_audio_buffer.commit (session %s)", self._log_tag, session.id)
         await ws.send(json.dumps({"type": "input_audio_buffer.commit"}))
-        await self._request_response(session, ws, "activity end")
+        await self._request_response(session, ws, "activity end", owed=True)
+
+    def _forget_session(self, session_id: str) -> None:
+        """Drop every per-session record but the socket and the receive task."""
+        self._provider_configs.pop(session_id, None)
+        self._responding.discard(session_id)
+        self._floor_held.discard(session_id)
+        self._turns_owed.discard(session_id)
+        self._pending_responses.pop(session_id, None)
+        self._output_audio.pop(session_id, None)
+        self._output_bytes_per_ms.pop(session_id, None)
+        self._audio_codecs.pop(session_id, None)
 
     async def _discard_connection(
         self,
@@ -435,13 +449,7 @@ class OpenAIRealtimeBase(OpenAIRealtimeEventHandlersMixin):
         self._connections.pop(session.id, None)
         self._sessions.pop(session.id, None)
         self._receive_tasks.pop(session.id, None)
-        self._provider_configs.pop(session.id, None)
-        self._responding.discard(session.id)
-        self._floor_held.discard(session.id)
-        self._pending_responses.pop(session.id, None)
-        self._output_audio.pop(session.id, None)
-        self._output_bytes_per_ms.pop(session.id, None)
-        self._audio_codecs.pop(session.id, None)
+        self._forget_session(session.id)
         was_active = session.state == VoiceSessionState.ACTIVE
         session.state = VoiceSessionState.ENDED
 
@@ -468,13 +476,7 @@ class OpenAIRealtimeBase(OpenAIRealtimeEventHandlersMixin):
         # Close WebSocket (short timeout to avoid blocking on close handshake)
         ws = self._connections.pop(session.id, None)
         self._sessions.pop(session.id, None)
-        self._provider_configs.pop(session.id, None)
-        self._responding.discard(session.id)
-        self._floor_held.discard(session.id)
-        self._pending_responses.pop(session.id, None)
-        self._output_audio.pop(session.id, None)
-        self._output_bytes_per_ms.pop(session.id, None)
-        self._audio_codecs.pop(session.id, None)
+        self._forget_session(session.id)
         if ws is not None:
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(ws.close(), timeout=_CLOSE_TIMEOUT)

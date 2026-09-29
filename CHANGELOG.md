@@ -17,9 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `is_interruption_marker` tells it from an answer.
 - `roomkit.core.task_utils.cancel_and_wait(*tasks)` (RMK-288): cancels tasks
   and waits for their end without eating the caller's own cancellation,
-  which it raises once they have ended; and `cancellation_requests()`, to
-  tell a task's interruption from the caller's cancellation after awaiting
-  it.
+  which it raises once they have ended; and `await_interruptible(task)`, which
+  awaits a task someone else may cancel (a playback interrupt) and keeps the
+  caller's own cancellation even when the task swallows it.
 - `AIToolCall.partial` and `StreamToolCall.partial` (RMK-284, RFC §6.4): the
   provider marks a call the response cut before its arguments were complete
   (the output cap, a content filter); no tool loop runs it, the AI channel's
@@ -185,13 +185,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A cancellation reaches the task it is aimed at (RMK-288). Thirty-six sites
   cancelled a task and awaited it under `suppress(CancelledError)`, which
   also swallowed a cancellation of the caller: a Gemini `reconfigure` called
-  from a cancelled tool handler went on to reconnect, a cancelled ACP turn
-  could spawn a new agent process, a Buzz source cancelled on its error path
-  kept reconnecting. They go through `cancel_and_wait`, and six sites with
-  the same loss in another shape (the outbound pacer's `stop()` and its
-  prebuffer, the voice STT's wait for its stream, the local, RTP and SIP
-  playback) let the caller's cancellation through. A task's own error is
-  raised as before, or logged where it was suppressed.
+  from a cancelled tool handler went on as if nothing happened, a cancelled
+  ACP turn could spawn a new agent process, a Buzz source cancelled on its
+  error path kept reconnecting. They go through `cancel_and_wait`, and six
+  sites with the same loss in another shape (the outbound pacer's `stop()`
+  and its prebuffer, the voice STT's wait for its stream, the local, RTP and
+  SIP playback, whose stream feeder swallows the cancellation it relays) let
+  the caller's cancellation through. A task's own error is raised as before,
+  or logged where it was suppressed. A Gemini reconfiguration that has begun
+  runs to its end before the caller's cancellation is raised, so a session is
+  never left on its old socket with its new configuration and nobody reading.
 - OpenAI and xAI Realtime no longer start a tool continuation while the
   caller speaks (RMK-288, RFC §12.4). Results that landed before a barge-in
   cancelled the response had their `response.create` sent at once, over the
@@ -200,16 +203,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   end, or the server VAD's speech end) and the caller's request covers it.
   Every `response.create` (a continuation, `inject_text`, the end of the
   caller's turn) now reads one in-progress state, so none doubles a request
-  the server has not begun yet.
+  the server has not begun yet. A caller's turn whose request met a response
+  in progress is answered once it ends, unless a later request covers it,
+  and a request the server rejects no longer leaves the session unable to
+  ask again.
 - `RealtimeVoiceChannel.wait_idle` opens once a tool call that owes no result
   ends, cancelled by the model or spared by the reconnect its own handler
   caused (RMK-288); it stayed closed until a later response.
 - After a pipeline handoff on `gemini-3.8-live`, every session of the room
   speaks as the new agent (RMK-288). That model resumes a session under its
   original system instruction, ignoring the one a reconfiguration sends: a
-  session with no conversation yet now reconnects fresh, and the handoff
-  greeting carries the new agent's instructions when the provider cannot
-  change them in place (`supports_mid_session_reconfigure` false).
+  session with no conversation yet now reconnects fresh, and a session with
+  one keeps its context and receives the new instruction with its next
+  non-silent injection, the handoff greeting in a pipeline handoff.
 - A room closed mid-stream takes no further streamed row (RMK-283, RFC
   §5.1). Streamed segments and tool rows were committed through a path that
   skipped the room's status, so a room closed during a turn kept receiving

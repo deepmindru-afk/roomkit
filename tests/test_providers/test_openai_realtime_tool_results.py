@@ -442,6 +442,79 @@ class TestOneRequestAtATime:
         assert _wire(ws) == ["item(text)", "response.create", "item(call_a)", "response.create"]
 
 
+class TestTheCallersTurnIsAnswered:
+    """RMK-288: a caller's turn that met a response in progress is owed one,
+    and a rejected request does not leave the session mute (RFC §12.4)."""
+
+    async def test_a_turn_ending_during_a_response_is_answered_after_it(
+        self, provider: OpenAIRealtimeBase, session: VoiceSession
+    ) -> None:
+        ws = _attach(provider, session)
+        await _response_created(provider, session)
+        await provider.send_activity_start(session)
+        await provider.send_activity_end(session)
+        assert _wire(ws) == ["input_audio_buffer.commit"]
+
+        await _response_done(provider, session)
+
+        assert _wire(ws) == ["input_audio_buffer.commit", "response.create"]
+        await _response_created(provider, session)
+        await _response_done(provider, session)
+        assert _wire(ws).count("response.create") == 1
+
+    async def test_a_continuation_sent_after_the_turn_covers_it(
+        self, provider: OpenAIRealtimeBase, session: VoiceSession
+    ) -> None:
+        ws = _attach(provider, session)
+        await _response_created(provider, session)
+        await _call(provider, session, "call_a")
+        await _result(provider, session, "call_a")
+        await provider.send_activity_start(session)
+        await provider.send_activity_end(session)
+
+        await _response_done(provider, session)
+        await _response_created(provider, session)
+        await _response_done(provider, session)
+
+        assert _wire(ws) == ["item(call_a)", "input_audio_buffer.commit", "response.create"]
+
+    async def test_a_turn_owed_while_the_caller_speaks_again_waits_for_that_turn(
+        self, provider: OpenAIRealtimeBase, session: VoiceSession
+    ) -> None:
+        ws = _attach(provider, session)
+        await _response_created(provider, session)
+        await provider.send_activity_end(session)
+        await provider.send_activity_start(session)
+
+        await _response_done(provider, session)
+        assert _wire(ws) == ["input_audio_buffer.commit"]
+
+        await provider.send_activity_end(session)
+        assert _wire(ws) == [
+            "input_audio_buffer.commit",
+            "input_audio_buffer.commit",
+            "response.create",
+        ]
+
+    async def test_a_rejected_request_does_not_leave_the_session_mute(
+        self, provider: OpenAIRealtimeBase, session: VoiceSession
+    ) -> None:
+        ws = _attach(provider, session)
+        await _response_created(provider, session)
+        await _call(provider, session, "call_a")
+        await _response_done(provider, session)
+        await _result(provider, session, "call_a")
+        assert _wire(ws) == ["item(call_a)", "response.create"]
+
+        await provider._handle_server_event(
+            session,
+            {"type": "error", "error": {"code": "invalid_request_error", "message": "no"}},
+        )
+        await provider.inject_text(session, "Say goodbye.", role="system")
+
+        assert _wire(ws) == ["item(call_a)", "response.create", "item(text)", "response.create"]
+
+
 class TestAnEndedSession:
     @pytest.mark.parametrize("end", ["disconnect", "connection lost"])
     async def test_an_ended_session_keeps_no_open_calls(

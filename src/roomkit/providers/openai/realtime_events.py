@@ -4,6 +4,9 @@ Translates the OpenAI Realtime server events (also spoken by xAI Grok) into
 RoomKit provider callbacks: the receive loop, a dispatch table keyed on the
 wire event type, and one handler per event. Kept separate from the outbound
 client API (``OpenAIRealtimeBase``) so each side stays one responsibility.
+The one outbound concern here is the response-request gate: every
+``response.create`` goes through it, because the server events (a response's
+start and end, the caller's speech, an error) are what move its state.
 """
 
 from __future__ import annotations
@@ -57,8 +60,9 @@ class _OutputAudioState:
 class OpenAIRealtimeEventHandlersMixin(RealtimeVoiceProvider):
     """Receive loop + server-event → callback dispatch for the OpenAI wire.
 
-    It also sends the one ``response.create`` that a response's tool calls
-    owe, since a response's end is one of the two events that settle them.
+    It also owns the gate every ``response.create`` passes (RFC §12.4): the
+    one a response's tool calls owe, the one a caller's turn is owed, and the
+    requests of ``inject_text`` and the end of the caller's turn.
     Mixed into ``OpenAIRealtimeBase``, which supplies the connection state and
     the ``_log_tag``. Subclasses may override :meth:`_log_usage`,
     :meth:`_on_session_created`, and :meth:`_on_session_updated`.
@@ -69,6 +73,7 @@ class OpenAIRealtimeEventHandlersMixin(RealtimeVoiceProvider):
     _responding: set[str]
     _pending_responses: dict[str, PendingResponse]
     _floor_held: set[str]
+    _turns_owed: set[str]
     _provider_configs: dict[str, dict[str, Any]]
     _output_audio: dict[str, _OutputAudioState]
     _audio_codecs: dict[str, tuple[_G711Codec | None, _G711Codec | None]]
@@ -325,6 +330,7 @@ class OpenAIRealtimeEventHandlersMixin(RealtimeVoiceProvider):
         self._responding.discard(session.id)
         await self._fire(self._response_end_callbacks, session, label="response_end")
         await self._continue_after_tool_results(session, response_ended=True)
+        await self._answer_owed_turn(session)
 
     async def _continue_after_tool_results(
         self, session: VoiceSession, *, response_ended: bool = False
@@ -360,14 +366,20 @@ class OpenAIRealtimeEventHandlersMixin(RealtimeVoiceProvider):
         pending = self._pending_responses.get(session_id)
         return session_id in self._responding or (pending is not None and pending.requested)
 
-    async def _request_response(self, session: VoiceSession, ws: Any, why: str) -> None:
+    async def _request_response(
+        self, session: VoiceSession, ws: Any, why: str, *, owed: bool = False
+    ) -> None:
         """Send ``response.create`` unless a response is already in progress.
 
         Every request goes through here, so none doubles another: the service
         rejects a second request while one is active, and the one requested
-        counts as active until the server begins it (RFC §12.4).
+        counts as active until the server begins it (RFC §12.4). An *owed*
+        request (the caller's turn) that meets one in progress is kept for
+        when it ends; any request sent covers it.
         """
         if self._response_in_progress(session.id):
+            if owed:
+                self._turns_owed.add(session.id)
             logger.debug(
                 "[%s] no response.create (%s): a response is in progress (session %s)",
                 self._log_tag,
@@ -375,9 +387,21 @@ class OpenAIRealtimeEventHandlersMixin(RealtimeVoiceProvider):
                 session.id,
             )
             return
+        self._turns_owed.discard(session.id)
         self._pending_responses[session.id] = PendingResponse(requested=True)
         logger.debug("[%s →] response.create (%s, session %s)", self._log_tag, why, session.id)
         await ws.send(json.dumps({"type": "response.create"}))
+
+    async def _answer_owed_turn(self, session: VoiceSession) -> None:
+        """Ask for the response a caller's turn is still owed, now that the
+        one in its way has ended (RFC §12.4)."""
+        ws = self._connections.get(session.id)
+        if session.id not in self._turns_owed or ws is None:
+            return
+        self._turns_owed.discard(session.id)
+        if session.id in self._floor_held:
+            return  # the caller speaks again: that turn's own request covers both
+        await self._request_response(session, ws, "caller's turn owed", owed=True)
 
     async def _on_buffer_committed(self, session: VoiceSession, event: dict[str, Any]) -> None:
         logger.debug("[%s] audio_buffer committed (session %s)", self._log_tag, session.id)
@@ -387,7 +411,21 @@ class OpenAIRealtimeEventHandlersMixin(RealtimeVoiceProvider):
         code = error.get("code", "unknown")
         message = error.get("message", "Unknown error")
         logger.error("[%s] error [%s] %s (session %s)", self._log_tag, code, message, session.id)
+        self._release_rejected_request(session.id)
         await self._fire(self._error_callbacks, session, code, message, label="error")
+
+    def _release_rejected_request(self, session_id: str) -> None:
+        """An error while a request waits and no response is active answers
+        that request: it is no longer in progress (RFC §12.4).
+
+        The wire does not say which client event an error answers unless the
+        client names it; an unrelated error in the same window costs at most a
+        second request the service rejects, where keeping the state would
+        leave the session asking for nothing ever again.
+        """
+        pending = self._pending_responses.get(session_id)
+        if pending is not None and pending.requested and session_id not in self._responding:
+            del self._pending_responses[session_id]
 
     # -- Overridable logging hooks ------------------------------------------
 
