@@ -11,11 +11,16 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import logging
+from collections.abc import Mapping
 from typing import Any
 
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
+from roomkit.models.tool_call import ToolCallEvent, ToolCallVerdict, chained_call_event
 from roomkit.providers.ai.base import AIImagePart, AITextPart
+
+logger = logging.getLogger("roomkit.tools")
 
 ToolResult = str | list[AITextPart | AIImagePart]
 
@@ -32,6 +37,37 @@ def as_tool_result(value: Any) -> ToolResult:
     if parts is not None:
         return parts
     return json.dumps(value, default=_json_default, ensure_ascii=False)
+
+
+def tool_call_verdict(hook_result: Any, event: ToolCallEvent) -> ToolCallVerdict:
+    """ON_TOOL_CALL's SYNC chain on *event*, as the verdict the channel applies.
+
+    A BLOCK is told apart from a rewrite, since a blocked call must not keep
+    its structured copy. Otherwise the verdict is the event the chain left
+    (``fold_tool_call_rewrite``): its structured copy, and its result as the
+    model reads it where a hook replaced it. A replacement counts whatever
+    its value (RFC §9.3): a hook that clears the result has the model read
+    ``null``, never the original.
+    """
+    if not hook_result.allowed:
+        reason = json.dumps({"error": hook_result.reason or "blocked"})
+        return ToolCallVerdict(result=reason, blocked=True)
+    final = chained_call_event(hook_result, event)
+    copy = final.structured_content
+    if copy is not None and not isinstance(copy, Mapping):
+        # A MODIFY skips the fold's check; the same rule applies to it.
+        logger.warning(
+            "ON_TOOL_CALL hook left a structured_content of type %s, not a mapping; "
+            "the call's structured copy is dropped",
+            type(copy).__name__,
+        )
+        copy = None
+    replaced = final.result is not event.result
+    return ToolCallVerdict(
+        result=as_tool_result(final.result) if replaced else None,
+        replaces_structured=copy is not event.structured_content,
+        structured_content=dict(copy) if copy is not None else None,
+    )
 
 
 def is_unknown_tool_answer(result: Any) -> bool:

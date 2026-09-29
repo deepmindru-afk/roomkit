@@ -24,12 +24,18 @@ from roomkit.core.exceptions import ToolRefusedError
 from roomkit.models.enums import ChannelType, HookTrigger
 from roomkit.models.tool_call import (
     ToolCallEvent,
+    chained_call_event,
     fold_tool_call_rewrite,
     withheld_call_event,
 )
 from roomkit.providers.ai.base import AITextPart
 from roomkit.telemetry.base import Attr, SpanKind
-from roomkit.tools.result import as_tool_result, is_unknown_tool_answer, unserved_tool_error
+from roomkit.tools.result import (
+    as_tool_result,
+    is_unknown_tool_answer,
+    tool_call_verdict,
+    unserved_tool_error,
+)
 from roomkit.tools.validation import fold_hoisted_arguments, validate_tool_arguments
 from roomkit.voice.base import VoiceSessionState
 
@@ -133,14 +139,13 @@ def _hook_outcome(
 ) -> tuple[str, bool]:
     """The result a realtime model reads after ON_TOOL_CALL, and whether it failed.
 
-    Read off the event the SYNC chain left (RFC §9.3), so a MODIFY counts like
-    the override.
+    The chain is read as on every channel (:func:`tool_call_verdict`, RFC
+    §9.3): a MODIFY counts like the override, and a result replaced by an
+    empty value is replaced, never kept.
     """
-    if not hook_result.allowed:
-        return json.dumps({"error": hook_result.reason or "Tool call blocked by hook"}), True
-    final = hook_result.event if isinstance(hook_result.event, ToolCallEvent) else tool_event
-    if final.result is not tool_event.result:
-        return result_text(final.result), False
+    verdict = tool_call_verdict(hook_result, tool_event)
+    if verdict.result is not None:
+        return result_text(verdict.result), verdict.blocked
     if handler_result is not None:
         return handler_result, False
     if hook_result.hook_errors:
@@ -1143,9 +1148,9 @@ class RealtimeToolsMixin:
         assert self._framework is not None  # guarded by caller  # noqa: S101
         t_seg = time.perf_counter()
         context = await self._framework._build_context(room_id, carrying=carrying)
-        # A call nothing served arrives with no result: the chain is the
-        # hooks' chance to serve it, not a report, so its observers wait for
-        # the outcome (RFC §9.3).
+        # The observers wait for the outcome: they see the result the model
+        # reads, and a call nothing served is the hooks' chance to serve it,
+        # not a report (RFC §9.3).
         hook_result = await self._framework.hook_engine.run_sync_hooks(
             room_id,
             HookTrigger.ON_TOOL_CALL,
@@ -1153,7 +1158,7 @@ class RealtimeToolsMixin:
             context,
             skip_event_filter=True,
             fold=fold_tool_call_rewrite,
-            fire_observers=handler_result is not None,
+            fire_observers=False,
         )
         if handler_result is not None:
             # The firing carried the handler's result: that was the report. A
@@ -1184,12 +1189,12 @@ class RealtimeToolsMixin:
     ) -> None:
         """Tell ON_TOOL_CALL's observers the call's outcome, once (RFC §9.3).
 
-        A handler's result already went through the chain and its observers,
-        but a block stops the engine before them: they get the withheld
-        outcome here. A call nothing served had its firing with no result, a
-        chance to serve it rather than a report: a hook that served it gives
-        the outcome, marked reported so a cancellation adds none; otherwise it
-        is a refusal, stated with the body the model is about to read, and a
+        A served call's observers see the result the model is about to read,
+        on the event the chain left; a blocked one's, the withheld outcome. A
+        call nothing served had its firing with no result, a chance to serve
+        it rather than a report: a hook that served it gives the outcome,
+        marked reported so a cancellation adds none; otherwise it is a
+        refusal, stated with the body the model is about to read, and a
         refusal carries its own framework event.
         """
         assert self._framework is not None  # guarded by caller  # noqa: S101
@@ -1201,19 +1206,15 @@ class RealtimeToolsMixin:
                 session, call_id, name, tool_event.arguments, result_str, room_id
             )
             return
-        if handler_result is None:
-            self._mark_tool_call_reported(session.id, call_id)
-            chained = hook_result.event
-            final = chained if isinstance(chained, ToolCallEvent) else tool_event
-            served = replace(final, result=result_str)
-            await engine.run_observers(
-                room_id, HookTrigger.ON_TOOL_CALL, served, context, skip_event_filter=True
-            )
-        elif not hook_result.allowed:
-            withheld = withheld_call_event(tool_event, result_str)
-            await engine.run_observers(
-                room_id, HookTrigger.ON_TOOL_CALL, withheld, context, skip_event_filter=True
-            )
+        if not hook_result.allowed:
+            observed = withheld_call_event(tool_event, result_str)
+        else:
+            if handler_result is None:
+                self._mark_tool_call_reported(session.id, call_id)
+            observed = replace(chained_call_event(hook_result, tool_event), result=result_str)
+        await engine.run_observers(
+            room_id, HookTrigger.ON_TOOL_CALL, observed, context, skip_event_filter=True
+        )
         await self._framework._emit_framework_event(
             "tool_call",
             room_id=room_id,

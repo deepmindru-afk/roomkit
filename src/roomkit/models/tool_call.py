@@ -164,6 +164,12 @@ def fold_tool_call_rewrite(event: Any, metadata: dict[str, Any]) -> Any:
     return replace(event, **changes) if changes else event
 
 
+def chained_call_event(hook_result: Any, event: ToolCallEvent) -> ToolCallEvent:
+    """The call as ON_TOOL_CALL's SYNC chain left it: *event* when no hook replaced it."""
+    chained = hook_result.event
+    return chained if isinstance(chained, ToolCallEvent) else event
+
+
 def withheld_call_event(event: ToolCallEvent, reason: str) -> ToolCallEvent:
     """What ON_TOOL_CALL's observers see of a call a SYNC hook withheld: the
     failure, with the reason the model reads, and no structured copy."""

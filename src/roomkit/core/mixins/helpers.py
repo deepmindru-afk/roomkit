@@ -24,7 +24,7 @@ import asyncio
 import contextlib
 import json
 import logging
-from collections.abc import Callable, Coroutine, Mapping
+from collections.abc import Callable, Coroutine
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 from uuid import uuid4
@@ -53,10 +53,11 @@ from roomkit.models.thinking_event import ThinkingEvent
 from roomkit.models.tool_call import (
     ToolCallEvent,
     ToolCallVerdict,
+    chained_call_event,
     fold_tool_call_rewrite,
     withheld_call_event,
 )
-from roomkit.tools.result import as_tool_result
+from roomkit.tools.result import tool_call_verdict
 
 _RECENT_EVENTS_LIMIT = 2_000
 """Hard ceiling on events kept in ``RoomContext.recent_events`` in memory."""
@@ -828,9 +829,9 @@ class HelpersMixin:
 
         The returned callback runs ON_TOOL_CALL's SYNC hooks as a chain on the
         call's outcome (RFC §9.3, ``fold_tool_call_rewrite``) and returns their
-        :class:`ToolCallVerdict` (see :func:`_tool_call_verdict`). The ASYNC
-        observers see the final outcome; a BLOCK, which the engine stops at,
-        fires them here with the failure. Emits a ``tool_call`` framework event.
+        :class:`ToolCallVerdict` (see :func:`tool_call_verdict`). The ASYNC
+        observers see the final outcome as the model reads it, or, after a
+        BLOCK, the failure. Emits a ``tool_call`` framework event.
 
         A call nothing served arrives with no result: the chain is the hooks'
         chance to serve it, not a report on it. The observers then see the
@@ -845,7 +846,6 @@ class HelpersMixin:
             context = await kit_ref._tool_hook_context(event.room_id)
             if context is None:
                 return kit_ref._unreachable_tool_call_verdict(event.room_id)
-            unserved = event.result is None
             hook_result = await kit_ref._hook_engine.run_sync_hooks(
                 event.room_id,
                 HookTrigger.ON_TOOL_CALL,
@@ -853,24 +853,22 @@ class HelpersMixin:
                 context,
                 skip_event_filter=True,
                 fold=fold_tool_call_rewrite,
-                fire_observers=not unserved,
+                fire_observers=False,
             )
-            verdict = _tool_call_verdict(hook_result, event)
+            verdict = tool_call_verdict(hook_result, event)
+            read = verdict.result if verdict.result is not None else event.result
             if verdict.blocked:
                 withheld = withheld_call_event(event, str(verdict.result))
                 await kit_ref._observe_tool_call(withheld, context)
-            elif unserved and verdict.result is not None:
-                # A hook served it: the observers see the result the model
-                # reads, on the event the chain left (its structured copy).
-                final = (
-                    hook_result.event if isinstance(hook_result.event, ToolCallEvent) else event
-                )
-                served = replace(final, result=as_tool_result(verdict.result))
-                await kit_ref._observe_tool_call(served, context)
-            elif unserved:
+            elif read is None:
                 # Served by nothing: the channel reports the failure, once,
                 # with its own framework event.
                 return verdict
+            else:
+                # The observers see the result the model reads, on the event
+                # the chain left (its structured copy), whoever served it.
+                served = replace(chained_call_event(hook_result, event), result=read)
+                await kit_ref._observe_tool_call(served, context)
             await kit_ref._emit_tool_call_event(event, channel_id)
             return verdict
 
@@ -1404,31 +1402,3 @@ class HelpersMixin:
             event_id=event_id,
             data={"dimension": dimension, "rating": rating},
         )
-
-
-def _tool_call_verdict(hook_result: Any, event: ToolCallEvent) -> ToolCallVerdict:
-    """ON_TOOL_CALL's SYNC hooks' result as the verdict the channel applies.
-
-    A BLOCK is told apart from a rewrite, since a blocked call must not keep
-    its structured copy. Otherwise the verdict is the event the chain left
-    (``fold_tool_call_rewrite``): its result and structured copy, where a
-    hook replaced them.
-    """
-    if not hook_result.allowed:
-        reason = json.dumps({"error": hook_result.reason or "blocked"})
-        return ToolCallVerdict(result=reason, blocked=True)
-    final = hook_result.event if isinstance(hook_result.event, ToolCallEvent) else event
-    copy = final.structured_content
-    if copy is not None and not isinstance(copy, Mapping):
-        # A MODIFY skips the fold's check; the same rule applies to it.
-        logger.warning(
-            "ON_TOOL_CALL hook left a structured_content of type %s, not a mapping; "
-            "the call's structured copy is dropped",
-            type(copy).__name__,
-        )
-        copy = None
-    return ToolCallVerdict(
-        result=final.result if final.result is not event.result else None,
-        replaces_structured=copy is not event.structured_content,
-        structured_content=dict(copy) if copy is not None else None,
-    )

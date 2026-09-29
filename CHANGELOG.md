@@ -203,6 +203,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An ON_TOOL_CALL SYNC hook that clears a served result
+  (`metadata={"result": None}`) replaces it, on every channel (RMK-292, RFC
+  §9.3): an AI channel ignored an empty replacement, so the model read and
+  the `TOOL_CALL_END` row stored the original the hook was withdrawing. The
+  model now reads `null`, as a realtime model already did. The chain is read
+  by one function for the AI channel (both loops), the conference and the
+  realtime channel, and ON_TOOL_CALL's observers of a served call see the
+  result as the model reads it: a hook's `dict` replacement reached them raw
+  while the model read its JSON. A realtime call blocked by a hook with no
+  reason reads `{"error": "blocked"}`, as on the other channels.
 - A delegated turn's child room is written by the room's own streamed-row
   writer (RMK-291, RFC §23.3). A delegation cancelled (a supervisor's
   timeout) or failed while one of the worker's tools ran left that call's

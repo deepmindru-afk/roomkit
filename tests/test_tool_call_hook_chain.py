@@ -16,6 +16,7 @@ from typing import Any
 from roomkit import (
     Agent,
     ChannelCategory,
+    EventType,
     HookExecution,
     HookResult,
     HookTrigger,
@@ -124,6 +125,48 @@ async def test_sync_hooks_chain_and_observers_see_the_final_result(streaming: bo
 
     assert _read_by_model(provider.calls[1]) == ["SSN [REDACTED] (source: CRM)"]
     assert observed == ["SSN [REDACTED] (source: CRM)"]
+    await kit.close()
+
+
+async def test_a_hook_that_clears_the_result_withholds_it(streaming: bool) -> None:
+    """RMK-292: an empty replacement replaces (RFC §9.3); the original never
+    reaches the model, the stored row or the observers."""
+    kit, provider = await _kit(streaming)
+    observed: list[Any] = []
+
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="clear")
+    async def clear(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
+        return HookResult(action="allow", metadata={"result": None})
+
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    async def audit(event: ToolCallEvent, ctx: RoomContext) -> None:
+        observed.append(event.result)
+
+    await _say(kit)
+
+    assert _read_by_model(provider.calls[1]) == ["null"]
+    assert observed == ["null"]
+    ends = [e for e in await kit.store.list_events("r1") if e.type == EventType.TOOL_CALL_END]
+    assert [e.content.result for e in ends] == ["null"]
+    await kit.close()
+
+
+async def test_observers_see_a_replacement_as_the_model_reads_it(streaming: bool) -> None:
+    kit, provider = await _kit(streaming)
+    observed: list[Any] = []
+
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="shape")
+    async def shape(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
+        return HookResult.modify(dataclasses.replace(event, result={"n": 1}))
+
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    async def audit(event: ToolCallEvent, ctx: RoomContext) -> None:
+        observed.append(event.result)
+
+    await _say(kit)
+
+    assert _read_by_model(provider.calls[1]) == ['{"n": 1}']
+    assert observed == ['{"n": 1}']
     await kit.close()
 
 
@@ -346,3 +389,47 @@ async def test_realtime_observers_fire_after_a_block(tmp_path) -> None:
         assert result == {"error": "restricted"}
         assert [event.is_error for event in observed] == [True]
         assert "123-45-6789" not in str(observed[0].result)
+
+
+async def test_realtime_a_cleared_result_reads_null(tmp_path) -> None:
+    """RMK-292: the realtime model reads what AIChannel reads for a cleared result."""
+    registry = _registry_with_skill(tmp_path, body="Rules.")
+    async with running(registry, provider=MockRealtimeProvider()) as ctx:
+        channel, provider, session, handler = ctx
+        handler.return_value = "SECRET-TOKEN-123"
+        observed: list[ToolCallEvent] = []
+
+        @channel._framework.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC)
+        async def clear(event: ToolCallEvent, context: RoomContext) -> HookResult:
+            return HookResult(action="allow", metadata={"result": None})
+
+        @channel._framework.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC)
+        async def audit(event: ToolCallEvent, context: RoomContext) -> None:
+            observed.append(event)
+
+        result = await call(channel, provider, session, "calendar", {"action": "read"})
+        await asyncio.sleep(0.05)
+
+        assert result is None  # the model read JSON null
+        assert [event.result for event in observed] == ["null"]
+
+
+async def test_realtime_observers_see_a_replacement_as_the_model_reads_it(tmp_path) -> None:
+    registry = _registry_with_skill(tmp_path, body="Rules.")
+    async with running(registry, provider=MockRealtimeProvider()) as ctx:
+        channel, provider, session, handler = ctx
+        observed: list[ToolCallEvent] = []
+
+        @channel._framework.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC)
+        async def shape(event: ToolCallEvent, context: RoomContext) -> HookResult:
+            return HookResult.modify(dataclasses.replace(event, result={"n": 1}))
+
+        @channel._framework.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC)
+        async def audit(event: ToolCallEvent, context: RoomContext) -> None:
+            observed.append(event)
+
+        result = await call(channel, provider, session, "calendar", {"action": "read"})
+        await asyncio.sleep(0.05)
+
+        assert result == {"n": 1}
+        assert [event.result for event in observed] == ['{"n": 1}']

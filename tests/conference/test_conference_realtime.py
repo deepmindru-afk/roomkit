@@ -474,6 +474,20 @@ class TestToolCallGate:
         assert [e.result for e in observed] == ['{"ssn": "[REDACTED]"}']
         await kit.close()
 
+    async def test_a_hook_that_clears_the_result_withholds_it(self) -> None:
+        """RMK-292: the conference reads a cleared result as every channel does."""
+        kit, channel, provider, observed = await _gated_kit(_found)
+
+        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="clear")
+        async def clear(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
+            return HookResult(action="allow", metadata={"result": None})
+
+        result = await _call(channel, provider, observed, "lookup", {"email": "a@b.example"})
+
+        assert result is None  # the model read JSON null
+        assert [e.result for e in observed] == ["null"]
+        await kit.close()
+
     async def test_a_block_withholds_the_result_and_is_observed(self) -> None:
         kit, channel, provider, observed = await _gated_kit(_found)
 
