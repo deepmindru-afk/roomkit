@@ -9,12 +9,14 @@ as the structured payload of the result tool the delegation forces.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from roomkit.channels._tool_event_result import tool_event_result
+from roomkit.core.mixins._response_reader import ResponseReader
 from roomkit.core.mixins._result_capture import capture_result
+from roomkit.core.mixins._streaming_segments import SegmentWriter
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import ChannelType, EventStatus, EventType
@@ -22,11 +24,9 @@ from roomkit.models.event import (
     EventSource,
     RoomEvent,
     TextContent,
-    ToolCallContent,
     answer_text,
 )
 from roomkit.models.store_filter import EventFilter
-from roomkit.models.streaming import LoopEndMarker, ToolCallEndMarker, ToolCallStartMarker
 
 if TYPE_CHECKING:
     from roomkit.core.framework import RoomKit
@@ -37,40 +37,20 @@ if TYPE_CHECKING:
 _tasks_logger = logging.getLogger("roomkit.tasks")
 
 
-def _child_tool_row(
-    child_room_id: str,
-    source: EventSource,
-    marker: ToolCallStartMarker | ToolCallEndMarker,
-    chain_depth: int,
-) -> RoomEvent:
-    """The TOOL_CALL_{START,END} row a streamed call marker leaves in the child room."""
-    if isinstance(marker, ToolCallStartMarker):
-        event_type = EventType.TOOL_CALL_START
-        content = ToolCallContent(
-            tool_name=marker.tool_name,
-            tool_id=marker.tool_id,
-            arguments=marker.arguments,
-            status="pending",
-        )
-    else:
-        event_type = EventType.TOOL_CALL_END
-        content = ToolCallContent(
-            tool_name=marker.tool_name,
-            tool_id=marker.tool_id,
-            arguments=marker.arguments,
-            result=tool_event_result(marker.result),
-            status=marker.status,
-            duration_ms=marker.duration_ms,
-            error=marker.error,
-        )
-    return RoomEvent(
-        room_id=child_room_id,
-        source=source,
-        type=event_type,
-        content=content,
-        status=EventStatus.DELIVERED,
-        chain_depth=chain_depth,
-    )
+class _TraceSink:
+    """A delegated turn's trace: each row committed as is, with no hook and no lane.
+
+    Nobody is delivered these rows; they are the record of a delegated turn
+    (RFC §23.3), so they cross no ``BEFORE_BROADCAST`` hook and ride no
+    delivery lane.
+    """
+
+    def __init__(self, kit: RoomKit, room_id: str) -> None:
+        self._kit = kit
+        self._room_id = room_id
+
+    async def commit(self, event: RoomEvent, *, exclude: set[str] | None) -> RoomEvent | None:
+        return await self._kit._commit_indexed(self._room_id, event)
 
 
 async def _persist_child_stream(
@@ -79,66 +59,36 @@ async def _persist_child_stream(
     sr: Any,
     chain_depth: int,
 ) -> str:
-    """Drain a streaming response into the child room, persisting tool calls.
+    """Write a delegated turn's stream into its child room; the worker's answer.
 
-    Segments the stream the way the main inbound streaming path does: text
-    deltas accumulate into MESSAGE segments split at tool-call boundaries,
-    and each ``ToolCall{Start,End}Marker`` is persisted as a
-    TOOL_CALL_{START,END} event — so the child room holds the worker's full
-    trace (what it searched/ran, with arguments and results), not just its
-    final answer. Unlike that path, the rows are committed directly: they
-    ride no delivery lane and cross no BEFORE_BROADCAST hook, because nobody
-    is delivered them — they are the record of a delegated turn. The turn's
-    record (``loop_end_reason``, ``ai_usage``) rides its last message, as a
-    non-streaming worker's does (RFC §6.4).
-    Returns the last segment's text: the worker's answer, as a non-streaming
-    worker's last message is.
+    The rows are the ones a room's streamed turn leaves, by the same writer
+    (RFC §23.3): text segments split at tool-call boundaries, each call's
+    TOOL_CALL_{START,END} with its structured copy, and the turn's record
+    (``loop_end_reason``, ``ai_usage``) on its last message (RFC §6.4). Only
+    the commit differs, through :class:`_TraceSink`. A delegation cancelled or
+    failed mid-turn closes its open calls and keeps its text (RFC §12.2 step
+    13s), then propagates. Returns the last segment's text: the worker's
+    answer, as a non-streaming worker's last message is.
     """
-    source = EventSource(channel_id=sr.source_channel_id, channel_type=sr.source_channel_type)
-    segment: list[str] = []
-    record: dict[str, Any] = {}
-    last: RoomEvent | None = None
-    answer = ""
-
-    async def _flush_segment() -> None:
-        nonlocal last, answer
-        if not segment:
-            return
-        body = answer = "".join(segment)
-        segment.clear()
-        last = await kit._commit_indexed(
-            child_room_id,
-            RoomEvent(
-                room_id=child_room_id,
-                source=source,
-                type=EventType.MESSAGE,
-                content=TextContent(body=body),
-                status=EventStatus.DELIVERED,
-                chain_depth=chain_depth,
-                metadata=dict(record),
-            ),
-        )
-
-    async for delta in sr.stream:
-        if isinstance(delta, str):
-            segment.append(delta)
-        elif isinstance(delta, ToolCallStartMarker | ToolCallEndMarker):
-            if isinstance(delta, ToolCallStartMarker):
-                await _flush_segment()
-            await kit._commit_indexed(
-                child_room_id, _child_tool_row(child_room_id, source, delta, chain_depth)
-            )
-        elif isinstance(delta, LoopEndMarker):
-            record = {"ai_usage": dict(delta.usage), "loop_end_reason": delta.reason}
-        # ThinkingDeltaMarker (and any other marker): transient, not persisted.
-    carried = bool(segment)
-    await _flush_segment()
-    if last is not None and record and not carried:
-        # No final text: the record rides the last message already written
-        await kit.store.update_event(
-            last.model_copy(update={"metadata": {**last.metadata, **record}})
-        )
-    return answer
+    writer = SegmentWriter(
+        kit, sr, _TraceSink(kit, child_room_id), room_id=child_room_id, chain_depth=chain_depth
+    )
+    reader = ResponseReader(sr.stream)
+    try:
+        async for _ in writer.read(reader):
+            pass
+        await writer.flush_text()
+    except asyncio.CancelledError:
+        await writer.end_cancelled(reader)
+        raise
+    except Exception:
+        await writer.end_failed(reader)
+        raise
+    await writer.record_on_last_message()
+    return next(
+        (e.content.body for e in reversed(writer.persisted) if isinstance(e.content, TextContent)),
+        "",
+    )
 
 
 async def _persist_response_events(

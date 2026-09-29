@@ -9,17 +9,24 @@ parent↔child relationship is rebuildable from persistence alone.
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
+from roomkit.channels.ai import AIChannel
 from roomkit.core.event_router import BroadcastResult
+from roomkit.core.framework import RoomKit
 from roomkit.core.mixins.delegation import _persist_child_stream, run_agent_in_child_room
 from roomkit.models.enums import ChannelType, EventType
 from roomkit.models.event import EventSource, RoomEvent, TextContent, ToolCallContent
 from roomkit.models.room import Room
 from roomkit.models.streaming import ThinkingDeltaMarker, ToolCallEndMarker, ToolCallStartMarker
-from roomkit.providers.ai.base import AIImagePart
+from roomkit.providers.ai.base import AIImagePart, AIResponse, AITool, AIToolCall
+from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.tools.context import current_tool_call
 
 
 def _recording_store() -> MagicMock:
@@ -40,7 +47,15 @@ def _sr(stream: Any) -> SimpleNamespace:
         stream=stream,
         source_channel_id="agent:w1",
         source_channel_type=ChannelType.AI,
+        response_metadata={},
     )
+
+
+def _recording_kit() -> MagicMock:
+    kit = MagicMock()
+    kit.store = _recording_store()
+    kit._commit_indexed = kit.store.commit_event
+    return kit
 
 
 class TestPersistChildStream:
@@ -141,6 +156,124 @@ class TestPersistChildStream:
         assert text == "just text"
         assert len(kit.store.added) == 1
         assert kit.store.added[0].content.body == "just text"
+
+
+class TestAChildTraceCutShort:
+    """RMK-291: a delegated turn cut short leaves no call open in its child room."""
+
+    async def test_a_failed_stream_closes_its_open_call(self) -> None:
+        kit = _recording_kit()
+
+        async def _stream() -> Any:
+            yield "Looking. "
+            yield ToolCallStartMarker(tool_name="search", tool_id="t1", arguments={})
+            raise RuntimeError("upstream 500")
+
+        with pytest.raises(RuntimeError, match="upstream 500"):
+            await _persist_child_stream(kit, "parent::task-4", _sr(_stream()), chain_depth=1)
+
+        rows = [(e.type, e.content) for e in kit.store.added]
+        assert [t for t, _ in rows] == [
+            EventType.MESSAGE,
+            EventType.TOOL_CALL_START,
+            EventType.TOOL_CALL_END,
+        ]
+        end = rows[-1][1]
+        assert (end.tool_id, end.status, end.error) == ("t1", "failed", "turn failed")
+
+    async def test_a_delegation_cancelled_while_its_tool_runs_leaves_no_call_open(
+        self, streaming: bool
+    ) -> None:
+        started = asyncio.Event()
+
+        async def _slow(name: str, args: dict[str, Any]) -> str:
+            started.set()
+            await asyncio.sleep(3600)
+            return "never"
+
+        kit = _delegating_kit(
+            MockAIProvider(
+                streaming=streaming,
+                ai_responses=[
+                    AIResponse(
+                        content="Working.",
+                        finish_reason="tool_calls",
+                        tool_calls=[AIToolCall(id="tc1", name="slow", arguments={})],
+                    ),
+                    AIResponse(content="Done."),
+                ],
+            ),
+            _slow,
+            "slow",
+        )
+        await kit.create_room(room_id="parent")
+        task = asyncio.create_task(kit.delegate("parent", "worker", "go", wait=True))
+        await asyncio.wait_for(started.wait(), 5)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+        # Every start has its end: a start row never stays pending (RFC §23.3).
+        rows = await _child_rows(kit)
+        starts = {c.tool_id for t, c in rows if t == EventType.TOOL_CALL_START}
+        ends = {c.tool_id: c for t, c in rows if t == EventType.TOOL_CALL_END}
+        assert starts == set(ends)
+        assert all((c.status, c.error) == ("failed", "cancelled") for c in ends.values())
+        if streaming:
+            assert starts == {"tc1"}
+            message = next(c for t, c in rows if t == EventType.MESSAGE)
+            assert message.body == "Working."
+        await kit.close()
+
+    async def test_a_tool_end_keeps_its_structured_copy(self, streaming: bool) -> None:
+        async def _query(name: str, args: dict[str, Any]) -> str:
+            current_tool_call().structured_content = {"rows": [1, 2, 3]}
+            return "3 rows"
+
+        kit = _delegating_kit(
+            MockAIProvider(
+                streaming=streaming,
+                ai_responses=[
+                    AIResponse(
+                        content="",
+                        finish_reason="tool_calls",
+                        tool_calls=[AIToolCall(id="tc1", name="query", arguments={})],
+                    ),
+                    AIResponse(content="Done."),
+                ],
+            ),
+            _query,
+            "query",
+        )
+        await kit.create_room(room_id="parent")
+
+        await kit.delegate("parent", "worker", "go", wait=True)
+
+        end = next(c for t, c in await _child_rows(kit) if t == EventType.TOOL_CALL_END)
+        assert (end.result, end.structured_content) == ("3 rows", {"rows": [1, 2, 3]})
+        await kit.close()
+
+
+def _delegating_kit(provider: MockAIProvider, handler: Any, tool: str) -> RoomKit:
+    kit = RoomKit()
+    kit.register_channel(
+        AIChannel(
+            "worker",
+            provider=provider,
+            tool_handler=handler,
+            tools=[AITool(name=tool, description="d")],
+            tool_search=False,
+        )
+    )
+    return kit
+
+
+async def _child_rows(kit: RoomKit) -> list[tuple[EventType, Any]]:
+    (child,) = [r for r in await kit.store.list_rooms() if r.id != "parent"]
+    return [
+        (e.type, e.content)
+        for e in await kit.store.list_events(child.id)
+        if e.source.channel_id == "worker"
+    ]
 
 
 class TestRunAgentNonStreaming:

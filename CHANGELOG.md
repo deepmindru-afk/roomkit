@@ -203,6 +203,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A delegated turn's child room is written by the room's own streamed-row
+  writer (RMK-291, RFC §23.3). A delegation cancelled (a supervisor's
+  timeout) or failed while one of the worker's tools ran left that call's
+  `TOOL_CALL_START` with no end forever; the call is now closed `failed`
+  (`cancelled` or `turn failed`) and the worker's text kept, marked
+  `cancelled` when the delegation was. A streamed `TOOL_CALL_END` in a child
+  room keeps the call's `structured_content`, as the buffered one did. Two
+  visible effects of sharing the writer: a child room's streamed messages
+  carry the turn's `response_metadata`, and the turn record written on the
+  last message fires `ON_EVENT_UPDATED`, as in any room.
 - A turn ended by a steering `Cancel` closes its `llm.generate` span
   `cancelled`, not `ok`, in both loops (RMK-289, RFC §6.4).
 - A turn constrained to a `response_schema` that the provider interrupts
