@@ -34,6 +34,7 @@ from roomkit.providers.ai.base import (
     AIToolResultPart,
 )
 from roomkit.providers.ai.tool_calls import cut_call_error
+from roomkit.tools.result import tool_failure
 
 if TYPE_CHECKING:
     from roomkit.providers.ai.base import AIProvider
@@ -280,8 +281,9 @@ class AIProviderReasoningBackend(ReasoningBackend):
         try:
             return await request.execute_tool(name, arguments)
         except Exception as exc:
+            # The class, never the message (RFC §9.3): it goes to the log.
             logger.exception("Reasoning backend tool %s failed", name)
-            return json.dumps({"error": f"Tool {name} failed: {exc}"})
+            return tool_failure(name, exc)
 
     async def session_ended(self, session_id: str) -> None:
         self._histories.pop(session_id, None)

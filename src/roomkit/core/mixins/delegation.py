@@ -146,7 +146,9 @@ def _delegation_result_text(result: DelegatedTaskResult) -> str:
     The worker's output, bounded and set apart as data: it is another agent's
     text, never an instruction to follow (RFC §23.3).
     """
-    body = result.output or result.error or "No output"
+    # A failed task's error is an exception's message: for the logs and
+    # ON_TASK_COMPLETED, never for a model (RFC §9.3).
+    body = result.output or "No output"
     if len(body) > _MAX_DELEGATION_RESULT_CHARS:
         body = body[:_MAX_DELEGATION_RESULT_CHARS] + "\n[...truncated]"
     return (
@@ -585,6 +587,8 @@ class DelegationMixin(HelpersMixin):
         """
         if not (result.output or result.error):
             return
+        # A failed task still tells the notified side, as failed (the header
+        # carries the status), without its error.
         text = _delegation_result_text(result)
         try:
             channel = self._channels.get(notify_channel_id)

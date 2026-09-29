@@ -98,6 +98,14 @@ def failure_detail(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}"
 
 
+def hook_errors_detail(hook_result: Any) -> str | None:
+    """What the ON_TOOL_CALL hooks that failed said, for logs and observers only."""
+    errors = hook_result.hook_errors
+    if not errors:
+        return None
+    return "; ".join(f"{e['hook']}: {e['error']}" for e in errors)
+
+
 def unserved_tool_error(name: str) -> str:
     """The failure a call reports when no handler and no hook served it."""
     return json.dumps({"error": f"No handler for tool {name}"})

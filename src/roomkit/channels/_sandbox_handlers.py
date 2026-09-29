@@ -6,7 +6,6 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from roomkit.sandbox.tools import SANDBOX_TOOL_PREFIX
-from roomkit.tools.result import tool_failure
 
 if TYPE_CHECKING:
     from roomkit.sandbox.executor import SandboxExecutor
@@ -28,10 +27,8 @@ async def handle_sandbox_command(
         JSON-encoded :class:`SandboxResult`.
     """
     command = tool_name.removeprefix(SANDBOX_TOOL_PREFIX)
-    try:
-        result = await executor.execute(command, arguments)
-        return result.model_dump_json()
-    except Exception as exc:
-        # The class, never the message (RFC §9.3): it goes to the log.
-        logger.exception("Sandbox command failed: %s", tool_name)
-        return tool_failure(tool_name, exc)
+    # A failure propagates: the channel reads it as any raised call, with its
+    # marker, the class for the model and the message for the observers
+    # (RFC §9.3).
+    result = await executor.execute(command, arguments)
+    return result.model_dump_json()

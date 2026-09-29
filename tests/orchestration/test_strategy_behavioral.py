@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from roomkit.channels.agent import Agent
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.enums import (
@@ -141,8 +143,9 @@ class TestSupervisorHandlerIdempotency:
         assert kit1.delegate.call_count == 1
         assert kit2.delegate.call_count == 0
 
-    async def test_delegation_error_returns_json_error(self):
-        """Delegation failure should return JSON error, not raise."""
+    async def test_delegation_error_is_raised_to_the_channel(self):
+        """A delegation failure raises on: the channel reads it as any failed
+        call, its message for the observers, never the model (RMK-295)."""
         boss = _make_agent("boss")
         w1 = _make_agent("w1")
         kit = _make_mock_kit(Room(id="r1"))
@@ -151,11 +154,8 @@ class TestSupervisorHandlerIdempotency:
         s = Supervisor(supervisor=boss, workers=[w1])
         await s.install(kit, "r1")
 
-        with tool_call_in("r1"):
-            result = await boss.tool_handler("delegate_to_w1", {"task": "fail"})
-        parsed = json.loads(result)
-        assert "error" in parsed
-        assert "boom" in parsed["error"]
+        with tool_call_in("r1"), pytest.raises(RuntimeError, match="boom"):
+            await boss.tool_handler("delegate_to_w1", {"task": "fail"})
 
     async def test_original_handler_preserved(self):
         """User-defined tool_handler on supervisor should still be reachable."""

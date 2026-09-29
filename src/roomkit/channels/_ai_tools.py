@@ -378,6 +378,23 @@ class AIToolsMixin:
                 "ON_TOOL_CALL observation failed for refused tool %s", tc.name, exc_info=True
             )
 
+    async def _failed_call(
+        self,
+        tc: Any,
+        arguments: dict[str, Any],
+        room_id: str | None,
+        body: str,
+        *,
+        detail: str | None = None,
+    ) -> ToolResult:
+        """The model's copy of a call that was refused or failed, its observers told.
+
+        Fired on the body before eviction and the repeated-result note shape
+        the model's copy of it.
+        """
+        await self._fire_tool_refusal(tc, arguments, body, room_id, detail=detail)
+        return self._bound_tool_result(tc.name, body, tc.id)
+
     async def _execute_tools_parallel(
         self,
         tool_calls: list[Any],
@@ -557,27 +574,20 @@ class AIToolsMixin:
                 # with its own sentence, which is how the reason gets lost.
                 telemetry.end_span(tool_span_id, status="error", error_message=refusal.message)
                 logger.info("Tool %s refused: %s", tc.name, refusal.message)
-                recorded_result = refusal.message
-                tool_failed = True
+                recorded_result, tool_failed = refusal.message, True
                 remember = not isinstance(refusal, ChannelRefusalError)
-                await self._fire_tool_refusal(tc, arguments, refusal.message, room_id)
-                result = self._bound_tool_result(tc.name, refusal.message, tc.id)
+                result = await self._failed_call(tc, arguments, room_id, refusal.message)
             except Exception as exc:
                 telemetry.end_span(tool_span_id, status="error", error_message=str(exc))
                 logger.warning("Tool %s raised %s: %s", tc.name, type(exc).__name__, exc)
                 # The class, never the message (RFC §9.3): it goes to the log
-                # above and to the observers, not to the model.
-                error = tool_failure(tc.name, exc)
-                # The model saw the error, so the memory records it, not a
-                # success the handler returned before a hook raised.
-                recorded_result = error
-                tool_failed = True
-                # Fired here, on the body before eviction and the
-                # repeated-result note shape the model's copy of it.
-                await self._fire_tool_refusal(
-                    tc, arguments, error, room_id, detail=failure_detail(exc)
+                # above and to the observers, not to the model. The memory
+                # records what the model saw, not a success the handler
+                # returned before a hook raised.
+                recorded_result, tool_failed = tool_failure(tc.name, exc), True
+                result = await self._failed_call(
+                    tc, arguments, room_id, recorded_result, detail=failure_detail(exc)
                 )
-                result = self._bound_tool_result(tc.name, error, tc.id)
             self._settle_activation(tc.id, served=not tool_failed)
             outcome = recorded_result if recorded_result is not None else result
             if remember:
@@ -1010,7 +1020,8 @@ class AIToolsMixin:
             )
         if shaped is None:
             body = unserved_tool_error(tc.name)
-            await self._fire_tool_refusal(tc, arguments, body, room_id)
+            detail = verdict.error_detail if verdict is not None else None
+            await self._fire_tool_refusal(tc, arguments, body, room_id, detail=detail)
             return _HookOutcome(
                 result=body, recorded=body, failed=True, structured=None, remember=False
             )

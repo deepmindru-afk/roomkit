@@ -21,14 +21,14 @@ import json
 import logging
 import re
 import threading
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 from uuid import uuid4
 
 from roomkit.channels._realtime_tools import result_text
 from roomkit.core.exceptions import ToolRefusedError
 from roomkit.models.enums import ChannelType
 from roomkit.telemetry.base import Attr, SpanKind
-from roomkit.tools.result import failure_detail, tool_failure
+from roomkit.tools.result import tool_failure
 from roomkit.voice.base import VoiceSessionState
 
 if TYPE_CHECKING:
@@ -126,6 +126,7 @@ class RealtimeToolRecoveryMixin:
     _authorize_realtime_tool: Any  # cross-mixin (RealtimeToolsMixin)
     _fire_tool_hook_outcome: Any  # cross-mixin (RealtimeToolsMixin)
     _fire_tool_refusal: Any  # cross-mixin (RealtimeToolsMixin)
+    _report_raised_call: Any  # cross-mixin (RealtimeToolsMixin)
     _call_tool_handler: Any  # cross-mixin (RealtimeToolsMixin)
     _truncate_tool_result: Any  # cross-mixin (RealtimeToolsMixin)
 
@@ -227,7 +228,7 @@ class RealtimeToolRecoveryMixin:
         call_id: str,
         result_str: str,
         *,
-        verb: str = "completed",
+        verb: Literal["completed", "denied", "failed"] = "completed",
     ) -> None:
         """Hand an outcome back to the model as silent context.
 
@@ -403,18 +404,17 @@ class RealtimeToolRecoveryMixin:
     ) -> None:
         """Tell the model and the observers that a recovered call failed (RFC §9.3).
 
-        Every call fires ON_TOOL_CALL with its outcome, and the model reads the
-        failure without the exception's message, which goes to the observers.
-        Best effort: the failure is already in the log.
+        The model reads the failure without the exception's message; the
+        observers get it, whether or not the model could be told (a dropped
+        socket is likely just when things fail), and never for a call they
+        already heard of.
         """
-        body = tool_failure(tool_name, exc)
         try:
+            body = tool_failure(tool_name, exc)
             await self._inject_recovered_result(session, tool_name, call_id, body, verb="failed")
-            await self._fire_tool_refusal(
-                session, call_id, tool_name, arguments, body, room_id, detail=failure_detail(exc)
-            )
         except Exception:
-            logger.exception("Could not report the failed recovered call %s", tool_name)
+            logger.exception("Could not tell the model the recovered call %s failed", tool_name)
+        await self._report_raised_call(session, call_id, tool_name, arguments, room_id, exc)
 
 
 # ------------------------------------------------------------------

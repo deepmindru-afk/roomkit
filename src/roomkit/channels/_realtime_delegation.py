@@ -24,7 +24,7 @@ from roomkit.core.exceptions import ToolRefusedError
 from roomkit.models.enums import HookTrigger
 from roomkit.telemetry.base import Attr, SpanKind
 from roomkit.telemetry.context import reset_span
-from roomkit.tools.result import failure_detail, tool_failure
+from roomkit.tools.result import tool_failure
 from roomkit.voice.base import VoiceSession, VoiceSessionState
 from roomkit.voice.realtime.events import RealtimeDelegationEvent
 from roomkit.voice.realtime.reasoning import ReasoningBackend, ReasoningRequest, TranscriptLine
@@ -113,6 +113,7 @@ class RealtimeDelegationMixin:
     _update_idle_event: Any  # see RealtimeDelegationHost — cross-mixin
     _telemetry_provider: Any  # see RealtimeDelegationHost — cross-mixin
     _authorize_realtime_tool: Any  # see RealtimeToolsMixin
+    _report_raised_call: Any  # see RealtimeToolsMixin
     _tool_reachable: Any  # see RealtimeToolsMixin
     _serve_gated_tool_call: Any  # see RealtimeToolsMixin
     _fire_tool_refusal: Any  # see RealtimeToolsMixin
@@ -426,9 +427,5 @@ class RealtimeDelegationMixin:
                 delegation_id,
                 session.id,
             )
-            # The class, never the message (RFC §9.3): it went to the log above.
-            body = tool_failure(name, exc)
-            await self._fire_tool_refusal(
-                session, call_id, name, arguments, body, room_id, detail=failure_detail(exc)
-            )
-            return body
+            await self._report_raised_call(session, call_id, name, arguments, room_id, exc)
+            return tool_failure(name, exc)

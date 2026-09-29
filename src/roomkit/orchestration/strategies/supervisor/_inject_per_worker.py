@@ -189,9 +189,12 @@ class _PerWorkerToolMixin:
                         ),
                     }
                 )
-            except Exception as exc:
+            except Exception:
+                # Raised on: the channel reads it as any failed call, the
+                # class for the model and the message for the observers
+                # (RFC §9.3).
                 logger.exception("Delegation to %s failed", worker_id)
-                return json.dumps({"error": str(exc)})
+                raise
 
         # The names this handler serves grow as other rooms install workers.
         self._supervisor.tool_handler = call_room_handler(

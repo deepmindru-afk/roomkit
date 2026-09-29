@@ -32,12 +32,18 @@ def _worker_roles_csv(workers: list[Agent]) -> str:
 
 
 def _result_output(result: Any) -> str:
-    """The best human-readable text from a delegated task result: ``output``,
-    else ``error``, else empty. Accepts a real result, a duck-typed object, or
-    ``None``."""
+    """The text a supervisor reads of a delegated task result: its ``output``.
+
+    A failed task reads as failed, never with its error, which is an
+    exception's message for the logs and hooks, not for a model (RFC §9.3).
+    Accepts a real result, a duck-typed object, or ``None``.
+    """
     if result is None:
         return ""
-    return getattr(result, "output", None) or getattr(result, "error", None) or ""
+    output = getattr(result, "output", None)
+    if output:
+        return output
+    return "The task failed." if getattr(result, "error", None) else ""
 
 
 def _result_completed(result: Any) -> bool:

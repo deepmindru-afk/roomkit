@@ -249,8 +249,11 @@ class _StrategyToolMixin:
                     for k in stale:
                         del _dedup_cache[k]
                     return review
-                except Exception as exc:
+                except Exception:
+                    # Raised on: the channel reads it as any failed call, the
+                    # class for the model and the message for the observers
+                    # (RFC §9.3).
                     logger.exception("Strategy delegation failed")
-                    return json.dumps({"error": str(exc)})
+                    raise
 
         self._supervisor.tool_handler = call_room_handler({tool_name}, delegate_workers, original)

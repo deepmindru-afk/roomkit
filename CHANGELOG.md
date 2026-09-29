@@ -102,17 +102,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reconnects them for Tool Search or a skill.
 - A tool whose handler raised reads the same on every channel, without the
   exception's message: `{"error": "Tool 'x' failed (<ExceptionClass>)"}`
-  (RMK-295, RFC §9.3, decision D9). The message can hold anything the failing
+  (RMK-295, RFC §9.3). The message can hold anything the failing
   code held; a realtime model read a hook's `postgres://admin:<password>@...`,
   and the AI channel sent `Error executing tool 'x': <message>` to the model
   and stored it on the `TOOL_CALL_END`. It now goes to the log and to
   ON_TOOL_CALL's observers, on the new `ToolCallEvent.error_detail`. The
   realtime channel (its four entries), the conference, `run_skill_script` and
   the sandbox read the same text; a realtime call nothing served whose hook
-  raised reads `No handler for tool x`, as on the AI channel. A spoken call
-  the realtime channel recovered and whose handler raised now tells the
-  model and the observers (it was only logged). `ToolRefusedError` still
-  hands the model its words.
+  raised reads `No handler for tool x`, as on the AI channel, and the hooks'
+  messages reach the observers on both (`ToolCallVerdict.error_detail`
+  carries them from the framework's callback). A spoken call the realtime
+  channel recovered and whose handler raised now tells the model and the
+  observers (it was only logged), the observers even when the model cannot
+  be told. A skill script or a sandbox command that raises is a failed call
+  (it read as a successful one returning an error). A delegated task that
+  failed reads as failed to the supervisor and to the notified agent,
+  without its error, and a supervisor's delegation that raises is read by
+  the channel like any failed call; a reasoning backend's tool reads the
+  same. The realtime fallback's "Do not infer an integration outage" hint is
+  gone with the rest of the old text. `ToolRefusedError` still hands the
+  model its words.
 - A name a channel serves itself is declared once, with the channel's
   definition (RMK-294, RFC §21.1). `AIChannel(tools=...)` and
   `RealtimeVoiceChannel(tools=...)` raise `ValueError` for a host tool under

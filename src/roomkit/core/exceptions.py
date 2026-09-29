@@ -168,8 +168,9 @@ class ToolRefusedError(RoomKitError):
     handler that *raises* already states it: the tool loop catches the
     exception and marks the part. What it cannot state that way is a refusal
     it wants the model to read in its own words, because the generic branch
-    replaces the body with ``Error executing tool '<name>': <exc>`` — the
-    wording a host tuned for a small model is gone, and with it the reason.
+    reads ``{"error": "Tool '<name>' failed (<ExceptionClass>)"}``, the
+    message withheld from the model (RFC §9.3): the wording a host tuned for a
+    small model is gone, and with it the reason.
 
     This is that branch with the message kept. A handler raises it to say two
     things at once: nothing ran, and here is what the model should read. The

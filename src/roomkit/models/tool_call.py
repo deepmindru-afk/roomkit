@@ -75,7 +75,8 @@ class ToolCallEvent:
 
     ``result`` alone cannot answer it. A refusal is a body like any other:
     roomkit's own refusals are JSON error envelopes, a handler that raised
-    leaves a prose sentence, and a failed external tool leaves whatever the
+    leaves ``{"error": "Tool 'x' failed (<class>)"}``, and a failed external
+    tool leaves whatever the
     provider printed. A consumer reading the body can only guess, and guessing
     reads a refusal as a completed call — which is how an audit trail ends up
     recording ``ok`` for a tool that never ran.
@@ -105,15 +106,6 @@ class ToolCallEvent:
     like a refusal's; :attr:`result` carries a short envelope saying so.
     """
 
-    error_detail: str | None = None
-    """What failed, in full, when the handler or a hook raised (RFC §9.3).
-
-    The exception's class and message, for logs and observers only. The model
-    reads :attr:`result`, the failure without the message: that message can
-    hold anything the failing code held, a connection string with its password
-    included. ``None`` for every other outcome.
-    """
-
     structured_content: dict[str, Any] | None = None
     """The call's structured copy, carried beside :attr:`result` on its
     tool-call event for UI surfaces (MCP ``structuredContent``); never read by
@@ -124,6 +116,16 @@ class ToolCallEvent:
     a new one; the next hook sees the replacement (RFC §9.3). A hook that replaces only the result
     keeps it (rewriting text is not withholding the payload), and a BLOCK drops
     it: the event of a withheld call must not publish what was withheld.
+    """
+
+    error_detail: str | None = None
+    """What failed, in full, when the handler or a hook raised (RFC §9.3).
+
+    A raised call's exception class and message, or what the ON_TOOL_CALL
+    hooks that failed said, for logs and observers only. The model reads
+    :attr:`result`, the failure without the message: that message can hold
+    anything the failing code held, a connection string with its password
+    included. ``None`` for every other outcome.
     """
 
 
@@ -142,6 +144,9 @@ class ToolCallVerdict:
     blocked: bool = False
     replaces_structured: bool = False
     structured_content: dict[str, Any] | None = None
+    error_detail: str | None = None
+    """For a call nothing served: what the hooks that failed said, for the
+    observers only (RFC §9.3)."""
 
 
 def fold_tool_call_rewrite(event: Any, metadata: dict[str, Any]) -> Any:

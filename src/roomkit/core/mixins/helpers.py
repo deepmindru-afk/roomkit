@@ -25,6 +25,7 @@ import contextlib
 import json
 import logging
 from collections.abc import Callable, Coroutine
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 from uuid import uuid4
 
@@ -55,7 +56,7 @@ from roomkit.models.tool_call import (
     fold_tool_call_rewrite,
     observed_call_event,
 )
-from roomkit.tools.result import tool_call_verdict
+from roomkit.tools.result import hook_errors_detail, tool_call_verdict
 
 _RECENT_EVENTS_LIMIT = 2_000
 """Hard ceiling on events kept in ``RoomContext.recent_events`` in memory."""
@@ -857,8 +858,9 @@ class HelpersMixin:
             read = verdict.result if verdict.result is not None else event.result
             if read is None:
                 # Served by nothing: the channel reports the failure, once,
-                # with its own framework event.
-                return verdict
+                # with its own framework event, and what any hook that
+                # failed said for the observers.
+                return replace(verdict, error_detail=hook_errors_detail(hook_result))
             await kit_ref._observe_tool_call(
                 observed_call_event(hook_result, event, read), context
             )

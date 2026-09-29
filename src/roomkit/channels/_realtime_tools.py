@@ -33,6 +33,7 @@ from roomkit.telemetry.base import Attr, SpanKind
 from roomkit.tools.result import (
     as_tool_result,
     failure_detail,
+    hook_errors_detail,
     is_unknown_tool_answer,
     tool_call_verdict,
     tool_failure,
@@ -157,14 +158,6 @@ def _hook_outcome(
     # "ok"}`` would be a success for work nobody did, which the model then
     # acts on and an audit trail records as a completed call.
     return unserved_tool_error(name), True
-
-
-def _hook_errors_detail(hook_result: Any) -> str | None:
-    """What the ON_TOOL_CALL hooks that raised said, for the observers only."""
-    errors = getattr(hook_result, "hook_errors", None)
-    if not errors:
-        return None
-    return "; ".join(f"{e['hook']}: {e['error']}" for e in errors)
 
 
 class RealtimeToolsMixin:
@@ -525,18 +518,12 @@ class RealtimeToolsMixin:
         except Exception as exc:
             telemetry.end_span(tool_span_id, status="error", error_message=f"tool {name} failed")
             logger.exception("Error handling tool call %s for session %s", call_id, session.id)
-            # The class, never the message (RFC §9.3): it went to the log above.
             body = tool_failure(name, exc)
             try:
                 await self._submit_realtime_tool_result(session, call_id, body)
             except Exception:
                 logger.exception("Error submitting fallback tool result")
-            if not self._tool_call_reported(session.id, call_id):
-                # A failure past the report — the submission itself — is in
-                # the log above; a refusal event now would be a second outcome.
-                await self._fire_tool_refusal(
-                    session, call_id, name, arguments, body, room_id, detail=failure_detail(exc)
-                )
+            await self._report_raised_call(session, call_id, name, arguments, room_id, exc)
         finally:
             if self._mute_on_tool_call and self._transport is not None:
                 self._transport.set_input_muted(session, False)
@@ -1068,6 +1055,29 @@ class RealtimeToolsMixin:
         arguments, invalid = _rewritten_arguments(name, arguments, params, hook_result.metadata)
         return arguments, invalid, context
 
+    async def _report_raised_call(
+        self,
+        session: VoiceSession,
+        call_id: str,
+        name: str,
+        arguments: dict[str, Any],
+        room_id: str | None,
+        exc: Exception,
+    ) -> None:
+        """Tell the observers a call raised, once, whatever reached the model (RFC §9.3).
+
+        The model reads :func:`tool_failure`, the class alone; the observers
+        get the message on ``error_detail``. A call already reported (served
+        before a later step failed, the submission itself for instance) adds no
+        second outcome: that failure is in the log.
+        """
+        if self._tool_call_reported(session.id, call_id):
+            return
+        body = tool_failure(name, exc)
+        await self._fire_tool_refusal(
+            session, call_id, name, arguments, body, room_id, detail=failure_detail(exc)
+        )
+
     async def _fire_tool_refusal(
         self,
         session: VoiceSession,
@@ -1238,7 +1248,7 @@ class RealtimeToolsMixin:
                 tool_event.arguments,
                 result_str,
                 room_id,
-                detail=_hook_errors_detail(hook_result),
+                detail=hook_errors_detail(hook_result),
             )
             return
         if handler_result is None and hook_result.allowed:

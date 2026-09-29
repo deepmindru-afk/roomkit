@@ -14,6 +14,8 @@ from __future__ import annotations
 import asyncio
 import json
 
+import pytest
+
 from roomkit import Agent, RoomKit, Supervisor, WebSocketChannel
 from roomkit.memory.sliding_window import SlidingWindowMemory
 from roomkit.models.enums import HookExecution, HookTrigger
@@ -245,7 +247,8 @@ class TestSubTaskRecursionGuard:
 
 class TestSequentialWorkerFailure:
     async def test_sequential_propagates_error_in_result(self) -> None:
-        """If delegation raises, the strategy handler returns an error JSON."""
+        """If delegation raises, the handler raises on: the channel reads it as
+        any failed call, its message never reaching the model (RMK-295)."""
         kit, supervisor = await _setup("sequential", [_agent("w1", "ok")])
 
         # Make delegate raise
@@ -254,19 +257,14 @@ class TestSequentialWorkerFailure:
 
         kit.delegate = failing_delegate  # type: ignore[assignment]
 
-        with tool_call_in("room"):
-            result = json.loads(
-                await supervisor.tool_handler("delegate_workers", {"task": "fail"})
-            )
-
-        assert "error" in result
-        assert "boom" in result["error"]
+        with tool_call_in("room"), pytest.raises(RuntimeError, match="boom"):
+            await supervisor.tool_handler("delegate_workers", {"task": "fail"})
         await kit.close()
 
 
 class TestParallelWorkerFailure:
     async def test_parallel_propagates_error(self) -> None:
-        """If delegation raises during parallel, error is returned."""
+        """If delegation raises during parallel, the handler raises on (RMK-295)."""
         kit, supervisor = await _setup("parallel", [_agent("w1", "ok")])
 
         async def failing_delegate(*args, **kwargs):  # type: ignore[no-untyped-def]
@@ -274,13 +272,8 @@ class TestParallelWorkerFailure:
 
         kit.delegate = failing_delegate  # type: ignore[assignment]
 
-        with tool_call_in("room"):
-            result = json.loads(
-                await supervisor.tool_handler("delegate_workers", {"task": "fail"})
-            )
-
-        assert "error" in result
-        assert "parallel boom" in result["error"]
+        with tool_call_in("room"), pytest.raises(RuntimeError, match="parallel boom"):
+            await supervisor.tool_handler("delegate_workers", {"task": "fail"})
         await kit.close()
 
 

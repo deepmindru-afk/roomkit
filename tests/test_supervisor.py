@@ -406,7 +406,8 @@ class TestPerWorkerDelegation:
         with tool_call_in("r1"):
             result = await boss.tool_handler("delegate_to_w1", {"task": "Do work"})
         parsed = json.loads(result)
-        assert parsed["result"] == "Something went wrong"
+        # A failed task reads as failed, never with its error (RMK-295).
+        assert parsed["result"] == "The task failed."
 
     async def test_wait_for_result_none(self) -> None:
         boss = _make_agent("boss")
@@ -471,11 +472,9 @@ class TestPerWorkerDelegation:
         s = Supervisor(supervisor=boss, workers=[w1], wait_for_result=True)
         await s.install(kit, "r1")
 
-        with tool_call_in("r1"):
-            result = await boss.tool_handler("delegate_to_w1", {"task": "Do work"})
-        parsed = json.loads(result)
-        assert "error" in parsed
-        assert "Connection lost" in parsed["error"]
+        # Raised on to the channel, which reads it as any failed call (RMK-295).
+        with tool_call_in("r1"), pytest.raises(RuntimeError, match="Connection lost"):
+            await boss.tool_handler("delegate_to_w1", {"task": "Do work"})
 
     async def test_unknown_tool_falls_through(self) -> None:
         boss = _make_agent("boss")
@@ -567,10 +566,9 @@ class TestStrategyToolHandler:
         )
         await s.install(kit, "r1")
 
-        with tool_call_in("r1"):
-            result = await boss.tool_handler("delegate_workers", {"task": "x"})
-        parsed = json.loads(result)
-        assert "error" in parsed
+        # Raised on to the channel, which reads it as any failed call (RMK-295).
+        with tool_call_in("r1"), pytest.raises(RuntimeError, match="Boom"):
+            await boss.tool_handler("delegate_workers", {"task": "x"})
 
     async def test_strategy_tool_dedup_cache(self) -> None:
         """Second call within dedup window returns cached result."""
@@ -695,7 +693,8 @@ class TestRunSequential:
 
         result = await _run_sequential(kit, "r1", [w1], "task")
         parsed = json.loads(result)
-        assert parsed["results"][0]["output"] == "Worker error"
+        # A failed task reads as failed, never with its error (RMK-295).
+        assert parsed["results"][0]["output"] == "The task failed."
 
     async def test_per_task_timeout_fails_one_worker_and_continues(self) -> None:
         # A worker that exceeds its per-task budget is recorded as failed, but
