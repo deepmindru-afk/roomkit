@@ -39,6 +39,7 @@ import inspect
 import logging
 from typing import Any
 
+from roomkit.core.task_utils import cancel_and_wait
 from roomkit.orchestration.status_bus import StatusBackend, StatusCallback, StatusEntry
 
 logger = logging.getLogger("roomkit.orchestration.status_redis")
@@ -171,11 +172,8 @@ class RedisStatusBackend(StatusBackend):
             return
         self._closed = True
 
-        if self._reader_task is not None:
-            self._reader_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._reader_task
-            self._reader_task = None
+        await cancel_and_wait(self._reader_task)
+        self._reader_task = None
 
         # Teardown under the lock so an in-flight subscribe() cannot
         # register a dangling subscriber after this.

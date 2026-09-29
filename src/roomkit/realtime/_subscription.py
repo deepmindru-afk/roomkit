@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 from collections import OrderedDict
 
+from roomkit.core.task_utils import cancel_and_wait
 from roomkit.realtime.base import EphemeralCallback, EphemeralEvent
 
 logger = logging.getLogger("roomkit.realtime")
@@ -51,11 +51,8 @@ class _Subscription:
         """Stop the background task."""
         self._stopped = True
         self._event.set()
-        if self._task is not None:
-            self._task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._task
-            self._task = None
+        await cancel_and_wait(self._task)
+        self._task = None
 
     async def _run(self) -> None:
         """Background task that drains the queue and invokes callbacks."""

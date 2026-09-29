@@ -36,6 +36,7 @@ import logging
 from collections.abc import AsyncIterator, Callable
 from typing import TYPE_CHECKING, Any
 
+from roomkit.core.task_utils import cancel_and_wait
 from roomkit.voice.backends._resample import build_streaming_resampler
 from roomkit.voice.backends.base import (
     AudioReceivedCallback,
@@ -260,12 +261,12 @@ class BuzzHuddleBackend(VoiceBackend):
         # Deliberate teardown: the dying receive loop must not report it as a
         # connection loss (the session owner already knows it's over).
         self._disconnect_fired.add(session.id)
-        for tasks in (self._receive_tasks, self._silence_tasks, self._alone_tasks):
-            task = tasks.pop(session.id, None)
-            if task is not None:
-                task.cancel()
-                with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await task
+        await cancel_and_wait(
+            self._receive_tasks.pop(session.id, None),
+            self._silence_tasks.pop(session.id, None),
+            self._alone_tasks.pop(session.id, None),
+            log_errors_to=logger,
+        )
         pacer = self._pacers.pop(session.id, None)
         if pacer is not None:
             with contextlib.suppress(Exception):

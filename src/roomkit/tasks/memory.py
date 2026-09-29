@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import time
 from typing import TYPE_CHECKING, Any
 
-from roomkit.core.task_utils import log_task_exception
+from roomkit.core.task_utils import cancel_and_wait, log_task_exception
 from roomkit.models.enums import TaskStatus
 from roomkit.tasks.base import OnCompleteCallback, TaskRunner
 from roomkit.tasks.models import DelegatedTask, DelegatedTaskResult
@@ -48,9 +47,7 @@ class InMemoryTaskRunner(TaskRunner):
         if handle is None or bg is None:
             return False
         handle.cancel()
-        bg.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await bg
+        await cancel_and_wait(bg)
         self._tasks.pop(task_id, None)
         self._handles.pop(task_id, None)
         return True

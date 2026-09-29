@@ -48,6 +48,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._conference_backlog import TrackBacklog
+from roomkit.core.task_utils import cancel_and_wait
 
 if TYPE_CHECKING:
     from roomkit.recorder.base import (
@@ -281,10 +282,7 @@ class TrackWriter:
             await asyncio.wait_for(self._backlog.join(), timeout)
         except TimeoutError:
             self._give_up_on_queued(timeout)
-        if self._task is not None:
-            self._task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._task
+        await cancel_and_wait(self._task)
         await self._settle_open(timeout)
         await self._settle_in_flight(timeout)
         return await self._finalize(timeout)

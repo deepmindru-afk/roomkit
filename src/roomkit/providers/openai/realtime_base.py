@@ -18,6 +18,7 @@ import logging
 from abc import abstractmethod
 from typing import Any
 
+from roomkit.core.task_utils import cancel_and_wait
 from roomkit.providers.openai.realtime_events import (
     OpenAIRealtimeEventHandlersMixin,
     _OutputAudioState,
@@ -466,11 +467,7 @@ class OpenAIRealtimeBase(OpenAIRealtimeEventHandlersMixin):
 
     async def disconnect(self, session: VoiceSession) -> None:
         # Cancel receive task
-        task = self._receive_tasks.pop(session.id, None)
-        if task is not None:
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await task
+        await cancel_and_wait(self._receive_tasks.pop(session.id, None), log_errors_to=logger)
 
         # Close WebSocket (short timeout to avoid blocking on close handshake)
         ws = self._connections.pop(session.id, None)

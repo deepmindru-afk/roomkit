@@ -26,6 +26,7 @@ from typing import Any
 
 from pydantic import SecretStr
 
+from roomkit.core.task_utils import cancel_and_wait
 from roomkit.providers.ai.tool_calls import tool_arguments
 from roomkit.providers.deepgram.config import DeepgramAgentConfig
 from roomkit.providers.deepgram.settings import build_settings, patch_speak, patch_think
@@ -868,13 +869,7 @@ class DeepgramAgentProvider(RealtimeVoiceProvider):
         state.deferred_bytes = 0
         state.session.state = VoiceSessionState.ENDED
 
-        current = asyncio.current_task()
-        for task in (state.receive_task, state.keepalive_task):
-            if task is None or task is current:
-                continue
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await task
+        await cancel_and_wait(state.receive_task, state.keepalive_task, log_errors_to=logger)
         with contextlib.suppress(Exception):
             await asyncio.wait_for(state.ws.close(), timeout=_CLOSE_TIMEOUT)
 

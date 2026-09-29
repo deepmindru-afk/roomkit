@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import contextlib
 import json
 import logging
 import time
@@ -14,6 +13,7 @@ from typing import TYPE_CHECKING
 
 import httpx
 
+from roomkit.core.task_utils import cancel_and_wait
 from roomkit.providers.utils import http_timeout
 from roomkit.voice.base import AudioChunk
 from roomkit.voice.tts.base import TTSProvider
@@ -306,9 +306,7 @@ class GrokTTSProvider(TTSProvider):
                             )
                             break
             finally:
-                sender_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await sender_task
+                await cancel_and_wait(sender_task)
 
     # ------------------------------------------------------------------
     # Lifecycle

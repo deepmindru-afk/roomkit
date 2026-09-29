@@ -38,6 +38,7 @@ from roomkit.conference.models import (
     ConferenceTrack,
     TrackKind,
 )
+from roomkit.core.task_utils import cancel_and_wait
 from roomkit.voice.base import AudioChunk
 
 logger = logging.getLogger("roomkit.conference.livekit")
@@ -217,11 +218,8 @@ class LiveKitBotSession:
             await self._stop_pumps()
             await self._voice.close()
         await self._disconnect_once()
-        if self._consumer is not None:
-            self._consumer.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._consumer
-            self._consumer = None
+        await cancel_and_wait(self._consumer)
+        self._consumer = None
         self._drain_events()
 
     async def _disconnect_once(self) -> None:
@@ -263,11 +261,7 @@ class LiveKitBotSession:
     async def _stop_pumps(self) -> None:
         pumps = list(self._pumps.values())
         self._pumps.clear()
-        for pump in pumps:
-            pump.cancel()
-        for pump in pumps:
-            with contextlib.suppress(asyncio.CancelledError):
-                await pump
+        await cancel_and_wait(*pumps)
 
     # -------------------------------------------------------------------------
     # Subscription — the framework's set is the authoritative one
@@ -301,11 +295,7 @@ class LiveKitBotSession:
 
     async def _stop_pump(self, track_id: str) -> None:
         pump = self._pumps.pop(track_id, None)
-        if pump is None:
-            return
-        pump.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await pump
+        await cancel_and_wait(pump)
 
     def publisher_identity(self, track_id: str) -> str | None:
         """Who publishes a track, for the moderation calls that need it.
@@ -728,11 +718,8 @@ class LiveKitBotSession:
 
     async def _finish_end(self, reason: str) -> None:
         """Stop the bridge and report the session's end, loss counted."""
-        if self._consumer is not None:
-            self._consumer.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._consumer
-            self._consumer = None
+        await cancel_and_wait(self._consumer)
+        self._consumer = None
         undelivered = self._drain_events()
         if undelivered:
             reason = (

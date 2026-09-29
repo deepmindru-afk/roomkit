@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import sys
 from collections import deque
@@ -26,6 +25,7 @@ from roomkit.console._brand import PRIMARY_LIGHT as _PRIMARY_LIGHT
 from roomkit.console._brand import logo_lines
 from roomkit.console._hooks import register_console_hooks, unregister_console_hooks
 from roomkit.console._state import ConsoleState, LogRingBuffer
+from roomkit.core.task_utils import cancel_and_wait
 
 if TYPE_CHECKING:
     from roomkit.core.framework import RoomKit
@@ -486,11 +486,8 @@ class RoomKitConsole:
 
     async def stop(self) -> None:
         """Stop the dashboard and restore original logging."""
-        if self._refresh_task is not None:
-            self._refresh_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._refresh_task
-            self._refresh_task = None
+        await cancel_and_wait(self._refresh_task)
+        self._refresh_task = None
 
         if self._live is not None:
             self._live.stop()

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import AsyncIterator
 
 from roomkit import RoomKit, VoiceChannel
+from roomkit.channels._voice_stt import _await_stream_end
 from roomkit.voice.audio_frame import AudioFrame
 from roomkit.voice.backends.mock import MockVoiceBackend
 from roomkit.voice.base import AudioChunk, TranscriptionResult, VoiceSession
@@ -347,3 +349,23 @@ class TestStreamingSTTLifecycle:
         # Backend fires disconnect — VoiceChannel should auto-cleanup
         await backend.simulate_client_disconnected(session)
         assert session.id not in channel._stt_streams
+
+
+class TestAwaitStreamEnd:
+    """RMK-288: the caller of the speech-end collection keeps its cancellation."""
+
+    async def test_a_cancelled_caller_is_cancelled_and_the_stream_ends(self) -> None:
+        async def _stream_swallowing_its_cancel() -> None:
+            # A stream consumer ends quietly when it is cancelled
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.sleep(999)
+
+        stream = asyncio.create_task(_stream_swallowing_its_cancel())
+        caller = asyncio.create_task(_await_stream_end(stream, "s1"))
+        await asyncio.sleep(0.01)
+
+        caller.cancel()
+        await asyncio.wait({caller}, timeout=1.0)
+
+        assert caller.cancelled()
+        assert stream.done()

@@ -44,6 +44,7 @@ from roomkit.console._activity import (
     spinner_frame,
 )
 from roomkit.console._chat import print_user_line
+from roomkit.core.task_utils import cancel_and_wait
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import Visibility
 from roomkit.models.event import TextContent
@@ -275,14 +276,7 @@ async def run_console_shell(
                 queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
-        if consumer is not None:
-            consumer.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await consumer
-        if spinner is not None:
-            spinner.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await spinner
+        await cancel_and_wait(consumer, spinner)
         if subscription is not None:
             with contextlib.suppress(Exception):
                 await kit.realtime.unsubscribe(subscription)

@@ -10,6 +10,7 @@ call.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -234,3 +235,33 @@ class TestReconfigurePreservation:
         session = _make_session()  # never registered with provider
         await provider.reconfigure(session, system_prompt="anything")
         provider._build_config.assert_not_called()
+
+
+class TestReconfigureCancellation:
+    async def test_a_cancelled_caller_is_not_resumed_into_the_reconnect(
+        self, provider: GeminiLiveProvider
+    ) -> None:
+        """RMK-288: the caller's cancellation, landing while reconfigure waits
+        for the old receive task, reaches the caller; no reconnect follows."""
+        session = _make_session()
+        state = _populate_session_state(provider, session)
+        release = asyncio.Event()
+
+        async def old_receive_loop() -> None:
+            try:
+                await asyncio.sleep(999)
+            finally:
+                # Its teardown outlasts the caller's own cancellation.
+                await release.wait()
+
+        state.receive_task = asyncio.create_task(old_receive_loop())
+        await asyncio.sleep(0)
+        caller = asyncio.create_task(provider.reconfigure(session, system_prompt="New."))
+        await asyncio.sleep(0)
+        caller.cancel()
+        await asyncio.wait({caller}, timeout=1.0)
+        release.set()
+        await asyncio.wait({caller, state.receive_task}, timeout=1.0)
+
+        assert caller.cancelled()
+        provider._reconnect.assert_not_awaited()  # type: ignore[attr-defined]

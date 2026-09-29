@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote, urlencode
 
+from roomkit.core.task_utils import cancel_and_wait
 from roomkit.providers.personaplex.voices import VOICES as _VOICES
 from roomkit.voice.base import VoiceSession, VoiceSessionState
 from roomkit.voice.realtime.injection import VoiceInjectionResult
@@ -260,10 +261,7 @@ class PersonaPlexRealtimeProvider(RealtimeVoiceProvider):
             return
         if state.response_end_task is not None:
             state.response_end_task.cancel()
-        if state.receive_task is not None:
-            state.receive_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await state.receive_task
+        await cancel_and_wait(state.receive_task, log_errors_to=logger)
         if state.ws is not None:
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(state.ws.close(), timeout=2.0)

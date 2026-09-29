@@ -437,3 +437,49 @@ class TestSilenceFillTiming:
         assert any(not any(chunk) for chunk in received), (
             "silence fill never kicked in after falling behind"
         )
+
+
+class TestCancellation:
+    """RMK-288: a cancellation reaches the task it is aimed at."""
+
+    async def test_stop_keeps_its_callers_cancellation(self) -> None:
+        release = asyncio.Event()
+
+        async def send_fn(audio: bytes) -> None:
+            await release.wait()  # a transport stuck mid-write
+
+        pacer = OutboundAudioPacer(send_fn, sample_rate=8000, prebuffer_ms=0)
+        await pacer.start()
+        sender = pacer._task
+        pacer.push(_make_audio(20))
+        await asyncio.sleep(0.05)
+        stopping = asyncio.create_task(pacer.stop())
+        await asyncio.sleep(0.05)
+
+        stopping.cancel()
+        release.set()
+        await asyncio.wait({stopping}, timeout=1.0)
+
+        assert stopping.cancelled()
+        assert sender is not None and sender.done()
+        assert pacer._task is None
+
+    async def test_a_sender_cancelled_while_prebuffering_ends(self) -> None:
+        sent: list[bytes] = []
+
+        async def send_fn(audio: bytes) -> None:
+            sent.append(audio)
+
+        pacer = OutboundAudioPacer(send_fn, sample_rate=8000, prebuffer_ms=150)
+        await pacer.start()
+        sender = pacer._task
+        assert sender is not None
+        pacer.push(_make_audio(20))
+        await asyncio.sleep(0.02)  # waiting for more audio to prebuffer
+
+        sender.cancel()
+        await asyncio.wait({sender}, timeout=0.5)
+
+        assert sender.cancelled()
+        assert sent == []
+        await pacer.stop()

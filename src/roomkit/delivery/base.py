@@ -8,7 +8,6 @@ workers in multi-process deployments.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 from abc import ABC, abstractmethod
 from datetime import UTC, datetime
@@ -18,6 +17,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
+from roomkit.core.task_utils import cancel_and_wait
 from roomkit.models.delivery import DeliveryOutcome
 
 if TYPE_CHECKING:
@@ -114,8 +114,5 @@ class DeliveryBackend(ABC):
 
     async def _cancel_worker_task(self) -> None:
         """Cancel the background worker task if running."""
-        if self._worker_task is not None:
-            self._worker_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._worker_task
-            self._worker_task = None
+        await cancel_and_wait(self._worker_task)
+        self._worker_task = None

@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `roomkit.core.task_utils.cancel_and_wait(*tasks)` (RMK-288): cancels tasks
+  and waits for their end without eating the caller's own cancellation,
+  which it raises once they have ended; and `cancellation_requests()`, to
+  tell a task's interruption from the caller's cancellation after awaiting
+  it.
 - `AIToolCall.partial` and `StreamToolCall.partial` (RMK-284, RFC §6.4): the
   provider marks a call the response cut before its arguments were complete
   (the output cap, a content filter); no tool loop runs it, the AI channel's
@@ -146,6 +151,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A cancellation reaches the task it is aimed at (RMK-288). Thirty-six sites
+  cancelled a task and awaited it under `suppress(CancelledError)`, which
+  also swallowed a cancellation of the caller: a Gemini `reconfigure` called
+  from a cancelled tool handler went on to reconnect, a cancelled ACP turn
+  could spawn a new agent process, a Buzz source cancelled on its error path
+  kept reconnecting. They go through `cancel_and_wait`, and six sites with
+  the same loss in another shape (the outbound pacer's `stop()` and its
+  prebuffer, the voice STT's wait for its stream, the local, RTP and SIP
+  playback) let the caller's cancellation through. A task's own error is
+  raised as before, or logged where it was suppressed.
 - A room closed mid-stream takes no further streamed row (RMK-283, RFC
   §5.1). Streamed segments and tool rows were committed through a path that
   skipped the room's status, so a room closed during a turn kept receiving

@@ -30,7 +30,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
-from roomkit.core.task_utils import log_task_exception
+from roomkit.core.task_utils import cancel_and_wait, log_task_exception
 from roomkit.providers.anam.config import AnamConfig
 from roomkit.video.avatar.base import AvatarProvider
 
@@ -219,10 +219,7 @@ class AnamAvatarProvider(AvatarProvider):
         """Disconnect from Anam."""
         self._closed = True
         self._started = False
-        if self._video_task is not None:
-            self._video_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._video_task
+        await cancel_and_wait(self._video_task)
         if self._ctx is not None:
             with contextlib.suppress(Exception):
                 await self._ctx.__aexit__(None, None, None)

@@ -17,6 +17,7 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
+from roomkit.core.task_utils import cancel_and_wait
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.event import TextContent
 from roomkit.providers.buzz.config import BuzzConfig
@@ -451,10 +452,7 @@ class BuzzRelaySource(BaseSourceProvider):
                     self._set_status(SourceStatus.ERROR, str(exc))
                     logger.warning("Buzz source %s error: %s", self._channel_id, exc)
             finally:
-                if presence_task is not None:
-                    presence_task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await presence_task
+                await cancel_and_wait(presence_task)
                 graceful = getattr(self._client, "close_code", None) == _CLOSE_GRACEFUL_RESTART
                 with contextlib.suppress(Exception):
                     await self._client.close()

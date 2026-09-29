@@ -31,7 +31,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from roomkit.core.task_utils import log_task_exception
+from roomkit.core.task_utils import cancel_and_wait, log_task_exception
 from roomkit.voice.backends.base import VoiceBackend
 from roomkit.voice.base import VoiceSession, VoiceSessionState
 from roomkit.voice.realtime.provider import RealtimeAudioVideoProvider, RealtimeVoiceProvider
@@ -311,10 +311,7 @@ class RealtimeAVBridge:
                 output_sample_rate=self._provider_rate,
             )
         finally:
-            if placeholder_task is not None:
-                placeholder_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await placeholder_task
+            await cancel_and_wait(placeholder_task)
 
         # If the backend session died during the provider negotiation
         # (e.g. SIP BYE during the 3-4s WebRTC handshake), disconnect

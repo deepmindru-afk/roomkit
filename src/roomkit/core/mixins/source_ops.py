@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from roomkit.core.exceptions import SourceAlreadyAttachedError, SourceNotFoundError
 from roomkit.core.mixins.helpers import HelpersMixin
+from roomkit.core.task_utils import cancel_and_wait
 
 if TYPE_CHECKING:
     from roomkit.models.delivery import InboundMessage, InboundResult
@@ -172,10 +172,7 @@ class SourceOpsMixin(HelpersMixin):
         await source.stop()
 
         # Cancel the runner task and await its completion
-        if task is not None:
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await task
+        await cancel_and_wait(task, log_errors_to=logging.getLogger("roomkit.sources"))
 
         # Both names, as in ``attach_source``.
         await self._emit_framework_event(

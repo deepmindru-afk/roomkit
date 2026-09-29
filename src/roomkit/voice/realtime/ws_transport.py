@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import logging
 from collections.abc import AsyncIterator
 from typing import Any, Literal
 
+from roomkit.core.task_utils import cancel_and_wait
 from roomkit.voice._limits import MAX_INBOUND_AUDIO_FRAME_BYTES, b64_within_limit
 from roomkit.voice.auth import AuthCallback
 from roomkit.voice.backends.base import (
@@ -133,14 +135,9 @@ class WebSocketRealtimeTransport(VoiceBackend):
             logger.exception("Error sending message to session %s", session.id)
 
     async def disconnect(self, session: VoiceSession) -> None:
-        import contextlib
-
         # Cancel receive task
         task = self._receive_tasks.pop(session.id, None)
-        if task is not None:
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await task
+        await cancel_and_wait(task, log_errors_to=logger)
 
         # Close WebSocket
         ws = self._websockets.pop(session.id, None)

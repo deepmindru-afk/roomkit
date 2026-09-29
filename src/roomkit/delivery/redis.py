@@ -21,10 +21,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
-from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from roomkit.core.task_utils import cancel_and_wait
 from roomkit.delivery._redis_scripts import RENEW, TRANSITION
 from roomkit.delivery.base import DeliveryBackend, DeliveryItem, DeliveryItemStatus
 from roomkit.delivery.worker import run_worker_loop
@@ -285,11 +285,8 @@ class RedisDeliveryBackend(DeliveryBackend):
         and will be reclaimed by another consumer or on restart.
         """
         await self._cancel_worker_task()
-        if self._heartbeat_task is not None:
-            self._heartbeat_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._heartbeat_task
-            self._heartbeat_task = None
+        await cancel_and_wait(self._heartbeat_task)
+        self._heartbeat_task = None
 
         # Clear in-process tracking (items remain in Redis PEL for recovery)
         self._entry_ids.clear()

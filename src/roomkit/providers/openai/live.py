@@ -27,7 +27,7 @@ from typing import Any
 
 from pydantic import SecretStr
 
-from roomkit.core.task_utils import log_task_exception
+from roomkit.core.task_utils import cancel_and_wait, log_task_exception
 from roomkit.providers.ai.base import ModelInfo
 from roomkit.providers.openai.live_client import OpenAILiveClientMixin
 from roomkit.providers.openai.live_config import (
@@ -469,11 +469,7 @@ class OpenAILiveProvider(
 
         if self._states.get(session.id) is state:
             del self._states[session.id]
-        task = state.receive_task
-        if task is not None and task is not asyncio.current_task():
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await task
+        await cancel_and_wait(state.receive_task, log_errors_to=logger)
         # Either ``session.closed`` landed — the protocol is over — or
         # ``_discard`` won the race and already closed this socket. Both mean
         # the teardown has nothing left to deliver, so nobody waits on it.

@@ -28,12 +28,11 @@ Usage::
 from __future__ import annotations
 
 import asyncio
-import contextlib
 from collections.abc import Callable
 from typing import Any
 
 from roomkit.core.callbacks import subscribe_callback
-from roomkit.core.task_utils import log_task_exception
+from roomkit.core.task_utils import cancel_and_wait, log_task_exception
 from roomkit.voice.backends._sip_types import (
     PT_G722,
     PT_PCMA,
@@ -399,11 +398,8 @@ class SIPVoiceBackend(SIPAuthMixin, SIPCallingMixin, SIPAudioMixin, VoiceBackend
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
         # Cancel registration renewal
-        if self._registration_task is not None:
-            self._registration_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._registration_task
-            self._registration_task = None
+        await cancel_and_wait(self._registration_task)
+        self._registration_task = None
 
         # Unregister (expires=0) if currently registered — best effort,
         # the 200 may race the transport shutdown
@@ -415,11 +411,8 @@ class SIPVoiceBackend(SIPAuthMixin, SIPCallingMixin, SIPAudioMixin, VoiceBackend
             self._registered = False
         self._registration = None
 
-        if self._stats_task is not None:
-            self._stats_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._stats_task
-            self._stats_task = None
+        await cancel_and_wait(self._stats_task)
+        self._stats_task = None
 
         errors: list[Exception] = []
         for state in list(self._session_states.values()):

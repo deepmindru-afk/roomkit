@@ -16,6 +16,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from roomkit.core.task_utils import cancel_and_wait
 from roomkit.providers.anam.config import AnamConfig
 from roomkit.voice.base import VoiceSession, VoiceSessionState
 from roomkit.voice.realtime.injection import VoiceInjectionResult
@@ -273,11 +274,7 @@ class AnamRealtimeProvider(RealtimeAudioVideoProvider):
         state._closed = True
 
         # Cancel consume tasks
-        for task in (state.audio_task, state.video_task):
-            if task is not None:
-                task.cancel()
-                with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await task
+        await cancel_and_wait(state.audio_task, state.video_task, log_errors_to=logger)
 
         # Flush pending response end
         if state.responding:

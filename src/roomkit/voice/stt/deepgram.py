@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from roomkit.core.task_utils import cancel_and_wait
 from roomkit.voice.base import AudioChunk, SpeakerSegment, TranscriptionResult, speaker_label
 from roomkit.voice.stt.base import STTProvider
 
@@ -474,12 +474,7 @@ class DeepgramSTTProvider(STTProvider):
                 if stream_error:
                     raise RuntimeError(f"Deepgram stream error: {stream_error[-1]}")
             finally:
-                sender_task.cancel()
-                listen_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await sender_task
-                with contextlib.suppress(asyncio.CancelledError):
-                    await listen_task
+                await cancel_and_wait(sender_task, listen_task)
 
     async def close(self) -> None:
         """Release resources."""

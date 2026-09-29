@@ -35,6 +35,7 @@ import logging
 from typing import Any
 from uuid import uuid4
 
+from roomkit.core.task_utils import cancel_and_wait
 from roomkit.realtime._subscription import _Subscription
 from roomkit.realtime.base import EphemeralCallback, EphemeralEvent, RealtimeBackend
 
@@ -203,11 +204,8 @@ class RedisRealtimeBackend(RealtimeBackend):
             return
         self._closed = True
 
-        if self._reader_task is not None:
-            self._reader_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._reader_task
-            self._reader_task = None
+        await cancel_and_wait(self._reader_task)
+        self._reader_task = None
 
         # Teardown under the lock so an in-flight subscribe() cannot
         # register a subscription (and leak its drain task) after this.

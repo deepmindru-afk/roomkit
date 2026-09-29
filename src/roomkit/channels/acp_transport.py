@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from roomkit.channels._acp_client import _absolute_path, _load_sdk
+from roomkit.core.task_utils import cancel_and_wait
 
 logger = logging.getLogger("roomkit.channels.acp")
 
@@ -244,11 +245,7 @@ class StdioACPTransport(ACPTransport):
     async def _stop_stderr_task(self) -> None:
         task = self._stderr_task
         self._stderr_task = None
-        if task is None:
-            return
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        await cancel_and_wait(task)
 
     @staticmethod
     async def _drain_stderr(process: Any) -> None:

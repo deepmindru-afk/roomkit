@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import logging
 import time
@@ -11,6 +10,7 @@ from typing import Any
 
 from pydantic import SecretStr
 
+from roomkit.core.task_utils import cancel_and_wait
 from roomkit.providers.ai.base import ModelInfo
 from roomkit.providers.gemini.realtime_config import (
     blocking_tool_names,
@@ -253,10 +253,7 @@ class GeminiLiveProvider(
         state.audio_buffer.clear()
 
         # Cancel receive task
-        if state.receive_task is not None:
-            state.receive_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await state.receive_task
+        await cancel_and_wait(state.receive_task, log_errors_to=logger)
 
         # Clean up transcription buffers
         self._clear_transcription_buffers(session.id)
@@ -380,11 +377,10 @@ class GeminiLiveProvider(
         # Cancel the old receive task BEFORE reconnecting to prevent it
         # from detecting the disconnection and triggering a second
         # auto-reconnect (double-reconnect bug).
-        if state.receive_task is not None:
-            state.receive_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await state.receive_task
-            state.receive_task = None
+        # The caller's own cancellation (a tool handler cancelled mid-handoff)
+        # must reach it here, not resume it into the reconnect below.
+        await cancel_and_wait(state.receive_task, log_errors_to=logger)
+        state.receive_task = None
 
         await self._reconnect(session)
 

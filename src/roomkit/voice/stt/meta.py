@@ -35,6 +35,7 @@ from collections.abc import AsyncGenerator, AsyncIterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
+from roomkit.core.task_utils import cancel_and_wait
 from roomkit.providers.utils import parse_data_uri
 from roomkit.voice.audio_frame import AudioFrame
 from roomkit.voice.base import AudioChunk, TranscriptionResult
@@ -308,9 +309,7 @@ class MetaSTTProvider(STTProvider):
                     if result is not None:
                         yield result
         finally:
-            sender.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await sender
+            await cancel_and_wait(sender)
             await ws.close()
 
     async def _open_stream(self, rate: int) -> Any:

@@ -16,6 +16,7 @@ from roomkit.channels._voice_speakers import (
     SpeakerTracker,
     claimed_speaker,
 )
+from roomkit.core.task_utils import cancel_and_wait
 from roomkit.models.enums import HookTrigger
 from roomkit.telemetry.base import Attr, SpanKind, TelemetryProvider
 from roomkit.telemetry.noop import NoopTelemetryProvider
@@ -95,6 +96,24 @@ def _extract_transcription_text(hook_event: Any, original: str) -> str:
     if isinstance(hook_event, str):
         return hook_event
     return original
+
+
+async def _await_stream_end(task: asyncio.Task[Any], session_id: str) -> None:
+    """Give an STT stream up to 5 s to end, then cancel it.
+
+    ``asyncio.wait``, not ``wait_for``: the stream task ends quietly when it
+    is cancelled, so under ``wait_for`` a cancellation of the caller read as
+    a normal end and the turn went on.
+    """
+    try:
+        _, pending = await asyncio.wait({task}, timeout=5.0)
+    except asyncio.CancelledError:
+        # The stream does not outlive its caller, and ends before it moves on
+        await cancel_and_wait(task, log_errors_to=logger)
+        raise
+    if pending:
+        logger.warning("STT stream timeout for %s, cancelling it", session_id)
+    await cancel_and_wait(task)
 
 
 @runtime_checkable
@@ -1211,7 +1230,7 @@ class VoiceSTTMixin:
             if stream_state is not None and not stream_state.error and not stream_state.cancelled:
                 try:
                     if stream_state.task is not None:
-                        await asyncio.wait_for(stream_state.task, timeout=5.0)
+                        await _await_stream_end(stream_state.task, session.id)
                     if stream_state.final_text:
                         text, result = stream_state.final_text, stream_state.final_result
                     else:
@@ -1223,13 +1242,6 @@ class VoiceSTTMixin:
                             "STT stream returned no text for %s, falling back to batch",
                             session.id,
                         )
-                except (TimeoutError, asyncio.CancelledError):
-                    logger.warning(
-                        "STT stream timeout/cancelled for %s, falling back to batch",
-                        session.id,
-                    )
-                    if stream_state.task is not None:
-                        stream_state.task.cancel()
                 except Exception:
                     logger.exception("STT stream collection error for %s", session.id)
             elif stream_state is not None:

@@ -27,6 +27,8 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
+from roomkit.core.task_utils import cancel_and_wait
+
 logger = logging.getLogger("roomkit.voice.realtime.pacer")
 
 # Sentinel strings used as control signals on the queue
@@ -212,17 +214,24 @@ class OutboundAudioPacer:
 
     async def stop(self) -> None:
         """Signal shutdown, await task with timeout, cancel if needed."""
-        if self._task is None:
+        task = self._task
+        if task is None:
             return
         self._queue.put_nowait(_STOP)
         try:
-            await asyncio.wait_for(self._task, timeout=2.0)
-        except (TimeoutError, asyncio.CancelledError):
-            self._task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._task
-        self._task = None
-        self._discard_boundaries()
+            # asyncio.wait, not wait_for: a cancellation of the caller must
+            # propagate, not read as the sender's own and be swallowed.
+            await asyncio.wait({task}, timeout=2.0)
+        except asyncio.CancelledError:
+            # The caller's own: the sender still ends first
+            await cancel_and_wait(task, log_errors_to=logger)
+            raise
+        else:
+            # Past the grace period the sender is cancelled; its own error raises
+            await cancel_and_wait(task)
+        finally:
+            self._task = None
+            self._discard_boundaries()
 
     # -- Internal sender loop --
 
@@ -314,7 +323,7 @@ class OutboundAudioPacer:
                     break
                 try:
                     next_item = await asyncio.wait_for(self._queue.get(), timeout=0.1)
-                except (TimeoutError, asyncio.CancelledError):
+                except TimeoutError:
                     break
                 if isinstance(next_item, str | _ResponseEnd):
                     if next_item == _STOP:
