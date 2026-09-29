@@ -25,7 +25,8 @@ class PendingResponse:
     call_ids: set[str] = field(default_factory=set)
     had_calls: bool = False
     finished: bool = False
-    # A continuation this client asked for and the server has not begun yet
+    # A response this client asked for (a continuation, an injection, the end
+    # of the caller's turn) and the server has not begun yet
     requested: bool = False
 
     @property

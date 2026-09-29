@@ -50,7 +50,7 @@ def _wire(ws: AsyncMock) -> list[str]:
     for call in ws.send.call_args_list:
         event = json.loads(call.args[0])
         if event["type"] == "conversation.item.create":
-            sent.append(f"item({event['item']['call_id']})")
+            sent.append(f"item({event['item'].get('call_id', 'text')})")
         else:
             sent.append(event["type"])
     return sent
@@ -297,6 +297,149 @@ class TestARequestNotYetBegun:
         await _response_done(provider, session)
 
         assert _wire(ws) == ["item(call_a)", "response.create"]
+
+
+async def _speech(provider: OpenAIRealtimeBase, session: VoiceSession, edge: str) -> None:
+    """The server VAD's own speech boundary: ``started`` or ``stopped``."""
+    await provider._handle_server_event(
+        session, {"type": f"input_audio_buffer.speech_{edge}", "item_id": "item_1"}
+    )
+
+
+class TestTheCallerHoldsTheFloor:
+    """RMK-288: a continuation never starts while the caller speaks (RFC §12.4)."""
+
+    async def test_results_in_before_a_barge_in_wait_for_the_end_of_the_turn(
+        self, provider: OpenAIRealtimeBase, session: VoiceSession
+    ) -> None:
+        ws = _attach(provider, session)
+        await _response_created(provider, session)
+        await _call(provider, session, "call_a")
+        await _result(provider, session, "call_a")
+        await provider.send_activity_start(session)
+        await provider.interrupt(session)
+        await _response_done(provider, session, status="cancelled")
+        assert _wire(ws) == ["item(call_a)", "response.cancel"]
+
+        await provider.send_activity_end(session)
+
+        assert _wire(ws) == [
+            "item(call_a)",
+            "response.cancel",
+            "input_audio_buffer.commit",
+            "response.create",
+        ]
+
+    async def test_a_result_that_lands_while_the_caller_speaks_waits(
+        self, provider: OpenAIRealtimeBase, session: VoiceSession
+    ) -> None:
+        ws = _attach(provider, session)
+        await _response_created(provider, session)
+        await _call(provider, session, "call_a")
+        await _response_done(provider, session)
+        await provider.send_activity_start(session)
+        await _result(provider, session, "call_a")
+        assert _wire(ws) == ["item(call_a)"]
+
+        await provider.send_activity_end(session)
+
+        assert _wire(ws) == ["item(call_a)", "input_audio_buffer.commit", "response.create"]
+        await _response_created(provider, session)
+        await _response_done(provider, session)
+        assert _wire(ws).count("response.create") == 1
+
+    async def test_under_server_vad_the_servers_answer_covers_it(
+        self, provider: OpenAIRealtimeBase, session: VoiceSession
+    ) -> None:
+        ws = _attach(provider, session)
+        await _response_created(provider, session)
+        await _call(provider, session, "call_a")
+        await _result(provider, session, "call_a")
+        await _speech(provider, session, "started")
+        await _response_done(provider, session, status="cancelled")
+        await _speech(provider, session, "stopped")
+        assert _wire(ws) == ["item(call_a)"]
+
+        # The server's own response to the turn, then its end: nothing owed
+        await _response_created(provider, session)
+        await _response_done(provider, session)
+
+        assert _wire(ws) == ["item(call_a)"]
+
+    async def test_under_server_vad_without_its_answers_the_provider_asks(
+        self, provider: OpenAIRealtimeBase, session: VoiceSession
+    ) -> None:
+        ws = _attach(provider, session)
+        provider._provider_configs[session.id] = {"create_response": False}
+        await _response_created(provider, session)
+        await _call(provider, session, "call_a")
+        await _result(provider, session, "call_a")
+        await _speech(provider, session, "started")
+        await _response_done(provider, session, status="cancelled")
+        assert _wire(ws) == ["item(call_a)"]
+
+        await _speech(provider, session, "stopped")
+
+        assert _wire(ws) == ["item(call_a)", "response.create"]
+
+
+class TestOneRequestAtATime:
+    """RMK-288: every emitter reads the same in-progress state (RFC §12.4)."""
+
+    async def _requested_continuation(
+        self, provider: OpenAIRealtimeBase, session: VoiceSession
+    ) -> AsyncMock:
+        ws = _attach(provider, session)
+        await _response_created(provider, session)
+        await _call(provider, session, "call_a")
+        await _response_done(provider, session)
+        await _result(provider, session, "call_a")
+        assert _wire(ws) == ["item(call_a)", "response.create"]
+        return ws
+
+    async def test_an_injection_does_not_double_a_requested_continuation(
+        self, provider: OpenAIRealtimeBase, session: VoiceSession
+    ) -> None:
+        ws = await self._requested_continuation(provider, session)
+
+        await provider.inject_text(session, "Also say goodbye.", role="system")
+
+        assert _wire(ws) == ["item(call_a)", "response.create", "item(text)"]
+
+    async def test_the_end_of_a_turn_does_not_double_a_requested_continuation(
+        self, provider: OpenAIRealtimeBase, session: VoiceSession
+    ) -> None:
+        ws = await self._requested_continuation(provider, session)
+
+        await provider.send_activity_end(session)
+
+        assert _wire(ws) == ["item(call_a)", "response.create", "input_audio_buffer.commit"]
+
+    async def test_two_injections_ask_once(
+        self, provider: OpenAIRealtimeBase, session: VoiceSession
+    ) -> None:
+        ws = _attach(provider, session)
+
+        await provider.inject_text(session, "Greet the caller.", role="system")
+        await provider.inject_text(session, "Mention the offer.", role="system")
+
+        assert _wire(ws) == ["item(text)", "response.create", "item(text)"]
+
+    async def test_a_result_after_an_injection_request_is_owed(
+        self, provider: OpenAIRealtimeBase, session: VoiceSession
+    ) -> None:
+        ws = _attach(provider, session)
+        await _response_created(provider, session)
+        await _call(provider, session, "call_a")
+        await _response_done(provider, session)
+        await provider.inject_text(session, "Greet the caller.", role="system")
+        await _result(provider, session, "call_a")
+        await _response_created(provider, session)
+        assert _wire(ws) == ["item(text)", "response.create", "item(call_a)"]
+
+        await _response_done(provider, session)
+
+        assert _wire(ws) == ["item(text)", "response.create", "item(call_a)", "response.create"]
 
 
 class TestAnEndedSession:

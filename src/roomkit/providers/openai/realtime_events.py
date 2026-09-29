@@ -68,6 +68,8 @@ class OpenAIRealtimeEventHandlersMixin(RealtimeVoiceProvider):
     _connections: dict[str, Any]
     _responding: set[str]
     _pending_responses: dict[str, PendingResponse]
+    _floor_held: set[str]
+    _provider_configs: dict[str, dict[str, Any]]
     _output_audio: dict[str, _OutputAudioState]
     _audio_codecs: dict[str, tuple[_G711Codec | None, _G711Codec | None]]
 
@@ -151,6 +153,8 @@ class OpenAIRealtimeEventHandlersMixin(RealtimeVoiceProvider):
             await getattr(self, handler_name)(session, event)
 
     async def _on_speech_started(self, session: VoiceSession, event: dict[str, Any]) -> None:
+        # Server VAD: the caller holds the floor until its speech stops
+        self._floor_held.add(session.id)
         logger.info(
             "[VAD] speech_start audio_start=%sms item=%s (session %s)",
             event.get("audio_start_ms", "?"),
@@ -160,6 +164,7 @@ class OpenAIRealtimeEventHandlersMixin(RealtimeVoiceProvider):
         await self._fire(self._speech_start_callbacks, session, label="speech_start")
 
     async def _on_speech_stopped(self, session: VoiceSession, event: dict[str, Any]) -> None:
+        self._floor_held.discard(session.id)
         logger.info(
             "[VAD] speech_end audio_end=%sms item=%s (session %s)",
             event.get("audio_end_ms", "?"),
@@ -167,6 +172,18 @@ class OpenAIRealtimeEventHandlersMixin(RealtimeVoiceProvider):
             session.id,
         )
         await self._fire(self._speech_end_callbacks, session, label="speech_end")
+        if not self._server_answers_turns(session.id):
+            # Nobody else asks for the response that covers the held continuation
+            await self._continue_after_tool_results(session)
+
+    def _server_answers_turns(self, session_id: str) -> bool:
+        """Whether the server VAD requests the response to a turn itself.
+
+        It does unless the session was configured with ``create_response``
+        false; its response then covers a continuation held for the turn.
+        """
+        create_response = self._provider_configs.get(session_id, {}).get("create_response")
+        return create_response is None or bool(create_response)
 
     async def _on_audio_delta(self, session: VoiceSession, event: dict[str, Any]) -> None:
         audio_b64 = event.get("delta", "")
@@ -327,9 +344,39 @@ class OpenAIRealtimeEventHandlersMixin(RealtimeVoiceProvider):
         if not pending.ready_to_continue or ws is None:
             del self._pending_responses[session.id]
             return
-        # Until the server begins it, the requested response is the one in progress
+        if session.id in self._floor_held:
+            # Held, not dropped: the request that answers the caller's turn
+            # covers the results, which sit ahead of it in the conversation.
+            logger.debug(
+                "[%s] continuation held: the caller has the floor (session %s)",
+                self._log_tag,
+                session.id,
+            )
+            return
+        await self._request_response(session, ws, "after tool results")
+
+    def _response_in_progress(self, session_id: str) -> bool:
+        """A response is active, or requested and not yet begun (RFC §12.4)."""
+        pending = self._pending_responses.get(session_id)
+        return session_id in self._responding or (pending is not None and pending.requested)
+
+    async def _request_response(self, session: VoiceSession, ws: Any, why: str) -> None:
+        """Send ``response.create`` unless a response is already in progress.
+
+        Every request goes through here, so none doubles another: the service
+        rejects a second request while one is active, and the one requested
+        counts as active until the server begins it (RFC §12.4).
+        """
+        if self._response_in_progress(session.id):
+            logger.debug(
+                "[%s] no response.create (%s): a response is in progress (session %s)",
+                self._log_tag,
+                why,
+                session.id,
+            )
+            return
         self._pending_responses[session.id] = PendingResponse(requested=True)
-        logger.debug("[%s →] response.create (after tool results)", self._log_tag)
+        logger.debug("[%s →] response.create (%s, session %s)", self._log_tag, why, session.id)
         await ws.send(json.dumps({"type": "response.create"}))
 
     async def _on_buffer_committed(self, session: VoiceSession, event: dict[str, Any]) -> None:

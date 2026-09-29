@@ -53,6 +53,9 @@ class OpenAIRealtimeBase(OpenAIRealtimeEventHandlersMixin):
         self._sessions: dict[str, VoiceSession] = {}
         # Track active responses per session to avoid inject_text conflicts
         self._responding: set[str] = set()
+        # Sessions whose caller is speaking: a continuation waits for the
+        # floor to come back (RFC §12.4)
+        self._floor_held: set[str] = set()
         # The current response's function calls: the model is asked to go on
         # once that response is done and every call has its output (RFC §12.4)
         self._pending_responses: dict[str, PendingResponse] = {}
@@ -309,17 +312,7 @@ class OpenAIRealtimeBase(OpenAIRealtimeEventHandlersMixin):
         if silent:
             logger.debug("[%s] Silent inject — no response.create", self._log_tag)
             return
-
-        if session.id in self._responding:
-            logger.debug(
-                "[%s] Skipping response.create — response already active (session %s)",
-                self._log_tag,
-                session.id,
-            )
-            return
-
-        logger.debug("[%s →] response.create", self._log_tag)
-        await ws.send(json.dumps({"type": "response.create"}))
+        await self._request_response(session, ws, "text injected")
 
     async def submit_tool_result(self, session: VoiceSession, call_id: str, result: str) -> None:
         ws = self._connections.get(session.id)
@@ -408,24 +401,26 @@ class OpenAIRealtimeBase(OpenAIRealtimeEventHandlersMixin):
         await ws.send(json.dumps(event))
 
     async def send_activity_start(self, session: VoiceSession) -> None:
-        """No-op — audio flows continuously via input_audio_buffer.append."""
-        logger.debug("[%s] activity_start (no-op, session %s)", self._log_tag, session.id)
+        """The caller takes the floor (manual VAD mode).
+
+        Nothing goes on the wire, audio flows continuously via
+        ``input_audio_buffer.append``; a continuation waits for the floor.
+        """
+        self._floor_held.add(session.id)
+        logger.debug("[%s] activity_start (session %s)", self._log_tag, session.id)
 
     async def send_activity_end(self, session: VoiceSession) -> None:
-        """Commit audio buffer and request a response (manual VAD mode)."""
+        """Commit audio buffer and request a response (manual VAD mode).
+
+        The request also covers a continuation held while the caller spoke.
+        """
+        self._floor_held.discard(session.id)
         ws = self._connections.get(session.id)
         if ws is None:
             return
         logger.debug("[%s →] input_audio_buffer.commit (session %s)", self._log_tag, session.id)
         await ws.send(json.dumps({"type": "input_audio_buffer.commit"}))
-
-        if session.id in self._responding:
-            logger.debug(
-                "[%s] skip response.create — responding (session %s)", self._log_tag, session.id
-            )
-            return
-        logger.debug("[%s →] response.create (session %s)", self._log_tag, session.id)
-        await ws.send(json.dumps({"type": "response.create"}))
+        await self._request_response(session, ws, "activity end")
 
     async def _discard_connection(
         self,
@@ -442,6 +437,7 @@ class OpenAIRealtimeBase(OpenAIRealtimeEventHandlersMixin):
         self._receive_tasks.pop(session.id, None)
         self._provider_configs.pop(session.id, None)
         self._responding.discard(session.id)
+        self._floor_held.discard(session.id)
         self._pending_responses.pop(session.id, None)
         self._output_audio.pop(session.id, None)
         self._output_bytes_per_ms.pop(session.id, None)
@@ -474,6 +470,7 @@ class OpenAIRealtimeBase(OpenAIRealtimeEventHandlersMixin):
         self._sessions.pop(session.id, None)
         self._provider_configs.pop(session.id, None)
         self._responding.discard(session.id)
+        self._floor_held.discard(session.id)
         self._pending_responses.pop(session.id, None)
         self._output_audio.pop(session.id, None)
         self._output_bytes_per_ms.pop(session.id, None)

@@ -161,6 +161,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   prebuffer, the voice STT's wait for its stream, the local, RTP and SIP
   playback) let the caller's cancellation through. A task's own error is
   raised as before, or logged where it was suppressed.
+- OpenAI and xAI Realtime no longer start a tool continuation while the
+  caller speaks (RMK-288, RFC §12.4). Results that landed before a barge-in
+  cancelled the response had their `response.create` sent at once, over the
+  caller; the caller's own request then found a response in progress and
+  the turn went unanswered. The continuation waits for the floor (activity
+  end, or the server VAD's speech end) and the caller's request covers it.
+  Every `response.create` (a continuation, `inject_text`, the end of the
+  caller's turn) now reads one in-progress state, so none doubles a request
+  the server has not begun yet.
 - A room closed mid-stream takes no further streamed row (RMK-283, RFC
   §5.1). Streamed segments and tool rows were committed through a path that
   skipped the room's status, so a room closed during a turn kept receiving
