@@ -287,3 +287,128 @@ async def test_a_withdrawn_eviction_re_read_is_neither_declared_nor_served(
     assert all("read_stored_result" not in _declared(call) for call in provider.calls[2:])
     assert run.calls[0].failed
     assert "ROW-0" not in str(run.calls[0].result)
+
+
+def _searching(provider: MockAIProvider, calls: _Recorder, *tools: AITool) -> AIChannel:
+    """A channel whose whole catalogue Tool Search defers."""
+    return AIChannel(
+        "ai1",
+        provider=provider,
+        tool_handler=calls.handler,
+        tools=list(tools),
+        tool_search=True,
+    )
+
+
+async def test_under_tool_search_the_hook_sees_the_catalogue(streaming: bool) -> None:
+    """RMK-293: the hook sees what it may withdraw, deferred tools included (RFC §6.4)."""
+    provider = MockAIProvider(ai_responses=[_DONE], streaming=streaming)
+    ch = _searching(provider, _Recorder(), _READ, _WIRE)
+    seen: list[set[str]] = []
+
+    async def hook(gen_event: AIGenerationEvent) -> SyncPipelineResult:
+        seen.append(_declared(gen_event.ai_context))
+        return SyncPipelineResult(allowed=True)
+
+    ch._before_generation_hook = hook
+
+    await _turn(ch)
+
+    assert {"safe_read", "wire_money", "find_tools", "list_tools"} <= seen[0]
+    # The first round still declares Tool Search's collapse, in both loops.
+    assert _declared(provider.calls[0]) == {"find_tools", "list_tools"}
+
+
+async def test_under_tool_search_a_withdrawn_deferred_tool_is_neither_found_nor_run(
+    streaming: bool,
+) -> None:
+    provider = MockAIProvider(
+        ai_responses=[
+            _round("c0", "find_tools", {"query": "wire money"}),
+            _round("c1", "list_tools"),
+            _round("c2", "wire_money"),
+            _DONE,
+        ],
+        streaming=streaming,
+    )
+    calls = _Recorder()
+    ch = _searching(provider, calls, _READ, _WIRE)
+
+    async def hook(gen_event: AIGenerationEvent) -> SyncPipelineResult:
+        kept = [t for t in gen_event.ai_context.tools if t.name != "wire_money"]
+        gen_event.ai_context = gen_event.ai_context.model_copy(update={"tools": kept})
+        return SyncPipelineResult(allowed=True)
+
+    ch._before_generation_hook = hook
+
+    run = await _turn(ch)
+
+    found, listed, wired = run.calls
+    assert "wire_money" not in str(found.result) and "wire_money" not in str(listed.result)
+    assert wired.failed
+    assert calls.ran == []
+    assert all("wire_money" not in _declared(call) for call in provider.calls)
+
+
+async def test_under_tool_search_an_empty_toolset_runs_nothing(streaming: bool) -> None:
+    provider = MockAIProvider(
+        ai_responses=[_round("c0", "wire_money"), _DONE], streaming=streaming
+    )
+    calls = _Recorder()
+    ch = _searching(provider, calls, _READ, _WIRE)
+
+    async def hook(gen_event: AIGenerationEvent) -> SyncPipelineResult:
+        gen_event.ai_context = gen_event.ai_context.model_copy(update={"tools": []})
+        return SyncPipelineResult(allowed=True)
+
+    ch._before_generation_hook = hook
+
+    run = await _turn(ch)
+
+    assert run.calls[0].failed
+    assert calls.ran == []
+
+
+async def test_under_tool_search_a_tool_the_hook_added_is_declared_at_every_round(
+    streaming: bool,
+) -> None:
+    provider = MockAIProvider(
+        ai_responses=[
+            _round("c0", "find_tools", {"query": "read"}),
+            _round("c1", "export_report"),
+            _DONE,
+        ],
+        streaming=streaming,
+    )
+    calls = _Recorder()
+    ch = _searching(provider, calls, _READ, _WIRE)
+
+    async def hook(gen_event: AIGenerationEvent) -> SyncPipelineResult:
+        tools = [*gen_event.ai_context.tools, _EXPORT]
+        gen_event.ai_context = gen_event.ai_context.model_copy(update={"tools": tools})
+        return SyncPipelineResult(allowed=True)
+
+    ch._before_generation_hook = hook
+
+    await _turn(ch)
+
+    assert all("export_report" in _declared(call) for call in provider.calls)
+    assert calls.ran == ["export_report"]
+
+
+async def test_nothing_declared_nothing_callable(streaming: bool) -> None:
+    """A handler that would serve any name (an orchestration wrapper) is not
+    reached by a call the turn never declared (RFC §6.4)."""
+    provider = MockAIProvider(
+        ai_responses=[_round("c0", "delegate_to_researcher"), _DONE], streaming=streaming
+    )
+    calls = _Recorder()
+    ch = AIChannel("ai1", provider=provider)
+    # Installed outside the channel's own dispatch, as orchestration's wrapper is.
+    ch.tool_handler = calls.handler
+
+    run = await _turn(ch)
+
+    # The streaming loop runs no tool round for a turn that declares none.
+    assert all(call.failed for call in run.calls)
+    assert calls.ran == []

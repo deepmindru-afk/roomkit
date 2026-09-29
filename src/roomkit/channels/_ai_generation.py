@@ -132,6 +132,8 @@ class AIGenerationHost(Protocol):
     Methods provided by other mixins:
         _build_context: ``AIContextMixin`` — builds AI context from room state.
         _drain_steering_queue: ``AISteeringMixin`` — drains pending directives.
+        _get_loop_ctx: ``AISteeringMixin`` — the current tool-loop context.
+        _apply_tool_filters: ``AIToolPolicyMixin`` — policy, gating, Tool Search.
         _generate_with_retry: ``AIResilienceMixin`` — generate with retry/fallback.
         _publish_thinking_event: ``AIEventsMixin`` — publish thinking events.
         _publish_tool_event: ``AIEventsMixin`` — publish tool call events.
@@ -206,6 +208,8 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
     # AIContextMixin whose return type must be preserved for subclasses
     # (Agent.super()._build_context()). Call sites use type: ignore instead.
     _drain_steering_queue: Any  # see AIGenerationHost
+    _get_loop_ctx: Any  # see AIGenerationHost
+    _apply_tool_filters: Any  # see AIGenerationHost
     _generate_with_retry: Any  # see AIGenerationHost
     _record_declared_tools: Any  # see AIGenerationHost
     _publish_thinking_event: Any  # see AIGenerationHost
@@ -251,6 +255,18 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
             _adopt_hook_toolset(loop_ctx, declared, gen_event.ai_context.tools)
         return gen_event.ai_context, False
 
+    def _first_round_context(self, ai_context: AIContext) -> AIContext:
+        """The turn's first round: Tool Search's collapse of the toolset the hook left.
+
+        The hook saw the whole catalogue (RFC §6.4); both loops declare the
+        same first round from what it left, as every later round does.
+        """
+        loop_ctx = self._get_loop_ctx()
+        if loop_ctx.all_context_tools is None:
+            return ai_context
+        tools = self._apply_tool_filters(loop_ctx.all_context_tools)
+        return ai_context.model_copy(update={"tools": tools})
+
     def _log_provider_error(self, exc: ProviderError) -> None:
         """One log line for a failed turn, its level by what the status says."""
         if exc.status_code == 404:
@@ -288,6 +304,7 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
         ai_context, blocked = await self._fire_before_generation_hook(ai_context, event)
         if blocked:
             return ChannelOutput.empty()
+        ai_context = self._first_round_context(ai_context)
         telemetry = self._telemetry_provider
         _t0 = time.monotonic()
         span_id = telemetry.start_span(
@@ -763,12 +780,15 @@ def _final_message_metadata(
 def _adopt_hook_toolset(
     loop_ctx: _ToolLoopContext, declared: set[str], left: list[AITool] | None
 ) -> None:
-    """Make what BEFORE_AI_GENERATION left of the first declaration the turn's base.
+    """Make what BEFORE_AI_GENERATION left of the toolset it saw the turn's base.
 
-    Every later round re-filters from ``all_context_tools``: without this, a
-    tool the hook withdrew would come back from round 1 (and run), and one it
-    added would vanish. The hook only sees the first round's declaration, so a tool it
-    never saw (deferred by Tool Search, gated by a skill) stays in the base.
+    Every round re-filters from ``all_context_tools``: without this, a tool
+    the hook withdrew would come back (and run), and one it added would
+    vanish. The hook saw the toolset the policy and skill gating leave, Tool
+    Search's catalogue included, so a tool it removes is gone from every
+    round, reveal and call; one it never saw (gated by a skill, denied by the
+    policy) stays in the base for those filters to decide. A tool it adds is
+    pinned for the turn: Tool Search never defers it (RFC §6.4).
     """
     if loop_ctx.all_context_tools is None:
         return
@@ -776,9 +796,11 @@ def _adopt_hook_toolset(
     withdrawn = declared - kept.keys()
     base = [kept.get(t.name, t) for t in loop_ctx.all_context_tools if t.name not in withdrawn]
     known = {tool.name for tool in base}
-    base.extend(tool for name, tool in kept.items() if name not in known)
+    added = {name for name in kept if name not in known}
+    base.extend(kept[name] for name in kept if name in added)
     loop_ctx.all_context_tools = base
     loop_ctx.withdrawn_tools = loop_ctx.withdrawn_tools | withdrawn
+    loop_ctx.hook_pinned = loop_ctx.hook_pinned | added
 
 
 def _tool_call_events(

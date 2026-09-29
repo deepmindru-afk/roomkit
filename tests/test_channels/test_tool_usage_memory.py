@@ -331,7 +331,10 @@ class TestToolUsageInContext:
         ch._tool_usage.record("r1", "SpotifyPlayback", {"action": "get"}, '{"artist": "Zach"}')
         _current_loop_ctx.set(_ToolLoopContext(room_id="r1"))
         try:
-            ctx = await ch._build_context(_event(), _binding(_CATALOGUE), _context())
+            # The first round: Tool Search's collapse of what the hook left.
+            ctx = ch._first_round_context(
+                await ch._build_context(_event(), _binding(_CATALOGUE), _context())
+            )
         finally:
             _current_loop_ctx.set(None)
         assert "Tools you've already used here" in (ctx.system_prompt or "")
@@ -362,7 +365,10 @@ class TestToolUsageInContext:
         try:
             turn = AIContext(messages=[AIMessage(role="user", content="my boards?")])
             await run_tool_loop(ch, turn, streaming=streaming)
-            ctx = await ch._build_context(_event(), _binding(_CATALOGUE), _context())
+            # The first round: Tool Search's collapse of what the hook left.
+            ctx = ch._first_round_context(
+                await ch._build_context(_event(), _binding(_CATALOGUE), _context())
+            )
         finally:
             _current_loop_ctx.set(None)
         prompt = ctx.system_prompt or ""
@@ -418,7 +424,10 @@ class TestToolUsageInContext:
         ch._tool_usage.record("r1", "SpotifyPlayback", {"action": "skip"}, "Skipped.")
         _current_loop_ctx.set(_ToolLoopContext(room_id="r1"))
         try:
-            ctx = await ch._build_context(_event(), _binding(_CATALOGUE), _context())
+            # The first round: Tool Search's collapse of what the hook left.
+            ctx = ch._first_round_context(
+                await ch._build_context(_event(), _binding(_CATALOGUE), _context())
+            )
         finally:
             _current_loop_ctx.set(None)
         names = {t.name for t in ctx.tools}
@@ -433,7 +442,10 @@ class TestToolUsageInContext:
         ch._tool_usage.record_revealed("r1", {"SpotifyPlayback"})
         _current_loop_ctx.set(_ToolLoopContext(room_id="r1"))
         try:
-            ctx = await ch._build_context(_event(), _binding(_CATALOGUE), _context())
+            # The first round: Tool Search's collapse of what the hook left.
+            ctx = ch._first_round_context(
+                await ch._build_context(_event(), _binding(_CATALOGUE), _context())
+            )
         finally:
             _current_loop_ctx.set(None)
         names = {t.name for t in ctx.tools}
@@ -470,7 +482,10 @@ class TestToolUsageInContext:
         for _ in range(2):
             _current_loop_ctx.set(_ToolLoopContext(room_id="r1"))
             try:
-                ctx = await ch._build_context(_event(), _binding(_CATALOGUE), _context())
+                # The first round: Tool Search's collapse of what the hook left.
+                ctx = ch._first_round_context(
+                    await ch._build_context(_event(), _binding(_CATALOGUE), _context())
+                )
             finally:
                 _current_loop_ctx.set(None)
         loader.assert_awaited_once_with("r1")
@@ -484,7 +499,10 @@ class TestToolUsageInContext:
         ch._tool_usage_loader = AsyncMock(side_effect=RuntimeError("store down"))
         _current_loop_ctx.set(_ToolLoopContext(room_id="r1"))
         try:
-            ctx = await ch._build_context(_event(), _binding(_CATALOGUE), _context())
+            # The first round: Tool Search's collapse of what the hook left.
+            ctx = ch._first_round_context(
+                await ch._build_context(_event(), _binding(_CATALOGUE), _context())
+            )
         finally:
             _current_loop_ctx.set(None)
         assert ctx is not None
@@ -496,7 +514,10 @@ class TestToolUsageInContext:
         ch = _channel(tool_search=True)
         _current_loop_ctx.set(_ToolLoopContext(room_id="r1"))
         try:
-            ctx = await ch._build_context(_event(), _binding(_CATALOGUE), _context())
+            # The first round: Tool Search's collapse of what the hook left.
+            ctx = ch._first_round_context(
+                await ch._build_context(_event(), _binding(_CATALOGUE), _context())
+            )
         finally:
             _current_loop_ctx.set(None)
         names = {t.name for t in ctx.tools}

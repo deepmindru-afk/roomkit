@@ -1362,7 +1362,9 @@ class TestRefusedAIToolCallsAreObserved:
         assert len(observed) == 1
         assert observed[0].is_error is True
         assert observed[0].name == "get_weather"
-        assert "not permitted" in json.loads(observed[0].result)["error"]
+        # Filtered out of the declaration by the policy, it is refused as a
+        # tool this agent does not have, naming why (RFC §21.1).
+        assert "blocked by the tool policy" in json.loads(observed[0].result)["error"]
         # A denial must never reach a hook that could serve the call — that
         # would hide the side effect instead of preventing it.
         assert served == []

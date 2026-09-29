@@ -146,11 +146,14 @@ class _ToolLoopContext:
     # ``None`` means context construction has not run. An empty list is a
     # completed, deny-all toolset and must remain distinguishable from it.
     all_context_tools: list[Any] | None = None
-    # Names BEFORE_AI_GENERATION withdrew from the turn's first declaration.
+    # Names BEFORE_AI_GENERATION withdrew from the toolset it saw.
     # ``all_context_tools`` has already lost them; this keeps the channel's
     # per-round injections (the eviction re-read) from bringing one back.
     # Inherited across for_loop like the toolset it amends.
     withdrawn_tools: frozenset[str] = frozenset()
+    # Names BEFORE_AI_GENERATION added: declared at every round of the turn,
+    # never deferred by Tool Search (RFC §6.4). Inherited like the above.
+    hook_pinned: frozenset[str] = frozenset()
     # ``activate_skill`` calls whose activation waits for the call's outcome,
     # by tool_call_id: committed once the call is served, dropped when
     # ON_TOOL_CALL blocks it or it fails, so a refused activation opens no gate.
@@ -239,6 +242,7 @@ class _ToolLoopContext:
             ctx.chain_depth = parent.chain_depth
             ctx.all_context_tools = parent.all_context_tools
             ctx.withdrawn_tools = parent.withdrawn_tools
+            ctx.hook_pinned = parent.hook_pinned
             ctx.tool_search_active = parent.tool_search_active
             # Carry the used-tools re-exposition seeded in _build_context into the
             # loop: the per-round re-filter runs under THIS child ctx, so without

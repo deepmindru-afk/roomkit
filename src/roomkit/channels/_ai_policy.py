@@ -187,7 +187,7 @@ class AIToolPolicyMixin:
             return "always"
         if name in self._tool_search_pinned:
             return "pinned"
-        if name in self._orchestration_tool_names(loop_ctx.room_id):
+        if name in self._orchestration_tool_names(loop_ctx.room_id) | loop_ctx.hook_pinned:
             return "always"
         if name in loop_ctx.sticky_tools:
             return "sticky"
@@ -278,13 +278,15 @@ class AIToolPolicyMixin:
         if loop_ctx.tool_search_active:
             # pinned (config) + revealed (find_tools this loop) + sticky (tools
             # already used this conversation, re-exposed so they stay callable)
-            # + the channel's own and orchestration's, never deferred.
+            # + the channel's own, orchestration's and the generation hook's
+            # additions, never deferred.
             keep = (
                 self._tool_search_pinned
                 | loop_ctx.revealed_tools
                 | loop_ctx.sticky_tools
                 | self._NEVER_DEFERRED
                 | self._orchestration_tool_names(loop_ctx.room_id)
+                | loop_ctx.hook_pinned
             )
         result: list[AITool] = []
         for tool in tools:

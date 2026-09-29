@@ -80,6 +80,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Under Tool Search, a `BEFORE_AI_GENERATION` hook sees the turn's whole
+  catalogue (every tool the tool policy and skill gating let the turn reach),
+  not only the first round's declaration (RMK-293, RFC §6.4). Tool Search
+  collapses what the hook leaves. A hook could not withdraw a tool Tool
+  Search had deferred: it never saw it, and `find_tools` then revealed it and
+  the model ran it; `tools=[]` let a deferred tool through the same way. A
+  tool the hook removes is now declared at no round, named by no `find_tools`
+  or `list_tools`, recovered at no call, and refused. A tool the hook adds is
+  declared at every round of the turn, never deferred: it vanished after the
+  first round of a buffered turn and was never declared in a streamed one.
+  Both loops declare the same first round, taken from what the hook left. A
+  hook that reads `ai_context.tools` under Tool Search now reads the
+  catalogue, not the first round's wire declaration. Once the turn's toolset
+  is resolved, a round that declares no tool makes none callable: a call it
+  never declared reached a handler installed outside the channel's dispatch
+  (an orchestration wrapper).
 - An agent's output wakes the other agents whichever path produced it
   (RMK-287, RFC §8.3, §10.1 step 14, §19.3.1). A streamed text segment, a
   greeting and a regenerated answer now solicit the other agents like a

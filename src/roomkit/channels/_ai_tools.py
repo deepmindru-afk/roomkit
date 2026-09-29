@@ -391,7 +391,13 @@ class AIToolsMixin:
                 or tc.name in TOOL_SEARCH_INFRA_TOOL_NAMES
                 or tc.name in self._sandbox_tool_names()
             )
-            if declared_names and tc.name not in declared_names and not channel_managed:
+            # Once the turn's toolset is resolved, an empty declaration is a
+            # real one: nothing declared, nothing callable (RFC §6.4). A loop
+            # built without context (``all_context_tools`` is ``None``) has
+            # no declaration to hold the call to.
+            resolved = bool(declared_names) or self._get_loop_ctx().all_context_tools is not None
+            undeclared = resolved and tc.name not in declared_names
+            if undeclared and not channel_managed:
                 recovered = self._recover_deferred_tool(tc.name)
                 if recovered is None:
                     logger.warning("Provider requested undeclared tool %s", tc.name)

@@ -146,6 +146,7 @@ class AIContextHost(Protocol):
     def _orchestration_tool_names(self, room_id: str | None) -> set[str]: ...
     def _skill_tools(self) -> list[AITool]: ...
     def _apply_tool_filters(self, tools: list[AITool]) -> list[AITool]: ...
+    def _reachable_tools(self, tools: list[AITool]) -> list[AITool]: ...
     def _policy_allows(self, name: str) -> bool: ...
     def _get_loop_ctx(self) -> _ToolLoopContext: ...
 
@@ -192,6 +193,7 @@ class AIContextMixin:
     _orchestration_tool_names: Any  # see AIContextHost
     _skill_tools: Any  # see AIContextHost
     _apply_tool_filters: Any  # see AIContextHost
+    _reachable_tools: Any  # see AIContextHost
     _policy_allows: Any  # see AIContextHost
     _get_loop_ctx: Any  # see AIContextHost
 
@@ -394,8 +396,10 @@ class AIContextMixin:
         # channel's own ``tools`` / binding metadata. Warn once per channel.
         self._warn_unoffered_human_input_tools({t.name for t in tools})
 
-        # Apply tool policy + skill gating visibility filters
-        tools = self._apply_tool_filters(tools)
+        # Tool policy + skill gating. Tool Search's collapse is applied to what
+        # BEFORE_AI_GENERATION leaves, so the hook sees the whole catalogue it
+        # may withdraw from (RFC §6.4).
+        tools = self._reachable_tools(tools)
 
         # Retrieve memory from this channel's view of the room, never the
         # room's whole timeline (RFC §7.5 rule 8): an event visibility kept
