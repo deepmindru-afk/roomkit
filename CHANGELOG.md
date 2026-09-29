@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `RoomKit.deliver(chain_depth=...)`, `InboundMessage.chain_depth`,
+  `DeliveryItem.chain_depth` and `RealtimeVoiceChannel.inject_text(chain_depth=...)`
+  (RMK-287, RFC §8.3, §23.3): the chain the delivered content continues.
+  0, the default, opens one, as a person's message does. The framework's own
+  background deliveries (a delegation's result, a supervisor's or a loop's
+  asynchronous results) pass the depth of the turn that started them; a host
+  delivering a result on a turn's behalf can do the same.
 - `LoopEndMarker.usage`, `roomkit.models.event.is_interruption_marker` and
   `answer_text` (RMK-289, RFC §6.4). The marker carries what the turn's
   generations used, summed over its rounds, so the streamed turn's record can
@@ -73,6 +80,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- An agent's output wakes the other agents whichever path produced it
+  (RMK-287, RFC §8.3, §10.1 step 14, §19.3.1). A streamed text segment, a
+  greeting and a regenerated answer now solicit the other agents like a
+  buffered response does: each streamed segment is answered as it is
+  committed, as each segment of a buffered response is. Before, the other
+  agents were still called, but a buffered one's answer (tools included)
+  was discarded and a streaming one's was never read, so two streaming agents
+  never chained. Under `AGENT_CHAIN` (the default) the other agents now
+  answer a greeting and a regenerated answer; `ADDRESSED_ONLY` keeps them
+  silent. A stream started by any pass is read by the caller, after its own,
+  and counts against the reentry budget a buffered answer counts against
+  (past it, it is closed unread and stored as a BLOCKED `reentry_loop_cap`
+  record); `InboundResult.response_metadata` and `.error` still describe the
+  caller's own answers only. A trigger's `response_visibility` scopes the
+  whole streamed chain, as it scoped a buffered one.
 - A streamed turn the provider interrupts after a tool round is reported
   like a buffered one (RMK-289, RFC §6.4): `ON_AI_RESPONSE` fires with
   `loop_end_reason="error"` and the usage of its rounds, then the error
@@ -279,15 +301,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dice"); a call re-emitted in a later chunk still folds into the first, and
   so does an identical id-less call in a later chunk, which the wire cannot
   tell from one.
-- The chain-depth limit holds for a streamed response (RMK-283, RFC §8.3).
-  The router applied it only to buffered responses: a streamed one (every
-  in-repo provider streams) answering a trigger already one below
-  `max_chain_depth`, one sent with `send_event(chain_depth=...)` or any with
-  `max_chain_depth <= 1`, was delivered in full. At the limit a streamed
-  response is now generated and read to its end, as a buffered one is, and
-  each row is stored BLOCKED with `blocked_by="event_chain_depth_limit"`, with
-  its own observation and `chain_depth_exceeded`, and delivered to no
-  channel, the streaming one included.
+- The chain-depth limit holds for a streamed response, and past it no agent
+  is asked (RMK-283, RMK-287, RFC §8.3). The router applied the limit only to
+  buffered responses: a streamed one (every in-repo provider streams)
+  answering a trigger already one below `max_chain_depth`, one sent with
+  `send_event(chain_depth=...)` or any with `max_chain_depth <= 1`, was
+  delivered in full, and a buffered one was generated, its tools run, before
+  it was blocked. Now an agent whose answer would reach the limit is not
+  called at all, streamed or buffered: no model call, no tool. One record
+  stands in for its answer, stored BLOCKED with
+  `blocked_by="event_chain_depth_limit"` (the agent as its source, empty
+  text, the depth the answer would have had), with its own observation and
+  `chain_depth_exceeded`. A tool-call row leaves no record. A channel that was
+  not called has no side effects to collect.
+- A delegation cycle ends at `max_chain_depth` (RMK-287, RFC §23.3). A
+  background delegation's result came back to the room at depth 0, so an
+  agent that delegated again on every result never stopped (measured: 50
+  child rooms and 2 808 model calls in 3 s, and the `process_inbound` that
+  started it never returned). The result now carries the depth of the turn
+  that delegated; so do a supervisor's and a loop's asynchronous results.
+- The answers that restarted the chain carry their trigger's depth plus one
+  (RMK-287, RFC §8.3, §12.4, §12.10.12, §19.7): a speech-to-speech model's
+  assistant transcription, on `RealtimeVoiceChannel` and on a conference
+  (1 after the user spoke, the injected event's depth plus one after a text
+  injection), a `Loop`'s result, and a `Supervisor`'s answer after its
+  workers ran. A realtime model and a text agent answering each other looped
+  without end. A supervisor's answer and a loop's result also stay in their
+  trigger's thread (`parent_event_id`).
+- A regeneration stores and announces what its broadcast blocked, and keeps
+  its tasks and observations, as the inbound path does (RMK-287, RFC §8.3).
+  A muted agent's regenerated answer and an agent not asked past the depth
+  limit left nothing in the room.
 - A turn that did not complete no longer reports as one, and a stop keeps its
   tools from running (RMK-282, RFC §6.4, §12.2 step 13s, §21.3). On the
   streaming tool loop, the one production uses, a turn whose stream was
