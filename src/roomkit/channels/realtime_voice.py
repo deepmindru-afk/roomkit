@@ -48,6 +48,7 @@ from roomkit.telemetry.base import Attr, SpanKind
 from roomkit.telemetry.noop import NoopTelemetryProvider
 from roomkit.voice.backends.base import VoiceBackend
 from roomkit.voice.base import VoiceSession, VoiceSessionState
+from roomkit.voice.realtime._answer_depth import AnswerDepth
 
 try:
     from websockets.exceptions import ConnectionClosed as _ConnectionClosed
@@ -504,6 +505,9 @@ class RealtimeVoiceChannel(
         self._preconnect_audio_dropped: set[str] = set()
         # Last assistant text per session (for barge-in event context)
         self._last_assistant_text: dict[str, str] = {}
+        # What each session's model heard last, which its answer's chain
+        # depth follows (RFC §12.4, §8.3).
+        self._answer_depth: dict[str, AnswerDepth] = {}
         # Barge-in state: set when user interrupts AI, cleared on next final transcription
         self._barge_in_active: set[str] = set()
         # FIFO lock per session keeping transcription processing in arrival
@@ -1480,6 +1484,7 @@ class RealtimeVoiceChannel(
             self._session_transport_output_rates.pop(session.id, None)
             self._audio_forward_count.pop(session.id, None)
             self._last_assistant_text.pop(session.id, None)
+            self._answer_depth.pop(session.id, None)
             self._recording_tracks.pop(session.id, None)
             self._barge_in_active.discard(session.id)
             self._transcription_order_locks.pop(session.id, None)
@@ -1747,18 +1752,18 @@ class RealtimeVoiceChannel(
 
         room_id = event.room_id
 
+        silent = binding.muted or binding.output_muted or not binding.can_write
         # Inject text into all active sessions for this room
         for session in self.get_room_sessions(room_id):
             try:
                 result = await self._provider.inject_text(
-                    session,
-                    text,
-                    role=inject_role,
-                    silent=binding.muted or binding.output_muted or not binding.can_write,
+                    session, text, role=inject_role, silent=silent
                 )
                 if result is None or result.status != "sent":
                     logger.debug("Text injection unconfirmed for session %s", session.id)
                     continue
+                if not silent:
+                    self._session_answer_depth(session.id).injected(event.chain_depth)
 
                 # Fire ON_REALTIME_TEXT_INJECTED hook (async)
                 if self._framework:

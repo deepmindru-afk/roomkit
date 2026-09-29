@@ -339,6 +339,7 @@ async def _run_loop(
         max_iterations=max_iterations,
     )
 
+    # The producer's response to the event, one deeper (RFC §8.3, §19.7.4).
     result_event = RoomEvent(
         room_id=room_id,
         type=event.type,
@@ -347,6 +348,8 @@ async def _run_loop(
             channel_type=ChannelType.AI,
         ),
         content=TextContent(body=result["output"]),
+        chain_depth=event.chain_depth + 1,
+        parent_event_id=event.parent_event_id,
         metadata={
             "approved": result["approved"],
             "iteration": result["iteration"],

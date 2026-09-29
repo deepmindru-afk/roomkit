@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from roomkit.core.exceptions import ChannelNotFoundError
 from roomkit.models.enums import HookTrigger
 from roomkit.models.event import TextContent
+from roomkit.voice.realtime._answer_depth import AnswerDepth
 from roomkit.voice.realtime.provider import RealtimeVoiceProvider
 
 if TYPE_CHECKING:
@@ -29,6 +30,7 @@ class RealtimeTranscriptionHost(Protocol):
         _session_rooms: Maps session IDs to room IDs.
         _barge_in_active: Session IDs with an active barge-in.
         _last_assistant_text: Last assistant utterance per session.
+        _answer_depth: What each session's model heard last (RFC §12.4).
         _emit_transcription_events: Whether to emit transcriptions as RoomEvents.
         _framework: The RoomKit framework instance (or None).
         channel_id: Channel identifier.
@@ -45,6 +47,7 @@ class RealtimeTranscriptionHost(Protocol):
     _session_rooms: dict[str, str]
     _barge_in_active: set[str]
     _last_assistant_text: dict[str, str]
+    _answer_depth: dict[str, AnswerDepth]
     _user_turn_start_at: dict[str, Any]
     _emit_transcription_events: bool
     _framework: RoomKit | None
@@ -70,6 +73,7 @@ class RealtimeTranscriptionMixin:
     _session_rooms: dict[str, str]
     _barge_in_active: set[str]
     _last_assistant_text: dict[str, str]
+    _answer_depth: dict[str, AnswerDepth]
     _user_turn_start_at: dict[str, Any]
     _emit_transcription_events: bool
     _framework: RoomKit | None
@@ -88,18 +92,26 @@ class RealtimeTranscriptionMixin:
         """Handle transcription from provider."""
         if self._provider.full_duplex and role == "assistant" and text and not is_final:
             self._note_provider_output(session.id)
+        answer_depth = self._session_answer_depth(session.id)
+        if role == "user":
+            # Noted on arrival, partial or final: the answer being said may
+            # be transcribed before the user's final transcription is.
+            answer_depth.user_spoke()
+        # Read on arrival too: processing runs in a task, after an injection
+        # that arrives meanwhile and must not deepen what came before it.
+        chain_depth = 0 if role == "user" else answer_depth.answer
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
         self._track_task(
             loop,
-            self._process_transcription(session, text, role, is_final),
+            self._process_transcription(session, text, role, is_final, chain_depth),
             name=f"rt_transcription:{session.id}",
         )
 
     async def _process_transcription(
-        self, session: VoiceSession, text: str, role: str, is_final: bool
+        self, session: VoiceSession, text: str, role: str, is_final: bool, chain_depth: int
     ) -> None:
         """Process a transcription: fire hooks, emit event, send to client.
 
@@ -119,10 +131,10 @@ class RealtimeTranscriptionMixin:
         with self._state_lock:
             lock = self._transcription_order_locks.setdefault(session.id, asyncio.Lock())
         async with lock:
-            await self._process_transcription_locked(session, text, role, is_final)
+            await self._process_transcription_locked(session, text, role, is_final, chain_depth)
 
     async def _process_transcription_locked(
-        self, session: VoiceSession, text: str, role: str, is_final: bool
+        self, session: VoiceSession, text: str, role: str, is_final: bool, chain_depth: int
     ) -> None:
         if not self._framework:
             return
@@ -238,7 +250,7 @@ class RealtimeTranscriptionMixin:
                 self._last_assistant_text[session.id] = final_text
 
             if self._emit_transcription_events and final_text.strip():
-                await self._emit_transcript_event(session, room_id, role, final_text)
+                await self._emit_transcript_event(session, room_id, role, final_text, chain_depth)
 
         except ChannelNotFoundError:
             # Benign teardown race: the channel was detached from the room
@@ -265,9 +277,12 @@ class RealtimeTranscriptionMixin:
                 reset_span(_tok)
 
     async def _emit_transcript_event(
-        self, session: VoiceSession, room_id: str, role: str, final_text: str
+        self, session: VoiceSession, room_id: str, role: str, final_text: str, chain_depth: int
     ) -> None:
-        """Store a final transcription as the room's RoomEvent.
+        """Store a final transcription as the room's RoomEvent, at *chain_depth*.
+
+        The user's words open a chain; the model's answer carries the depth
+        of what it heard plus one (RFC §12.4).
 
         User transcriptions are finalized at turn_complete, which often
         happens AFTER any tool_calls the agent fired mid-turn. Stamp user
@@ -294,6 +309,7 @@ class RealtimeTranscriptionMixin:
             room_id,
             self.channel_id,
             TextContent(body=final_text),
+            chain_depth=chain_depth,
             participant_id=participant_id,
             metadata={
                 "voice_session_id": session.id,
@@ -303,3 +319,8 @@ class RealtimeTranscriptionMixin:
             provider=self.provider_name,
             created_at=created_at,
         )
+
+    def _session_answer_depth(self, session_id: str) -> AnswerDepth:
+        """What the session's model heard last (RFC §12.4)."""
+        with self._state_lock:
+            return self._answer_depth.setdefault(session_id, AnswerDepth())

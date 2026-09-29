@@ -217,12 +217,15 @@ async def _two_pass_delegate(
         task_timeout=task_timeout,
     )
 
-    # Pass 2: inject worker results and generate final response
+    # Pass 2: inject worker results and generate final response. The results
+    # stand in for the event, so the answer stays one deeper than it (§8.3).
     results_event = RoomEvent(
         room_id=event.room_id,
         type=event.type,
         source=EventSource(channel_id="system", channel_type=_ChannelType.SYSTEM),
         content=TextContent(body=_present_worker_results(worker_results)),
+        chain_depth=event.chain_depth,
+        parent_event_id=event.parent_event_id,
     )
 
     # Ingest the results so the supervisor sees them in context
@@ -274,7 +277,8 @@ async def _one_pass_delegate(
         task_timeout=task_timeout,
     )
 
-    # Inject results into context and let supervisor present
+    # Inject results into context and let supervisor present. The results
+    # stand in for the event, so the answer stays one deeper than it (§8.3).
     results_event = RoomEvent(
         room_id=event.room_id,
         type=event.type,
@@ -282,6 +286,8 @@ async def _one_pass_delegate(
         content=TextContent(
             body=(f"The user asked: {user_message}\n\n{_present_worker_results(worker_results)}")
         ),
+        chain_depth=event.chain_depth,
+        parent_event_id=event.parent_event_id,
     )
 
     try:

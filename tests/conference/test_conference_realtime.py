@@ -256,6 +256,25 @@ class TestTranscription:
         assert backend.published_audio == []
         assert provider.injected_texts == []
 
+    async def test_an_answer_is_one_deeper_than_what_the_model_heard(self) -> None:
+        """RFC 12.10.12: after an injected event its depth plus one, after the
+        room's people spoke 1, so a chain through the provider ends at the limit."""
+        kit, channel, _, provider = await realtime_kit()
+        session = await channel._realtime.ensure_session(ROOM)
+        assert session is not None
+
+        await kit.send_event(ROOM, "src", TextContent(body="agent says"), chain_depth=2)
+        await provider.simulate_transcription(session, "after the agent", role="assistant")
+        await provider.simulate_transcription(session, "someone spoke", role="user")
+        await provider.simulate_transcription(session, "after the people", role="assistant")
+
+        depths = {
+            e.content.body: e.chain_depth
+            for e in await kit.store.list_events(ROOM)
+            if isinstance(e.content, TextContent)
+        }
+        assert (depths["after the agent"], depths["after the people"]) == (3, 1)
+
     async def test_assistant_partials_are_not_stored(self) -> None:
         kit, channel, _, provider = await realtime_kit()
         session = await channel._realtime.ensure_session(ROOM)

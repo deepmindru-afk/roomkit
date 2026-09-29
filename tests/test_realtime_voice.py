@@ -357,6 +357,41 @@ class TestTranscriptions:
         assert text_events[0].metadata.get("role") == "user"
         assert text_events[0].metadata.get("source") == "realtime_voice"
 
+    async def test_an_answer_carries_the_depth_of_what_the_model_heard(
+        self,
+        kit: RoomKit,
+        channel: RealtimeVoiceChannel,
+        provider: MockRealtimeProvider,
+        room_id: str,
+    ) -> None:
+        """RFC §12.4: the user opens a chain at 0, the model's answer is 1 after
+        the user and the injected event's depth plus one after an injection."""
+        session = await channel.start_session(room_id, "user-1", "fake-ws")
+        binding = await kit.store.get_binding(room_id, channel.channel_id)
+        assert binding is not None
+
+        await provider.simulate_transcription(session, "question", "user", True)
+        await provider.simulate_transcription(session, "first answer", "assistant", True)
+        await channel.on_event(
+            RoomEvent(
+                room_id=room_id,
+                source=EventSource(channel_id="agent", channel_type=ChannelType.AI),
+                content=TextContent(body="agent says"),
+                chain_depth=3,
+            ),
+            binding,
+            await kit._build_context(room_id),
+        )
+        await provider.simulate_transcription(session, "second answer", "assistant", True)
+        await asyncio.sleep(0.1)
+
+        depths = {
+            e.content.body: e.chain_depth
+            for e in await kit.get_timeline(room_id)
+            if isinstance(e.content, TextContent)
+        }
+        assert (depths["question"], depths["first answer"], depths["second answer"]) == (0, 1, 4)
+
     async def test_non_final_transcription_not_emitted(
         self,
         kit: RoomKit,

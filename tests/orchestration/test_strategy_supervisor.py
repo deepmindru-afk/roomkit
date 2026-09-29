@@ -6,6 +6,8 @@ import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from roomkit.channels.agent import Agent
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.context import RoomContext
@@ -445,3 +447,38 @@ class TestSupervisorShareChannels:
 
         _, kwargs = kit.delegate.call_args
         assert kwargs["share_channels"] == ["system", "ws-status"]
+
+
+@pytest.mark.parametrize("refine_task", [False, True], ids=["one-pass", "two-pass"])
+async def test_the_supervisors_answer_is_one_deeper_than_its_event(refine_task: bool) -> None:
+    """RFC §8.3, §19.7.3: the worker results stand in for the event, so the
+    supervisor's answer does not restart the chain at 1."""
+    boss = _make_agent("boss")
+    room = Room(id="r1")
+    kit = _make_mock_kit(room)
+    mock_task = MagicMock()
+    mock_task.result = MagicMock(output="worker result", error=None)
+    kit.delegate = AsyncMock(return_value=mock_task)
+    supervisor = Supervisor(
+        supervisor=boss,
+        workers=[_make_agent("w1")],
+        strategy="sequential",
+        auto_delegate=True,
+        refine_task=refine_task,
+    )
+    await supervisor.install(kit, "r1")
+
+    output = await boss.on_event(
+        RoomEvent(
+            room_id="r1",
+            type=EventType.MESSAGE,
+            source=EventSource(channel_id="user", channel_type=ChannelType.SMS),
+            content=TextContent(body="Analyze this topic"),
+            chain_depth=2,
+        ),
+        ChannelBinding(channel_id="user", room_id="r1", channel_type=ChannelType.SMS),
+        RoomContext(room=room, bindings=[], recent_events=[]),
+    )
+
+    assert output.response_events
+    assert {e.chain_depth for e in output.response_events} == {3}

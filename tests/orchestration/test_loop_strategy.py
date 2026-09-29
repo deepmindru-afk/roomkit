@@ -295,6 +295,32 @@ class TestRunLoop:
         assert len(result.response_events) == 1
         assert "Great content" in result.response_events[0].content.body
 
+    async def test_run_loop_answers_one_deeper_than_its_event(self) -> None:
+        """RFC §8.3, §19.7.4: the result is the producer's response to the event."""
+        kit = _make_mock_kit(Room(id="r1"))
+        kit.delegate = AsyncMock(
+            side_effect=[
+                _delegated_task_with_output("Great content"),
+                _delegated_task_with_output("APPROVED"),
+            ]
+        )
+        event = _make_event(body="Write something").model_copy(
+            update={"chain_depth": 2, "parent_event_id": "thread-root"}
+        )
+
+        result = await _run_loop(
+            kit=kit,
+            room_id="r1",
+            producer=_make_agent("writer"),
+            reviewers=[_make_agent("editor")],
+            strategy=None,
+            event=event,
+            max_iterations=3,
+        )
+
+        [answer] = result.response_events
+        assert (answer.chain_depth, answer.parent_event_id) == (3, "thread-root")
+
     async def test_run_loop_empty_content_returns_empty(self) -> None:
         """Non-text event should return empty output."""
         from roomkit.models.event import MediaContent

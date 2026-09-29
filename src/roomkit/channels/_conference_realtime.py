@@ -43,6 +43,7 @@ from roomkit.core.task_utils import log_task_exception
 from roomkit.models.event import TextContent
 from roomkit.models.tool_call import ToolCallEvent
 from roomkit.voice.base import AudioChunk, VoiceSession
+from roomkit.voice.realtime._answer_depth import AnswerDepth
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -108,6 +109,8 @@ class _RoomRealtime:
     tasks: set[asyncio.Task[None]] = field(default_factory=set)
     tool_calls: dict[str, _ToolCall] = field(default_factory=dict)
     """Calls in flight, by call id: what a provider cancellation interrupts."""
+    answer_depth: AnswerDepth = field(default_factory=AnswerDepth)
+    """What the room's model heard last, which its answer's depth follows."""
 
     def spawn(self, coro: Awaitable[None]) -> asyncio.Task[None]:
         task = asyncio.ensure_future(coro)
@@ -299,13 +302,16 @@ class ConferenceRealtime:
         ):
             await config.provider.send_audio(session, data)
 
-    async def deliver_text(self, room_id: str, text: str, *, role: str) -> None:
+    async def deliver_text(
+        self, room_id: str, text: str, *, role: str, chain_depth: int = 0
+    ) -> None:
         """Inject a broadcast text event into the provider's context.
 
         The realtime counterpart of speaking it: a 1:1 realtime channel
         injects rather than synthesizes, and the conference follows suit.
         Contained, because a provider that cannot take the text right now
-        must not fail the broadcast that carried it.
+        must not fail the broadcast that carried it. The model's answer to
+        it is one deeper than the event (RFC §12.10.12).
         """
         config = self._config
         if config is None:
@@ -318,6 +324,9 @@ class ConferenceRealtime:
                 ConferenceResource.REALTIME, what=f"text injection for room {room_id}"
             ):
                 await config.provider.inject_text(session, text, role=role)
+            room = self._rooms.get(room_id)
+            if room is not None:
+                room.answer_depth.injected(chain_depth)
         except Exception:
             logger.warning(
                 "Conference channel %r could not inject a text event into the realtime "
@@ -454,7 +463,12 @@ class ConferenceRealtime:
         room's record of what the AI said.
         """
         room = self._guarded(session)
-        if room is None or role != "assistant":
+        if room is None:
+            return
+        if role != "assistant":
+            # Discarded, but it says the model heard the room's people,
+            # whose words open a chain.
+            room.answer_depth.user_spoke()
             return
         utterance = room.utterance
         if not is_final:
@@ -468,9 +482,9 @@ class ConferenceRealtime:
             return
         if utterance is not None and utterance.playback is not None:
             utterance.playback.text = final
-        await self._emit_assistant_text(session.room_id, final)
+        await self._emit_assistant_text(session.room_id, final, room.answer_depth.answer)
 
-    async def _emit_assistant_text(self, room_id: str, text: str) -> None:
+    async def _emit_assistant_text(self, room_id: str, text: str, chain_depth: int) -> None:
         config = self._config
         if config is None or self._framework is None:
             return
@@ -479,6 +493,7 @@ class ConferenceRealtime:
                 room_id,
                 self._channel_id,
                 TextContent(body=text),
+                chain_depth=chain_depth,
                 metadata={"source": "conference_realtime", "role": "assistant"},
                 provider=config.provider.name,
             )
