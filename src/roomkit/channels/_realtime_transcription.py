@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.core.exceptions import ChannelNotFoundError
@@ -236,43 +237,8 @@ class RealtimeTranscriptionMixin:
             if role == "assistant":
                 self._last_assistant_text[session.id] = final_text
 
-            # Emit final transcriptions as RoomEvents.
-            # User transcriptions are finalized at turn_complete, which often
-            # happens AFTER any tool_calls the agent fired mid-turn. Stamp
-            # user turns with the pipeline-VAD SPEECH_START timestamp (captured
-            # in _on_pipeline_speech_start) so they sort chronologically
-            # before the tool calls they triggered — matching what the user
-            # actually experienced (said the thing, then the agent reacted).
-            # Fall back to a small offset if VAD didn't fire (e.g., server-
-            # VAD mode without a local pipeline) so ordering is still
-            # reasonable.
             if self._emit_transcription_events and final_text.strip():
-                from datetime import UTC, datetime, timedelta
-
-                participant_id = session.participant_id if role == "user" else None
-                logger.info(
-                    "Emitting transcription as RoomEvent: role=%s, text=%s",
-                    role,
-                    final_text,
-                )
-                created_at = None
-                if role == "user":
-                    with self._state_lock:
-                        turn_start = self._user_turn_start_at.pop(session.id, None)
-                    created_at = turn_start or (datetime.now(UTC) - timedelta(seconds=2))
-                await self._framework.send_event(
-                    room_id,
-                    self.channel_id,
-                    TextContent(body=final_text),
-                    participant_id=participant_id,
-                    metadata={
-                        "voice_session_id": session.id,
-                        "source": "realtime_voice",
-                        "role": role,
-                    },
-                    provider=self.provider_name,
-                    created_at=created_at,
-                )
+                await self._emit_transcript_event(session, room_id, role, final_text)
 
         except ChannelNotFoundError:
             # Benign teardown race: the channel was detached from the room
@@ -297,3 +263,43 @@ class RealtimeTranscriptionMixin:
         finally:
             if _tok is not None:
                 reset_span(_tok)
+
+    async def _emit_transcript_event(
+        self, session: VoiceSession, room_id: str, role: str, final_text: str
+    ) -> None:
+        """Store a final transcription as the room's RoomEvent.
+
+        User transcriptions are finalized at turn_complete, which often
+        happens AFTER any tool_calls the agent fired mid-turn. Stamp user
+        turns with the pipeline-VAD SPEECH_START timestamp (captured in
+        _on_pipeline_speech_start) so they sort chronologically before the
+        tool calls they triggered — matching what the user actually
+        experienced (said the thing, then the agent reacted). Fall back to a
+        small offset if VAD didn't fire (e.g., server-VAD mode without a
+        local pipeline) so ordering is still reasonable.
+        """
+        assert self._framework is not None
+        participant_id = session.participant_id if role == "user" else None
+        logger.info(
+            "Emitting transcription as RoomEvent: role=%s, text=%s",
+            role,
+            final_text,
+        )
+        created_at = None
+        if role == "user":
+            with self._state_lock:
+                turn_start = self._user_turn_start_at.pop(session.id, None)
+            created_at = turn_start or (datetime.now(UTC) - timedelta(seconds=2))
+        await self._framework.send_event(
+            room_id,
+            self.channel_id,
+            TextContent(body=final_text),
+            participant_id=participant_id,
+            metadata={
+                "voice_session_id": session.id,
+                "source": "realtime_voice",
+                "role": role,
+            },
+            provider=self.provider_name,
+            created_at=created_at,
+        )
