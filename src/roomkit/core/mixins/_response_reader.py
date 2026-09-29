@@ -77,9 +77,10 @@ class ResponseReader:
                     self._track(item)
             except StopAsyncIteration:
                 pass
-            except Exception as exc:
+            except Exception:
+                # The detail goes to the log; the stored row names the outcome.
                 logger.exception("A running tool round failed after the response was stopped")
-                error = f"{type(exc).__name__}: {exc}"
+                error = "tool round failed"
         ends.extend(self._close_open(error))
         return ends
 

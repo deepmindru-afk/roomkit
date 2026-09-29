@@ -150,7 +150,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   while a round's calls were announced, after the model's last event, still
   ran them; none runs now, and each call's TOOL_CALL_END is stored `failed`.
   A streamed turn cancelled or failed while a tool ran left its
-  TOOL_CALL_START pending; its end is stored `failed`.
+  TOOL_CALL_START pending; its end is stored `failed` and delivered to every
+  channel, the one that streamed included. A host that counted usage through
+  `ON_AI_RESPONSE` no longer sees a barge-in turn there: its tokens and tool
+  count are on its `llm.generate` span, which ends `cancelled`.
 - Gemini declares a tool whose schema has an `enum` of numbers, booleans or
   mixed values (RMK-281). Gemini's `enum` holds strings only, so a
   `Literal[1, 2, 3]` parameter failed inside `FunctionDeclaration` with the

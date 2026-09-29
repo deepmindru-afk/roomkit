@@ -294,7 +294,14 @@ class AIResponseEvent:
     its own terms, and ``"max_rounds"``, ``"timeout"``, ``"cancelled"``,
     ``"force_stopped"``, ``"truncated"``, ``"empty_response"`` and ``"error"``
     each name the rule that stopped it (``"error"``: the provider interrupted
-    the turn after a tool round, RFC §6.4).
+    the turn after a tool round and the turn was delivered once its loop
+    ended, RFC §6.4).
+
+    A turn whose loop did not reach its end fires no event at all: one that
+    raised (a streamed turn the provider interrupted included) or whose
+    stream was closed first (a barge-in, a transport that stopped reading, a
+    task cancelled from outside). Its ``llm.generate`` span carries what its
+    rounds used.
 
     None means the path that fired the hook reported no reason, not that the
     turn completed.

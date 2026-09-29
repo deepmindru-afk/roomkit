@@ -243,6 +243,35 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
             _adopt_hook_toolset(loop_ctx, declared, gen_event.ai_context.tools)
         return gen_event.ai_context, False
 
+    def _log_provider_error(self, exc: ProviderError) -> None:
+        """One log line for a failed turn, its level by what the status says."""
+        if exc.status_code == 404:
+            logger.error(
+                "AI model not found (channel=%s, provider=%s): %s",
+                self.channel_id,
+                exc.provider,
+                exc,
+            )
+        elif exc.status_code and exc.status_code >= 500:
+            logger.error(
+                "AI provider server error (channel=%s, provider=%s, status=%s): %s",
+                self.channel_id,
+                exc.provider,
+                exc.status_code,
+                exc,
+            )
+        else:
+            # Connect-refused/timeout (status None), rate-limit (429), other
+            # 4xx: expected transients — one WARNING line, no traceback (the
+            # error is re-raised and surfaced to the caller regardless).
+            logger.warning(
+                "AI provider error (channel=%s, provider=%s, status=%s): %s",
+                self.channel_id,
+                exc.provider,
+                exc.status_code,
+                exc,
+            )
+
     async def _generate_response(
         self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
     ) -> ChannelOutput:
@@ -269,32 +298,7 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
             require_schema_answer(ai_context, loop_result.reason)
         except ProviderError as exc:
             telemetry.end_span(span_id, status="error", error_message=str(exc))
-            if exc.status_code == 404:
-                logger.error(
-                    "AI model not found (channel=%s, provider=%s): %s",
-                    self.channel_id,
-                    exc.provider,
-                    exc,
-                )
-            elif exc.status_code and exc.status_code >= 500:
-                logger.error(
-                    "AI provider server error (channel=%s, provider=%s, status=%s): %s",
-                    self.channel_id,
-                    exc.provider,
-                    exc.status_code,
-                    exc,
-                )
-            else:
-                # Connect-refused/timeout (status None), rate-limit (429), other
-                # 4xx: expected transients — one WARNING line, no traceback (the
-                # error is re-raised and surfaced to the caller regardless).
-                logger.warning(
-                    "AI provider error (channel=%s, provider=%s, status=%s): %s",
-                    self.channel_id,
-                    exc.provider,
-                    exc.status_code,
-                    exc,
-                )
+            self._log_provider_error(exc)
             # Propagate so the broadcast path fires ON_ERROR — mirrors the
             # streaming path (which raises out of stream consumption). Swallowing
             # into an empty output would leave the turn with no error surfaced.

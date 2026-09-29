@@ -120,8 +120,32 @@ class SegmentWriter:
         return tool_id in self._started
 
     async def tool_start(self, marker: ToolCallStartMarker) -> RoomEvent | None:
+        return await self._write(self._start_row(marker), exclude=set(self._streamed_to))
+
+    async def tool_end(self, marker: ToolCallEndMarker) -> RoomEvent | None:
+        # Excluded like a text segment, and for the same reason: the channel
+        # consuming the stream is handed every persisted event inline, so
+        # laning it there too sent the same event id twice.
+        return await self._write(self._end_row(marker), exclude=set(self._streamed_to))
+
+    async def close_calls(
+        self, closed: list[tuple[ToolCallStartMarker, ToolCallEndMarker]]
+    ) -> None:
+        """Write the end of each call a stop or an abandon closed.
+
+        The stream no longer carries rows, so each goes to every channel, the
+        one that streamed included: it saw the start inline and would keep
+        the call running. A call whose start row was cut off gets it first
+        (RFC §12.2 step 13s).
+        """
+        for start, end in closed:
+            if not self.started(start.tool_id):
+                await self._write(self._start_row(start), exclude=None)
+            await self._write(self._end_row(end), exclude=None)
+
+    def _start_row(self, marker: ToolCallStartMarker) -> RoomEvent:
         self._started.add(marker.tool_id)
-        event = self._build(
+        return self._build(
             EventType.TOOL_CALL_START,
             ToolCallContent(
                 tool_name=marker.tool_name,
@@ -130,11 +154,10 @@ class SegmentWriter:
                 status="pending",
             ),
         )
-        return await self._write(event, exclude=set(self._streamed_to))
 
-    async def tool_end(self, marker: ToolCallEndMarker) -> RoomEvent | None:
+    def _end_row(self, marker: ToolCallEndMarker) -> RoomEvent:
         result, structured = tool_event_payload(marker.result, marker.structured_content)
-        event = self._build(
+        return self._build(
             EventType.TOOL_CALL_END,
             ToolCallContent(
                 tool_name=marker.tool_name,
@@ -147,10 +170,6 @@ class SegmentWriter:
                 structured_content=structured,
             ),
         )
-        # Excluded like a text segment, and for the same reason: the channel
-        # consuming the stream is handed every persisted event inline, so
-        # laning it there too sent the same event id twice.
-        return await self._write(event, exclude=set(self._streamed_to))
 
     # -- how any of them is written ----------------------------------------
 

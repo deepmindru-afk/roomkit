@@ -10,7 +10,10 @@ announced, before they run, stops them (RFC §21.3).
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
 from typing import Any
+
+import pytest
 
 from roomkit import HookExecution, HookResult, HookTrigger, RoomKit
 from roomkit.channels.ai import AIChannel
@@ -19,9 +22,16 @@ from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelCategory, EventType
 from roomkit.models.event import TextContent
 from roomkit.models.steering import Cancel
-from roomkit.providers.ai.base import AIContext, AIResponse, AITool, AIToolCall
+from roomkit.providers.ai.base import (
+    AIContext,
+    AIResponse,
+    AITool,
+    AIToolCall,
+    StreamDone,
+    StreamEvent,
+)
 from roomkit.providers.ai.mock import MockAIProvider
-from roomkit.telemetry.base import SpanKind
+from roomkit.telemetry.base import Attr, SpanKind
 from roomkit.telemetry.mock import MockTelemetryProvider
 from tests.test_framework import SimpleChannel
 
@@ -108,6 +118,24 @@ async def test_a_barge_in_on_a_streamed_tool_turn_reports_nothing() -> None:
     assert message.metadata.get("cancelled") is True
 
 
+async def test_a_barge_in_keeps_what_the_rounds_used_on_the_span() -> None:
+    """Nothing is reported for the turn, so its span keeps its tokens."""
+    turn = _Turn()
+    turn.kit.register_channel(_BargeIn("tts1"))
+    used = {"input_tokens": 1000, "output_tokens": 50}
+    first = _round("").model_copy(update={"usage": used})
+    await turn.build(MockAIProvider(streaming=True, ai_responses=[first, _round("Here.")]))
+    await turn.kit.attach_channel("r1", "tts1")
+
+    await turn.say()
+
+    [span] = turn.spans()
+    assert span.status == "cancelled"
+    assert span.attributes[Attr.LLM_INPUT_TOKENS] == 1000
+    assert span.attributes[Attr.LLM_OUTPUT_TOKENS] == 50
+    assert span.attributes[Attr.LLM_TOOL_COUNT] == 1
+
+
 async def test_a_schema_turn_cut_short_reports_nothing_in_either_loop(streaming: bool) -> None:
     turn = _Turn()
     provider = MockAIProvider(
@@ -133,6 +161,8 @@ async def test_a_schema_turn_cut_short_reports_nothing_in_either_loop(streaming:
 
     assert turn.reports == []
     assert len(errors) == 1
+    # The refused answer fails the turn: an error, not a cancellation.
+    assert [span.status for span in turn.spans()] == ["error"]
 
 
 async def test_a_stop_while_the_calls_are_announced_runs_none() -> None:
@@ -151,6 +181,66 @@ async def test_a_stop_while_the_calls_are_announced_runs_none() -> None:
     [end] = await turn.rows(EventType.TOOL_CALL_END)
     assert end.content.status == "failed"
     assert [(r.loop_end_reason, r.tool_calls_count) for r in turn.reports] == [("cancelled", 0)]
+
+
+class _StopAfterTheRound(MockAIProvider):
+    """The model's round is over when the stop lands, its calls not yet announced."""
+
+    channel: AIChannel | None = None
+
+    async def generate_structured_stream(self, context: AIContext) -> AsyncIterator[StreamEvent]:
+        async for event in super().generate_structured_stream(context):
+            yield event
+            if isinstance(event, StreamDone) and self.channel is not None:
+                self.channel.steer(Cancel(reason="user pressed stop"))
+
+
+async def test_a_stop_after_the_models_last_event_announces_nothing() -> None:
+    turn = _Turn()
+    provider = _StopAfterTheRound(streaming=True, ai_responses=[_round(""), _round()])
+    provider.channel = await turn.build(provider)
+
+    await turn.say()
+
+    assert turn.ran == []
+    assert await turn.rows(EventType.TOOL_CALL_START) == []
+    assert [(r.loop_end_reason, r.tool_calls_count) for r in turn.reports] == [("cancelled", 0)]
+
+
+class _StreamingTransport(SimpleChannel):
+    """A transport that reads the whole stream."""
+
+    @property
+    def supports_streaming_delivery(self) -> bool:
+        return True
+
+    async def deliver_stream(self, text_stream, event, binding, context):  # type: ignore[no-untyped-def]
+        async for _ in text_stream:
+            pass
+        return ChannelOutput.empty()
+
+
+@pytest.mark.parametrize("streamed_to", [True, False], ids=["streaming-target", "headless"])
+async def test_a_turn_that_fails_while_a_call_is_open_closes_it(
+    streamed_to: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def broken(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("executor bug")
+
+    monkeypatch.setattr(AIChannel, "_execute_round_tools", broken)
+    turn = _Turn()
+    if streamed_to:
+        turn.kit.register_channel(_StreamingTransport("ws1"))
+    await turn.build(MockAIProvider(streaming=True, ai_responses=[_round(""), _round()]))
+    if streamed_to:
+        await turn.kit.attach_channel("r1", "ws1")
+
+    await turn.say()
+
+    [end] = await turn.rows(EventType.TOOL_CALL_END)
+    assert end.content.status == "failed"
+    # The row names the outcome; the exception's text stays in the log.
+    assert end.content.error == "turn failed"
 
 
 class _Hang(MockAIProvider):

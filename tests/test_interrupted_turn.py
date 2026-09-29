@@ -1,9 +1,10 @@
 """A turn cut short delivers nothing twice and nothing from an earlier turn (RFC §6.4; RMK-156).
 
 The room already holds each round's text as its own message. A turn the
-provider interrupts after a round ends on the marker alone; a turn cancelled
-between rounds adds no terminal text. The history the model was given is
-context, never this turn's output.
+provider interrupts after a round is an error; delivered once its loop ends,
+it ends on the marker alone, while a streamed one keeps what it streamed and
+reports nothing (RMK-282). A turn cancelled between rounds adds no terminal
+text. The history the model was given is context, never this turn's output.
 """
 
 from __future__ import annotations
@@ -118,23 +119,34 @@ async def test_an_interrupted_turn_replays_nothing(streaming: bool) -> None:
     await kit.close()
 
 
-async def test_an_interrupted_turn_ends_on_the_marker_alone(streaming: bool) -> None:
+async def test_an_interrupted_turn_ends_on_the_marker_alone() -> None:
     """Delivered once its loop ends, the turn closes on the marker and reports
-    it. A streamed turn raised out of its loop: it keeps what it streamed, adds
-    no marker and reports nothing, its error surfacing on its own (RFC §6.4)."""
-    kit, _, responses = await _room(_FailingAt(4, HISTORY, streaming=streaming))
+    its transcript, the segments once each (RFC §6.4)."""
+    kit, _, responses = await _room(_FailingAt(4, HISTORY, streaming=False))
 
     await _say(kit, "first", "second", "third")
 
-    said = ["Earlier answer.", "Second answer.", "Looking."]
-    if streaming:
-        assert await _ai_messages(kit) == said
-        assert len(responses) == 2
-    else:
-        assert await _ai_messages(kit) == [*said, MARKER]
-        # The hook's transcript is the turn's segments, once each.
-        assert responses[-1].response_content == f"Looking.\n\n{MARKER}"
-        assert "req_abc123" not in responses[-1].response_content
+    assert await _ai_messages(kit) == ["Earlier answer.", "Second answer.", "Looking.", MARKER]
+    assert responses[-1].response_content == f"Looking.\n\n{MARKER}"
+    assert "req_abc123" not in responses[-1].response_content
+    await kit.close()
+
+
+async def test_an_interrupted_streamed_turn_keeps_what_it_streamed() -> None:
+    """A streamed turn raised out of its loop: it adds no marker and reports
+    nothing, and its error surfaces (RFC §6.4)."""
+    kit, _, responses = await _room(_FailingAt(4, HISTORY, streaming=True))
+    errors: list[Any] = []
+
+    @kit.hook(HookTrigger.ON_ERROR, execution=HookExecution.ASYNC, name="card")
+    async def card(event: Any, ctx: Any) -> None:
+        errors.append(event)
+
+    await _say(kit, "first", "second", "third")
+
+    assert await _ai_messages(kit) == ["Earlier answer.", "Second answer.", "Looking."]
+    assert len(responses) == 2
+    assert len(errors) == 1
     await kit.close()
 
 
@@ -175,8 +187,8 @@ async def test_a_turn_cancelled_between_rounds_adds_no_terminal_text(streaming: 
 
 
 @pytest.mark.xfail_streaming(
-    "RMK-282, left open: no streamed turn puts loop_end_reason or ai_usage on its "
-    "messages, cancelled or not"
+    "not carded (item C7 of the 2026-09-28 tool review, raised by RMK-282): no streamed "
+    "turn puts loop_end_reason or ai_usage on its messages, cancelled or not"
 )
 async def test_a_turn_without_final_text_keeps_its_record_on_its_last_message(
     streaming: bool,

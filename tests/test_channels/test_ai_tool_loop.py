@@ -528,26 +528,26 @@ class TestContextOverflowRecovery:
         # still overflows.
         return AIContext(messages=[AIMessage(role="user", content=f"msg{i}") for i in range(10)])
 
-    async def test_compaction_still_overflowing_ends_the_turn_on_the_marker(
-        self, streaming: bool
-    ) -> None:
+    async def test_compaction_still_overflowing_ends_the_turn_on_the_marker(self) -> None:
         """After a round, an overflow compaction does not cure interrupts the
-        turn. Delivered once its loop ends, it keeps the round and ends on the
-        marker; streamed, its round is out already and the error raises
-        (RFC §6.4)."""
-        handler = AsyncMock(return_value="ok")
-        channel, context = self._overflowing_channel(handler), self._long_context()
+        turn: delivered once its loop ends, it keeps the round and ends on the
+        marker (RFC §6.4)."""
+        channel, context = self._overflowing_channel(), self._long_context()
 
-        if streaming:
-            with pytest.raises(ProviderError, match="context length exceeded"):
-                await run_tool_loop(channel, context, streaming=True)
-            handler.assert_awaited_once()
-            return
         run = await run_tool_loop(channel, context, streaming=False)
 
         assert run.text == "[Response interrupted]"
         assert run.reason == "error"
         assert [call.failed for call in run.calls] == [False]
+
+    async def test_compaction_still_overflowing_raises_out_of_a_streamed_turn(self) -> None:
+        """Streamed, the round is out already: the overflow raises (RFC §6.4)."""
+        handler = AsyncMock(return_value="ok")
+        channel, context = self._overflowing_channel(handler), self._long_context()
+
+        with pytest.raises(ProviderError, match="context length exceeded"):
+            await run_tool_loop(channel, context, streaming=True)
+        handler.assert_awaited_once()
 
     def test_is_context_overflow_matches_known_patterns(self) -> None:
         """_is_context_overflow detects known error messages."""

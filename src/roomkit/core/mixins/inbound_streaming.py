@@ -36,24 +36,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger("roomkit.framework")
 
 
-async def _store_closed_calls(
-    writer: SegmentWriter, closed: list[tuple[ToolCallStartMarker, ToolCallEndMarker]]
-) -> None:
-    """Store the end of each call a stop or an abandon closed.
-
-    A call whose start row was cut off gets it first, so its end has a start
-    to close (RFC §12.2 step 13s).
-    """
-    for start, end in closed:
-        if not writer.started(start.tool_id):
-            await writer.tool_start(start)
-        await writer.tool_end(end)
-
-
-def _failure(exc: BaseException) -> str:
-    return f"{type(exc).__name__}: {exc}"
-
-
 @dataclass
 class _StreamingResult:
     """Result of handling a streaming response.
@@ -265,7 +247,7 @@ class InboundStreamingMixin(HelpersMixin):
                 # context missing what it already said. Not an error — nobody
                 # failed — so ON_ERROR stays silent and the cancellation
                 # propagates untouched.
-                await _store_closed_calls(writer, await reader.abandon())
+                await writer.close_calls(await reader.abandon())
                 await writer.flush_text(cancelled=True)
                 raise
             except Exception as exc:
@@ -277,7 +259,7 @@ class InboundStreamingMixin(HelpersMixin):
                 # gone, so this text never reached its channels — it goes out
                 # as an ordinary event, to everyone.
                 writer.stream_lost()
-                await _store_closed_calls(writer, await reader.abandon(_failure(exc)))
+                await writer.close_calls(await reader.abandon("turn failed"))
                 await writer.flush_text()
                 await self._fire_error_hook(
                     room_id,
@@ -307,7 +289,7 @@ class InboundStreamingMixin(HelpersMixin):
                 async for _ in segment_stream():
                     pass
             except asyncio.CancelledError:
-                await _store_closed_calls(writer, await reader.abandon())
+                await writer.close_calls(await reader.abandon())
                 await writer.flush_text(cancelled=True)
                 raise
             except Exception as exc:
@@ -315,7 +297,7 @@ class InboundStreamingMixin(HelpersMixin):
                 self._log_stream_failure(
                     exc, "stream consumption (no targets)", room_id, headless=True
                 )
-                await _store_closed_calls(writer, await reader.abandon(_failure(exc)))
+                await writer.close_calls(await reader.abandon("turn failed"))
                 await writer.flush_text()
                 await self._fire_error_hook(
                     room_id,
@@ -360,7 +342,7 @@ class InboundStreamingMixin(HelpersMixin):
         the provider's finalizer, not the response's: it is logged and the
         text is still stored as cancelled.
         """
-        await _store_closed_calls(writer, await reader.stop())
+        await writer.close_calls(await reader.stop())
         try:
             await segments.aclose()
             await _aclose_stream(sr.stream)

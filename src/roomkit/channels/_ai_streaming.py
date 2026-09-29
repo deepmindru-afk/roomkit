@@ -72,6 +72,54 @@ class _StreamTurnState:
     saw_tool_call: bool = False
 
 
+def _turn_span_attributes(turn: _StreamTurnState) -> dict[str, Any]:
+    """What the turn's rounds used, whether or not the turn reached its end."""
+    attributes: dict[str, Any] = {Attr.LLM_TOOL_COUNT: turn.tool_calls_count}
+    if turn.usage.get("input_tokens") or turn.usage.get("output_tokens"):
+        attributes[Attr.LLM_INPUT_TOKENS] = turn.usage.get("input_tokens", 0)
+        attributes[Attr.LLM_OUTPUT_TOKENS] = turn.usage.get("output_tokens", 0)
+    return attributes
+
+
+def _end_unfinished_turn(turn: _StreamTurnState, exc: BaseException) -> None:
+    """End the span of a turn whose loop did not reach its end (RFC §6.4).
+
+    A raise is an error. A close at a yield (a barge-in, a transport that
+    stopped reading, a consumer that refused the answer) or a cancelled task
+    is a cancellation. Such a turn reports nothing, so its span is where what
+    its rounds used stays on record.
+    """
+    attributes = _turn_span_attributes(turn)
+    if isinstance(exc, Exception):
+        turn.telemetry.end_span(
+            turn.span_id, status="error", error_message=str(exc), attributes=attributes
+        )
+    else:
+        turn.telemetry.end_span(turn.span_id, status="cancelled", attributes=attributes)
+
+
+def _round_stop_reason(
+    state: _StreamRoundState, loop_ctx: _ToolLoopContext
+) -> LoopEndReason | None:
+    """Why the loop stops after a round, if it does; a stop that came after the
+    model's last event counts as one that came during it."""
+    if state.cancelled or loop_ctx.cancel_event.is_set():
+        return "cancelled"
+    return "force_stopped" if loop_ctx.force_stop else None
+
+
+async def _unrun_call_ends(calls: list[Any]) -> AsyncGenerator[StreamDelta, None]:
+    """A failed end for each announced call a stop kept from running (RFC §21.3)."""
+    for call in calls:
+        yield ToolCallEndMarker(
+            tool_name=call.name,
+            tool_id=call.id,
+            arguments=call.arguments,
+            status="failed",
+            error="cancelled",
+        )
+
+
 @runtime_checkable
 class AIStreamingHost(Protocol):
     """Contract: capabilities a host class must provide for AIStreamingMixin.
@@ -150,14 +198,19 @@ class AIStreamingHost(Protocol):
 
 
 async def _answered_or_raise(
-    context: AIContext, deltas: AsyncIterator[StreamDelta]
+    context: AIContext, deltas: AsyncGenerator[StreamDelta, None]
 ) -> AsyncIterator[StreamDelta]:
     """The streaming tool loop, failing a constrained turn that ends without
     its answer (see :func:`require_schema_answer`)."""
     try:
         async for delta in deltas:
             if isinstance(delta, LoopEndMarker):
-                require_schema_answer(context, delta.reason)
+                try:
+                    require_schema_answer(context, delta.reason)
+                except Exception as refused:
+                    # Raised inside the loop, so its turn ends as the error it is.
+                    await deltas.athrow(refused)
+                    raise
             yield delta
     finally:
         await _aclose_stream(deltas)
@@ -495,14 +548,8 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
             turn = _StreamTurnState(loop_ctx, telemetry, span_id, room_id)
             try:
                 yield turn
-            except Exception as exc:
-                telemetry.end_span(span_id, status="error", error_message=str(exc))
-                raise
-            except BaseException:
-                # Closed at a yield (a barge-in, a transport that stopped
-                # reading, a consumer that refused the answer) or cancelled:
-                # no response was delivered, so none is reported (RFC §6.4).
-                telemetry.end_span(span_id, status="cancelled")
+            except BaseException as exc:
+                _end_unfinished_turn(turn, exc)
                 raise
             await self._finish_streaming_tool_turn(turn)
         finally:
@@ -512,11 +559,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
 
     async def _finish_streaming_tool_turn(self, turn: _StreamTurnState) -> None:
         """Report the delivered transcript and the counters accumulated by this turn."""
-        attributes: dict[str, Any] = {Attr.LLM_TOOL_COUNT: turn.tool_calls_count}
-        if turn.usage.get("input_tokens") or turn.usage.get("output_tokens"):
-            attributes[Attr.LLM_INPUT_TOKENS] = turn.usage.get("input_tokens", 0)
-            attributes[Attr.LLM_OUTPUT_TOKENS] = turn.usage.get("output_tokens", 0)
-        turn.telemetry.end_span(turn.span_id, attributes=attributes)
+        turn.telemetry.end_span(turn.span_id, attributes=_turn_span_attributes(turn))
         if self._after_response_hook:
             try:
                 segments, transcript = response_transcript("".join(text) for text in turn.segments)
@@ -562,18 +605,21 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
             yield ToolCallStartMarker(
                 tool_name=call.name, tool_id=call.id, arguments=call.arguments
             )
-        if turn.loop_ctx.cancel_event.is_set():
-            # A stop that came while the calls were announced: none runs, and
-            # the loop ends cancelled at its next check (RFC §21.3).
-            for call in calls:
-                yield ToolCallEndMarker(
-                    tool_name=call.name,
-                    tool_id=call.id,
-                    arguments=call.arguments,
-                    status="failed",
-                    error="cancelled",
-                )
-            return
+        # A stop that came while the calls were announced: none of them runs,
+        # and the loop ends cancelled at its next check (RFC §21.3).
+        ends = (
+            _unrun_call_ends(calls)
+            if turn.loop_ctx.cancel_event.is_set()
+            else self._run_announced_calls(context, calls, turn, index)
+        )
+        async with aclosing(ends) as deltas:
+            async for delta in deltas:
+                yield delta
+
+    async def _run_announced_calls(
+        self, context: AIContext, calls: list[Any], turn: _StreamTurnState, index: int
+    ) -> AsyncGenerator[StreamDelta, None]:
+        """Execute a round's announced calls and yield one end marker per call."""
         results, duration_ms, executed_arguments = await self._execute_round_tools(
             context, calls, turn.telemetry, turn.room_id, index, parent_span_id=turn.span_id
         )
@@ -605,7 +651,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
 
     async def _run_streaming_tool_loop(
         self, context: AIContext, *, parent_loop_ctx: _ToolLoopContext | None = None
-    ) -> AsyncIterator[StreamDelta]:
+    ) -> AsyncGenerator[StreamDelta, None]:
         """Orchestrate generation, termination decisions and local tool rounds."""
         async with self._streaming_tool_turn(context, parent_loop_ctx) as turn:
             loop_ctx = turn.loop_ctx
@@ -652,10 +698,9 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                         yield delta
                 state = round_.state
 
-                # A stop that came after the model's last event counts too.
-                cancelled = state.cancelled or loop_ctx.cancel_event.is_set()
-                if cancelled or loop_ctx.force_stop:
-                    turn.reason = "cancelled" if cancelled else "force_stopped"
+                stop = _round_stop_reason(state, loop_ctx)
+                if stop is not None:
+                    turn.reason = stop
                     yield LoopEndMarker(reason=turn.reason, rounds=index)
                     return
                 if not state.tool_calls:
