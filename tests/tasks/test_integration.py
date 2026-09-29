@@ -19,6 +19,7 @@ from roomkit.models.enums import HookExecution, HookTrigger, TaskStatus
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.providers.email.mock import MockEmailProvider
 from roomkit.tasks.models import DelegatedTaskResult
+from tests.test_framework import SimpleChannel
 
 # -- Helpers ------------------------------------------------------------------
 
@@ -50,9 +51,11 @@ class TestDelegateIntegration:
 
         kit.register_channel(voice_agent)
         kit.register_channel(pr_reviewer)
+        kit.register_channel(SimpleChannel("phone"))
 
-        # Create parent room
+        # Create parent room, reached through a transport
         await kit.create_room(room_id="call-room")
+        await kit.attach_channel("call-room", "phone")
         await kit.attach_channel(
             "call-room", "voice-assistant", category=ChannelCategory.INTELLIGENCE
         )
@@ -99,12 +102,25 @@ class TestDelegateIntegration:
         assert len(delegated_hooks) == 1
         assert len(completed_hooks) == 1
 
-        # Verify notify binding was updated with result
+        # The notified agent keeps its own prompt; the result reaches it as an
+        # instruction it answers at once, outside the system role (RMK-310).
         binding = await kit.store.get_binding("call-room", "voice-assistant")
         assert binding is not None
-        prompt = binding.metadata.get("system_prompt", "")
-        assert "BACKGROUND TASK COMPLETED" in prompt
-        assert "PR looks good" in prompt
+        assert "system_prompt" not in binding.metadata
+        for _ in range(50):
+            if voice_agent._provider.calls:
+                break
+            await asyncio.sleep(0.01)
+        (call,) = voice_agent._provider.calls
+        assert call.system_prompt is not None
+        assert call.system_prompt.startswith("You are a voice assistant.")
+        assert "PR looks good" not in call.system_prompt
+        assert "PR looks good" in str(call.messages[-1].content)
+        # Never stored as anyone's words: the room holds the agent's answer.
+        bodies = [
+            str(getattr(e.content, "body", "")) for e in await kit.store.list_events("call-room")
+        ]
+        assert not any("Background task from" in body for body in bodies)
 
         await kit.close()
 

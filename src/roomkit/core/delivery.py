@@ -19,9 +19,25 @@ from roomkit.models.enums import ChannelCategory, ChannelType
 
 if TYPE_CHECKING:
     from roomkit.core.framework import RoomKit
+    from roomkit.store.base import ConversationStore
 
 logger = logging.getLogger("roomkit.delivery")
 _VOICE_TYPES = frozenset({ChannelType.VOICE, ChannelType.REALTIME_VOICE})
+
+
+async def find_transport_channel_id(store: ConversationStore, room_id: str) -> str | None:
+    """The transport a room is reached through: voice first, then the first other."""
+    bindings = await store.list_bindings(room_id)
+    voice_id: str | None = None
+    text_id: str | None = None
+    for binding in bindings:
+        if binding.category != ChannelCategory.TRANSPORT:
+            continue
+        if binding.channel_type in _VOICE_TYPES:
+            voice_id = binding.channel_id
+        elif text_id is None:
+            text_id = binding.channel_id
+    return voice_id or text_id
 
 
 @dataclass
@@ -43,17 +59,7 @@ class DeliveryContext:
 
     async def find_transport_channel_id(self) -> str | None:
         """Prefer voice, then the first other transport bound to the room."""
-        bindings = await self.kit.store.list_bindings(self.room_id)
-        voice_id: str | None = None
-        text_id: str | None = None
-        for binding in bindings:
-            if binding.category != ChannelCategory.TRANSPORT:
-                continue
-            if binding.channel_type in _VOICE_TYPES:
-                voice_id = binding.channel_id
-            elif text_id is None:
-                text_id = binding.channel_id
-        return voice_id or text_id
+        return await find_transport_channel_id(self.kit.store, self.room_id)
 
     async def resolve_channel_id(self) -> str | None:
         """Resolve an explicit destination or auto-detect its transport."""

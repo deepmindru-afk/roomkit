@@ -80,6 +80,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A delegation no longer writes its result into the notified channel's
+  `system_prompt` binding metadata (RMK-310, RFC §23.3): the first
+  delegation replaced the agent's own prompt with a "BACKGROUND TASK
+  COMPLETED" block, handing the worker's output the system role for every
+  later turn. The result, bounded to 4,000 characters and set apart as the
+  worker's output, now reaches a notified agent as an instruction addressed
+  to it (RFC §10.1.1), which it answers at once through the room's
+  transport; a notified transport receives it as a delivery. A room with no
+  transport leaves the result to `ON_TASK_COMPLETED`. The supervisor's
+  task-formulation pass rides a copy of the binding for that call: it
+  rewrote the supervisor's own prompt, shared by every room, and two rooms
+  delegating at once could leave the instruction stuck for good; it also now
+  follows a binding's or a config provider's prompt, which it used to lose.
 - xAI realtime reconfigures a live session in band, with a partial
   `session.update`, as OpenAI does (RMK-311): `find_tools`, a skill
   activation and a handoff disconnected and reconnected, and the agent lost

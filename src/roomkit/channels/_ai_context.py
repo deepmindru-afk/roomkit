@@ -246,11 +246,7 @@ class AIContextMixin:
         that snapshots go stale. Without a provider, the metadata toolset
         is used.
         """
-        turn = None
-        if self._config_provider is not None:
-            turn = await self._config_provider(binding, context)
-
-        settings = self._turn_settings(binding, turn)
+        turn, settings = await self._resolve_turn(binding, context)
         # The prompt grows below (skills, sandbox, planner, notes); the other
         # settings reach the context as resolved.
         system_prompt = settings.pop("system_prompt")
@@ -609,6 +605,21 @@ class AIContextMixin:
                     self._tool_usage.tool_names(event.room_id) & catalogue_names
                 )
         return system_prompt
+
+    async def _resolve_turn(
+        self, binding: ChannelBinding, context: RoomContext
+    ) -> tuple[AIChannelTurnConfig | None, dict[str, Any]]:
+        """A turn's config provider result and its resolved per-turn settings.
+
+        Each setting from the binding metadata, else the config provider,
+        else the channel default (:meth:`_turn_settings`). The system prompt
+        resolved here is the one the turn starts from, before the channel's
+        own blocks (skills, sandbox, plan, digest).
+        """
+        turn = None
+        if self._config_provider is not None:
+            turn = await self._config_provider(binding, context)
+        return turn, self._turn_settings(binding, turn)
 
     def _turn_settings(
         self, binding: ChannelBinding, turn: AIChannelTurnConfig | None

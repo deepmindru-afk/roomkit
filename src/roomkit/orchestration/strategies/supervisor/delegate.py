@@ -198,6 +198,33 @@ async def _run_workers(
     return parsed.get("results", [])
 
 
+async def _formulate_task(
+    supervisor: Agent,
+    original_on_event: Any,
+    event: RoomEvent,
+    binding: ChannelBinding,
+    context: RoomContext,
+    instruction: str | None,
+) -> tuple[ChannelOutput, str]:
+    """Pass 1: the supervisor turns the request into a task for its workers.
+
+    The task-formulation instruction rides this call only, on a copy of the
+    binding whose prompt is the one the turn would have had followed by the
+    instruction (RFC §19.7.3). The supervisor serves every room it is attached
+    to: its own prompt is never the carrier, so a room running meanwhile never
+    reads another's instruction.
+    """
+    pass1_instruction = instruction or _build_pass1_instruction()
+    _, settings = await supervisor._resolve_turn(binding, context)
+    base = settings.get("system_prompt")
+    prompt = f"{base}\n\n{pass1_instruction}" if base else pass1_instruction
+    pass1_binding = binding.model_copy(
+        update={"metadata": {**binding.metadata, "system_prompt": prompt}}
+    )
+    pass1_output = await original_on_event(event, pass1_binding, context)
+    return pass1_output, await _extract_output_text(pass1_output)
+
+
 async def _two_pass_delegate(
     kit: RoomKit,
     room_id: str,
@@ -216,18 +243,9 @@ async def _two_pass_delegate(
 ) -> ChannelOutput:
     """Two-pass: supervisor formulates task → workers run (validated between
     steps by the supervisor in sequential mode) → supervisor presents."""
-    # Pass 1: temporarily inject a task-formulation instruction
-    pass1_instruction = instruction or _build_pass1_instruction()
-    original_prompt = supervisor._system_prompt
-    supervisor._system_prompt = (
-        f"{original_prompt}\n\n{pass1_instruction}" if original_prompt else pass1_instruction
+    pass1_output, refined_task = await _formulate_task(
+        supervisor, original_on_event, event, binding, context, instruction
     )
-    try:
-        pass1_output = await original_on_event(event, binding, context)
-        refined_task = await _extract_output_text(pass1_output)
-    finally:
-        # Always restore the original prompt
-        supervisor._system_prompt = original_prompt
 
     logger.debug("Pass 1 refined task: %s", refined_task[:200] if refined_task else "(empty)")
 

@@ -15,7 +15,7 @@ from roomkit.core.framework import RoomKit
 from roomkit.delivery.base import DeliveryItem
 from roomkit.delivery.worker import execute_delivery
 from roomkit.models.delivery import InboundMessage
-from roomkit.models.enums import ChannelCategory, EventStatus
+from roomkit.models.enums import ChannelCategory, EventStatus, EventType
 from roomkit.models.event import RoomEvent, TextContent
 from roomkit.models.store_filter import EventFilter
 from roomkit.providers.ai.base import AIResponse, AIToolCall
@@ -58,6 +58,17 @@ async def _timeline(kit: RoomKit) -> list[RoomEvent]:
     return await kit.store.list_events("r1", event_filter=EventFilter(include_blocked=True))
 
 
+def _answers(events: list[RoomEvent]) -> list[int]:
+    """The chain depth of each answer the front agent delivered."""
+    return [
+        e.chain_depth
+        for e in events
+        if e.source.channel_id == "front"
+        and e.type == EventType.MESSAGE
+        and e.status == EventStatus.DELIVERED
+    ]
+
+
 async def _until_blocked(kit: RoomKit, timeout: float = 5.0) -> None:
     async with asyncio.timeout(timeout):
         while not any(e.status == EventStatus.BLOCKED for e in await _timeline(kit)):
@@ -77,14 +88,11 @@ async def test_a_delegation_cycle_ends_at_max_chain_depth(streaming: bool) -> No
     await asyncio.sleep(0.1)
 
     events = await _timeline(kit)
-    results = [
-        e.chain_depth
-        for e in events
-        if e.source.channel_id == "sms1" and e.content.body.startswith("[Background task")
-    ]
-    # The human's message at 0; each result one deeper than the last answer
-    # that delegated, until the answer to the last one would reach the limit.
-    assert results == [1, 2]
+    # Each result reaches the agent as an instruction one deeper than the
+    # answer that delegated (never stored, RMK-310): the agent answers the
+    # human at 1 and the first result at 2, until the answer to the last one
+    # would reach the limit.
+    assert _answers(events) == [1, 2]
     [record] = [e for e in events if e.status == EventStatus.BLOCKED]
     assert (record.source.channel_id, record.chain_depth) == ("front", 3)
     # Three turns (two model calls each): the human's, then one per result
@@ -106,8 +114,12 @@ async def test_a_delegation_outside_a_tool_call_opens_a_chain() -> None:
     await _until_blocked(kit)
     await asyncio.sleep(0.1)
 
-    results = [e.chain_depth for e in await _timeline(kit) if e.source.channel_id == "sms1"]
-    assert results == [0, 1, 2]
+    events = await _timeline(kit)
+    # The first result at 0: the agent answers it at 1, the next result at 2,
+    # and the answer to the last one is the refused one at the limit.
+    assert _answers(events) == [1, 2]
+    [record] = [e for e in events if e.status == EventStatus.BLOCKED]
+    assert (record.source.channel_id, record.chain_depth) == ("front", 3)
     await kit.close()
 
 

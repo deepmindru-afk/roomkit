@@ -311,11 +311,15 @@ async def main() -> None:
     print(f"  Child room parent:  {child_room.metadata.get('parent_room_id')}")
     print(f"  Child room agent:   {child_room.metadata.get('task_agent_id')}")
 
-    # ── Verify notify binding was updated ─────────────────────────────
+    # ── The notified agent was told the result ────────────────────────
+    # An instruction addressed to it: it answers at once, and its own
+    # prompt is left as configured (RFC §23.3).
 
     voice_binding = await kit.store.get_binding("call-room", "voice-assistant")
     prompt = voice_binding.metadata.get("system_prompt", "") if voice_binding else ""
-    print(f"\n  Voice agent prompt updated: {'BACKGROUND TASK COMPLETED' in prompt}")
+    print(f"\n  Voice agent prompt holds no task result: {'PR #42' not in prompt}")
+    told = any("Background task from" in str(call.messages[-1].content) for call in voice_ai.calls)
+    print(f"  Voice agent was told the result: {told}")
 
     await kit.close()
     print("\nDone!")
