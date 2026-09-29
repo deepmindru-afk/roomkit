@@ -12,6 +12,7 @@ from roomkit.models.enums import ChannelType
 from roomkit.models.streaming import StreamDelta, ToolCallEndMarker, ToolCallStartMarker
 from roomkit.models.tool_call import ToolCallCallback, ToolCallEvent
 from roomkit.providers.ai.base import AIToolResultPart, StreamToolCall
+from roomkit.providers.ai.tool_calls import cut_call_error
 from roomkit.realtime.base import EphemeralEventType
 from roomkit.tools.external import BeforeToolCallback, ExternalToolHandler
 from roomkit.tools.result import as_tool_result
@@ -65,18 +66,9 @@ class _ExternalStreamTools:
         # A proxy's embedded result means the side effect already happened.
         # Only a still-pending call can be denied or rewritten before acting.
         if not already_executed:
-            decision = await handler.process_tool_call(
-                call.name, arguments, tool_call_id=call.id, room_id=self.room_id
+            arguments, result, is_error = await self._decide(
+                handler, call, arguments, result, bool(is_error)
             )
-            if not decision.approved:
-                result = json.dumps({"error": decision.reason or f"Tool '{call.name}' was denied"})
-                is_error = True
-            else:
-                if decision.modified_input is not None:
-                    arguments = decision.modified_input
-                if decision.result is not None:
-                    result = decision.result
-                    is_error = False
         await handler.on_tool_result(
             call.name,
             arguments,
@@ -104,6 +96,37 @@ class _ExternalStreamTools:
                 round_idx,
                 duration_ms=duration_ms,
             )
+
+    async def _decide(
+        self,
+        handler: ExternalToolHandler,
+        call: StreamToolCall,
+        arguments: dict[str, Any],
+        result: str,
+        is_error: bool,
+    ) -> tuple[dict[str, Any], str, bool]:
+        """What a still-pending call becomes: its arguments, result and error flag.
+
+        A call the response cut before its arguments were complete is refused
+        without asking the handler (RFC §6.4); any other is the handler's to
+        deny, rewrite or serve.
+        """
+        if call.partial:
+            return arguments, json.dumps(cut_call_error(call.name)), True
+        decision = await handler.process_tool_call(
+            call.name, arguments, tool_call_id=call.id, room_id=self.room_id
+        )
+        if not decision.approved:
+            return (
+                arguments,
+                json.dumps({"error": decision.reason or f"Tool '{call.name}' was denied"}),
+                True,
+            )
+        if decision.modified_input is not None:
+            arguments = decision.modified_input
+        if decision.result is not None:
+            return arguments, decision.result, False
+        return arguments, result, is_error
 
     async def observe_calls(self, calls: Sequence[StreamToolCall]) -> None:
         """Notify hooks after the round when no external handler served it inline."""

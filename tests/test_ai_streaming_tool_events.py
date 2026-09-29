@@ -238,6 +238,38 @@ async def test_external_handler_streaming_publishes_tool_events() -> None:
     await kit.close()
 
 
+async def test_external_handler_is_not_asked_about_a_cut_call() -> None:
+    """A call the response cut before its arguments were complete is refused
+    without reaching the external handler (RFC §6.4)."""
+    provider = MockAIProvider(
+        streaming=True,
+        ai_responses=[
+            AIResponse(
+                content="",
+                finish_reason="length",
+                tool_calls=[
+                    AIToolCall(
+                        id="tc1", name="Bash", arguments={"raw": '{"cmd": "rm -'}, partial=True
+                    )
+                ],
+            ),
+        ],
+    )
+    kit = RoomKit()
+    handler = PolicyExternalToolHandler()
+    process_tool_call = AsyncMock(wraps=handler.process_tool_call)
+    handler.process_tool_call = process_tool_call  # type: ignore[method-assign]
+    ai = AIChannel("ai1", provider=provider, external_tool_handler=handler)
+
+    received = await _run_turn(kit, ai)
+    _, ends = _tool_events(received)
+
+    process_tool_call.assert_not_awaited()
+    assert "cut off" in ends[0].data["tool_calls"][0]["result"]
+
+    await kit.close()
+
+
 async def test_provider_executed_tool_never_fires_retroactive_before_hook() -> None:
     """An embedded result is observable, but can no longer be authorized."""
     provider = MockAIProvider(

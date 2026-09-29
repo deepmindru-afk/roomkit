@@ -146,6 +146,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The external tool handler is not asked about a call the response cut
+  (RMK-284, RFC §6.4). On the streaming external path, a call marked
+  `partial` reached `process_tool_call` like any other; it is now refused
+  with the cut error, and the handler only hears of its outcome.
 - An aborted tool round closes its TOOL_CALL_START on the realtime bus
   (RMK-282). A turn cancelled while a tool ran published the call's
   ephemeral START and never its END, in both loops, so a live surface kept
