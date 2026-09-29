@@ -804,6 +804,7 @@ class RealtimeVoiceChannel(
         role: str = "user",
         silent: bool = False,
         start_audio_stream: bool = False,
+        chain_depth: int = 0,
     ) -> VoiceInjectionResult | None:
         """Inject a text turn into the provider session.
 
@@ -822,11 +823,16 @@ class RealtimeVoiceChannel(
                 the first inject in outbound flows where the app speaks
                 first (e.g. SIP dial greetings); no-op on providers
                 that don't need priming (OpenAI, xAI).
+            chain_depth: The chain depth of what the text stands for; the
+                model's answer to it is one deeper (RFC §12.4). 0, the
+                default, for text that opens a chain.
         """
         if start_audio_stream:
             await self._provider.start_audio_stream(session)
         result = await self._provider.inject_text(session, text, role=role, silent=silent)
         if result is not None and result.status == "sent":
+            if not silent:
+                self._session_answer_depth(session.id).injected(chain_depth)
             await self._fire_text_injected(session, text, role=role)
         logger.info(
             "Text injection into session %s: %s (role=%s, silent=%s, len=%d)",

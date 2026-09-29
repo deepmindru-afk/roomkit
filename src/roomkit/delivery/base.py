@@ -48,6 +48,7 @@ class DeliveryItem(BaseModel):
     addressed_to: list[str] | None = None
     idempotency_key: str | None = None
     session_id: str | None = None
+    chain_depth: int = Field(default=0, ge=0)
     strategy: dict[str, Any] = Field(default_factory=lambda: {"type": "immediate", "params": {}})
     metadata: dict[str, Any] = Field(default_factory=dict)
     retry_count: int = 0

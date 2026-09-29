@@ -74,3 +74,26 @@ async def test_one_rooms_pipeline_does_not_hold_up_another_rooms_call(
     assert not room_a.done()
     release.set()
     await asyncio.wait_for(room_a, 1)
+
+
+async def test_async_results_continue_the_chain_of_the_turn_that_dispatched(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """RFC §19.7.3, §23.3: the results come back at the dispatching turn's depth."""
+    dispatched: list[dict[str, Any]] = []
+
+    async def run_and_deliver(**kwargs: Any) -> None:
+        dispatched.append(kwargs)
+        kwargs["on_done"]()
+
+    monkeypatch.setattr(_inject_strategy, "_async_run_and_deliver", run_and_deliver)
+    boss = _agent("boss")
+    await _installed_in_two_rooms(
+        Supervisor(boss, [_agent("researcher")], strategy="parallel", async_delivery=True)
+    )
+
+    with tool_call_in("tenant-A", chain_depth=2):
+        await boss.tool_handler("delegate_workers", {"task": "look into it"})
+    await asyncio.sleep(0)
+
+    assert [(d["room_id"], d["chain_depth"]) for d in dispatched] == [("tenant-A", 2)]

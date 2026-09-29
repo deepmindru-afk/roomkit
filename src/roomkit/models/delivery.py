@@ -100,6 +100,12 @@ class InboundMessage(BaseModel):
     # would hide what you asked and publish what you were told. Covers the
     # whole turn — text segments and tool activity alike.
     response_visibility: str | None = None
+    # The chain depth the message continues (RFC §8.3). 0, the default, opens
+    # a chain: a person, a webhook. A result delivered back to a room for a
+    # turn that delegated carries that turn's depth, so a cycle of
+    # delegation, result and delegation again ends at ``max_chain_depth``
+    # (§23.3). Set by the framework's own delivery, not by a transport.
+    chain_depth: int = Field(default=0, ge=0)
     # An instruction whose turn reads nothing of the room (RFC §10.1.1 step
     # 7): no rebuilt history, and the memory provider is not called. For a
     # pass that must start from a blank page — a summary re-run that would

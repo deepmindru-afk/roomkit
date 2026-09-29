@@ -1385,6 +1385,23 @@ class TestAsyncRunAndDeliver:
         assert "Analysis done" in delivered_text
         on_done.assert_called_once()
 
+    async def test_the_results_continue_the_dispatching_turns_chain(self) -> None:
+        """RFC §23.3: delivered at the depth of the turn that dispatched them."""
+        kit = _make_mock_kit(Room(id="r1"))
+        kit.delegate = AsyncMock(return_value=_delegated_task_with_output("Analysis done"))
+
+        await _async_run_and_deliver(
+            kit=kit,
+            room_id="r1",
+            strategy=WorkerStrategy.SEQUENTIAL,
+            workers=[_make_agent("w1")],
+            task_desc="Analyze this",
+            on_done=MagicMock(),
+            chain_depth=3,
+        )
+
+        assert kit.deliver.call_args.kwargs["chain_depth"] == 3
+
     async def test_calls_on_done_even_on_failure(self) -> None:
         kit = _make_mock_kit(Room(id="r1"))
         kit.delegate = AsyncMock(side_effect=RuntimeError("Boom"))

@@ -373,6 +373,11 @@ class InboundMixin(HelpersMixin):
         if message.idempotency_key is not None and event.idempotency_key is None:
             event = event.model_copy(update={"idempotency_key": message.idempotency_key})
 
+        # The chain the message continues (RFC §8.3, §23.3): a transport parses
+        # a person's words, which open one, so only the caller sets it.
+        if message.chain_depth:
+            event = event.model_copy(update={"chain_depth": message.chain_depth})
+
         # Where this message's answer may go — same central application, same
         # rule: a channel that resolved one itself keeps it.
         if message.response_visibility is not None and event.response_visibility is None:

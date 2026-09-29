@@ -174,7 +174,7 @@ async def _submit(
         result = (
             await channel.inject_text(session, ctx.content, silent=True)
             if silent
-            else await channel.inject_text(session, ctx.content)
+            else await channel.inject_text(session, ctx.content, chain_depth=ctx.chain_depth)
         )
         outcome = _reported(result, session.id)
         if outcome.status == "sent" and not any(

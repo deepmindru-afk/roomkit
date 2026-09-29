@@ -92,6 +92,7 @@ async def deliver_to_channel(ctx: DeliveryContext, channel_id: str) -> DeliveryO
             metadata=ctx.metadata or {},
             addressed_to=ctx.addressed_to,
             idempotency_key=ctx.idempotency_key,
+            chain_depth=ctx.chain_depth,
         ),
         room_id=ctx.room_id,
         defer_delivery=True,

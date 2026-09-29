@@ -173,6 +173,11 @@ class _ToolLoopContext:
     # ``current_tool_actor_id()`` documents the resolution a host owes it.
     actor_id: str | None = None
     room_id: str | None = None
+    # The chain depth of the response this turn produces (RFC §8.3, §21.4):
+    # a result delivered later on the turn's behalf, a background
+    # delegation's, inherits it, so a cycle of delegations ends at
+    # ``max_chain_depth`` like any chain. 0 outside a turn.
+    chain_depth: int = 0
     # The Room of the turn, as ``on_event`` received it in its ``RoomContext``:
     # the room as the store loaded it when the turn began, carried by
     # reference so a tool handler reads the same object the turn's hooks,
@@ -231,6 +236,7 @@ class _ToolLoopContext:
         if parent is not None:
             ctx.current_participant_role = parent.current_participant_role
             ctx.actor_id = parent.actor_id
+            ctx.chain_depth = parent.chain_depth
             ctx.all_context_tools = parent.all_context_tools
             ctx.withdrawn_tools = parent.withdrawn_tools
             ctx.tool_search_active = parent.tool_search_active
@@ -622,6 +628,7 @@ class AIChannel(
         event_ctx = _ToolLoopContext()
         event_ctx.current_participant_role = self._resolve_participant_role(event, context)
         event_ctx.actor_id = event.source.participant_id
+        event_ctx.chain_depth = event.chain_depth + 1
         event_ctx.room_id = context.room.id if context.room else event.room_id
         event_ctx.room = context.room
         token = _current_loop_ctx.set(event_ctx)

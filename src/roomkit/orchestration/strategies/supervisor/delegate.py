@@ -59,8 +59,13 @@ async def _async_run_and_deliver(
     task_desc: str,
     share_channels: list[str] | None = None,
     on_done: Callable[..., None],
+    chain_depth: int = 0,
 ) -> None:
     """Background: run workers → deliver results via kit.deliver().
+
+    ``chain_depth`` is the depth of the turn that dispatched the workers: the
+    results continue its chain (RFC §23.3), so a supervisor re-dispatching on
+    every result stops at ``max_chain_depth``.
 
     Individual worker lifecycle events are posted to ``kit.status_bus``
     inside ``_run_sequential`` / ``_run_parallel``. This helper emits
@@ -93,6 +98,7 @@ async def _async_run_and_deliver(
         await kit.deliver(
             room_id,
             f"Analysis results are ready. Here's what the analysts found:\n\n{results_text}",
+            chain_depth=chain_depth,
         )
         _post_worker_status(
             kit,

@@ -36,6 +36,7 @@ class DeliveryContext:
     addressed_to: list[str] | None = None
     idempotency_key: str | None = None
     session_id: str | None = None
+    chain_depth: int = 0
     _voice_sessions: list[Any] | None = field(default=None, repr=False)
     _voice_channel: Any = field(default=None, repr=False)
     _wait_for_turn: bool = field(default=True, repr=False)
@@ -120,6 +121,7 @@ class _QueuedRequest:
             and self.channel_id == other.channel_id
             and left.channel_id == right.channel_id
             and left.addressed_to == right.addressed_to
+            and left.chain_depth == right.chain_depth
             and left.session_id == right.session_id
             and left._voice_sessions == right._voice_sessions
             and left.metadata == right.metadata

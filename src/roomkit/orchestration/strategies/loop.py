@@ -28,6 +28,7 @@ from roomkit.orchestration.state import (
 )
 from roomkit.orchestration.status_bus import StatusLevel, post_agent_lifecycle
 from roomkit.orchestration.strategies.supervisor import WorkerStrategy
+from roomkit.tools.context import _current_turn_chain_depth
 
 if TYPE_CHECKING:
     from roomkit.channels.agent import Agent
@@ -289,6 +290,7 @@ class Loop(Orchestration):
                         task_desc=arguments.get("task", ""),
                         max_iterations=max_iter,
                         on_done=lambda: running.discard(rid),
+                        chain_depth=_current_turn_chain_depth(),
                     )
                 )
             except BaseException:
@@ -368,8 +370,13 @@ async def _async_loop_and_deliver(
     task_desc: str,
     max_iterations: int,
     on_done: Any,
+    chain_depth: int = 0,
 ) -> None:
-    """Background: run loop → deliver results via kit.deliver()."""
+    """Background: run loop → deliver results via kit.deliver().
+
+    At ``chain_depth``, the depth of the turn that started the loop, whose
+    chain the results continue (RFC §23.3).
+    """
     try:
         result = await _execute_loop(
             kit=kit,
@@ -387,6 +394,7 @@ async def _async_loop_and_deliver(
         await kit.deliver(
             room_id,
             f"The review loop has completed ({status}).\n\n{result['output']}",
+            chain_depth=chain_depth,
         )
     except Exception:
         logger.exception("[loop] Async loop failed")

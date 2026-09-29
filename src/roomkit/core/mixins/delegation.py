@@ -32,6 +32,7 @@ from roomkit.models.enums import (
 )
 from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.tasks.models import DelegatedTask, DelegatedTaskResult
+from roomkit.tools.context import _current_turn_chain_depth
 
 if TYPE_CHECKING:
     from roomkit.channels.base import Channel
@@ -383,9 +384,7 @@ class DelegationMixin(HelpersMixin):
                 metadata=context or {},
             )
             try:
-                await self._on_delegation_complete(
-                    cancelled, notify or handle.agent_id, deliver=False
-                )
+                await self._on_delegation_complete(cancelled, notify or handle.agent_id)
             except Exception:
                 # Best-effort: the cancellation still propagates below. Log so a
                 # failure to fire the completion (which unsticks a "running" step)
@@ -416,7 +415,7 @@ class DelegationMixin(HelpersMixin):
         # Fire completion hooks + callbacks (skip proactive delivery for inline —
         # the caller handles presenting results directly)
         notify_channel = notify or handle.agent_id
-        await self._on_delegation_complete(result, notify_channel, deliver=False)
+        await self._on_delegation_complete(result, notify_channel)
         if on_complete:
             try:
                 await on_complete(result)
@@ -439,6 +438,9 @@ class DelegationMixin(HelpersMixin):
         from roomkit.telemetry.base import Attr
 
         notify_channel = notify or handle.agent_id
+        # Read now, inside the tool call that delegated: the result continues
+        # that turn's chain (RFC §23.3), whenever it comes back.
+        chain_depth = _current_turn_chain_depth()
 
         async def _on_bg_complete(result: DelegatedTaskResult) -> None:
             telemetry.end_span(
@@ -449,6 +451,7 @@ class DelegationMixin(HelpersMixin):
                 },
             )
             await self._on_delegation_complete(result, notify_channel)
+            await self._deliver_delegation_result(result, notify_channel, chain_depth)
             if on_complete:
                 await on_complete(result)
 
@@ -464,10 +467,12 @@ class DelegationMixin(HelpersMixin):
         self,
         result: DelegatedTaskResult,
         notify_channel_id: str,
-        *,
-        deliver: bool = True,
     ) -> None:
-        """Handle delegation completion: inject result + fire hook + deliver."""
+        """Record a finished delegation where the parent room sees it.
+
+        The result joins the notified agent's system prompt, and
+        ``ON_TASK_COMPLETED`` fires in the parent room.
+        """
         # Inject result into the notified agent's system prompt
         max_delegation_prompt = 4000
         binding = await self._store.get_binding(result.parent_room_id, notify_channel_id)
@@ -521,20 +526,31 @@ class DelegationMixin(HelpersMixin):
                 "Failed to fire ON_TASK_COMPLETED hook for task %s", result.task_id
             )
 
-        # Deliver result via kit.deliver() (background path only)
-        if not deliver:
+    async def _deliver_delegation_result(
+        self,
+        result: DelegatedTaskResult,
+        notify_channel_id: str,
+        chain_depth: int,
+    ) -> None:
+        """Hand a background delegation's result back to its room, at *chain_depth*.
+
+        The depth of the turn that delegated (RFC §23.3): the notified agent's
+        answer is one deeper, so a cycle of delegation, result and delegation
+        again ends at ``max_chain_depth``. An inline delegation never comes
+        here: its caller presents the result itself.
+        """
+        if not (result.output or result.error):
             return
-        content = result.output or result.error
-        if content:
-            try:
-                prompt = (
-                    f"[Background task from {result.agent_id} completed. "
-                    f"Share the result with the user.]"
-                )
-                await self.deliver(
-                    result.parent_room_id,
-                    prompt,
-                    channel_id=notify_channel_id,
-                )
-            except Exception:
-                _tasks_logger.exception("Delivery failed for task %s", result.task_id)
+        try:
+            prompt = (
+                f"[Background task from {result.agent_id} completed. "
+                f"Share the result with the user.]"
+            )
+            await self.deliver(
+                result.parent_room_id,
+                prompt,
+                channel_id=notify_channel_id,
+                chain_depth=chain_depth,
+            )
+        except Exception:
+            _tasks_logger.exception("Delivery failed for task %s", result.task_id)

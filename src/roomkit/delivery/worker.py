@@ -176,6 +176,7 @@ async def execute_delivery(
                     addressed_to=item.addressed_to,
                     idempotency_key=item.idempotency_key,
                     session_id=item.session_id,
+                    chain_depth=item.chain_depth,
                 )
             )
             if not isinstance(outcome, DeliveryOutcome):

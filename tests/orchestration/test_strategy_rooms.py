@@ -126,6 +126,49 @@ async def test_a_voice_loop_in_two_rooms_declares_once_and_runs_for_the_calling_
     await kit.close()
 
 
+async def test_voice_results_continue_the_chain_of_the_models_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """RFC §12.4, §23.3: a realtime tool call belongs to the model's answer, one
+    deeper than what the model heard, and the results it dispatches continue it."""
+    dispatched: list[tuple[str, int]] = []
+
+    async def run_and_deliver(**kwargs: Any) -> None:
+        dispatched.append(("supervisor", kwargs["chain_depth"]))
+        kwargs["on_done"]()
+
+    async def loop_and_deliver(**kwargs: Any) -> None:
+        dispatched.append(("loop", kwargs["chain_depth"]))
+        kwargs["on_done"]()
+
+    monkeypatch.setattr(_install_auto, "_async_run_and_deliver", run_and_deliver)
+    monkeypatch.setattr(loop_module, "_async_loop_and_deliver", loop_and_deliver)
+    for orchestration, tool in (
+        (
+            lambda: Supervisor(
+                _agent("sup"),
+                [_agent("worker")],
+                strategy="sequential",
+                auto_delegate=True,
+                async_delivery=True,
+            ),
+            "delegate_workers",
+        ),
+        (
+            lambda: Loop(agent=_agent("writer"), reviewer=_agent("editor"), async_delivery=True),
+            "delegate_loop",
+        ),
+    ):
+        kit, voice, provider, sessions = await _voice_rooms(orchestration)
+        session = sessions["tenant-A"]
+        await voice.inject_text(session, "an agent's answer", chain_depth=3)
+        await provider.simulate_tool_call(session, "c1", tool, {"task": "A"})
+        await _until(lambda p=provider: len(p.tool_results) == 1)
+        await kit.close()
+
+    assert dispatched == [("supervisor", 4), ("loop", 4)]
+
+
 async def test_a_voice_supervisor_refuses_a_room_it_was_not_installed_in(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

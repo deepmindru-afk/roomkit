@@ -13,9 +13,12 @@ from roomkit.channels.ai import _current_loop_ctx, _ToolLoopContext
 
 
 @contextmanager
-def tool_call_in(room_id: str) -> Iterator[None]:
-    """Run the enclosed handler calls as calls of *room_id*'s tool loop."""
-    token = _current_loop_ctx.set(_ToolLoopContext(room_id=room_id))
+def tool_call_in(room_id: str, *, chain_depth: int = 0) -> Iterator[None]:
+    """Run the enclosed handler calls as calls of *room_id*'s tool loop.
+
+    *chain_depth* is the depth of the response the calling turn produces.
+    """
+    token = _current_loop_ctx.set(_ToolLoopContext(room_id=room_id, chain_depth=chain_depth))
     try:
         yield
     finally:

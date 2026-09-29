@@ -154,6 +154,18 @@ def current_tool_actor_id() -> str | None:
     return ctx.actor_id if ctx is not None else None
 
 
+def _current_turn_chain_depth() -> int:
+    """The chain depth of the response the current turn produces; 0 outside a turn.
+
+    What a result delivered later on the turn's behalf inherits (RFC §21.4,
+    §23.3). Internal: the delegation paths read it, no host needs to.
+    """
+    from roomkit.channels.ai import _current_loop_ctx
+
+    ctx = _current_loop_ctx.get()
+    return ctx.chain_depth if ctx is not None else 0
+
+
 def current_tool_allowed_names() -> set[str] | None:
     """Names of every tool in the current turn's resolved toolset.
 

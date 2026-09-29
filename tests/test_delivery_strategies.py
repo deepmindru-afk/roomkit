@@ -477,13 +477,14 @@ class TestDeliverToRealtimeVoice:
             bindings=[_binding("rt", ChannelType.REALTIME_VOICE)],
             channels={"rt": channel},
         )
-        ctx = DeliveryContext(kit=kit, room_id="room-1", content="msg")
+        ctx = DeliveryContext(kit=kit, room_id="room-1", content="msg", chain_depth=2)
 
         await _deliver_to_realtime_voice(channel, ctx)
 
+        # The chain the content continues rides the injection (RFC §12.4).
         assert channel.inject_text.call_count == 2
-        channel.inject_text.assert_any_call(s1, "msg")
-        channel.inject_text.assert_any_call(s2, "msg")
+        channel.inject_text.assert_any_call(s1, "msg", chain_depth=2)
+        channel.inject_text.assert_any_call(s2, "msg", chain_depth=2)
 
 
 # ===========================================================================

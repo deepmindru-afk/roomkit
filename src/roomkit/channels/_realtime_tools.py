@@ -186,6 +186,7 @@ class RealtimeToolsMixin:
     _telemetry_provider: Any
 
     _track_task: Any  # see RealtimeToolsHost — cross-mixin
+    _session_answer_depth: Any  # RealtimeTranscriptionMixin — cross-mixin
     _expect_provider_output: Any
     _update_idle_event: Any
     _compose_session_prompt: Any
@@ -660,6 +661,8 @@ class RealtimeToolsMixin:
         ctx.has_turn = False
         ctx.room_id = room_id or session.room_id
         ctx.actor_id = session.participant_id
+        # The call belongs to the model's answer, as deep as its transcript.
+        ctx.chain_depth = self._session_answer_depth(session.id).answer
         if gate_context is not None:
             ctx.room = gate_context.room
         elif self._framework is not None and ctx.room_id:

@@ -61,6 +61,7 @@ class DeliverMixin(HelpersMixin):
         addressed_to: list[str] | None = None,
         idempotency_key: str | None = None,
         session_id: str | None = None,
+        chain_depth: int = 0,
     ) -> DeliveryOutcome:
         """Deliver content to a room/channel.
 
@@ -91,6 +92,11 @@ class DeliverMixin(HelpersMixin):
             session_id: Exact realtime session on the selected channel. An ended
                 or replaced session is unavailable; no substitute is selected.
                 A keyed receipt can still be replayed after its session ends.
+            chain_depth: The chain the delivered content continues (RFC §8.3).
+                0 opens one. Content delivered for a turn, such as a
+                background task's result, passes that turn's depth, so a
+                cycle of task, result and task again ends at
+                ``max_chain_depth`` (§23.3).
 
         Returns:
             Queue acceptance or the actual execution outcome. ``sent`` does not
@@ -109,6 +115,7 @@ class DeliverMixin(HelpersMixin):
             addressed_to=addressed_to,
             idempotency_key=idempotency_key,
             session_id=session_id,
+            chain_depth=chain_depth,
         )
         if self._delivery_backend is not None:
             refusal = await reject_invalid_delivery(
