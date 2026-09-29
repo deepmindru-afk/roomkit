@@ -146,6 +146,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Realtime providers read a call's arguments as every provider does
+  (RMK-284, RFC §6.4). OpenAI Realtime passed JSON `null` as `None` and an
+  array as a list to the tool-call callbacks, the GPT-Live hosted delegation
+  had its own reading, and Deepgram turned unparseable arguments into `{}`;
+  all now go through `tool_arguments` (no arguments or `null` is `{}`,
+  anything else unparseable is kept under `raw`).
 - A Gemini Live receive loop runs in a context of its own (RMK-280). Started
   by `reconfigure` from inside a tool handler (a handoff), the new
   connection's loop inherited that call's context (its voice session, its AI

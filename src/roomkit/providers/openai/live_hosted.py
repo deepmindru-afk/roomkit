@@ -15,6 +15,7 @@ import json
 import logging
 from typing import Any
 
+from roomkit.providers.ai.tool_calls import tool_arguments
 from roomkit.providers.openai.live_config import (
     _LOG_TAG,
     HostedReasoning,
@@ -123,11 +124,7 @@ class OpenAILiveHostedDelegationMixin(RealtimeVoiceProvider):
         if call_id in state.open_calls:
             logger.warning("[%s] function call %s already in progress", _LOG_TAG, call_id)
             return
-        raw_args = item.get("arguments") or "{}"
-        try:
-            arguments = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
-        except (json.JSONDecodeError, TypeError, ValueError):
-            arguments = {"raw": raw_args}
+        arguments = tool_arguments(item.get("arguments"))
 
         pending = state.pending.setdefault(key, PendingResponse())
         pending.call_ids.add(str(call_id))
