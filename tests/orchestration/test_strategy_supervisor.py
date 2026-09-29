@@ -433,8 +433,9 @@ class TestSupervisorShareChannels:
         )
         await s.install(kit, "r1")
 
-        # Call the injected tool handler
-        result = await mock_voice.tool_handler("delegate_workers", {"task": "Analyze"})
+        # Call the injected tool handler, as the voice channel's session in r1 would
+        with tool_call_in("r1"):
+            result = await mock_voice.tool_handler("delegate_workers", {"task": "Analyze"})
         parsed = json.loads(result)
         assert parsed["status"] == "dispatched"
 

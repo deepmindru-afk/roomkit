@@ -100,6 +100,7 @@ class AIContextHost(Protocol):
         _planner: Optional task planner for planning tools.
         _user_tools: User-provided tool definitions.
         _injected_tools: Orchestration-injected tool definitions.
+        _room_tools: Tools declared in one room's turns only, by room id.
         channel_id: Unique identifier for this channel.
 
     Properties / methods provided by other mixins:
@@ -131,6 +132,7 @@ class AIContextHost(Protocol):
     _planner: TaskPlanner | None
     _user_tools: list[AITool]
     _injected_tools: list[AITool]
+    _room_tools: dict[str, list[AITool]]
     _config_provider: Any  # ConfigProvider | None — see channels/_turn_config.py
     _tool_search: bool | None
     _tool_search_pinned: set[str]
@@ -173,6 +175,7 @@ class AIContextMixin:
     _planner: TaskPlanner | None
     _user_tools: list[AITool]
     _injected_tools: list[AITool]
+    _room_tools: dict[str, list[AITool]]
     _config_provider: Any  # ConfigProvider | None — see channels/_turn_config.py
     _tool_search: bool | None
     _tool_search_pinned: set[str]
@@ -261,8 +264,10 @@ class AIContextMixin:
                 for t in raw_tools
             ]
 
-        # Inject extra tools (user-provided + orchestration handoff, etc.)
+        # Inject extra tools (user-provided + orchestration handoff, etc.),
+        # and those an orchestration strategy declared for this room only.
         tools.extend(self.extra_tools)
+        tools.extend(self._room_tools.get(binding.room_id, ()))
 
         # Inject human-input tool definitions (e.g. AskUserQuestion)
         if self._human_input_handler is not None:

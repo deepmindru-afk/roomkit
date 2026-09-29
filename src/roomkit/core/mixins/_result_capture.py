@@ -1,12 +1,13 @@
 """Room-scoped capture of a delegated agent's result-tool call.
 
 A delegated agent is one channel object serving every room it is attached to,
-so the tool handler and the injected tools a delegation installs on it are
-shared by all of them. Two delegations to the same agent in two rooms at once
-(two supervisor reviews, say) must neither read each other's result nor leave a
-handler behind them. One capture state per channel holds the channel's own
-handler, a result slot per child room, and how many delegations need each
-tool; the last delegation out restores the channel as it found it.
+so the tool handler a delegation installs on it is shared by all of them. Two
+delegations to the same agent in two rooms at once (two supervisor reviews,
+say) must neither read each other's result nor leave a handler behind them.
+One capture state per channel holds the channel's own handler and a result
+slot per child room; the last delegation out restores the handler. The result
+tool itself is declared in the child room's turns only (RFC §19.7): the
+agent's other rooms, a customer's among them, never see it.
 """
 
 from __future__ import annotations
@@ -35,7 +36,6 @@ class ResultSlot:
 class _ChannelCapture:
     original_handler: Any
     slots: dict[str, ResultSlot] = field(default_factory=dict)
-    tool_users: dict[str, int] = field(default_factory=dict)
 
     async def dispatch(self, name: str, arguments: dict[str, Any]) -> str:
         """The channel's tool handler while a delegation captures on it."""
@@ -70,8 +70,9 @@ _CAPTURES: dict[int, _ChannelCapture] = {}
 def capture_result(channel: Any, child_room_id: str, tool: ResultTool) -> Iterator[ResultSlot]:
     """Capture *tool*'s call made in *child_room_id* by the agent behind *channel*.
 
-    The tool is injected once however many delegations need it, and removed
-    when the last one ends; the channel's own handler is restored then too.
+    The tool is declared in *child_room_id*'s turns for as long as the capture
+    runs; the channel's own handler is restored when the last capture on it
+    ends.
     """
     state = _CAPTURES.get(id(channel))
     if state is None:
@@ -80,18 +81,16 @@ def capture_result(channel: Any, child_room_id: str, tool: ResultTool) -> Iterat
         channel.tool_handler = state.dispatch
     slot = ResultSlot(tool)
     state.slots[child_room_id] = slot
-    if not state.tool_users.get(tool.name):
-        channel._injected_tools.append(tool.tool)
-    state.tool_users[tool.name] = state.tool_users.get(tool.name, 0) + 1
+    room_tools = channel._room_tools.setdefault(child_room_id, [])
+    room_tools.append(tool.tool)
     try:
         yield slot
     finally:
         state.slots.pop(child_room_id, None)
-        state.tool_users[tool.name] -= 1
-        if not state.tool_users[tool.name]:
-            del state.tool_users[tool.name]
-            with contextlib.suppress(ValueError):
-                channel._injected_tools.remove(tool.tool)
+        with contextlib.suppress(ValueError):
+            room_tools.remove(tool.tool)
+        if not room_tools:
+            channel._room_tools.pop(child_room_id, None)
         if not state.slots:
             channel.tool_handler = state.original_handler
             del _CAPTURES[id(channel)]

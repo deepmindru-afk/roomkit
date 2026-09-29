@@ -38,6 +38,10 @@ if TYPE_CHECKING:
     from roomkit.channels.agent import Agent
     from roomkit.core.framework import RoomKit
 
+# The supervisors whose tool handler already serves ``delegate_workers``: a
+# second room's install declares the tool for its room, and wraps nothing.
+_SERVING: weakref.WeakSet[Any] = weakref.WeakSet()
+
 
 class _StrategyToolMixin:
     """Inject the single ``delegate_workers`` tool (deterministic execution)."""
@@ -50,21 +54,11 @@ class _StrategyToolMixin:
     _task_timeout: float
     _max_revisions: int
 
-    def _inject_strategy_tool(self, kit: RoomKit) -> None:
-        """Inject a single ``delegate_workers`` tool for deterministic execution.
-
-        The supervisor serves every room it is installed in, so a call
-        delegates from the room of the call (RFC §23.4), never from the room
-        that happened to install the tool first.
-        """
-        tool_name = _STRATEGY_TOOL_NAME
-
-        if any(t.name == tool_name for t in self._supervisor._injected_tools):
-            return
-
+    def _strategy_tool(self) -> AITool:
+        """The ``delegate_workers`` declaration: the whole team, in one call."""
         worker_roles = _worker_roles_csv(self._workers)
-        tool = AITool(
-            name=tool_name,
+        return AITool(
+            name=_STRATEGY_TOOL_NAME,
             description=(
                 f"Delegate a task to ALL workers ({worker_roles}) at once. "
                 f"Call this tool exactly ONCE with the topic. "
@@ -82,7 +76,23 @@ class _StrategyToolMixin:
                 "required": ["task"],
             },
         )
-        self._supervisor._injected_tools.append(tool)
+
+    def _inject_strategy_tool(self, kit: RoomKit, room_id: str) -> None:
+        """Declare ``delegate_workers`` in *room_id*'s turns, and serve it.
+
+        The tool is declared per installed room (RFC §19.7): not in the
+        supervisor's other rooms, nor in the ``::task-`` rooms where the
+        supervised flow runs the supervisor to frame and judge, where it must
+        answer instead of delegating again. Its handler is installed once per
+        supervisor, and a call delegates from the room of the call (RFC §23.4).
+        """
+        tool_name = _STRATEGY_TOOL_NAME
+        room_tools = self._supervisor._room_tools.setdefault(room_id, [])
+        if not any(t.name == tool_name for t in room_tools):
+            room_tools.append(self._strategy_tool())
+        if self._supervisor in _SERVING:
+            return
+        _SERVING.add(self._supervisor)
 
         original = self._supervisor.tool_handler
         strategy = self._strategy

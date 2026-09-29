@@ -431,6 +431,10 @@ class AIChannel(
         # orchestration code can inspect/modify injected tools independently.
         self._user_tools: list[AITool] = extracted_defs
         self._injected_tools: list[AITool] = []
+        # Tools declared in one room's turns only (RFC §19.7): what an
+        # orchestration strategy adds for a room must not reach the other
+        # rooms this channel object serves.
+        self._room_tools: dict[str, list[AITool]] = {}
 
         # Set _tool_handler to the unified dispatcher only when tools actually
         # exist.  Keeping it None when no tools are configured preserves the
@@ -632,6 +636,7 @@ class AIChannel(
                 bool(raw_tools)
                 or self._config_provider is not None
                 or self._channel_tool_surface()
+                or bool(self._room_tools.get(event_ctx.room_id or ""))
                 or self._external_tool_handler is not None
                 or (
                     self._human_input_handler is not None and bool(self._human_input_handler.tools)

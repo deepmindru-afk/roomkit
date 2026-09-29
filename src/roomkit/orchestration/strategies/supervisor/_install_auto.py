@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import weakref
 from typing import TYPE_CHECKING, Any
 
 from roomkit.core.task_utils import log_task_exception
@@ -17,9 +18,9 @@ from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import ChannelType as _ChannelType
 from roomkit.models.event import RoomEvent
+from roomkit.orchestration._call_room import call_room_handler
 from roomkit.orchestration.strategies.supervisor._common import (
     WorkerStrategy,
-    _fallthrough,
     _is_subtask_room,
     logger,
 )
@@ -33,6 +34,10 @@ from roomkit.orchestration.strategies.supervisor.results import _worker_roles_cs
 if TYPE_CHECKING:
     from roomkit.channels.agent import Agent
     from roomkit.core.framework import RoomKit
+
+# The supervisors whose ``on_event`` already runs the framework-driven
+# delegation: a second room's install wraps nothing.
+_AUTO_DELEGATING: weakref.WeakSet[Any] = weakref.WeakSet()
 
 
 class _AutoDelegateInstallMixin:
@@ -48,15 +53,23 @@ class _AutoDelegateInstallMixin:
     _max_revisions: int
     _task_timeout: float
 
-    def _install_auto_delegate(self, kit: RoomKit, room_id: str) -> None:
-        """Install framework-driven delegation (sync or async)."""
-        if self._async_delivery:
-            self._install_async_auto_delegate(kit, room_id)
-        else:
-            self._install_sync_auto_delegate(kit, room_id)
+    def _install_auto_delegate(self, kit: RoomKit) -> None:
+        """Install framework-driven delegation (sync or async), once.
 
-    def _install_sync_auto_delegate(self, kit: RoomKit, room_id: str) -> None:
+        The supervisor and the voice channel serve every room the strategy is
+        installed in (RFC §19.7): a second room's install finds them wired,
+        and each delegation runs for the room it came from.
+        """
+        if self._async_delivery:
+            self._install_async_auto_delegate(kit)
+        else:
+            self._install_sync_auto_delegate(kit)
+
+    def _install_sync_auto_delegate(self, kit: RoomKit) -> None:
         """Wrap supervisor's on_event — blocks until workers complete."""
+        if self._supervisor in _AUTO_DELEGATING:
+            return
+        _AUTO_DELEGATING.add(self._supervisor)
         supervisor = self._supervisor
         strategy = self._strategy
         workers = self._workers
@@ -77,7 +90,7 @@ class _AutoDelegateInstallMixin:
             if event.source.channel_type == _ChannelType.AI:
                 return ChannelOutput.empty()
 
-            rid = context.room.id if context.room else room_id
+            rid = context.room.id if context.room else event.room_id
             # Only the parent room drives delegation. Inside a child task room
             # (e.g. a supervisor review room created by the supervised loop, or
             # any delegated worker room), the supervisor must run NORMALLY —
@@ -119,7 +132,7 @@ class _AutoDelegateInstallMixin:
 
         supervisor.on_event = auto_delegate_on_event  # ty: ignore[invalid-assignment]
 
-    def _install_async_auto_delegate(self, kit: RoomKit, room_id: str) -> None:
+    def _install_async_auto_delegate(self, kit: RoomKit) -> None:
         """Inject delegate_workers tool into RealtimeVoiceChannel.
 
         The tool handler runs workers in the background and returns
@@ -163,55 +176,43 @@ class _AutoDelegateInstallMixin:
             },
         }
 
-        # Add tool to voice channel
+        # Declared and served once per voice channel: a second room's install
+        # finds it there, and one handler serves every room's calls.
         if voice_channel._tools is None:
             voice_channel._tools = []
+        if any(t.get("name") == "delegate_workers" for t in voice_channel._tools):
+            return
         voice_channel._tools.append(tool_def)
 
         # Wrap tool handler for async delegation
         original_handler = voice_channel.tool_handler
-        _running = False
-        _lock = asyncio.Lock()
+        running: set[str] = set()  # rooms whose workers are running
 
-        async def async_tool_handler(name: str, arguments: dict[str, Any]) -> str:
-            nonlocal _running
-
-            if name != "delegate_workers":
-                return await _fallthrough(original_handler, name, arguments)
-
-            async with _lock:
-                if _running:
-                    return json.dumps(
-                        {
-                            "status": "already_running",
-                            "message": "Workers are already running.",
-                        }
+        async def delegate_workers(rid: str, name: str, arguments: dict[str, Any]) -> str:
+            if rid in running:
+                return json.dumps(
+                    {"status": "already_running", "message": "Workers are already running."}
+                )
+            running.add(rid)
+            # Launch in the same step as the flag, so a second call of this
+            # room's cannot slip between them. If create_task raises (shutdown
+            # race), release the room so it isn't stuck in already_running.
+            try:
+                task = asyncio.create_task(
+                    _async_run_and_deliver(
+                        kit=kit,
+                        room_id=rid,
+                        strategy=strategy,
+                        workers=workers,
+                        task_desc=arguments.get("task", ""),
+                        share_channels=share_channels,
+                        on_done=lambda **_: running.discard(rid),
                     )
-
-                task_desc = arguments.get("task", "")
-                _running = True
-
-                # Launch workers inside the lock so _running and the
-                # task creation are atomic. If create_task raises
-                # (shutdown race), release _running so the voice
-                # channel isn't permanently stuck in already_running.
-                try:
-                    task = asyncio.create_task(
-                        _async_run_and_deliver(
-                            kit=kit,
-                            room_id=room_id,
-                            strategy=strategy,
-                            workers=workers,
-                            task_desc=task_desc,
-                            share_channels=share_channels,
-                            on_done=_clear,
-                        )
-                    )
-                    task.add_done_callback(log_task_exception)
-                except BaseException:
-                    _running = False
-                    raise
-
+                )
+                task.add_done_callback(log_task_exception)
+            except BaseException:
+                running.discard(rid)
+                raise
             return json.dumps(
                 {
                     "status": "dispatched",
@@ -220,13 +221,6 @@ class _AutoDelegateInstallMixin:
                 }
             )
 
-        def _clear(**_: Any) -> None:
-            """Accept but ignore ``success`` from _async_run_and_deliver.
-
-            The voice path has no dedup cache to evict on failure, so
-            success/failure doesn't change behaviour here.
-            """
-            nonlocal _running
-            _running = False
-
-        voice_channel.tool_handler = async_tool_handler
+        voice_channel.tool_handler = call_room_handler(
+            {"delegate_workers"}, delegate_workers, original_handler
+        )

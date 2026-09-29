@@ -58,10 +58,11 @@ async def _setup(strategy: str, workers: list[Agent]) -> tuple[RoomKit, Agent]:
 class TestStrategyToolInjection:
     async def test_strategy_injects_delegate_workers_tool(self) -> None:
         kit, supervisor = await _setup("sequential", [_agent("w1", "r1")])
-        tool_names = [t.name for t in supervisor._injected_tools]
-        assert "delegate_workers" in tool_names
+        # Declared in the room it was installed in (RFC §19.7), not channel-wide.
+        assert [t.name for t in supervisor._room_tools["room"]] == ["delegate_workers"]
+        assert "delegate_workers" not in [t.name for t in supervisor._injected_tools]
         # No per-worker tools
-        assert "delegate_to_w1" not in tool_names
+        assert "delegate_to_w1" not in [t.name for t in supervisor._injected_tools]
         await kit.close()
 
     async def test_no_strategy_injects_per_worker_tools(self) -> None:

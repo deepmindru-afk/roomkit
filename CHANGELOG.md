@@ -126,6 +126,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A strategy installed in several rooms keeps what it adds per room (RMK-276,
+  RFC §19.7). The voice supervisor (`auto_delegate=True, async_delivery=True`)
+  and the voice `Loop` declared their tool again at each room's install, so a
+  voice channel serving two rooms declared `delegate_workers` twice (a
+  provider refuses duplicate names), and ran every call for the room
+  installed last; they now declare it once, run each call for the room of
+  the session that made it, and track "already running" per room. The sync
+  auto-delegate supervisor wrapped `on_event` again at each install, so one
+  message in one of two rooms ran the whole pipeline three times; it now
+  wraps once. A delegation's `submit_result` / `submit_verdict` was declared
+  in every room the delegated agent served, a customer's included, and a
+  supervisor lost `delegate_workers` in all its rooms while one of them ran a
+  supervised step; both are now declared per room (`AIChannel._room_tools`),
+  the result tool in the child room, `delegate_workers` in the rooms the
+  supervisor was installed in.
+- A realtime `ConversationPipeline` keeps the voice channel's own tools and
+  declares the active agent's (RMK-276, RFC §19.5). Each agent's session
+  declared only the handoff tool, so the channel's tools vanished at install
+  and an agent's `tools=` were never offered; a session now declares the
+  channel's tools, the agent's and the handoff tool, and a call to one of
+  the active agent's tools is served by that agent's `tool_handler`.
 - A supervisor serving several rooms keeps their delegations apart (RMK-275,
   RFC §23.4). With `wait_for_result=False`, a worker busy with room A's task
   answered room B's delegation "already running"; with a `strategy`, room B's

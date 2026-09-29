@@ -230,9 +230,9 @@ class Supervisor(
 
         # Wire delegation based on mode
         if self._auto_delegate:
-            self._install_auto_delegate(kit, room_id)
+            self._install_auto_delegate(kit)
         elif self._strategy is not None:
-            self._inject_strategy_tool(kit)
+            self._inject_strategy_tool(kit, room_id)
         else:
             self._inject_per_worker_tools(kit)
 

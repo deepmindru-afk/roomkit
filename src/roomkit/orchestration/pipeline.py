@@ -17,11 +17,14 @@ from pydantic import BaseModel, Field
 from roomkit.models.enums import EventType, HookExecution, HookTrigger
 from roomkit.orchestration.handoff import HandoffHandler, build_handoff_tool, setup_handoff
 from roomkit.orchestration.router import ConversationRouter, RoutingConditions, RoutingRule
+from roomkit.orchestration.state import get_conversation_state
+from roomkit.tools.context import current_tool_room_id
 
 if TYPE_CHECKING:
     from roomkit.channels.agent import Agent
     from roomkit.channels.ai import ToolResult
     from roomkit.core.framework import RoomKit
+    from roomkit.providers.ai.base import AITool
 
 logger = logging.getLogger("roomkit.orchestration")
 
@@ -293,7 +296,6 @@ class ConversationPipeline:
         reconfigures the provider session on handoff.
         """
         from roomkit.channels.realtime_voice import RealtimeVoiceChannel
-        from roomkit.orchestration.state import get_conversation_state
 
         rtv = kit.channels.get(rtv_channel_id)
         if not isinstance(rtv, RealtimeVoiceChannel):
@@ -302,6 +304,8 @@ class ConversationPipeline:
 
         agent_map: dict[str, Agent] = {a.channel_id: a for a in agents}
         stage_by_agent: dict[str, PipelineStage] = {s.agent_id: s for s in self._stages}
+        # The channel's own tools stay declared under every agent (RFC §19.5).
+        channel_tools = [dict(t) for t in rtv._tools or []]
 
         # Build per-agent configurations
         agent_configs: dict[str, dict[str, Any]] = {}
@@ -334,7 +338,7 @@ class ConversationPipeline:
             agent_configs[agent.channel_id] = {
                 "system_prompt": prompt or None,
                 "voice": agent.voice,
-                "tools": [tool.model_dump()],
+                "tools": _agent_session_tools(channel_tools, agent, tool),
             }
 
         # Set initial agent config on the RealtimeVoiceChannel
@@ -384,9 +388,9 @@ class ConversationPipeline:
             arguments: dict[str, Any],
         ) -> ToolResult:
             if name != "handoff_conversation":
-                if original_handler:
-                    return await original_handler(name, arguments)
-                return json.dumps({"error": f"Unknown tool: {name}"})
+                return await _serve_agent_or_channel_tool(
+                    kit, agent_map, default_agent_id, original_handler, name, arguments
+                )
 
             # Lazy import to avoid circular dependency
             from roomkit.channels.realtime_voice import get_current_voice_session
@@ -595,3 +599,48 @@ class ConversationPipeline:
                 if ctx.room.id in _handoff_pending:
                     return HookResult.block("handoff_transition")
                 return HookResult.allow()
+
+
+def _agent_session_tools(
+    channel_tools: list[dict[str, Any]], agent: Agent, handoff: AITool
+) -> list[dict[str, Any]]:
+    """The tools an agent's realtime session declares (RFC §19.5).
+
+    The channel's own tools, the agent's, then the handoff tool; a later tool
+    replaces an earlier one of the same name, so an agent may specialise one.
+    """
+    declared = [*channel_tools, *(t.model_dump() for t in agent._user_tools), handoff.model_dump()]
+    return list({tool["name"]: tool for tool in declared}.values())
+
+
+async def _serve_agent_or_channel_tool(
+    kit: RoomKit,
+    agent_map: dict[str, Agent],
+    default_agent_id: str,
+    channel_handler: Any,
+    name: str,
+    arguments: dict[str, Any],
+) -> ToolResult:
+    """Serve a call other than the handoff: the active agent's own tool by that
+    agent's handler, any other tool by the channel's (RFC §19.5)."""
+    agent = await _active_agent(kit, agent_map, default_agent_id)
+    if (
+        agent is not None
+        and agent.tool_handler is not None
+        and any(t.name == name for t in agent._user_tools)
+    ):
+        return await agent.tool_handler(name, arguments)
+    if channel_handler is not None:
+        return await channel_handler(name, arguments)
+    return json.dumps({"error": f"Unknown tool: {name}"})
+
+
+async def _active_agent(
+    kit: RoomKit, agent_map: dict[str, Agent], default_agent_id: str
+) -> Agent | None:
+    """The agent the call's room is talking to, by its conversation state."""
+    room_id = current_tool_room_id()
+    if room_id is None:
+        return None
+    state = get_conversation_state(await kit.get_room(room_id))
+    return agent_map.get(state.active_agent_id or default_agent_id)

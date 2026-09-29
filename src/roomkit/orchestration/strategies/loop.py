@@ -17,6 +17,7 @@ from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import ChannelType
 from roomkit.models.event import EventSource, RoomEvent, TextContent
+from roomkit.orchestration._call_room import call_room_handler
 from roomkit.orchestration.base import Orchestration
 from roomkit.orchestration.state import (
     ConversationState,
@@ -143,7 +144,7 @@ class Loop(Orchestration):
             kit.register_channel(producer)
 
         if async_delivery:
-            self._install_async_loop(kit, room_id)
+            self._install_async_loop(kit)
         else:
 
             async def loop_on_event(
@@ -187,8 +188,13 @@ class Loop(Orchestration):
 
     # -- Async delivery (voice) -----------------------------------------------
 
-    def _install_async_loop(self, kit: RoomKit, room_id: str) -> None:
-        """Inject delegate_workers tool into RealtimeVoiceChannel for async loop."""
+    def _install_async_loop(self, kit: RoomKit) -> None:
+        """Inject the ``delegate_loop`` tool into RealtimeVoiceChannel, once.
+
+        The voice channel serves every room the loop is installed in (RFC
+        §19.7): a second room's install finds the tool there, and each call
+        runs the loop for the room it came from.
+        """
         from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 
         producer = self._agent
@@ -228,44 +234,32 @@ class Loop(Orchestration):
 
         if voice_channel._tools is None:
             voice_channel._tools = []
+        if any(t.get("name") == "delegate_loop" for t in voice_channel._tools):
+            return
         voice_channel._tools.append(tool_def)
 
         original_handler = voice_channel.tool_handler
-        _running = False
+        running: set[str] = set()  # rooms whose loop is running
 
-        async def async_loop_handler(name: str, arguments: dict[str, Any]) -> ToolResult:
-            nonlocal _running
-
-            if name != "delegate_loop":
-                if original_handler:
-                    return await original_handler(name, arguments)
-                return json.dumps({"error": f"Unknown tool: {name}"})
-
-            if _running:
+        async def delegate_loop(rid: str, name: str, arguments: dict[str, Any]) -> ToolResult:
+            if rid in running:
                 return json.dumps(
-                    {
-                        "status": "already_running",
-                        "message": "Loop is already running.",
-                    }
+                    {"status": "already_running", "message": "Loop is already running."}
                 )
-
-            task_desc = arguments.get("task", "")
-            _running = True
-
+            running.add(rid)
             task = asyncio.create_task(
                 _async_loop_and_deliver(
                     kit=kit,
-                    room_id=room_id,
+                    room_id=rid,
                     producer=producer,
                     reviewers=reviewers,
                     strategy=strategy,
-                    task_desc=task_desc,
+                    task_desc=arguments.get("task", ""),
                     max_iterations=max_iter,
-                    on_done=lambda: _clear(),
+                    on_done=lambda: running.discard(rid),
                 )
             )
             task.add_done_callback(log_task_exception)
-
             return json.dumps(
                 {
                     "status": "started",
@@ -273,11 +267,9 @@ class Loop(Orchestration):
                 }
             )
 
-        def _clear() -> None:
-            nonlocal _running
-            _running = False
-
-        voice_channel.tool_handler = async_loop_handler
+        voice_channel.tool_handler = call_room_handler(
+            {"delegate_loop"}, delegate_loop, original_handler
+        )
 
 
 # ---------------------------------------------------------------------------

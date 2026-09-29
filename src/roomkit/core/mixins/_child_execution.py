@@ -232,7 +232,7 @@ class _InjectableToolChannel(Protocol):
     both members.
     """
 
-    _injected_tools: list[Any]
+    _room_tools: dict[str, list[Any]]
     tool_handler: Any
 
 

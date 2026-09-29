@@ -285,8 +285,7 @@ class TestSupervisorInstall:
         )
         await s.install(kit, "r1")
 
-        tool_names = [t.name for t in boss._injected_tools]
-        assert "delegate_workers" in tool_names
+        assert [t.name for t in boss._room_tools["r1"]] == ["delegate_workers"]
 
     async def test_install_per_worker_tools(self) -> None:
         boss = _make_agent("boss")
@@ -327,11 +326,14 @@ class TestSupervisorInstall:
             strategy="sequential",
         )
         await s.install(kit, "r1")
+        handler = boss.tool_handler
         kit2 = _make_mock_kit(Room(id="r2"))
         await s.install(kit2, "r2")
 
-        tool_count = sum(1 for t in boss._injected_tools if t.name == "delegate_workers")
-        assert tool_count == 1
+        # Declared once in each room it serves, and served by one handler.
+        for room_id in ("r1", "r2"):
+            assert [t.name for t in boss._room_tools[room_id]] == ["delegate_workers"]
+        assert boss.tool_handler is handler
 
     async def test_router_hook_installed_in_strategy_tool_async_delivery(self) -> None:
         """Strategy-tool mode: router is installed even with async_delivery.
@@ -777,44 +779,35 @@ class TestSupervisedSequential:
         assert [s["role"] for s in steps] == ["Researcher", "Writer"]
         assert [s["approved"] for s in steps] == [True, True]
 
-    async def test_strategy_tool_stripped_during_dispatch_review(self) -> None:
-        """Regression: in strategy-tool mode the supervisor owns delegate_workers.
-        It must NOT carry that tool into its own dispatch/review sub-runs — else it
-        re-delegates (delegate_workers within delegate_workers) and the run stalls.
-        The tool is stripped while the supervisor runs, and restored afterwards."""
-        from roomkit.providers.ai.base import AITool
-
+    async def test_dispatch_and_review_leave_the_strategy_tool_in_its_room(self) -> None:
+        """In strategy-tool mode the supervisor owns delegate_workers, declared in
+        the room it was installed in (RFC §19.7). Its dispatch and review run in
+        ``::task-`` child rooms, where the tool is not declared, so the flow has
+        nothing to strip, and another room's supervisor keeps the tool meanwhile."""
         kit = _make_mock_kit(Room(id="r1"))
         boss = _make_agent("boss", role="Supervisor")
-        boss._injected_tools.append(
-            AITool(
-                name="delegate_workers",
-                description="dispatch the team",
-                parameters={"type": "object", "properties": {}},
-            )
-        )
         w1 = _make_agent("w1", role="Researcher")
+        await Supervisor(supervisor=boss, workers=[w1], strategy="sequential").install(kit, "r1")
         verdicts = [{"approved": True, "feedback": "", "next_task": ""}]
         router, _calls = _supervised_delegate_router("boss", verdicts, dispatch="framed")
-
-        tools_seen_by_boss: list[list[str]] = []
+        declared_during: list[dict[str, list[str]]] = []
 
         async def recording(
             room_id: str, channel_id: str, task: str, *, wait: bool = False, **kw: Any
         ) -> Any:
             if channel_id == "boss":
-                tools_seen_by_boss.append([t.name for t in boss._injected_tools])
+                declared_during.append(
+                    {rid: [t.name for t in tools] for rid, tools in boss._room_tools.items()}
+                )
             return await router(room_id, channel_id, task, wait=wait, **kw)
 
         kit.delegate = AsyncMock(side_effect=recording)
 
         await _run_supervised_sequential(kit, "r1", boss, [w1], "research", max_revisions=3)
 
-        # The supervisor was invoked (dispatch + review) and never saw delegate_workers.
-        assert tools_seen_by_boss
-        assert all("delegate_workers" not in names for names in tools_seen_by_boss)
-        # Restored after the run so the supervisor can delegate again on its next turn.
-        assert "delegate_workers" in [t.name for t in boss._injected_tools]
+        assert declared_during
+        assert all(seen == {"r1": ["delegate_workers"]} for seen in declared_during)
+        assert "delegate_workers" not in [t.name for t in boss._injected_tools]
 
     async def test_rework_on_rejection_then_approve(self) -> None:
         kit = _make_mock_kit(Room(id="r1"))

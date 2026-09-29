@@ -47,7 +47,7 @@ def _make_kit(
     kit.store.commit_event = AsyncMock(side_effect=lambda _rid, ev: ev)
     kit._commit_indexed = AsyncMock(side_effect=lambda _rid, ev: ev)
 
-    channel = SimpleNamespace(_injected_tools=[], tool_handler=None, role="Researcher")
+    channel = SimpleNamespace(_room_tools={}, tool_handler=None, role="Researcher")
     kit.channels = {agent_id: channel}
     counter: dict[str, Any] = {"n": 0, "messages": []}
 
@@ -78,8 +78,8 @@ class TestStructuredResultGuard:
         assert payload["status"] == "completed"
         assert payload["data"] == {"x": 1}
         assert counter["n"] == 1  # no retries needed
-        # The tool was cleaned up afterwards (no leak onto the shared channel).
-        assert channel._injected_tools == []
+        # The tool was declared in the child room only, and removed afterwards.
+        assert channel._room_tools == {}
         assert channel.tool_handler is None
 
     async def test_reprompts_until_worker_submits(self) -> None:
@@ -118,7 +118,7 @@ def _make_cc_kit(events: list[RoomEvent]):
     kit.store.add_event_auto_index = AsyncMock(side_effect=lambda _rid, ev: ev)
     kit.store.commit_event = AsyncMock(side_effect=lambda _rid, ev: ev)
     kit._commit_indexed = AsyncMock(side_effect=lambda _rid, ev: ev)
-    channel = SimpleNamespace(_injected_tools=[], tool_handler=None, role="Researcher")
+    channel = SimpleNamespace(_room_tools={}, tool_handler=None, role="Researcher")
     kit.channels = {"agent:w1": channel}
 
     async def _broadcast(_event, _binding, _context):
@@ -222,7 +222,7 @@ class TestAnotherResultTool:
         original_broadcast = kit._get_router.return_value.broadcast.side_effect
 
         async def _spy(event, binding, context):
-            seen.append([t.name for t in channel._injected_tools])
+            seen.append([t.name for t in channel._room_tools.get("parent::task-1", [])])
             return await original_broadcast(event, binding, context)
 
         kit._get_router.return_value.broadcast.side_effect = _spy
@@ -233,7 +233,7 @@ class TestAnotherResultTool:
 
         assert json.loads(out) == {"approved": True, "feedback": "", "next_task": "write it up"}
         assert seen == [["submit_verdict"]]
-        assert channel._injected_tools == []
+        assert channel._room_tools == {}
 
     async def test_its_reminder_and_its_missing_payload_are_used(self) -> None:
         kit, _channel, counter = _make_kit(

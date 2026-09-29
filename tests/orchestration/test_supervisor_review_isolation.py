@@ -12,16 +12,11 @@ import asyncio
 from typing import Any
 
 from roomkit import Agent, RoomKit
-from roomkit.orchestration.strategies.supervisor.supervised import (
-    _STRATEGY_TOOL_NAME,
-    _supervisor_review,
-    _supervisor_without_strategy_tool,
-)
+from roomkit.orchestration.strategies.supervisor.supervised import _supervisor_review
 from roomkit.providers.ai.base import (
     AIContext,
     AIProvider,
     AIResponse,
-    AITool,
     AIToolCall,
     AIToolResultPart,
 )
@@ -122,21 +117,4 @@ class TestReviewThroughTheToolLoop:
         # And the shared channel is left as it was found.
         assert boss.tool_handler is handler_before
         assert boss._injected_tools == tools_before
-
-
-class TestStrategyToolAcrossOverlappingSubRuns:
-    async def test_the_tool_comes_back_once_the_last_sub_run_ends(self) -> None:
-        boss = Agent("boss", provider=_JudgeByOutput(), role="Supervisor")
-        strategy = AITool(name=_STRATEGY_TOOL_NAME, description="delegate")
-        boss._injected_tools.append(strategy)
-
-        first = _supervisor_without_strategy_tool(boss)
-        second = _supervisor_without_strategy_tool(boss)
-        first.__enter__()
-        second.__enter__()
-        assert strategy not in boss._injected_tools
-        first.__exit__(None, None, None)
-        assert strategy not in boss._injected_tools  # the second is still running
-        second.__exit__(None, None, None)
-
-        assert boss._injected_tools.count(strategy) == 1
+        assert boss._room_tools == {}
