@@ -175,6 +175,24 @@ class AIToolsHost(Protocol):
     def _gate_refusal(self, name: str) -> dict[str, str] | None: ...
 
 
+def _cut_call_error(tc: Any) -> dict[str, Any]:
+    """What the model reads for a call the output cap cut (RFC §6.4).
+
+    Its arguments stopped before they were complete, so running it would act
+    on a fragment: it does not run, and the model learns why and can call
+    again with less.
+    """
+    logger.warning("Provider cut tool call %s (%s) before its arguments ended", tc.name, tc.id)
+    return {
+        "error": "Tool call cut off",
+        "tool": tc.name,
+        "hint": (
+            "The output limit cut this call before its arguments were complete, "
+            "so it did not run. Call it again, with shorter arguments if you can."
+        ),
+    }
+
+
 class AIToolsMixin:
     """Parallel tool execution, skill tool definitions, and dispatch routing.
 
@@ -365,6 +383,8 @@ class AIToolsMixin:
                     tool_call_id=tc.id, name=tc.name, result=body, is_error=True
                 )
 
+            if getattr(tc, "partial", False):
+                return await rejected(_cut_call_error(tc))
             # A tool BEFORE_AI_GENERATION withdrew is gone for the turn, the
             # channel's own included: no exemption below may bring it back.
             if tc.name in self._get_loop_ctx().withdrawn_tools:

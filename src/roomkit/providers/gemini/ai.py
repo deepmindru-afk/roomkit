@@ -81,6 +81,29 @@ def _parts_layout(parts: list[Any]) -> str:
     return " ".join(out) or "(empty)"
 
 
+def _call_key(fc: Any, name: str, args: dict[str, Any], in_chunk: dict[str, int]) -> str:
+    """Which call of the response a function-call part is.
+
+    Gemini can re-emit a call in a later chunk (the first carrying its
+    thought_signature), and a re-emission must fold into it; but two
+    identical calls in one chunk ("roll two dice") are two calls. The call's
+    own id identifies it when Gemini gives one; otherwise its name and
+    arguments do, counted within the chunk, so a later chunk's re-emission
+    lands on the first occurrence.
+    """
+    call_id = getattr(fc, "id", None)
+    if call_id:
+        return f"id::{call_id}"
+    try:
+        fingerprint = json.dumps(args, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        fingerprint = repr(args)
+    base = f"{name}::{fingerprint}"
+    occurrence = in_chunk.get(base, 0)
+    in_chunk[base] = occurrence + 1
+    return f"{base}#{occurrence}"
+
+
 class GeminiAIProvider(AIProvider):
     """AI provider using the Google Gemini API."""
 
@@ -280,6 +303,9 @@ class GeminiAIProvider(AIProvider):
                 ):
                     logger.debug("Gemini stream chunk parts: %s", _parts_layout(parts))
 
+                # A call re-emitted in a later chunk folds into the first; two
+                # identical calls of one chunk are two calls (RFC §6.4).
+                in_chunk: dict[str, int] = {}
                 for part in parts:
                     if hasattr(part, "text") and part.text:
                         if first_token:
@@ -302,11 +328,7 @@ class GeminiAIProvider(AIProvider):
                             if isinstance(raw_sig, bytes)
                             else raw_sig
                         )
-                        try:
-                            fp = json.dumps(fc_args, sort_keys=True, default=str)
-                        except (TypeError, ValueError):
-                            fp = repr(fc_args)
-                        key = f"{fc_name}::{fp}"
+                        key = _call_key(fc, fc_name, fc_args, in_chunk)
                         if key not in fcalls:
                             fcalls[key] = {
                                 "id": f"call_{uuid4().hex[:12]}",
@@ -388,6 +410,7 @@ class GeminiAIProvider(AIProvider):
                         name=event.name,
                         arguments=event.arguments,
                         metadata=event.metadata,
+                        partial=event.partial,
                     )
                 )
             elif isinstance(event, StreamDone):

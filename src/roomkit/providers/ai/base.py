@@ -53,6 +53,9 @@ class AIToolCall(BaseModel):
     name: str
     arguments: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    partial: bool = False
+    """The output cap cut the call before its arguments were complete; the
+    tool loop does not run it and tells the model why (RFC §6.4)."""
 
 
 class AIToolCallPart(BaseModel):
@@ -425,6 +428,8 @@ class StreamToolCall(BaseModel):
     name: str
     arguments: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    partial: bool = False
+    """As :attr:`AIToolCall.partial`: the output cap cut the call's arguments."""
 
 
 class StreamToolCallDelta(BaseModel):
@@ -830,7 +835,9 @@ class AIProvider(ABC):
         if response.content:
             yield StreamTextDelta(text=response.content)
         for tc in response.tool_calls:
-            yield StreamToolCall(id=tc.id, name=tc.name, arguments=tc.arguments)
+            yield StreamToolCall(
+                id=tc.id, name=tc.name, arguments=tc.arguments, partial=tc.partial
+            )
         yield StreamDone(
             finish_reason=response.finish_reason,
             usage=response.usage,

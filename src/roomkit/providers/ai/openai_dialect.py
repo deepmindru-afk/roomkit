@@ -16,7 +16,8 @@ from __future__ import annotations
 import re
 from typing import Any, Literal
 
-from roomkit.providers.ai.base import StreamToolCallDelta
+from roomkit.providers.ai.base import StreamToolCall, StreamToolCallDelta
+from roomkit.providers.ai.tool_calls import CallIds, arguments_cut, is_truncation, tool_arguments
 
 _THINK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
 
@@ -158,6 +159,50 @@ def fold_tool_call_fragment(
     return StreamToolCallDelta(
         id=slot["id"], name=slot["name"], index=index, arguments_delta=fragment
     )
+
+
+class ToolCallSlots:
+    """Streamed tool-call fragments folded into calls, one slot per call.
+
+    A fragment belongs to the call its stream index names, unless it carries
+    an id other than that call's: then it is another call, since a server that
+    sends each call whole may tag every one with index 0 (Mistral's SDK
+    defaults it), and folding them together would run one call made of two.
+    """
+
+    def __init__(self) -> None:
+        self._slots: list[dict[str, str]] = []
+        self._by_index: dict[int, int] = {}
+
+    def fold(
+        self, index: int | None, call_id: str | None, name: str | None, fragment: str
+    ) -> StreamToolCallDelta | None:
+        """Fold one fragment in; return the composition event it warrants."""
+        key = index if index is not None else 0
+        position = self._by_index.get(key)
+        held = self._slots[position]["id"] if position is not None else ""
+        if position is None or (call_id and held and call_id != held):
+            self._slots.append({"id": "", "name": "", "arguments": ""})
+            position = self._by_index[key] = len(self._slots) - 1
+        slot = self._slots[position]
+        if call_id:
+            slot["id"] = call_id
+        return fold_tool_call_fragment(slot, position, name, fragment)
+
+    def calls(self, finish_reason: str | None) -> list[StreamToolCall]:
+        """The complete calls, each with its own id and its arguments as a
+        mapping; one whose arguments the output cap cut is partial (RFC §6.4)."""
+        ids = CallIds()
+        truncated = is_truncation(finish_reason)
+        return [
+            StreamToolCall(
+                id=ids(slot["id"], slot["name"]),
+                name=slot["name"],
+                arguments=tool_arguments(slot["arguments"]),
+                partial=truncated and arguments_cut(slot["arguments"]),
+            )
+            for slot in self._slots
+        ]
 
 
 def extract_think_tags(text: str) -> tuple[str | None, str]:

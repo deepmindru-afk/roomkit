@@ -58,14 +58,13 @@ from roomkit.providers.ai.base import (
     StreamEvent,
     StreamTextDelta,
     StreamThinkingDelta,
-    StreamToolCall,
     StreamToolCallDelta,
 )
 from roomkit.providers.ai.image_parts import image_part_uri
 from roomkit.providers.ai.openai_dialect import (
     ThinkTagParser,
+    ToolCallSlots,
     extract_think_tags,
-    fold_tool_call_fragment,
     json_schema_format,
 )
 from roomkit.providers.ai.response_schema import (
@@ -73,6 +72,7 @@ from roomkit.providers.ai.response_schema import (
     checked_stream,
     schema_for_generate,
 )
+from roomkit.providers.ai.tool_calls import CallIds, arguments_cut, is_truncation, tool_arguments
 from roomkit.providers.polargrid.config import PolarGridConfig
 from roomkit.providers.polargrid.models import (
     MODELS,
@@ -505,7 +505,7 @@ class PolarGridAIProvider(AIProvider):
         finish_reason = getattr(choice, "finish_reason", None)
         usage = self._extract_usage(response)
         model = getattr(response, "model", self._config.model)
-        tool_calls = self._extract_tool_calls(message)
+        tool_calls = self._extract_tool_calls(message, finish_reason)
         if not tool_calls:
             self._check_schema_answer(context, content, finish_reason)
 
@@ -581,7 +581,7 @@ class PolarGridAIProvider(AIProvider):
         first_token = True
         finish_reason: str | None = None
         usage: dict[str, int] = {}
-        tool_accum: dict[int, dict[str, str]] = {}
+        tool_call_slots = ToolCallSlots()
         parser = ThinkTagParser()
 
         try:
@@ -606,7 +606,7 @@ class PolarGridAIProvider(AIProvider):
                     if first_token:
                         self._record_ttfb(t0)
                         first_token = False
-                    for composed in self._accumulate_tool_deltas(tool_accum, tool_deltas):
+                    for composed in self._accumulate_tool_deltas(tool_call_slots, tool_deltas):
                         yield composed
 
                 text = getattr(delta, "content", None)
@@ -627,7 +627,7 @@ class PolarGridAIProvider(AIProvider):
                 else:
                     yield StreamTextDelta(text=segment)
 
-            for event in self._finalize_tool_calls(tool_accum):
+            for event in tool_call_slots.calls(finish_reason):
                 yield event
 
             yield StreamDone(finish_reason=finish_reason, usage=usage)
@@ -638,45 +638,33 @@ class PolarGridAIProvider(AIProvider):
 
     # -- Helpers ------------------------------------------------------------
 
-    @staticmethod
-    def _parse_arguments(raw: Any) -> dict[str, Any]:
-        """Coerce PolarGrid's JSON-string tool arguments into a dict.
-
-        RoomKit's ``AIToolCall.arguments`` is a dict; PolarGrid sends a
-        JSON string. Already-dict inputs pass through; malformed or
-        non-object JSON is preserved under a ``raw`` key so nothing is
-        silently lost.
-        """
-        if isinstance(raw, dict):
-            return raw
-        if not raw:
-            return {}
-        try:
-            parsed = json.loads(raw)
-        except (json.JSONDecodeError, TypeError):
-            return {"raw": raw}
-        return parsed if isinstance(parsed, dict) else {"raw": raw}
-
-    def _extract_tool_calls(self, message: Any) -> list[AIToolCall]:
-        """Read non-streaming ``message.tool_calls`` into AIToolCalls."""
+    def _extract_tool_calls(self, message: Any, finish_reason: str | None) -> list[AIToolCall]:
+        """Read non-streaming ``message.tool_calls`` into AIToolCalls (RFC §6.4)."""
         raw_calls = getattr(message, "tool_calls", None) or []
+        ids = CallIds()
+        truncated = is_truncation(finish_reason)
         result: list[AIToolCall] = []
         for tc in raw_calls:
             func = getattr(tc, "function", None)
             if func is None:
                 continue
-            name = getattr(func, "name", "") or ""
-            arguments = self._parse_arguments(getattr(func, "arguments", ""))
-            call_id = getattr(tc, "id", None) or f"call_{name}"
-            result.append(AIToolCall(id=str(call_id), name=str(name), arguments=arguments))
+            name = str(getattr(func, "name", "") or "")
+            raw = getattr(func, "arguments", "")
+            result.append(
+                AIToolCall(
+                    id=ids(getattr(tc, "id", None), name),
+                    name=name,
+                    arguments=tool_arguments(raw),
+                    partial=truncated and arguments_cut(raw),
+                )
+            )
         return result
 
     @staticmethod
     def _accumulate_tool_deltas(
-        accum: dict[int, dict[str, str]],
-        deltas: list[Any],
+        slots: ToolCallSlots, deltas: list[Any]
     ) -> list[StreamToolCallDelta]:
-        """Fold streamed ``ToolCallDelta`` fragments into per-index slots.
+        """Fold streamed ``ToolCallDelta`` fragments (plain dicts) into *slots*.
 
         Returns the composition events the caller yields: the call's name on
         the fragment that first carries it, then one per argument fragment, so
@@ -685,34 +673,18 @@ class PolarGridAIProvider(AIProvider):
         """
         composed: list[StreamToolCallDelta] = []
         for d in deltas:
-            idx = getattr(d, "index", 0) or 0
-            slot = accum.setdefault(idx, {"id": "", "name": "", "arguments": ""})
-            d_id = getattr(d, "id", None)
-            if d_id:
-                slot["id"] = d_id
             func = getattr(d, "function", None)
             if not isinstance(func, dict):
-                continue
-            event = fold_tool_call_fragment(
-                slot, idx, func.get("name"), func.get("arguments") or ""
+                func = {}
+            event = slots.fold(
+                getattr(d, "index", None),
+                getattr(d, "id", None),
+                func.get("name"),
+                func.get("arguments") or "",
             )
             if event is not None:
                 composed.append(event)
         return composed
-
-    def _finalize_tool_calls(self, accum: dict[int, dict[str, str]]) -> list[StreamToolCall]:
-        """Turn accumulated tool-call slots into StreamToolCall events."""
-        events: list[StreamToolCall] = []
-        for idx in sorted(accum):
-            slot = accum[idx]
-            events.append(
-                StreamToolCall(
-                    id=slot["id"],
-                    name=slot["name"],
-                    arguments=self._parse_arguments(slot["arguments"]),
-                )
-            )
-        return events
 
     @staticmethod
     def _extract_usage(obj: Any) -> dict[str, int]:

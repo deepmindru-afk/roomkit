@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `AIToolCall.partial` and `StreamToolCall.partial` (RMK-284, RFC §6.4): the
+  provider marks a call the output cap cut before its arguments were
+  complete; the tool loop does not run it and answers the model that it was
+  cut, so it can call again with less. `roomkit.providers.ai.tool_calls`
+  holds the shared rules every provider reads a call by (`tool_arguments`,
+  `arguments_cut`, `CallIds`, `is_truncation`).
 - `ChannelOutput.error` (RMK-156): an error a channel met while producing an
   output it still delivers. The router records it as it records a raised
   one, so `ON_ERROR` fires and the caller's `InboundResult.error` carries it,
@@ -139,6 +145,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Every provider hands the tool loop the same call (RMK-284, RFC §6.4). A
+  call the output cap cut mid-arguments ran anyway, with `{}` on Anthropic
+  and `{"raw": "<fragment>"}` on the OpenAI dialect; it is now marked partial
+  and never runs. `null` or array arguments raised a raw `ValidationError`
+  (buffered) or a non-retryable `ProviderError` (streamed); arguments are now
+  always a mapping (empty `{}`, anything unparseable under `raw`), the same in
+  both modes. Calls the server gave no id (OpenAI dialect, Mistral) or the
+  same id (PolarGrid) now get distinct ones. Two whole calls sent on one
+  stream index (Mistral's SDK defaults it to 0) no longer fold into one call.
+  Gemini no longer merges two identical calls of one round ("roll two
+  dice"), while a call re-emitted in a later chunk still folds into the
+  first.
 - The chain-depth limit holds for a streamed response (RMK-283, RFC §8.3).
   The router applied it only to buffered responses: a streamed one (every
   in-repo provider streams) answering a trigger already one below

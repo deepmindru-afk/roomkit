@@ -29,6 +29,7 @@ from roomkit.providers.ai.base import (
     AIToolCallPart,
 )
 from roomkit.providers.ai.response_schema import ResponseSchemaError
+from roomkit.providers.ai.tool_calls import is_truncation
 from roomkit.realtime.base import EphemeralEventType
 
 if TYPE_CHECKING:
@@ -67,11 +68,6 @@ _FORCE_STOP_NUDGE = (
 
 # Every provider reports "I hit the output cap" in its own vocabulary, and
 # RoomKit forwards the raw value rather than inventing a normalized one:
-# OpenAI-compatible servers and Ollama's ``done_reason`` say ``length``,
-# Anthropic's ``stop_reason`` says ``max_tokens``, Gemini's candidate says
-# ``MAX_TOKENS``. A rule that knew only one spelling would cover only the
-# providers using it, which is the failure mode this module exists to prevent.
-_TRUNCATION_FINISH_REASONS = frozenset({"length", "max_tokens"})
 
 
 def _accumulate_usage(total: dict[str, int], round_usage: dict[str, Any]) -> None:
@@ -86,15 +82,6 @@ def _accumulate_usage(total: dict[str, int], round_usage: dict[str, Any]) -> Non
     for counter, value in round_usage.items():
         if isinstance(value, int):
             total[counter] = total.get(counter, 0) + value
-
-
-def _is_truncation(finish_reason: str | None) -> bool:
-    """Whether a round ended by exhausting its output budget.
-
-    Compared case-insensitively so Gemini's ``MAX_TOKENS`` and Anthropic's
-    ``max_tokens`` are one entry rather than two.
-    """
-    return finish_reason is not None and finish_reason.lower() in _TRUNCATION_FINISH_REASONS
 
 
 # How a tool loop can stop short of its final answer. A turn constrained to a
@@ -149,7 +136,7 @@ def final_round_reason(
         return "force_stopped"
     if final_text.strip() or not had_tool_round:
         return "completed"
-    if _is_truncation(finish_reason):
+    if is_truncation(finish_reason):
         return "truncated"
     if deadline_exceeded:
         return "timeout"
@@ -340,14 +327,14 @@ class AIToolLoopRulesMixin:
         been appended and the retry counted. The deadline term is evaluated
         last so no clock read happens when an earlier term already fails.
 
-        A truncated round (see ``_is_truncation``) is a different failure and
+        A truncated round (see ``is_truncation``) is a different failure and
         is not retried: the round did not fall silent, it ran out of output
         budget — typically a reasoning model that spent the whole cap inside
         its thinking block, so ``content`` arrives empty. Re-prompting under
         the same cap truncates again, so the nudge is skipped in favour of a
         log line naming the actual cause.
         """
-        if had_tool_round and not final_text.strip() and _is_truncation(finish_reason):
+        if had_tool_round and not final_text.strip() and is_truncation(finish_reason):
             logger.warning(
                 "%s: response truncated at the output cap before any final text "
                 "(finish_reason=%s). Raise max_tokens, or disable the model's "

@@ -37,15 +37,14 @@ from roomkit.providers.ai.base import (
     StreamEvent,
     StreamTextDelta,
     StreamThinkingDelta,
-    StreamToolCall,
 )
 from roomkit.providers.ai.image_parts import image_part_uri
 from roomkit.providers.ai.openai_dialect import (
     ThinkTagParser,
+    ToolCallSlots,
     choice_refusal,
     extract_think_tags,
     field_reasoning,
-    fold_tool_call_fragment,
     json_schema_format,
     merge_thinking,
     overflow_fact,
@@ -55,6 +54,7 @@ from roomkit.providers.ai.response_schema import (
     checked_stream,
     schema_for_generate,
 )
+from roomkit.providers.ai.tool_calls import CallIds, arguments_cut, is_truncation, tool_arguments
 from roomkit.providers.openai.config import OpenAIConfig
 from roomkit.providers.openai.models import MODELS
 from roomkit.providers.utils import _aclose_stream, http_timeout
@@ -491,16 +491,16 @@ class OpenAIAIProvider(AIProvider):
         # Extract tool calls from response
         tool_calls: list[AIToolCall] = []
         if choice.message.tool_calls:
+            ids = CallIds()
+            truncated = is_truncation(choice.finish_reason)
             for tc in choice.message.tool_calls:
-                try:
-                    args = json.loads(tc.function.arguments)
-                except (json.JSONDecodeError, TypeError):
-                    args = {"raw": tc.function.arguments}
+                raw = tc.function.arguments
                 tool_calls.append(
                     AIToolCall(
-                        id=tc.id,
+                        id=ids(tc.id, tc.function.name),
                         name=tc.function.name,
-                        arguments=args,
+                        arguments=tool_arguments(raw),
+                        partial=truncated and arguments_cut(raw),
                     )
                 )
 
@@ -575,7 +575,7 @@ class OpenAIAIProvider(AIProvider):
         parser = ThinkTagParser()
 
         # Accumulate tool call deltas across chunks
-        tool_call_accum: dict[int, dict[str, Any]] = {}
+        tool_call_slots = ToolCallSlots()
         finish_reason: str | None = None
         usage: dict[str, int] = {}
         refusal_parts: list[str] = []
@@ -597,28 +597,18 @@ class OpenAIAIProvider(AIProvider):
                 # Accumulate streamed tool call deltas
                 if hasattr(delta, "tool_calls") and delta.tool_calls:
                     for tc_delta in delta.tool_calls:
-                        idx = tc_delta.index
-                        if idx not in tool_call_accum:
-                            tool_call_accum[idx] = {
-                                "id": "",
-                                "name": "",
-                                "arguments": "",
-                            }
-                        acc = tool_call_accum[idx]
-                        if tc_delta.id:
-                            acc["id"] = tc_delta.id
-                        if hasattr(tc_delta, "function") and tc_delta.function:
-                            # Surface the call while it is being composed. The
-                            # complete StreamToolCall below is unchanged and
-                            # remains the unit of execution and persistence.
-                            composed = fold_tool_call_fragment(
-                                acc,
-                                idx,
-                                tc_delta.function.name,
-                                tc_delta.function.arguments or "",
-                            )
-                            if composed is not None:
-                                yield composed
+                        function = getattr(tc_delta, "function", None)
+                        # Surface the call while it is being composed. The
+                        # complete StreamToolCall below remains the unit of
+                        # execution and persistence.
+                        composed = tool_call_slots.fold(
+                            getattr(tc_delta, "index", None),
+                            tc_delta.id,
+                            function.name if function else None,
+                            (function.arguments or "") if function else "",
+                        )
+                        if composed is not None:
+                            yield composed
 
                 # OpenAI-compatible reasoning models (DeepSeek-R1, vLLM with a
                 # reasoning parser) stream reasoning in a dedicated field instead
@@ -653,13 +643,8 @@ class OpenAIAIProvider(AIProvider):
                     yield StreamTextDelta(text=segment)
 
             # Yield accumulated tool calls
-            for _idx in sorted(tool_call_accum):
-                acc = tool_call_accum[_idx]
-                try:
-                    args = json.loads(acc["arguments"]) if acc["arguments"] else {}
-                except (json.JSONDecodeError, TypeError):
-                    args = {"raw": acc["arguments"]}
-                yield StreamToolCall(id=acc["id"], name=acc["name"], arguments=args)
+            for call in tool_call_slots.calls(finish_reason):
+                yield call
 
             yield StreamDone(
                 finish_reason=finish_reason,

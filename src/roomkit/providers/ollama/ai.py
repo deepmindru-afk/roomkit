@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import time
-import uuid
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -45,6 +44,7 @@ from roomkit.providers.ai.response_schema import (
     checked_stream,
     schema_for_generate,
 )
+from roomkit.providers.ai.tool_calls import CallIds, tool_arguments
 from roomkit.providers.ollama.config import OllamaConfig
 from roomkit.providers.ollama.models import MODELS
 from roomkit.providers.utils import _aclose_stream, http_timeout
@@ -520,25 +520,24 @@ class OllamaAIProvider(AIProvider):
 
     def _extract_tool_calls(self, message: Any) -> list[AIToolCall]:
         raw_calls = self._get_attr(message, "tool_calls", None) or []
+        # Ollama doesn't issue stable tool-call ids: one is minted, unique
+        # across turns, for the consumer to pair calls with results by. It is
+        # never echoed back to Ollama (its API matches tool results by
+        # role+name, not by id).
+        ids = CallIds()
         result: list[AIToolCall] = []
         for tc in raw_calls:
             func = self._get_attr(tc, "function", None)
             if not func:
                 continue
-            name = self._get_attr(func, "name", "")
-            arguments = self._get_attr(func, "arguments", {}) or {}
-            if not isinstance(arguments, dict):
-                arguments = {"raw": arguments}
-            # Ollama doesn't issue stable tool-call ids — synthesize one
-            # the consumer can pair calls with results by. A per-response
-            # counter (``len(result)``) resets each turn and would collide
-            # across turns of the same conversation; downstream code that
-            # dedups START/END events by tool_id then collapses N pairs
-            # into one. Use a uuid4 suffix so every synthesized id is
-            # globally unique. The id is never echoed back to Ollama
-            # (its API matches tool results by role+name, not by id).
-            call_id = self._get_attr(tc, "id", None) or f"call_{name}_{uuid.uuid4().hex[:12]}"
-            result.append(AIToolCall(id=str(call_id), name=str(name), arguments=arguments))
+            name = str(self._get_attr(func, "name", ""))
+            result.append(
+                AIToolCall(
+                    id=ids(self._get_attr(tc, "id", None), name),
+                    name=name,
+                    arguments=tool_arguments(self._get_attr(func, "arguments", None)),
+                )
+            )
         return result
 
     async def close(self) -> None:

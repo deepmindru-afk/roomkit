@@ -172,7 +172,9 @@ class MockAIProvider(AIProvider):
         for tc in response.tool_calls:
             for delta in self._tool_call_deltas(tc):
                 yield delta
-            yield StreamToolCall(id=tc.id, name=tc.name, arguments=tc.arguments)
+            yield StreamToolCall(
+                id=tc.id, name=tc.name, arguments=tc.arguments, partial=tc.partial
+            )
         yield StreamDone(
             finish_reason=response.finish_reason,
             usage=response.usage,

@@ -30,7 +30,7 @@ from roomkit.providers.ai.base import (
 from roomkit.providers.ai.image_parts import image_part_uri
 from roomkit.providers.ai.openai_dialect import (
     ThinkTagParser,
-    fold_tool_call_fragment,
+    ToolCallSlots,
     json_schema_format,
 )
 from roomkit.providers.ai.response_schema import checked_stream, schema_for_generate
@@ -334,7 +334,7 @@ class MistralAIProvider(AIProvider):
         parser = ThinkTagParser()
 
         # Accumulate tool call deltas across chunks
-        tool_call_accum: dict[int, dict[str, Any]] = {}
+        tool_call_slots = ToolCallSlots()
         finish_reason: str | None = None
         usage: dict[str, int] = {}
 
@@ -357,28 +357,18 @@ class MistralAIProvider(AIProvider):
                 # Accumulate streamed tool call deltas
                 if hasattr(delta, "tool_calls") and delta.tool_calls:
                     for tc_delta in delta.tool_calls:
-                        idx = tc_delta.index if hasattr(tc_delta, "index") else 0
-                        if idx not in tool_call_accum:
-                            tool_call_accum[idx] = {
-                                "id": "",
-                                "name": "",
-                                "arguments": "",
-                            }
-                        acc = tool_call_accum[idx]
-                        if tc_delta.id:
-                            acc["id"] = tc_delta.id
-                        if hasattr(tc_delta, "function") and tc_delta.function:
-                            # Surface the call while it is being composed. The
-                            # complete StreamToolCall below is unchanged and
-                            # remains the unit of execution and persistence.
-                            composed = fold_tool_call_fragment(
-                                acc,
-                                idx,
-                                tc_delta.function.name,
-                                tc_delta.function.arguments or "",
-                            )
-                            if composed is not None:
-                                yield composed
+                        function = getattr(tc_delta, "function", None)
+                        # Surface the call while it is being composed. The
+                        # complete StreamToolCall below remains the unit of
+                        # execution and persistence.
+                        composed = tool_call_slots.fold(
+                            getattr(tc_delta, "index", None),
+                            tc_delta.id,
+                            function.name if function else None,
+                            (function.arguments or "") if function else "",
+                        )
+                        if composed is not None:
+                            yield composed
 
                 # Reasoning models stream content as a list of typed chunks
                 # (ThinkChunk / TextChunk); older or non-reasoning models stream
@@ -410,13 +400,8 @@ class MistralAIProvider(AIProvider):
                     yield StreamTextDelta(text=segment)
 
             # Yield accumulated tool calls
-            for _idx in sorted(tool_call_accum):
-                acc = tool_call_accum[_idx]
-                try:
-                    args = json.loads(acc["arguments"]) if acc["arguments"] else {}
-                except (json.JSONDecodeError, TypeError):
-                    args = {"raw": acc["arguments"]}
-                yield StreamToolCall(id=acc["id"], name=acc["name"], arguments=args)
+            for call in tool_call_slots.calls(finish_reason):
+                yield call
 
             yield StreamDone(
                 finish_reason=finish_reason,
@@ -441,7 +426,12 @@ class MistralAIProvider(AIProvider):
                 text_parts.append(event.text)
             elif isinstance(event, StreamToolCall):
                 tool_calls.append(
-                    AIToolCall(id=event.id, name=event.name, arguments=event.arguments)
+                    AIToolCall(
+                        id=event.id,
+                        name=event.name,
+                        arguments=event.arguments,
+                        partial=event.partial,
+                    )
                 )
             elif isinstance(event, StreamDone):
                 done_event = event

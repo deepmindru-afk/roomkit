@@ -7,7 +7,6 @@ request lives in ``request.py``.
 
 from __future__ import annotations
 
-import json
 import logging
 import time
 from collections.abc import AsyncIterator
@@ -30,6 +29,7 @@ from roomkit.providers.ai.base import (
     request_api_key,
 )
 from roomkit.providers.ai.response_schema import checked_stream, schema_for_generate
+from roomkit.providers.ai.tool_calls import arguments_cut, is_truncation, tool_arguments
 from roomkit.providers.anthropic.config import AnthropicConfig
 from roomkit.providers.anthropic.models import MODELS
 from roomkit.providers.anthropic.request import build_kwargs
@@ -335,25 +335,26 @@ class AnthropicAIProvider(AIProvider):
                             tb = _tool_blocks.pop(idx)
                             if tb["id"] not in _yielded_tool_ids:
                                 _yielded_tool_ids.add(tb["id"])
-                                try:
-                                    args = json.loads(tb["input_json"]) if tb["input_json"] else {}
-                                except json.JSONDecodeError:
-                                    args = {}
+                                # A complete tool_use always parses: one that
+                                # does not was cut by max_tokens (RFC §6.4).
                                 yield StreamToolCall(
                                     id=tb["id"],
                                     name=tb["name"],
-                                    arguments=args,
+                                    arguments=tool_arguments(tb["input_json"]),
+                                    partial=arguments_cut(tb["input_json"]),
                                 )
 
                 final = await stream.get_final_message()
 
-            # Yield any tool calls from final message not already yielded
+            # Yield any tool calls from final message not already yielded; one
+            # the stream did not close is partial when the output cap ended it.
             for block in final.content:
                 if block.type == "tool_use" and block.id not in _yielded_tool_ids:
                     yield StreamToolCall(
                         id=block.id,
                         name=block.name,
-                        arguments=block.input,
+                        arguments=tool_arguments(block.input),
+                        partial=is_truncation(final.stop_reason),
                     )
 
             usage: dict[str, int] = {
@@ -406,7 +407,12 @@ class AnthropicAIProvider(AIProvider):
                 text_parts.append(event.text)
             elif isinstance(event, StreamToolCall):
                 tool_calls.append(
-                    AIToolCall(id=event.id, name=event.name, arguments=event.arguments)
+                    AIToolCall(
+                        id=event.id,
+                        name=event.name,
+                        arguments=event.arguments,
+                        partial=event.partial,
+                    )
                 )
             elif isinstance(event, StreamDone):
                 done_event = event

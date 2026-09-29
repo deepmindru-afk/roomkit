@@ -1,0 +1,275 @@
+"""What a provider hands the tool loop for a call, on every provider (RMK-284, RFC §6.4).
+
+Arguments are a mapping and never an error, every call of a response has its
+own id, two calls stay two, and a call the output cap cut is marked partial
+and never runs.
+"""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+from typing import Any
+from unittest.mock import AsyncMock
+
+import pytest
+
+from roomkit.channels.ai import AIChannel
+from roomkit.providers.ai.base import (
+    AIContext,
+    AIMessage,
+    AIResponse,
+    AITool,
+    AIToolCall,
+    StreamToolCall,
+)
+from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.providers.ai.openai_dialect import ToolCallSlots
+from roomkit.providers.ai.tool_calls import CallIds, arguments_cut, tool_arguments
+from roomkit.providers.anthropic.ai import AnthropicAIProvider
+from roomkit.providers.anthropic.config import AnthropicConfig
+from roomkit.providers.gemini.ai import GeminiAIProvider
+from roomkit.providers.gemini.config import GeminiConfig
+from roomkit.providers.openai.ai import OpenAIAIProvider
+from roomkit.providers.openai.config import OpenAIConfig
+from tests.tool_loop_modes import run_tool_loop
+
+_CTX = AIContext(
+    messages=[AIMessage(role="user", content="hi")],
+    tools=[AITool(name="now", description="current time")],
+)
+
+
+class TestArguments:
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            (None, {}),
+            ("", {}),
+            ("  ", {}),
+            ('{"q": "a"}', {"q": "a"}),
+            ({"q": "a"}, {"q": "a"}),
+            ("null", {"raw": "null"}),
+            ("[1, 2]", {"raw": "[1, 2]"}),
+            ('{"q": "ab', {"raw": '{"q": "ab'}),
+        ],
+    )
+    def test_arguments_are_a_mapping_never_an_error(self, raw: Any, expected: Any) -> None:
+        assert tool_arguments(raw) == expected
+
+    @pytest.mark.parametrize(
+        ("raw", "cut"), [('{"q": "ab', True), ("null", False), ("", False), ('{"q": 1}', False)]
+    )
+    def test_only_text_that_stops_before_its_json_ends_is_cut(self, raw: str, cut: bool) -> None:
+        assert arguments_cut(raw) is cut
+
+
+class TestCallIds:
+    def test_every_call_of_a_response_gets_its_own_id(self) -> None:
+        ids = CallIds()
+
+        handed = [ids("c1", "now"), ids(None, "now"), ids("", "now"), ids("c1", "now")]
+
+        assert handed[0] == "c1"
+        assert len(set(handed)) == 4
+        assert all(i.startswith("call_now_") for i in handed[1:])
+
+
+class TestStreamedSlots:
+    def test_whole_calls_on_one_index_stay_two_calls(self) -> None:
+        slots = ToolCallSlots()
+        slots.fold(0, "a", "now", '{"tz": "A"}')
+        slots.fold(0, "b", "later", '{"tz": "B"}')
+
+        calls = slots.calls("tool_calls")
+
+        assert [(c.id, c.name, c.arguments) for c in calls] == [
+            ("a", "now", {"tz": "A"}),
+            ("b", "later", {"tz": "B"}),
+        ]
+
+    def test_fragments_of_one_call_fold_together(self) -> None:
+        slots = ToolCallSlots()
+        slots.fold(0, "a", "now", '{"tz": ')
+        slots.fold(0, None, None, '"A"}')
+
+        [call] = slots.calls("tool_calls")
+
+        assert (call.id, call.arguments, call.partial) == ("a", {"tz": "A"}, False)
+
+    def test_a_call_cut_by_the_output_cap_is_partial(self) -> None:
+        slots = ToolCallSlots()
+        slots.fold(0, "a", "now", "{}")
+        slots.fold(1, "b", "write", '{"path": "/tmp/a", "content": "hel')
+
+        calls = slots.calls("length")
+
+        assert [c.partial for c in calls] == [False, True]
+        assert calls[1].arguments == {"raw": '{"path": "/tmp/a", "content": "hel'}
+
+
+def _openai(response: Any) -> OpenAIAIProvider:
+    provider = OpenAIAIProvider(OpenAIConfig(api_key="sk-test", model="gpt-5.4"))
+    provider._client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=AsyncMock(return_value=response)))
+    )
+    return provider
+
+
+def _openai_response(calls: list[tuple[str | None, str]], finish_reason: str) -> Any:
+    tool_calls = [
+        SimpleNamespace(id=i, function=SimpleNamespace(name="now", arguments=a)) for i, a in calls
+    ]
+    message = SimpleNamespace(content=None, tool_calls=tool_calls, refusal=None)
+    return SimpleNamespace(
+        choices=[SimpleNamespace(message=message, finish_reason=finish_reason)],
+        usage=None,
+        model="m",
+    )
+
+
+class TestOpenAIDialect:
+    async def test_a_buffered_response_reads_every_call_the_same_way(self) -> None:
+        response = _openai_response(
+            [(None, ""), (None, "null"), (None, '{"q": "ab')], finish_reason="length"
+        )
+
+        calls = (await _openai(response).generate(_CTX)).tool_calls
+
+        assert [c.arguments for c in calls] == [{}, {"raw": "null"}, {"raw": '{"q": "ab'}]
+        assert [c.partial for c in calls] == [False, False, True]
+        assert len({c.id for c in calls}) == 3
+
+    async def test_a_stream_with_null_arguments_is_no_error(self) -> None:
+        async def chunks() -> Any:
+            delta = SimpleNamespace(
+                content=None,
+                tool_calls=[
+                    SimpleNamespace(
+                        index=0, id="c0", function=SimpleNamespace(name="now", arguments="null")
+                    )
+                ],
+            )
+            yield SimpleNamespace(
+                usage=None, choices=[SimpleNamespace(delta=delta, finish_reason=None)]
+            )
+            done = SimpleNamespace(content=None, tool_calls=None)
+            yield SimpleNamespace(
+                usage=None, choices=[SimpleNamespace(delta=done, finish_reason="tool_calls")]
+            )
+
+        provider = _openai(chunks())
+
+        events = [e async for e in provider.generate_structured_stream(_CTX)]
+
+        calls = [e for e in events if isinstance(e, StreamToolCall)]
+        assert [c.arguments for c in calls] == [{"raw": "null"}]
+
+
+class _AnthropicStream:
+    def __init__(self, events: list[Any], final: Any) -> None:
+        self._events, self._final = events, final
+
+    async def __aenter__(self) -> _AnthropicStream:
+        return self
+
+    async def __aexit__(self, *exc: Any) -> bool:
+        return False
+
+    def __aiter__(self) -> Any:
+        async def gen() -> Any:
+            for event in self._events:
+                yield event
+
+        return gen()
+
+    async def get_final_message(self) -> Any:
+        return self._final
+
+
+async def test_an_anthropic_tool_use_cut_by_max_tokens_is_partial() -> None:
+    fragment = '{"path": "/tmp/a", "content": "hel'
+    events = [
+        SimpleNamespace(
+            type="content_block_start",
+            index=0,
+            content_block=SimpleNamespace(type="tool_use", id="toolu_1", name="write_file"),
+        ),
+        SimpleNamespace(
+            type="content_block_delta",
+            index=0,
+            delta=SimpleNamespace(type="input_json_delta", partial_json=fragment),
+        ),
+        SimpleNamespace(type="content_block_stop", index=0),
+    ]
+    usage = SimpleNamespace(
+        input_tokens=1, output_tokens=1, cache_creation_input_tokens=0, cache_read_input_tokens=0
+    )
+    final = SimpleNamespace(content=[], usage=usage, stop_reason="max_tokens", model="claude")
+    provider = AnthropicAIProvider(AnthropicConfig(api_key="k", model="claude-sonnet-5-5"))
+    provider._client = SimpleNamespace(
+        messages=SimpleNamespace(stream=lambda **kw: _AnthropicStream(events, final))
+    )
+
+    [call] = (await provider.generate(_CTX)).tool_calls
+
+    assert call.partial is True
+    assert call.arguments == {"raw": fragment}
+
+
+def _gemini_part(sig: bytes | None = None) -> Any:
+    call = SimpleNamespace(name="roll_die", args={"sides": 6}, id=None)
+    return SimpleNamespace(text=None, thought=False, function_call=call, thought_signature=sig)
+
+
+async def _gemini_calls(chunks: list[list[Any]]) -> list[StreamToolCall]:
+    async def stream() -> Any:
+        for parts in chunks:
+            candidate = SimpleNamespace(finish_reason=None, content=SimpleNamespace(parts=parts))
+            yield SimpleNamespace(
+                usage_metadata=None, prompt_feedback=None, candidates=[candidate]
+            )
+
+    async def generate(**kwargs: Any) -> Any:
+        return stream()
+
+    provider = GeminiAIProvider(GeminiConfig(api_key="k"))
+    provider._client = SimpleNamespace(
+        aio=SimpleNamespace(models=SimpleNamespace(generate_content_stream=generate))
+    )
+    events = [e async for e in provider.generate_structured_stream(_CTX)]
+    return [e for e in events if isinstance(e, StreamToolCall)]
+
+
+class TestGeminiCalls:
+    async def test_two_identical_calls_of_one_chunk_stay_two(self) -> None:
+        calls = await _gemini_calls([[_gemini_part(b"s"), _gemini_part()]])
+
+        assert len(calls) == 2
+        assert calls[0].id != calls[1].id
+
+    async def test_a_call_re_emitted_in_a_later_chunk_stays_one(self) -> None:
+        calls = await _gemini_calls([[_gemini_part()], [_gemini_part(b"s")]])
+
+        [call] = calls
+        assert call.metadata.get("thought_signature")
+
+
+async def test_a_partial_call_never_runs_and_the_model_reads_why(streaming: bool) -> None:
+    handler = AsyncMock(return_value="ok")
+    cut = AIToolCall(id="c1", name="now", arguments={"raw": '{"tz": "Eu'}, partial=True)
+    provider = MockAIProvider(
+        streaming=streaming,
+        ai_responses=[
+            AIResponse(content="", finish_reason="length", tool_calls=[cut]),
+            AIResponse(content="Retrying later."),
+        ],
+    )
+    channel = AIChannel("ai1", provider=provider, tool_handler=handler, tool_search=False)
+    context = AIContext(messages=[AIMessage(role="user", content="go")], tools=_CTX.tools)
+
+    run = await run_tool_loop(channel, context, streaming=streaming)
+
+    handler.assert_not_awaited()
+    [call] = run.calls
+    assert call.failed is True
+    assert "cut" in (call.error or "").lower()
