@@ -12,7 +12,11 @@ from roomkit.providers.ai.base import AIImagePart, AITextPart, AITool
 
 logger = logging.getLogger("roomkit.channels.ai")
 
+# Stored results a room keeps (its oldest go first), and a wider bound over
+# every room for memory: another room's evictions must not push a room's
+# results out (RFC §21.5).
 _MAX_EVICTED = 50
+_MAX_EVICTED_TOTAL = 200
 
 # Chars reserved per read_stored_result page for the JSON envelope — fixed
 # keys plus the partial-page warning prose (~350 chars escaped, worst case) —
@@ -154,16 +158,36 @@ class ToolEviction:
         if estimated <= self.threshold_tokens or is_eviction_placeholder(result):
             return result
 
-        result_id = f"evicted_{tool_call_id}" if tool_call_id else f"evicted_{id(result)}"
-        self._store[(self._room_scope(), result_id)] = result
-        while len(self._store) > _MAX_EVICTED:
-            self._store.popitem(last=False)
+        room = self._room_scope()
+        result_id = self._free_id(
+            room, f"evicted_{tool_call_id}" if tool_call_id else f"evicted_{id(result)}"
+        )
+        self._store[(room, result_id)] = result
+        self._bound(room)
 
         return (
             f"{EVICTION_PLACEHOLDER_PREFIX}{estimated} tokens). Full output saved as "
             f"'{result_id}'. Use read_stored_result to read it with pagination.\n\n"
             f"Preview:\n{_preview(result, self._preview_budget())}"
         )
+
+    def _free_id(self, room: str, base: str) -> str:
+        """*base*, numbered when the room already holds it: a call id reused in a
+        later turn must not overwrite the result an earlier placeholder names."""
+        result_id, n = base, 1
+        while (room, result_id) in self._store:
+            n += 1
+            result_id = f"{base}_{n}"
+        return result_id
+
+    def _bound(self, room: str) -> None:
+        """Keep :data:`_MAX_EVICTED` per room and :data:`_MAX_EVICTED_TOTAL`
+        overall, the oldest leaving first."""
+        in_room = [key for key in self._store if key[0] == room]
+        for key in in_room[: max(0, len(in_room) - _MAX_EVICTED)]:
+            del self._store[key]
+        while len(self._store) > _MAX_EVICTED_TOTAL:
+            self._store.popitem(last=False)
 
     def maybe_evict_parts(
         self, parts: list[AITextPart | AIImagePart], tool_call_id: str = ""

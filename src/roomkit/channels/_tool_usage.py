@@ -38,7 +38,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from roomkit.channels._skill_constants import SKILL_INFRA_TOOL_NAMES
-from roomkit.channels._tool_eviction import is_eviction_placeholder
+from roomkit.channels._tool_eviction import (
+    EVICTION_PLACEHOLDER_PREFIX,
+    is_eviction_placeholder,
+)
 from roomkit.channels._tool_search_constants import TOOL_SEARCH_INFRA_TOOL_NAMES
 
 # Discovery / housekeeping tools are not "work the agent did" and are always
@@ -99,6 +102,17 @@ def _part_text(part: Any) -> str | None:
     return text if isinstance(text, str) else None
 
 
+def _evicted_preview(text: str) -> str:
+    """The digest's line for an evicted result, without its stored id.
+
+    The id dies with the process, and a digest rebuilt after a restart must
+    not offer to read it back (RFC §21.5): the size stays, the id goes.
+    """
+    start = text.find(EVICTION_PLACEHOLDER_PREFIX)
+    head = text[start:].split(")", 1)[0] + ")" if start >= 0 else "Result too large"
+    return f"{head}; call the tool again to see it"
+
+
 class ToolUsageMemory:
     """In-memory, room-scoped record of recent tool calls for a channel."""
 
@@ -134,7 +148,7 @@ class ToolUsageMemory:
         entry = _Call(
             name,
             dict(arguments),
-            self._preview(text),
+            _evicted_preview(text) if evicted else self._preview(text),
             result_excerpt=excerpt,
             result_chars=len(text),
         )
