@@ -41,8 +41,13 @@ which is what Pydantic already sends for ``list[Any]``.
 
 Gemini's ``enum`` holds strings only, so an ``enum`` of numbers or booleans
 (``Literal[1, 2, 3]``) fails inside ``FunctionDeclaration``. It is dropped and
-its values move to the description; the node keeps its declared type, so the
-model still sends a number, the type the channel checks the call against.
+its values move to the description; the node keeps its declared type, or
+takes the one its values share, so the model still sends a number, the type
+the channel checks the call against. A ``null`` member is ``nullable``.
+
+:func:`function_declaration` builds a tool's declaration from the cleaned
+schema for the text and Live paths alike, and names the tool when the SDK
+still refuses it.
 """
 
 from __future__ import annotations
@@ -313,16 +318,44 @@ def _describe_enum(obj: dict[str, Any]) -> dict[str, Any]:
     mix fail inside ``FunctionDeclaration``. Turning the values into strings
     would type the node a string, and the model's ``"2"`` would then fail the
     declared type the call's arguments are checked against. The node keeps its
-    type, and its description names the values the declared ``enum`` allows.
+    type, or takes the one all its values share, and its description names
+    the values the declared ``enum`` allows. A ``null`` member, the JSON
+    Schema spelling of an optional enum, becomes ``nullable``, so an enum of
+    strings and ``null`` stays an enum.
     """
     values = obj.get("enum")
-    if not isinstance(values, list) or all(isinstance(value, str) for value in values):
+    if not isinstance(values, list):
         return obj
-    described = {key: value for key, value in obj.items() if key != "enum"}
-    allowed = "Allowed values: " + ", ".join(json.dumps(value) for value in values) + "."
+    present = [value for value in values if value is not None]
+    nullable = {"nullable": True} if len(present) != len(values) else {}
+    if present and all(isinstance(value, str) for value in present):
+        return {**obj, "enum": present, **nullable} if nullable else obj
+    described = {key: value for key, value in obj.items() if key != "enum"} | nullable
+    if "type" not in described and (kind := _shared_json_type(present)) is not None:
+        described["type"] = kind
+    allowed = ", ".join(json.dumps(value, ensure_ascii=False, default=str) for value in values)
     description = described.get("description")
-    described["description"] = f"{description} {allowed}" if description else allowed
+    note = f"Allowed values: {allowed}."
+    described["description"] = f"{description} {note}" if description else note
     return described
+
+
+def _shared_json_type(values: list[Any]) -> str | None:
+    """The JSON type all *values* share, integers widening to numbers."""
+    kinds = {_json_type(value) for value in values}
+    if kinds == {"integer", "number"}:
+        return "number"
+    return kinds.pop() if len(kinds) == 1 else None
+
+
+def _json_type(value: Any) -> str | None:
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    return None
 
 
 def function_declaration(
@@ -348,11 +381,15 @@ def function_declaration(
             **fields,
         )
     except ValidationError as exc:
-        first = exc.errors()[0] if exc.errors() else {}
+        errors = exc.errors()
+        first = errors[0] if errors else {}
         where = ".".join(str(part) for part in first.get("loc", ()))
+        more = f" (+{len(errors) - 1} more)" if len(errors) > 1 else ""
+        # Structural: a tool named ``context_length`` is not an overflow.
         raise ProviderError(
-            f"Gemini cannot declare tool {name!r}: {where}: {first.get('msg', exc)}",
+            f"Gemini cannot declare tool {name!r}: {where}: {first.get('msg', exc)}{more}",
             provider="gemini",
+            context_overflow=False,
         ) from exc
 
 

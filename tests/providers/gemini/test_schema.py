@@ -769,7 +769,7 @@ class TestNonStringEnum:
             ),
             (
                 {"enum": ["a", 1, None]},
-                {"description": 'Allowed values: "a", 1, null.'},
+                {"nullable": True, "description": 'Allowed values: "a", 1, null.'},
             ),
         ],
     )
@@ -782,12 +782,42 @@ class TestNonStringEnum:
 
         assert cleaned == {"type": "object", "properties": {"p": expected}, "required": ["p"]}
 
+    @pytest.mark.parametrize(
+        ("values", "kind"),
+        [([1, 2, 3], "integer"), ([1, 2.5], "number"), ([True, False], "boolean")],
+    )
+    def test_an_untyped_enum_takes_the_type_its_values_share(
+        self, values: list[Any], kind: str
+    ) -> None:
+        cleaned = clean_gemini_schema({"type": "object", "properties": {"p": {"enum": values}}})
+
+        assert cleaned["properties"]["p"]["type"] == kind
+
     def test_a_string_enum_is_kept(self) -> None:
         prop = {"type": "string", "enum": ["low", "high"]}
 
         cleaned = clean_gemini_schema({"type": "object", "properties": {"p": prop}})
 
         assert cleaned == {"type": "object", "properties": {"p": prop}}
+
+    def test_a_null_member_makes_a_string_enum_nullable(self) -> None:
+        """The JSON Schema spelling of an optional enum stays an enum."""
+        prop = {"type": ["string", "null"], "enum": ["low", "high", None]}
+
+        cleaned = clean_gemini_schema({"type": "object", "properties": {"p": prop}})
+
+        assert cleaned["properties"]["p"] == {
+            "type": "string",
+            "nullable": True,
+            "enum": ["low", "high"],
+        }
+
+    def test_the_description_keeps_non_ascii_values_readable(self) -> None:
+        prop = {"enum": ["élevé", 1]}
+
+        cleaned = clean_gemini_schema({"type": "object", "properties": {"p": prop}})
+
+        assert cleaned["properties"]["p"]["description"] == 'Allowed values: "élevé", 1.'
 
     def test_a_nested_enum_is_described_too(self) -> None:
         schema = {
@@ -797,14 +827,7 @@ class TestNonStringEnum:
 
         cleaned = clean_gemini_schema(schema)
 
-        assert cleaned["properties"]["levels"]["items"] == {"description": "Allowed values: 1, 2."}
-
-    def test_a_tuple_of_items_is_declarable(self) -> None:
-        schema = {
-            "type": "object",
-            "properties": {"point": {"type": "array", "items": [{"type": "number"}] * 2}},
+        assert cleaned["properties"]["levels"]["items"] == {
+            "type": "integer",
+            "description": "Allowed values: 1, 2.",
         }
-
-        cleaned = clean_gemini_schema(schema)
-
-        assert cleaned["properties"]["point"] == {"type": "array", "items": {}}

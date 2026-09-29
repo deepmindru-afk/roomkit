@@ -108,6 +108,30 @@ def warn_unsupported(
         )
 
 
+def _live_tools(
+    types: Any,
+    model: str,
+    profile: LiveModelProfile,
+    tools: list[dict[str, Any]],
+    warned: set[str],
+) -> list[Any]:
+    """One Live ``Tool`` per tool, its declaration built from the cleaned schema."""
+    return [
+        types.Tool(
+            function_declarations=[
+                function_declaration(
+                    types,
+                    name=tool.get("name", ""),
+                    description=tool.get("description", ""),
+                    parameters=tool.get("parameters"),
+                    behavior=tool_behavior(model, profile, tool.get("behavior"), warned),
+                )
+            ]
+        )
+        for tool in tools
+    ]
+
+
 def tool_behavior(
     model: str, profile: LiveModelProfile, requested: str | None, warned: set[str]
 ) -> str:
@@ -393,24 +417,8 @@ def build_live_config(
         )
     config["realtime_input_config"] = types.RealtimeInputConfig(**realtime_input_kwargs)
 
-    # --- Tools ---
     if tools:
-        genai_tools = []
-        for tool in tools:
-            genai_tools.append(
-                types.Tool(
-                    function_declarations=[
-                        function_declaration(
-                            types,
-                            name=tool.get("name", ""),
-                            description=tool.get("description", ""),
-                            parameters=tool.get("parameters"),
-                            behavior=tool_behavior(model, profile, tool.get("behavior"), warned),
-                        )
-                    ]
-                )
-            )
-        config["tools"] = genai_tools
+        config["tools"] = _live_tools(types, model, profile, tools, warned)
 
     # --- Session resilience ---
     if not pc.get("preserve_context"):
