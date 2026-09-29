@@ -7,6 +7,7 @@ import json
 import logging
 import threading
 import time
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.channels._ai_policy import policy_admits, policy_refusal
@@ -21,8 +22,9 @@ from roomkit.models.tool_call import (
     fold_tool_call_rewrite,
     withheld_call_event,
 )
-from roomkit.providers.ai.base import AIImagePart, AITextPart
+from roomkit.providers.ai.base import AITextPart
 from roomkit.telemetry.base import Attr, SpanKind
+from roomkit.tools.result import as_tool_result, unserved_tool_error
 from roomkit.tools.validation import fold_hoisted_arguments, validate_tool_arguments
 from roomkit.voice.base import VoiceSessionState
 
@@ -52,13 +54,13 @@ def result_text(raw: Any) -> str:
     list (text + images); a speech provider cannot consume an image, so the
     list flattens the way ``AIToolResultPart.as_text()`` does — text joined,
     ``[image]`` placeholders. ``json.dumps`` on such a list would raise on
-    the pydantic parts instead. Anything else keeps the JSON coercion.
+    the pydantic parts instead. Anything else is JSON, as on every channel
+    (RFC §21.4).
     """
-    if isinstance(raw, str):
-        return raw
-    if isinstance(raw, list) and all(isinstance(p, AITextPart | AIImagePart) for p in raw):
-        return "\n".join(p.text if isinstance(p, AITextPart) else "[image]" for p in raw)
-    return json.dumps(raw)
+    value = as_tool_result(raw)
+    if isinstance(value, str):
+        return value
+    return "\n".join(p.text if isinstance(p, AITextPart) else "[image]" for p in value)
 
 
 @runtime_checkable
@@ -134,8 +136,7 @@ def _hook_outcome(
         return json.dumps({"error": hook_result.reason or "Tool call blocked by hook"}), True
     final = hook_result.event if isinstance(hook_result.event, ToolCallEvent) else tool_event
     if final.result is not tool_event.result:
-        value = final.result
-        return (value if isinstance(value, str) else json.dumps(value)), False
+        return result_text(final.result), False
     if handler_result is not None:
         return handler_result, False
     if hook_result.hook_errors:
@@ -145,7 +146,7 @@ def _hook_outcome(
     # answered it did not. Reporting ``{"status": "ok"}`` would be a success
     # for work nobody did, which the model then acts on and an audit trail
     # records as a completed call.
-    return json.dumps({"error": f"No handler for tool {name}"}), True
+    return unserved_tool_error(name), True
 
 
 class RealtimeToolsMixin:
@@ -1097,6 +1098,9 @@ class RealtimeToolsMixin:
         assert self._framework is not None  # guarded by caller  # noqa: S101
         t_seg = time.perf_counter()
         context = await self._framework._build_context(room_id, carrying=carrying)
+        # A call nothing served arrives with no result: the chain is the
+        # hooks' chance to serve it, not a report, so its observers wait for
+        # the outcome (RFC §9.3).
         hook_result = await self._framework.hook_engine.run_sync_hooks(
             room_id,
             HookTrigger.ON_TOOL_CALL,
@@ -1104,6 +1108,7 @@ class RealtimeToolsMixin:
             context,
             skip_event_filter=True,
             fold=fold_tool_call_rewrite,
+            fire_observers=handler_result is not None,
         )
         if handler_result is not None:
             # The firing carried the handler's result: that was the report. A
@@ -1117,6 +1122,15 @@ class RealtimeToolsMixin:
             (time.perf_counter() - t_seg) * 1000,
         )
         result_str, failed = _hook_outcome(hook_result, tool_event, handler_result, name)
+        if handler_result is None and not failed:
+            # A hook served the call: that is its outcome, for the observers.
+            await self._framework.hook_engine.run_observers(
+                room_id,
+                HookTrigger.ON_TOOL_CALL,
+                replace(tool_event, result=result_str),
+                context,
+                skip_event_filter=True,
+            )
         if not hook_result.allowed and handler_result is not None:
             # The engine stops at a block, before its observers: the served
             # call still fires them, with the failure. (A call nothing served

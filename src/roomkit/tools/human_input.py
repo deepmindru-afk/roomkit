@@ -59,6 +59,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 from uuid import uuid4
 
+from roomkit.core.exceptions import ToolRefusedError
 from roomkit.core.task_utils import log_task_exception
 from roomkit.models.enums import ChannelType
 from roomkit.models.pending_input import PendingInput, PendingInputEvent, PendingInputStatus
@@ -547,8 +548,12 @@ class HumanInputToolHandler:
             )
             return await self._handler.wait(pending.pending_id, timeout=self.timeout)
         except TimeoutError:
-            return json.dumps(
-                {"error": f"Human input timed out after {self.timeout}s for tool '{name}'"}
-            )
+            # Refusals, not answers: the call carries the failure marker and
+            # the model reads the reason (RFC §9.3).
+            raise ToolRefusedError(
+                json.dumps(
+                    {"error": f"Human input timed out after {self.timeout}s for tool '{name}'"}
+                )
+            ) from None
         except RuntimeError as exc:
-            return json.dumps({"error": f"Human input rejected: {exc}"})
+            raise ToolRefusedError(json.dumps({"error": f"Human input rejected: {exc}"})) from exc

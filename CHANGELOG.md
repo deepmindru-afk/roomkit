@@ -126,6 +126,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- What a tool handler returns reaches the model as JSON, and the outcomes the
+  channel decides carry the failure marker (RMK-278, RFC §9.3, §21.4). On
+  `AIChannel` a handler returning `[{"id": 1}]` failed the whole turn with a
+  vision model (and showed a pydantic trace to a text-only one), and a dict
+  or `None` reached the model as Python's `repr`, where the realtime channel
+  sent JSON; a dict an `ON_TOOL_CALL` hook supplied failed the turn too. Any
+  value outside text and content parts is now JSON on both channels. A repeat
+  of the same call that the channel stops, and a tool outside the turn's
+  toolset, were reported as successes: they are refusals now (`is_error`,
+  observers only), and so are `HumanInputToolHandler`'s timeout and
+  rejection. A declared tool no handler serves reaches the `ON_TOOL_CALL`
+  sync hooks with `result=None`, so a hook can serve it; if none does, the
+  model reads `{"error": "No handler for tool <name>"}` and the call is
+  reported once, as failed (the realtime channel reported it twice). The
+  built-in vision tools (`DescribeWebcamTool`, `ListWebcamsTool`,
+  `DescribeScreenTool`, `screen_input`) answer an unknown name with the JSON
+  envelope `compose_tool_handlers` falls through on, so `list_webcams` is
+  reachable again beside `describe_webcam`.
 - Tool Search no longer hides the tools orchestration injects (RMK-277, RFC
   §21.1). With a catalogue large enough to collapse behind `find_tools`,
   `handoff_conversation`, `delegate_task`, a supervisor's tools and a

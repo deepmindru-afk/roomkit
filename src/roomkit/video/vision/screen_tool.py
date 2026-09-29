@@ -21,6 +21,7 @@ Example with RealtimeVoiceChannel::
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -145,7 +146,7 @@ class DescribeScreenTool:
     ) -> str:
         """Tool handler for describe_screen."""
         if name != TOOL_NAME:
-            return f"Unknown tool: {name}"
+            return json.dumps({"error": f"Unknown tool: {name}"})
 
         query = str(arguments.get("query", "Describe what is on this screen."))
         logger.info("describe_screen(query='%s')", query[:100])

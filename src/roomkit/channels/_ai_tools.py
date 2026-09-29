@@ -52,6 +52,11 @@ from roomkit.sandbox.tools import SANDBOX_TOOL_PREFIX
 from roomkit.telemetry.base import SpanKind
 from roomkit.telemetry.redaction import redact
 from roomkit.tools.context import ToolCallContext, _current_tool_call
+from roomkit.tools.result import (
+    UnservedToolCallError,
+    as_tool_result,
+    unserved_tool_error,
+)
 from roomkit.tools.validation import fold_hoisted_arguments, validate_tool_arguments
 
 if TYPE_CHECKING:
@@ -481,8 +486,11 @@ class AIToolsMixin:
                 )
                 _tc_tok = _current_tool_call.set(_tc_ctx)
                 started = time.monotonic()
+                result: ToolResult | None
                 try:
-                    result = await handler(tc.name, arguments)
+                    result = as_tool_result(await handler(tc.name, arguments))
+                except UnservedToolCallError:
+                    result = None  # nothing served the call; ON_TOOL_CALL's hooks may
                 finally:
                     _current_tool_call.reset(_tc_tok)
                 recorded_result = result
@@ -717,38 +725,40 @@ class AIToolsMixin:
         )
 
     async def _channel_tool_handler(self, name: str, arguments: dict[str, Any]) -> ToolResult:
-        """Unified tool dispatcher: channel-managed -> sandbox -> skill -> user tools."""
+        """Unified tool dispatcher: channel-managed -> sandbox -> skill -> user tools.
+
+        The outcomes the channel decides itself (a repeat the guard stops, a
+        tool outside the turn's toolset) are refusals, raised as
+        :class:`ToolRefusedError` so they carry the failure marker (RFC §9.3).
+        :class:`UnservedToolCallError` when nothing serves the call:
+        ON_TOOL_CALL's hooks may then serve it.
+        """
         guard = self._repeated_call_guard(name, arguments)
         if guard is not None:
-            return guard
+            raise ToolRefusedError(guard)
         handler = self._channel_tool_dispatch.get(name)
         if handler is not None:
             result = handler(arguments)
             # Support both sync and async handlers
             if asyncio.iscoroutine(result):
-                return str(await result)
-            return str(result)
+                result = await result
+            return as_tool_result(result)
         # The sandbox's own tools, by exact name, before user/MCP tools
         if self._sandbox is not None and name in self._sandbox_tool_names():
             return await handle_sandbox_command(name, arguments or {}, self._sandbox)
-        if self._user_tool_handler:
-            # Provider responses are untrusted and may name a tool outside the
-            # turn's resolved toolset. Once context construction has resolved
-            # that invocation-scoped set, fail closed instead of forwarding a
-            # guessed name to a shared host handler. ``None`` preserves direct
-            # internal loops built without context; [] is a real deny-all set.
-            context_tools = self._get_loop_ctx().all_context_tools
-            if context_tools is not None and name not in {t.name for t in context_tools}:
-                return json.dumps(
-                    {"error": f"Tool '{name}' is not available in the current turn."}
-                )
-            result = await self._user_tool_handler(name, arguments)
-            # A multimodal result (content-part list, e.g. a screenshot) must
-            # reach the provider intact — str() would flatten it to its repr.
-            if isinstance(result, list):
-                return result
-            return str(result)
-        return json.dumps({"error": f"Unknown tool: {name}"})
+        if self._user_tool_handler is None:
+            raise UnservedToolCallError(name)
+        # Provider responses are untrusted and may name a tool outside the
+        # turn's resolved toolset. Once context construction has resolved
+        # that invocation-scoped set, fail closed instead of forwarding a
+        # guessed name to a shared host handler. ``None`` preserves direct
+        # internal loops built without context; [] is a real deny-all set.
+        context_tools = self._get_loop_ctx().all_context_tools
+        if context_tools is not None and name not in {t.name for t in context_tools}:
+            raise ToolRefusedError(
+                json.dumps({"error": f"Tool '{name}' is not available in the current turn."})
+            )
+        return as_tool_result(await self._user_tool_handler(name, arguments))
 
     async def _handle_activate_skill(self, arguments: dict[str, Any]) -> str:
         """Load and return full skill instructions, tracking activation for gating."""
@@ -897,7 +907,7 @@ class AIToolsMixin:
         self,
         tc: Any,
         arguments: dict[str, Any],
-        result: ToolResult,
+        result: ToolResult | None,
         call_ctx: ToolCallContext,
         room_id: str | None,
     ) -> _HookOutcome:
@@ -914,7 +924,13 @@ class AIToolsMixin:
         step keeps none. The hook sees the copy and may replace it; a BLOCK
         withholds the result and drops the copy. Eviction never touches it:
         UI surfaces need the payload whole.
+
+        A call nothing served (*result* ``None``) reaches the hooks with no
+        result: one may serve it, and if none does the call failed, reported
+        once to the observers (RFC §9.3).
         """
+        if result is None:
+            return await self._serve_by_hook(tc, arguments, call_ctx, room_id)
         shaped = self._shape_for_model(tc.name, result, tc.id)
         structured = call_ctx.structured_content
         kept = _HookOutcome(result=shaped, recorded=result, failed=False, structured=structured)
@@ -940,14 +956,48 @@ class AIToolsMixin:
             return _HookOutcome(result=reason, recorded=reason, failed=True, structured=None)
         if verdict.replaces_structured:
             structured = verdict.structured_content
-        override = verdict.result
-        if override is None:
+        if verdict.result is None:
             return _HookOutcome(
                 result=shaped, recorded=result, failed=False, structured=structured
             )
+        override = as_tool_result(verdict.result)
         return _HookOutcome(
             result=override, recorded=override, failed=False, structured=structured
         )
+
+    async def _serve_by_hook(
+        self, tc: Any, arguments: dict[str, Any], call_ctx: ToolCallContext, room_id: str | None
+    ) -> _HookOutcome:
+        """A call nothing served: ON_TOOL_CALL's hooks may serve it, with the
+        result they supply; otherwise it failed, and is reported so once."""
+        verdict = None
+        if self._tool_call_hook is not None:
+            verdict = await self._tool_call_hook(
+                ToolCallEvent(
+                    channel_id=self.channel_id,
+                    channel_type=ChannelType.AI,
+                    tool_call_id=tc.id,
+                    name=tc.name,
+                    arguments=arguments,
+                    result=None,
+                    room_id=room_id,
+                )
+            )
+        if verdict is not None and not isinstance(verdict, ToolCallVerdict):
+            verdict = ToolCallVerdict(result=verdict)  # a bare result
+        if verdict is not None and verdict.blocked:
+            # The block's firing already told the observers.
+            reason = verdict.result or json.dumps({"error": "blocked"})
+            return _HookOutcome(result=reason, recorded=reason, failed=True, structured=None)
+        if verdict is not None and verdict.result is not None:
+            served = as_tool_result(verdict.result)
+            structured = verdict.structured_content if verdict.replaces_structured else None
+            return _HookOutcome(
+                result=served, recorded=served, failed=False, structured=structured
+            )
+        body = unserved_tool_error(tc.name)
+        await self._fire_tool_refusal(tc, arguments, body, room_id)
+        return _HookOutcome(result=body, recorded=body, failed=True, structured=None)
 
     def _shape_for_model(self, name: str, result: ToolResult, tool_call_id: str) -> ToolResult:
         """A text-only model gets the text of a content-part result, the way it

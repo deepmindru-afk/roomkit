@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from roomkit.channels.ai import AIChannel
+from roomkit.core.exceptions import ToolRefusedError
 from roomkit.models.enums import ChannelType
 from roomkit.models.pending_input import PendingInput, PendingInputEvent, PendingInputStatus
 from roomkit.providers.ai.base import AIContext, AITool
@@ -652,9 +653,10 @@ async def test_tool_handler_blocks_and_resolves() -> None:
 
 async def test_tool_handler_timeout() -> None:
     hit = HumanInputToolHandler(tool_names={"approve"}, timeout=0.01)
-    result = await hit("approve", {"amount": 500})
-    parsed = json.loads(result)
-    assert "timed out" in parsed["error"]
+    # A refusal, not an answer: the call carries the failure marker (RFC §9.3).
+    with pytest.raises(ToolRefusedError) as refused:
+        await hit("approve", {"amount": 500})
+    assert "timed out" in json.loads(refused.value.message)["error"]
 
 
 async def test_tool_handler_rejection() -> None:
@@ -667,9 +669,9 @@ async def test_tool_handler_rejection() -> None:
         hit.handler.reject(pid, "nope")
 
     asyncio.create_task(_reject_later())
-    result = await hit("approve", {"amount": 500})
-    parsed = json.loads(result)
-    assert "rejected" in parsed["error"].lower()
+    with pytest.raises(ToolRefusedError) as refused:
+        await hit("approve", {"amount": 500})
+    assert "rejected" in json.loads(refused.value.message)["error"].lower()
 
 
 async def test_tool_handler_exposes_inner_handler() -> None:

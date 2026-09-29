@@ -1566,11 +1566,11 @@ class TestRefusedRealtimeToolCallsAreObserved:
         rt_provider: MockRealtimeProvider,
         rt_transport: MockRealtimeTransport,
     ) -> None:
-        """No handler, and no hook answered: the outcome is a refusal.
+        """No handler, and no hook answered: the outcome is a refusal, reported once.
 
-        The dispatch firing carries ``result=None`` — it is the hooks' chance
-        to serve the call, not a report on it — so the failure needs a firing
-        of its own, or nothing downstream ever learns of it.
+        The dispatch firing carries ``result=None``: it is the hooks' chance to
+        serve the call, not a report on it, so the observers see the failure
+        alone, not a first outcome with no result (RFC §9.3).
         """
         _kit, session, observed, _served = await self._channel(
             rt_provider, rt_transport, "rt-refused-unserved"
@@ -1579,11 +1579,8 @@ class TestRefusedRealtimeToolCallsAreObserved:
         await rt_provider.simulate_tool_call(session, "c2", "lookup", {"city": "Paris"})
         await asyncio.sleep(0.1)
 
-        dispatch = [e for e in observed if e.result is None]
-        failures = [e for e in observed if e.is_error]
-        assert len(dispatch) == 1
-        assert len(failures) == 1
-        assert json.loads(failures[0].result) == {"error": "No handler for tool lookup"}
+        assert [e.is_error for e in observed] == [True]
+        assert json.loads(observed[0].result) == {"error": "No handler for tool lookup"}
 
 
 class TestCancelledRealtimeToolCallsAreObserved:

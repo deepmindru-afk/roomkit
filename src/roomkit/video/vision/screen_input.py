@@ -525,7 +525,7 @@ class ScreenInputTools:
             return self._scroll(arguments)
         if name == "click_element":
             return await self._click_element(arguments)
-        return f"Unknown tool: {name}"
+        return json.dumps({"error": f"Unknown tool: {name}"})
 
     @staticmethod
     def _type_text(args: dict[str, Any]) -> str:

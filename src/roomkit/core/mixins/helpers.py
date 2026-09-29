@@ -25,6 +25,7 @@ import contextlib
 import json
 import logging
 from collections.abc import Callable, Coroutine, Mapping
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 from uuid import uuid4
 
@@ -829,6 +830,11 @@ class HelpersMixin:
         :class:`ToolCallVerdict` (see :func:`_tool_call_verdict`). The ASYNC
         observers see the final outcome; a BLOCK, which the engine stops at,
         fires them here with the failure. Emits a ``tool_call`` framework event.
+
+        A call nothing served arrives with no result: the chain is the hooks'
+        chance to serve it, not a report on it. The observers then see the
+        result a hook supplied, or the block; when none serves it, the channel
+        reports the failure itself, once (RFC §9.3).
         """
         kit_ref = self
 
@@ -838,6 +844,7 @@ class HelpersMixin:
             context = await kit_ref._tool_hook_context(event.room_id)
             if context is None:
                 return kit_ref._unreachable_tool_call_verdict(event.room_id)
+            unserved = event.result is None
             hook_result = await kit_ref._hook_engine.run_sync_hooks(
                 event.room_id,
                 HookTrigger.ON_TOOL_CALL,
@@ -845,11 +852,14 @@ class HelpersMixin:
                 context,
                 skip_event_filter=True,
                 fold=fold_tool_call_rewrite,
+                fire_observers=not unserved,
             )
             verdict = _tool_call_verdict(hook_result, event)
             if verdict.blocked:
                 withheld = withheld_call_event(event, str(verdict.result))
                 await kit_ref._observe_tool_call(withheld, context)
+            elif unserved and verdict.result is not None:
+                await kit_ref._observe_tool_call(replace(event, result=verdict.result), context)
             await kit_ref._emit_tool_call_event(event, channel_id)
             return verdict
 
