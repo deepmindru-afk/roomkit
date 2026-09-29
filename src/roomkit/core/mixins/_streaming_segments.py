@@ -4,23 +4,41 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import AsyncGenerator
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from roomkit.channels._tool_event_result import tool_event_payload
 from roomkit.core.mixins.helpers import _RECENT_EVENTS_LIMIT
 from roomkit.models.enums import EventStatus, EventType, HookTrigger
 from roomkit.models.event import EventSource, RoomEvent, TextContent, ToolCallContent
-from roomkit.models.streaming import LoopEndMarker, ToolCallEndMarker, ToolCallStartMarker
+from roomkit.models.streaming import (
+    LoopEndMarker,
+    ThinkingDeltaMarker,
+    ToolCallEndMarker,
+    ToolCallStartMarker,
+)
 
 if TYPE_CHECKING:
     from roomkit.core.event_router import StreamingResponse
     from roomkit.core.hooks import SyncPipelineResult
     from roomkit.core.lanes import DeliveryCascade
+    from roomkit.core.mixins._response_reader import ResponseReader
     from roomkit.core.mixins.lane_execution import DeliverySource
     from roomkit.models.context import RoomContext
 
 logger = logging.getLogger("roomkit.inbound")
+
+
+class RowSink(Protocol):
+    """How a streamed turn's rows are committed, the one thing writers differ in."""
+
+    async def commit(self, event: RoomEvent, *, exclude: set[str] | None) -> RoomEvent | None:
+        """Commit *event*: the stored row, or ``None`` when it was refused or excluded.
+
+        *exclude* names the channels the row must not be delivered to.
+        """
+        ...
 
 
 class SegmentWriter:
@@ -31,37 +49,37 @@ class SegmentWriter:
     whether it crossed the ``BEFORE_BROADCAST`` hooks. The text did and the
     two markers did not, so a hook's decision (a display label, a PII
     rewrite, a refusal) never reached a stored tool row. They are verbs of
-    one writer here, and the gate is the writer's own step: a fourth kind of
-    row cannot be written past it.
+    one writer here, and the commit is the writer's own step, through its
+    sink: a fourth kind of row cannot be written past it.
 
     Each verb returns the row it committed, or ``None`` when there was
     nothing to write, a hook refused it, or the persistence policy excluded
     it (RFC §14.3) — which is exactly what the caller yields into the stream.
+
+    How a row is committed is the *sink*'s: a room's rows cross the hooks
+    and ride its lane (:class:`LaneSink`), a delegated turn's trace is
+    committed as is (RFC §23.3). Everything else is this writer's, for both.
     """
 
     def __init__(
         self,
         kit: Any,
         sr: StreamingResponse,
+        sink: RowSink,
         *,
         room_id: str,
-        context: RoomContext,
-        cascade: DeliveryCascade,
-        plan_source: DeliverySource | str,
         chain_depth: int,
-        visibility: str,
-        response_visibility: str | None,
-        correlation_id: str,
-        parent_event_id: str | None,
-        streamed_to: set[str],
-        response_events: list[RoomEvent] | None,
+        visibility: str = "all",
+        response_visibility: str | None = None,
+        correlation_id: str | None = None,
+        parent_event_id: str | None = None,
+        streamed_to: set[str] | None = None,
+        response_events: list[RoomEvent] | None = None,
     ) -> None:
         self._kit = kit
         self._sr = sr
+        self._sink = sink
         self._room_id = room_id
-        self._context = context
-        self._cascade = cascade
-        self._plan_source = plan_source
         self._chain_depth = chain_depth
         self._visibility = visibility
         # The trigger's answer scope rides every row, so what another agent
@@ -73,7 +91,7 @@ class SegmentWriter:
         # itself is its delivery, so the lane must not send it again. Only the
         # first target streams (V1); any other streaming-capable channel is an
         # ordinary recipient.
-        self._streamed_to = streamed_to
+        self._streamed_to = streamed_to if streamed_to is not None else set()
         self._response_events = response_events
         # The turn's record (``loop_end_reason``, ``ai_usage``), once its
         # ``LoopEndMarker`` is read; ``_record_owed`` while no row carries it.
@@ -139,6 +157,43 @@ class SegmentWriter:
         """The stream failed: text accumulated past the failure never reached
         the streaming channel, so it goes out like any other event."""
         self._streamed_to.clear()
+
+    async def read(
+        self, reader: ResponseReader
+    ) -> AsyncGenerator[str | ThinkingDeltaMarker | RoomEvent, None]:
+        """Read the response through *reader*, writing each row as it ends.
+
+        Yields every text delta and thinking marker as it arrives, for the
+        channel rendering the stream, and every row committed. Stops at the
+        stream's end, before the final text is written: the caller writes it.
+        """
+        while True:
+            try:
+                delta = await reader.next()
+            except StopAsyncIteration:
+                return
+            if isinstance(delta, str):
+                self.add_text(delta)
+                yield delta
+            elif isinstance(delta, ThinkingDeltaMarker):
+                yield delta
+            else:
+                for row in await self.take(delta):
+                    yield row
+
+    async def end_cancelled(self, reader: ResponseReader) -> None:
+        """Write what a cancelled turn leaves: open calls closed, text kept as cancelled.
+
+        A running tool is aborted and its call closed ``failed``, so no start
+        row stays pending (RFC §12.2 step 13s).
+        """
+        await self.close_calls(await reader.abandon())
+        await self.flush_text(cancelled=True)
+
+    async def end_failed(self, reader: ResponseReader) -> None:
+        """Write what a failed turn leaves: open calls closed as ``turn failed``, text kept."""
+        await self.close_calls(await reader.abandon("turn failed"))
+        await self.flush_text()
 
     # -- the three rows ----------------------------------------------------
 
@@ -312,6 +367,33 @@ class SegmentWriter:
             )
 
     async def _write_now(self, event: RoomEvent, *, exclude: set[str] | None) -> RoomEvent | None:
+        stored = await self._sink.commit(event, exclude=exclude)
+        if stored is not None:
+            self.persisted.append(stored)
+            if self._response_events is not None:
+                self._response_events.append(stored)
+        return stored
+
+
+class LaneSink:
+    """A room's streamed rows: gated on ``BEFORE_BROADCAST``, committed on its lane."""
+
+    def __init__(
+        self,
+        kit: Any,
+        *,
+        room_id: str,
+        context: RoomContext,
+        cascade: DeliveryCascade,
+        plan_source: DeliverySource | str,
+    ) -> None:
+        self._kit = kit
+        self._room_id = room_id
+        self._context = context
+        self._cascade = cascade
+        self._plan_source = plan_source
+
+    async def commit(self, event: RoomEvent, *, exclude: set[str] | None) -> RoomEvent | None:
         gated = await self._gate(event)
         if gated is None:
             return None
@@ -393,9 +475,6 @@ class SegmentWriter:
             hook_result=hook_result,
         )
         if stored is not None:
-            self.persisted.append(stored)
-            if self._response_events is not None:
-                self._response_events.append(stored)
             self._plan_source = _with_row(self._plan_source, stored)
         return stored
 

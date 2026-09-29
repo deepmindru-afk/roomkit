@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import aclosing
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from uuid import uuid4
@@ -11,7 +12,7 @@ from uuid import uuid4
 from roomkit.core.event_router import unanswered
 from roomkit.core.lanes import DeliveryCascade
 from roomkit.core.mixins._response_reader import ResponseReader
-from roomkit.core.mixins._streaming_segments import SegmentWriter
+from roomkit.core.mixins._streaming_segments import LaneSink, SegmentWriter
 from roomkit.core.mixins.helpers import HelpersMixin
 from roomkit.core.mixins.lane_execution import DeliverySource
 from roomkit.core.visibility import visibility_allows
@@ -22,7 +23,6 @@ from roomkit.models.enums import (
 )
 from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.models.response_metadata import ResponseMetadata
-from roomkit.models.streaming import ThinkingDeltaMarker
 from roomkit.providers.ai.base import ProviderError
 from roomkit.providers.utils import _aclose_stream
 
@@ -160,10 +160,10 @@ class InboundStreamingMixin(HelpersMixin):
         writer = SegmentWriter(
             self,
             sr,
+            LaneSink(
+                self, room_id=room_id, context=context, cascade=cascade, plan_source=plan_source
+            ),
             room_id=room_id,
-            context=context,
-            cascade=cascade,
-            plan_source=plan_source,
             chain_depth=chain_depth,
             visibility=visibility,
             response_visibility=response_vis,
@@ -194,19 +194,9 @@ class InboundStreamingMixin(HelpersMixin):
             ``THINKING_END`` for out-of-band observers).
             """
             nonlocal exhausted
-            while True:
-                try:
-                    delta = await reader.next()
-                except StopAsyncIteration:
-                    break
-                if isinstance(delta, str):
-                    writer.add_text(delta)
-                    yield delta
-                elif isinstance(delta, ThinkingDeltaMarker):
-                    yield delta
-                else:
-                    for row in await writer.take(delta):
-                        yield row
+            async with aclosing(writer.read(reader)) as items:
+                async for item in items:
+                    yield item
 
             exhausted = True
             row = await writer.flush_text()
@@ -241,8 +231,7 @@ class InboundStreamingMixin(HelpersMixin):
                 # context missing what it already said. Not an error — nobody
                 # failed — so ON_ERROR stays silent and the cancellation
                 # propagates untouched.
-                await writer.close_calls(await reader.abandon())
-                await writer.flush_text(cancelled=True)
+                await writer.end_cancelled(reader)
                 raise
             except Exception as exc:
                 stream_error = exc
@@ -253,8 +242,7 @@ class InboundStreamingMixin(HelpersMixin):
                 # gone, so this text never reached its channels — it goes out
                 # as an ordinary event, to everyone.
                 writer.stream_lost()
-                await writer.close_calls(await reader.abandon("turn failed"))
-                await writer.flush_text()
+                await writer.end_failed(reader)
                 await self._fire_error_hook(
                     room_id,
                     context,
@@ -283,16 +271,14 @@ class InboundStreamingMixin(HelpersMixin):
                 async for _ in segment_stream():
                     pass
             except asyncio.CancelledError:
-                await writer.close_calls(await reader.abandon())
-                await writer.flush_text(cancelled=True)
+                await writer.end_cancelled(reader)
                 raise
             except Exception as exc:
                 stream_error = exc
                 self._log_stream_failure(
                     exc, "stream consumption (no targets)", room_id, headless=True
                 )
-                await writer.close_calls(await reader.abandon("turn failed"))
-                await writer.flush_text()
+                await writer.end_failed(reader)
                 await self._fire_error_hook(
                     room_id,
                     context,
