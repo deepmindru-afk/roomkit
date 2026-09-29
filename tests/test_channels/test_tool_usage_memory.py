@@ -225,6 +225,8 @@ class TestToolUsageMemory:
         digest = mem.render_digest("r1") or ""
         assert "\n<tool_result>\n" not in digest
         assert "z" * 500 not in digest
+        # Its stored id does not outlive the process (RFC §21.5).
+        assert "evicted_" not in digest
 
     def test_kept_result_is_bounded_by_the_configured_size(self) -> None:
         mem = ToolUsageMemory(result_keep_chars=100)

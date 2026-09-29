@@ -149,12 +149,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A stored large tool result stays readable while its room works (RMK-285,
   RFC §21.5). The eviction store held 50 results for every room together, so
   50 evictions elsewhere pushed a room's result out and `read_stored_result`
-  answered "not found"; it now keeps 50 per room, with a bound of 200 over
-  all rooms for memory. A call id reused in a later turn overwrote the result
-  an earlier placeholder named; each stored result now has its own id
-  (`evicted_call_0`, then `evicted_call_0_2`). A tool-usage digest rebuilt
-  after a restart offered to read back an id the store no longer held; it
-  keeps the result's size and drops the id.
+  answered "not found". Each room now keeps its 50 most recently read
+  results, and the store's bounds for memory (200 results, 64 MB of text)
+  take from the room holding the most first, so a quiet room keeps its
+  results while others evict. A call id reused in a later turn overwrote the
+  result an earlier placeholder named; an id is now never given to another
+  result, even once its own left the store (`evicted_call_0`, then
+  `evicted_call_0_2`). A tool-usage digest rebuilt after a restart offered to
+  read back an id the store no longer held; it keeps the result's size and
+  drops the id.
 - Every provider hands the tool loop the same call (RMK-284, RFC §6.4). A
   call the output cap cut mid-arguments ran anyway, with `{}` on Anthropic
   and `{"raw": "<fragment>"}` on the OpenAI dialect; it is now marked partial

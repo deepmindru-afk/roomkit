@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from typing import Any
 
 from roomkit.memory.token_estimator import estimate_tokens
@@ -12,11 +12,17 @@ from roomkit.providers.ai.base import AIImagePart, AITextPart, AITool
 
 logger = logging.getLogger("roomkit.channels.ai")
 
-# Stored results a room keeps (its oldest go first), and a wider bound over
-# every room for memory: another room's evictions must not push a room's
-# results out (RFC §21.5).
+# Stored results a room keeps (its least recently read go first), and the
+# bounds the whole store needs for memory, which take from the room holding
+# the most first: a room holding few results keeps them while others evict
+# (RFC §21.5).
 _MAX_EVICTED = 50
 _MAX_EVICTED_TOTAL = 200
+_MAX_EVICTED_CHARS = 64 * 1024 * 1024
+
+# Ids the store has handed out, remembered well past what any context can
+# still name, so a released id is never given to another result.
+_ISSUED_IDS_REMEMBERED = 10_000
 
 # Chars reserved per read_stored_result page for the JSON envelope — fixed
 # keys plus the partial-page warning prose (~350 chars escaped, worst case) —
@@ -40,6 +46,13 @@ EVICTION_PLACEHOLDER_PREFIX = "Result too large ("
 def is_eviction_placeholder(text: str) -> bool:
     """Whether *text* is the stand-in :class:`ToolEviction` gave an oversized result."""
     return text.startswith(EVICTION_PLACEHOLDER_PREFIX)
+
+
+def eviction_placeholder_size(text: str) -> str:
+    """The size head of the placeholder in *text*, ``Result too large (N tokens)``,
+    without the stored id, which does not outlive the process."""
+    start = text.find(EVICTION_PLACEHOLDER_PREFIX)
+    return text[start:].split(")", 1)[0] + ")"
 
 
 def _omission_marker(count: int) -> str:
@@ -134,6 +147,8 @@ class ToolEviction:
     def __init__(self, threshold_tokens: int = 5000) -> None:
         self.threshold_tokens = threshold_tokens
         self._store: OrderedDict[tuple[str, str], str] = OrderedDict()
+        self._chars = 0
+        self._issued: OrderedDict[tuple[str, str], None] = OrderedDict()
 
     @staticmethod
     def _room_scope() -> str:
@@ -163,6 +178,7 @@ class ToolEviction:
             room, f"evicted_{tool_call_id}" if tool_call_id else f"evicted_{id(result)}"
         )
         self._store[(room, result_id)] = result
+        self._chars += len(result)
         self._bound(room)
 
         return (
@@ -172,22 +188,43 @@ class ToolEviction:
         )
 
     def _free_id(self, room: str, base: str) -> str:
-        """*base*, numbered when the room already holds it: a call id reused in a
-        later turn must not overwrite the result an earlier placeholder names."""
+        """*base*, numbered when the room was already given it.
+
+        An id is never given again, even once its result left the store: a
+        placeholder still in the model's context would otherwise read another
+        call's data. A call id reused in a later turn gets ``base_2``.
+        """
         result_id, n = base, 1
-        while (room, result_id) in self._store:
+        while (room, result_id) in self._issued or (room, result_id) in self._store:
             n += 1
             result_id = f"{base}_{n}"
+        self._issued[(room, result_id)] = None
+        while len(self._issued) > _ISSUED_IDS_REMEMBERED:
+            self._issued.popitem(last=False)
         return result_id
 
     def _bound(self, room: str) -> None:
-        """Keep :data:`_MAX_EVICTED` per room and :data:`_MAX_EVICTED_TOTAL`
-        overall, the oldest leaving first."""
+        """Keep :data:`_MAX_EVICTED` per room, then the store's bounds.
+
+        Over a store bound, the room holding the most gives up its least
+        recently read result first, so a room holding few keeps them. The
+        newest result always stays, however large.
+        """
         in_room = [key for key in self._store if key[0] == room]
         for key in in_room[: max(0, len(in_room) - _MAX_EVICTED)]:
-            del self._store[key]
-        while len(self._store) > _MAX_EVICTED_TOTAL:
-            self._store.popitem(last=False)
+            self._drop(key)
+        while len(self._store) > 1 and (
+            len(self._store) > _MAX_EVICTED_TOTAL or self._chars > _MAX_EVICTED_CHARS
+        ):
+            self._drop(self._oldest_of_fullest_room())
+
+    def _oldest_of_fullest_room(self) -> tuple[str, str]:
+        counts = Counter(scope for scope, _ in self._store)
+        fullest = max(counts, key=counts.__getitem__)
+        return next(key for key in self._store if key[0] == fullest)
+
+    def _drop(self, key: tuple[str, str]) -> None:
+        self._chars -= len(self._store.pop(key))
 
     def maybe_evict_parts(
         self, parts: list[AITextPart | AIImagePart], tool_call_id: str = ""
@@ -237,6 +274,8 @@ class ToolEviction:
         if full_result is None:
             available = [rid for scope, rid in self._store if scope == room]
             return json.dumps({"error": f"Result '{result_id}' not found", "available": available})
+        # Read back, it is in use: the room's least recently read go first.
+        self._store.move_to_end((room, result_id))
 
         # Char budget per page. The page returns as a JSON string (the content
         # re-escaped, wrapped in an envelope) and is re-measured against
