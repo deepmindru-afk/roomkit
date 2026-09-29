@@ -100,7 +100,7 @@ class AIContextHost(Protocol):
         _planner: Optional task planner for planning tools.
         _user_tools: User-provided tool definitions.
         _injected_tools: Orchestration-injected tool definitions.
-        _room_tools: Tools declared in one room's turns only, by room id.
+        _room_tool_defs: ``AIChannel`` method: the tools declared in one room's turns only.
         channel_id: Unique identifier for this channel.
 
     Properties / methods provided by other mixins:
@@ -132,7 +132,6 @@ class AIContextHost(Protocol):
     _planner: TaskPlanner | None
     _user_tools: list[AITool]
     _injected_tools: list[AITool]
-    _room_tools: dict[str, list[AITool]]
     _config_provider: Any  # ConfigProvider | None — see channels/_turn_config.py
     _tool_search: bool | None
     _tool_search_pinned: set[str]
@@ -142,6 +141,7 @@ class AIContextHost(Protocol):
 
     @property
     def extra_tools(self) -> list[AITool]: ...
+    def _room_tool_defs(self, room_id: str) -> list[AITool]: ...
     def _skill_tools(self) -> list[AITool]: ...
     def _apply_tool_filters(self, tools: list[AITool]) -> list[AITool]: ...
     def _policy_allows(self, name: str) -> bool: ...
@@ -175,7 +175,6 @@ class AIContextMixin:
     _planner: TaskPlanner | None
     _user_tools: list[AITool]
     _injected_tools: list[AITool]
-    _room_tools: dict[str, list[AITool]]
     _config_provider: Any  # ConfigProvider | None — see channels/_turn_config.py
     _tool_search: bool | None
     _tool_search_pinned: set[str]
@@ -187,6 +186,7 @@ class AIContextMixin:
 
     # Cross-mixin methods — Any annotations avoid MRO shadowing
     extra_tools: Any  # see AIContextHost
+    _room_tool_defs: Any  # see AIContextHost
     _skill_tools: Any  # see AIContextHost
     _apply_tool_filters: Any  # see AIContextHost
     _policy_allows: Any  # see AIContextHost
@@ -264,10 +264,8 @@ class AIContextMixin:
                 for t in raw_tools
             ]
 
-        # Inject extra tools (user-provided + orchestration handoff, etc.),
-        # and those an orchestration strategy declared for this room only.
-        tools.extend(self.extra_tools)
-        tools.extend(self._room_tools.get(binding.room_id, ()))
+        # Inject extra tools (user-provided + orchestration handoff, etc.)
+        tools.extend([*self.extra_tools, *self._room_tool_defs(binding.room_id)])
 
         # Inject human-input tool definitions (e.g. AskUserQuestion)
         if self._human_input_handler is not None:

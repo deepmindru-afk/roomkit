@@ -8,6 +8,7 @@ declared as annotations; they are set in ``Supervisor.__init__``.
 from __future__ import annotations
 
 import json
+import weakref
 from typing import TYPE_CHECKING, Any
 
 from roomkit.orchestration._call_room import call_room_handler
@@ -26,6 +27,10 @@ if TYPE_CHECKING:
     from roomkit.channels.agent import Agent
     from roomkit.core.framework import RoomKit
 
+# Per supervisor, the ``delegate_to_<id>`` names its handler serves, to the
+# worker each one reaches: a second room's install adds its workers here.
+_PER_WORKER: weakref.WeakKeyDictionary[Any, dict[str, str]] = weakref.WeakKeyDictionary()
+
 
 class _PerWorkerToolMixin:
     """Inject per-worker ``delegate_to_<id>`` tools (the AI decides)."""
@@ -35,43 +40,27 @@ class _PerWorkerToolMixin:
     _wait_for_result: bool
     _share_channels: list[str]
 
-    def _inject_per_worker_tools(self, kit: RoomKit) -> None:
-        """Inject per-worker ``delegate_to_<id>`` tools (AI decides).
+    def _inject_per_worker_tools(self, kit: RoomKit, room_id: str) -> None:
+        """Declare per-worker ``delegate_to_<id>`` tools in *room_id*'s turns.
 
-        The supervisor serves every room it is installed in, so a call
-        delegates from the room of the call (RFC §23.4), never from the room
-        that happened to install the tools first.
+        The tools are declared per installed room (RFC §19.7), not in every
+        room the supervisor serves. Their handler is installed once per
+        supervisor and serves the workers of every room it was installed in;
+        a call delegates from the room of the call (RFC §23.4).
         """
-        any_new = False
-        for worker in self._workers:
-            tool_name = f"delegate_to_{worker.channel_id}"
-
-            if any(t.name == tool_name for t in self._supervisor._injected_tools):
-                continue
-
-            any_new = True
-            desc = getattr(worker, "description", None) or f"Worker agent {worker.channel_id}"
-            tool = AITool(
-                name=tool_name,
-                description=f"Delegate a task to {worker.channel_id}. {desc}",
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "task": {
-                            "type": "string",
-                            "description": "Description of the task to delegate",
-                        },
-                    },
-                    "required": ["task"],
-                },
-            )
-            self._supervisor._injected_tools.append(tool)
-
-        if not any_new:
+        room_tools = self._supervisor._room_tools.setdefault(room_id, [])
+        declared = {t.name for t in room_tools}
+        room_tools.extend(
+            tool for tool in map(_worker_tool, self._workers) if tool.name not in declared
+        )
+        workers = {f"delegate_to_{w.channel_id}": w.channel_id for w in self._workers}
+        tool_to_worker = _PER_WORKER.get(self._supervisor)
+        if tool_to_worker is not None:
+            tool_to_worker.update(workers)
             return
+        tool_to_worker = _PER_WORKER[self._supervisor] = workers
 
         original = self._supervisor.tool_handler
-        tool_to_worker = {f"delegate_to_{w.channel_id}": w.channel_id for w in self._workers}
         wait = self._wait_for_result
         share_channels = self._share_channels
         # Per room: a worker busy in one room is free in another.
@@ -204,6 +193,26 @@ class _PerWorkerToolMixin:
                 logger.exception("Delegation to %s failed", worker_id)
                 return json.dumps({"error": str(exc)})
 
+        # The names this handler serves grow as other rooms install workers.
         self._supervisor.tool_handler = call_room_handler(
-            set(tool_to_worker), delegate_to_worker, original
+            tool_to_worker.keys(), delegate_to_worker, original
         )
+
+
+def _worker_tool(worker: Agent) -> AITool:
+    """The ``delegate_to_<id>`` declaration for one worker."""
+    desc = getattr(worker, "description", None) or f"Worker agent {worker.channel_id}"
+    return AITool(
+        name=f"delegate_to_{worker.channel_id}",
+        description=f"Delegate a task to {worker.channel_id}. {desc}",
+        parameters={
+            "type": "object",
+            "properties": {
+                "task": {
+                    "type": "string",
+                    "description": "Description of the task to delegate",
+                },
+            },
+            "required": ["task"],
+        },
+    )

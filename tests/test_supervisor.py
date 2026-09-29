@@ -295,9 +295,8 @@ class TestSupervisorInstall:
         s = Supervisor(supervisor=boss, workers=workers)
         await s.install(kit, "r1")
 
-        tool_names = [t.name for t in boss._injected_tools]
-        assert "delegate_to_w1" in tool_names
-        assert "delegate_to_w2" in tool_names
+        tool_names = [t.name for t in boss._room_tools["r1"]]
+        assert tool_names == ["delegate_to_w1", "delegate_to_w2"]
 
     async def test_double_install_no_duplicate_tools(self) -> None:
         boss = _make_agent("boss")
@@ -313,8 +312,8 @@ class TestSupervisorInstall:
         kit2.delegate = AsyncMock(return_value=mock_task)
         await s.install(kit2, "r2")
 
-        tool_count = sum(1 for t in boss._injected_tools if t.name == "delegate_to_w1")
-        assert tool_count == 1
+        for room_id in ("r1", "r2"):
+            assert [t.name for t in boss._room_tools[room_id]] == ["delegate_to_w1"]
 
     async def test_double_install_strategy_tool_no_duplicate(self) -> None:
         boss = _make_agent("boss")
@@ -783,11 +782,13 @@ class TestSupervisedSequential:
         """In strategy-tool mode the supervisor owns delegate_workers, declared in
         the room it was installed in (RFC §19.7). Its dispatch and review run in
         ``::task-`` child rooms, where the tool is not declared, so the flow has
-        nothing to strip, and another room's supervisor keeps the tool meanwhile."""
+        nothing to strip, and the supervisor's other room keeps the tool meanwhile."""
         kit = _make_mock_kit(Room(id="r1"))
         boss = _make_agent("boss", role="Supervisor")
         w1 = _make_agent("w1", role="Researcher")
-        await Supervisor(supervisor=boss, workers=[w1], strategy="sequential").install(kit, "r1")
+        for room_id in ("r1", "r2"):
+            supervisor = Supervisor(supervisor=boss, workers=[w1], strategy="sequential")
+            await supervisor.install(kit, room_id)
         verdicts = [{"approved": True, "feedback": "", "next_task": ""}]
         router, _calls = _supervised_delegate_router("boss", verdicts, dispatch="framed")
         declared_during: list[dict[str, list[str]]] = []
@@ -805,8 +806,10 @@ class TestSupervisedSequential:
 
         await _run_supervised_sequential(kit, "r1", boss, [w1], "research", max_revisions=3)
 
+        # r1's supervised steps leave r2's tool where it is.
+        expected = {"r1": ["delegate_workers"], "r2": ["delegate_workers"]}
         assert declared_during
-        assert all(seen == {"r1": ["delegate_workers"]} for seen in declared_during)
+        assert all(seen == expected for seen in declared_during)
         assert "delegate_workers" not in [t.name for t in boss._injected_tools]
 
     async def test_rework_on_rejection_then_approve(self) -> None:

@@ -104,9 +104,10 @@ class TestSupervisorInstall:
         s = Supervisor(supervisor=boss, workers=workers)
         await s.install(kit, "r1")
 
-        tool_names = [t.name for t in boss._injected_tools]
-        assert "delegate_to_w1" in tool_names
-        assert "delegate_to_w2" in tool_names
+        # Declared in the room it was installed in (RFC §19.7), not channel-wide.
+        tool_names = [t.name for t in boss._room_tools["r1"]]
+        assert tool_names == ["delegate_to_w1", "delegate_to_w2"]
+        assert boss._injected_tools == []
 
     async def test_sets_initial_state(self):
         boss = _make_agent("boss")
@@ -170,8 +171,8 @@ class TestSupervisorInstall:
         kit2.delegate = AsyncMock(return_value=mock_task)
         await s.install(kit2, "r2")
 
-        tool_count = sum(1 for t in boss._injected_tools if t.name == "delegate_to_w1")
-        assert tool_count == 1
+        for room_id in ("r1", "r2"):
+            assert [t.name for t in boss._room_tools[room_id]] == ["delegate_to_w1"]
 
 
 class TestSupervisorShareChannels:

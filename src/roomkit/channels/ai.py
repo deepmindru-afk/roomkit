@@ -431,9 +431,7 @@ class AIChannel(
         # orchestration code can inspect/modify injected tools independently.
         self._user_tools: list[AITool] = extracted_defs
         self._injected_tools: list[AITool] = []
-        # Tools declared in one room's turns only (RFC §19.7): what an
-        # orchestration strategy adds for a room must not reach the other
-        # rooms this channel object serves.
+        # Tools declared in one room's turns only, by room id (RFC §19.7).
         self._room_tools: dict[str, list[AITool]] = {}
 
         # Set _tool_handler to the unified dispatcher only when tools actually
@@ -627,30 +625,35 @@ class AIChannel(
         event_ctx.room = context.room
         token = _current_loop_ctx.set(event_ctx)
         try:
-            raw_tools = binding.metadata.get("tools", [])
-            # A config_provider may deliver tools at _build_context time even
-            # when the binding carries no snapshot — route to the tool loop
-            # so those tools are executable. An empty turn toolset just runs
-            # the loop for a single round.
-            has_tools = (
-                bool(raw_tools)
-                or self._config_provider is not None
-                or self._channel_tool_surface()
-                or bool(self._room_tools.get(event_ctx.room_id or ""))
-                or self._external_tool_handler is not None
-                or (
-                    self._human_input_handler is not None and bool(self._human_input_handler.tools)
-                )
-            )
-
             if self._provider.supports_streaming or self._provider.supports_structured_streaming:
-                if has_tools:
+                if self._turn_has_tools(binding):
                     return await self._start_streaming_tool_response(event, binding, context)
                 return await self._start_streaming_response(event, binding, context)
 
             return await self._generate_response(event, binding, context)
         finally:
             _current_loop_ctx.reset(token)
+
+    def _turn_has_tools(self, binding: ChannelBinding) -> bool:
+        """Whether a streaming turn goes through the tool loop.
+
+        A config_provider may deliver tools at _build_context time even when
+        the binding carries no snapshot, so it routes to the tool loop for
+        those tools to be executable. An empty turn toolset just runs the loop
+        for a single round.
+        """
+        return (
+            bool(binding.metadata.get("tools"))
+            or self._config_provider is not None
+            or self._channel_tool_surface()
+            or bool(self._room_tool_defs(binding.room_id))
+            or self._external_tool_handler is not None
+            or (self._human_input_handler is not None and bool(self._human_input_handler.tools))
+        )
+
+    def _room_tool_defs(self, room_id: str) -> list[AITool]:
+        """The tools declared in *room_id*'s turns only (RFC §19.7)."""
+        return self._room_tools.get(room_id, [])
 
     async def deliver(
         self, event: RoomEvent, binding: ChannelBinding, context: RoomContext

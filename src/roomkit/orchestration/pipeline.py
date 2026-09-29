@@ -23,6 +23,7 @@ from roomkit.tools.context import current_tool_room_id
 if TYPE_CHECKING:
     from roomkit.channels.agent import Agent
     from roomkit.channels.ai import ToolResult
+    from roomkit.channels.realtime_voice import RealtimeVoiceChannel
     from roomkit.core.framework import RoomKit
     from roomkit.providers.ai.base import AITool
 
@@ -304,8 +305,6 @@ class ConversationPipeline:
 
         agent_map: dict[str, Agent] = {a.channel_id: a for a in agents}
         stage_by_agent: dict[str, PipelineStage] = {s.agent_id: s for s in self._stages}
-        # The channel's own tools stay declared under every agent (RFC §19.5).
-        channel_tools = [dict(t) for t in rtv._tools or []]
 
         # Build per-agent configurations
         agent_configs: dict[str, dict[str, Any]] = {}
@@ -338,7 +337,7 @@ class ConversationPipeline:
             agent_configs[agent.channel_id] = {
                 "system_prompt": prompt or None,
                 "voice": agent.voice,
-                "tools": _agent_session_tools(channel_tools, agent, tool),
+                "tools": _agent_session_tools(rtv, agent, tool),
             }
 
         # Set initial agent config on the RealtimeVoiceChannel
@@ -602,14 +601,19 @@ class ConversationPipeline:
 
 
 def _agent_session_tools(
-    channel_tools: list[dict[str, Any]], agent: Agent, handoff: AITool
+    rtv: RealtimeVoiceChannel, agent: Agent, handoff: AITool
 ) -> list[dict[str, Any]]:
     """The tools an agent's realtime session declares (RFC §19.5).
 
-    The channel's own tools, the agent's, then the handoff tool; a later tool
-    replaces an earlier one of the same name, so an agent may specialise one.
+    The channel's own tools, which stay declared under every agent, the
+    agent's, then the handoff tool; a later tool replaces an earlier one of
+    the same name, so an agent may specialise one.
     """
-    declared = [*channel_tools, *(t.model_dump() for t in agent._user_tools), handoff.model_dump()]
+    declared = [
+        *(dict(t) for t in rtv._tools or []),
+        *(t.model_dump() for t in agent._user_tools),
+        handoff.model_dump(),
+    ]
     return list({tool["name"]: tool for tool in declared}.values())
 
 
@@ -621,15 +625,14 @@ async def _serve_agent_or_channel_tool(
     name: str,
     arguments: dict[str, Any],
 ) -> ToolResult:
-    """Serve a call other than the handoff: the active agent's own tool by that
-    agent's handler, any other tool by the channel's (RFC §19.5)."""
+    """Serve a call other than the handoff (RFC §19.5): the active agent's
+    own tool by the handler the agent was given, any other tool, and an agent
+    tool the agent has no handler for, by the channel's."""
     agent = await _active_agent(kit, agent_map, default_agent_id)
-    if (
-        agent is not None
-        and agent.tool_handler is not None
-        and any(t.name == name for t in agent._user_tools)
-    ):
-        return await agent.tool_handler(name, arguments)
+    agent_handler = agent._user_tool_handler if agent is not None else None
+    agent_tools = agent._user_tools if agent is not None else []
+    if agent_handler is not None and any(t.name == name for t in agent_tools):
+        return await agent_handler(name, arguments)
     if channel_handler is not None:
         return await channel_handler(name, arguments)
     return json.dumps({"error": f"Unknown tool: {name}"})

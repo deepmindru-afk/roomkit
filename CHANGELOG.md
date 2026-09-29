@@ -128,25 +128,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A strategy installed in several rooms keeps what it adds per room (RMK-276,
   RFC §19.7). The voice supervisor (`auto_delegate=True, async_delivery=True`)
-  and the voice `Loop` declared their tool again at each room's install, so a
-  voice channel serving two rooms declared `delegate_workers` twice (a
-  provider refuses duplicate names), and ran every call for the room
-  installed last; they now declare it once, run each call for the room of
-  the session that made it, and track "already running" per room. The sync
-  auto-delegate supervisor wrapped `on_event` again at each install, so one
-  message in one of two rooms ran the whole pipeline three times; it now
-  wraps once. A delegation's `submit_result` / `submit_verdict` was declared
-  in every room the delegated agent served, a customer's included, and a
-  supervisor lost `delegate_workers` in all its rooms while one of them ran a
-  supervised step; both are now declared per room (`AIChannel._room_tools`),
-  the result tool in the child room, `delegate_workers` in the rooms the
-  supervisor was installed in.
+  and the voice `Loop` appended their tool (`delegate_workers`,
+  `delegate_loop`) at each room's install, so a voice channel serving two
+  rooms declared it twice (a provider refuses duplicate names) and ran every
+  call for the room installed last. They now declare it once, run each call
+  for the room of the session that made it, refuse a call from a room they
+  were not installed in, and track "already running" per room; called
+  directly, outside a session's tool call, they answer the `NO_CALL_ROOM`
+  refusal of RMK-275. The sync auto-delegate supervisor wrapped `on_event`
+  again at each install, so one message in one of two rooms ran the whole
+  pipeline three times, and the sync `Loop` stacked one wrapper per room
+  until a deep enough stack raised `RecursionError`; both now wrap once. On
+  an AI channel, a supervisor's `delegate_workers` and `delegate_to_<worker>`
+  tools, and a delegation's `submit_result` / `submit_verdict`, were declared
+  in every room the agent served, a customer's included, and a supervised
+  step took `delegate_workers` away from all the supervisor's rooms while it
+  ran. They are now declared per room (`AIChannel._room_tools`): the
+  supervisor's tools in the rooms it was installed in, the result tool in the
+  delegation's child room. A room created before a restart gets them back by
+  installing the strategy in it again.
 - A realtime `ConversationPipeline` keeps the voice channel's own tools and
   declares the active agent's (RMK-276, RFC §19.5). Each agent's session
   declared only the handoff tool, so the channel's tools vanished at install
   and an agent's `tools=` were never offered; a session now declares the
-  channel's tools, the agent's and the handoff tool, and a call to one of
-  the active agent's tools is served by that agent's `tool_handler`.
+  channel's tools, the agent's and the handoff tool. A call to one of the
+  active agent's tools is served by the `tool_handler` the agent was given;
+  a tool it declares without one, a specialised channel tool included, is
+  served by the channel's handler.
 - A supervisor serving several rooms keeps their delegations apart (RMK-275,
   RFC §23.4). With `wait_for_result=False`, a worker busy with room A's task
   answered room B's delegation "already running"; with a `strategy`, room B's

@@ -19,6 +19,7 @@ from roomkit.models.context import RoomContext
 from roomkit.models.enums import ChannelType as _ChannelType
 from roomkit.models.event import RoomEvent
 from roomkit.orchestration._call_room import call_room_handler
+from roomkit.orchestration._installs import first_install
 from roomkit.orchestration.strategies.supervisor._common import (
     WorkerStrategy,
     _is_subtask_room,
@@ -36,8 +37,12 @@ if TYPE_CHECKING:
     from roomkit.core.framework import RoomKit
 
 # The supervisors whose ``on_event`` already runs the framework-driven
-# delegation: a second room's install wraps nothing.
+# delegation, and the voice channels already serving ``delegate_workers``: a
+# second room's install wraps nothing.
 _AUTO_DELEGATING: weakref.WeakSet[Any] = weakref.WeakSet()
+_VOICE_SERVING: weakref.WeakSet[Any] = weakref.WeakSet()
+# The rooms each voice channel's ``delegate_workers`` was installed in.
+_VOICE_ROOMS: weakref.WeakKeyDictionary[Any, set[str]] = weakref.WeakKeyDictionary()
 
 
 class _AutoDelegateInstallMixin:
@@ -53,7 +58,7 @@ class _AutoDelegateInstallMixin:
     _max_revisions: int
     _task_timeout: float
 
-    def _install_auto_delegate(self, kit: RoomKit) -> None:
+    def _install_auto_delegate(self, kit: RoomKit, room_id: str) -> None:
         """Install framework-driven delegation (sync or async), once.
 
         The supervisor and the voice channel serve every room the strategy is
@@ -61,15 +66,14 @@ class _AutoDelegateInstallMixin:
         and each delegation runs for the room it came from.
         """
         if self._async_delivery:
-            self._install_async_auto_delegate(kit)
+            self._install_async_auto_delegate(kit, room_id)
         else:
             self._install_sync_auto_delegate(kit)
 
     def _install_sync_auto_delegate(self, kit: RoomKit) -> None:
         """Wrap supervisor's on_event — blocks until workers complete."""
-        if self._supervisor in _AUTO_DELEGATING:
+        if not first_install(_AUTO_DELEGATING, self._supervisor):
             return
-        _AUTO_DELEGATING.add(self._supervisor)
         supervisor = self._supervisor
         strategy = self._strategy
         workers = self._workers
@@ -132,7 +136,7 @@ class _AutoDelegateInstallMixin:
 
         supervisor.on_event = auto_delegate_on_event  # ty: ignore[invalid-assignment]
 
-    def _install_async_auto_delegate(self, kit: RoomKit) -> None:
+    def _install_async_auto_delegate(self, kit: RoomKit, room_id: str) -> None:
         """Inject delegate_workers tool into RealtimeVoiceChannel.
 
         The tool handler runs workers in the background and returns
@@ -177,18 +181,22 @@ class _AutoDelegateInstallMixin:
         }
 
         # Declared and served once per voice channel: a second room's install
-        # finds it there, and one handler serves every room's calls.
-        if voice_channel._tools is None:
-            voice_channel._tools = []
-        if any(t.get("name") == "delegate_workers" for t in voice_channel._tools):
+        # adds its room, and one handler serves the installed rooms' calls. The
+        # channel declares the same tools in every room, so a call from a room
+        # the supervisor was not installed in is refused (RFC §19.7).
+        rooms = _VOICE_ROOMS.setdefault(voice_channel, set())
+        rooms.add(room_id)
+        if not first_install(_VOICE_SERVING, voice_channel):
             return
-        voice_channel._tools.append(tool_def)
+        voice_channel._tools = [*(voice_channel._tools or []), tool_def]
 
         # Wrap tool handler for async delegation
         original_handler = voice_channel.tool_handler
         running: set[str] = set()  # rooms whose workers are running
 
         async def delegate_workers(rid: str, name: str, arguments: dict[str, Any]) -> str:
+            if rid not in rooms:
+                return json.dumps({"error": "delegate_workers is not available in this room"})
             if rid in running:
                 return json.dumps(
                     {"status": "already_running", "message": "Workers are already running."}

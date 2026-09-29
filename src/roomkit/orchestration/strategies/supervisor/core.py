@@ -230,11 +230,11 @@ class Supervisor(
 
         # Wire delegation based on mode
         if self._auto_delegate:
-            self._install_auto_delegate(kit)
+            self._install_auto_delegate(kit, room_id)
         elif self._strategy is not None:
             self._inject_strategy_tool(kit, room_id)
         else:
-            self._inject_per_worker_tools(kit)
+            self._inject_per_worker_tools(kit, room_id)
 
         # Set initial conversation state
         room = await kit.get_room(room_id)

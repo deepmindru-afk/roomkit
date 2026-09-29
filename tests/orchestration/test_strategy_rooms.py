@@ -118,11 +118,53 @@ async def test_a_voice_loop_in_two_rooms_declares_once_and_runs_for_the_calling_
         lambda: Loop(agent=producer, reviewer=reviewer, async_delivery=True)
     )
 
-    await provider.simulate_tool_call(sessions["tenant-B"], "c1", "delegate_loop", {"task": "B"})
+    await provider.simulate_tool_call(sessions["tenant-A"], "c1", "delegate_loop", {"task": "A"})
     await _until(lambda: len(provider.tool_results) == 1)
 
     assert _declared(voice) == ["delegate_loop"]
-    assert ran_for == ["tenant-B"]
+    assert ran_for == ["tenant-A"]
+    await kit.close()
+
+
+async def test_a_voice_supervisor_refuses_a_room_it_was_not_installed_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ran_for: list[str] = []
+
+    async def run_and_deliver(**kwargs: Any) -> None:
+        ran_for.append(kwargs["room_id"])
+        kwargs["on_done"]()
+
+    monkeypatch.setattr(_install_auto, "_async_run_and_deliver", run_and_deliver)
+    supervisor, worker = _agent("sup"), _agent("worker")
+    kit, voice, provider, _ = await _voice_rooms(
+        lambda: Supervisor(
+            supervisor, [worker], strategy="sequential", auto_delegate=True, async_delivery=True
+        )
+    )
+    await kit.create_room(room_id="plain")  # no orchestration
+    await kit.attach_channel("plain", "voice")
+    session = await voice.start_session("plain", "user-plain", "ws")
+
+    await provider.simulate_tool_call(session, "c1", "delegate_workers", {"task": "C"})
+    await _until(lambda: len(provider.tool_results) == 1)
+
+    assert "not available in this room" in json.loads(provider.tool_results[0][2])["error"]
+    assert ran_for == []
+    await kit.close()
+
+
+async def test_a_sync_loop_in_two_rooms_wraps_its_producer_once() -> None:
+    producer, reviewer = _agent("writer"), _agent("editor")
+    kit = RoomKit()
+    wrapped = []
+    for tenant in TENANTS:
+        await kit.create_room(
+            room_id=tenant, orchestration=Loop(agent=producer, reviewer=reviewer)
+        )
+        wrapped.append(producer.on_event)
+
+    assert wrapped[0] is wrapped[1]
     await kit.close()
 
 
@@ -266,57 +308,93 @@ async def test_the_supervisor_runs_its_sub_runs_without_its_strategy_tool() -> N
     await kit.close()
 
 
+class _Pipeline:
+    """A voice channel with its own tool, driven by a two-agent pipeline."""
+
+    def __init__(self) -> None:
+        self.agent_calls: list[str] = []
+        self.channel_calls: list[str] = []
+        self.provider = MockRealtimeProvider()
+        webcam = {"name": "describe_webcam", "description": "see", "parameters": {}}
+        self.voice = RealtimeVoiceChannel(
+            "voice",
+            provider=self.provider,
+            transport=MockRealtimeTransport(),
+            tools=[webcam],
+            tool_handler=self._channel_handler,
+        )
+        # triage serves lookup_order itself; billing declares refund and a
+        # describe_webcam of its own without a handler for either.
+        self.triage = _agent("triage", _tool("lookup_order"), tool_handler=self._agent_handler)
+        self.billing = _agent("billing", _tool("refund"), _tool("describe_webcam"))
+
+    async def _agent_handler(self, name: str, arguments: dict[str, Any]) -> str:
+        self.agent_calls.append(name)
+        return '{"served_by": "agent"}'
+
+    async def _channel_handler(self, name: str, arguments: dict[str, Any]) -> str:
+        self.channel_calls.append(name)
+        return '{"served_by": "channel"}'
+
+    async def start(self) -> tuple[RoomKit, Any]:
+        kit = RoomKit()
+        for channel in (self.voice, self.triage, self.billing):
+            kit.register_channel(channel)
+        ConversationPipeline(
+            stages=[
+                PipelineStage(phase="triage", agent_id="triage", next="billing"),
+                PipelineStage(phase="billing", agent_id="billing", next=None),
+            ]
+        ).install(kit, [self.triage, self.billing], voice_channel_id="voice")
+        room = await kit.create_room(room_id="r1")
+        triage_state = ConversationState(phase="triage", active_agent_id="triage")
+        await kit.store.update_room(set_conversation_state(room, triage_state))
+        await kit.attach_channel("r1", "voice")
+        return kit, await self.voice.start_session("r1", "caller", "ws")
+
+    async def call(self, session: Any, call_id: str, name: str, **arguments: Any) -> Any:
+        await self.provider.simulate_tool_call(session, call_id, name, arguments)
+        await _until(lambda: any(c == call_id for _s, c, _r in self.provider.tool_results))
+        return json.loads(self.provider.tool_results[-1][2])
+
+
 async def test_a_realtime_pipeline_declares_the_channels_and_the_active_agents_tools() -> None:
-    lookups: list[str] = []
+    pipeline = _Pipeline()
+    kit, session = await pipeline.start()
 
-    async def triage_tools(name: str, arguments: dict[str, Any]) -> str:
-        lookups.append(name)
-        return '{"order": "shipped"}'
+    agent_tool = await pipeline.call(session, "c1", "lookup_order")
+    channel_tool = await pipeline.call(session, "c2", "describe_webcam")
 
-    provider = MockRealtimeProvider()
-    webcam = {"name": "describe_webcam", "description": "see", "parameters": {"type": "object"}}
-    voice = RealtimeVoiceChannel(
-        "voice", provider=provider, transport=MockRealtimeTransport(), tools=[webcam]
+    assert _declared(pipeline.voice) == [
+        "describe_webcam",
+        "lookup_order",
+        "handoff_conversation",
+    ]
+    assert agent_tool == {"served_by": "agent"}
+    assert channel_tool == {"served_by": "channel"}
+    await kit.close()
+
+
+async def test_a_handoff_declares_the_next_agents_tools_and_the_channel_serves_the_rest() -> None:
+    pipeline = _Pipeline()
+    kit, session = await pipeline.start()
+
+    await pipeline.call(
+        session, "c1", "handoff_conversation", target="billing", reason="r", summary="s"
     )
-    triage = Agent(
-        "triage",
-        provider=MockAIProvider(),
-        tools=[_tool("lookup_order")],
-        tool_handler=triage_tools,
-    )
-    billing = Agent("billing", provider=MockAIProvider(), tools=[_tool("refund")])
-    kit = RoomKit()
-    for channel in (voice, triage, billing):
-        kit.register_channel(channel)
-    ConversationPipeline(
-        stages=[
-            PipelineStage(phase="triage", agent_id="triage", next="billing"),
-            PipelineStage(phase="billing", agent_id="billing", next=None),
-        ]
-    ).install(kit, [triage, billing], voice_channel_id="voice")
-    room = await kit.create_room(room_id="r1")
-    triage_state = ConversationState(phase="triage", active_agent_id="triage")
-    await kit.store.update_room(set_conversation_state(room, triage_state))
-    await kit.attach_channel("r1", "voice")
-    session = await voice.start_session("r1", "caller", "ws")
+    refund = await pipeline.call(session, "c2", "refund")
+    webcam = await pipeline.call(session, "c3", "describe_webcam")
 
-    await provider.simulate_tool_call(session, "c1", "lookup_order", {})
-    await _until(lambda: bool(provider.tool_results))
-
-    assert _declared(voice) == ["describe_webcam", "lookup_order", "handoff_conversation"]
-    assert lookups == ["lookup_order"]
-    assert json.loads(provider.tool_results[0][2]) == {"order": "shipped"}
-
-    handoff = {"target": "billing", "reason": "refund", "summary": "wants a refund"}
-    await provider.simulate_tool_call(session, "c2", "handoff_conversation", handoff)
-    await _until(lambda: len(provider.tool_results) == 2)
-
-    connected = [c.args for c in provider.calls if c.method == "connect"][-1]
+    connected = [c.args for c in pipeline.provider.calls if c.method == "connect"][-1]
     assert [t["name"] for t in connected["tools"]] == [
         "describe_webcam",
         "refund",
         "handoff_conversation",
     ]
+    # billing has no handler of its own: its tools, the specialised
+    # describe_webcam included, fall to the channel's.
+    assert (refund, webcam) == ({"served_by": "channel"}, {"served_by": "channel"})
+    assert pipeline.channel_calls == ["refund", "describe_webcam"]
     await kit.close()
 
 

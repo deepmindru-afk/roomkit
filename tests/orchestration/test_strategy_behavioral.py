@@ -126,9 +126,10 @@ class TestSupervisorHandlerIdempotency:
         await s.install(kit1, "r1")
         await s.install(kit2, "r2")
 
-        # Only one delegation tool should be injected
-        delegate_tools = [t for t in boss._injected_tools if t.name == "delegate_to_w1"]
-        assert len(delegate_tools) == 1
+        # One delegation tool per installed room, none channel-wide
+        for room_id in ("r1", "r2"):
+            assert [t.name for t in boss._room_tools[room_id]] == ["delegate_to_w1"]
+        assert boss._injected_tools == []
 
         # Handler should still work — call delegation tool
         with tool_call_in("r2"):

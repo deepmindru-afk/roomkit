@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 from roomkit.core.task_utils import log_task_exception
 from roomkit.orchestration._call_room import call_room_handler
+from roomkit.orchestration._installs import first_install
 from roomkit.orchestration.strategies.supervisor._common import (
     _STRATEGY_TOOL_NAME,
     WorkerStrategy,
@@ -90,9 +91,8 @@ class _StrategyToolMixin:
         room_tools = self._supervisor._room_tools.setdefault(room_id, [])
         if not any(t.name == tool_name for t in room_tools):
             room_tools.append(self._strategy_tool())
-        if self._supervisor in _SERVING:
+        if not first_install(_SERVING, self._supervisor):
             return
-        _SERVING.add(self._supervisor)
 
         original = self._supervisor.tool_handler
         strategy = self._strategy

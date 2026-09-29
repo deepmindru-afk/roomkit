@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import weakref
 from typing import TYPE_CHECKING, Any
 
 from roomkit.core.task_utils import log_task_exception
@@ -18,6 +19,7 @@ from roomkit.models.context import RoomContext
 from roomkit.models.enums import ChannelType
 from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.orchestration._call_room import call_room_handler
+from roomkit.orchestration._installs import first_install
 from roomkit.orchestration.base import Orchestration
 from roomkit.orchestration.state import (
     ConversationState,
@@ -33,6 +35,14 @@ if TYPE_CHECKING:
     from roomkit.core.framework import RoomKit
 
 logger = logging.getLogger("roomkit.orchestration.strategies.loop")
+
+# A loop installed in several rooms wires its shared objects once (RFC §19.7):
+# the producers whose on_event it wraps and the voice channels it serves
+# ``delegate_loop`` on, with the rooms each one was installed in.
+_LOOP_WRAPPED: weakref.WeakSet[Any] = weakref.WeakSet()
+_LOOP_ROOMS: weakref.WeakKeyDictionary[Any, set[str]] = weakref.WeakKeyDictionary()
+_LOOP_VOICE_SERVING: weakref.WeakSet[Any] = weakref.WeakSet()
+_LOOP_VOICE_ROOMS: weakref.WeakKeyDictionary[Any, set[str]] = weakref.WeakKeyDictionary()
 
 
 class Loop(Orchestration):
@@ -130,9 +140,7 @@ class Loop(Orchestration):
         producer = self._agent
         reviewers = self._reviewers
         max_iter = self._max_iterations
-        strategy = self._strategy
         async_delivery = self._async_delivery
-        original_on_event = producer.on_event
 
         # Register all reviewers on the kit (not attached to room)
         for rev in reviewers:
@@ -144,33 +152,9 @@ class Loop(Orchestration):
             kit.register_channel(producer)
 
         if async_delivery:
-            self._install_async_loop(kit)
+            self._install_async_loop(kit, room_id)
         else:
-
-            async def loop_on_event(
-                event: RoomEvent,
-                binding: ChannelBinding,
-                context: RoomContext,
-            ) -> ChannelOutput:
-                current_room = context.room.id if context.room else event.room_id
-                if current_room != room_id:
-                    return await original_on_event(event, binding, context)
-                if event.source.channel_id == producer.channel_id:
-                    return ChannelOutput.empty()
-                if event.source.channel_type in (ChannelType.AI, ChannelType.SYSTEM):
-                    return await original_on_event(event, binding, context)
-
-                return await _run_loop(
-                    kit=kit,
-                    room_id=current_room,
-                    producer=producer,
-                    reviewers=reviewers,
-                    strategy=strategy,
-                    event=event,
-                    max_iterations=max_iter,
-                )
-
-            producer.on_event = loop_on_event  # ty: ignore[invalid-assignment]
+            self._install_sync_loop(kit, room_id)
 
         # Set initial state
         room = await kit.get_room(room_id)
@@ -186,14 +170,57 @@ class Loop(Orchestration):
         room = set_conversation_state(room, initial_state)
         await kit.store.update_room(room)
 
+    def _install_sync_loop(self, kit: RoomKit, room_id: str) -> None:
+        """Wrap the producer's ``on_event`` once, for every room installed.
+
+        The producer serves every room it is attached to (RFC §19.7): a second
+        room's install adds its room to the wrapper's, and wraps nothing.
+        """
+        producer = self._agent
+        reviewers = self._reviewers
+        max_iter = self._max_iterations
+        strategy = self._strategy
+        rooms = _LOOP_ROOMS.setdefault(producer, set())
+        rooms.add(room_id)
+        if not first_install(_LOOP_WRAPPED, producer):
+            return
+        original_on_event = producer.on_event
+
+        async def loop_on_event(
+            event: RoomEvent,
+            binding: ChannelBinding,
+            context: RoomContext,
+        ) -> ChannelOutput:
+            current_room = context.room.id if context.room else event.room_id
+            if current_room not in rooms:
+                return await original_on_event(event, binding, context)
+            if event.source.channel_id == producer.channel_id:
+                return ChannelOutput.empty()
+            if event.source.channel_type in (ChannelType.AI, ChannelType.SYSTEM):
+                return await original_on_event(event, binding, context)
+
+            return await _run_loop(
+                kit=kit,
+                room_id=current_room,
+                producer=producer,
+                reviewers=reviewers,
+                strategy=strategy,
+                event=event,
+                max_iterations=max_iter,
+            )
+
+        producer.on_event = loop_on_event  # ty: ignore[invalid-assignment]
+
     # -- Async delivery (voice) -----------------------------------------------
 
-    def _install_async_loop(self, kit: RoomKit) -> None:
+    def _install_async_loop(self, kit: RoomKit, room_id: str) -> None:
         """Inject the ``delegate_loop`` tool into RealtimeVoiceChannel, once.
 
         The voice channel serves every room the loop is installed in (RFC
-        §19.7): a second room's install finds the tool there, and each call
-        runs the loop for the room it came from.
+        §19.7): a second room's install adds its room, each call runs the loop
+        for the room it came from, and a call from a room the loop was not
+        installed in is refused, since the channel declares the same tools in
+        every room.
         """
         from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 
@@ -232,33 +259,41 @@ class Loop(Orchestration):
             },
         }
 
-        if voice_channel._tools is None:
-            voice_channel._tools = []
-        if any(t.get("name") == "delegate_loop" for t in voice_channel._tools):
+        rooms = _LOOP_VOICE_ROOMS.setdefault(voice_channel, set())
+        rooms.add(room_id)
+        if not first_install(_LOOP_VOICE_SERVING, voice_channel):
             return
-        voice_channel._tools.append(tool_def)
+        voice_channel._tools = [*(voice_channel._tools or []), tool_def]
 
         original_handler = voice_channel.tool_handler
         running: set[str] = set()  # rooms whose loop is running
 
         async def delegate_loop(rid: str, name: str, arguments: dict[str, Any]) -> ToolResult:
+            if rid not in rooms:
+                return json.dumps({"error": "delegate_loop is not available in this room"})
             if rid in running:
                 return json.dumps(
                     {"status": "already_running", "message": "Loop is already running."}
                 )
             running.add(rid)
-            task = asyncio.create_task(
-                _async_loop_and_deliver(
-                    kit=kit,
-                    room_id=rid,
-                    producer=producer,
-                    reviewers=reviewers,
-                    strategy=strategy,
-                    task_desc=arguments.get("task", ""),
-                    max_iterations=max_iter,
-                    on_done=lambda: running.discard(rid),
+            # If create_task raises (shutdown race), release the room so it
+            # isn't stuck in already_running.
+            try:
+                task = asyncio.create_task(
+                    _async_loop_and_deliver(
+                        kit=kit,
+                        room_id=rid,
+                        producer=producer,
+                        reviewers=reviewers,
+                        strategy=strategy,
+                        task_desc=arguments.get("task", ""),
+                        max_iterations=max_iter,
+                        on_done=lambda: running.discard(rid),
+                    )
                 )
-            )
+            except BaseException:
+                running.discard(rid)
+                raise
             task.add_done_callback(log_task_exception)
             return json.dumps(
                 {

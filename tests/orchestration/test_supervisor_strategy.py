@@ -79,9 +79,8 @@ class TestStrategyToolInjection:
         await kit.create_room(room_id="room")
         await kit.attach_channel("room", "ws")
 
-        tool_names = [t.name for t in supervisor._injected_tools]
-        assert "delegate_to_w1" in tool_names
-        assert "delegate_to_w2" in tool_names
+        tool_names = [t.name for t in supervisor._room_tools["room"]]
+        assert tool_names == ["delegate_to_w1", "delegate_to_w2"]
         assert "delegate_workers" not in tool_names
         await kit.close()
 

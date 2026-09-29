@@ -145,7 +145,8 @@ async def main() -> None:
 
     # 4. Show injected per-worker tools
     print("\n=== Supervisor's tools ===")
-    for tool in manager._injected_tools:
+    # Declared in the room the supervisor was installed in, not in its other rooms.
+    for tool in manager._room_tools["project-room"]:
         print(f"  {tool.name}")
 
     # 5. Show conversation state
