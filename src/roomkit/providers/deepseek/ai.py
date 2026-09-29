@@ -107,4 +107,4 @@ class DeepSeekAIProvider(OpenAIAIProvider):
         usage = {"input_tokens": miss, "output_tokens": raw.completion_tokens or 0}
         if hit:
             usage["cache_read_input_tokens"] = hit
-        return usage
+        return {**usage, **OpenAIAIProvider._reasoning_detail(raw)}

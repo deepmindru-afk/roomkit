@@ -81,8 +81,10 @@ class AzureAIConfig(BaseModel):
     max_retries: int = 0
     """SDK-level retry count. Default 0 because RoomKit's RetryPolicy
     handles retries at the right layer with proper backoff and fallback."""
-    include_stream_usage: bool = False
-    """When True, request token usage in streaming responses."""
+    include_stream_usage: bool = True
+    """Request token usage in streaming responses; without it a streamed
+    turn reports no usage. Set False for a deployment that rejects
+    ``stream_options``."""
     use_max_completion_tokens: bool = False
     """Send the output cap as ``max_completion_tokens`` rather than the
     deprecated ``max_tokens``. Required by newer Azure-hosted OpenAI models;

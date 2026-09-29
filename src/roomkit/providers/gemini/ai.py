@@ -81,6 +81,31 @@ def _parts_layout(parts: list[Any]) -> str:
     return " ".join(out) or "(empty)"
 
 
+def _usage_from_metadata(meta: Any) -> dict[str, int]:
+    """Map Gemini's usage metadata to roomkit's canonical, disjoint counters.
+
+    The SDK calls them prompt and candidates counts. The prompt count includes
+    implicitly cached tokens, reported apart so the cached prefix is not
+    charged twice and cache rates apply. Thinking and a built-in tool's prompt
+    are billed but counted outside candidates and prompt: they join output and
+    input, and the thinking share is also exposed as ``reasoning_tokens``, a
+    detail of output that is never priced on its own.
+    """
+    tool_prompt = getattr(meta, "tool_use_prompt_token_count", None) or 0
+    prompt = (meta.prompt_token_count or 0) + tool_prompt
+    cached = getattr(meta, "cached_content_token_count", None) or 0
+    thoughts = getattr(meta, "thoughts_token_count", None) or 0
+    usage = {
+        "input_tokens": max(prompt - cached, 0),
+        "output_tokens": (meta.candidates_token_count or 0) + thoughts,
+    }
+    if cached:
+        usage["cache_read_input_tokens"] = cached
+    if thoughts:
+        usage["reasoning_tokens"] = thoughts
+    return usage
+
+
 def _call_key(fc: Any, name: str, args: dict[str, Any], in_chunk: dict[str, int]) -> str:
     """Which call of the response a function-call part is.
 
@@ -257,21 +282,7 @@ class GeminiAIProvider(AIProvider):
             async for chunk in response_stream:
                 # Extract usage from each chunk (last one has the totals)
                 if chunk.usage_metadata:
-                    # Canonical key names (input_tokens / output_tokens) so the
-                    # downstream usage tracker records Gemini like every other
-                    # provider — the SDK calls them prompt/candidates counts.
-                    # Gemini's prompt count INCLUDES implicitly-cached tokens;
-                    # report them separately (Anthropic-style accounting, where
-                    # input excludes cache reads) so cost math doesn't double-
-                    # charge the cached prefix and cache rates can apply.
-                    prompt = chunk.usage_metadata.prompt_token_count or 0
-                    cached = getattr(chunk.usage_metadata, "cached_content_token_count", None) or 0
-                    usage = {
-                        "input_tokens": max(prompt - cached, 0),
-                        "output_tokens": chunk.usage_metadata.candidates_token_count or 0,
-                    }
-                    if cached:
-                        usage["cache_read_input_tokens"] = cached
+                    usage = _usage_from_metadata(chunk.usage_metadata)
 
                 block_reason = prompt_block_reason(chunk) or block_reason
                 # Read before the content guards below: the chunk that reports

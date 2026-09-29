@@ -410,7 +410,18 @@ class OpenAIAIProvider(AIProvider):
             usage["cache_read_input_tokens"] = cached
         if written:
             usage["cache_creation_input_tokens"] = written
-        return usage
+        return {**usage, **OpenAIAIProvider._reasoning_detail(raw)}
+
+    @staticmethod
+    def _reasoning_detail(raw: Any) -> dict[str, int]:
+        """``reasoning_tokens``, when the usage object reports it.
+
+        A detail of ``completion_tokens``, which already counts it: exposed,
+        never priced apart (``ModelPricing.cost_for`` ignores it).
+        """
+        details = getattr(raw, "completion_tokens_details", None)
+        reasoning = (getattr(details, "reasoning_tokens", 0) if details else 0) or 0
+        return {"reasoning_tokens": reasoning} if reasoning else {}
 
     # -- Non-streaming ---------------------------------------------------------
 

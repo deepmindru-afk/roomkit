@@ -37,10 +37,12 @@ class OpenAIConfig(BaseModel):
     max_retries: int = 0
     """SDK-level retry count. Default 0 because RoomKit's RetryPolicy
     handles retries at the right layer with proper backoff and fallback."""
-    include_stream_usage: bool = False
-    """When True, request token usage in streaming responses via
-    ``stream_options.include_usage``. The usage is included in the
-    final :class:`StreamDone` event."""
+    include_stream_usage: bool = True
+    """Request token usage in streaming responses via
+    ``stream_options.include_usage``; it is included in the final
+    :class:`StreamDone` event. Every tool round streams, so without it a
+    turn reports no usage and prices at zero. Set False for an
+    OpenAI-compatible server that rejects ``stream_options``."""
     use_max_completion_tokens: bool = False
     """Send the output cap as ``max_completion_tokens`` instead of the
     deprecated ``max_tokens``. OpenAI's newer models (o-series, gpt-5,

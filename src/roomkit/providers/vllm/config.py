@@ -67,8 +67,10 @@ class VLLMConfig(BaseModel):
     max_retries: int = 0
     """SDK-level retry count. Default 0 because RoomKit's RetryPolicy
     handles retries at the right layer with proper backoff and fallback."""
-    include_stream_usage: bool = False
-    """When True, request token usage in streaming responses."""
+    include_stream_usage: bool = True
+    """Request token usage in streaming responses; without it a streamed
+    turn reports no usage. Set False for a server that rejects
+    ``stream_options``."""
     headers: dict[str, str] | None = None
     """Extra HTTP headers sent on every request (proxy headers, non-Bearer
     auth). ``None`` sends only the SDK defaults."""

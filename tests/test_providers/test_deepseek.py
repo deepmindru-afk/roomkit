@@ -356,6 +356,17 @@ class TestDeepSeekUsage:
         )
         assert usage == {"input_tokens": 100, "output_tokens": 5}
 
+    def test_reasoning_tokens_are_exposed_as_a_detail_of_output(self) -> None:
+        # deepseek-reasoner counts its thinking inside completion_tokens (RMK-312).
+        usage = self._usage(
+            prompt_tokens=100,
+            completion_tokens=500,
+            prompt_cache_hit_tokens=0,
+            prompt_cache_miss_tokens=100,
+            completion_tokens_details=SimpleNamespace(reasoning_tokens=450),
+        )
+        assert usage == {"input_tokens": 100, "output_tokens": 500, "reasoning_tokens": 450}
+
     def test_falls_back_to_openai_shape(self) -> None:
         # A proxy in front of DeepSeek may normalise usage to OpenAI's shape.
         usage = self._usage(
