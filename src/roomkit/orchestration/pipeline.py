@@ -461,6 +461,8 @@ class ConversationPipeline:
                     # full-duplex provider voices a user injection instead
                     # of following it (RFC §12.4).
                     msg = _build_greet(new_id, language=lang)
+                    if not rtv.provider.supports_mid_session_reconfigure:
+                        msg = _with_instructions(prompt, msg)
                     await rtv.provider.inject_text(
                         session,
                         msg,
@@ -601,6 +603,23 @@ class ConversationPipeline:
                 if ctx.room.id in _handoff_pending:
                     return HookResult.block("handoff_transition")
                 return HookResult.allow()
+
+
+def _with_instructions(prompt: str | None, greeting: str) -> str:
+    """The handoff greeting, carrying the new agent's instructions ahead of it.
+
+    A provider that cannot change a session's instructions in place may keep
+    the old agent's across the reconfigure: ``gemini-3.8-live`` resumes a
+    session under its original instruction and ignores the new one. The
+    greeting is an instruction the model follows at once, so it carries them
+    (RMK-288); a session that did take the new instruction reads it twice.
+    """
+    if not prompt:
+        return greeting
+    return (
+        "Your instructions have been replaced. From now on, follow only these:\n"
+        f"{prompt}\n\n{greeting}"
+    )
 
 
 def _agent_session_tools(

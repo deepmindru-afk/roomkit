@@ -382,6 +382,14 @@ class GeminiLiveProvider(
         await cancel_and_wait(state.receive_task, log_errors_to=logger)
         state.receive_task = None
 
+        if not state.has_conversation and state.resumption_handle is not None:
+            # Nothing to keep, and a resumed session may keep its original
+            # instruction: gemini-3.8-live does, whatever the new setup says.
+            logger.info(
+                "Gemini session %s has no conversation yet: reconnecting fresh", session.id
+            )
+            state.resumption_handle = None
+
         await self._reconnect(session)
 
         # Start a fresh receive loop for the new connection.

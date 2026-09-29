@@ -170,6 +170,7 @@ class GeminiLiveInputMixin(RealtimeVoiceProvider):
         silent: bool,
     ) -> None:
         types = genai_types()
+        state.has_conversation = True
 
         if role == "assistant":
             # No turn makes the model speak a given text (a ``model`` turn

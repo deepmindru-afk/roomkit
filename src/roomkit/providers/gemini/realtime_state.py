@@ -124,6 +124,11 @@ class _GeminiSessionState:
     # The interruption already ended this response: the turn_complete (and
     # IDLE) that closes the interrupted request must not end it again.
     response_ended_by_interrupt: bool = False
+    # Whether anything was said in this session yet: text sent, the user
+    # transcribed, the model heard or seen calling a tool. A session with
+    # nothing in it has no context to resume, and ``gemini-3.8-live`` resumes
+    # a session under its original instruction, ignoring a new one.
+    has_conversation: bool = False
     # Effective config values, kept in sync across connect + reconfigure
     # so partial reconfigures (e.g. system_prompt-only) preserve the
     # other fields. Without these, ``_build_config`` (which treats

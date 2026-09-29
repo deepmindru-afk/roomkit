@@ -173,6 +173,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `RealtimeVoiceChannel.wait_idle` opens once a tool call that owes no result
   ends, cancelled by the model or spared by the reconnect its own handler
   caused (RMK-288); it stayed closed until a later response.
+- After a pipeline handoff on `gemini-3.8-live`, every session of the room
+  speaks as the new agent (RMK-288). That model resumes a session under its
+  original system instruction, ignoring the one a reconfiguration sends: a
+  session with no conversation yet now reconnects fresh, and the handoff
+  greeting carries the new agent's instructions when the provider cannot
+  change them in place (`supports_mid_session_reconfigure` false).
 - A room closed mid-stream takes no further streamed row (RMK-283, RFC
   §5.1). Streamed segments and tool rows were committed through a path that
   skipped the room's status, so a room closed during a turn kept receiving

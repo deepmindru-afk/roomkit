@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -265,3 +266,61 @@ class TestReconfigureCancellation:
 
         assert caller.cancelled()
         provider._reconnect.assert_not_awaited()  # type: ignore[attr-defined]
+
+
+class TestReconfigureResumption:
+    """RMK-288: gemini-3.8-live resumes a session under its original
+    instruction, so a session with nothing in it reconnects fresh."""
+
+    async def _handle_at_reconnect(
+        self, provider: GeminiLiveProvider, state: _GeminiSessionState
+    ) -> str | None:
+        seen: list[str | None] = []
+        provider._reconnect = AsyncMock(  # type: ignore[method-assign]
+            side_effect=lambda session: seen.append(state.resumption_handle)
+        )
+        await provider.reconfigure(state.session, system_prompt="You are Bill.")
+        return seen[0]
+
+    async def test_a_session_with_no_conversation_reconnects_fresh(
+        self, provider: GeminiLiveProvider
+    ) -> None:
+        state = _populate_session_state(provider, _make_session())
+        state.resumption_handle = "handle-1"
+
+        assert await self._handle_at_reconnect(provider, state) is None
+
+    async def test_a_session_with_a_conversation_resumes(
+        self, provider: GeminiLiveProvider
+    ) -> None:
+        state = _populate_session_state(provider, _make_session())
+        state.resumption_handle = "handle-1"
+        state.has_conversation = True
+
+        assert await self._handle_at_reconnect(provider, state) == "handle-1"
+
+    @pytest.mark.parametrize("kind", ["user_text", "model_turn", "tool_call"])
+    async def test_what_counts_as_a_conversation(
+        self, provider: GeminiLiveProvider, kind: str
+    ) -> None:
+        session = _make_session()
+        state = _populate_session_state(provider, session)
+        state.live_session = AsyncMock()
+        if kind == "user_text":
+            await provider.inject_text(session, "Hello", role="user")
+        elif kind == "model_turn":
+            content = SimpleNamespace(model_turn=SimpleNamespace(parts=[]))
+            await provider._on_server_content(session, state, content)
+        else:
+            await provider._on_tool_call(session, state, SimpleNamespace(function_calls=[]))
+
+        assert state.has_conversation is True
+
+    async def test_audio_alone_is_no_conversation(self, provider: GeminiLiveProvider) -> None:
+        session = _make_session()
+        state = _populate_session_state(provider, session)
+        state.live_session = AsyncMock()
+
+        await provider.send_audio(session, b"\x00\x00" * 160)
+
+        assert state.has_conversation is False

@@ -13,6 +13,8 @@ import asyncio
 import json
 from typing import Any
 
+import pytest
+
 from roomkit import HookExecution, HookResult, HookTrigger, RoomContext, RoomKit
 from roomkit.channels.agent import Agent
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
@@ -338,7 +340,56 @@ class TestIdleAfterACallThatOwesNothing:
         await ch.wait_idle(session.room_id, timeout=0.5)
 
 
+class _KeepsItsInstructions(ReconnectingProvider):
+    """A provider that cannot change a session's instructions in place."""
+
+    @property
+    def supports_mid_session_reconfigure(self) -> bool:
+        return False
+
+
 class TestSpeechToSpeechHandoff:
+    @pytest.mark.parametrize("in_place", [True, False], ids=["in-place", "resumed"])
+    async def test_the_greeting_carries_the_instructions_where_they_do_not_change(
+        self, in_place: bool
+    ) -> None:
+        """RMK-288: gemini-3.8-live keeps a resumed session's instruction; the
+        handoff greeting carries the new agent's where the provider says so."""
+        provider = ReconnectingProvider() if in_place else _KeepsItsInstructions()
+        ch = RealtimeVoiceChannel("rtv", provider=provider, transport=MockRealtimeTransport())
+        kit = RoomKit()
+        kit.register_channel(ch)
+        triage = Agent("agent-triage", role="Triage", voice="v-t", system_prompt="You are Tina.")
+        billing = Agent(
+            "agent-billing", role="Billing", voice="v-b", system_prompt="You are Bill."
+        )
+        pipeline = ConversationPipeline(
+            stages=[
+                PipelineStage(phase="triage", agent_id="agent-triage", next="billing"),
+                PipelineStage(phase="billing", agent_id="agent-billing", next=None),
+            ],
+        )
+        pipeline.install(kit, [triage, billing], voice_channel_id="rtv", greet_on_handoff=True)
+        room = await kit.create_room()
+        state = ConversationState(active_agent_id="agent-triage", phase="triage")
+        await kit.store.update_room(set_conversation_state(room, state))
+        await kit.attach_channel(room.id, "rtv")
+        caller = await ch.start_session(room.id, "u1", "ws")
+        listener = await ch.start_session(room.id, "u2", "ws")
+
+        await provider.simulate_tool_call(
+            caller,
+            "h1",
+            "handoff_conversation",
+            {"target": "agent-billing", "reason": "r", "summary": "s"},
+        )
+        await asyncio.sleep(0.2)
+
+        for session in (caller, listener):
+            [greeting] = provider.injected(session)
+            assert ("You are Bill." in greeting) is not in_place
+            assert "You are now the Billing" in greeting
+
     async def test_every_session_of_the_room_takes_the_new_agent(self) -> None:
         provider = ReconnectingProvider()
         ch = RealtimeVoiceChannel("rtv", provider=provider, transport=MockRealtimeTransport())

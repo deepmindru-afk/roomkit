@@ -217,6 +217,8 @@ class GeminiLiveEventHandlersMixin(RealtimeVoiceProvider):
 
         out_tr = getattr(content, "output_transcription", None)
         model_turn = getattr(content, "model_turn", None)
+        if (tr and tr.text) or (out_tr and out_tr.text) or model_turn:
+            state.has_conversation = True
 
         # The user's utterance is over the moment the model starts replying —
         # flush it BEFORE any assistant transcription goes out. One server
