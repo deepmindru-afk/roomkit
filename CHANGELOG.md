@@ -146,6 +146,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An aborted tool round closes its TOOL_CALL_START on the realtime bus
+  (RMK-282). A turn cancelled while a tool ran published the call's
+  ephemeral START and never its END, in both loops, so a live surface kept
+  the call spinning; the round now publishes a failed END for each call
+  before the cancellation goes on.
 - Realtime providers read a call's arguments as every provider does
   (RMK-284, RFC §6.4). OpenAI Realtime passed JSON `null` as `None` and an
   array as a list to the tool-call callbacks, the GPT-Live hosted delegation

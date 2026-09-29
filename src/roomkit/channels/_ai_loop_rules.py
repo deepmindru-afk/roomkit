@@ -14,6 +14,7 @@ providers that use that generation mode.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from dataclasses import dataclass
@@ -27,6 +28,7 @@ from roomkit.providers.ai.base import (
     AITextPart,
     AIThinkingPart,
     AIToolCallPart,
+    AIToolResultPart,
 )
 from roomkit.providers.ai.response_schema import ResponseSchemaError
 from roomkit.providers.ai.tool_calls import is_truncation
@@ -39,7 +41,6 @@ if TYPE_CHECKING:
     from roomkit.providers.ai.base import (
         AIContext,
         AIToolCall,
-        AIToolResultPart,
         StreamToolCall,
     )
 
@@ -199,6 +200,15 @@ class AIToolLoopRulesHost(Protocol):
         parent_span_id: str | None = ...,
         executed_arguments: dict[str, dict[str, Any]] | None = ...,
     ) -> list[_ContentPart]: ...
+
+
+def _aborted_results(tool_calls: list[Any]) -> list[AIToolResultPart]:
+    """A failed result for each call of a round that was aborted mid-run."""
+    body = json.dumps({"error": "Tool call aborted"})
+    return [
+        AIToolResultPart(tool_call_id=tc.id, name=tc.name, result=body, is_error=True)
+        for tc in tool_calls
+    ]
 
 
 class AIToolLoopRulesMixin:
@@ -407,13 +417,25 @@ class AIToolLoopRulesMixin:
             )
         t0 = time.monotonic()
         executed_arguments: dict[str, dict[str, Any]] = {}
-        result_parts = await self._execute_tools_parallel(
-            tool_calls,
-            telemetry,
-            declared_tools=context.tools,
-            parent_span_id=parent_span_id,
-            executed_arguments=executed_arguments,
-        )
+        try:
+            result_parts = await self._execute_tools_parallel(
+                tool_calls,
+                telemetry,
+                declared_tools=context.tools,
+                parent_span_id=parent_span_id,
+                executed_arguments=executed_arguments,
+            )
+        except BaseException:
+            # Aborted mid-round (a turn cancelled while a tool ran): the START
+            # published above gets its END, or a live surface spins forever.
+            if room_id:
+                await self._publish_tool_event(
+                    EphemeralEventType.TOOL_CALL_END,
+                    room_id,
+                    _aborted_results(tool_calls),
+                    round_idx,
+                )
+            raise
         duration_ms = int((time.monotonic() - t0) * 1000)
         context.messages.append(AIMessage(role="tool", content=result_parts))
         return result_parts, duration_ms, executed_arguments

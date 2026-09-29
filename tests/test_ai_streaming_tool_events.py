@@ -1158,3 +1158,56 @@ async def test_composition_coalescer_closes_only_what_it_opened() -> None:
     # Closing twice publishes one terminal, not two.
     await coalescer.close()
     assert len(published) == 2
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["non-streaming", "streaming"])
+async def test_a_turn_cancelled_while_a_tool_runs_closes_its_start(streaming: bool) -> None:
+    """The bus pairs every TOOL_CALL_START with an END, an aborted call too (RMK-282)."""
+    started = asyncio.Event()
+
+    async def slow(name: str, args: dict[str, Any]) -> str:
+        started.set()
+        await asyncio.sleep(30)
+        return "too late"
+
+    provider = MockAIProvider(
+        streaming=streaming,
+        ai_responses=[
+            AIResponse(
+                content="",
+                finish_reason="tool_calls",
+                tool_calls=[AIToolCall(id="c1", name="search", arguments={})],
+            ),
+            AIResponse(content="never"),
+        ],
+    )
+    kit = RoomKit(realtime=InMemoryRealtime())
+    ai = AIChannel("ai1", provider=provider, tool_handler=slow)
+    kit.register_channel(SimpleChannel("sms1"))
+    kit.register_channel(ai)
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "sms1")
+    await kit.attach_channel(
+        "r1", "ai1", category=ChannelCategory.INTELLIGENCE, metadata={"tools": _TOOLS}
+    )
+    received: list[EphemeralEvent] = []
+
+    async def on_event(ev: EphemeralEvent) -> None:
+        received.append(ev)
+
+    await kit.realtime.subscribe_to_room("r1", on_event)
+    turn = asyncio.create_task(
+        kit.process_inbound(
+            InboundMessage(channel_id="sms1", sender_id="u1", content=TextContent(body="go"))
+        )
+    )
+    await asyncio.wait_for(started.wait(), 1)
+
+    turn.cancel()
+    await asyncio.gather(turn, return_exceptions=True)
+    await asyncio.sleep(0.05)
+
+    starts, ends = _tool_events(received)
+    assert [c["id"] for e in starts for c in e.data["tool_calls"]] == ["c1"]
+    assert [c["id"] for e in ends for c in e.data["tool_calls"]] == ["c1"]
+    assert "aborted" in ends[0].data["tool_calls"][0]["result"]
