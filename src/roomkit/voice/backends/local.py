@@ -38,7 +38,7 @@ import uuid
 from collections import deque
 from typing import TYPE_CHECKING, Any
 
-from roomkit.core.task_utils import cancellation_requests
+from roomkit.core.task_utils import await_interruptible
 from roomkit.voice._sounddevice import import_sounddevice
 from roomkit.voice.audio_frame import AudioFrame
 from roomkit.voice.backends.base import (
@@ -780,13 +780,11 @@ class LocalAudioBackend(VoiceBackend):
         task = asyncio.create_task(_run())
         self._playback_tasks[session.id] = task
         cancelled = False
-        requested = cancellation_requests()
         try:
-            await task
+            cancelled = await await_interruptible(task)  # cancel_audio() during barge-in
         except asyncio.CancelledError:
-            cancelled = True  # cancel_audio() during barge-in
-            if cancellation_requests() > requested:
-                raise  # the caller itself is being cancelled
+            cancelled = True  # the caller itself is being cancelled
+            raise
         finally:
             self._playback_tasks.pop(session.id, None)
             ostream = self._output_streams.pop(session.id, None)

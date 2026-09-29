@@ -11,8 +11,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
+from roomkit.voice.backends._sip_types import SIPSessionState
 from roomkit.voice.backends.sip import SIPVoiceBackend
-from roomkit.voice.base import VoiceSession
+from roomkit.voice.base import AudioChunk, VoiceSession
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
 from tests.voice.backends.test_sip import (
     _make_mock_aiosipua_module,
@@ -228,3 +229,36 @@ async def test_sip_adapters_unsubscribe_without_chaining_or_closing_neighbors(
     assert not backend._audio_subscribers
     assert not backend._disconnect_callbacks
     assert not backend._audio_played_callbacks
+
+
+async def test_a_cancelled_sender_of_a_sip_stream_is_cancelled(
+    sip: tuple[SIPVoiceBackend, MagicMock],
+) -> None:
+    """RMK-288: the stream feeder swallows the cancellation it relays; the
+    caller of ``send_audio`` is cancelled all the same, not resumed."""
+    backend, media = sip
+    carrier = VoiceSession(id="sip", room_id="r", participant_id="p", channel_id="sip")
+    state = SIPSessionState(session=carrier, call_session=media, codec_rate=8000, clock_rate=8000)
+    backend._session_states[carrier.id] = state
+    gate = asyncio.Event()
+    resumed = False
+
+    async def chunks() -> Any:
+        yield AudioChunk(data=b"\x00\x00" * 160, sample_rate=8000)
+        await gate.wait()  # mid-flight when the caller is cancelled
+        yield AudioChunk(data=b"\x00\x00" * 160, sample_rate=8000)
+
+    async def caller() -> None:
+        nonlocal resumed
+        await backend.send_audio(carrier, chunks())
+        resumed = True
+
+    task = asyncio.create_task(caller())
+    await asyncio.sleep(0.05)
+    task.cancel()
+    await asyncio.wait({task}, timeout=1.0)
+
+    assert task.cancelled()
+    assert not resumed
+    if state.pacer is not None:
+        await state.pacer.stop()

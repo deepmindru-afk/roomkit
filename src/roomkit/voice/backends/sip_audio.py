@@ -7,7 +7,7 @@ import time
 from collections.abc import AsyncIterator
 from typing import Any, Protocol, runtime_checkable
 
-from roomkit.core.task_utils import cancellation_requests, log_task_exception
+from roomkit.core.task_utils import await_interruptible, log_task_exception
 from roomkit.models.trace import ProtocolTrace
 from roomkit.telemetry.base import Attr, SpanKind
 from roomkit.telemetry.noop import NoopTelemetryProvider
@@ -628,14 +628,11 @@ class SIPAudioMixin:
             state.is_playing = True
             task = asyncio.create_task(self._feed_stream(session, pacer, audio))
             state.playback_task = task
-            requested = cancellation_requests()
             try:
-                await task
-            except asyncio.CancelledError:
                 # A playback interrupt ends the stream quietly; the caller's own
-                # cancellation propagates.
-                if cancellation_requests() > requested:
-                    raise
+                # cancellation propagates, even though _feed_stream swallows
+                # the cancellation it relays.
+                await await_interruptible(task)
             finally:
                 if state.playback_task is task:
                     state.playback_task = None

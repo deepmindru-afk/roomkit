@@ -31,7 +31,7 @@ import uuid
 from collections.abc import AsyncIterator, Callable
 from typing import Any
 
-from roomkit.core.task_utils import cancellation_requests
+from roomkit.core.task_utils import await_interruptible
 from roomkit.voice.audio_frame import AudioFrame
 from roomkit.voice.backends.base import AudioReceivedCallback, SessionReadyCallback, VoiceBackend
 from roomkit.voice.base import (
@@ -365,14 +365,10 @@ class RTPVoiceBackend(VoiceBackend):
 
         task = asyncio.create_task(_run())
         self._playback_tasks[session.id] = task
-        requested = cancellation_requests()
         try:
-            await task
-        except asyncio.CancelledError:
             # A playback interrupt ends the stream quietly; the caller's own
             # cancellation propagates.
-            if cancellation_requests() > requested:
-                raise
+            await await_interruptible(task)
         finally:
             self._playback_tasks.pop(session.id, None)
 

@@ -9,8 +9,8 @@ import logging
 import pytest
 
 from roomkit.core.task_utils import (
+    await_interruptible,
     cancel_and_wait,
-    cancellation_requests,
     log_task_exception,
 )
 
@@ -156,34 +156,45 @@ class TestCancelAndWait:
         assert all(t.cancelled() for t in tasks)
 
 
-class TestCancellationRequests:
-    async def test_tells_an_interrupt_from_the_callers_own_cancellation(self):
-        outcomes: list[str] = []
+class TestAwaitInterruptible:
+    """RMK-288: an interrupt of the awaited task is quiet, the caller's own
+    cancellation is not, even when the task swallows it."""
 
+    async def test_an_interrupt_ends_the_wait_quietly(self):
         async def _playback():
             await asyncio.sleep(999)
 
-        async def _caller(inner: asyncio.Task[None]) -> None:
-            requested = cancellation_requests()
-            try:
-                await inner
-            except asyncio.CancelledError:
-                if cancellation_requests() > requested:
-                    outcomes.append("caller cancelled")
-                    raise
-                outcomes.append("interrupted")
-
         inner = asyncio.create_task(_playback())
-        caller = asyncio.create_task(_caller(inner))
+        waiting = asyncio.create_task(await_interruptible(inner))
         await asyncio.sleep(0)
         inner.cancel()  # a playback interrupt
-        await caller
 
-        inner = asyncio.create_task(_playback())
+        assert await waiting is True
+
+    async def test_a_finished_task_was_not_interrupted(self):
+        async def _playback():
+            return None
+
+        assert await await_interruptible(asyncio.create_task(_playback())) is False
+
+    async def test_the_callers_cancellation_is_kept_when_the_task_swallows_it(self):
+        resumed = False
+
+        async def _swallowing_playback():
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.sleep(999)
+
+        async def _caller(inner: asyncio.Task[None]) -> None:
+            nonlocal resumed
+            await await_interruptible(inner)
+            resumed = True
+
+        inner = asyncio.create_task(_swallowing_playback())
         caller = asyncio.create_task(_caller(inner))
         await asyncio.sleep(0)
         caller.cancel()
-        await asyncio.wait({caller})
+        await asyncio.wait({caller}, timeout=1.0)
 
-        assert outcomes == ["interrupted", "caller cancelled"]
         assert caller.cancelled()
+        assert inner.done()
+        assert not resumed

@@ -42,6 +42,10 @@ async def cancel_and_wait(
     awaiting it would, unless *log_errors_to* is given: it is then logged
     there, at debug, and the teardown goes on. A cancelled caller gets its
     cancellation, never a task's exception.
+
+    Like a ``TaskGroup``'s exit, the teardown is not cut short: a second
+    cancellation of the caller, or a timeout around it, waits for the tasks
+    too, so a task that never ends holds its caller.
     """
     current = asyncio.current_task()
     pending = [t for t in dict.fromkeys(tasks) if t is not None and t is not current]
@@ -59,7 +63,9 @@ async def cancel_and_wait(
     ]
     if cancelled is not None:
         for error in errors:
-            logger.debug("Task failed before its cancellation: %s", error, exc_info=error)
+            (log_errors_to or logger).debug(
+                "Task failed before its cancellation: %s", error, exc_info=error
+            )
         raise cancelled
     if errors and log_errors_to is None:
         raise errors[0]
@@ -69,17 +75,32 @@ async def cancel_and_wait(
         )
 
 
-def cancellation_requests() -> int:
-    """The current task's pending cancellation requests; 0 outside a task.
-
-    Read before awaiting a task that someone else may cancel, then again on
-    its ``CancelledError``: a larger count means the caller itself is being
-    cancelled, not only the task it awaited. Comparing counts rather than
-    reading ``cancelling()`` alone keeps a request swallowed earlier in the
-    task from passing for a new one.
-    """
+def _cancellation_requests() -> int:
+    """The current task's pending cancellation requests; 0 outside a task."""
     task = asyncio.current_task()
     return task.cancelling() if task is not None else 0
+
+
+async def await_interruptible(task: asyncio.Future[Any]) -> bool:
+    """Await *task*, which someone else may cancel; whether they did.
+
+    A cancellation of *task* from elsewhere (a playback interrupt) ends the
+    wait quietly and returns ``True``. One aimed at the caller reaches the
+    task too, as awaiting it does, and is raised once the task has ended,
+    even when the task swallowed it and returned: comparing the caller's
+    pending cancellation requests before and after tells the two apart. The
+    task's own exception is raised, as awaiting it would.
+    """
+    requested = _cancellation_requests()
+    try:
+        await task
+    except asyncio.CancelledError:
+        if _cancellation_requests() > requested:
+            raise
+        return True
+    if _cancellation_requests() > requested:
+        raise asyncio.CancelledError
+    return False
 
 
 def log_task_exception(task: asyncio.Task[Any]) -> None:
