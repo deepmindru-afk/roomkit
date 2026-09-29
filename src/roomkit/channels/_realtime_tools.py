@@ -117,7 +117,6 @@ class RealtimeToolsHost(Protocol):
     _awaiting_tool_response: set[str]
     _pending_tool_calls: dict[str, dict[str, tuple[str, dict[str, Any]]]]
     _reported_tool_calls: dict[str, set[str]]
-    _provider_idle: dict[str, bool]
     _scheduled_tasks: set[asyncio.Task[Any]]
     channel_id: str
     _telemetry_provider: Any
@@ -182,7 +181,6 @@ class RealtimeToolsMixin:
     _awaiting_tool_response: set[str]
     _pending_tool_calls: dict[str, dict[str, tuple[str, dict[str, Any]]]]
     _reported_tool_calls: dict[str, set[str]]
-    _provider_idle: dict[str, bool]
     _scheduled_tasks: set[asyncio.Task[Any]]
     channel_id: str
     _telemetry_provider: Any
@@ -315,8 +313,11 @@ class RealtimeToolsMixin:
     def _begin_tool_call(
         self, session_id: str, call_id: str, name: str, arguments: dict[str, Any]
     ) -> None:
+        # The call holds idle while it runs, and a result it sends holds it
+        # until the continuation (``_expect_provider_output``). The provider's
+        # response state is not touched: a call that ends owing nothing
+        # (cancelled, or spared by its own reconnect) leaves nothing to wait on.
         self._pending_tool_calls.setdefault(session_id, {})[call_id] = (name, arguments)
-        self._provider_idle[session_id] = False
         self._update_idle_event(session_id)
 
     def _finish_tool_call(self, session_id: str, call_id: str) -> None:

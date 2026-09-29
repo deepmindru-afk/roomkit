@@ -299,6 +299,45 @@ class TestTheOtherCallsTheReconnectOrphaned:
         assert provider.tool_results == []
 
 
+class TestIdleAfterACallThatOwesNothing:
+    """RMK-288: ``wait_idle`` opens once a call whose result stays off the wire
+    ends, with no response to wait for."""
+
+    async def test_a_spared_call_leaves_the_session_idle(self) -> None:
+        provider = ReconnectingProvider()
+        holder: dict[str, Any] = {}
+
+        async def switch_agent(name: str, arguments: dict[str, Any]) -> str:
+            await holder["ch"].reconfigure_session(holder["session"], system_prompt="New.")
+            return '{"accepted": true}'
+
+        ch, [session], observed = await _channel(provider, switch_agent)
+        holder.update(ch=ch, session=session)
+        await provider.simulate_tool_call(session, "h1", "switch_agent", {})
+        await asyncio.sleep(0.1)
+        assert [(e.tool_call_id, e.cancelled) for e in observed] == [("h1", False)]
+
+        await ch.wait_idle(session.room_id, timeout=0.5)
+
+    async def test_a_cancelled_call_leaves_the_session_idle(self) -> None:
+        provider = ReconnectingProvider()
+        started = asyncio.Event()
+
+        async def lookup(name: str, arguments: dict[str, Any]) -> str:
+            started.set()
+            await asyncio.sleep(30)
+            return "too late"
+
+        ch, [session], observed = await _channel(provider, lookup)
+        await provider.simulate_tool_call(session, "c1", "lookup", {})
+        await asyncio.wait_for(started.wait(), 1)
+        await ch.reconfigure_session(session, system_prompt="New.")
+        await asyncio.sleep(0.05)
+        assert [(e.tool_call_id, e.cancelled) for e in observed] == [("c1", True)]
+
+        await ch.wait_idle(session.room_id, timeout=0.5)
+
+
 class TestSpeechToSpeechHandoff:
     async def test_every_session_of_the_room_takes_the_new_agent(self) -> None:
         provider = ReconnectingProvider()

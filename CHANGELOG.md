@@ -170,6 +170,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Every `response.create` (a continuation, `inject_text`, the end of the
   caller's turn) now reads one in-progress state, so none doubles a request
   the server has not begun yet.
+- `RealtimeVoiceChannel.wait_idle` opens once a tool call that owes no result
+  ends, cancelled by the model or spared by the reconnect its own handler
+  caused (RMK-288); it stayed closed until a later response.
 - A room closed mid-stream takes no further streamed row (RMK-283, RFC
   §5.1). Streamed segments and tool rows were committed through a path that
   skipped the room's status, so a room closed during a turn kept receiving
