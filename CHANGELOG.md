@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `LoopEndMarker.usage` and `roomkit.models.event.is_interruption_marker`
+  (RMK-289, RFC §6.4). The marker carries what the turn's generations used,
+  summed over its rounds, so the streamed turn's record can ride its last
+  message. The terminal `[Response interrupted]` message of a turn the
+  provider interrupted after a round carries `metadata["interrupted"] = True`,
+  and `is_interruption_marker` tells it from an answer.
 - `roomkit.core.task_utils.cancel_and_wait(*tasks)` (RMK-288): cancels tasks
   and waits for their end without eating the caller's own cancellation,
   which it raises once they have ended; and `cancellation_requests()`, to
@@ -63,6 +69,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A streamed turn the provider interrupts after a tool round is reported
+  like a buffered one (RMK-289, RFC §6.4): `ON_AI_RESPONSE` fires with
+  `loop_end_reason="error"` and the usage of its rounds, then the error
+  surfaces through `ON_ERROR` and `InboundResult.error`. It was not reported
+  at all (RMK-282). The loop yields its `LoopEndMarker` with reason `error`
+  before the exception reaches the consumer.
+- A streamed turn records how it ended on its last message, as a buffered one
+  does (RMK-289, RFC §6.4): `loop_end_reason` and `ai_usage` in the metadata
+  of the message of its final text, or, when it has none (a cancellation
+  between rounds, an interruption), of the last message it wrote, whose
+  stored row is updated once the turn's deliveries are done. The documented
+  read of `loop_end_reason` off the reply now works on the streaming path.
 - Calling a tool handler directly, outside a tool loop, may now raise where
   it returned a JSON error body (RMK-278): `HumanInputToolHandler` raises
   `ToolRefusedError` on a timeout or a rejection, and `AIChannel.tool_handler`
@@ -151,6 +169,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A turn ended by a steering `Cancel` closes its `llm.generate` span
+  `cancelled`, not `ok`, in both loops (RMK-289, RFC §6.4).
+- A turn constrained to a `response_schema` that the provider interrupts
+  after a tool round fails with `ResponseSchemaError("truncated")` in both
+  loops (RMK-289, RFC A.9): the buffered loop delivered the interruption
+  marker as its answer. A final answer that fails the provider's schema
+  check after a round fails with that check's error: the buffered loop took
+  it for an interruption, delivered the marker and reported the turn.
+- The interruption marker is never read as an agent's answer (RMK-289, RFC
+  §6.4, §19.3): it solicits no intelligence channel (it asked the other
+  agents of an `AGENT_CHAIN` room to answer it), a supervisor does not hand
+  it to its workers as their task, and a delegated turn does not return it
+  as its result.
 - A cancellation reaches the task it is aimed at (RMK-288). Thirty-six sites
   cancelled a task and awaited it under `suppress(CancelledError)`, which
   also swallowed a cancellation of the caller: a Gemini `reconfigure` called

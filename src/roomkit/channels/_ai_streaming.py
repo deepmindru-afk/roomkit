@@ -16,6 +16,7 @@ from roomkit.channels._ai_loop_rules import (
     _accumulate_usage,
     final_round_reason,
     require_schema_answer,
+    turn_span_status,
 )
 from roomkit.channels._ai_resilience import _StreamRetryBoundary
 from roomkit.channels._ai_stream_external_tools import _ExternalStreamTools
@@ -34,10 +35,12 @@ from roomkit.models.tool_call import AIResponseEvent, DeclaredTool, response_tra
 from roomkit.providers.ai.base import (
     AIContext,
     AIMessage,
+    ProviderError,
     StreamDone,
     StreamTextDelta,
     StreamThinkingDelta,
 )
+from roomkit.providers.ai.response_schema import ResponseSchemaError
 from roomkit.providers.utils import _aclose_stream
 from roomkit.realtime.base import EphemeralEventType
 from roomkit.telemetry.base import Attr, SpanKind, TelemetryProvider
@@ -70,6 +73,17 @@ class _StreamTurnState:
     started_at: float = field(default_factory=time.monotonic)
     dedup_prefix: str = ""
     saw_tool_call: bool = False
+    # The provider error that interrupted the turn after a round (reason
+    # ``error``): the turn reaches its end on it, then it is raised (RFC §6.4).
+    error: Exception | None = None
+
+    def usage_record(self) -> dict[str, int]:
+        return {"input_tokens": 0, "output_tokens": 0, **self.usage}
+
+    def end(self, reason: LoopEndReason, rounds: int) -> LoopEndMarker:
+        """End the loop on *reason*: the marker the consumer reads it from."""
+        self.reason = reason
+        return LoopEndMarker(reason=reason, rounds=rounds, usage=self.usage_record())
 
 
 def _turn_span_attributes(turn: _StreamTurnState) -> dict[str, Any]:
@@ -549,7 +563,11 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
             try:
                 yield turn
             except BaseException as exc:
-                _end_unfinished_turn(turn, exc)
+                if exc is turn.error:
+                    # Interrupted after a round: it reached its end (RFC §6.4)
+                    await self._finish_streaming_tool_turn(turn)
+                else:
+                    _end_unfinished_turn(turn, exc)
                 raise
             await self._finish_streaming_tool_turn(turn)
         finally:
@@ -559,7 +577,12 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
 
     async def _finish_streaming_tool_turn(self, turn: _StreamTurnState) -> None:
         """Report the delivered transcript and the counters accumulated by this turn."""
-        turn.telemetry.end_span(turn.span_id, attributes=_turn_span_attributes(turn))
+        turn.telemetry.end_span(
+            turn.span_id,
+            status=turn_span_status(turn.reason),
+            error_message=None if turn.error is None else str(turn.error),
+            attributes=_turn_span_attributes(turn),
+        )
         if self._after_response_hook:
             try:
                 segments, transcript = response_transcript("".join(text) for text in turn.segments)
@@ -573,7 +596,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                         round_count=turn.tool_rounds_count,
                         loop_end_reason=turn.reason,
                         declared_tools=list(turn.loop_ctx.declared_tools.values()),
-                        usage={"input_tokens": 0, "output_tokens": 0, **turn.usage},
+                        usage=turn.usage_record(),
                         latency_ms=int((time.monotonic() - turn.started_at) * 1000),
                         streaming=True,
                     )
@@ -649,6 +672,30 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                 duration_ms=duration_ms,
             )
 
+    async def _stream_generation(
+        self, round_: _StreamRound, context: AIContext, turn: _StreamTurnState, index: int
+    ) -> AsyncGenerator[StreamDelta, None]:
+        """One round's generation; a provider error once a round ran ends the turn.
+
+        The rounds already reached the room, so the turn reaches its end on
+        the error, reported as the buffered loop reports it, and the error
+        then reaches the consumer (RFC §6.4).
+        """
+        try:
+            async with aclosing(
+                round_.stream(self._generate_stream_with_retry(context))
+            ) as deltas:
+                async for delta in deltas:
+                    yield delta
+        except ResponseSchemaError:
+            raise  # the answer failed its own check, it was not interrupted
+        except ProviderError as exc:
+            if not turn.saw_tool_call:
+                raise
+            turn.error = exc
+            yield turn.end("error", index)
+            raise
+
     async def _run_streaming_tool_loop(
         self, context: AIContext, *, parent_loop_ctx: _ToolLoopContext | None = None
     ) -> AsyncGenerator[StreamDelta, None]:
@@ -665,15 +712,13 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
             )
             context, cancelled = self._drain_steering_queue(context, loop_ctx)
             if cancelled:
-                turn.reason = "cancelled"
-                yield LoopEndMarker(reason=turn.reason, rounds=0)
+                yield turn.end("cancelled", 0)
                 return
             rules = self._new_loop_state("Streaming tool loop")
 
             for index in range(self._max_tool_rounds + 1):
                 if loop_ctx.cancel_event.is_set():
-                    turn.reason = "cancelled"
-                    yield LoopEndMarker(reason=turn.reason, rounds=index)
+                    yield turn.end("cancelled", index)
                     return
                 context = self._prepare_round_context(context, loop_ctx, rules, index)
                 round_ = _StreamRound(
@@ -692,7 +737,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                 # What this round declares, as the provider receives it.
                 self._record_declared_tools(loop_ctx, context.tools)
                 async with aclosing(
-                    round_.stream(self._generate_stream_with_retry(context))
+                    self._stream_generation(round_, context, turn, index)
                 ) as deltas:
                     async for delta in deltas:
                         yield delta
@@ -700,8 +745,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
 
                 stop = _round_stop_reason(state, loop_ctx)
                 if stop is not None:
-                    turn.reason = stop
-                    yield LoopEndMarker(reason=turn.reason, rounds=index)
+                    yield turn.end(stop, index)
                     return
                 if not state.tool_calls:
                     if self._try_empty_retry(
@@ -713,28 +757,26 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                         finish_reason=state.finish_reason,
                     ):
                         continue
-                    turn.reason = final_round_reason(
+                    reason = final_round_reason(
                         had_tool_round=turn.saw_tool_call,
                         final_text=state.text,
                         finish_reason=state.finish_reason,
                         deadline_exceeded=rules.deadline_exceeded(),
                         force_stopped=loop_ctx.force_stop,
                     )
-                    yield LoopEndMarker(reason=turn.reason, rounds=index)
+                    yield turn.end(reason, index)
                     return
 
                 turn.saw_tool_call = True
                 if self._tool_handler is None:
                     await external.observe_calls(state.tool_calls)
-                    turn.reason = "completed"
-                    yield LoopEndMarker(reason=turn.reason, rounds=index)
+                    yield turn.end("completed", index)
                     return
                 if index >= self._max_tool_rounds:
                     logger.warning(
                         "Streaming tool loop reached max_tool_rounds=%d", self._max_tool_rounds
                     )
-                    turn.reason = "max_rounds"
-                    yield LoopEndMarker(reason=turn.reason, rounds=index)
+                    yield turn.end("max_rounds", index)
                     return
                 if rules.deadline_exceeded():
                     logger.warning(
@@ -742,8 +784,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                         index,
                         self._tool_loop_timeout_seconds,
                     )
-                    turn.reason = "timeout"
-                    yield LoopEndMarker(reason=turn.reason, rounds=index)
+                    yield turn.end("timeout", index)
                     return
 
                 rules.warn_if_needed(index)
@@ -754,10 +795,8 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                         yield delta
                 context, cancelled = self._drain_steering_queue(context, loop_ctx)
                 if cancelled:
-                    turn.reason = "cancelled"
-                    yield LoopEndMarker(reason=turn.reason, rounds=index)
+                    yield turn.end("cancelled", index)
                     return
 
             # An empty-response retry can consume the final generation slot.
-            turn.reason = "max_rounds"
-            yield LoopEndMarker(reason=turn.reason, rounds=self._max_tool_rounds)
+            yield turn.end("max_rounds", self._max_tool_rounds)

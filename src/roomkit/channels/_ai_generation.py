@@ -15,11 +15,18 @@ from roomkit.channels._ai_loop_rules import (
     _accumulate_usage,
     final_round_reason,
     require_schema_answer,
+    turn_span_status,
 )
 from roomkit.channels._tool_event_result import tool_event_payload
 from roomkit.models.channel import ChannelOutput
 from roomkit.models.enums import EventType
-from roomkit.models.event import EventSource, RoomEvent, TextContent, ToolCallContent
+from roomkit.models.event import (
+    INTERRUPTED_KEY,
+    EventSource,
+    RoomEvent,
+    TextContent,
+    ToolCallContent,
+)
 from roomkit.models.streaming import LoopEndReason
 from roomkit.models.tool_call import (
     AIGenerationEvent,
@@ -33,6 +40,7 @@ from roomkit.providers.ai.base import (
     AIResponse,
     ProviderError,
 )
+from roomkit.providers.ai.response_schema import ResponseSchemaError
 from roomkit.realtime.base import EphemeralEventType
 from roomkit.telemetry.base import Attr, SpanKind
 from roomkit.telemetry.context import get_current_span
@@ -318,7 +326,7 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
         interrupted = loop_result.error
         telemetry.end_span(
             span_id,
-            status="ok" if interrupted is None else "error",
+            status=turn_span_status(loop_result.reason),
             error_message=None if interrupted is None else str(interrupted),
             attributes={
                 Attr.LLM_INPUT_TOKENS: usage.get("input_tokens", 0),
@@ -409,6 +417,13 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
             "ai_usage": usage,
             "loop_end_reason": loop_result.reason,
         }
+        # The interruption marker says the turn was cut; it is no answer
+        # (RFC §6.4), and readers tell it from one by this key.
+        final_metadata = (
+            {**message_metadata, INTERRUPTED_KEY: True}
+            if loop_result.error is not None
+            else message_metadata
+        )
 
         if not loop_result.rounds:
             # No tool calls — single text event (existing behavior)
@@ -467,7 +482,7 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
                     chain_depth=chain_depth,
                     correlation_id=correlation_id,
                     parent_event_id=parent_event_id,
-                    metadata=message_metadata,
+                    metadata=final_metadata,
                 )
             )
 
@@ -545,6 +560,10 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
             # ``_generate_with_retry``: whatever reaches here is spent.
             try:
                 return await _generate(ctx)
+            except ResponseSchemaError:
+                # The answer failed its own check: the turn fails with it, it
+                # was not interrupted (RFC A.9)
+                raise
             except ProviderError as exc:
                 raise _TurnInterruptedError(exc) from exc
 

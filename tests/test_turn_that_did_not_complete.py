@@ -27,10 +27,12 @@ from roomkit.providers.ai.base import (
     AIResponse,
     AITool,
     AIToolCall,
+    ProviderError,
     StreamDone,
     StreamEvent,
 )
 from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.providers.ai.response_schema import ResponseSchemaError
 from roomkit.telemetry.base import Attr, SpanKind
 from roomkit.telemetry.mock import MockTelemetryProvider
 from tests.test_framework import SimpleChannel
@@ -260,3 +262,103 @@ async def test_a_turn_cancelled_from_outside_closes_its_span(streaming: bool) ->
 
     assert turn.reports == []
     assert [span.status for span in turn.spans()] == ["cancelled"]
+
+
+async def test_a_steering_cancel_closes_its_span_cancelled(streaming: bool) -> None:
+    """RMK-289: a turn that reached its end on a steering Cancel is reported
+    ``cancelled``, and its span is too, never ``ok`` (RFC §6.4)."""
+    turn = _Turn()
+    ai: AIChannel | None = None
+
+    async def cancelling(name: str, arguments: dict[str, Any]) -> str:
+        assert ai is not None
+        ai.steer(Cancel())
+        return "ok"
+
+    turn.handler = cancelling  # type: ignore[method-assign]
+    ai = await turn.build(MockAIProvider(streaming=streaming, ai_responses=[_round(), _round()]))
+
+    await turn.say()
+
+    assert [r.loop_end_reason for r in turn.reports] == ["cancelled"]
+    assert [span.status for span in turn.spans()] == ["cancelled"]
+
+
+class _FailsAfterTheRound(MockAIProvider):
+    """Answers the first round, then the provider fails, whichever loop draws."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._generations = 0
+
+    def _next_response(self) -> AIResponse:
+        self._generations += 1
+        if self._generations == 2:
+            raise ProviderError("upstream 500", retryable=False, status_code=500)
+        return super()._next_response()
+
+
+async def test_a_schema_turn_the_provider_interrupts_fails_in_either_loop(
+    streaming: bool,
+) -> None:
+    """RMK-289: interrupted after a round, a turn constrained to a schema has no
+    document to deliver: it fails ``truncated``, the marker never delivered as
+    its answer (RFC A.9)."""
+    turn = _Turn()
+    provider = _FailsAfterTheRound(
+        streaming=streaming,
+        response_schema=True,
+        response_schema_with_tools=True,
+        ai_responses=[_round("Let me check that."), AIResponse(content="never")],
+    )
+    schema = {
+        "type": "object",
+        "properties": {"a": {"type": "string"}},
+        "required": ["a"],
+        "additionalProperties": False,
+    }
+    await turn.build(provider, response_schema=schema)
+
+    result = await turn.kit.process_inbound(
+        InboundMessage(channel_id="sms1", sender_id="u1", content=TextContent(body="go"))
+    )
+    await asyncio.sleep(0.1)
+
+    assert isinstance(result.error, ResponseSchemaError)
+    assert result.error.reason == "truncated"
+    messages = [e.content.body for e in await turn.rows(EventType.MESSAGE)]
+    assert "[Response interrupted]" not in messages
+    assert [span.status for span in turn.spans()] == ["error"]
+
+
+async def test_a_final_answer_failing_its_schema_after_a_round_is_no_interruption(
+    streaming: bool,
+) -> None:
+    """RMK-289: the provider's own check refusing the final answer fails the
+    turn with that error; the turn was not interrupted, so no marker is
+    delivered and nothing reports it (RFC A.9)."""
+    turn = _Turn()
+    provider = MockAIProvider(
+        streaming=streaming,
+        response_schema=True,
+        response_schema_with_tools=True,
+        ai_responses=[_round("Let me check that."), AIResponse(content="Sure, it is yes.")],
+    )
+    schema = {
+        "type": "object",
+        "properties": {"a": {"type": "string"}},
+        "required": ["a"],
+        "additionalProperties": False,
+    }
+    await turn.build(provider, response_schema=schema)
+
+    result = await turn.kit.process_inbound(
+        InboundMessage(channel_id="sms1", sender_id="u1", content=TextContent(body="go"))
+    )
+    await asyncio.sleep(0.1)
+
+    assert isinstance(result.error, ResponseSchemaError)
+    assert result.error.reason == "invalid_json"
+    assert turn.reports == []
+    messages = [e.content.body for e in await turn.rows(EventType.MESSAGE)]
+    assert "[Response interrupted]" not in messages

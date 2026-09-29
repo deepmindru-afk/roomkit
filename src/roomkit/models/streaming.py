@@ -70,12 +70,12 @@ class ThinkingDeltaMarker:
 #: its own name — that text is a summary of a turn the platform cut short, not
 #: an answer, and a caller that reads ``completed`` delivers it as one.
 #:
-#: ``error`` is a turn the provider interrupted after a tool round, on the
-#: non-streaming loop: the rounds are kept, each round's text as its own
-#: message, the turn ends on the ``[Response interrupted]`` marker alone, and it
-#: is an error too (``ChannelOutput.error``: ON_ERROR fires, the caller reads it
-#: on ``InboundResult.error``). RFC §6.4. The streaming loop never emits it:
-#: there the exception itself reaches the consumer.
+#: ``error`` is a turn the provider interrupted after a tool round: the rounds
+#: are kept, each round's text as its own message, and it is an error too
+#: (ON_ERROR fires, the caller reads it on ``InboundResult.error``). The
+#: non-streaming loop ends it on the ``[Response interrupted]`` marker alone
+#: (``ChannelOutput.error``); the streaming loop yields its ``LoopEndMarker``,
+#: then the exception reaches the consumer. RFC §6.4.
 LoopEndReason = Literal[
     "completed",
     "max_rounds",
@@ -107,7 +107,9 @@ class LoopEndMarker:
 
     ``rounds`` is how many tool rounds ran before the stop. The limits the
     reason refers to are the caller's own configuration, so they are not
-    repeated here.
+    repeated here. ``usage`` is what the turn's generations used, summed over
+    every round: with the reason, it is the turn's record, which the stream's
+    consumer writes on the turn's last message (RFC §6.4).
 
     Streaming only: the non-streaming loop hands back an ``AIResponse`` the
     caller already holds, rather than a stream whose end is silent.
@@ -115,6 +117,7 @@ class LoopEndMarker:
 
     reason: LoopEndReason
     rounds: int = 0
+    usage: dict[str, int] = field(default_factory=dict)
 
 
 #: Union of all marker types that may appear in a streaming response.

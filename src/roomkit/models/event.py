@@ -257,6 +257,20 @@ class RoomEvent(BaseModel):
     delivery_results: dict[str, Any] = Field(default_factory=dict)
 
 
+#: Metadata key marking the terminal message of a turn the provider
+#: interrupted after a round (RFC §6.4): the interruption marker, not an answer.
+INTERRUPTED_KEY = "interrupted"
+
+
+def is_interruption_marker(event: RoomEvent) -> bool:
+    """Whether *event* is an interruption marker (RFC §6.4).
+
+    It says an agent's turn was cut: it solicits no agent (RFC §19.3), and
+    nothing that reads an agent's answer takes it for one.
+    """
+    return event.metadata.get(INTERRUPTED_KEY) is True
+
+
 class ThreadSummary(BaseModel):
     """Aggregate view of a thread, keyed by its root event.
 

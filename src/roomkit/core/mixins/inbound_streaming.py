@@ -21,7 +21,12 @@ from roomkit.models.enums import (
 )
 from roomkit.models.event import RoomEvent
 from roomkit.models.response_metadata import ResponseMetadata
-from roomkit.models.streaming import ThinkingDeltaMarker, ToolCallEndMarker, ToolCallStartMarker
+from roomkit.models.streaming import (
+    LoopEndMarker,
+    ThinkingDeltaMarker,
+    ToolCallEndMarker,
+    ToolCallStartMarker,
+)
 from roomkit.providers.ai.base import ProviderError
 from roomkit.providers.utils import _aclose_stream
 
@@ -213,6 +218,8 @@ class InboundStreamingMixin(HelpersMixin):
                     row = await writer.tool_end(delta)
                     if row is not None:
                         yield row
+                elif isinstance(delta, LoopEndMarker):
+                    writer.end_turn(delta)
 
             exhausted = True
             row = await writer.flush_text()
@@ -318,6 +325,7 @@ class InboundStreamingMixin(HelpersMixin):
         # Every segment's delivery set, awaited once now that the stream is
         # done — the run's completion is what the caller's turn waits on.
         await cascade.wait()
+        await writer.record_on_last_message()
 
         if not writer.persisted and stream_error is None:
             return None

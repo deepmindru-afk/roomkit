@@ -85,7 +85,7 @@ def _accumulate_usage(total: dict[str, int], round_usage: dict[str, Any]) -> Non
 # How a tool loop can stop short of its final answer. A turn constrained to a
 # response schema that ends this way has no checked document to deliver.
 _CUT_SHORT: frozenset[str] = frozenset(
-    {"max_rounds", "timeout", "force_stopped", "empty_response", "truncated"}
+    {"max_rounds", "timeout", "force_stopped", "empty_response", "truncated", "error"}
 )
 
 
@@ -104,6 +104,17 @@ def require_schema_answer(context: AIContext, reason: LoopEndReason) -> None:
             f"the tool loop stopped ({reason}) before a final answer in the response schema",
             reason="truncated",
         )
+
+
+def turn_span_status(reason: LoopEndReason) -> str:
+    """The status of the ``llm.generate`` span of a turn that reached its end.
+
+    A turn cancelled between rounds ends ``cancelled``, one the provider
+    interrupted after a round ends ``error``: neither is ``ok`` (RFC §6.4).
+    """
+    if reason in ("cancelled", "error"):
+        return reason
+    return "ok"
 
 
 def final_round_reason(

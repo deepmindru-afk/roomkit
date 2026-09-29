@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from roomkit.core.lanes import DeliveryCascade
     from roomkit.core.mixins.lane_execution import DeliverySource
     from roomkit.models.context import RoomContext
-    from roomkit.models.streaming import ToolCallEndMarker, ToolCallStartMarker
+    from roomkit.models.streaming import LoopEndMarker, ToolCallEndMarker, ToolCallStartMarker
 
 logger = logging.getLogger("roomkit.inbound")
 
@@ -70,6 +70,10 @@ class SegmentWriter:
         # ordinary recipient.
         self._streamed_to = streamed_to
         self._response_events = response_events
+        # The turn's record (``loop_end_reason``, ``ai_usage``), once its
+        # ``LoopEndMarker`` is read; ``_record_owed`` while no row carries it.
+        self._turn_record: dict[str, Any] | None = None
+        self._record_owed = False
         self._accumulated: list[str] = []
         self._writing: set[asyncio.Task[RoomEvent | None]] = set()
         self._started: set[str] = set()
@@ -80,6 +84,39 @@ class SegmentWriter:
     def add_text(self, delta: str) -> None:
         """Accumulate a text delta; a segment is written when something ends it."""
         self._accumulated.append(delta)
+
+    def end_turn(self, marker: LoopEndMarker) -> None:
+        """The loop reached its end: its record rides the turn's last message.
+
+        The marker comes last, so the next flush is the turn's final text and
+        carries it; a turn with no final text has it written on the message it
+        already wrote, by :meth:`record_on_last_message` (RFC §6.4).
+        """
+        self._turn_record = {"ai_usage": dict(marker.usage), "loop_end_reason": marker.reason}
+        self._record_owed = True
+
+    async def record_on_last_message(self) -> None:
+        """Write a record no final text carried on the last MESSAGE already stored.
+
+        Run once the turn's deliveries are done, so no delivery record is
+        written to the same row meanwhile; the stored row is read again and
+        only its metadata changes. It is not delivered again.
+        """
+        if not self._record_owed or self._turn_record is None:
+            return
+        self._record_owed = False
+        last = next((e for e in reversed(self.persisted) if e.type == EventType.MESSAGE), None)
+        if last is None:
+            return
+        stored = await self._kit._store.get_event(last.id)
+        if stored is None:
+            return
+        updated = await self._kit._store.update_event(
+            stored.model_copy(update={"metadata": {**stored.metadata, **self._turn_record}})
+        )
+        for rows in (self.persisted, self._response_events):
+            if rows is not None and last in rows:
+                rows[rows.index(last)] = updated
 
     def stream_lost(self) -> None:
         """The stream failed: text accumulated past the failure never reached
@@ -109,12 +146,19 @@ class SegmentWriter:
         body = "".join(self._accumulated)
         self._accumulated.clear()
         metadata = dict(self._sr.response_metadata or {})
+        # Read after the loop's end: this is the turn's final text
+        carries_record = self._turn_record is not None
+        if self._turn_record is not None:
+            metadata.update(self._turn_record)
         if cancelled:
             metadata["cancelled"] = True
         event = self._build(EventType.MESSAGE, TextContent(body=body), metadata=metadata)
         # The streaming channel already rendered this text chunk by chunk —
         # only the others get it as an event.
-        return await self._write(event, exclude=set(self._streamed_to))
+        row = await self._write(event, exclude=set(self._streamed_to))
+        if carries_record and row is not None:
+            self._record_owed = False
+        return row
 
     def started(self, tool_id: str) -> bool:
         """Whether this call's start row was handed to the writer."""

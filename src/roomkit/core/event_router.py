@@ -37,6 +37,7 @@ from roomkit.models.event import (
     TemplateContent,
     TextContent,
     VideoContent,
+    is_interruption_marker,
 )
 from roomkit.models.task import Observation, Task
 from roomkit.providers.ai.base import ProviderError
@@ -80,6 +81,9 @@ def _solicits(
     Solicitation only — the caller has already resolved *visibility*, which
     is a separate question this must not re-answer.
     """
+    if is_interruption_marker(event):
+        # It says a turn was cut, nothing to act on (RFC §19.3 rule 5)
+        return False
     metadata = event.metadata or {}
     always_process = metadata.get("_always_process", [])
 

@@ -18,7 +18,13 @@ from roomkit.core.mixins._result_capture import capture_result
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import ChannelType, EventStatus, EventType
-from roomkit.models.event import EventSource, RoomEvent, TextContent, ToolCallContent
+from roomkit.models.event import (
+    EventSource,
+    RoomEvent,
+    TextContent,
+    ToolCallContent,
+    is_interruption_marker,
+)
 from roomkit.models.store_filter import EventFilter
 from roomkit.models.streaming import ToolCallEndMarker, ToolCallStartMarker
 
@@ -126,7 +132,12 @@ async def _persist_response_events(
         await kit._commit_indexed(
             child_room_id, resp.model_copy(update={"status": EventStatus.DELIVERED})
         )
-        if isinstance(resp.content, TextContent) and resp.content.body:
+        # An interruption marker is not the worker's answer (RFC §6.4)
+        if (
+            isinstance(resp.content, TextContent)
+            and resp.content.body
+            and not is_interruption_marker(resp)
+        ):
             final_text = resp.content.body
     return final_text
 
