@@ -15,6 +15,7 @@ import logging
 from abc import abstractmethod
 from typing import Any
 
+from roomkit.providers.openai.live_events import PendingResponse
 from roomkit.voice._g711 import _G711Codec
 from roomkit.voice.base import VoiceSession
 from roomkit.voice.realtime.provider import RealtimeVoiceProvider
@@ -63,6 +64,7 @@ class OpenAIRealtimeEventHandlersMixin(RealtimeVoiceProvider):
     # Connection state owned by OpenAIRealtimeBase.__init__; declared for typing.
     _connections: dict[str, Any]
     _responding: set[str]
+    _pending_responses: dict[str, PendingResponse]
     _output_audio: dict[str, _OutputAudioState]
     _audio_codecs: dict[str, tuple[_G711Codec | None, _G711Codec | None]]
 
@@ -230,6 +232,9 @@ class OpenAIRealtimeEventHandlersMixin(RealtimeVoiceProvider):
             arguments = json.loads(args_str)
         except json.JSONDecodeError:
             arguments = {"raw": args_str}
+        pending = self._pending_responses.setdefault(session.id, PendingResponse())
+        pending.call_ids.add(call_id)
+        pending.had_calls = True
         await self._fire(
             self._tool_call_callbacks,
             session,
@@ -244,6 +249,8 @@ class OpenAIRealtimeEventHandlersMixin(RealtimeVoiceProvider):
         # completed item after response.done while its buffered audio is still
         # playing, but never carry it into a subsequent response.
         self._output_audio.pop(session.id, None)
+        # A call still open in an earlier response no longer holds this one
+        self._pending_responses[session.id] = PendingResponse()
         self._responding.add(session.id)
         logger.info("[%s] response_start (session %s)", self._log_tag, session.id)
         await self._fire(self._response_start_callbacks, session, label="response_start")
@@ -296,6 +303,28 @@ class OpenAIRealtimeEventHandlersMixin(RealtimeVoiceProvider):
 
         self._responding.discard(session.id)
         await self._fire(self._response_end_callbacks, session, label="response_end")
+        await self._continue_after_tool_results(session, response_ended=True)
+
+    async def _continue_after_tool_results(
+        self, session: VoiceSession, *, response_ended: bool = False
+    ) -> None:
+        """Ask the model to go on once, when its response is done and fully answered.
+
+        One ``response.create`` per result would start a second response while
+        the first is active, and the API rejects it (RFC §12.4.1).
+        """
+        pending = self._pending_responses.get(session.id)
+        if pending is None:
+            return
+        pending.finished = pending.finished or response_ended
+        if not pending.finished or pending.call_ids:
+            return
+        del self._pending_responses[session.id]
+        ws = self._connections.get(session.id)
+        if not pending.had_calls or ws is None:
+            return
+        logger.debug("[%s →] response.create (after tool results)", self._log_tag)
+        await ws.send(json.dumps({"type": "response.create"}))
 
     async def _on_buffer_committed(self, session: VoiceSession, event: dict[str, Any]) -> None:
         logger.debug("[%s] audio_buffer committed (session %s)", self._log_tag, session.id)

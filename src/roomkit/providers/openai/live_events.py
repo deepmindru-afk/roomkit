@@ -142,16 +142,18 @@ class TurnGrouper:
         await self._on_close(text)
 
 
-# --- Hosted delegation bookkeeping -----------------------------------------
+# --- Response continuation bookkeeping -------------------------------------
 
 
 @dataclass
 class PendingResponse:
-    """A hosted delegation's Responses run whose function calls are being collected.
+    """A model response whose function calls are being collected.
 
-    The hosted service rejects ``response.create`` while any call of the run
-    is unanswered, so the run resumes only once ``finished`` is set and
-    ``call_ids`` is empty — and only if it asked for a call at all.
+    The service rejects ``response.create`` while a response is active or any
+    of its calls is unanswered, so the model resumes only once ``finished`` is
+    set and ``call_ids`` is empty — and only if it asked for a call at all
+    (RFC §12.4.1). Kept per delegated run by the hosted GPT-Live backend, and
+    per session by the classic OpenAI Realtime wire.
     """
 
     call_ids: set[str] = field(default_factory=set)

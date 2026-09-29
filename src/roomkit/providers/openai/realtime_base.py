@@ -18,6 +18,7 @@ import logging
 from abc import abstractmethod
 from typing import Any
 
+from roomkit.providers.openai.live_events import PendingResponse
 from roomkit.providers.openai.realtime_events import (
     OpenAIRealtimeEventHandlersMixin,
     _OutputAudioState,
@@ -51,6 +52,9 @@ class OpenAIRealtimeBase(OpenAIRealtimeEventHandlersMixin):
         self._sessions: dict[str, VoiceSession] = {}
         # Track active responses per session to avoid inject_text conflicts
         self._responding: set[str] = set()
+        # The current response's function calls: the model is asked to go on
+        # once that response is done and every call has its output (RFC §12.4.1)
+        self._pending_responses: dict[str, PendingResponse] = {}
         # provider_config as passed to connect, kept so mid-session calls
         # (image injection, for one) can read settings fixed at connect time
         self._provider_configs: dict[str, dict[str, Any]] = {}
@@ -334,8 +338,12 @@ class OpenAIRealtimeBase(OpenAIRealtimeEventHandlersMixin):
             )
         )
 
-        logger.debug("[%s →] response.create (after tool result)", self._log_tag)
-        await ws.send(json.dumps({"type": "response.create"}))
+        # A call of a response the conversation has left joins the one in
+        # progress, or continues at once when none is (RFC §12.4.1)
+        pending = self._pending_responses.setdefault(session.id, PendingResponse(finished=True))
+        pending.call_ids.discard(call_id)
+        pending.had_calls = True
+        await self._continue_after_tool_results(session)
 
     async def interrupt(self, session: VoiceSession) -> None:
         ws = self._connections.get(session.id)
@@ -433,6 +441,7 @@ class OpenAIRealtimeBase(OpenAIRealtimeEventHandlersMixin):
         self._receive_tasks.pop(session.id, None)
         self._provider_configs.pop(session.id, None)
         self._responding.discard(session.id)
+        self._pending_responses.pop(session.id, None)
         self._output_audio.pop(session.id, None)
         self._output_bytes_per_ms.pop(session.id, None)
         self._audio_codecs.pop(session.id, None)
@@ -468,6 +477,7 @@ class OpenAIRealtimeBase(OpenAIRealtimeEventHandlersMixin):
         self._sessions.pop(session.id, None)
         self._provider_configs.pop(session.id, None)
         self._responding.discard(session.id)
+        self._pending_responses.pop(session.id, None)
         self._output_audio.pop(session.id, None)
         self._output_bytes_per_ms.pop(session.id, None)
         self._audio_codecs.pop(session.id, None)
