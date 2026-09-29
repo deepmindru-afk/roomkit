@@ -12,18 +12,29 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import dataclass
 from typing import Any
 
 import pytest
+from pydantic import BaseModel
 
 from roomkit import HookExecution, HookResult, HookTrigger, RoomContext, RoomKit, ToolCallEvent
 from roomkit.channels.ai import AIChannel
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.enums import ChannelType
-from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall, AIToolResultPart
+from roomkit.providers.ai.base import (
+    AIImagePart,
+    AIResponse,
+    AITextPart,
+    AITool,
+    AIToolCall,
+    AIToolResultPart,
+)
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.tools.compose import extract_tools
+from roomkit.tools.human_input import HumanInputToolHandler
+from roomkit.tools.result import as_tool_result, is_unknown_tool_answer
 from roomkit.video.vision.mock import MockVisionProvider
 from roomkit.video.vision.screen_tool import DescribeScreenTool
 from roomkit.video.vision.webcam_tool import ListWebcamsTool
@@ -32,6 +43,19 @@ from tests.conftest import make_event
 from tests.tool_loop_modes import respond
 
 SCHEMA = {"type": "object", "properties": {}}
+
+
+class _Point(BaseModel):
+    x: int
+    y: int
+
+
+@dataclass
+class _Pair:
+    a: int
+    b: str
+
+
 T = AITool(name="t", description="a tool", parameters=SCHEMA)
 VALUES = [["a", "b"], [{"id": 1}], {"ok": True, "n": None}, None, 3]
 
@@ -64,9 +88,10 @@ class _Round:
 
     async def run(self, channel: AIChannel) -> list[AIToolResultPart]:
         room = await self.kit.create_room()
+        self.room_id = room.id
         await self.kit.attach_channel(room.id, "ai-1")
         binding = ChannelBinding(channel_id="ai-1", room_id=room.id, channel_type=ChannelType.AI)
-        await respond(
+        self.last_run = await respond(
             channel,
             make_event(room_id=room.id, body="go", channel_id="sms-1"),
             binding,
@@ -122,6 +147,44 @@ async def test_a_realtime_call_reads_the_same_json(value: Any) -> None:
     await asyncio.sleep(0.05)
 
     assert provider.tool_results[0][2] == json.dumps(value)
+    await kit.close()
+
+
+async def test_a_realtime_call_a_hook_serves_is_reported_once() -> None:
+    provider = MockRealtimeProvider()
+    voice = RealtimeVoiceChannel(
+        "rt",
+        provider=provider,
+        transport=MockRealtimeTransport(),
+        tools=[{"name": "t", "description": "a tool", "parameters": SCHEMA}],
+    )
+    kit = RoomKit()
+    kit.register_channel(voice)
+    observed: list[ToolCallEvent] = []
+    framework_events: list[Any] = []
+
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="serve")
+    async def serve(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
+        return HookResult(action="allow", metadata={"result": {"temp": 22}})
+
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="spy")
+    async def spy(event: ToolCallEvent, ctx: RoomContext) -> None:
+        observed.append(event)
+
+    @kit.on("tool_call")
+    async def count(event: Any) -> None:
+        framework_events.append(event)
+
+    room = await kit.create_room()
+    await kit.attach_channel(room.id, "rt")
+    session = await voice.start_session(room.id, "u1", "ws")
+
+    await provider.simulate_tool_call(session, "c1", "t", {})
+    await asyncio.sleep(0.05)
+
+    assert provider.tool_results[0][2] == '{"temp": 22}'
+    assert [(e.result, e.is_error) for e in observed] == [('{"temp": 22}', False)]
+    assert len(framework_events) == 1
     await kit.close()
 
 
@@ -183,23 +246,23 @@ async def test_a_hook_serves_a_declared_tool_nothing_else_serves(streaming: bool
 
     assert round_.hook_saw == [None]
     assert [(p.result, p.is_error) for p in parts] == [('{"temp": 22}', False)]
-    assert [(e.result, e.is_error) for e in round_.observed] == [({"temp": 22}, False)]
+    # The observers see the result the model reads, once.
+    assert [(e.result, e.is_error) for e in round_.observed] == [('{"temp": 22}', False)]
 
 
 async def test_the_channels_own_outcomes_are_refusals_no_sync_hook_serves(
     streaming: bool,
 ) -> None:
-    """A repeat the guard stops, and a tool outside the turn's toolset."""
+    """A repeat the guard stops, and a tool outside the turn's toolset: here
+    ``activate_skill``, a channel tool, on a channel with no skills."""
 
     async def handler(name: str, arguments: dict[str, Any]) -> str:
         return "ok"
 
     same = [_call(f"c{i}", x=1) for i in range(3)]
-    round_ = _Round(*same, _call("c3", "ghost"), streaming=streaming)
+    unavailable = AIToolCall(id="c3", name="activate_skill", arguments={"name": "payments"})
+    round_ = _Round(*same, unavailable, streaming=streaming)
     channel = round_.channel(tools=[T], tool_handler=handler)
-    # "ghost" gets past the declared check, as a recovered deferred tool does,
-    # but is outside the turn's toolset: the dispatcher refuses it.
-    channel._recover_deferred_tool = lambda name: T if name == "ghost" else None  # ty: ignore
 
     @round_.kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="look")
     async def look(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
@@ -212,15 +275,105 @@ async def test_the_channels_own_outcomes_are_refusals_no_sync_hook_serves(
     assert "already called" in parts["c2"].result
     assert "not available in the current turn" in parts["c3"].result
     assert sorted(round_.hook_saw) == ["c0", "c1"]
+    observed = {e.tool_call_id: e.is_error for e in round_.observed}
+    assert observed == {"c0": False, "c1": False, "c2": True, "c3": True}
+    assert [c.failed for c in round_.last_run.calls] == [False, False, True, True]
 
 
-async def test_composed_vision_tools_serve_each_their_own_call() -> None:
-    """``compose_tool_handlers`` falls through on the JSON unknown-tool
-    envelope: the second built-in tool is reachable."""
-    definitions, handler = extract_tools(
-        [DescribeScreenTool(MockVisionProvider()), ListWebcamsTool()]
+async def test_a_repeat_the_guard_stops_leaves_the_rooms_memory_its_real_result(
+    streaming: bool,
+) -> None:
+    async def handler(name: str, arguments: dict[str, Any]) -> str:
+        return '{"balance": 42}'
+
+    same = [_call(f"c{i}", x=1) for i in range(3)]
+    round_ = _Round(*same, streaming=streaming)
+    channel = round_.channel(tools=[T], tool_handler=handler)
+
+    await round_.run(channel)
+
+    digest = channel._tool_usage.render_digest(round_.room_id) or ""
+    assert '{"balance": 42}' in digest
+    assert "already called" not in digest
+
+
+async def test_a_human_input_timeout_is_a_refusal_through_the_loop(streaming: bool) -> None:
+    ask = AITool(name="ask", description="Ask the user", parameters=SCHEMA)
+    human = HumanInputToolHandler(tool_names={"ask"}, timeout=0.01, tool_definitions=[ask])
+    round_ = _Round(_call("c1", "ask"), streaming=streaming)
+    channel = round_.channel(human_input_handler=human)
+
+    parts = await round_.run(channel)
+
+    assert [p.is_error for p in parts] == [True]
+    assert "timed out" in json.loads(parts[0].result)["error"]
+    assert [e.is_error for e in round_.observed] == [True]
+
+
+async def test_a_tool_object_chain_that_answers_unknown_served_nothing(
+    streaming: bool,
+) -> None:
+    """A Tool object serves its own tool: another declared tool gets its
+    ``Unknown tool`` answer, the one a composition passes a call on for, so
+    the call reaches the hooks empty and fails once."""
+    round_ = _Round(_call("c1", "weather"), streaming=streaming)
+    weather = AITool(name="weather", description="The weather", parameters=SCHEMA)
+    channel = round_.channel(tools=[ListWebcamsTool(), weather])
+
+    @round_.kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="look")
+    async def look(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
+        round_.hook_saw.append(event.result)
+        return HookResult.allow()
+
+    parts = await round_.run(channel)
+
+    assert round_.hook_saw == [None]
+    assert [(json.loads(p.result), p.is_error) for p in parts] == [
+        ({"error": "No handler for tool weather"}, True)
+    ]
+    assert [e.is_error for e in round_.observed] == [True]
+
+
+@pytest.mark.parametrize("first_screen", [True, False], ids=["screen-first", "webcams-first"])
+async def test_composed_vision_tools_reach_each_their_own_call(first_screen: bool) -> None:
+    """``compose_tool_handlers`` passes a call on over the JSON unknown-tool
+    envelope: ``list_webcams`` is served whichever tool comes first."""
+    screen, webcams = DescribeScreenTool(MockVisionProvider()), ListWebcamsTool()
+    _, handler = extract_tools([screen, webcams] if first_screen else [webcams, screen])
+
+    answer = await handler("list_webcams", {})
+
+    assert not is_unknown_tool_answer(answer)
+    assert answer == await webcams.handler("list_webcams", {})
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ({"city": "Montréal"}, '{"city": "Montréal"}'),
+        ([], "[]"),
+        ({1, 2}, "[1, 2]"),
+        (b"abc", '"abc"'),
+        (_Point(x=1, y=2), '{"x": 1, "y": 2}'),
+        (_Pair(1, "b"), '{"a": 1, "b": "b"}'),
+    ],
+    ids=["unicode", "empty-list", "set", "bytes", "pydantic", "dataclass"],
+)
+def test_a_value_json_does_not_know_is_serialized_not_printed(value: Any, expected: str) -> None:
+    assert as_tool_result(value) == expected
+
+
+def test_content_parts_given_as_mappings_stay_content_parts() -> None:
+    parts = as_tool_result(
+        [
+            {"type": "text", "text": "a screenshot"},
+            {"type": "image", "url": "data:image/png;base64,AAAA"},
+        ]
     )
 
-    answer = await handler(definitions[1].name, {})
+    assert isinstance(parts, list)
+    assert [type(p) for p in parts] == [AITextPart, AIImagePart]
 
-    assert "Unknown tool" not in str(answer)
+
+def test_a_list_of_plain_mappings_is_json() -> None:
+    assert as_tool_result([{"id": 1}]) == '[{"id": 1}]'

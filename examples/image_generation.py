@@ -48,6 +48,7 @@ Run with:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import sys
@@ -110,7 +111,7 @@ class DrawTool:
 
     async def handler(self, name: str, arguments: dict[str, Any]) -> str:
         if name != TOOL_DEFINITION["name"]:
-            return f"Unknown tool: {name}"
+            return json.dumps({"error": f"Unknown tool: {name}"})
 
         prompt = str(arguments.get("prompt", "")).strip()
         if not prompt:

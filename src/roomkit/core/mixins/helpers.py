@@ -56,6 +56,7 @@ from roomkit.models.tool_call import (
     fold_tool_call_rewrite,
     withheld_call_event,
 )
+from roomkit.tools.result import as_tool_result
 
 _RECENT_EVENTS_LIMIT = 2_000
 """Hard ceiling on events kept in ``RoomContext.recent_events`` in memory."""
@@ -859,7 +860,17 @@ class HelpersMixin:
                 withheld = withheld_call_event(event, str(verdict.result))
                 await kit_ref._observe_tool_call(withheld, context)
             elif unserved and verdict.result is not None:
-                await kit_ref._observe_tool_call(replace(event, result=verdict.result), context)
+                # A hook served it: the observers see the result the model
+                # reads, on the event the chain left (its structured copy).
+                final = (
+                    hook_result.event if isinstance(hook_result.event, ToolCallEvent) else event
+                )
+                served = replace(final, result=as_tool_result(verdict.result))
+                await kit_ref._observe_tool_call(served, context)
+            elif unserved:
+                # Served by nothing: the channel reports the failure, once,
+                # with its own framework event.
+                return verdict
             await kit_ref._emit_tool_call_event(event, channel_id)
             return verdict
 

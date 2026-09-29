@@ -46,6 +46,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Calling a tool handler directly, outside a tool loop, may now raise where
+  it returned a JSON error body (RMK-278): `HumanInputToolHandler` raises
+  `ToolRefusedError` on a timeout or a rejection, and `AIChannel.tool_handler`
+  raises `ChannelRefusalError` (a `ToolRefusedError`) for a repeat it stops or
+  a tool outside the turn's toolset, and `UnservedToolCallError` for a
+  declared tool no handler serves. Inside the tool loop these are the call's
+  outcomes (RFC §9.3); a host that wraps or calls the handler itself catches
+  them.
 - `ToolPolicy` governs the tools the channel injects itself (RMK-271,
   RFC §21.1). Sandbox commands (`sandbox_*`), `run_skill_script` and
   `plan_tasks` escaped it: `deny=["*"]` still declared and ran
@@ -132,18 +140,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   vision model (and showed a pydantic trace to a text-only one), and a dict
   or `None` reached the model as Python's `repr`, where the realtime channel
   sent JSON; a dict an `ON_TOOL_CALL` hook supplied failed the turn too. Any
-  value outside text and content parts is now JSON on both channels. A repeat
-  of the same call that the channel stops, and a tool outside the turn's
+  value outside text and content parts is now JSON on both channels and in a
+  conference (unicode kept, pydantic models and dataclasses as their fields),
+  and content parts may be given as mappings naming their `type`. A repeat of
+  the same call that the channel stops, and a tool outside the turn's
   toolset, were reported as successes: they are refusals now (`is_error`,
-  observers only), and so are `HumanInputToolHandler`'s timeout and
-  rejection. A declared tool no handler serves reaches the `ON_TOOL_CALL`
+  observers only, `ChannelRefusalError`), and the room's tool memory no
+  longer keeps them, so a stopped repeat cannot replace the real result in
+  the next turn's digest. `HumanInputToolHandler`'s timeout and rejection are
+  refusals too. A declared tool nothing serves (no handler, or handlers that
+  all answer `{"error": "Unknown tool: ..."}`) reaches the `ON_TOOL_CALL`
   sync hooks with `result=None`, so a hook can serve it; if none does, the
   model reads `{"error": "No handler for tool <name>"}` and the call is
-  reported once, as failed (the realtime channel reported it twice). The
-  built-in vision tools (`DescribeWebcamTool`, `ListWebcamsTool`,
-  `DescribeScreenTool`, `screen_input`) answer an unknown name with the JSON
-  envelope `compose_tool_handlers` falls through on, so `list_webcams` is
-  reachable again beside `describe_webcam`.
+  reported once, as failed, with one framework event (the realtime channel
+  reported it twice). The built-in vision tools (`DescribeWebcamTool`,
+  `ListWebcamsTool`, `DescribeScreenTool`, `ScreenInputTools`) answer an
+  unknown name with the JSON envelope `compose_tool_handlers` falls through
+  on, so `list_webcams` is reachable again beside `describe_webcam`.
 - Tool Search no longer hides the tools orchestration injects (RMK-277, RFC
   §21.1). With a catalogue large enough to collapse behind `find_tools`,
   `handoff_conversation`, `delegate_task`, a supervisor's tools and a

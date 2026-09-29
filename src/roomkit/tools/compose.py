@@ -2,36 +2,19 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
-from roomkit.providers.ai.base import AIImagePart, AITextPart, AITool
+from roomkit.providers.ai.base import AITool
+from roomkit.tools.result import ToolResult, is_unknown_tool_answer
 
 if TYPE_CHECKING:
     from roomkit.tools.base import Tool
 
 logger = logging.getLogger("roomkit.tools.compose")
 
-# Mirrors roomkit.channels.ai.ToolResult: a handler may answer with plain
-# text or a content-part list (text + images) that must travel intact.
-ToolResult = str | list[AITextPart | AIImagePart]
 ToolHandler = Callable[[str, dict[str, Any]], Awaitable[ToolResult]]
-
-
-def _is_unknown_tool_error(result: ToolResult) -> bool:
-    """Check if a tool handler result is an 'unknown tool' error."""
-    if not isinstance(result, str):
-        return False  # A multimodal result is always a handled tool
-    try:
-        parsed = json.loads(result)
-    except (json.JSONDecodeError, TypeError):
-        return False
-    if isinstance(parsed, dict):
-        error = parsed.get("error", "")
-        return isinstance(error, str) and error.lower().startswith("unknown tool")
-    return False
 
 
 def compose_tool_handlers(*handlers: ToolHandler) -> ToolHandler:
@@ -57,7 +40,7 @@ def compose_tool_handlers(*handlers: ToolHandler) -> ToolHandler:
     async def _composed(name: str, arguments: dict[str, Any]) -> ToolResult:
         for handler in handlers[:-1]:
             result = await handler(name, arguments)
-            if not _is_unknown_tool_error(result):
+            if not is_unknown_tool_answer(result):
                 return result
             logger.debug("Handler %r did not handle tool %r, trying next", handler, name)
         # Last handler — return whatever it gives

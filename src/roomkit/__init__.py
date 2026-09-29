@@ -70,6 +70,7 @@ from roomkit.conference import (
 )
 from roomkit.core.delivery import DeliveryStrategy, Immediate, Queued, WaitForIdle
 from roomkit.core.exceptions import (
+    ChannelRefusalError,
     ConferenceAlreadyAttachedError,
     ConferenceCapabilityError,
     ConferenceCloseError,
@@ -77,6 +78,7 @@ from roomkit.core.exceptions import (
     ProviderDeliveryError,
     RoomNotAttachedError,
     ToolRefusedError,
+    UnservedToolCallError,
     VoiceSessionEndedError,
 )
 from roomkit.core.framework import (
@@ -289,6 +291,8 @@ __all__ = [
     "ConferenceCloseError",
     "RoomNotAttachedError",
     "ToolRefusedError",
+    "ChannelRefusalError",
+    "UnservedToolCallError",
     # Delivery
     "DeliveryBackend",
     "DeliveryItem",

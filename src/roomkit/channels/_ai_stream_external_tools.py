@@ -14,6 +14,7 @@ from roomkit.models.tool_call import ToolCallCallback, ToolCallEvent
 from roomkit.providers.ai.base import AIToolResultPart, StreamToolCall
 from roomkit.realtime.base import EphemeralEventType
 from roomkit.tools.external import BeforeToolCallback, ExternalToolHandler
+from roomkit.tools.result import as_tool_result
 
 
 class _ToolEventPublisher(Protocol):
@@ -122,11 +123,12 @@ class _ExternalStreamTools:
                 tool_call_id=call.id,
                 name=call.name,
                 arguments=arguments,
+                # A call the proxy already ran has an outcome, empty when it
+                # sent none (as in stream_call): None would read as a call
+                # nothing served (RFC §9.3).
                 result=(
-                    result
-                    if isinstance(result, (str, list))
-                    else json.dumps(result)
-                    if result is not None
+                    ("" if result is None else as_tool_result(result))
+                    if already_executed
                     else None
                 ),
                 room_id=self.room_id,

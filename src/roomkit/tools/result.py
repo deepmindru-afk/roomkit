@@ -1,19 +1,26 @@
 """What a tool handler's answer reads as for a model (RFC §21.4).
 
-A handler answers with text or with a list of content parts; anything else it
-returns is serialized as JSON, the same on every channel, and so is a result a
-SYNC ON_TOOL_CALL hook supplies in its place. A value outside the contract must
-neither fail the turn nor reach the model as Python's printing of it.
+A handler answers with text or with a list of content parts, which it may give
+as mappings naming their type; anything else it returns is serialized as JSON,
+the same on every channel, and so is a result a SYNC ON_TOOL_CALL hook supplies
+in its place. A value outside the contract must neither fail the turn nor reach
+the model as Python's printing of it.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from typing import Any
+
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from roomkit.providers.ai.base import AIImagePart, AITextPart
 
 ToolResult = str | list[AITextPart | AIImagePart]
+
+_PARTS: TypeAdapter[list[AITextPart | AIImagePart]] = TypeAdapter(list[AITextPart | AIImagePart])
+_PART_TYPES = frozenset({"text", "image"})
 
 
 def as_tool_result(value: Any) -> ToolResult:
@@ -21,25 +28,61 @@ def as_tool_result(value: Any) -> ToolResult:
     anything else as JSON (a mapping, a list of values, a number, ``None``)."""
     if isinstance(value, str):
         return value
-    if (
-        isinstance(value, list)
-        and value
-        and all(isinstance(part, AITextPart | AIImagePart) for part in value)
-    ):
-        return value
-    return json.dumps(value, default=str)
+    parts = _content_parts(value)
+    if parts is not None:
+        return parts
+    return json.dumps(value, default=_json_default, ensure_ascii=False)
 
 
-class UnservedToolCallError(Exception):
-    """Raised by a channel's dispatcher when nothing serves a call.
-
-    Not a refusal: ON_TOOL_CALL's hooks may still serve the call (RFC §9.3).
-    Raised rather than returned, so a handler keeps its contract (it answers
-    with a result) and the wrappers orchestration puts around the dispatcher
-    carry it through unchanged.
+def is_unknown_tool_answer(result: Any) -> bool:
+    """Whether *result* is the answer by which a handler says a tool is not
+    its to serve (``{"error": "Unknown tool: ..."}``), the one
+    :func:`~roomkit.tools.compose.compose_tool_handlers` passes a call on for.
     """
+    if not isinstance(result, str):
+        return False  # A multimodal result is always a handled tool
+    try:
+        parsed = json.loads(result)
+    except (json.JSONDecodeError, TypeError):
+        return False
+    if isinstance(parsed, dict):
+        error = parsed.get("error", "")
+        return isinstance(error, str) and error.lower().startswith("unknown tool")
+    return False
 
 
 def unserved_tool_error(name: str) -> str:
     """The failure a call reports when no handler and no hook served it."""
     return json.dumps({"error": f"No handler for tool {name}"})
+
+
+def _content_parts(value: Any) -> list[AITextPart | AIImagePart] | None:
+    """*value* as content parts, when every item is one or a mapping naming
+    its part type; ``None`` otherwise."""
+    if not isinstance(value, list) or not value:
+        return None
+    if all(isinstance(item, AITextPart | AIImagePart) for item in value):
+        return value
+    if not all(
+        isinstance(item, AITextPart | AIImagePart)
+        or (isinstance(item, dict) and item.get("type") in _PART_TYPES)
+        for item in value
+    ):
+        return None
+    try:
+        return _PARTS.validate_python(value)
+    except ValidationError:
+        return None
+
+
+def _json_default(value: Any) -> Any:
+    """JSON for the values ``json`` does not know, never their Python repr."""
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json")
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return dataclasses.asdict(value)
+    if isinstance(value, set | frozenset | tuple):
+        return list(value)
+    if isinstance(value, bytes | bytearray):
+        return value.decode("utf-8", errors="replace")
+    return str(value)

@@ -16,6 +16,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._ai_policy import policy_admits, policy_refusal
+from roomkit.channels._realtime_tools import result_text
 from roomkit.core.exceptions import ToolRefusedError
 from roomkit.models.enums import ChannelType, HookTrigger
 from roomkit.models.tool_call import (
@@ -129,7 +130,7 @@ class ConferenceToolGate:
                 event.room_id,
             )
             return self.failure(event)
-        return ToolOutcome(event, _as_text(result), served=True)
+        return ToolOutcome(event, result_text(result), served=True)
 
     def failure(self, event: ToolCallEvent) -> ToolOutcome:
         """The outcome of a call that failed: the exception is for the log,
@@ -143,7 +144,7 @@ class ConferenceToolGate:
         if outcome.served and self._served is not None:
             verdict = await self._served(replace(outcome.event, result=body))
             if isinstance(verdict, ToolCallVerdict) and verdict.result is not None:
-                body = _as_text(verdict.result)
+                body = result_text(verdict.result)
         return _bounded(body, outcome.event.name)
 
     async def report_refusal(
@@ -211,10 +212,6 @@ class ConferenceToolGate:
 
 def _error(reason: str) -> str:
     return json.dumps({"error": reason})
-
-
-def _as_text(value: Any) -> str:
-    return value if isinstance(value, str) else json.dumps(value, default=str)
 
 
 def _bounded(text: str, name: str) -> str:

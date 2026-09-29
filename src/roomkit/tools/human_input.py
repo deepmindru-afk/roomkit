@@ -525,7 +525,12 @@ class HumanInputToolHandler:
         return list(self._tool_definitions)
 
     async def __call__(self, name: str, arguments: dict[str, Any]) -> str:
-        """ToolHandler protocol — blocks on matching tools, falls through otherwise."""
+        """ToolHandler protocol — blocks on matching tools, falls through otherwise.
+
+        Raises :class:`~roomkit.core.exceptions.ToolRefusedError` when nobody
+        answers within :attr:`timeout` or the human rejects the request: the
+        call carries the failure marker and the model reads the reason.
+        """
         if name not in self.tool_names:
             return json.dumps({"error": f"Unknown tool: {name}"})
 

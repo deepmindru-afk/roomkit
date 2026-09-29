@@ -38,7 +38,11 @@ from roomkit.channels._tool_search_constants import (
     TOOL_LIST_TOOLS,
     TOOL_SEARCH_INFRA_TOOL_NAMES,
 )
-from roomkit.core.exceptions import ToolRefusedError
+from roomkit.core.exceptions import (
+    ChannelRefusalError,
+    ToolRefusedError,
+    UnservedToolCallError,
+)
 from roomkit.models.enums import ChannelType
 from roomkit.models.tool_call import ToolCallEvent, ToolCallVerdict
 from roomkit.providers.ai.base import (
@@ -52,11 +56,7 @@ from roomkit.sandbox.tools import SANDBOX_TOOL_PREFIX
 from roomkit.telemetry.base import SpanKind
 from roomkit.telemetry.redaction import redact
 from roomkit.tools.context import ToolCallContext, _current_tool_call
-from roomkit.tools.result import (
-    UnservedToolCallError,
-    as_tool_result,
-    unserved_tool_error,
-)
+from roomkit.tools.result import as_tool_result, is_unknown_tool_answer, unserved_tool_error
 from roomkit.tools.validation import fold_hoisted_arguments, validate_tool_arguments
 
 if TYPE_CHECKING:
@@ -86,8 +86,19 @@ class _HookOutcome:
 
     result: Any  # what the model reads, before eviction
     recorded: Any  # what the usage memory keeps
-    failed: bool  # the hook blocked the call
+    failed: bool  # the hook blocked the call, or nothing served it
     structured: dict[str, Any] | None  # the structured copy the call keeps
+    remember: bool = True  # the room's tool memory keeps it (not an unserved call)
+
+
+def _log_answer(name: str, result: Any, started: float) -> None:
+    elapsed = (time.monotonic() - started) * 1000
+    if result is None:
+        logger.info("Tool %s: nothing served it (%.0f ms)", name, elapsed)
+        return
+    size = len(result) if isinstance(result, str) else -1
+    logger.info("Tool %s returned %d chars in %.0f ms", name, size, elapsed)
+    logger.debug("Tool %s result: %s", name, redact(_preview(result)))
 
 
 @runtime_checkable
@@ -471,6 +482,7 @@ class AIToolsMixin:
             # oversized body for a placeholder: the usage memory keeps the head
             # of the data, which is what a later turn asks about.
             recorded_result: Any = None
+            remember = True  # see _remember_call
             if executed_arguments is not None:
                 # Snapshot the post-hook payload before handing it to user
                 # code. Persistence can then distinguish what the model
@@ -484,26 +496,13 @@ class AIToolsMixin:
                     tool_call_id=tc.id,
                     channel_id=self.channel_id,
                 )
-                _tc_tok = _current_tool_call.set(_tc_ctx)
                 started = time.monotonic()
-                result: ToolResult | None
-                try:
-                    result = as_tool_result(await handler(tc.name, arguments))
-                except UnservedToolCallError:
-                    result = None  # nothing served the call; ON_TOOL_CALL's hooks may
-                finally:
-                    _current_tool_call.reset(_tc_tok)
+                result = await self._serve_call(handler, tc.name, arguments, _tc_ctx)
                 recorded_result = result
-                logger.info(
-                    "Tool %s returned %d chars in %.0f ms",
-                    tc.name,
-                    len(result) if isinstance(result, str) else -1,
-                    (time.monotonic() - started) * 1000,
-                )
-                logger.debug("Tool %s result: %s", tc.name, redact(_preview(result)))
+                _log_answer(tc.name, result, started)
                 hook = await self._apply_tool_call_hook(tc, arguments, result, _tc_ctx, room_id)
                 recorded_result, tool_failed = hook.recorded, hook.failed
-                structured_content = hook.structured
+                structured_content, remember = hook.structured, hook.remember
                 result = self._bound_tool_result(tc.name, hook.result, tc.id)
 
                 telemetry.end_span(tool_span_id)
@@ -519,6 +518,7 @@ class AIToolsMixin:
                 logger.info("Tool %s refused: %s", tc.name, refusal.message)
                 recorded_result = refusal.message
                 tool_failed = True
+                remember = not isinstance(refusal, ChannelRefusalError)
                 await self._fire_tool_refusal(tc, arguments, refusal.message, room_id)
                 result = self._bound_tool_result(tc.name, refusal.message, tc.id)
             except Exception as exc:
@@ -535,15 +535,9 @@ class AIToolsMixin:
                 await self._fire_tool_refusal(tc, arguments, error, room_id)
                 result = self._bound_tool_result(tc.name, error, tc.id)
             self._settle_activation(tc.id, served=not tool_failed)
-            # Remember this call (final result, success or error) so later turns
-            # can show "tools you've already used" and re-reveal it under Tool
-            # Search. Infra/discovery tools are filtered inside record().
             outcome = recorded_result if recorded_result is not None else result
-            # The model's own arguments, never a BEFORE_TOOL_USE rewrite: the
-            # digest goes back into the next turn's prompt, and a hook that
-            # de-tokenises (``<EMAIL_1>`` to the real address) would put there
-            # the very value it kept from the model.
-            self._tool_usage.record(room_id, tc.name, call_arguments, outcome)
+            if remember:
+                self._remember_call(room_id, tc.name, call_arguments, outcome)
             # Annotate an answer this tool already gave this turn. The hash is
             # taken on the recorded outcome, so the memory above keeps the
             # tool's own output and only the model's copy carries the note, and
@@ -735,7 +729,7 @@ class AIToolsMixin:
         """
         guard = self._repeated_call_guard(name, arguments)
         if guard is not None:
-            raise ToolRefusedError(guard)
+            raise ChannelRefusalError(guard)
         handler = self._channel_tool_dispatch.get(name)
         if handler is not None:
             result = handler(arguments)
@@ -746,18 +740,18 @@ class AIToolsMixin:
         # The sandbox's own tools, by exact name, before user/MCP tools
         if self._sandbox is not None and name in self._sandbox_tool_names():
             return await handle_sandbox_command(name, arguments or {}, self._sandbox)
-        if self._user_tool_handler is None:
-            raise UnservedToolCallError(name)
         # Provider responses are untrusted and may name a tool outside the
         # turn's resolved toolset. Once context construction has resolved
-        # that invocation-scoped set, fail closed instead of forwarding a
-        # guessed name to a shared host handler. ``None`` preserves direct
-        # internal loops built without context; [] is a real deny-all set.
+        # that invocation-scoped set, fail closed, before anything may serve
+        # it, a hook included. ``None`` preserves direct internal loops built
+        # without context; [] is a real deny-all set.
         context_tools = self._get_loop_ctx().all_context_tools
         if context_tools is not None and name not in {t.name for t in context_tools}:
-            raise ToolRefusedError(
+            raise ChannelRefusalError(
                 json.dumps({"error": f"Tool '{name}' is not available in the current turn."})
             )
+        if self._user_tool_handler is None:
+            raise UnservedToolCallError(name)
         return as_tool_result(await self._user_tool_handler(name, arguments))
 
     async def _handle_activate_skill(self, arguments: dict[str, Any]) -> str:
@@ -903,6 +897,22 @@ class AIToolsMixin:
         catalogue = self._tool_search_catalogue(loop_ctx)
         return render_list_payload(catalogue, category, exclude_names=TOOL_SEARCH_INFRA_TOOL_NAMES)
 
+    def _remember_call(
+        self, room_id: str | None, name: str, call_arguments: dict[str, Any], outcome: Any
+    ) -> None:
+        """Remember a call (its final result, success or error) so later turns
+        show "tools you've already used" and re-reveal it under Tool Search.
+
+        With the model's own arguments, never a BEFORE_TOOL_USE rewrite: the
+        digest goes back into the next turn's prompt, and a hook that
+        de-tokenises (``<EMAIL_1>`` to the real address) would put there the
+        very value it kept from the model. Not for a refusal the channel
+        decided, nor a call nothing served: neither is the tool's answer, and
+        either would stand in for an earlier, identical call's real result.
+        Infra/discovery tools are filtered inside ``record()``.
+        """
+        self._tool_usage.record(room_id, name, call_arguments, outcome)
+
     async def _apply_tool_call_hook(
         self,
         tc: Any,
@@ -926,78 +936,78 @@ class AIToolsMixin:
         UI surfaces need the payload whole.
 
         A call nothing served (*result* ``None``) reaches the hooks with no
-        result: one may serve it, and if none does the call failed, reported
-        once to the observers (RFC §9.3).
+        result: one may serve it with the result it supplies, and if none does
+        the call failed, reported once to the observers (RFC §9.3).
         """
-        if result is None:
-            return await self._serve_by_hook(tc, arguments, call_ctx, room_id)
-        shaped = self._shape_for_model(tc.name, result, tc.id)
-        structured = call_ctx.structured_content
-        kept = _HookOutcome(result=shaped, recorded=result, failed=False, structured=structured)
-        if self._tool_call_hook is None:
-            return kept
-        event = ToolCallEvent(
-            channel_id=self.channel_id,
-            channel_type=ChannelType.AI,
-            tool_call_id=tc.id,
-            name=tc.name,
-            arguments=arguments,
-            result=shaped,
-            room_id=room_id,
-            structured_content=structured,
-        )
-        verdict = await self._tool_call_hook(event)
-        if verdict is None:
-            return kept
-        if not isinstance(verdict, ToolCallVerdict):
-            verdict = ToolCallVerdict(result=verdict)  # a bare override
-        if verdict.blocked:
-            reason = verdict.result or json.dumps({"error": "blocked"})
-            return _HookOutcome(result=reason, recorded=reason, failed=True, structured=None)
-        if verdict.replaces_structured:
-            structured = verdict.structured_content
-        if verdict.result is None:
-            return _HookOutcome(
-                result=shaped, recorded=result, failed=False, structured=structured
-            )
-        override = as_tool_result(verdict.result)
-        return _HookOutcome(
-            result=override, recorded=override, failed=False, structured=structured
-        )
-
-    async def _serve_by_hook(
-        self, tc: Any, arguments: dict[str, Any], call_ctx: ToolCallContext, room_id: str | None
-    ) -> _HookOutcome:
-        """A call nothing served: ON_TOOL_CALL's hooks may serve it, with the
-        result they supply; otherwise it failed, and is reported so once."""
-        verdict = None
-        if self._tool_call_hook is not None:
-            verdict = await self._tool_call_hook(
-                ToolCallEvent(
-                    channel_id=self.channel_id,
-                    channel_type=ChannelType.AI,
-                    tool_call_id=tc.id,
-                    name=tc.name,
-                    arguments=arguments,
-                    result=None,
-                    room_id=room_id,
-                )
-            )
-        if verdict is not None and not isinstance(verdict, ToolCallVerdict):
-            verdict = ToolCallVerdict(result=verdict)  # a bare result
+        shaped = None if result is None else self._shape_for_model(tc.name, result, tc.id)
+        structured = None if result is None else call_ctx.structured_content
+        verdict = await self._tool_call_verdict(tc, arguments, shaped, structured, room_id)
         if verdict is not None and verdict.blocked:
-            # The block's firing already told the observers.
             reason = verdict.result or json.dumps({"error": "blocked"})
             return _HookOutcome(result=reason, recorded=reason, failed=True, structured=None)
+        if verdict is not None and verdict.replaces_structured:
+            structured = verdict.structured_content
         if verdict is not None and verdict.result is not None:
-            served = as_tool_result(verdict.result)
-            structured = verdict.structured_content if verdict.replaces_structured else None
+            override = as_tool_result(verdict.result)
             return _HookOutcome(
-                result=served, recorded=served, failed=False, structured=structured
+                result=override, recorded=override, failed=False, structured=structured
             )
-        body = unserved_tool_error(tc.name)
-        await self._fire_tool_refusal(tc, arguments, body, room_id)
-        return _HookOutcome(result=body, recorded=body, failed=True, structured=None)
+        if shaped is None:
+            body = unserved_tool_error(tc.name)
+            await self._fire_tool_refusal(tc, arguments, body, room_id)
+            return _HookOutcome(
+                result=body, recorded=body, failed=True, structured=None, remember=False
+            )
+        return _HookOutcome(result=shaped, recorded=result, failed=False, structured=structured)
+
+    async def _tool_call_verdict(
+        self,
+        tc: Any,
+        arguments: dict[str, Any],
+        result: ToolResult | None,
+        structured: dict[str, Any] | None,
+        room_id: str | None,
+    ) -> ToolCallVerdict | None:
+        """ON_TOOL_CALL's SYNC chain on one call's outcome, as a verdict."""
+        if self._tool_call_hook is None:
+            return None
+        verdict = await self._tool_call_hook(
+            ToolCallEvent(
+                channel_id=self.channel_id,
+                channel_type=ChannelType.AI,
+                tool_call_id=tc.id,
+                name=tc.name,
+                arguments=arguments,
+                result=result,
+                room_id=room_id,
+                structured_content=structured,
+            )
+        )
+        if verdict is None or isinstance(verdict, ToolCallVerdict):
+            return verdict
+        return ToolCallVerdict(result=verdict)  # a bare override
+
+    async def _serve_call(
+        self,
+        handler: Any,
+        name: str,
+        arguments: dict[str, Any],
+        call_ctx: ToolCallContext,
+    ) -> ToolResult | None:
+        """The handler's answer to one call, run in its tool call context.
+
+        ``None`` when nothing served it: the dispatcher found no handler, or
+        the handlers all answered that the tool is not theirs (RFC §21.4), the
+        answer a composition passes a call on for.
+        """
+        token = _current_tool_call.set(call_ctx)
+        try:
+            answer = await handler(name, arguments)
+        except UnservedToolCallError:
+            return None
+        finally:
+            _current_tool_call.reset(token)
+        return None if is_unknown_tool_answer(answer) else as_tool_result(answer)
 
     def _shape_for_model(self, name: str, result: ToolResult, tool_call_id: str) -> ToolResult:
         """A text-only model gets the text of a content-part result, the way it

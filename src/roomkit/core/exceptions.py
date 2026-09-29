@@ -184,3 +184,24 @@ class ToolRefusedError(RoomKitError):
     def __init__(self, message: str) -> None:
         super().__init__(message)
         self.message = message
+
+
+class ChannelRefusalError(ToolRefusedError):
+    """A refusal the channel decided itself, before any tool ran (RFC §9.3).
+
+    A repeat of the same call with the same arguments that the channel stops,
+    or a tool outside the turn's toolset. Refused like a handler's refusal,
+    but it is not the tool's answer: the room's tool memory does not keep it,
+    so it cannot stand in for the result of an earlier, identical call.
+    """
+
+
+class UnservedToolCallError(RoomKitError):
+    """Raised by a channel's tool dispatcher when nothing serves a call.
+
+    Not a refusal: ON_TOOL_CALL's SYNC hooks may still serve the call (RFC
+    §9.3), and it fails, reported once, when none does. Raised rather than
+    returned so a handler keeps its contract (it answers with a result) and
+    the wrappers put around the dispatcher carry it through unchanged. A
+    caller of :attr:`AIChannel.tool_handler` outside a tool loop may see it.
+    """

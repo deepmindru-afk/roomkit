@@ -24,7 +24,7 @@ from roomkit.models.tool_call import (
 )
 from roomkit.providers.ai.base import AITextPart
 from roomkit.telemetry.base import Attr, SpanKind
-from roomkit.tools.result import as_tool_result, unserved_tool_error
+from roomkit.tools.result import as_tool_result, is_unknown_tool_answer, unserved_tool_error
 from roomkit.tools.validation import fold_hoisted_arguments, validate_tool_arguments
 from roomkit.voice.base import VoiceSessionState
 
@@ -561,6 +561,10 @@ class RealtimeToolsMixin:
                     len(handler_result),
                     _LOOP_SEGMENT_BUDGET_S * 1000,
                 )
+            if is_unknown_tool_answer(handler_result):
+                # Every handler said the tool is not theirs: nothing served
+                # the call, which the hooks may still serve (RFC §21.4).
+                handler_result = None
             # Yield so realtime pacing gets a slot between the handler
             # segment and hook dispatch — sync hooks run inline next and
             # would otherwise fuse with this segment into one loop step.
@@ -581,7 +585,7 @@ class RealtimeToolsMixin:
         elif handler_result is not None:
             result_str = handler_result
         else:
-            result_str = json.dumps({"error": f"No handler for tool {name}"})
+            result_str = unserved_tool_error(name)
 
         if len(result_str) > self._tool_result_max_length:
             result_str = self._truncate_tool_result(result_str, name, call_id, session.id)
@@ -1122,27 +1126,53 @@ class RealtimeToolsMixin:
             (time.perf_counter() - t_seg) * 1000,
         )
         result_str, failed = _hook_outcome(hook_result, tool_event, handler_result, name)
-        if handler_result is None and not failed:
-            # A hook served the call: that is its outcome, for the observers.
-            await self._framework.hook_engine.run_observers(
-                room_id,
-                HookTrigger.ON_TOOL_CALL,
-                replace(tool_event, result=result_str),
-                context,
-                skip_event_filter=True,
-            )
-        if not hook_result.allowed and handler_result is not None:
-            # The engine stops at a block, before its observers: the served
-            # call still fires them, with the failure. (A call nothing served
-            # is reported by the refusal below instead.)
-            await self._framework.hook_engine.run_observers(
-                room_id,
-                HookTrigger.ON_TOOL_CALL,
-                withheld_call_event(tool_event, result_str),
-                context,
-                skip_event_filter=True,
-            )
+        await self._report_hook_outcome(
+            tool_event, hook_result, handler_result, result_str, failed, context, session
+        )
+        return result_str, failed
 
+    async def _report_hook_outcome(
+        self,
+        tool_event: ToolCallEvent,
+        hook_result: Any,
+        handler_result: str | None,
+        result_str: str,
+        failed: bool,
+        context: RoomContext,
+        session: VoiceSession,
+    ) -> None:
+        """Tell ON_TOOL_CALL's observers the call's outcome, once (RFC §9.3).
+
+        A handler's result already went through the chain and its observers,
+        but a block stops the engine before them: they get the withheld
+        outcome here. A call nothing served had its firing with no result, a
+        chance to serve it rather than a report: a hook that served it gives
+        the outcome, marked reported so a cancellation adds none; otherwise it
+        is a refusal, stated with the body the model is about to read, and a
+        refusal carries its own framework event.
+        """
+        assert self._framework is not None  # guarded by caller  # noqa: S101
+        room_id = str(tool_event.room_id)
+        call_id, name = tool_event.tool_call_id, tool_event.name
+        engine = self._framework.hook_engine
+        if handler_result is None and failed:
+            await self._fire_tool_refusal(
+                session, call_id, name, tool_event.arguments, result_str, room_id
+            )
+            return
+        if handler_result is None:
+            self._mark_tool_call_reported(session.id, call_id)
+            chained = hook_result.event
+            final = chained if isinstance(chained, ToolCallEvent) else tool_event
+            served = replace(final, result=result_str)
+            await engine.run_observers(
+                room_id, HookTrigger.ON_TOOL_CALL, served, context, skip_event_filter=True
+            )
+        elif not hook_result.allowed:
+            withheld = withheld_call_event(tool_event, result_str)
+            await engine.run_observers(
+                room_id, HookTrigger.ON_TOOL_CALL, withheld, context, skip_event_filter=True
+            )
         await self._framework._emit_framework_event(
             "tool_call",
             room_id=room_id,
@@ -1153,23 +1183,6 @@ class RealtimeToolsMixin:
                 "channel_type": str(ChannelType.REALTIME_VOICE),
             },
         )
-        if failed and handler_result is None:
-            # The firing above carried ``result=None`` — it was the hooks'
-            # chance to serve the call, not a report on it — so an observer
-            # would never learn that the call ended in a refusal. State it,
-            # with the body the model is about to read. Unlike the gate's
-            # refusals this one runs before the result reaches the wire, which
-            # costs nothing it has not already spent: the whole sync hook chain
-            # ran just above, on this same call.
-            #
-            # Only when nothing had served the call. A handler that ran and was
-            # then blocked is not a refused call: it executed, and its
-            # observers got the withheld outcome above — a second report
-            # would put two outcomes on one ``tool_call_id``.
-            await self._fire_tool_refusal(
-                session, call_id, name, tool_event.arguments, result_str, room_id
-            )
-        return result_str, failed
 
     async def _dispatch_tool_search_call(
         self,
