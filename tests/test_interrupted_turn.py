@@ -187,8 +187,7 @@ async def test_a_turn_cancelled_between_rounds_adds_no_terminal_text(streaming: 
 
 
 @pytest.mark.xfail_streaming(
-    "not carded (item C7 of the 2026-09-28 tool review, raised by RMK-282): no streamed "
-    "turn puts loop_end_reason or ai_usage on its messages, cancelled or not"
+    "RMK-289: no streamed turn puts loop_end_reason or ai_usage on its messages, cancelled or not"
 )
 async def test_a_turn_without_final_text_keeps_its_record_on_its_last_message(
     streaming: bool,
