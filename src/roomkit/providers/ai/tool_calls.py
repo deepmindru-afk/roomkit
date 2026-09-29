@@ -26,6 +26,16 @@ _TRUNCATION_FINISH_REASONS = frozenset({"length", "max_tokens"})
 _CALL_CUTTING_FINISH_REASONS = _TRUNCATION_FINISH_REASONS | {"model_length", "content_filter"}
 
 
+# Endings where the model tried to call a tool and the provider could not
+# parse the call, so none reached the loop (Gemini's MALFORMED_FUNCTION_CALL).
+_MALFORMED_CALL_FINISH_REASONS = frozenset({"malformed_function_call"})
+
+
+def is_malformed_call(finish_reason: str | None) -> bool:
+    """Whether a response ended on a tool call its provider could not parse."""
+    return finish_reason is not None and finish_reason.lower() in _MALFORMED_CALL_FINISH_REASONS
+
+
 def is_truncation(finish_reason: str | None) -> bool:
     """Whether a response ended by exhausting its output budget.
 

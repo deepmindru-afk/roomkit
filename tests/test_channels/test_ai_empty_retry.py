@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock
 
+from roomkit.channels._ai_loop_rules import _MALFORMED_CALL_NUDGE
 from roomkit.channels.ai import _EMPTY_RETRY_NUDGE, AIChannel
 from roomkit.providers.ai.base import AIContext, AIMessage, AIResponse, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
@@ -95,3 +96,44 @@ async def test_bounded_gives_up_when_still_empty(streaming: bool) -> None:
     run = await run_tool_loop(ch, context, streaming=streaming)
     assert run.text == ""
     assert _nudged(context) == 1  # exactly one retry, then give up
+
+
+def _malformed() -> AIResponse:
+    """A round that ended on a tool call its provider could not parse."""
+    return AIResponse(content="", tool_calls=[], finish_reason="MALFORMED_FUNCTION_CALL")
+
+
+def _told_malformed(context: AIContext) -> int:
+    return sum(1 for m in context.messages if m.content == _MALFORMED_CALL_NUDGE)
+
+
+async def test_a_malformed_call_is_told_and_retried_on_the_first_round(streaming: bool) -> None:
+    """The model learns its call did not run and issues it again (RMK-314)."""
+    handler = AsyncMock(return_value="ok")
+    provider = MockAIProvider(ai_responses=[_malformed(), _tool(), _final("Done")])
+    ch = AIChannel(
+        "ai1",
+        provider=provider,
+        tool_handler=handler,
+        tool_loop_timeout_seconds=None,
+        max_empty_retries=1,
+    )
+    context = _ctx()
+    run = await run_tool_loop(ch, context, streaming=streaming)
+    assert run.text == "Done"
+    assert _told_malformed(context) == 1
+    assert handler.await_count == 1
+
+
+async def test_a_malformed_call_past_the_budget_ends_the_turn_empty(streaming: bool) -> None:
+    provider = MockAIProvider(ai_responses=[_malformed()])
+    ch = AIChannel(
+        "ai1",
+        provider=provider,
+        tool_handler=AsyncMock(return_value="ok"),
+        tool_loop_timeout_seconds=None,
+        max_empty_retries=0,
+    )
+    run = await run_tool_loop(ch, _ctx(), streaming=streaming)
+    assert run.text == ""
+    assert run.reason == "empty_response"

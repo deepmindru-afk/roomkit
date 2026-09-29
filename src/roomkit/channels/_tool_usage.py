@@ -40,6 +40,7 @@ from typing import Any
 from roomkit.channels._skill_constants import SKILL_INFRA_TOOL_NAMES
 from roomkit.channels._tool_eviction import eviction_placeholder_size, is_eviction_placeholder
 from roomkit.channels._tool_search_constants import TOOL_SEARCH_INFRA_TOOL_NAMES
+from roomkit.tools.fence import fence
 
 # Discovery / housekeeping tools are not "work the agent did" and are always
 # available anyway — recording them would only add noise to the digest and
@@ -65,8 +66,6 @@ _ARG_VALUE_CHARS = 48
 # so three of them cannot crowd out a small model's context.
 _RESULTS_SHOWN = 3
 _RESULT_KEEP_CHARS = 6000
-_RESULT_OPEN = "<tool_result>"
-_RESULT_CLOSE = "</tool_result>"
 
 
 @dataclass
@@ -249,10 +248,7 @@ class ToolUsageMemory:
     @classmethod
     def _format_call_with_result(cls, call: _Call) -> str:
         head = f"- {call.name}({cls._format_args(call.arguments)}) returned:"
-        # A closing tag inside the data would end the block early and let what
-        # follows read as prompt text.
-        body = call.result_excerpt.replace(_RESULT_CLOSE, "</tool_result_>")
-        lines = [head, _RESULT_OPEN, body, _RESULT_CLOSE]
+        lines = [head, fence("tool_result", call.result_excerpt)]
         if call.result_chars > len(call.result_excerpt):
             lines.append(
                 f"  [first {len(call.result_excerpt)} of {call.result_chars} characters; "

@@ -9,6 +9,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from roomkit.channels._ai_loop_rules import _MALFORMED_CALL_NUDGE
+from roomkit.channels.ai import AIChannel
 from roomkit.providers.ai.base import (
     AIContext,
     AIImagePart,
@@ -23,6 +25,7 @@ from roomkit.providers.ai.base import (
 from roomkit.providers.ai.response_schema import ResponseSchemaError
 from roomkit.providers.gemini.config import GeminiConfig
 from roomkit.providers.gemini.request import format_content, format_messages
+from tests.tool_loop_modes import run_tool_loop
 
 
 class _FakeStreamIterator:
@@ -433,6 +436,40 @@ class TestGeminiAIProvider:
 
             assert result.content == ""
             assert result.finish_reason == "MAX_TOKENS"
+
+    async def test_a_malformed_call_is_retried_by_the_tool_loop(self, streaming: bool) -> None:
+        """Gemini ends a round on a call it could not parse with no part at all:
+        the loop tells the model its call did not run, and it calls again (RMK-314)."""
+        mock_genai = _mock_genai_module()
+        with patch.dict("sys.modules", _genai_modules(mock_genai)):
+            from roomkit.providers.gemini.ai import GeminiAIProvider
+
+            provider = GeminiAIProvider(_config())
+            malformed = SimpleNamespace(
+                candidates=[
+                    SimpleNamespace(
+                        content=None, finish_reason=SimpleNamespace(name="MALFORMED_FUNCTION_CALL")
+                    )
+                ],
+                usage_metadata=None,
+            )
+            provider._client.aio.models.generate_content_stream.side_effect = [
+                _FakeStreamIterator([malformed]),
+                _stream_chunks(tool_calls=[{"name": "search", "args": {"query": "x"}}]),
+                _stream_chunks(text_parts=["Found it."]),
+            ]
+            handler = AsyncMock(return_value="ok")
+            channel = AIChannel(
+                "ai", provider=provider, tool_handler=handler, tool_loop_timeout_seconds=None
+            )
+            context = _context(
+                tools=[AITool(name="search", description="Search", parameters={"type": "object"})]
+            )
+            run = await run_tool_loop(channel, context, streaming=streaming)
+
+            assert run.text == "Found it."
+            assert handler.await_count == 1
+            assert [m.content for m in context.messages].count(_MALFORMED_CALL_NUDGE) == 1
 
     @pytest.mark.asyncio
     async def test_generate_with_tools(self) -> None:

@@ -93,6 +93,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A tool call a realtime model speaks as text (`call:name{...}`) is
+  recovered only when it is said as a sentence of its own that ends the
+  utterance: at the start of the text or of a line, or after a sentence's
+  end, with nothing after its closing brace (RMK-314). A sentence that
+  mentions the form mid-way ("type call:lookup{city:Paris} to search") calls
+  nothing; "Let me check. call:lookup{city:Paris}" still runs.
 - `BEFORE_TOOL_USE` fails closed (RMK-313, RFC §9.3), like `BEFORE_TTS` and
   `ON_TRANSCRIPTION`: a hook that raises, times out or returns something
   unusable refuses the call before it runs, where the tool used to run. It
@@ -331,6 +337,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Data framed for a model cannot close its own block (RMK-314): a tool
+  result in the tool-usage digest (system prompt) escaped only the exact
+  `</tool_result>`, so `</TOOL_RESULT>` or `</tool_result >` ended the block
+  and what followed read as prompt text. One helper,
+  `roomkit.tools.fence.fence`, neutralises any spelling of the closing tag;
+  a delegation's hand-back fences the worker's output with it too.
+- A round that ends on a tool call the provider could not parse (Gemini's
+  `MALFORMED_FUNCTION_CALL`) is told to the model (RMK-314): it had neither
+  text nor a call, so the turn ended empty on the first round, and after
+  tool rounds the model was told to stop calling tools. It is now
+  re-prompted that its call did not run, within `max_empty_retries`, and a
+  turn whose budget runs out ends as `empty_response`.
+- A recovered spoken call that nothing served reads as a failure (`No
+  handler for tool x`), no longer `{"status": "ok"}` (RMK-314, RFC §9.3).
 - Billed thinking counts in `output_tokens` (RMK-312, RFC §6). Gemini (text
   and Live) reported `candidates_token_count` (`response_token_count` on
   Live) alone, while it bills `thoughts_token_count` as output too, so a

@@ -445,6 +445,43 @@ class TestSpokenCallParsing:
         spoken = [e.content.body for e in timeline if isinstance(e.content, TextContent)]
         assert spoken == ["Bien sur, je regarde."]
 
+    async def test_a_sentence_that_mentions_the_form_calls_nothing(
+        self, provider: MockRealtimeProvider
+    ) -> None:
+        """Only a call said as a sentence of its own that ends the utterance runs
+        (RMK-314): quoting the form mid-sentence is speech."""
+        called: list[dict[str, Any]] = []
+
+        async def handler(name: str, args: dict[str, Any]) -> str:
+            called.append(args)
+            return "ok"
+
+        kit, _channel, session = await _session(provider, "rt-rec-quote", handler=handler)
+        said = "You can type call:lookup{city:Paris} to search."
+
+        await provider.simulate_transcription(session, said, "assistant")
+        await asyncio.sleep(0.1)
+
+        assert called == []
+        timeline = await kit.get_timeline(session.room_id)
+        assert [e.content.body for e in timeline if isinstance(e.content, TextContent)] == [said]
+
+    async def test_a_recovered_call_nothing_served_reads_as_a_failure(
+        self, provider: MockRealtimeProvider
+    ) -> None:
+        """No framework to reach a hook and no handler: a failure, never
+        ``{"status": "ok"}`` (RFC §9.3)."""
+        kit, channel, session = await _session(provider, "rt-rec-unserved")
+        channel._framework = None
+
+        text = "call:lookup{city:Paris}"
+        await channel._dispatch_recovered_tool_call(session, "lookup", {"city": "Paris"}, text)
+
+        (injected,) = _injected(provider)
+        assert "failed" in injected and "No handler for tool lookup" in injected
+        assert '"ok"' not in injected
+        await kit.close()
+
     async def test_a_call_with_no_speech_around_it_is_not_spoken(
         self, provider: MockRealtimeProvider
     ) -> None:

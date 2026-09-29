@@ -32,7 +32,7 @@ from roomkit.providers.ai.base import (
     ProviderError,
 )
 from roomkit.providers.ai.response_schema import ResponseSchemaError
-from roomkit.providers.ai.tool_calls import is_truncation
+from roomkit.providers.ai.tool_calls import is_malformed_call, is_truncation
 from roomkit.realtime.base import EphemeralEventType
 
 if TYPE_CHECKING:
@@ -55,6 +55,12 @@ logger = logging.getLogger("roomkit.channels.ai")
 _EMPTY_RETRY_NUDGE = (
     "You called tools and already have their results above. Now write your "
     "final answer to the user in plain text. Do not call any more tools."
+)
+
+_MALFORMED_CALL_NUDGE = (
+    "Your last tool call could not be parsed, so it did not run. Call the tool "
+    "again with arguments that are valid JSON matching its parameters, or answer "
+    "in plain text."
 )
 
 # Injected when the anti-loop guard force-stops a stuck model. Tools are
@@ -155,6 +161,8 @@ def final_round_reason(
     """
     if force_stopped:
         return "force_stopped"
+    if not final_text.strip() and is_malformed_call(finish_reason):
+        return "empty_response"
     if final_text.strip() or not had_tool_round:
         return "completed"
     if is_truncation(finish_reason):
@@ -162,6 +170,36 @@ def final_round_reason(
     if deadline_exceeded:
         return "timeout"
     return "empty_response"
+
+
+def _empty_round_nudge(
+    *, had_tool_round: bool, final_text: str, finish_reason: str | None, log_label: str
+) -> str | None:
+    """What to tell a model whose round ended with no text, or ``None`` to end there.
+
+    A call the provider could not parse never reached the loop: the model is
+    told it did not run, on any round, so it can issue it again (RFC §9.3: a
+    refused call is the model's to read). An empty answer after tool rounds
+    gets the plain nudge. A truncated round is a different failure and is not
+    retried: it ran out of output budget, typically a reasoning model that
+    spent the whole cap thinking, and the same cap truncates again.
+    """
+    if final_text.strip():
+        return None
+    if is_malformed_call(finish_reason):
+        return _MALFORMED_CALL_NUDGE
+    if not had_tool_round:
+        return None
+    if is_truncation(finish_reason):
+        logger.warning(
+            "%s: response truncated at the output cap before any final text "
+            "(finish_reason=%s). Raise max_tokens, or disable the model's "
+            "reasoning block if it is consuming the budget.",
+            log_label,
+            finish_reason,
+        )
+        return None
+    return _EMPTY_RETRY_NUDGE
 
 
 @dataclass
@@ -353,31 +391,20 @@ class AIToolLoopRulesMixin:
         final_text: str,
         finish_reason: str | None = None,
     ) -> bool:
-        """Bounded re-prompt when the final answer is empty after tool rounds.
+        """Bounded re-prompt when a round ends with no text and no call to run.
 
         Returns ``True`` when the caller should re-generate: the nudge has
         been appended and the retry counted. The deadline term is evaluated
         last so no clock read happens when an earlier term already fails.
-
-        A truncated round (see ``is_truncation``) is a different failure and
-        is not retried: the round did not fall silent, it ran out of output
-        budget — typically a reasoning model that spent the whole cap inside
-        its thinking block, so ``content`` arrives empty. Re-prompting under
-        the same cap truncates again, so the nudge is skipped in favour of a
-        log line naming the actual cause.
         """
-        if had_tool_round and not final_text.strip() and is_truncation(finish_reason):
-            logger.warning(
-                "%s: response truncated at the output cap before any final text "
-                "(finish_reason=%s). Raise max_tokens, or disable the model's "
-                "reasoning block if it is consuming the budget.",
-                state.log_label,
-                finish_reason,
-            )
-            return False
+        nudge = _empty_round_nudge(
+            had_tool_round=had_tool_round,
+            final_text=final_text,
+            finish_reason=finish_reason,
+            log_label=state.log_label,
+        )
         if not (
-            had_tool_round
-            and not final_text.strip()
+            nudge is not None
             and state.empty_retries < self._max_empty_retries
             and not loop_ctx.cancel_event.is_set()
             and not state.deadline_exceeded()
@@ -385,12 +412,13 @@ class AIToolLoopRulesMixin:
             return False
         state.empty_retries += 1
         logger.warning(
-            "%s: empty response after tool round(s); re-prompting for final answer (retry %d/%d)",
+            "%s: round ended with no text (finish_reason=%s); re-prompting (retry %d/%d)",
             state.log_label,
+            finish_reason,
             state.empty_retries,
             self._max_empty_retries,
         )
-        context.messages.append(AIMessage(role="user", content=_EMPTY_RETRY_NUDGE))
+        context.messages.append(AIMessage(role="user", content=nudge))
         return True
 
     @staticmethod

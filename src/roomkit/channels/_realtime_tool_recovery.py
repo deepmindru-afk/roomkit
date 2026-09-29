@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 import logging
 import re
 import threading
@@ -27,8 +26,9 @@ from uuid import uuid4
 from roomkit.channels._realtime_tools import result_text
 from roomkit.core.exceptions import ToolRefusedError
 from roomkit.models.enums import ChannelType
+from roomkit.models.tool_call import ToolCallEvent
 from roomkit.telemetry.base import Attr, SpanKind
-from roomkit.tools.result import tool_failure
+from roomkit.tools.result import tool_failure, unserved_tool_error
 from roomkit.voice.base import VoiceSessionState
 
 if TYPE_CHECKING:
@@ -38,8 +38,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("roomkit.channels.realtime_voice")
 
-# Matches ``call:tool_name{`` with optional leading text.
-_TEXT_TOOL_CALL_RE = re.compile(r"call:(\w+)\s*\{(.+)", re.DOTALL)
+# ``call:tool_name{...}`` said as a sentence of its own that ends the utterance:
+# at the start of the text or of a line, or after a sentence's end, with nothing
+# after its closing brace. Speech before it is kept; a sentence that mentions
+# the form mid-way ("type call:x{...} to search") calls nothing.
+_TEXT_TOOL_CALL_RE = re.compile(
+    r"(?:^|(?<=[.!?])[ \t]+)[ \t]*call:(\w+)\s*\{(.*\})\s*\Z", re.DOTALL | re.MULTILINE
+)
 
 # A ``key:`` token where a key can legitimately start — at the beginning of the
 # argument text or just after a comma. Anywhere else (``at 3:30``) is a value,
@@ -348,8 +353,6 @@ class RealtimeToolRecoveryMixin:
                 handler_result = result_text(raw)
 
             # Fire ON_TOOL_CALL hook (for observability / overrides).
-            from roomkit.models.tool_call import ToolCallEvent
-
             tool_event = ToolCallEvent(
                 channel_id=self.channel_id,
                 channel_type=ChannelType.REALTIME_VOICE,
@@ -373,7 +376,8 @@ class RealtimeToolRecoveryMixin:
             elif handler_result is not None:
                 result_str = handler_result
             else:
-                result_str = json.dumps({"status": "ok"})
+                # Nothing served it: a failure, never a success (RFC §9.3).
+                result_str, failed = unserved_tool_error(tool_name), True
 
             verb = "failed" if failed else "completed"
             await self._inject_recovered_result(session, tool_name, call_id, result_str, verb=verb)
