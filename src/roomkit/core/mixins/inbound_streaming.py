@@ -373,9 +373,6 @@ class InboundStreamingMixin(HelpersMixin):
         context: RoomContext,
     ) -> list[Any]:
         """Find transport channels that support streaming delivery."""
-        if sr.blocked_by is not None:
-            # A blocked stream is read to its end and delivered to no one (RFC §8.3).
-            return []
         response_vis = sr.trigger_event.response_visibility
         targets: list[Any] = []
         for binding in context.bindings:

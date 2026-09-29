@@ -1,10 +1,10 @@
-"""A response at the chain-depth limit is blocked, streamed or not (RMK-283).
+"""Past the chain-depth limit no agent is asked, streamed or not (RMK-283, RMK-287).
 
-RFC §8.3: when ``chain_depth >= max_chain_depth`` the response is stored
-BLOCKED with ``blocked_by = "event_chain_depth_limit"`` and announced as
-``chain_depth_exceeded``. A streamed response is generated and read to its
-end like a buffered one; each of its segments is stored BLOCKED and
-delivered to no channel.
+RFC §8.3 (decision B): when a response would reach ``max_chain_depth`` the
+agent's ``on_event`` is not called, so no model is called and no tool runs.
+One record stands in for the response: stored BLOCKED with ``blocked_by =
+"event_chain_depth_limit"``, observed, and announced as
+``chain_depth_exceeded``.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from roomkit.core.framework import RoomKit
 from roomkit.models.channel import ChannelOutput
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelCategory, EventStatus, EventType
-from roomkit.models.event import TextContent
+from roomkit.models.event import TextContent, ToolCallContent
 from roomkit.models.store_filter import EventFilter
 from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
@@ -51,10 +51,11 @@ class _Voice(SimpleChannel):
 
 async def _turn(
     streaming: bool, max_chain_depth: int, then: Any = None
-) -> tuple[RoomKit, SimpleChannel, _Voice, list[str]]:
+) -> tuple[RoomKit, SimpleChannel, _Voice, list[str], MockAIProvider]:
     kit = RoomKit(max_chain_depth=max_chain_depth)
     sms, voice = SimpleChannel("sms1"), _Voice("voice1")
     ran: list[str] = []
+    provider = MockAIProvider(streaming=streaming, ai_responses=list(_ANSWERS))
 
     async def lookup(name: str, arguments: dict[str, Any]) -> str:
         ran.append(name)
@@ -67,7 +68,7 @@ async def _turn(
     kit.register_channel(
         AIChannel(
             "ai1",
-            provider=MockAIProvider(streaming=streaming, ai_responses=list(_ANSWERS)),
+            provider=provider,
             tool_handler=lookup,
             tools=[AITool(name="lookup", description="d")],
         )
@@ -76,7 +77,7 @@ async def _turn(
     for channel_id in ("sms1", "voice1"):
         await kit.attach_channel("r1", channel_id)
     await kit.attach_channel("r1", "ai1", category=ChannelCategory.INTELLIGENCE)
-    return kit, sms, voice, ran
+    return kit, sms, voice, ran, provider
 
 
 async def _say(kit: RoomKit) -> None:
@@ -90,8 +91,8 @@ async def _ai_rows(kit: RoomKit) -> list[Any]:
     return [e for e in events if e.source.channel_id == "ai1"]
 
 
-async def test_at_the_limit_every_segment_is_blocked(streaming: bool) -> None:
-    kit, sms, voice, ran = await _turn(streaming, max_chain_depth=1)
+async def test_at_the_limit_the_agent_is_not_asked(streaming: bool) -> None:
+    kit, sms, voice, ran, provider = await _turn(streaming, max_chain_depth=1)
     announced: list[Any] = []
 
     @kit.on("chain_depth_exceeded")
@@ -100,31 +101,32 @@ async def test_at_the_limit_every_segment_is_blocked(streaming: bool) -> None:
 
     await _say(kit)
 
-    rows = await _ai_rows(kit)
-    assert [row.type for row in rows] == [
+    # No model call and no tool, in either mode.
+    assert provider.calls == []
+    assert ran == []
+    # One record stands in for the response.
+    [row] = await _ai_rows(kit)
+    assert (row.type, row.status, row.blocked_by, row.chain_depth) == (
         EventType.MESSAGE,
-        EventType.TOOL_CALL_START,
-        EventType.TOOL_CALL_END,
-        EventType.MESSAGE,
+        EventStatus.BLOCKED,
+        "event_chain_depth_limit",
+        1,
+    )
+    assert row.content.body == ""
+    assert [(e.event_id, e.data) for e in announced] == [
+        (row.id, {"chain_depth": 1, "max_chain_depth": 1})
     ]
-    assert {(row.status, row.blocked_by, row.chain_depth) for row in rows} == {
-        (EventStatus.BLOCKED, "event_chain_depth_limit", 1)
-    }
-    assert [e.data for e in announced] == [{"chain_depth": 1, "max_chain_depth": 1}] * len(rows)
-    # One observation per blocked row, as a buffered response's blocked events get.
     observations = await kit.store.list_observations("r1")
-    assert sorted(o.id for o in observations) == sorted(f"obs_{row.id}" for row in rows)
-    # Generated and run, as a buffered response is; delivered to nobody.
-    assert ran == ["lookup"]
+    assert [o.id for o in observations] == [f"obs_{row.id}"]
     assert sms.delivered == []
     assert voice.live == []
 
 
 async def test_the_limit_holds_at_its_default(streaming: bool) -> None:
     """A trigger at depth 3 is answered at 4 and delivered; one at 4 would be
-    answered at 5, the default limit, and is blocked."""
+    answered at 5, the default limit, and the agent is not asked."""
     for trigger_depth, blocked in ((3, False), (4, True)):
-        kit, _, _, _ = await _turn(streaming, max_chain_depth=5)
+        kit, _, _, ran, _ = await _turn(streaming, max_chain_depth=5)
 
         await kit.send_event("r1", "sms1", TextContent(body="go"), chain_depth=trigger_depth)
 
@@ -132,20 +134,23 @@ async def test_the_limit_holds_at_its_default(streaming: bool) -> None:
         assert rows
         assert {row.chain_depth for row in rows} == {trigger_depth + 1}
         assert all((row.status == EventStatus.BLOCKED) is blocked for row in rows)
+        assert (ran == []) is blocked
+        assert len(rows) == 1 if blocked else len(rows) > 1
 
 
-async def test_a_room_closed_while_blocked_rows_are_written_takes_no_more(
-    streaming: bool,
-) -> None:
-    async def close_the_room(kit: RoomKit) -> None:
-        await kit.close_room("r1")
+async def test_a_tool_call_row_at_the_limit_leaves_no_record(streaming: bool) -> None:
+    """No agent answers a tool-call row, so none is recorded as not asked."""
+    kit, _, _, _, _ = await _turn(streaming, max_chain_depth=1)
 
-    kit, _, _, _ = await _turn(streaming, max_chain_depth=1, then=close_the_room)
+    await kit.send_event(
+        "r1",
+        "sms1",
+        ToolCallContent(tool_name="lookup", tool_id="t9", arguments={}, status="pending"),
+        event_type=EventType.TOOL_CALL_START,
+    )
 
-    await _say(kit)
-
-    rows = await _ai_rows(kit)
-    assert EventType.TOOL_CALL_END not in [row.type for row in rows]
+    assert await _ai_rows(kit) == []
+    assert await kit.store.list_observations("r1") == []
 
 
 async def test_a_room_closed_mid_stream_takes_no_further_row(streaming: bool) -> None:
@@ -154,7 +159,7 @@ async def test_a_room_closed_mid_stream_takes_no_further_row(streaming: bool) ->
     async def close_the_room(kit: RoomKit) -> None:
         await kit.close_room("r1")
 
-    kit, _, _, _ = await _turn(streaming, max_chain_depth=5, then=close_the_room)
+    kit, _, _, _, _ = await _turn(streaming, max_chain_depth=5, then=close_the_room)
 
     await _say(kit)
 
@@ -164,7 +169,7 @@ async def test_a_room_closed_mid_stream_takes_no_further_row(streaming: bool) ->
 
 
 async def test_below_the_limit_nothing_is_blocked(streaming: bool) -> None:
-    kit, sms, _, _ = await _turn(streaming, max_chain_depth=5)
+    kit, sms, _, _, _ = await _turn(streaming, max_chain_depth=5)
 
     await _say(kit)
 

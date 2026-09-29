@@ -24,12 +24,14 @@ from roomkit.models.enums import (
     ChannelDirection,
     ChannelMediaType,
     EventStatus,
+    EventType,
     Visibility,
 )
 from roomkit.models.event import (
     AudioContent,
     DeleteContent,
     EditContent,
+    EventSource,
     LocationContent,
     MediaContent,
     RichContent,
@@ -111,9 +113,9 @@ CHAIN_DEPTH_LIMIT = "event_chain_depth_limit"
 
 
 def chain_depth_exceeded(blocked: RoomEvent, max_chain_depth: int) -> Observation:
-    """Log a response blocked past the chain-depth limit and record it.
+    """Log a record blocked past the chain-depth limit and observe it.
 
-    One per blocked row, buffered or streamed, its id tied to the row.
+    One per record, its id tied to the record.
     """
     channel_id = blocked.source.channel_id
     logger.warning(
@@ -152,8 +154,6 @@ class StreamingResponse:
     # The turn's live record (``ChannelOutput.response_metadata``), read by the
     # persistence of each segment as it stands then — never copied here.
     response_metadata: Mapping[str, Any] = field(default_factory=dict)
-    # Why every segment is stored BLOCKED and delivered nowhere (RFC §8.3).
-    blocked_by: str | None = None
 
 
 @dataclass
@@ -442,7 +442,6 @@ class EventRouter:
                         source_channel_type=binding.channel_type,
                         trigger_event=transcoded_event,
                         response_metadata=output.response_metadata,
-                        blocked_by=self._stream_blocked_by(transcoded_event),
                     )
                     tr.observations.extend(output.observations)
                     target_results.append(tr)
@@ -602,8 +601,8 @@ class EventRouter:
 
         return result
 
-    @staticmethod
     def _unasked_result(
+        self,
         event: RoomEvent,
         source_binding: ChannelBinding,
         binding: ChannelBinding,
@@ -618,6 +617,9 @@ class EventRouter:
         untranscoded event: transcoding rewrites content, never the address or
         the routing metadata read here. Transport delivery is untouched:
         addressing narrows who is asked, never who may see.
+
+        Past the chain-depth limit a solicited channel is not asked either
+        (RFC §8.3): no model call, no tool, streamed or buffered alike.
         """
         internal = bool((event.metadata or {}).get("_orchestration_internal"))
         asked = not internal and _solicits(
@@ -628,19 +630,34 @@ class EventRouter:
         )
         if not asked:
             return _TargetResult(channel_id=binding.channel_id)
+        if event.chain_depth + 1 >= self._max_chain_depth:
+            return self._depth_limit_record(event, binding)
         return None
 
-    def _stream_blocked_by(self, trigger: RoomEvent) -> str | None:
-        """Why a streamed response to *trigger* is blocked, if it is.
+    def _depth_limit_record(self, event: RoomEvent, binding: ChannelBinding) -> _TargetResult:
+        """The BLOCKED record of an agent not asked past the depth limit (RFC §8.3).
 
-        Its depth is known before a token is read (the trigger's plus one),
-        so the stream is marked here; the writer that reads it stores and
-        announces each row as a buffered response's blocked events are
-        (RFC §8.3).
+        One per agent, in place of the response it was not asked for: its
+        source is that agent, its text empty, its depth the one the response
+        would have had. A tool-call row leaves none, since no agent answers
+        one.
         """
-        if trigger.chain_depth + 1 >= self._max_chain_depth:
-            return CHAIN_DEPTH_LIMIT
-        return None
+        result = _TargetResult(channel_id=binding.channel_id)
+        if event.type in (EventType.TOOL_CALL_START, EventType.TOOL_CALL_END):
+            return result
+        record = RoomEvent(
+            room_id=event.room_id,
+            source=EventSource(channel_id=binding.channel_id, channel_type=binding.channel_type),
+            content=TextContent(body=""),
+            status=EventStatus.BLOCKED,
+            blocked_by=CHAIN_DEPTH_LIMIT,
+            chain_depth=event.chain_depth + 1,
+            visibility=event.response_visibility or Visibility.ALL,
+            parent_event_id=event.parent_event_id,
+        )
+        result.blocked_events.append(record)
+        result.observations.append(chain_depth_exceeded(record, self._max_chain_depth))
+        return result
 
     async def broadcast(
         self,

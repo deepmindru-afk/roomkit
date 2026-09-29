@@ -700,10 +700,11 @@ class LaneExecutionMixin(HelpersMixin):
             await self._emit_framework_event("event_processed", room_id=room_id, event_id=event.id)
 
     async def _commit_blocked_response(self, room_id: str, blocked: RoomEvent) -> None:
-        """Commit a response the router blocked, and announce why.
+        """Commit a record the router blocked, and announce why.
 
-        Shared by a buffered response's blocked events and a blocked stream's
-        segments (RFC §8.3), so both are indexed and announced alike.
+        Shared by every blocked record a delivery set leaves: an agent not
+        asked past the depth limit, a muted source's response (RFC §8.3,
+        §7.5), so each is indexed and announced alike.
         """
         await self._commit_indexed(room_id, blocked)
         if blocked.blocked_by == CHAIN_DEPTH_LIMIT:
