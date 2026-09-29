@@ -204,10 +204,18 @@ class TestSetupDelegation:
 # -- setup_realtime_delegation ------------------------------------------------
 
 
+def _declare_for_real(rtv: MagicMock) -> None:
+    """Let a mocked voice channel declare the tools orchestration injects."""
+    rtv._inject_orchestration_tool.side_effect = lambda tool: (
+        RealtimeVoiceChannel._inject_orchestration_tool(rtv, tool)
+    )
+
+
 class TestSetupRealtimeDelegation:
     def test_injects_tool_dict_and_wraps_handler(self):
         """Should add delegate tool to _tools and wrap _tool_handler."""
         rtv = MagicMock(spec=RealtimeVoiceChannel)
+        _declare_for_real(rtv)
         rtv.channel_id = "rtv-main"
         rtv._tools = [{"name": "existing", "description": "test", "parameters": {}}]
         rtv._tool_handler = None
@@ -224,6 +232,7 @@ class TestSetupRealtimeDelegation:
     def test_double_setup_raises(self):
         """Should raise RuntimeError if called twice."""
         rtv = MagicMock(spec=RealtimeVoiceChannel)
+        _declare_for_real(rtv)
         rtv.channel_id = "rtv-main"
         rtv._tools = []
         rtv._tool_handler = None
@@ -238,6 +247,7 @@ class TestSetupRealtimeDelegation:
     async def test_intercepts_delegate_task(self):
         """Wrapped handler should call DelegateHandler for delegate_task."""
         rtv = MagicMock(spec=RealtimeVoiceChannel)
+        _declare_for_real(rtv)
         rtv.channel_id = "rtv-main"
         rtv._tools = []
         rtv._tool_handler = None
@@ -276,6 +286,7 @@ class TestSetupRealtimeDelegation:
     async def test_no_session_returns_error(self):
         """Without voice session context, should return error."""
         rtv = MagicMock(spec=RealtimeVoiceChannel)
+        _declare_for_real(rtv)
         rtv.channel_id = "rtv-main"
         rtv._tools = []
         rtv._tool_handler = None
@@ -305,6 +316,8 @@ class TestSetupRealtimeDelegation:
             return json.dumps({"ok": True})
 
         rtv = MagicMock(spec=RealtimeVoiceChannel)
+
+        _declare_for_real(rtv)
         rtv.channel_id = "rtv-main"
         rtv._tools = []
         rtv._tool_handler = original_handler
@@ -320,6 +333,7 @@ class TestSetupRealtimeDelegation:
     def test_none_tools_initializes_list(self):
         """When _tools is None, should create new list with delegate tool."""
         rtv = MagicMock(spec=RealtimeVoiceChannel)
+        _declare_for_real(rtv)
         rtv.channel_id = "rtv-main"
         rtv._tools = None
         rtv._tool_handler = None

@@ -209,8 +209,9 @@ ToolDeclarationOrigin = Literal["always", "pinned", "sticky", "revealed"]
 """Why a tool was in the toolset the provider received (:class:`DeclaredTool`).
 
 ``"always"`` is a tool Tool Search never hid: every tool of a turn that ran
-without it, and, under it, a discovery or skill infrastructure tool and
-anything a hook added. The other three name which term of the Tool Search
+without it, and, under it, a discovery or skill infrastructure tool, a tool
+orchestration injected (a handoff, a delegation, a result tool; RFC §21.1)
+and anything a hook added. The other three name which term of the Tool Search
 keep-set admitted a catalogue tool: ``"pinned"`` by the channel's
 ``tool_search_pinned`` configuration, ``"sticky"`` because the room already
 called or found it in an earlier turn, ``"revealed"`` because ``find_tools``

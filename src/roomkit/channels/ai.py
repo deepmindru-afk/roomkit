@@ -431,7 +431,8 @@ class AIChannel(
         # orchestration code can inspect/modify injected tools independently.
         self._user_tools: list[AITool] = extracted_defs
         self._injected_tools: list[AITool] = []
-        # Tools declared in one room's turns only, by room id (RFC §19.7).
+        # Tools orchestration declares in one room's turns only, by room id
+        # (RFC §19.7); like _injected_tools, never deferred (RFC §21.1).
         self._room_tools: dict[str, list[AITool]] = {}
 
         # Set _tool_handler to the unified dispatcher only when tools actually

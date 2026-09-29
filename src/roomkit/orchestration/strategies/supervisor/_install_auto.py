@@ -188,8 +188,7 @@ class _AutoDelegateInstallMixin:
         rooms.add(room_id)
         if not first_install(_VOICE_SERVING, voice_channel):
             return
-        voice_channel._tools = [*(voice_channel._tools or []), tool_def]
-        voice_channel._pin_orchestration_tool("delegate_workers")
+        voice_channel._inject_orchestration_tool(tool_def)
 
         # Wrap tool handler for async delegation
         original_handler = voice_channel.tool_handler

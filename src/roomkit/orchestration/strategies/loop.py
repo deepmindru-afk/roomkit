@@ -263,8 +263,7 @@ class Loop(Orchestration):
         rooms.add(room_id)
         if not first_install(_LOOP_VOICE_SERVING, voice_channel):
             return
-        voice_channel._tools = [*(voice_channel._tools or []), tool_def]
-        voice_channel._pin_orchestration_tool("delegate_loop")
+        voice_channel._inject_orchestration_tool(tool_def)
 
         original_handler = voice_channel.tool_handler
         running: set[str] = set()  # rooms whose loop is running

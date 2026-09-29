@@ -748,6 +748,12 @@ class RealtimeVoiceChannel(
             "voice": self._voice,
         }
 
+    def _inject_orchestration_tool(self, tool_def: dict[str, Any]) -> None:
+        """Declare a tool orchestration wires on this channel, pinned under
+        Tool Search (RFC §21.1)."""
+        self._tools = [*(self._tools or []), tool_def]
+        self._pin_orchestration_tool(tool_def["name"])
+
     def _pin_orchestration_tool(self, name: str) -> None:
         """Keep a tool orchestration injected declared under Tool Search (RFC
         §21.1): the agent is told to call it, not to go and find it."""

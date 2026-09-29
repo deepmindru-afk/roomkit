@@ -100,11 +100,12 @@ class AIContextHost(Protocol):
         _planner: Optional task planner for planning tools.
         _user_tools: User-provided tool definitions.
         _injected_tools: Orchestration-injected tool definitions.
-        _room_tool_defs: ``AIChannel`` method: the tools declared in one room's turns only.
         channel_id: Unique identifier for this channel.
 
     Properties / methods provided by other mixins:
         extra_tools: ``AIChannel`` property returning user + injected tools.
+        _room_tool_defs: ``AIChannel`` — the tools declared in one room's turns only.
+        _orchestration_tool_names: ``AIChannel`` — what Tool Search never defers.
         _skill_tools: ``AIToolsMixin`` — builds skill tool definitions.
         _apply_tool_filters: ``AIToolPolicyMixin`` — applies policy + gating.
         _policy_allows: ``AIToolPolicyMixin`` — the turn's policy admits a name.
@@ -378,49 +379,9 @@ class AIContextMixin:
         if usage_digest:
             system_prompt = (system_prompt or "") + f"\n\n{usage_digest}"
 
-        # Tool Search — when the catalogue is large, hide it behind the two
-        # discovery tools and let the model reveal what it needs via find_tools.
-        # Decided once here on the REAL catalogue (before the infra tools are
-        # added) and recorded on the loop ctx so every round's re-filter agrees.
-        # Unlike realtime, no provider.reconfigure is needed: the tool loop
-        # re-sends its (re-filtered) tool list every round.
-        window = self._provider.context_window
-        # What orchestration injected stays declared (RFC §21.1), outside the
-        # catalogue whose size decides the collapse.
-        orchestration = self._orchestration_tool_names(binding.room_id)
-        loop_ctx.tool_search_active = should_activate_tool_search(
-            mode=self._tool_search,
-            catalogue=[t for t in tools if t.name not in orchestration],
-            pinned=self._tool_search_pinned,
-            window=window,
-            threshold_pct=self._tool_search_threshold_pct,
-            threshold_count=self._tool_search_threshold,
+        system_prompt = self._collapse_behind_tool_search(
+            tools, system_prompt, loop_ctx, binding, event, standalone
         )
-        if loop_ctx.tool_search_active:
-            catalogue_names = {t.name for t in tools}
-            # Parity with the realtime channel's Tool Search log: make the
-            # deferral observable (the text path is otherwise silent about it).
-            logger.info(
-                "Tool Search active: %d tools deferred behind find_tools/list_tools "
-                "(pinned=%d, window=%s)",
-                len(tools),
-                len((self._tool_search_pinned | orchestration) & catalogue_names),
-                window if window else "unknown",
-            )
-            tools.extend(t for t in search_tool_defs() if t.name not in catalogue_names)
-            system_prompt = (system_prompt or "") + f"\n\n{TOOL_SEARCH_PREAMBLE}"
-            # Re-reveal tools the agent already called this conversation so one it
-            # used once stays callable even though Tool Search re-hides the
-            # catalogue each turn. Seeded on ``sticky_tools`` (NOT ``revealed_tools``)
-            # because the per-round re-filter runs under the for_loop CHILD ctx,
-            # which inherits sticky_tools but resets revealed_tools — seeding the
-            # latter here would be dropped at round 0. Intersected with the live
-            # catalogue so a tool that has since disappeared (e.g. an edge device
-            # unbound) is never surfaced as a phantom.
-            if not standalone:
-                loop_ctx.sticky_tools |= (
-                    self._tool_usage.tool_names(event.room_id) & catalogue_names
-                )
 
         # Store unfiltered tool list for re-application after skill activation
         loop_ctx.all_context_tools = list(tools)
@@ -588,6 +549,64 @@ class AIContextMixin:
             response_metadata=loop_ctx.response_metadata,
             **settings,
         )
+
+    def _collapse_behind_tool_search(
+        self,
+        tools: list[AITool],
+        system_prompt: str | None,
+        loop_ctx: _ToolLoopContext,
+        binding: ChannelBinding,
+        event: RoomEvent,
+        standalone: bool,
+    ) -> str | None:
+        """Tool Search for the turn, applied to *tools* in place; the system
+        prompt, with the Tool Search preamble when it hides the catalogue.
+
+        When the catalogue is large, hide it behind the two discovery tools
+        and let the model reveal what it needs via find_tools.
+        Decided once here on the REAL catalogue (before the infra tools are
+        added) and recorded on the loop ctx so every round's re-filter agrees.
+        Unlike realtime, no provider.reconfigure is needed: the tool loop
+        re-sends its (re-filtered) tool list every round.
+        """
+        window = self._provider.context_window
+        # What orchestration injected stays declared (RFC §21.1), outside the
+        # catalogue whose size decides the collapse.
+        orchestration = self._orchestration_tool_names(binding.room_id)
+        loop_ctx.tool_search_active = should_activate_tool_search(
+            mode=self._tool_search,
+            catalogue=[t for t in tools if t.name not in orchestration],
+            pinned=self._tool_search_pinned,
+            window=window,
+            threshold_pct=self._tool_search_threshold_pct,
+            threshold_count=self._tool_search_threshold,
+        )
+        if loop_ctx.tool_search_active:
+            catalogue_names = {t.name for t in tools}
+            # Parity with the realtime channel's Tool Search log: make the
+            # deferral observable (the text path is otherwise silent about it).
+            logger.info(
+                "Tool Search active: %d tools deferred behind find_tools/list_tools "
+                "(pinned=%d, window=%s)",
+                len(tools),
+                len((self._tool_search_pinned | orchestration) & catalogue_names),
+                window if window else "unknown",
+            )
+            tools.extend(t for t in search_tool_defs() if t.name not in catalogue_names)
+            system_prompt = (system_prompt or "") + f"\n\n{TOOL_SEARCH_PREAMBLE}"
+            # Re-reveal tools the agent already called this conversation so one it
+            # used once stays callable even though Tool Search re-hides the
+            # catalogue each turn. Seeded on ``sticky_tools`` (NOT ``revealed_tools``)
+            # because the per-round re-filter runs under the for_loop CHILD ctx,
+            # which inherits sticky_tools but resets revealed_tools — seeding the
+            # latter here would be dropped at round 0. Intersected with the live
+            # catalogue so a tool that has since disappeared (e.g. an edge device
+            # unbound) is never surfaced as a phantom.
+            if not standalone:
+                loop_ctx.sticky_tools |= (
+                    self._tool_usage.tool_names(event.room_id) & catalogue_names
+                )
+        return system_prompt
 
     def _turn_settings(
         self, binding: ChannelBinding, turn: AIChannelTurnConfig | None

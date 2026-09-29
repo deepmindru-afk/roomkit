@@ -74,6 +74,10 @@ class ToolPolicyHost(Protocol):
     Methods provided by AISteeringMixin (or equivalent):
         _get_loop_ctx: Return the current tool-loop context (activated skills,
             participant role, steering queue).
+
+    Methods provided by AIChannel:
+        _orchestration_tool_names: The tools orchestration injected for a
+            room, which Tool Search never defers.
     """
 
     _tool_policy: ToolPolicy | None
@@ -173,15 +177,18 @@ class AIToolPolicyMixin:
         """Why a tool is in this round's declaration (``ToolDeclarationOrigin``).
 
         The keep-set of ``_apply_tool_filters`` is ``pinned | revealed |
-        sticky``; this names which term admitted the tool, pinned before
-        sticky before revealed: the earliest reason it was visible. Outside
-        Tool Search, and for a tool the collapse never touches (an
-        infrastructure tool, one a hook added), there is no such reason.
+        sticky`` plus the tools the collapse never touches; this names which
+        term admitted the tool, pinned before sticky before revealed: the
+        earliest reason it was visible. Outside Tool Search, and for a tool
+        the collapse never touches (an infrastructure tool, one orchestration
+        injected, one a hook added), there is no such reason (RFC §21.1).
         """
         if not loop_ctx.tool_search_active:
             return "always"
         if name in self._tool_search_pinned:
             return "pinned"
+        if name in self._orchestration_tool_names(loop_ctx.room_id):
+            return "always"
         if name in loop_ctx.sticky_tools:
             return "sticky"
         if name in loop_ctx.revealed_tools:

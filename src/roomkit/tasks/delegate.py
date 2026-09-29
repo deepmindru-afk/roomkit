@@ -317,11 +317,7 @@ def setup_realtime_delegation(
         msg = f"setup_realtime_delegation() already called for channel '{channel.channel_id}'"
         raise RuntimeError(msg)
 
-    if channel._tools is None:
-        channel._tools = [tool_def]
-    else:
-        channel._tools.append(tool_def)
-    channel._pin_orchestration_tool(tool_def["name"])
+    channel._inject_orchestration_tool(tool_def)
 
     original = channel._tool_handler
 

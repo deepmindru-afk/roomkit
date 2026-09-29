@@ -134,7 +134,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   does, on `AIChannel` (both tool loops) and on `RealtimeVoiceChannel` (the
   voice supervisor, the voice `Loop`, `setup_realtime_delegation` and a
   voice pipeline's handoff), and they no longer count toward the catalogue
-  that decides whether Tool Search switches on.
+  that decides whether Tool Search switches on. `find_tools` does not name
+  them, being declared already, and `declared_tools` reports them `always`.
 - A strategy installed in several rooms keeps what it adds per room (RMK-276,
   RFC §19.7). The voice supervisor (`auto_delegate=True, async_delivery=True`)
   and the voice `Loop` appended their tool (`delegate_workers`,

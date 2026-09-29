@@ -153,6 +153,7 @@ class AIToolsHost(Protocol):
         tool_call_id: str = ...,
     ) -> str | list[AITextPart | AIImagePart]: ...
     def _get_loop_ctx(self) -> _ToolLoopContext: ...
+    def _orchestration_tool_names(self, room_id: str | None) -> set[str]: ...
     def _apply_tool_filters(self, tools: list[AITool]) -> list[AITool]: ...
     def _reachable_tools(self, tools: Iterable[AITool]) -> list[AITool]: ...
     def _gate_refusal(self, name: str) -> dict[str, str] | None: ...
@@ -195,6 +196,7 @@ class AIToolsMixin:
     _reachable_tools: Any  # see AIToolsHost
     _gate_refusal: Any  # see AIToolsHost
     extra_tools: Any  # AIChannel property: user + orchestration-injected tools
+    _orchestration_tool_names: Any  # AIChannel: never deferred behind Tool Search
 
     def _tool_parameters(
         self, name: str, declared_tools: list[AITool] | None = None
@@ -861,7 +863,13 @@ class AIToolsMixin:
         max_results = normalize_max_results(
             arguments.get("max_results"), self._tool_search_threshold
         )
-        exclude = self._tool_search_pinned | TOOL_SEARCH_INFRA_TOOL_NAMES
+        # Declared already, never named: the pinned, the discovery tools, and
+        # what orchestration injected for this room (RFC §21.1).
+        exclude = (
+            self._tool_search_pinned
+            | TOOL_SEARCH_INFRA_TOOL_NAMES
+            | self._orchestration_tool_names(loop_ctx.room_id)
+        )
         matches = search_catalogue(catalogue, query, max_results, exclude_names=exclude)
         loop_ctx.revealed_tools = {m["name"] for m in matches if m.get("name")}
         # Reveals persist across turns via ToolUsageMemory (the tool's own
