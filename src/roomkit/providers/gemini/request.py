@@ -15,7 +15,7 @@ provider rather than imported here: the SDK is an optional dependency that
 from __future__ import annotations
 
 import base64
-from typing import Any, cast
+from typing import Any
 
 from roomkit.providers.ai.base import (
     AIContext,
@@ -29,7 +29,7 @@ from roomkit.providers.ai.base import (
 )
 from roomkit.providers.ai.image_parts import image_part_payload
 from roomkit.providers.gemini.config import GeminiConfig
-from roomkit.providers.gemini.schema import clean_gemini_schema
+from roomkit.providers.gemini.schema import function_declaration
 
 
 def _part_signature(part: AIToolCallPart) -> bytes | None:
@@ -214,10 +214,8 @@ def build_gen_config(types: Any, config: GeminiConfig, context: AIContext) -> An
 
     if context.tools:
         func_decls = [
-            types.FunctionDeclaration(
-                name=t.name,
-                description=t.description,
-                parameters=cast(Any, clean_gemini_schema(t.parameters)) if t.parameters else None,
+            function_declaration(
+                types, name=t.name, description=t.description, parameters=t.parameters
             )
             for t in context.tools
         ]

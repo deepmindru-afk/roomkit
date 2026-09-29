@@ -14,7 +14,7 @@ import json
 import logging
 import os
 from collections.abc import Callable
-from typing import Any, cast
+from typing import Any
 
 from roomkit.providers.gemini.realtime_models import (
     THINKING_LEVELS,
@@ -22,7 +22,7 @@ from roomkit.providers.gemini.realtime_models import (
     LiveModelProfile,
     live_model_profile,
 )
-from roomkit.providers.gemini.schema import clean_gemini_schema
+from roomkit.providers.gemini.schema import clean_gemini_schema, function_declaration
 
 logger = logging.getLogger("roomkit.providers.gemini.realtime")
 
@@ -400,10 +400,11 @@ def build_live_config(
             genai_tools.append(
                 types.Tool(
                     function_declarations=[
-                        types.FunctionDeclaration(
+                        function_declaration(
+                            types,
                             name=tool.get("name", ""),
                             description=tool.get("description", ""),
-                            parameters=cast(Any, clean_gemini_schema(tool.get("parameters"))),
+                            parameters=tool.get("parameters"),
                             behavior=tool_behavior(model, profile, tool.get("behavior"), warned),
                         )
                     ]

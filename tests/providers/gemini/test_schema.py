@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from roomkit.providers.gemini.schema import clean_gemini_schema
 
 
@@ -745,3 +747,64 @@ class TestRequiredMatchesProperties:
         cleaned = clean_gemini_schema(schema)
         assert cleaned is not None
         assert cleaned["required"] == ["a"]
+
+
+class TestNonStringEnum:
+    """Gemini's ``enum`` holds strings: other values go to the description (RMK-281)."""
+
+    @pytest.mark.parametrize(
+        ("prop", "expected"),
+        [
+            (
+                {"type": "integer", "enum": [1, 2, 3], "description": "Urgency."},
+                {"type": "integer", "description": "Urgency. Allowed values: 1, 2, 3."},
+            ),
+            (
+                {"type": "number", "enum": [0.5, 1.5]},
+                {"type": "number", "description": "Allowed values: 0.5, 1.5."},
+            ),
+            (
+                {"type": "boolean", "enum": [True]},
+                {"type": "boolean", "description": "Allowed values: true."},
+            ),
+            (
+                {"enum": ["a", 1, None]},
+                {"description": 'Allowed values: "a", 1, null.'},
+            ),
+        ],
+    )
+    def test_the_values_move_to_the_description_and_the_type_stays(
+        self, prop: dict[str, Any], expected: dict[str, Any]
+    ) -> None:
+        schema = {"type": "object", "properties": {"p": prop}, "required": ["p"]}
+
+        cleaned = clean_gemini_schema(schema)
+
+        assert cleaned == {"type": "object", "properties": {"p": expected}, "required": ["p"]}
+
+    def test_a_string_enum_is_kept(self) -> None:
+        prop = {"type": "string", "enum": ["low", "high"]}
+
+        cleaned = clean_gemini_schema({"type": "object", "properties": {"p": prop}})
+
+        assert cleaned == {"type": "object", "properties": {"p": prop}}
+
+    def test_a_nested_enum_is_described_too(self) -> None:
+        schema = {
+            "type": "object",
+            "properties": {"levels": {"type": "array", "items": {"enum": [1, 2]}}},
+        }
+
+        cleaned = clean_gemini_schema(schema)
+
+        assert cleaned["properties"]["levels"]["items"] == {"description": "Allowed values: 1, 2."}
+
+    def test_a_tuple_of_items_is_declarable(self) -> None:
+        schema = {
+            "type": "object",
+            "properties": {"point": {"type": "array", "items": [{"type": "number"}] * 2}},
+        }
+
+        cleaned = clean_gemini_schema(schema)
+
+        assert cleaned["properties"]["point"] == {"type": "array", "items": {}}

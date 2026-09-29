@@ -38,11 +38,21 @@ untyped node with ``properties`` is an object and one with ``items`` an
 array, and an array may omit ``items``. Gemini refuses all three, so the
 cleaner writes the type and gives a bare array ``items: {}``, "any value",
 which is what Pydantic already sends for ``list[Any]``.
+
+Gemini's ``enum`` holds strings only, so an ``enum`` of numbers or booleans
+(``Literal[1, 2, 3]``) fails inside ``FunctionDeclaration``. It is dropped and
+its values move to the description; the node keeps its declared type, so the
+model still sends a number, the type the channel checks the call against.
 """
 
 from __future__ import annotations
 
+import json
 from typing import Any
+
+from pydantic import ValidationError
+
+from roomkit.providers.ai.base import ProviderError
 
 # Fields that Gemini accepts in a function parameter schema.
 _GEMINI_ALLOWED_KEYS = frozenset(
@@ -68,7 +78,7 @@ _UNION_KEYS = ("anyOf", "oneOf", "allOf")
 def clean_gemini_schema(schema: dict[str, Any] | None) -> dict[str, Any] | None:
     """Recursively prepare a JSON Schema for Gemini ``FunctionDeclaration``.
 
-    Performs three passes per node:
+    Performs four passes per node:
 
     1. **Fold what Gemini cannot say.** A type list and a union become one
        type: ``{"anyOf": [{...}, {"type": "null"}]}`` and ``{"type": [...,
@@ -80,7 +90,9 @@ def clean_gemini_schema(schema: dict[str, Any] | None) -> dict[str, Any] | None:
     2. **Spell out the shape** JSON Schema leaves implied: the type an
        untyped node's ``properties`` or ``items`` imply, ``items`` on an
        array, and no key the type cannot carry (see :func:`_complete_shape`).
-    3. **Strip unknown keys.** Anything not in :data:`_GEMINI_ALLOWED_KEYS`
+    3. **Describe a non-string enum**, which Gemini cannot hold (see
+       :func:`_describe_enum`).
+    4. **Strip unknown keys.** Anything not in :data:`_GEMINI_ALLOWED_KEYS`
        (e.g. ``$schema``, ``additionalProperties``, ``default``, ``title``)
        is dropped at every nesting level, and ``required`` keeps only the
        properties that survived.
@@ -279,6 +291,7 @@ def _clean(obj: dict[str, Any]) -> dict[str, Any]:
     # the strip untouched (``type`` is allowed) and would fail inside Gemini.
     obj = _collapse_type_list(obj)
     obj = _complete_shape(obj)
+    obj = _describe_enum(obj)
 
     result: dict[str, Any] = {}
     for key, value in obj.items():
@@ -291,6 +304,56 @@ def _clean(obj: dict[str, Any]) -> dict[str, Any]:
         else:
             result[key] = value
     return _keep_declared_required(result)
+
+
+def _describe_enum(obj: dict[str, Any]) -> dict[str, Any]:
+    """Move an ``enum`` Gemini cannot hold into the node's description.
+
+    Gemini's ``enum`` is a list of strings: ``[1, 2, 3]``, ``[true]`` or a
+    mix fail inside ``FunctionDeclaration``. Turning the values into strings
+    would type the node a string, and the model's ``"2"`` would then fail the
+    declared type the call's arguments are checked against. The node keeps its
+    type, and its description names the values the declared ``enum`` allows.
+    """
+    values = obj.get("enum")
+    if not isinstance(values, list) or all(isinstance(value, str) for value in values):
+        return obj
+    described = {key: value for key, value in obj.items() if key != "enum"}
+    allowed = "Allowed values: " + ", ".join(json.dumps(value) for value in values) + "."
+    description = described.get("description")
+    described["description"] = f"{description} {allowed}" if description else allowed
+    return described
+
+
+def function_declaration(
+    types: Any,
+    *,
+    name: str,
+    description: str | None,
+    parameters: dict[str, Any] | None,
+    **fields: Any,
+) -> Any:
+    """The ``FunctionDeclaration`` of one tool, its schema cleaned.
+
+    A schema the SDK still refuses fails every turn that declares the tool,
+    so the refusal becomes a :class:`ProviderError` naming the tool rather
+    than the SDK's validation error, raised before the request's own
+    error handling.
+    """
+    try:
+        return types.FunctionDeclaration(
+            name=name,
+            description=description,
+            parameters=clean_gemini_schema(parameters) if parameters else None,
+            **fields,
+        )
+    except ValidationError as exc:
+        first = exc.errors()[0] if exc.errors() else {}
+        where = ".".join(str(part) for part in first.get("loc", ()))
+        raise ProviderError(
+            f"Gemini cannot declare tool {name!r}: {where}: {first.get('msg', exc)}",
+            provider="gemini",
+        ) from exc
 
 
 def _keep_declared_required(result: dict[str, Any]) -> dict[str, Any]:

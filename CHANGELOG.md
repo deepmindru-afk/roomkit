@@ -139,6 +139,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Gemini declares a tool whose schema has an `enum` of numbers, booleans or
+  mixed values (RMK-281). Gemini's `enum` holds strings only, so a
+  `Literal[1, 2, 3]` parameter failed inside `FunctionDeclaration` with the
+  SDK's raw `ValidationError`, on every text turn and Live connection that
+  declared the tool. Such an `enum` is now dropped from the schema Gemini
+  receives and its values are listed in the parameter's description; the
+  parameter keeps its type, so the model still sends a number. A declaration
+  the SDK still refuses raises a `ProviderError` naming the tool.
 - A realtime tool handler that reconfigures its own session is no longer
   treated as abandoned by the reconnect it caused (RMK-280, RFC §9.3). Gemini
   Live applies a reconfiguration by reconnecting, and a reconnect orphans
