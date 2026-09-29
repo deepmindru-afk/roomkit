@@ -203,7 +203,7 @@ def test_a_failed_delegated_task_reads_as_failed_without_its_error() -> None:
 
     text = _delegation_result_text(result)
 
-    assert "(failed)" in text
+    assert text.startswith("[Background task from worker failed.")
     assert "hunter2" not in text
 
 

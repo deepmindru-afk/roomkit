@@ -19,25 +19,9 @@ from roomkit.models.enums import ChannelCategory, ChannelType
 
 if TYPE_CHECKING:
     from roomkit.core.framework import RoomKit
-    from roomkit.store.base import ConversationStore
 
 logger = logging.getLogger("roomkit.delivery")
 _VOICE_TYPES = frozenset({ChannelType.VOICE, ChannelType.REALTIME_VOICE})
-
-
-async def find_transport_channel_id(store: ConversationStore, room_id: str) -> str | None:
-    """The transport a room is reached through: voice first, then the first other."""
-    bindings = await store.list_bindings(room_id)
-    voice_id: str | None = None
-    text_id: str | None = None
-    for binding in bindings:
-        if binding.category != ChannelCategory.TRANSPORT:
-            continue
-        if binding.channel_type in _VOICE_TYPES:
-            voice_id = binding.channel_id
-        elif text_id is None:
-            text_id = binding.channel_id
-    return voice_id or text_id
 
 
 @dataclass
@@ -53,13 +37,24 @@ class DeliveryContext:
     idempotency_key: str | None = None
     session_id: str | None = None
     chain_depth: int = 0
+    instruction: bool = False
     _voice_sessions: list[Any] | None = field(default=None, repr=False)
     _voice_channel: Any = field(default=None, repr=False)
     _wait_for_turn: bool = field(default=True, repr=False)
 
     async def find_transport_channel_id(self) -> str | None:
         """Prefer voice, then the first other transport bound to the room."""
-        return await find_transport_channel_id(self.kit.store, self.room_id)
+        bindings = await self.kit.store.list_bindings(self.room_id)
+        voice_id: str | None = None
+        text_id: str | None = None
+        for binding in bindings:
+            if binding.category != ChannelCategory.TRANSPORT:
+                continue
+            if binding.channel_type in _VOICE_TYPES:
+                voice_id = binding.channel_id
+            elif text_id is None:
+                text_id = binding.channel_id
+        return voice_id or text_id
 
     async def resolve_channel_id(self) -> str | None:
         """Resolve an explicit destination or auto-detect its transport."""
@@ -128,6 +123,7 @@ class _QueuedRequest:
             and left.channel_id == right.channel_id
             and left.addressed_to == right.addressed_to
             and left.chain_depth == right.chain_depth
+            and left.instruction == right.instruction
             and left.session_id == right.session_id
             and left._voice_sessions == right._voice_sessions
             and left.metadata == right.metadata

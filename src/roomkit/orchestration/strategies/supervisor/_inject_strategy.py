@@ -141,8 +141,8 @@ class _StrategyToolMixin:
                 # Async dispatch: fire-and-return so the supervisor's
                 # tool loop doesn't block on worker execution. Workers
                 # post lifecycle events to the status bus and their
-                # combined output is delivered back to the room via
-                # kit.deliver(), re-triggering the supervisor.
+                # combined output is handed back to the supervisor as an
+                # instruction (tasks.handback), which it answers.
                 if async_delivery:
                     if rid in _running:
                         return json.dumps(
@@ -182,6 +182,7 @@ class _StrategyToolMixin:
                             _async_run_and_deliver(
                                 kit=kit,
                                 room_id=rid,
+                                supervisor_id=supervisor.channel_id,
                                 strategy=strategy,
                                 workers=workers,
                                 task_desc=task_desc,
@@ -201,8 +202,8 @@ class _StrategyToolMixin:
                             "message": (
                                 "Workers are running in the background. "
                                 "Use check_status_bus to follow progress. "
-                                "Their combined results will arrive as a new "
-                                "message in this room when they are done."
+                                "Their combined results will be handed to you "
+                                "when they are done."
                             ),
                         }
                     )

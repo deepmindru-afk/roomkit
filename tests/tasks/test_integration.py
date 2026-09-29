@@ -19,6 +19,7 @@ from roomkit.models.enums import HookExecution, HookTrigger, TaskStatus
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.providers.email.mock import MockEmailProvider
 from roomkit.tasks.models import DelegatedTaskResult
+from tests.tasks.test_delegation_result_delivery import _told
 from tests.test_framework import SimpleChannel
 
 # -- Helpers ------------------------------------------------------------------
@@ -102,25 +103,11 @@ class TestDelegateIntegration:
         assert len(delegated_hooks) == 1
         assert len(completed_hooks) == 1
 
-        # The notified agent keeps its own prompt; the result reaches it as an
-        # instruction it answers at once, outside the system role (RMK-310).
-        binding = await kit.store.get_binding("call-room", "voice-assistant")
-        assert binding is not None
-        assert "system_prompt" not in binding.metadata
-        for _ in range(50):
-            if voice_agent._provider.calls:
-                break
-            await asyncio.sleep(0.01)
-        (call,) = voice_agent._provider.calls
-        assert call.system_prompt is not None
-        assert call.system_prompt.startswith("You are a voice assistant.")
-        assert "PR looks good" not in call.system_prompt
-        assert "PR looks good" in str(call.messages[-1].content)
-        # Never stored as anyone's words: the room holds the agent's answer.
-        bodies = [
-            str(getattr(e.content, "body", "")) for e in await kit.store.list_events("call-room")
-        ]
-        assert not any("Background task from" in body for body in bodies)
+        # The notified agent is told, under its own prompt (RMK-310); the rest
+        # of the hand-back is test_delegation_result_delivery's.
+        (told,) = await _told(voice_agent, 1)
+        assert "PR looks good" in told
+        assert voice_agent._provider.calls[0].system_prompt == "You are a voice assistant."
 
         await kit.close()
 

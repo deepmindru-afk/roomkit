@@ -171,10 +171,14 @@ async def _submit(
         if refusal is not None:
             return await _persist(ctx, record, refusal)
         started = True
+        # An instruction directs the model; content is what someone said (§12.4).
+        role = "system" if ctx.instruction else "user"
         result = (
-            await channel.inject_text(session, ctx.content, silent=True)
+            await channel.inject_text(session, ctx.content, role=role, silent=True)
             if silent
-            else await channel.inject_text(session, ctx.content, chain_depth=ctx.chain_depth)
+            else await channel.inject_text(
+                session, ctx.content, role=role, chain_depth=ctx.chain_depth
+            )
         )
         outcome = _reported(result, session.id)
         if outcome.status == "sent" and not any(

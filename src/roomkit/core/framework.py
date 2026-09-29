@@ -196,10 +196,10 @@ class RoomKit(
             voice: Optional voice backend for real-time audio transport.
             task_runner: Pluggable backend for delegated background tasks.
                 Defaults to ``InMemoryTaskRunner``.
-            delivery_strategy: Controls proactive delivery of background task
-                results.  When set, ``strategy.deliver()`` is called after
-                system prompt injection and the ``ON_TASK_COMPLETED`` hook.
-                Can be overridden per-task via ``delegate()``.
+            delivery_strategy: Controls when proactive content is delivered,
+                a background task's result included: the result is handed back
+                through ``deliver()`` after the ``ON_TASK_COMPLETED`` hook
+                (RFC §23.3). ``deliver()`` takes a strategy per call.
             delivery_backend: Persistent delivery backend.  When set,
                 ``kit.deliver()`` enqueues items instead of executing
                 in-process, and a worker loop dequeues and executes them.

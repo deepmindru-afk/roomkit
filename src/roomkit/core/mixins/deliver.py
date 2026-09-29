@@ -62,6 +62,7 @@ class DeliverMixin(HelpersMixin):
         idempotency_key: str | None = None,
         session_id: str | None = None,
         chain_depth: int = 0,
+        instruction: bool = False,
     ) -> DeliveryOutcome:
         """Deliver content to a room/channel.
 
@@ -97,6 +98,12 @@ class DeliverMixin(HelpersMixin):
                 background task's result, passes that turn's depth, so a
                 cycle of task, result and task again ends at
                 ``max_chain_depth`` (§23.3).
+            instruction: Deliver *content* as the application's direction to
+                an agent, never as a participant's words (RFC §22.1): an
+                ``INSTRUCTION`` event through the text pipeline, which needs
+                *addressed_to* and no *idempotency_key* (§10.1.1), or the
+                ``system`` intent in a realtime session (§12.4). The strategy
+                and the delivery hooks apply unchanged.
 
         Returns:
             Queue acceptance or the actual execution outcome. ``sent`` does not
@@ -116,6 +123,7 @@ class DeliverMixin(HelpersMixin):
             idempotency_key=idempotency_key,
             session_id=session_id,
             chain_depth=chain_depth,
+            instruction=instruction,
         )
         if self._delivery_backend is not None:
             refusal = await reject_invalid_delivery(

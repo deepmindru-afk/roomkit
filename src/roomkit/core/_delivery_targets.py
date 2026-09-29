@@ -8,7 +8,14 @@ from typing import TYPE_CHECKING
 from roomkit.core._voice_delivery import active_sessions as _active_sessions
 from roomkit.core._voice_delivery import deliver_to_realtime_voice, replay_explicit_session
 from roomkit.models.delivery import DeliveryError, DeliveryOutcome, InboundMessage, InboundResult
-from roomkit.models.enums import Access, ChannelCategory, ChannelType, EventStatus, RoomStatus
+from roomkit.models.enums import (
+    Access,
+    ChannelCategory,
+    ChannelType,
+    EventStatus,
+    EventType,
+    RoomStatus,
+)
 from roomkit.models.event import TextContent
 
 if TYPE_CHECKING:
@@ -88,6 +95,7 @@ async def deliver_to_channel(ctx: DeliveryContext, channel_id: str) -> DeliveryO
         InboundMessage(
             channel_id=channel_id,
             sender_id="system",
+            event_type=EventType.INSTRUCTION if ctx.instruction else EventType.MESSAGE,
             content=TextContent(body=ctx.content),
             metadata=ctx.metadata or {},
             addressed_to=ctx.addressed_to,

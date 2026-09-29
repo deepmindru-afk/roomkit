@@ -16,6 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   background deliveries (a delegation's result, a supervisor's or a loop's
   asynchronous results) pass the depth of the turn that started them; a host
   delivering a result on a turn's behalf can do the same.
+- `RoomKit.deliver(instruction=...)` and `DeliveryItem.instruction` (RMK-310,
+  RFC §22.1): deliver content as the application's direction to an agent,
+  never as a participant's words. Through the text pipeline it is an
+  `INSTRUCTION` event, which needs `addressed_to` and no `idempotency_key`;
+  in a realtime session it is injected with the `system` intent. The
+  strategy, the delivery hooks (which see an `INSTRUCTION` event) and the
+  delivery backend apply unchanged, and `Queued` never merges an
+  instruction with a message.
 - `LoopEndMarker.usage`, `roomkit.models.event.is_interruption_marker` and
   `answer_text` (RMK-289, RFC §6.4). The marker carries what the turn's
   generations used, summed over its rounds, so the streamed turn's record can
@@ -84,11 +92,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `system_prompt` binding metadata (RMK-310, RFC §23.3): the first
   delegation replaced the agent's own prompt with a "BACKGROUND TASK
   COMPLETED" block, handing the worker's output the system role for every
-  later turn. The result, bounded to 4,000 characters and set apart as the
-  worker's output, now reaches a notified agent as an instruction addressed
-  to it (RFC §10.1.1), which it answers at once through the room's
-  transport; a notified transport receives it as a delivery. A room with no
-  transport leaves the result to `ON_TASK_COMPLETED`. The supervisor's
+  later turn. The result, bounded to 4,000 characters and delimited as the
+  worker's output, is now handed back through `deliver(instruction=True)`,
+  so the delivery strategy, `BEFORE_DELIVER`/`AFTER_DELIVER` and a delivery
+  backend apply to it as to any proactive delivery: a notified agent
+  receives an instruction addressed to it (RFC §10.1.1), which it answers
+  through the room's transport; a notified realtime voice channel, an
+  injection with the `system` intent (it used to be `user`); another
+  transport, a message through it. An instruction is not stored: the
+  result lives in the turn it opens and in the agent's answer, and a later
+  turn no longer sees the details the agent did not say. A notify channel
+  not attached to the parent room (`delegate()`'s default, the worker) is
+  told nothing, and an undelivered result (a room with no transport, a
+  hook's refusal) is logged; `ON_TASK_COMPLETED` still carries it. A
+  supervisor's background workers (`async_delivery=True`) hand their
+  results back the same way, addressed to the supervisor, each worker's
+  output bounded: they were published unbounded as a message from the
+  room's transport, stored as the participant's words. The supervisor's
   task-formulation pass rides a copy of the binding for that call: it
   rewrote the supervisor's own prompt, shared by every room, and two rooms
   delegating at once could leave the instruction stuck for good; it also now

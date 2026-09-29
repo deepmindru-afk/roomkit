@@ -8,7 +8,8 @@ Demonstrates the first-class delegation API:
 4. The child room shares the parent's EmailChannel
 5. PR reviewer works in the background — its own event history
 6. Voice conversation continues uninterrupted
-7. When the child room completes, result flows back via system prompt injection
+7. When the child room completes, the result is handed back to the voice agent
+   as an instruction through ``kit.deliver()`` (strategy and delivery hooks apply)
 8. Voice agent tells the user the result
 
 Key concept:
@@ -58,6 +59,19 @@ from roomkit.voice.tts.mock import MockTTSProvider
 logger = setup_logging("example.background_task")
 # Suppress noisy voice pipeline errors from mock VAD audio frames
 logging.getLogger("roomkit.voice").setLevel(logging.CRITICAL)
+
+
+async def _show_hand_back(kit: RoomKit, voice_ai: MockAIProvider) -> None:
+    """Show that the notified agent was told the result, its prompt untouched.
+
+    The result is an instruction addressed to it: it answers at once, and its
+    own prompt is left as configured (RFC §23.3).
+    """
+    voice_binding = await kit.store.get_binding("call-room", "voice-assistant")
+    prompt = voice_binding.metadata.get("system_prompt", "") if voice_binding else ""
+    print(f"\n  Voice agent prompt holds no task result: {'PR #42' not in prompt}")
+    told = any("Background task from" in str(call.messages[-1].content) for call in voice_ai.calls)
+    print(f"  Voice agent was told the result: {told}")
 
 
 async def main() -> None:
@@ -117,7 +131,7 @@ async def main() -> None:
         responses=[
             (
                 "## PR #42: Add background task executor\n\n"
-                "**Author:** quintana | **Files:** 8 | **+340 / -45**\n\n"
+                "**Author:** alex | **Files:** 8 | **+340 / -45**\n\n"
                 "### Summary\n"
                 "Adds `TaskExecutor` ABC with `InMemoryTaskExecutor`. "
                 "Introduces child-room pattern for background agent work. "
@@ -198,7 +212,7 @@ async def main() -> None:
         "email-out",
         metadata={
             "from_": "assistant@company.com",
-            "email_address": "quintana@company.com",
+            "email_address": "alex@company.com",
         },
     )
 
@@ -243,8 +257,8 @@ async def main() -> None:
             "Review the latest PR on the 'roomkit' repository. Produce a summary with assessment."
         ),
         context={
-            "requester": "quintana",
-            "email": "quintana@company.com",
+            "requester": "alex",
+            "email": "alex@company.com",
         },
         share_channels=["email-out"],
         notify="voice-assistant",
@@ -311,15 +325,7 @@ async def main() -> None:
     print(f"  Child room parent:  {child_room.metadata.get('parent_room_id')}")
     print(f"  Child room agent:   {child_room.metadata.get('task_agent_id')}")
 
-    # ── The notified agent was told the result ────────────────────────
-    # An instruction addressed to it: it answers at once, and its own
-    # prompt is left as configured (RFC §23.3).
-
-    voice_binding = await kit.store.get_binding("call-room", "voice-assistant")
-    prompt = voice_binding.metadata.get("system_prompt", "") if voice_binding else ""
-    print(f"\n  Voice agent prompt holds no task result: {'PR #42' not in prompt}")
-    told = any("Background task from" in str(call.messages[-1].content) for call in voice_ai.calls)
-    print(f"  Voice agent was told the result: {told}")
+    await _show_hand_back(kit, voice_ai)
 
     await kit.close()
     print("\nDone!")

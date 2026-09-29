@@ -210,6 +210,7 @@ class _AutoDelegateInstallMixin:
                     _async_run_and_deliver(
                         kit=kit,
                         room_id=rid,
+                        supervisor_id=voice_channel.channel_id,
                         strategy=strategy,
                         workers=workers,
                         task_desc=arguments.get("task", ""),

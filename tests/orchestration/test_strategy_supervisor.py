@@ -422,6 +422,7 @@ class TestSupervisorShareChannels:
 
         # Create a mock that passes isinstance check for RealtimeVoiceChannel
         mock_voice = MagicMock(spec=RealtimeVoiceChannel)
+        mock_voice.channel_id = "voice"
         mock_voice._tools = None
         mock_voice.tool_handler = None
         kit.channels = {"voice": mock_voice}

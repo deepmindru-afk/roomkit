@@ -76,6 +76,8 @@ def _make_mock_kit(room: Room) -> MagicMock:
     kit = MagicMock()
     kit.get_room = AsyncMock(return_value=room)
     kit.store.update_room = AsyncMock()
+    # Every channel asked about is attached to the room.
+    kit.store.get_binding = AsyncMock(return_value=MagicMock())
     kit.hook_engine = MagicMock()
     kit.hook_engine.add_room_hook = MagicMock()
     kit.lock_manager = MagicMock()
@@ -1367,12 +1369,14 @@ class TestAsyncRunAndDeliver:
     async def test_delivers_results(self) -> None:
         kit = _make_mock_kit(Room(id="r1"))
         w1 = _make_agent("w1")
+        kit.get_channel = MagicMock(return_value=_make_agent("boss"))
         kit.delegate = AsyncMock(return_value=_delegated_task_with_output("Analysis done"))
         on_done = MagicMock()
 
         await _async_run_and_deliver(
             kit=kit,
             room_id="r1",
+            supervisor_id="boss",
             strategy=WorkerStrategy.SEQUENTIAL,
             workers=[w1],
             task_desc="Analyze this",
@@ -1382,6 +1386,9 @@ class TestAsyncRunAndDeliver:
         kit.deliver.assert_called_once()
         delivered_text = kit.deliver.call_args[0][1]
         assert "Analysis done" in delivered_text
+        # Handed back to the supervisor alone, as an instruction (RFC §19.7.3).
+        assert kit.deliver.call_args.kwargs["addressed_to"] == ["boss"]
+        assert kit.deliver.call_args.kwargs["instruction"] is True
         on_done.assert_called_once()
 
     async def test_the_results_continue_the_dispatching_turns_chain(self) -> None:
@@ -1394,6 +1401,7 @@ class TestAsyncRunAndDeliver:
             await _async_run_and_deliver(
                 kit=kit,
                 room_id="r1",
+                supervisor_id="boss",
                 strategy=WorkerStrategy.SEQUENTIAL,
                 workers=[_make_agent("w1")],
                 task_desc="Analyze this",
@@ -1410,6 +1418,7 @@ class TestAsyncRunAndDeliver:
         await _async_run_and_deliver(
             kit=kit,
             room_id="r1",
+            supervisor_id="boss",
             strategy=WorkerStrategy.SEQUENTIAL,
             workers=[_make_agent("w1")],
             task_desc="task",
@@ -1564,6 +1573,7 @@ class TestAutoDelegate:
         await _async_run_and_deliver(
             kit=kit,
             room_id="r1",
+            supervisor_id="boss",
             strategy=WorkerStrategy.PARALLEL,
             workers=[w1],
             task_desc="Analyze topic",

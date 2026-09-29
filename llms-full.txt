@@ -1098,7 +1098,7 @@ member management API.
 | Trigger | Execution | Signature | Description |
 |---------|-----------|-----------|-------------|
 | `ON_DELIVERY_STATUS` | ASYNC | `(DeliveryStatus, ctx) -> None` | Provider delivery receipt dispatched by `kit.process_delivery_status()` / `kit.process_webhook()`. The `@kit.on_delivery_status` decorator registers a `(status)`-only callback on this trigger. |
-| `BEFORE_DELIVER` | ASYNC | `(event, ctx) -> None` | Before a proactive `kit.deliver()` strategy executes (in-process and worker paths). Payload is a synthetic INTERNAL system-source event describing the delivery. Observational — invoked through the async pipeline, cannot block (RFC §9 lists it SYNC; code invokes it ASYNC). |
+| `BEFORE_DELIVER` | SYNC | `(event, ctx) -> HookResult` | Before a proactive `kit.deliver()` strategy executes (in-process and worker paths), a delegation's or a supervisor's background result included. Payload is a synthetic INTERNAL system-source event describing the delivery, of type `INSTRUCTION` for `deliver(instruction=True)`. `HookResult.block()` refuses the delivery (outcome `blocked`); a modified event's text replaces the content. A hook that raises does not block (fail-open, RFC §9.3). |
 | `AFTER_DELIVER` | ASYNC | `(event, ctx) -> None` | After the delivery strategy completes. Same payload shape with status DELIVERED/FAILED and `metadata.error` set on failure. |
 
 ### Side Effects

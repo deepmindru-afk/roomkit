@@ -39,13 +39,14 @@ def build_delivery_hook_event(
     extra_meta: dict[str, object] | None = None,
     addressed_to: list[str] | None = None,
     idempotency_key: str | None = None,
+    instruction: bool = False,
 ) -> RoomEvent:
     """Build the observation shared by direct execution and queue workers."""
     return RoomEvent(
         room_id=room_id,
         source=EventSource(channel_id="system", channel_type="system"),
         content=TextContent(body=content),
-        type=EventType.MESSAGE,
+        type=EventType.INSTRUCTION if instruction else EventType.MESSAGE,
         status=status,
         visibility=Visibility.INTERNAL,
         addressed_to=addressed_to,
@@ -101,6 +102,7 @@ async def fire_delivery_hooks(
         idempotency_key=published.idempotency_key
         if published is not None
         else item.idempotency_key,
+        instruction=item.instruction,
     )
     if trigger == HookTrigger.AFTER_DELIVER:
         try:
@@ -177,6 +179,7 @@ async def execute_delivery(
                     idempotency_key=item.idempotency_key,
                     session_id=item.session_id,
                     chain_depth=item.chain_depth,
+                    instruction=item.instruction,
                 )
             )
             if not isinstance(outcome, DeliveryOutcome):

@@ -1,7 +1,7 @@
 """Delegation entry points that wire worker execution to the supervisor.
 
 The framework-driven auto-delegate helpers (one-pass / two-pass), the
-background runner that delivers results via ``kit.deliver``, and the strategy
+background runner that hands results back to the supervisor, and the strategy
 dispatcher that routes to the supervised, sequential, or parallel runner.
 """
 
@@ -35,6 +35,7 @@ from roomkit.orchestration.strategies.supervisor.results import (
 from roomkit.orchestration.strategies.supervisor.supervised import (
     _run_supervised_sequential,
 )
+from roomkit.tasks.handback import bounded, hand_back, result_text
 from roomkit.tools.context import _current_turn_chain_depth
 
 if TYPE_CHECKING:
@@ -55,13 +56,14 @@ async def _async_run_and_deliver(
     *,
     kit: RoomKit,
     room_id: str,
+    supervisor_id: str,
     strategy: WorkerStrategy | None,
     workers: list[Agent],
     task_desc: str,
     share_channels: list[str] | None = None,
     on_done: Callable[..., None],
 ) -> None:
-    """Background: run workers → deliver results via kit.deliver().
+    """Background: run workers → hand their results back to *supervisor_id*.
 
     Started as a task by the tool call that dispatched the workers, so the
     context it copied is that call's (RFC §21.4): the results continue the
@@ -94,7 +96,7 @@ async def _async_run_and_deliver(
             task_desc,
             share_channels=share_channels,
         )
-        await _deliver_worker_results(kit, room_id, worker_results, chain_depth)
+        await _deliver_worker_results(kit, room_id, supervisor_id, worker_results, chain_depth)
         _post_worker_status(
             kit,
             "orchestration",
@@ -119,16 +121,24 @@ async def _async_run_and_deliver(
 
 
 async def _deliver_worker_results(
-    kit: RoomKit, room_id: str, worker_results: list[Any], chain_depth: int
+    kit: RoomKit,
+    room_id: str,
+    supervisor_id: str,
+    worker_results: list[dict[str, Any]],
+    chain_depth: int,
 ) -> None:
-    """Hand the workers' results back to the room, at the dispatching turn's depth."""
-    results_text = _format_worker_results(worker_results)
-    logger.info("[async_delegate] Workers completed, delivering results")
-    await kit.deliver(
-        room_id,
-        f"Analysis results are ready. Here's what the analysts found:\n\n{results_text}",
-        chain_depth=chain_depth,
+    """Hand the workers' results back to the supervisor, at the dispatching turn's depth.
+
+    As a background delegation's result is (RFC §19.7.3, §23.3): an instruction
+    addressed to the supervisor, each worker's output bounded.
+    """
+    each_bounded = [{**r, "output": bounded(str(r.get("output") or ""))} for r in worker_results]
+    logger.info("[async_delegate] Workers completed, handing results back")
+    text = result_text(
+        "[Your background workers completed. Share their results with the user.]",
+        _format_worker_results(each_bounded),
     )
+    await hand_back(kit, room_id, supervisor_id, text, chain_depth)
 
 
 def _results_event(event: RoomEvent, body: str) -> RoomEvent:
