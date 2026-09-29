@@ -371,7 +371,12 @@ class GeminiLiveEventHandlersMixin(RealtimeVoiceProvider):
                 response_tokens=response_tokens,
                 total_tokens=total_tokens,
             )
-        self._record_usage(session, prompt_tokens, response_tokens, details=_usage_details(meta))
+        # Thinking is billed as output but counted outside the response count:
+        # the output total counts it, as on the text path (RFC §6, §12.4.2).
+        thoughts = getattr(meta, "thoughts_token_count", 0) or 0
+        self._record_usage(
+            session, prompt_tokens, response_tokens + thoughts, details=_usage_details(meta)
+        )
 
     async def _on_go_away(
         self, session: VoiceSession, state: _GeminiSessionState, go_away: Any

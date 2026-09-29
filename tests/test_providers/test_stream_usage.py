@@ -1,9 +1,11 @@
 """A streamed turn of the OpenAI family reports its usage and a cost (RMK-312).
 
-Every tool round streams, and without ``stream_options.include_usage`` the
-server sends no usage: the turn reported ``{}`` and priced at zero. The
-family now asks for it by default; a server that rejects the option sets
-``include_stream_usage=False``. Cerebras keeps False: it sends usage unasked.
+Every tool round streams, and the server sends usage in a stream only when
+``stream_options.include_usage`` asks for it: the family asks by default, and
+a server that rejects the option sets ``include_stream_usage=False``.
+Cerebras keeps False: it sends usage unasked. ``reasoning_tokens`` is the
+thinking share of ``output_tokens``; xAI, which reports it beside the
+completion count, has it folded in.
 """
 
 from __future__ import annotations
@@ -11,12 +13,12 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
 import httpx
 import pytest
-from pydantic import BaseModel
 
 from roomkit.providers.ai.base import AIContext, AIMessage, StreamDone
 from roomkit.providers.azure.config import AzureAIConfig
@@ -25,6 +27,7 @@ from roomkit.providers.deepseek.config import DeepSeekConfig
 from roomkit.providers.openai.ai import OpenAIAIProvider
 from roomkit.providers.openai.config import OpenAIConfig
 from roomkit.providers.vllm.config import VLLMConfig
+from roomkit.providers.xai.ai import XAIAIProvider
 
 _MODEL = "gpt-5.6-sol"
 _USAGE = {
@@ -36,21 +39,25 @@ _USAGE = {
 }
 
 
+_Config = OpenAIConfig | AzureAIConfig | VLLMConfig
+
+
 @pytest.mark.parametrize(
     ("config", "expected"),
     [
-        (OpenAIConfig(api_key="k", model=_MODEL), True),
-        (DeepSeekConfig(api_key="k", model="deepseek-chat"), True),
-        (AzureAIConfig(api_key="k", azure_endpoint="https://x", model="d"), True),
-        (VLLMConfig(model="m"), True),
-        (CerebrasConfig(api_key="k", model="gpt-oss-120b"), False),
+        pytest.param(OpenAIConfig(api_key="k", model=_MODEL), True, id="openai"),
+        pytest.param(DeepSeekConfig(api_key="k", model="deepseek-chat"), True, id="deepseek"),
+        pytest.param(
+            AzureAIConfig(api_key="k", azure_endpoint="https://x", model="d"), True, id="azure"
+        ),
+        pytest.param(VLLMConfig(model="m"), True, id="vllm"),
+        pytest.param(CerebrasConfig(api_key="k", model="gpt-oss-120b"), False, id="cerebras"),
     ],
-    ids=lambda value: type(value).__name__ if isinstance(value, BaseModel) else "",
 )
 def test_the_openai_family_asks_for_stream_usage_by_default(
-    config: BaseModel, expected: bool
+    config: _Config, expected: bool
 ) -> None:
-    assert config.include_stream_usage is expected  # ty: ignore[unresolved-attribute]
+    assert config.include_stream_usage is expected
 
 
 def _stream(requests: list[dict[str, Any]]) -> Callable[[httpx.Request], httpx.Response]:
@@ -127,3 +134,25 @@ async def test_a_server_that_rejects_the_option_can_turn_it_off() -> None:
 
     assert "stream_options" not in requests[0]
     assert usage == {}
+
+
+def _xai_usage(completion: int) -> dict[str, int]:
+    """xAI's usage for 279 prompt and 89 reasoning tokens, 374 in all."""
+    return XAIAIProvider._usage_from(
+        SimpleNamespace(
+            prompt_tokens=279,
+            completion_tokens=completion,
+            total_tokens=374,
+            prompt_tokens_details=None,
+            completion_tokens_details=SimpleNamespace(reasoning_tokens=89),
+        )
+    )
+
+
+def test_xai_reasoning_reported_beside_the_completion_is_billed_as_output() -> None:
+    apart = _xai_usage(completion=6)
+    inside = _xai_usage(completion=95)
+
+    assert apart == {"input_tokens": 279, "output_tokens": 95, "reasoning_tokens": 89}
+    # Shaped like OpenAI's, the reasoning is already in the completion: never twice.
+    assert inside == apart

@@ -86,13 +86,12 @@ def _usage_from_metadata(meta: Any) -> dict[str, int]:
 
     The SDK calls them prompt and candidates counts. The prompt count includes
     implicitly cached tokens, reported apart so the cached prefix is not
-    charged twice and cache rates apply. Thinking and a built-in tool's prompt
-    are billed but counted outside candidates and prompt: they join output and
-    input, and the thinking share is also exposed as ``reasoning_tokens``, a
-    detail of output that is never priced on its own.
+    charged twice and cache rates apply. Thinking is billed as output but
+    counted outside candidates: it joins ``output_tokens``, and its share is
+    also exposed as ``reasoning_tokens``, a detail never priced on its own
+    (RFC §6, usage counters).
     """
-    tool_prompt = getattr(meta, "tool_use_prompt_token_count", None) or 0
-    prompt = (meta.prompt_token_count or 0) + tool_prompt
+    prompt = meta.prompt_token_count or 0
     cached = getattr(meta, "cached_content_token_count", None) or 0
     thoughts = getattr(meta, "thoughts_token_count", None) or 0
     usage = {

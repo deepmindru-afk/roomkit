@@ -9,9 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `reasoning_tokens` in `AIResponse.usage` for OpenAI, DeepSeek and Gemini
-  (RMK-312): the thinking share of `output_tokens`, which already counts it.
-  A detail: `ModelPricing.cost_for` never prices it a second time.
+- `reasoning_tokens` in `AIResponse.usage` (RMK-312, RFC §6) for every
+  provider on the OpenAI client (OpenAI, Azure, vLLM, llama.cpp, xAI, Meta,
+  OpenRouter, LiteLLM, Qwen, Cerebras), DeepSeek and Gemini: the thinking
+  share of `output_tokens`, which counts it. A detail: `ModelPricing.cost_for`
+  never prices it a second time.
 - `RoomKit.deliver(chain_depth=...)`, `InboundMessage.chain_depth`,
   `DeliveryItem.chain_depth` and `RealtimeVoiceChannel.inject_text(chain_depth=...)`
   (RMK-287, RFC §8.3, §23.3): the chain the delivered content continues.
@@ -104,10 +106,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   set the timeout it needs.
 - `include_stream_usage` defaults to `True` on `OpenAIConfig` (and the
   providers built on it: DeepSeek, Qwen, OpenRouter, LiteLLM), `AzureAIConfig`
-  and `VLLMConfig` (RMK-312): every tool round streams, and without
-  `stream_options.include_usage` a streamed turn reported `usage={}` and
-  priced at zero. A compatible server that rejects `stream_options` now needs
-  `include_stream_usage=False`. Cerebras keeps `False`: it sends usage unasked.
+  and `VLLMConfig`, and so the managed llama.cpp server (RMK-312): every tool
+  round streams, and without `stream_options.include_usage` a streamed turn
+  reported `usage={}` and priced at zero. A compatible server that rejects
+  `stream_options` now needs `include_stream_usage=False`. Cerebras keeps
+  `False`: it sends usage unasked.
 - A delegation no longer writes its result into the notified channel's
   `system_prompt` binding metadata (RMK-310, RFC §23.3): the first
   delegation replaced the agent's own prompt with a "BACKGROUND TASK
@@ -328,11 +331,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Gemini (text) counts thinking and a built-in tool's prompt (RMK-312): its
-  usage reported `candidates_token_count` alone as `output_tokens`, while
-  Gemini bills `thoughts_token_count` as output too, so a turn that thought
-  900 tokens to answer in 10 was priced for 10. `output_tokens` now adds the
-  thinking, and `input_tokens` the `tool_use_prompt_token_count`.
+- Billed thinking counts in `output_tokens` (RMK-312, RFC §6). Gemini (text
+  and Live) reported `candidates_token_count` (`response_token_count` on
+  Live) alone, while it bills `thoughts_token_count` as output too, so a
+  turn that thought 900 tokens to answer in 10 was priced for 10. xAI
+  reports its reasoning beside `completion_tokens` (its total is prompt +
+  completion + reasoning): the reasoning now joins `output_tokens` when the
+  total says it was reported apart, never twice.
 - The tool policy's exemption (`activate_skill`, `read_skill_reference`,
   `read_stored_result`, `find_tools`, `list_tools`) covers the tool the
   channel serves itself, not a name (RMK-294, RFC §21.1). A host or MCP tool

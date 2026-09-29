@@ -541,6 +541,8 @@ class ModelPricing(BaseModel):
         Every counter is **disjoint**: a token is charged under exactly one of
         them. Providers that receive image tokens nested inside a total
         subtract them before reporting, so summing here bills each token once.
+        ``reasoning_tokens`` is not one of them: it is the thinking share of
+        ``output_tokens``, a detail this ignores (RFC §6).
 
         A counter with no corresponding rate is omitted: ``None`` means the
         catalog does not represent a separate per-token charge for it. When the

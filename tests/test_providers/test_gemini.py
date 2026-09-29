@@ -357,10 +357,9 @@ class TestGeminiAIProvider:
 
             assert result.usage == {"input_tokens": 42, "output_tokens": 7}
 
-    async def test_thinking_and_a_tool_prompt_are_counted_and_priced(self) -> None:
-        """Gemini bills thinking as output and a built-in tool's prompt as input,
-        outside candidates and prompt: 900 thinking tokens were reported as the 10
-        of the answer (RMK-312)."""
+    async def test_thinking_is_counted_and_priced_as_output(self) -> None:
+        """Gemini bills thinking as output but counts it outside candidates: a
+        turn that thinks 900 tokens to answer in 10 is priced for 910 (RMK-312)."""
         mock_genai = _mock_genai_module()
         with patch.dict("sys.modules", _genai_modules(mock_genai)):
             from roomkit.providers.gemini.ai import GeminiAIProvider
@@ -370,7 +369,6 @@ class TestGeminiAIProvider:
                 prompt_token_count=100,
                 candidates_token_count=10,
                 thoughts_token_count=900,
-                tool_use_prompt_token_count=5,
                 cached_content_token_count=40,
             )
             text = SimpleNamespace(
@@ -389,7 +387,7 @@ class TestGeminiAIProvider:
             result = await provider.generate(_context())
 
             assert result.usage == {
-                "input_tokens": 65,
+                "input_tokens": 60,
                 "output_tokens": 910,
                 "cache_read_input_tokens": 40,
                 "reasoning_tokens": 900,

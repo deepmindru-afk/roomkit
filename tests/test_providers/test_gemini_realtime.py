@@ -2078,6 +2078,8 @@ class TestGeminiLiveProvider:
 
         usage = session._last_usage
         assert usage["input_tokens"] == 23520
+        # Thinking is billed as output, outside the response count (RFC §6).
+        assert usage["output_tokens"] == 344
         assert usage["prompt_tokens_details"] == {"AUDIO": 3520, "TEXT": 20000}
         assert usage["response_tokens_details"] == {"AUDIO": 44}
         assert usage["cached_content_token_count"] == 12000

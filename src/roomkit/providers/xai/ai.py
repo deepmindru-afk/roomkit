@@ -38,6 +38,22 @@ class XAIAIProvider(OpenAIAIProvider):
         """Provider identifier used in error messages and telemetry."""
         return "xai"
 
+    @staticmethod
+    def _usage_from(raw: Any) -> dict[str, int]:
+        """xAI reports reasoning beside ``completion_tokens`` and bills it as output.
+
+        Its total is prompt + completion + reasoning, where OpenAI's reasoning
+        sits inside completion. The reasoning joins ``output_tokens`` only when
+        the total says it was reported apart, so a response shaped like
+        OpenAI's is never counted twice (RFC §6, usage counters).
+        """
+        usage = OpenAIAIProvider._usage_from(raw)
+        reasoning = usage.get("reasoning_tokens", 0)
+        apart = (raw.prompt_tokens or 0) + (raw.completion_tokens or 0) + reasoning
+        if reasoning and getattr(raw, "total_tokens", None) == apart:
+            usage["output_tokens"] += reasoning
+        return usage
+
     @property
     def supports_vision(self) -> bool:
         """Whether the configured Grok model accepts image input.
