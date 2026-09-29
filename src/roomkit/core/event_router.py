@@ -364,24 +364,10 @@ class EventRouter:
         target_results: list[_TargetResult] = []
 
         async def _process_target(binding: ChannelBinding) -> None:
-            # Solicitation is decided before anything is done for this target
-            # (RFC §19.3, §19.4 step 0). An intelligence channel that is not
-            # asked to act costs nothing: no registry lookup, no transcode, and
-            # no warning about a channel a restart has not re-registered but
-            # that this event never needed. Reads the untranscoded event —
-            # transcoding rewrites content, never the address or the routing
-            # metadata read here. Transport delivery below is untouched:
-            # addressing narrows who is asked, never who may see.
             if binding.category == ChannelCategory.INTELLIGENCE:
-                internal = bool((event.metadata or {}).get("_orchestration_internal"))
-                asked = not internal and _solicits(
-                    event,
-                    binding.channel_id,
-                    source_is_agent=source_binding.category == ChannelCategory.INTELLIGENCE,
-                    policy=context.room.agent_response_policy,
-                )
-                if not asked:
-                    target_results.append(_TargetResult(channel_id=binding.channel_id))
+                unasked = self._unasked_result(event, source_binding, binding, context)
+                if unasked is not None:
+                    target_results.append(unasked)
                     return
 
             channel = self._channels.get(binding.channel_id)
@@ -615,6 +601,34 @@ class EventRouter:
         )
 
         return result
+
+    @staticmethod
+    def _unasked_result(
+        event: RoomEvent,
+        source_binding: ChannelBinding,
+        binding: ChannelBinding,
+        context: RoomContext,
+    ) -> _TargetResult | None:
+        """What an intelligence target leaves when it is not asked to act, or ``None``.
+
+        Decided before anything is done for the target (RFC §19.3, §19.4 step
+        0): a channel that is not asked costs nothing, no registry lookup, no
+        transcode, and no warning about a channel a restart has not
+        re-registered but that this event never needed. Reads the
+        untranscoded event: transcoding rewrites content, never the address or
+        the routing metadata read here. Transport delivery is untouched:
+        addressing narrows who is asked, never who may see.
+        """
+        internal = bool((event.metadata or {}).get("_orchestration_internal"))
+        asked = not internal and _solicits(
+            event,
+            binding.channel_id,
+            source_is_agent=source_binding.category == ChannelCategory.INTELLIGENCE,
+            policy=context.room.agent_response_policy,
+        )
+        if not asked:
+            return _TargetResult(channel_id=binding.channel_id)
+        return None
 
     def _stream_blocked_by(self, trigger: RoomEvent) -> str | None:
         """Why a streamed response to *trigger* is blocked, if it is.
