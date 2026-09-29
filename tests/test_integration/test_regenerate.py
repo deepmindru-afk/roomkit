@@ -412,3 +412,62 @@ class TestRegenerateTarget:
 
         with pytest.raises(RoomNotFoundError):
             await kit.regenerate_target("nope")
+
+
+class TestRegenerateBlocked:
+    """What a regeneration blocks is stored and announced, as on the inbound path
+    (RFC §8.3; RMK-287)."""
+
+    async def test_past_the_depth_limit_the_agent_is_not_asked(self, streaming: bool) -> None:
+        kit = RoomKit(max_chain_depth=1)
+        provider = MockAIProvider(responses=["never"], streaming=streaming)
+        kit.register_channel(SMSChannel("sms1"))
+        kit.register_channel(AIChannel("ai1", provider=provider))
+        await kit.create_room(room_id="r1")
+        await kit.attach_channel("r1", "sms1")
+        await kit.attach_channel("r1", "ai1", category=ChannelCategory.INTELLIGENCE)
+        await kit.process_inbound(
+            InboundMessage(channel_id="sms1", sender_id="u1", content=TextContent(body="hi"))
+        )
+        announced: list[FrameworkEvent] = []
+
+        @kit.on("chain_depth_exceeded")
+        async def on_exceeded(event: FrameworkEvent) -> None:
+            announced.append(event)
+
+        await kit.regenerate_response("r1")
+
+        records = [
+            e
+            for e in await kit.store.list_events(
+                "r1", event_filter=EventFilter(include_blocked=True)
+            )
+            if e.source.channel_id == "ai1"
+        ]
+        assert [(e.status, e.blocked_by) for e in records] == [
+            (EventStatus.BLOCKED, "event_chain_depth_limit")
+        ] * 2
+        assert [e.event_id for e in announced] == [records[1].id]
+        observations = await kit.store.list_observations("r1")
+        assert f"obs_{records[1].id}" in {o.id for o in observations}
+        assert provider.calls == []
+        await kit.close()
+
+    async def test_a_muted_agents_regenerated_answer_is_stored_blocked(self) -> None:
+        kit, _ = await _kit_with_turn(streaming=False)
+        binding = await kit.store.get_binding("r1", "ai1")
+        assert binding is not None
+        await kit.store.update_binding(binding.model_copy(update={"muted": True}))
+        blocked: list[FrameworkEvent] = []
+
+        @kit.on("event_blocked")
+        async def on_blocked(event: FrameworkEvent) -> None:
+            blocked.append(event)
+
+        await kit.regenerate_response("r1")
+
+        events = await kit.store.list_events("r1", event_filter=EventFilter(include_blocked=True))
+        [record] = [e for e in _ai_messages(events, "ai1") if e.status == EventStatus.BLOCKED]
+        assert record.blocked_by == "source_muted"
+        assert [e.event_id for e in blocked] == [record.id]
+        await kit.close()

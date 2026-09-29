@@ -695,13 +695,7 @@ class LaneExecutionMixin(HelpersMixin):
         # answer, and is chained.
         cascade.add_streams(result.streaming_responses, chained=not plan.emit_processed)
 
-        # Commit blocked responses atomically (RFC §8.1 / §8.3 / §14.3 —
-        # blocked events are still indexed): chain-depth enforcement and
-        # muted sources (§7.5 rule 2) both land here. A room that refuses
-        # writes takes neither (§5.1).
-        if result.blocked_events and not await self._room_refuses_writes(room_id):
-            for blocked in result.blocked_events:
-                await self._commit_blocked_response(room_id, blocked)
+        await self._commit_blocked_events(room_id, result)
 
         if plan.fire_after_broadcast:
             await self._persist_side_effects(
@@ -717,6 +711,18 @@ class LaneExecutionMixin(HelpersMixin):
 
         if plan.emit_processed:
             await self._emit_framework_event("event_processed", room_id=room_id, event_id=event.id)
+
+    async def _commit_blocked_events(self, room_id: str, result: BroadcastResult) -> None:
+        """Commit the records a delivery set blocked (RFC §8.1, §8.3, §14.3).
+
+        Blocked events are still indexed: an agent not asked past the depth
+        limit and a muted source's response (§7.5 rule 2) both land here,
+        whichever path broadcast the trigger. A room that refuses writes takes
+        neither (§5.1).
+        """
+        if result.blocked_events and not await self._room_refuses_writes(room_id):
+            for blocked in result.blocked_events:
+                await self._commit_blocked_response(room_id, blocked)
 
     async def _commit_blocked_response(self, room_id: str, blocked: RoomEvent) -> None:
         """Commit a record the router blocked, and announce why.

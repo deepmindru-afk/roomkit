@@ -37,6 +37,7 @@ class RegenerateHost(Protocol):
     Cross-mixin methods (provided by other mixins in the MRO):
         _get_router: From :class:`InboundLockedMixin`.
         _commit_and_deliver: From :class:`LaneExecutionMixin`.
+        _commit_blocked_events: From :class:`LaneExecutionMixin`.
         _finish_cascade: From :class:`LaneExecutionMixin`.
     """
 
@@ -60,6 +61,7 @@ class RegenerateMixin(HelpersMixin):
     # Cross-mixin methods — attribute annotations avoid MRO shadowing
     _get_router: Any  # see RegenerateHost
     _commit_and_deliver: Any  # see RegenerateHost
+    _commit_blocked_events: Any  # see RegenerateHost
     _finish_cascade: Any  # see RegenerateHost
 
     async def regenerate_target(self, room_id: str) -> RoomEvent | None:
@@ -296,6 +298,12 @@ class RegenerateMixin(HelpersMixin):
         # answer is read with it (RFC §8.3), the regenerated stream first.
         cascade = DeliveryCascade(room_id, reentry_budget=self._max_chain_depth * 10)
         cascade.add_streams(pending_streams)
+        # What the re-broadcast blocked is stored and announced, and its side
+        # effects kept, as the inbound path does (RFC §8.3).
+        await self._commit_blocked_events(room_id, broadcast_result)
+        await self._persist_side_effects(
+            room_id, broadcast_result.tasks, broadcast_result.observations, trigger, context
+        )
         for reentry in regenerated:
             await self._commit_and_deliver(
                 room_id, reentry, reentry.source.channel_id, cascade=cascade
