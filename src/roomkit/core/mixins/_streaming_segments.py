@@ -7,6 +7,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._tool_event_result import tool_event_payload
+from roomkit.core.event_router import chain_depth_exceeded
 from roomkit.models.enums import EventStatus, EventType, HookTrigger
 from roomkit.models.event import EventSource, RoomEvent, TextContent, ToolCallContent
 
@@ -244,14 +245,21 @@ class SegmentWriter:
         return await self._lane(event, exclude=exclude, hook_result=hook_result)
 
     async def _write_blocked(self, event: RoomEvent) -> None:
-        """Store a segment of a blocked stream as its audit record, delivered
-        nowhere, as a buffered response's blocked events are (RFC §8.3)."""
+        """Store a row of a blocked stream as its audit record, delivered
+        nowhere, as a buffered response's blocked events are (RFC §8.3).
+
+        Like them, it skips BEFORE_BROADCAST and gets its own observation.
+        """
         if await self._kit._room_refuses_writes(self._room_id):
             return
         blocked = event.model_copy(
             update={"status": EventStatus.BLOCKED, "blocked_by": self._sr.blocked_by}
         )
         await self._kit._commit_blocked_response(self._room_id, blocked)
+        observation = chain_depth_exceeded(blocked, self._kit._max_chain_depth)
+        await self._kit._persist_side_effects(
+            self._room_id, [], [observation], blocked, self._context
+        )
 
     async def _gate(self, event: RoomEvent) -> tuple[RoomEvent, SyncPipelineResult] | None:
         """Run the BEFORE_BROADCAST sync hooks on a row before it commits.

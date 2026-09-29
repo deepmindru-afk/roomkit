@@ -16,6 +16,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from roomkit.core.event_router import CHAIN_DEPTH_LIMIT
 from roomkit.core.mixins.helpers import _RECENT_EVENTS_LIMIT, HelpersMixin, _refuses_writes
 from roomkit.models.delivery import DeliveryError, DeliveryResult
 from roomkit.models.enums import ChannelCategory, EventStatus, EventType, HookTrigger
@@ -700,7 +701,7 @@ class LaneExecutionMixin(HelpersMixin):
         segments (RFC §8.3), so both are indexed and announced alike.
         """
         await self._commit_indexed(room_id, blocked)
-        if blocked.blocked_by == "event_chain_depth_limit":
+        if blocked.blocked_by == CHAIN_DEPTH_LIMIT:
             await self._emit_framework_event(
                 "chain_depth_exceeded",
                 room_id=room_id,

@@ -115,10 +115,7 @@ class InboundStreamingMixin(HelpersMixin):
         from roomkit.models.event import EventSource, TextContent
 
         response_vis = sr.trigger_event.response_visibility
-        # A blocked stream is read to its end and delivered to no one (RFC §8.3).
-        streaming_targets = (
-            [] if sr.blocked_by is not None else self._find_streaming_targets(router, sr, context)
-        )
+        streaming_targets = self._find_streaming_targets(router, sr, context)
 
         logger.debug(
             "Streaming targets for room %s: %d found",
@@ -381,6 +378,9 @@ class InboundStreamingMixin(HelpersMixin):
         context: RoomContext,
     ) -> list[Any]:
         """Find transport channels that support streaming delivery."""
+        if sr.blocked_by is not None:
+            # A blocked stream is read to its end and delivered to no one (RFC §8.3).
+            return []
         response_vis = sr.trigger_event.response_visibility
         targets: list[Any] = []
         for binding in context.bindings:

@@ -140,13 +140,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - The chain-depth limit holds for a streamed response (RMK-283, RFC §8.3).
-  The router applied it only to buffered responses: a streamed one, which
-  every in-repo provider produces, was delivered in full past
-  `max_chain_depth`, so the guard against AI-to-AI loops did not hold in
-  production. At the limit a streamed response is now generated and read to
-  its end, its tools run, and each segment is stored BLOCKED with
-  `blocked_by="event_chain_depth_limit"`, announced as `chain_depth_exceeded`
-  and delivered to no channel, the streaming one included.
+  The router applied it only to buffered responses: a streamed one (every
+  in-repo provider streams) answering a trigger already one below
+  `max_chain_depth`, one sent with `send_event(chain_depth=...)` or any with
+  `max_chain_depth <= 1`, was delivered in full. At the limit a streamed
+  response is now generated and read to its end, as a buffered one is, and
+  each row is stored BLOCKED with `blocked_by="event_chain_depth_limit"`, with
+  its own observation and `chain_depth_exceeded`, and delivered to no
+  channel, the streaming one included.
 - A turn that did not complete no longer reports as one, and a stop keeps its
   tools from running (RMK-282, RFC §6.4, §12.2 step 13s, §21.3). On the
   streaming tool loop, the one production uses, a turn whose stream was
