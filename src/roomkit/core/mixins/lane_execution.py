@@ -676,26 +676,7 @@ class LaneExecutionMixin(HelpersMixin):
         # writes takes neither (§5.1).
         if result.blocked_events and not await self._room_refuses_writes(room_id):
             for blocked in result.blocked_events:
-                await self._commit_indexed(room_id, blocked)
-                if blocked.blocked_by == "event_chain_depth_limit":
-                    await self._emit_framework_event(
-                        "chain_depth_exceeded",
-                        room_id=room_id,
-                        event_id=blocked.id,
-                        channel_id=blocked.source.channel_id,
-                        data={
-                            "chain_depth": blocked.chain_depth,
-                            "max_chain_depth": self._max_chain_depth,
-                        },
-                    )
-                else:
-                    await self._emit_framework_event(
-                        "event_blocked",
-                        room_id=room_id,
-                        event_id=blocked.id,
-                        channel_id=blocked.source.channel_id,
-                        data={"reason": blocked.blocked_by, "blocked_by": blocked.blocked_by},
-                    )
+                await self._commit_blocked_response(room_id, blocked)
 
         if plan.fire_after_broadcast:
             await self._persist_side_effects(
@@ -711,6 +692,33 @@ class LaneExecutionMixin(HelpersMixin):
 
         if plan.emit_processed:
             await self._emit_framework_event("event_processed", room_id=room_id, event_id=event.id)
+
+    async def _commit_blocked_response(self, room_id: str, blocked: RoomEvent) -> None:
+        """Commit a response the router blocked, and announce why.
+
+        Shared by a buffered response's blocked events and a blocked stream's
+        segments (RFC §8.3), so both are indexed and announced alike.
+        """
+        await self._commit_indexed(room_id, blocked)
+        if blocked.blocked_by == "event_chain_depth_limit":
+            await self._emit_framework_event(
+                "chain_depth_exceeded",
+                room_id=room_id,
+                event_id=blocked.id,
+                channel_id=blocked.source.channel_id,
+                data={
+                    "chain_depth": blocked.chain_depth,
+                    "max_chain_depth": self._max_chain_depth,
+                },
+            )
+        else:
+            await self._emit_framework_event(
+                "event_blocked",
+                room_id=room_id,
+                event_id=blocked.id,
+                channel_id=blocked.source.channel_id,
+                data={"reason": blocked.blocked_by, "blocked_by": blocked.blocked_by},
+            )
 
     async def _reentry_commit_pass(
         self,

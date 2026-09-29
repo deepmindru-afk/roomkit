@@ -113,6 +113,8 @@ class StreamingResponse:
     # The turn's live record (``ChannelOutput.response_metadata``), read by the
     # persistence of each segment as it stands then — never copied here.
     response_metadata: Mapping[str, Any] = field(default_factory=dict)
+    # Why every segment is stored BLOCKED and delivered nowhere (RFC §8.3).
+    blocked_by: str | None = None
 
 
 @dataclass
@@ -415,6 +417,7 @@ class EventRouter:
                         source_channel_type=binding.channel_type,
                         trigger_event=transcoded_event,
                         response_metadata=output.response_metadata,
+                        blocked_by=self._stream_depth_block(tr, binding, transcoded_event),
                     )
                     tr.observations.extend(output.observations)
                     target_results.append(tr)
@@ -521,32 +524,9 @@ class EventRouter:
                             )
                             tr.blocked_events.append(blocked)
                             tr.observations.append(
-                                Observation(
-                                    id=f"obs_{blocked.id}",
-                                    room_id=event.room_id,
-                                    channel_id=binding.channel_id,
-                                    content=(
-                                        f"Event chain depth {resp.chain_depth}"
-                                        f" exceeded limit {self._max_chain_depth}"
-                                    ),
-                                    category="event_chain_depth_exceeded",
-                                    metadata={
-                                        "chain_depth": resp.chain_depth,
-                                        "max_chain_depth": self._max_chain_depth,
-                                        "source_channel": binding.channel_id,
-                                    },
+                                self._chain_depth_exceeded(
+                                    f"obs_{blocked.id}", event.room_id, binding, resp.chain_depth
                                 )
-                            )
-                            logger.warning(
-                                "Chain depth %d exceeded limit %d for channel %s — event blocked",
-                                resp.chain_depth,
-                                self._max_chain_depth,
-                                binding.channel_id,
-                                extra={
-                                    "room_id": event.room_id,
-                                    "channel_id": binding.channel_id,
-                                    "chain_depth": resp.chain_depth,
-                                },
                             )
 
             except Exception as exc:
@@ -598,6 +578,52 @@ class EventRouter:
         )
 
         return result
+
+    def _stream_depth_block(
+        self, tr: _TargetResult, binding: ChannelBinding, trigger: RoomEvent
+    ) -> str | None:
+        """Block a streamed response at the chain-depth limit, as a buffered one is.
+
+        Its depth is known before a token is read (the trigger's plus one), so
+        the stream is marked here and every segment is stored BLOCKED and
+        delivered nowhere (RFC §8.3).
+        """
+        depth = trigger.chain_depth + 1
+        if depth < self._max_chain_depth:
+            return None
+        tr.observations.append(
+            self._chain_depth_exceeded(
+                f"obs_stream_{trigger.id}_{binding.channel_id}",
+                trigger.room_id,
+                binding,
+                depth,
+            )
+        )
+        return "event_chain_depth_limit"
+
+    def _chain_depth_exceeded(
+        self, observation_id: str, room_id: str, binding: ChannelBinding, depth: int
+    ) -> Observation:
+        """Log a response past the chain-depth limit and record it as an observation."""
+        logger.warning(
+            "Chain depth %d exceeded limit %d for channel %s — event blocked",
+            depth,
+            self._max_chain_depth,
+            binding.channel_id,
+            extra={"room_id": room_id, "channel_id": binding.channel_id, "chain_depth": depth},
+        )
+        return Observation(
+            id=observation_id,
+            room_id=room_id,
+            channel_id=binding.channel_id,
+            content=f"Event chain depth {depth} exceeded limit {self._max_chain_depth}",
+            category="event_chain_depth_exceeded",
+            metadata={
+                "chain_depth": depth,
+                "max_chain_depth": self._max_chain_depth,
+                "source_channel": binding.channel_id,
+            },
+        )
 
     async def broadcast(
         self,

@@ -234,11 +234,24 @@ class SegmentWriter:
             )
 
     async def _write_now(self, event: RoomEvent, *, exclude: set[str] | None) -> RoomEvent | None:
+        if self._sr.blocked_by is not None:
+            await self._write_blocked(event)
+            return None
         gated = await self._gate(event)
         if gated is None:
             return None
         event, hook_result = gated
         return await self._lane(event, exclude=exclude, hook_result=hook_result)
+
+    async def _write_blocked(self, event: RoomEvent) -> None:
+        """Store a segment of a blocked stream as its audit record, delivered
+        nowhere, as a buffered response's blocked events are (RFC §8.3)."""
+        if await self._kit._room_refuses_writes(self._room_id):
+            return
+        blocked = event.model_copy(
+            update={"status": EventStatus.BLOCKED, "blocked_by": self._sr.blocked_by}
+        )
+        await self._kit._commit_blocked_response(self._room_id, blocked)
 
     async def _gate(self, event: RoomEvent) -> tuple[RoomEvent, SyncPipelineResult] | None:
         """Run the BEFORE_BROADCAST sync hooks on a row before it commits.
