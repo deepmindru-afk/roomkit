@@ -7,7 +7,6 @@ import json
 import logging
 import threading
 import time
-from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.channels._ai_policy import policy_admits, policy_refusal
@@ -24,9 +23,8 @@ from roomkit.core.exceptions import ToolRefusedError
 from roomkit.models.enums import ChannelType, HookTrigger
 from roomkit.models.tool_call import (
     ToolCallEvent,
-    chained_call_event,
     fold_tool_call_rewrite,
-    withheld_call_event,
+    observed_call_event,
 )
 from roomkit.providers.ai.base import AITextPart
 from roomkit.telemetry.base import Attr, SpanKind
@@ -1206,14 +1204,14 @@ class RealtimeToolsMixin:
                 session, call_id, name, tool_event.arguments, result_str, room_id
             )
             return
-        if not hook_result.allowed:
-            observed = withheld_call_event(tool_event, result_str)
-        else:
-            if handler_result is None:
-                self._mark_tool_call_reported(session.id, call_id)
-            observed = replace(chained_call_event(hook_result, tool_event), result=result_str)
+        if handler_result is None and hook_result.allowed:
+            self._mark_tool_call_reported(session.id, call_id)
         await engine.run_observers(
-            room_id, HookTrigger.ON_TOOL_CALL, observed, context, skip_event_filter=True
+            room_id,
+            HookTrigger.ON_TOOL_CALL,
+            observed_call_event(hook_result, tool_event, result_str),
+            context,
+            skip_event_filter=True,
         )
         await self._framework._emit_framework_event(
             "tool_call",
@@ -1262,31 +1260,18 @@ class RealtimeToolsMixin:
                 )
 
         # Observers may request a handoff, so never call them under the
-        # configuration lock. Their result cannot replace infrastructure delivery.
-        # Fire ON_TOOL_CALL hook so audit + UI-broadcast hooks see search calls.
+        # configuration lock. The model already read the result, so the
+        # firing is a report: nothing a hook returns replaces it, and the
+        # observers see it whatever a hook decided, a BLOCK included.
         if self._framework and room_id:
-            search_event = ToolCallEvent(
-                channel_id=self.channel_id,
-                channel_type=ChannelType.REALTIME_VOICE,
-                tool_call_id=call_id,
-                name=name,
-                arguments=arguments,
-                result=result_str,
-                room_id=room_id,
-                session=session,
+            search_event = self._realtime_tool_event(
+                session, call_id, name, arguments, result_str, room_id
             )
             try:
-                ctx = await self._framework._build_context(room_id)
-                await self._framework.hook_engine.run_sync_hooks(
-                    room_id,
-                    HookTrigger.ON_TOOL_CALL,
-                    search_event,
-                    ctx,
-                    skip_event_filter=True,
-                )
+                await self._framework._report_tool_call(search_event, self.channel_id)
             except Exception:
                 logger.debug(
-                    "ON_TOOL_CALL observation failed for tool-search tool %s",
+                    "ON_TOOL_CALL report failed for tool-search tool %s",
                     name,
                     exc_info=True,
                 )

@@ -313,6 +313,48 @@ async def test_provider_executed_tool_never_fires_retroactive_before_hook() -> N
     await kit.close()
 
 
+@pytest.mark.parametrize("decision", ["clear", "block"])
+async def test_a_provider_run_call_is_reported_as_the_provider_ran_it(decision: str) -> None:
+    """RMK-292 review: the firing on a call the provider already ran is a
+    report (RFC §9.3): its observers see the provider's outcome, whatever a
+    SYNC hook returned, a BLOCK included."""
+    provider = MockAIProvider(
+        streaming=True,
+        ai_responses=[
+            AIResponse(
+                content="done",
+                finish_reason="stop",
+                tool_calls=[
+                    AIToolCall(
+                        id="tc1",
+                        name="Write",
+                        arguments={"path": "/tmp/out", "_result": "written"},
+                    )
+                ],
+            )
+        ],
+    )
+    kit = RoomKit()
+    ai = AIChannel("ai1", provider=provider)
+    observed: list[ToolCallEvent] = []
+
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC)
+    async def rewrite(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
+        if decision == "block":
+            return HookResult.block("no")
+        return HookResult(action="allow", metadata={"result": None})
+
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC)
+    async def audit(event: ToolCallEvent, ctx: RoomContext) -> None:
+        observed.append(event)
+
+    await _run_turn(kit, ai)
+    await asyncio.sleep(0.05)
+
+    assert [(e.result, e.is_error) for e in observed] == [("written", False)]
+    await kit.close()
+
+
 async def test_no_streaming_target_error_fires_on_error() -> None:
     """A provider failure on the no-streaming-targets path (a PII-locked / edge
     agent whose stream send fn was withheld) must still fire ON_ERROR so the

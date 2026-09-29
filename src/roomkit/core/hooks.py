@@ -430,8 +430,9 @@ class HookEngine:
                 all see the chain's latest state. ``None`` leaves metadata
                 beside the event.
             fire_observers: ``False`` leaves the ASYNC observers to the
-                caller, for a firing whose observers must see an event no
-                SYNC hook can change (an external tool's report).
+                caller, for a firing whose observers must see something other
+                than the event the chain left: a served tool call's result as
+                the model reads it, or a report no SYNC hook can change.
         """
         filter_event = None if skip_event_filter else event
         hooks = self._get_hooks(room_id, trigger, HookExecution.SYNC, event=filter_event)

@@ -11,16 +11,17 @@ from __future__ import annotations
 
 import dataclasses
 import json
-import logging
-from collections.abc import Mapping
 from typing import Any
 
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
-from roomkit.models.tool_call import ToolCallEvent, ToolCallVerdict, chained_call_event
+from roomkit.models.tool_call import (
+    ToolCallEvent,
+    ToolCallVerdict,
+    chained_call_event,
+    renderable_copy,
+)
 from roomkit.providers.ai.base import AIImagePart, AITextPart
-
-logger = logging.getLogger("roomkit.tools")
 
 ToolResult = str | list[AITextPart | AIImagePart]
 
@@ -53,20 +54,13 @@ def tool_call_verdict(hook_result: Any, event: ToolCallEvent) -> ToolCallVerdict
         reason = json.dumps({"error": hook_result.reason or "blocked"})
         return ToolCallVerdict(result=reason, blocked=True)
     final = chained_call_event(hook_result, event)
-    copy = final.structured_content
-    if copy is not None and not isinstance(copy, Mapping):
-        # A MODIFY skips the fold's check; the same rule applies to it.
-        logger.warning(
-            "ON_TOOL_CALL hook left a structured_content of type %s, not a mapping; "
-            "the call's structured copy is dropped",
-            type(copy).__name__,
-        )
-        copy = None
+    # A MODIFY skips the fold's check; the same rule applies to it.
+    copy = renderable_copy(final.structured_content)
     replaced = final.result is not event.result
     return ToolCallVerdict(
         result=as_tool_result(final.result) if replaced else None,
-        replaces_structured=copy is not event.structured_content,
-        structured_content=dict(copy) if copy is not None else None,
+        replaces_structured=final.structured_content is not event.structured_content,
+        structured_content=copy,
     )
 
 

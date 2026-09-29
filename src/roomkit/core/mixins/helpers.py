@@ -25,7 +25,6 @@ import contextlib
 import json
 import logging
 from collections.abc import Callable, Coroutine
-from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 from uuid import uuid4
 
@@ -53,9 +52,8 @@ from roomkit.models.thinking_event import ThinkingEvent
 from roomkit.models.tool_call import (
     ToolCallEvent,
     ToolCallVerdict,
-    chained_call_event,
     fold_tool_call_rewrite,
-    withheld_call_event,
+    observed_call_event,
 )
 from roomkit.tools.result import tool_call_verdict
 
@@ -857,18 +855,13 @@ class HelpersMixin:
             )
             verdict = tool_call_verdict(hook_result, event)
             read = verdict.result if verdict.result is not None else event.result
-            if verdict.blocked:
-                withheld = withheld_call_event(event, str(verdict.result))
-                await kit_ref._observe_tool_call(withheld, context)
-            elif read is None:
+            if read is None:
                 # Served by nothing: the channel reports the failure, once,
                 # with its own framework event.
                 return verdict
-            else:
-                # The observers see the result the model reads, on the event
-                # the chain left (its structured copy), whoever served it.
-                served = replace(chained_call_event(hook_result, event), result=read)
-                await kit_ref._observe_tool_call(served, context)
+            await kit_ref._observe_tool_call(
+                observed_call_event(hook_result, event, read), context
+            )
             await kit_ref._emit_tool_call_event(event, channel_id)
             return verdict
 
@@ -885,23 +878,33 @@ class HelpersMixin:
         kit_ref = self
 
         async def _callback(event: ToolCallEvent) -> None:
-            if not event.room_id:
-                return
-            context = await kit_ref._tool_hook_context(event.room_id)
-            if context is None:
-                return
-            await kit_ref._hook_engine.run_sync_hooks(
-                event.room_id,
-                HookTrigger.ON_TOOL_CALL,
-                event,
-                context,
-                skip_event_filter=True,
-                fire_observers=False,
-            )
-            await kit_ref._observe_tool_call(event, context)
-            await kit_ref._emit_tool_call_event(event, channel_id)
+            await kit_ref._report_tool_call(event, channel_id)
 
         return _callback
+
+    async def _report_tool_call(self, event: ToolCallEvent, channel_id: str) -> None:
+        """Fire ON_TOOL_CALL as a report on a call whose outcome the model already read.
+
+        Every hook runs and nothing it returns is applied (RFC §9.3): the
+        observers see *event* as it stands, a BLOCK included. For a call an
+        external handler or a provider ran, and for a result delivered before
+        the hooks ran (a realtime Tool Search call).
+        """
+        if not event.room_id:
+            return
+        context = await self._tool_hook_context(event.room_id)
+        if context is None:
+            return
+        await self._hook_engine.run_sync_hooks(
+            event.room_id,
+            HookTrigger.ON_TOOL_CALL,
+            event,
+            context,
+            skip_event_filter=True,
+            fire_observers=False,
+        )
+        await self._observe_tool_call(event, context)
+        await self._emit_tool_call_event(event, channel_id)
 
     async def _tool_hook_context(self, room_id: str) -> RoomContext | None:
         """The room's context for ON_TOOL_CALL, or ``None`` when it will not build."""

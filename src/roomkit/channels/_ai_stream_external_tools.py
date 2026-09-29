@@ -10,7 +10,7 @@ from typing import Any, Protocol
 
 from roomkit.models.enums import ChannelType
 from roomkit.models.streaming import StreamDelta, ToolCallEndMarker, ToolCallStartMarker
-from roomkit.models.tool_call import ToolCallCallback, ToolCallEvent
+from roomkit.models.tool_call import ToolCallEvent, ToolCallObserver
 from roomkit.providers.ai.base import AIToolResultPart, StreamToolCall
 from roomkit.providers.ai.tool_calls import cut_call_error
 from roomkit.realtime.base import EphemeralEventType
@@ -39,7 +39,8 @@ class _ExternalStreamTools:
     publish: _ToolEventPublisher
     handler: ExternalToolHandler | None = None
     before: BeforeToolCallback | None = None
-    after: ToolCallCallback | None = None
+    # ON_TOOL_CALL as a report, for a call the provider already ran (RFC §9.3).
+    report: ToolCallObserver | None = None
 
     async def stream_call(
         self, call: StreamToolCall, round_idx: int
@@ -157,7 +158,7 @@ class _ExternalStreamTools:
                 room_id=self.room_id,
                 is_error=is_error,
             )
-            if already_executed and self.after is not None:
-                await self.after(event)
+            if already_executed and self.report is not None:
+                await self.report(event)
             elif not already_executed and self.before is not None:
                 await self.before(event)

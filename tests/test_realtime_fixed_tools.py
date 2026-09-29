@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -322,3 +323,29 @@ async def test_recovered_transcription_during_hangup_has_no_side_effect() -> Non
         finally:
             release.set()
             await ending
+
+
+@pytest.mark.parametrize("decision", ["modify", "block"])
+async def test_a_find_tools_call_is_reported_as_the_model_read_it(decision: str) -> None:
+    """RMK-292 review: a Tool Search call's result reaches the model before
+    ON_TOOL_CALL runs, so the firing is a report: the observers see what the
+    model read, whatever a SYNC hook returned, a BLOCK included (RFC §9.3)."""
+    async with channel_context() as ctx:
+        kit, channel, provider, session, handler = ctx
+        observed: list[Any] = []
+
+        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC)
+        async def rewrite(event: Any, context: Any) -> HookResult:
+            if decision == "block":
+                return HookResult.block("no")
+            return HookResult.modify(dataclasses.replace(event, result={"n": 1}))
+
+        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC)
+        async def audit(event: Any, context: Any) -> None:
+            observed.append(event)
+
+        found = await call(channel, provider, session, "find_tools", {"query": "calendar"})
+        await asyncio.sleep(0.05)
+
+        assert found["matches"][0]["name"] == "calendar"
+        assert [(json.loads(e.result), e.is_error) for e in observed] == [(found, False)]

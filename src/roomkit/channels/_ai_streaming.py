@@ -172,7 +172,7 @@ class AIStreamingHost(Protocol):
     _after_response_hook: Any
     _before_generation_hook: Any
     _before_tool_call_hook: Any
-    _tool_call_hook: Any
+    _tool_report_hook: Any
     _external_tool_handler: Any
     channel_id: str
 
@@ -246,7 +246,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
     _after_response_hook: Any
     _before_generation_hook: Any
     _before_tool_call_hook: Any
-    _tool_call_hook: Any
+    _tool_report_hook: Any
     _external_tool_handler: Any
     channel_id: str
 
@@ -711,7 +711,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                 publish=self._publish_tool_event,
                 handler=self._external_tool_handler,
                 before=self._before_tool_call_hook,
-                after=self._tool_call_hook,
+                report=self._tool_report_hook,
             )
             context, cancelled = self._drain_steering_queue(context, loop_ctx)
             if cancelled:

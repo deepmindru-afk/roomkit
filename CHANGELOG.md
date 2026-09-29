@@ -211,8 +211,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   by one function for the AI channel (both loops), the conference and the
   realtime channel, and ON_TOOL_CALL's observers of a served call see the
   result as the model reads it: a hook's `dict` replacement reached them raw
-  while the model read its JSON. A realtime call blocked by a hook with no
-  reason reads `{"error": "blocked"}`, as on the other channels.
+  while the model read its JSON. A firing on a call whose outcome the model
+  already read is a report (RFC §9.3), its observers seeing that outcome
+  whatever a SYNC hook returned: a call the provider ran itself in the
+  streaming loop went through the served-call path, so a clearing hook made
+  its observers see `null` and a BLOCK marked a successful call failed; and
+  a realtime Tool Search call's observers saw a hook's raw rewrite, nothing
+  at all after a BLOCK, and no `tool_call` framework event.
 - A delegated turn's child room is written by the room's own streamed-row
   writer (RMK-291, RFC §23.3). A delegation cancelled (a supervisor's
   timeout) or failed while one of the worker's tools ran left that call's

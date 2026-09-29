@@ -139,12 +139,11 @@ def fold_tool_call_rewrite(event: Any, metadata: dict[str, Any]) -> Any:
     """An ON_TOOL_CALL hook's override, written into the event it leaves.
 
     The hook engine's ``fold`` for ON_TOOL_CALL (RFC §9.3): the next SYNC
-    hook, the ASYNC observers and the channel then read the outcome as the
-    chain left it, whether a hook replaced it with ``modify`` or through
-    ``metadata``. ``metadata["result"]`` replaces the result;
-    ``metadata["structured_content"]`` replaces the structured copy, and a
-    value that is not a mapping is no copy a surface can render, so it clears
-    the copy rather than publish the original.
+    hook and the channel then read the outcome as the chain left it, whether
+    a hook replaced it with ``modify`` or through ``metadata``, and the ASYNC
+    observers read it as the model does. ``metadata["result"]`` replaces the
+    result; ``metadata["structured_content"]`` replaces the structured copy
+    (:func:`renderable_copy`).
     """
     if not isinstance(event, ToolCallEvent):
         return event
@@ -152,16 +151,26 @@ def fold_tool_call_rewrite(event: Any, metadata: dict[str, Any]) -> Any:
     if "result" in metadata:
         changes["result"] = metadata["result"]
     if "structured_content" in metadata:
-        copy = metadata["structured_content"]
-        if copy is not None and not isinstance(copy, Mapping):
-            logger.warning(
-                "ON_TOOL_CALL hook returned a structured_content of type %s, not a mapping; "
-                "the call's structured copy is dropped",
-                type(copy).__name__,
-            )
-            copy = None
-        changes["structured_content"] = dict(copy) if copy is not None else None
+        changes["structured_content"] = renderable_copy(metadata["structured_content"])
     return replace(event, **changes) if changes else event
+
+
+def renderable_copy(copy: Any) -> dict[str, Any] | None:
+    """*copy* as a structured copy a surface can render: a mapping, or ``None``.
+
+    A hook's copy that is not a mapping is no copy a surface can render, so it
+    clears the copy rather than publish the original.
+    """
+    if copy is None:
+        return None
+    if not isinstance(copy, Mapping):
+        logger.warning(
+            "ON_TOOL_CALL hook left a structured_content of type %s, not a mapping; "
+            "the call's structured copy is dropped",
+            type(copy).__name__,
+        )
+        return None
+    return dict(copy)
 
 
 def chained_call_event(hook_result: Any, event: ToolCallEvent) -> ToolCallEvent:
@@ -174,6 +183,17 @@ def withheld_call_event(event: ToolCallEvent, reason: str) -> ToolCallEvent:
     """What ON_TOOL_CALL's observers see of a call a SYNC hook withheld: the
     failure, with the reason the model reads, and no structured copy."""
     return replace(event, result=reason, is_error=True, structured_content=None)
+
+
+def observed_call_event(hook_result: Any, event: ToolCallEvent, read: Any) -> ToolCallEvent:
+    """What ON_TOOL_CALL's observers see of a served call, *read* being what the model reads.
+
+    The event the SYNC chain left carrying that result, or the failure when a
+    hook withheld it (RFC §9.3).
+    """
+    if not hook_result.allowed:
+        return withheld_call_event(event, read)
+    return replace(chained_call_event(hook_result, event), result=read)
 
 
 # Callback type injected into AIChannel by the framework: the hooks' verdict,

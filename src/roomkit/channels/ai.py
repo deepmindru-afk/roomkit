@@ -463,6 +463,8 @@ class AIChannel(
         self._tool_call_hook: ToolCallCallback | None = None
         # Fired for a call that failed or was refused — observers only.
         self._tool_observer_hook: ToolCallObserver | None = None
+        # Fired for a call a provider already ran — a report, nothing applied.
+        self._tool_report_hook: ToolCallObserver | None = None
         # Pre-tool-use hook callback (injected by framework on register_channel)
         self._before_tool_call_hook: Any = None
         # AI response hook callback (injected by framework on register_channel)
