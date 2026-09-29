@@ -87,6 +87,10 @@ class ToolLoopResult:
 
 logger = logging.getLogger("roomkit.channels.ai")
 
+#: The terminal message of a turn the provider interrupted after a round: the
+#: rounds already reached the room, so this is all it has not read (RFC §6.4).
+INTERRUPTED_MARKER = "[Response interrupted]"
+
 
 @runtime_checkable
 class AIGenerationHost(Protocol):
@@ -110,7 +114,6 @@ class AIGenerationHost(Protocol):
         _generate_with_retry: ``AIResilienceMixin`` — generate with retry/fallback.
         _publish_thinking_event: ``AIEventsMixin`` — publish thinking events.
         _publish_tool_event: ``AIEventsMixin`` — publish tool call events.
-        _extract_accumulated_text: ``AIResilienceMixin`` static — extract text.
 
     The shared per-round loop rules (force-stop, empty-retry, budget, parts
     assembly, tool execution) come from :class:`AIToolLoopRulesMixin`, the
@@ -156,8 +159,6 @@ class AIGenerationHost(Protocol):
         *,
         duration_ms: int | None = ...,
     ) -> None: ...
-    @staticmethod
-    def _extract_accumulated_text(messages: list[AIMessage]) -> str: ...
 
 
 class AIGenerationMixin(AIToolLoopRulesMixin):
@@ -188,7 +189,6 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
     _record_declared_tools: Any  # see AIGenerationHost
     _publish_thinking_event: Any  # see AIGenerationHost
     _publish_tool_event: Any  # see AIGenerationHost
-    _extract_accumulated_text: Any  # see AIGenerationHost
 
     @property
     def _telemetry_provider(self) -> NoopTelemetryProvider:
@@ -609,6 +609,9 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
                 if should_cancel:
                     logger.info("Tool loop cancelled after round %d", round_idx)
                     reason = "cancelled"
+                    # The round's text is already its own segment: the
+                    # cancelled turn adds no terminal text (RFC §6.4).
+                    response = AIResponse(content="", tool_calls=[])
                     break
 
                 # Anti-loop ripcord (force_stop): strip tools and do one final
@@ -624,32 +627,26 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
                 except ProviderError:
                     # Overflow recovery (compact and replay once) already ran
                     # inside ``_generate_with_retry``; whatever reaches here
-                    # is spent, whichever kind it is.
-                    accumulated = self._extract_accumulated_text(context.messages)
-                    if accumulated:
-                        # The partial answer is worth keeping; the reason it
-                        # stopped is not for the room to read. The error is
-                        # the provider SDK's own string — status codes,
-                        # request ids, model and organisation names — and
-                        # this content is broadcast to every participant.
-                        # The detail goes to the log, where an operator can
-                        # correlate it; the delivery pipeline already
-                        # normalises its provider errors the same way
-                        # (`providers/http_errors.py`).
-                        logger.exception(
-                            "Tool loop interrupted by provider error at round %d", round_idx
-                        )
-                        return ToolLoopResult(
-                            response=AIResponse(
-                                content=accumulated + "\n\n[Response interrupted]",
-                                tool_calls=[],
-                                usage=dict(total_usage),
-                            ),
-                            rounds=rounds,
-                            reason="error",
-                            declared_tools=list(loop_ctx.declared_tools.values()),
-                        )
-                    raise
+                    # is spent, whichever kind it is. The rounds that ran are
+                    # kept, each round's text as its own segment: the terminal
+                    # message adds only the marker, never the history the
+                    # model was given nor this turn's text again (RFC §6.4).
+                    # The error is the provider SDK's own string (status
+                    # codes, request ids, model and organisation names), not
+                    # for the room: it goes to the log, where an operator can
+                    # correlate it, as the delivery pipeline does with its
+                    # provider errors (`providers/http_errors.py`).
+                    logger.exception(
+                        "Tool loop interrupted by provider error at round %d", round_idx
+                    )
+                    return ToolLoopResult(
+                        response=AIResponse(
+                            content=INTERRUPTED_MARKER, tool_calls=[], usage=dict(total_usage)
+                        ),
+                        rounds=rounds,
+                        reason="error",
+                        declared_tools=list(loop_ctx.declared_tools.values()),
+                    )
 
                 if response.thinking and room_id:
                     await self._publish_thinking_event(

@@ -309,21 +309,6 @@ class AIResilienceMixin:
         context.messages[:] = [summary_msg] + recent_messages
         return context
 
-    @staticmethod
-    def _extract_accumulated_text(messages: list[AIMessage]) -> str:
-        """Extract accumulated assistant text from message history."""
-        parts: list[str] = []
-        for msg in messages:
-            if msg.role != "assistant":
-                continue
-            if isinstance(msg.content, str):
-                parts.append(msg.content)
-            elif isinstance(msg.content, list):
-                for p in msg.content:
-                    if isinstance(p, AITextPart) and p.text:
-                        parts.append(p.text)
-        return "\n".join(parts)
-
     def _maybe_truncate_result(
         self, result: str | list[AITextPart | AIImagePart], tool_call_id: str = ""
     ) -> str | list[AITextPart | AIImagePart]:

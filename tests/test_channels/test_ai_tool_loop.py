@@ -14,9 +14,7 @@ from roomkit.providers.ai.base import (
     AIContext,
     AIMessage,
     AIResponse,
-    AITextPart,
     AIToolCall,
-    AIToolCallPart,
     ProviderError,
 )
 from roomkit.providers.ai.mock import MockAIProvider
@@ -470,7 +468,7 @@ class TestContextOverflowRecovery:
         assert call_count == 3
 
     async def test_non_overflow_error_returns_partial(self) -> None:
-        """Non-overflow errors return accumulated text as partial result."""
+        """A non-overflow error keeps the rounds that ran and ends on the marker."""
         call_count = 0
 
         async def generate_failing(context: AIContext) -> AIResponse:
@@ -492,16 +490,18 @@ class TestContextOverflowRecovery:
         )
 
         context = AIContext(messages=[AIMessage(role="user", content="go")])
-        response = (await ch._run_tool_loop(context)).response
+        result = await ch._run_tool_loop(context)
 
-        assert "Thinking..." in response.content
-        # The partial answer survives; the provider's own error string does
-        # not — it is broadcast to the room, and carries API detail.
-        assert "[Response interrupted]" in response.content
-        assert "Internal server error" not in response.content
+        # The round's text survives as its own segment; the terminal message
+        # adds only the marker, not that text again, and never the provider's
+        # own error string, which carries API detail (RFC §6.4).
+        assert [rnd.text_before for rnd in result.rounds] == ["Thinking..."]
+        assert result.response.content == "[Response interrupted]"
+        assert result.reason == "error"
 
-    async def test_compaction_still_overflows_raises(self, streaming: bool) -> None:
-        """When compaction doesn't help, error propagates."""
+    @staticmethod
+    def _overflowing_channel() -> AIChannel:
+        """A first round, then an overflow compaction does not cure."""
         call_count = 0
 
         async def always_overflow(context: AIContext) -> AIResponse:
@@ -514,22 +514,36 @@ class TestContextOverflowRecovery:
 
         provider = MockAIProvider()
         provider.generate = always_overflow  # type: ignore[assignment]
-        handler = AsyncMock(return_value="ok")
-        ch = AIChannel(
+        return AIChannel(
             "ai1",
             provider=provider,
-            tool_handler=handler,
+            tool_handler=AsyncMock(return_value="ok"),
             max_tool_rounds=200,
             tool_loop_timeout_seconds=None,
         )
 
-        # Enough messages for compaction to work, but second generate
-        # still overflows — the compacted context is re-raised.
-        context = AIContext(
-            messages=[AIMessage(role="user", content=f"msg{i}") for i in range(10)]
-        )
+    @staticmethod
+    def _long_context() -> AIContext:
+        # Enough messages for compaction to work, but the next generation
+        # still overflows.
+        return AIContext(messages=[AIMessage(role="user", content=f"msg{i}") for i in range(10)])
+
+    async def test_compaction_still_overflowing_ends_the_turn_on_the_marker(self) -> None:
+        """After a round, an overflow compaction does not cure interrupts the
+        turn: the round is kept and the turn ends on the marker (RFC §6.4)."""
+        channel, context = self._overflowing_channel(), self._long_context()
+
+        run = await run_tool_loop(channel, context, streaming=False)
+
+        assert run.text == "[Response interrupted]"
+        assert run.reason == "error"
+        assert [call.failed for call in run.calls] == [False]
+
+    async def test_compaction_still_overflowing_raises_on_the_streaming_loop(self) -> None:
+        """The streaming loop raises instead, and delivers no marker: a
+        divergence from the loop above, reported with RMK-156."""
         with pytest.raises(ProviderError, match="context length exceeded"):
-            await run_tool_loop(ch, context, streaming=streaming)
+            await run_tool_loop(self._overflowing_channel(), self._long_context(), streaming=True)
 
     def test_is_context_overflow_matches_known_patterns(self) -> None:
         """_is_context_overflow detects known error messages."""
@@ -657,38 +671,6 @@ class TestToolLoopContextAccumulation:
         result_map = {r.name: r.result for r in results}
         assert result_map["alpha"] == "result_for_alpha"
         assert result_map["beta"] == "result_for_beta"
-
-
-class TestExtractAccumulatedText:
-    def test_extracts_from_string_content(self) -> None:
-        messages = [
-            AIMessage(role="user", content="question"),
-            AIMessage(role="assistant", content="answer1"),
-            AIMessage(role="user", content="follow-up"),
-            AIMessage(role="assistant", content="answer2"),
-        ]
-        result = AIChannel._extract_accumulated_text(messages)
-        assert "answer1" in result
-        assert "answer2" in result
-        assert "question" not in result
-
-    def test_extracts_from_list_content(self) -> None:
-        messages = [
-            AIMessage(
-                role="assistant",
-                content=[
-                    AITextPart(text="part1"),
-                    AIToolCallPart(id="x", name="t", arguments={}),
-                ],
-            ),
-        ]
-        result = AIChannel._extract_accumulated_text(messages)
-        assert "part1" in result
-
-    def test_returns_empty_for_no_assistant_messages(self) -> None:
-        messages = [AIMessage(role="user", content="hello")]
-        result = AIChannel._extract_accumulated_text(messages)
-        assert result == ""
 
 
 class TestEvictionToolAvailableMidLoop:

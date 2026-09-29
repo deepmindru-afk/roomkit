@@ -134,6 +134,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A turn cut short no longer replays the room's history (RMK-156, RFC §6.4).
+  When the provider failed after a tool round on the non-streaming loop,
+  the `[Response interrupted]` message carried the text of every assistant
+  message in the model's context, earlier turns included, and repeated the
+  round's own text, already delivered as its own message; the `ON_AI_RESPONSE`
+  transcript repeated it too. The terminal message is now the marker alone,
+  and it is delivered as soon as a round ran, so the calls that ran are kept:
+  a round without text, or an overflow compaction did not cure, used to
+  raise and lose them. A turn cancelled between rounds no longer repeats the
+  round's text as a final message. The streaming loop, which never replayed
+  the history, still ends such a turn without the marker.
 - What a tool handler returns reaches the model as JSON, and the outcomes the
   channel decides carry the failure marker (RMK-278, RFC §9.3, §21.4). On
   `AIChannel` a handler returning `[{"id": 1}]` failed the whole turn with a
