@@ -52,6 +52,7 @@ from roomkit.providers.ai.base import (
     AITool,
     AIToolResultPart,
 )
+from roomkit.providers.ai.tool_calls import cut_call_error
 from roomkit.sandbox.tools import SANDBOX_TOOL_PREFIX
 from roomkit.telemetry.base import SpanKind
 from roomkit.telemetry.redaction import redact
@@ -176,21 +177,9 @@ class AIToolsHost(Protocol):
 
 
 def _cut_call_error(tc: Any) -> dict[str, Any]:
-    """What the model reads for a call the output cap cut (RFC §6.4).
-
-    Its arguments stopped before they were complete, so running it would act
-    on a fragment: it does not run, and the model learns why and can call
-    again with less.
-    """
+    """What the model reads for a call cut before its arguments were complete."""
     logger.warning("Provider cut tool call %s (%s) before its arguments ended", tc.name, tc.id)
-    return {
-        "error": "Tool call cut off",
-        "tool": tc.name,
-        "hint": (
-            "The output limit cut this call before its arguments were complete, "
-            "so it did not run. Call it again, with shorter arguments if you can."
-        ),
-    }
+    return cut_call_error(tc.name)
 
 
 class AIToolsMixin:

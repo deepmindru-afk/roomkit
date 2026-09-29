@@ -72,7 +72,7 @@ from roomkit.providers.ai.response_schema import (
     checked_stream,
     schema_for_generate,
 )
-from roomkit.providers.ai.tool_calls import CallIds, arguments_cut, is_truncation, tool_arguments
+from roomkit.providers.ai.tool_calls import CallIds, call_cut, tool_arguments
 from roomkit.providers.polargrid.config import PolarGridConfig
 from roomkit.providers.polargrid.models import (
     MODELS,
@@ -642,7 +642,6 @@ class PolarGridAIProvider(AIProvider):
         """Read non-streaming ``message.tool_calls`` into AIToolCalls (RFC §6.4)."""
         raw_calls = getattr(message, "tool_calls", None) or []
         ids = CallIds()
-        truncated = is_truncation(finish_reason)
         result: list[AIToolCall] = []
         for tc in raw_calls:
             func = getattr(tc, "function", None)
@@ -655,7 +654,7 @@ class PolarGridAIProvider(AIProvider):
                     id=ids(getattr(tc, "id", None), name),
                     name=name,
                     arguments=tool_arguments(raw),
-                    partial=truncated and arguments_cut(raw),
+                    partial=call_cut(raw, finish_reason),
                 )
             )
         return result

@@ -24,13 +24,16 @@ from roomkit.providers.ai.base import (
 )
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.providers.ai.openai_dialect import ToolCallSlots
-from roomkit.providers.ai.tool_calls import CallIds, arguments_cut, tool_arguments
+from roomkit.providers.ai.tool_calls import CallIds, arguments_cut, call_cut, tool_arguments
 from roomkit.providers.anthropic.ai import AnthropicAIProvider
 from roomkit.providers.anthropic.config import AnthropicConfig
 from roomkit.providers.gemini.ai import GeminiAIProvider
 from roomkit.providers.gemini.config import GeminiConfig
+from roomkit.providers.mistral.ai import MistralAIProvider
+from roomkit.providers.mistral.config import MistralConfig
 from roomkit.providers.openai.ai import OpenAIAIProvider
 from roomkit.providers.openai.config import OpenAIConfig
+from roomkit.providers.polargrid.ai import PolarGridAIProvider
 from tests.tool_loop_modes import run_tool_loop
 
 _CTX = AIContext(
@@ -48,8 +51,9 @@ class TestArguments:
             ("  ", {}),
             ('{"q": "a"}', {"q": "a"}),
             ({"q": "a"}, {"q": "a"}),
-            ("null", {"raw": "null"}),
+            ("null", {}),
             ("[1, 2]", {"raw": "[1, 2]"}),
+            ('{"a": ' + "[" * 100_000, {"raw": '{"a": ' + "[" * 100_000}),
             ('{"q": "ab', {"raw": '{"q": "ab'}),
         ],
     )
@@ -62,6 +66,16 @@ class TestArguments:
     def test_only_text_that_stops_before_its_json_ends_is_cut(self, raw: str, cut: bool) -> None:
         assert arguments_cut(raw) is cut
 
+    @pytest.mark.parametrize(
+        ("finish_reason", "partial"),
+        [("length", True), ("MAX_TOKENS", True), ("content_filter", True), ("stop", False)],
+    )
+    def test_a_call_is_partial_when_the_response_cut_it(
+        self, finish_reason: str, partial: bool
+    ) -> None:
+        assert call_cut('{"q": "ab', finish_reason) is partial
+        assert call_cut('{"q": "ab"}', finish_reason) is False
+
 
 class TestCallIds:
     def test_every_call_of_a_response_gets_its_own_id(self) -> None:
@@ -72,6 +86,9 @@ class TestCallIds:
         assert handed[0] == "c1"
         assert len(set(handed)) == 4
         assert all(i.startswith("call_now_") for i in handed[1:])
+
+    def test_a_server_id_that_is_not_text_becomes_text(self) -> None:
+        assert CallIds()(7, "now") == "7"
 
 
 class TestStreamedSlots:
@@ -86,6 +103,25 @@ class TestStreamedSlots:
             ("a", "now", {"tz": "A"}),
             ("b", "later", {"tz": "B"}),
         ]
+
+    def test_whole_calls_without_ids_on_one_index_stay_two_calls(self) -> None:
+        slots = ToolCallSlots()
+        slots.fold(0, None, "roll_die", '{"sides": 6}')
+        slots.fold(0, None, "roll_die", '{"sides": 6}')
+
+        calls = slots.calls("tool_calls")
+
+        assert [c.arguments for c in calls] == [{"sides": 6}, {"sides": 6}]
+        assert calls[0].id != calls[1].id
+
+    def test_the_composition_events_carry_the_calls_final_id(self) -> None:
+        slots = ToolCallSlots()
+        delta = slots.fold(0, None, "now", '{"tz": "A"}')
+
+        [call] = slots.calls("tool_calls")
+
+        assert delta is not None
+        assert delta.id == call.id
 
     def test_fragments_of_one_call_fold_together(self) -> None:
         slots = ToolCallSlots()
@@ -135,7 +171,7 @@ class TestOpenAIDialect:
 
         calls = (await _openai(response).generate(_CTX)).tool_calls
 
-        assert [c.arguments for c in calls] == [{}, {"raw": "null"}, {"raw": '{"q": "ab'}]
+        assert [c.arguments for c in calls] == [{}, {}, {"raw": '{"q": "ab'}]
         assert [c.partial for c in calls] == [False, False, True]
         assert len({c.id for c in calls}) == 3
 
@@ -162,7 +198,36 @@ class TestOpenAIDialect:
         events = [e async for e in provider.generate_structured_stream(_CTX)]
 
         calls = [e for e in events if isinstance(e, StreamToolCall)]
-        assert [c.arguments for c in calls] == [{"raw": "null"}]
+        assert [c.arguments for c in calls] == [{}]
+
+    async def test_a_stream_keeps_calls_apart_and_marks_the_cut_one(self) -> None:
+        def chunk(index: int, call_id: str | None, name: str | None, args: str) -> Any:
+            call = SimpleNamespace(
+                index=index, id=call_id, function=SimpleNamespace(name=name, arguments=args)
+            )
+            delta = SimpleNamespace(content=None, tool_calls=[call])
+            return SimpleNamespace(
+                usage=None, choices=[SimpleNamespace(delta=delta, finish_reason=None)]
+            )
+
+        async def chunks() -> Any:
+            yield chunk(0, None, "now", '{"tz": "A"}')
+            yield chunk(0, None, "now", '{"tz": "B"}')
+            yield chunk(1, None, "write", '{"path": "/tmp/a", "content": "hel')
+            done = SimpleNamespace(content=None, tool_calls=None)
+            yield SimpleNamespace(
+                usage=None, choices=[SimpleNamespace(delta=done, finish_reason="length")]
+            )
+
+        events = [e async for e in _openai(chunks()).generate_structured_stream(_CTX)]
+
+        calls = [e for e in events if isinstance(e, StreamToolCall)]
+        assert [(c.name, c.partial) for c in calls] == [
+            ("now", False),
+            ("now", False),
+            ("write", True),
+        ]
+        assert len({c.id for c in calls}) == 3
 
 
 class _AnthropicStream:
@@ -214,6 +279,67 @@ async def test_an_anthropic_tool_use_cut_by_max_tokens_is_partial() -> None:
 
     assert call.partial is True
     assert call.arguments == {"raw": fragment}
+
+
+async def test_an_anthropic_block_the_stream_never_closed_is_partial_when_cut() -> None:
+    usage = SimpleNamespace(
+        input_tokens=1, output_tokens=1, cache_creation_input_tokens=0, cache_read_input_tokens=0
+    )
+    block = SimpleNamespace(type="tool_use", id="toolu_9", name="write_file", input={"path": "/a"})
+    final = SimpleNamespace(content=[block], usage=usage, stop_reason="max_tokens", model="claude")
+    provider = AnthropicAIProvider(AnthropicConfig(api_key="k", model="claude-sonnet-5-5"))
+    provider._client = SimpleNamespace(
+        messages=SimpleNamespace(stream=lambda **kw: _AnthropicStream([], final))
+    )
+
+    [call] = (await provider.generate(_CTX)).tool_calls
+
+    assert (call.id, call.partial) == ("toolu_9", True)
+
+
+class TestMistral:
+    async def test_id_less_whole_calls_on_index_zero_stay_two(self) -> None:
+        def event(args: Any) -> Any:
+            call = SimpleNamespace(
+                index=0, id="null", function=SimpleNamespace(name="roll_die", arguments=args)
+            )
+            delta = SimpleNamespace(content=None, tool_calls=[call])
+            choice = SimpleNamespace(delta=delta, finish_reason=None)
+            return SimpleNamespace(data=SimpleNamespace(choices=[choice], usage=None))
+
+        async def stream() -> Any:
+            yield event('{"sides": 6}')
+            yield event({"sides": 20})  # the SDK types arguments Dict | str
+
+        provider = MistralAIProvider(MistralConfig(api_key="k", model="mistral-large-latest"))
+        provider._client = SimpleNamespace(
+            chat=SimpleNamespace(stream_async=AsyncMock(return_value=stream()))
+        )
+
+        events = [e async for e in provider.generate_structured_stream(_CTX)]
+
+        calls = [e for e in events if isinstance(e, StreamToolCall)]
+        assert [c.arguments for c in calls] == [{"sides": 6}, {"sides": 20}]
+        assert len({c.id for c in calls}) == 2
+        assert "null" not in {c.id for c in calls}
+
+
+def test_polargrid_reads_every_buffered_call_the_same_way() -> None:
+    message = SimpleNamespace(
+        tool_calls=[
+            SimpleNamespace(
+                id=None, function=SimpleNamespace(name="search", arguments='{"q": 1}')
+            ),
+            SimpleNamespace(id=None, function=SimpleNamespace(name="search", arguments="null")),
+            SimpleNamespace(id=None, function=SimpleNamespace(name="search", arguments='{"q": ')),
+        ]
+    )
+
+    calls = PolarGridAIProvider._extract_tool_calls(SimpleNamespace(), message, "length")
+
+    assert [c.arguments for c in calls] == [{"q": 1}, {}, {"raw": '{"q": '}]
+    assert [c.partial for c in calls] == [False, False, True]
+    assert len({c.id for c in calls}) == 3
 
 
 def _gemini_part(sig: bytes | None = None) -> Any:

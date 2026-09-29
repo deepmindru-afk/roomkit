@@ -420,6 +420,36 @@ class TestAIProviderReasoningBackend:
         assert [m.role for m in second_call.messages] == ["user", "assistant", "tool"]
         assert second_call.messages[2].content[0].result == '{"status": "cancelled"}'
 
+    async def test_a_partial_call_is_answered_without_running(self) -> None:
+        """A call cut before its arguments were complete never runs (RFC §6.4)."""
+        cut = AIToolCall(id="c1", name="lookup", arguments={"raw": '{"flight": "UA'}, partial=True)
+        provider = MockAIProvider(
+            ai_responses=[
+                AIResponse(content="", finish_reason="length", tool_calls=[cut]),
+                AIResponse(content="Let me try again."),
+            ]
+        )
+        backend = AIProviderReasoningBackend(provider)
+        executed: list[str] = []
+
+        async def execute(name: str, arguments: dict[str, Any]) -> str:
+            executed.append(name)
+            return "ran"
+
+        request = ReasoningRequest(
+            session=self._session(),
+            delegation_id="d1",
+            transcript=[TranscriptLine("user", "Is UA482 running?")],
+            first=True,
+            tools=[LOOKUP],
+            execute_tool=execute,
+        )
+        _ = [o async for o in backend.run(request)]
+
+        assert executed == []
+        answer = provider.calls[1].messages[-1].content[0].result
+        assert json.loads(answer)["error"] == "Tool call cut off"
+
     async def test_history_persists_across_delegations_until_the_session_ends(self) -> None:
         provider = MockAIProvider(responses=["one", "two"])
         backend = AIProviderReasoningBackend(provider)

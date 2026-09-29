@@ -66,9 +66,6 @@ _FORCE_STOP_NUDGE = (
     "needed; never claim an action succeeded without a successful tool result."
 )
 
-# Every provider reports "I hit the output cap" in its own vocabulary, and
-# RoomKit forwards the raw value rather than inventing a normalized one:
-
 
 def _accumulate_usage(total: dict[str, int], round_usage: dict[str, Any]) -> None:
     """Add one round's token counters into a turn's running totals.

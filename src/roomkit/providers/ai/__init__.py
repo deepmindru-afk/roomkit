@@ -32,6 +32,13 @@ from roomkit.providers.ai.image_parts import (
 from roomkit.providers.ai.json_schema import check_portable_schema, schema_mismatch
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.providers.ai.response_schema import ResponseSchemaError
+from roomkit.providers.ai.tool_calls import (
+    CallIds,
+    call_cut,
+    cut_call_error,
+    is_truncation,
+    tool_arguments,
+)
 
 __all__ = [
     "API_KEY_METADATA_KEY",
@@ -46,6 +53,7 @@ __all__ = [
     "AIToolCall",
     "AIToolCallPart",
     "AIToolResultPart",
+    "CallIds",
     "MockAIProvider",
     "ModelInfo",
     "ModelPricing",
@@ -57,10 +65,14 @@ __all__ = [
     "StreamThinkingDelta",
     "StreamToolCall",
     "StreamToolCallDelta",
+    "call_cut",
     "check_portable_schema",
+    "cut_call_error",
     "image_part_base64",
     "image_part_payload",
     "image_part_uri",
     "is_context_overflow_message",
+    "is_truncation",
     "schema_mismatch",
+    "tool_arguments",
 ]

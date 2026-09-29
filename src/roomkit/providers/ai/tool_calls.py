@@ -13,11 +13,17 @@ import json
 from typing import Any
 from uuid import uuid4
 
+# Every provider reports "I hit the output cap" in its own vocabulary, and
+# RoomKit forwards the raw value rather than inventing a normalized one.
 # OpenAI-compatible servers and Ollama's ``done_reason`` say ``length``,
 # Anthropic's ``stop_reason`` says ``max_tokens``, Gemini's candidate says
 # ``MAX_TOKENS``. A rule that knew only one spelling would cover only the
 # providers using it.
 _TRUNCATION_FINISH_REASONS = frozenset({"length", "max_tokens"})
+
+# Endings that can stop a call mid-arguments: the output cap under its
+# spellings, Mistral's context cap, and a content filter cutting the stream.
+_CALL_CUTTING_FINISH_REASONS = _TRUNCATION_FINISH_REASONS | {"model_length", "content_filter"}
 
 
 def is_truncation(finish_reason: str | None) -> bool:
@@ -32,9 +38,10 @@ def is_truncation(finish_reason: str | None) -> bool:
 def tool_arguments(raw: Any) -> dict[str, Any]:
     """A call's arguments as a mapping, never an error.
 
-    A mapping passes through. Empty arguments are ``{}``. Text that parses to a
-    JSON object is that object; anything else (invalid JSON, ``null``, an
-    array, a fragment the output cap cut) is kept whole under ``raw``.
+    A mapping passes through. No arguments (nothing, blank text, JSON
+    ``null``) are ``{}``. Text that parses to a JSON object is that object;
+    anything else (invalid JSON, an array, a fragment the output cap cut) is
+    kept whole under ``raw``.
     """
     if isinstance(raw, dict):
         return raw
@@ -44,24 +51,51 @@ def tool_arguments(raw: Any) -> dict[str, Any]:
         return {"raw": raw}
     try:
         parsed = json.loads(raw)
-    except ValueError:
+    except (ValueError, RecursionError):
         return {"raw": raw}
+    if parsed is None:
+        return {}
     return parsed if isinstance(parsed, dict) else {"raw": raw}
 
 
 def arguments_cut(raw: Any) -> bool:
-    """Whether argument text stops before its JSON ends.
+    """Whether argument text is not valid JSON.
 
-    What the output cap leaves of a call it cut; complete JSON that is not an
-    object (``null``, an array) is whole, however unusable.
+    In a response cut short, what the cut left of a call (see
+    :func:`call_cut`); complete JSON that is not an object (an array) is
+    whole, however unusable.
     """
     if not isinstance(raw, str) or not raw.strip():
         return False
     try:
         json.loads(raw)
-    except ValueError:
+    except (ValueError, RecursionError):
         return True
     return False
+
+
+def call_cut(raw: Any, finish_reason: str | None) -> bool:
+    """Whether a call's arguments were cut before they were complete.
+
+    The response ended on something that stops a call mid-arguments (the
+    output cap, a content filter) and the call's argument text is not valid
+    JSON. A call marked so is ``partial`` and never runs (RFC §6.4).
+    """
+    if finish_reason is None or finish_reason.lower() not in _CALL_CUTTING_FINISH_REASONS:
+        return False
+    return arguments_cut(raw)
+
+
+def cut_call_error(name: str) -> dict[str, Any]:
+    """What the model reads for a ``partial`` call: it was cut, nothing ran."""
+    return {
+        "error": "Tool call cut off",
+        "tool": name,
+        "hint": (
+            "This call was cut off before its arguments were complete, so it did "
+            "not run. Call it again, with shorter arguments if you can."
+        ),
+    }
 
 
 def minted_call_id(name: str) -> str:
@@ -80,8 +114,8 @@ class CallIds:
     def __init__(self) -> None:
         self._taken: set[str] = set()
 
-    def __call__(self, server_id: str | None, name: str) -> str:
-        call_id = server_id if server_id and server_id not in self._taken else None
-        call_id = call_id or minted_call_id(name)
+    def __call__(self, server_id: Any, name: str) -> str:
+        given = str(server_id) if server_id else ""
+        call_id = given if given and given not in self._taken else minted_call_id(name)
         self._taken.add(call_id)
         return call_id

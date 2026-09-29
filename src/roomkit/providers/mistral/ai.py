@@ -39,6 +39,22 @@ from roomkit.providers.mistral.models import MODELS
 from roomkit.providers.utils import _aclose_stream
 
 
+def _server_call_id(call_id: str | None) -> str | None:
+    """The call's id, or None when the server gave none.
+
+    Mistral's SDK fills a missing ``id`` with the string ``"null"``: read as
+    an id, every id-less call would share it.
+    """
+    return None if call_id in (None, "", "null") else call_id
+
+
+def _argument_text(arguments: Any) -> str:
+    """A fragment's arguments as text; the SDK types them ``Dict | str``."""
+    if isinstance(arguments, dict):
+        return json.dumps(arguments)
+    return arguments or ""
+
+
 class MistralAIProvider(AIProvider):
     """AI provider using the Mistral AI API.
 
@@ -363,9 +379,9 @@ class MistralAIProvider(AIProvider):
                         # execution and persistence.
                         composed = tool_call_slots.fold(
                             getattr(tc_delta, "index", None),
-                            tc_delta.id,
+                            _server_call_id(tc_delta.id),
                             function.name if function else None,
-                            (function.arguments or "") if function else "",
+                            _argument_text(function.arguments) if function else "",
                         )
                         if composed is not None:
                             yield composed

@@ -33,6 +33,7 @@ from roomkit.providers.ai.base import (
     AIToolCallPart,
     AIToolResultPart,
 )
+from roomkit.providers.ai.tool_calls import cut_call_error
 
 if TYPE_CHECKING:
     from roomkit.providers.ai.base import AIProvider
@@ -263,7 +264,11 @@ class AIProviderReasoningBackend(ReasoningBackend):
         """Execute one round of tool calls through the channel gate; record the results."""
         results: list[Any] = []
         for tc in calls:
-            result = await self._execute(request, tc.name, tc.arguments)
+            if tc.partial:
+                # Cut before its arguments were complete: it never runs (RFC §6.4).
+                result = json.dumps(cut_call_error(tc.name))
+            else:
+                result = await self._execute(request, tc.name, tc.arguments)
             results.append(AIToolResultPart(tool_call_id=tc.id, name=tc.name, result=result))
         history.append(AIMessage(role="tool", content=results))
 

@@ -54,7 +54,7 @@ from roomkit.providers.ai.response_schema import (
     checked_stream,
     schema_for_generate,
 )
-from roomkit.providers.ai.tool_calls import CallIds, arguments_cut, is_truncation, tool_arguments
+from roomkit.providers.ai.tool_calls import CallIds, call_cut, tool_arguments
 from roomkit.providers.openai.config import OpenAIConfig
 from roomkit.providers.openai.models import MODELS
 from roomkit.providers.utils import _aclose_stream, http_timeout
@@ -492,7 +492,7 @@ class OpenAIAIProvider(AIProvider):
         tool_calls: list[AIToolCall] = []
         if choice.message.tool_calls:
             ids = CallIds()
-            truncated = is_truncation(choice.finish_reason)
+            finish_reason = choice.finish_reason
             for tc in choice.message.tool_calls:
                 raw = tc.function.arguments
                 tool_calls.append(
@@ -500,7 +500,7 @@ class OpenAIAIProvider(AIProvider):
                         id=ids(tc.id, tc.function.name),
                         name=tc.function.name,
                         arguments=tool_arguments(raw),
-                        partial=truncated and arguments_cut(raw),
+                        partial=call_cut(raw, finish_reason),
                     )
                 )
 
