@@ -15,12 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   share of `output_tokens`, which counts it. A detail: `ModelPricing.cost_for`
   never prices it a second time.
 - `RoomKit.deliver(chain_depth=...)`, `InboundMessage.chain_depth`,
-  `DeliveryItem.chain_depth` and `RealtimeVoiceChannel.inject_text(chain_depth=...)`
-  (RMK-287, RFC §8.3, §23.3): the chain the delivered content continues.
-  0, the default, opens one, as a person's message does. The framework's own
-  background deliveries (a delegation's result, a supervisor's or a loop's
-  asynchronous results) pass the depth of the turn that started them; a host
-  delivering a result on a turn's behalf can do the same.
+  `DeliveryItem.chain_depth` and
+  `RealtimeVoiceChannel.inject_text(chain_depth=...)` (RMK-287, RFC §8.3,
+  §23.3): the chain the delivered content continues. 0, the default, opens
+  one, as a person's message does. The framework's own background deliveries
+  (a delegation's result, a supervisor's or a loop's asynchronous results)
+  pass the depth of the turn that started them; a host delivering a result on
+  a turn's behalf can do the same.
 - `RoomKit.deliver(instruction=...)` and `DeliveryItem.instruction` (RMK-310,
   RFC §22.1): deliver content as the application's direction to an agent,
   never as a participant's words. Through the text pipeline it is an
@@ -34,11 +35,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   generations used, summed over its rounds, so the streamed turn's record can
   ride its last message; a response without tools yields it too, unless its
   provider streams text only (no structured streaming). The terminal
-  `[Response interrupted]` message of a turn the provider interrupted after a
-  round carries `metadata["interruption_marker"] = True` (distinct from the
-  `interrupted` of a spoken reply a barge-in cut), `is_interruption_marker`
-  tells it from an answer, and `answer_text` reads an agent's answer off a
-  message, the marker excluded.
+  `[Response interrupted]` message of a buffered turn the provider interrupted
+  after a round (a streamed turn ends without one) carries
+  `metadata["interruption_marker"] = True` (distinct from the `interrupted` of
+  a spoken reply a barge-in cut), `is_interruption_marker` tells it from an
+  answer, and `answer_text` reads an agent's answer off a message, the marker
+  excluded.
 - `roomkit.core.task_utils.cancel_and_wait(*tasks)` (RMK-288): cancels tasks
   and waits for their end without eating the caller's own cancellation,
   which it raises once they have ended; and `await_interruptible(task)`, which
@@ -54,25 +56,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ChannelOutput.error` (RMK-156): an error a channel met while producing an
   output it still delivers. The router records it as it records a raised
   one, so `ON_ERROR` fires and the caller's `InboundResult.error` carries it,
-  while the output's events are delivered. An `AIChannel` turn the provider
-  interrupts after a tool round uses it (RFC §6.4).
-- `RealtimeVoiceChannel(tool_policy=...)` and `ConferenceRealtimeConfig(tool_policy=...)`
-  (RMK-286, RFC §12.4, §12.10.12): the `ToolPolicy` an `AIChannel` takes,
-  with the same exempt names. A denied tool is not declared to the session
-  (connection, reconfiguration, Tool Search reveals and skill activations
-  included) nor to a reasoning backend, which is no longer offered a tool a
-  skill still gates either, is never named by `find_tools`, and
-  is refused at the gate, whether the call comes from the provider, from
-  spoken text the channel recovered or from a backend; the refusal reaches
-  `ON_TOOL_CALL`'s observers. Tool Search's `call_tool` transport stays
-  declared under an allow list, and the policy applies to the tool it names.
-  Role overrides apply to the session's participant, as the store holds it
-  when the session starts and again at each call, so a role changed during
-  the session holds from the next call; a participant the store does not
-  hold gets the base rules, and so does a conference, whose mix names no
-  participant (it logs the overrides it ignores). `tool_policy` is the last
-  field of `ConferenceRealtimeConfig`. Default `None`: nothing changes. See
-  `examples/realtime_tool_policy.py`.
+  while the output's events are delivered. A buffered `AIChannel` turn the
+  provider interrupts after a tool round uses it; a streamed one raises
+  through its stream (RFC §6.4).
+- `RealtimeVoiceChannel(tool_policy=...)` and
+  `ConferenceRealtimeConfig(tool_policy=...)` (RMK-286, RFC §12.4, §12.10.12):
+  the `ToolPolicy` an `AIChannel` takes. An exempt tool escapes it only where
+  the channel serves it itself (RMK-294); a conference serves none and exempts
+  nothing. A denied tool is not declared to the session (connection,
+  reconfiguration, Tool Search reveals and skill activations included) nor to
+  a reasoning backend, which is no longer offered a tool a skill still gates
+  either, is never named by `find_tools`, and is refused at the gate, whether
+  the call comes from the provider, from spoken text the channel recovered or
+  from a backend; the refusal reaches `ON_TOOL_CALL`'s observers. Tool
+  Search's `call_tool` transport stays declared under an allow list, and the
+  policy applies to the tool it names. Role overrides apply to the session's
+  participant, as the store holds it when the session starts and again at each
+  call, so a role changed during the session holds from the next call; a
+  participant the store does not hold gets the base rules, and so does a
+  conference, whose mix names no participant (it logs the overrides it
+  ignores). `tool_policy` is the last field of `ConferenceRealtimeConfig`.
+  Default `None`: nothing changes. See `examples/realtime_tool_policy.py`.
 - ElevenLabs TTS can stream its text input over WebSocket (RMK-265): with
   `ElevenLabsConfig(stream_input=True)` a streaming AI response is spoken
   from its first sentence instead of once it is complete. First audio came
@@ -101,9 +105,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   form ("type call:lookup{city:Paris} to search"), or a call followed by
   more speech, calls nothing; "Let me check. call:lookup{city:Paris}" still
   runs. A brace later in the speech is no longer read as the call's own.
-- A delegation's hand-back fences the worker's output in a
-  `<worker_output>` block where it used `--- result ---` /
-  `--- end of result ---` (RMK-314): a notified transport receives that text.
 - `BEFORE_TOOL_USE` fails closed (RMK-313, RFC §9.3), like `BEFORE_TTS` and
   `ON_TRANSCRIPTION`: a hook that raises, times out or returns something
   unusable refuses the call before it runs, where the tool used to run. It
@@ -242,8 +243,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A streamed turn the provider interrupts after a tool round is reported
   like a buffered one (RMK-289, RFC §6.4): `ON_AI_RESPONSE` fires with
   `loop_end_reason="error"` and the usage of its rounds, then the error
-  surfaces through `ON_ERROR` and `InboundResult.error`. It was not reported
-  at all (RMK-282). The loop yields its `LoopEndMarker` with reason `error`
+  surfaces through `ON_ERROR` and `InboundResult.error`. It fired no
+  `ON_AI_RESPONSE`. The loop yields its `LoopEndMarker` with reason `error`
   before the exception reaches the consumer.
 - A streamed turn records how it ended on its last message, as a buffered one
   does (RMK-289, RFC §6.4): `loop_end_reason` and `ai_usage` in the metadata
@@ -251,7 +252,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   between rounds, an interruption), of the last message it wrote, whose
   stored row is updated once the turn's deliveries are done, through
   `update_event` (so `ON_EVENT_UPDATED` fires), best effort. A response
-  without tools records it too, and so does a delegated turn's last message in
+  without tools records it too, unless its provider streams text only, and
+  so does a delegated turn's last message in
   its child room. The documented read of `loop_end_reason` off the reply now
   works on the streaming path.
 - A streamed delegated turn returns its worker's last message as the task's
@@ -265,24 +267,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   declared tool no handler serves. Inside the tool loop these are the call's
   outcomes (RFC §9.3); a host that wraps or calls the handler itself catches
   them.
-- `ToolPolicy` governs the tools the channel injects itself (RMK-271,
-  RFC §21.1). Sandbox commands (`sandbox_*`), `run_skill_script` and
-  `plan_tasks` escaped it: `deny=["*"]` still declared and ran
-  `sandbox_bash`. They are now allowed or denied like a host tool, and so is
-  a host tool whose name starts with `sandbox_`. Only `activate_skill`,
-  `read_skill_reference`, `read_stored_result`, `find_tools` and `list_tools`
-  stay exempt, by exact name. A host with an allow list that relied on the
-  exemption adds the injected tools it wants to it (`allow=[...,
-  "sandbox_*", "run_skill_script", "plan_tasks"]`). The same names alone
-  escape skill gating, in the declared list and at execution alike (a skill
-  gating `sandbox_*` hid nothing and refused the call), `run_skill_script`
-  included on RealtimeVoiceChannel. `find_tools`, `list_tools` and the tool
-  hint of `activate_skill` no longer name a tool the policy denies or a
-  skill gates, on RealtimeVoiceChannel too for skill gating. The sandbox
-  preamble is left out of the prompt when the policy allows no sandbox tool,
-  and the skills preamble says scripts are unavailable when it denies
-  `run_skill_script`. Only the tools a sandbox declares are routed to it: a
-  host tool that merely starts with `sandbox_` reaches the host's handler.
+- `ToolPolicy` governs the tools the channel injects itself (RMK-271, RFC
+  §21.1). Sandbox commands (`sandbox_*`), `run_skill_script` and `plan_tasks`
+  escaped it: `deny=["*"]` still declared and ran `sandbox_bash`. They are now
+  allowed or denied like a host tool, and so is a host tool whose name starts
+  with `sandbox_`. Only `activate_skill`, `read_skill_reference`,
+  `read_stored_result`, `find_tools` and `list_tools` stay exempt, and only
+  when the channel serves them itself (RMK-294). A host with an allow list
+  that relied on the exemption adds the injected tools it wants to it
+  (`allow=[..., "sandbox_*", "run_skill_script", "plan_tasks"]`). The same
+  tools, when the channel serves them, alone escape skill gating, in the
+  declared list and at execution alike (a skill gating `sandbox_*` hid nothing
+  and refused the call), `run_skill_script` included on RealtimeVoiceChannel.
+  `find_tools`, `list_tools` and the tool hint of `activate_skill` no longer
+  name a tool the policy denies or a skill gates, on RealtimeVoiceChannel too.
+  The sandbox preamble is left out of the prompt when the policy allows no
+  sandbox tool, and the skills preamble says scripts are unavailable when it
+  denies `run_skill_script`. Only the tools a sandbox declares are routed to
+  it: a host tool that merely starts with `sandbox_` reaches the host's
+  handler.
 - ElevenLabs `expressive=True` selects Eleven v4 Turbo (`eleven_v4_turbo`)
   where it forced `eleven_v3` (RMK-263). v4 Turbo renders the same inline
   audio tags, stacked if need be, at conversational latency, and unlike v3
@@ -489,25 +492,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   by `reconfigure` from inside a tool handler (a handoff), the new
   connection's loop inherited that call's context (its voice session, its AI
   loop, the call it served) and carried it into every event of the session.
-- A stored large tool result stays readable while its room works (RMK-285,
-  RFC §21.5). The eviction store held 50 results for every room together, so
-  50 evictions elsewhere pushed a room's result out and `read_stored_result`
-  answered "not found". Each room now keeps its 50 most recently read
-  results, and the store's bounds for memory (200 results, 64 MB of text)
-  take from the room holding the most first, so a quiet room keeps its
-  results while others evict. A call id reused in a later turn overwrote the
-  result an earlier placeholder named; an id is now never given to another
-  result, even once its own left the store (`evicted_call_0`, then
-  `evicted_call_0_2`). A tool-usage digest rebuilt after a restart offered to
-  read back an id the store no longer held; it keeps the result's size and
-  drops the id.
+- A stored large tool result stays readable while its room works (RMK-285, RFC
+  §21.5). The eviction store held 50 results for every room together, so 50
+  evictions elsewhere pushed a room's result out and `read_stored_result`
+  answered "not found". Each room now keeps its 50 most recently stored or
+  read results, and the store's bounds for memory (200 results, 64 Mi
+  characters of text) take from the room holding the most first, so a quiet
+  room keeps its results while others evict. A call id reused in a later turn
+  overwrote the result an earlier placeholder named; an id is now not given to
+  another result while it is among the last 10,000 the store issued, even once
+  its own left the store (`evicted_call_0`, then `evicted_call_0_2`). A
+  tool-usage digest rebuilt after a restart offered to read back an id the
+  store no longer held; it keeps the result's size and drops the id.
 - Every provider hands the tool loop the same call (RMK-284, RFC §6.4). A
   call the output cap cut mid-arguments ran anyway, with `{}` on Anthropic
   and `{"raw": "<fragment>"}` on the OpenAI dialect; it is now marked partial
   and never runs. `null` or array arguments raised a raw `ValidationError`
   (buffered) or a non-retryable `ProviderError` (streamed); arguments are now
-  always a mapping (none or `null` is `{}`, anything unparseable under
-  `raw`), the same in both modes. Calls the server gave no id (OpenAI
+  always a mapping (none or `null` is `{}`, anything that is not a JSON
+  object under `raw`), the same in both modes. On Anthropic, whose complete
+  `tool_use` block always parses, a call whose arguments are not valid JSON
+  is partial whatever the stop reason, `tool_use` included; the other
+  providers mark one only when the response ended on the output cap or a
+  content filter, and otherwise run it with its text under `raw`. Ollama
+  reads arguments sent as a JSON string as the object they encode, where it
+  passed the string under `raw`. Calls the server gave no id (OpenAI
   dialect, Mistral, whose SDK fills a missing id with `"null"`) or the same
   id (PolarGrid) now get distinct ones, and the composition events carry the
   id the call ends with. Two whole calls sent on one stream index (Mistral's
@@ -516,6 +525,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dice"); a call re-emitted in a later chunk still folds into the first, and
   so does an identical id-less call in a later chunk, which the wire cannot
   tell from one.
+- `StreamToolCallDelta.index` is the call's position among the response's
+  calls, in the order they first appeared, on OpenAI and the providers built
+  on it, Mistral and PolarGrid (RMK-284, RFC §6.4): it was the server's
+  stream index, which two calls may share. Their complete `StreamToolCall`s
+  come out in that order too, where they were sorted by stream index.
+  Anthropic's index is still its content block's.
 - The chain-depth limit holds for a streamed response, and past it no agent
   is asked (RMK-283, RMK-287, RFC §8.3). The router applied the limit only to
   buffered responses: a streamed one (every in-repo provider streams)
@@ -537,13 +552,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that delegated; so do a supervisor's and a loop's asynchronous results.
 - The answers that restarted the chain carry their trigger's depth plus one
   (RMK-287, RFC §8.3, §12.4, §12.10.12, §19.7): a speech-to-speech model's
-  assistant transcription, on `RealtimeVoiceChannel` and on a conference
-  (1 after the user spoke, the injected event's depth plus one after a text
-  injection), a `Loop`'s result, and a `Supervisor`'s answer after its
-  workers ran. A realtime model and a text agent answering each other looped
-  without end; the limit now stops the text agent. It does not hold the
-  speech-to-speech model itself, which answers an injection at any depth. A supervisor's answer and a loop's result also stay in their
-  trigger's thread (`parent_event_id`).
+  assistant transcription, on `RealtimeVoiceChannel` and on a conference (1
+  after the user spoke, the injected event's depth plus one after a text
+  injection), a `Loop`'s result, and a `Supervisor`'s answer after its workers
+  ran. A realtime model and a text agent answering each other looped without
+  end; the limit now stops the text agent. It does not hold the
+  speech-to-speech model itself, which answers an injection at any depth. A
+  supervisor's answer and a loop's result also stay in their trigger's thread
+  (`parent_event_id`).
 - A regeneration and a delegated turn's child room store and announce what
   their broadcast blocked, and keep its tasks and observations, as the
   inbound path does (RMK-287, RFC §8.3). A muted agent's regenerated answer
@@ -551,16 +567,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A turn that did not complete no longer reports as one, and a stop keeps its
   tools from running (RMK-282, RFC §6.4, §12.2 step 13s, §21.3). On the
   streaming tool loop, the one production uses, a turn whose stream was
-  closed early (a barge-in, a transport that stopped reading, a schema turn
-  whose answer was refused) fired `ON_AI_RESPONSE` as `completed` and closed
-  its `llm.generate` span `ok`; it now fires nothing and the span ends
-  `cancelled`. A turn cancelled from outside left the span open on the
-  non-streaming loop; it ends `cancelled` there too. A Cancel that arrived
-  while a round's calls were announced, after the model's last event, still
-  ran them; none runs now, and each call's TOOL_CALL_END is stored `failed`.
-  A streamed turn cancelled or failed while a tool ran left its
-  TOOL_CALL_START pending; its end is stored `failed` and delivered to every
-  channel, the one that streamed included. A host that counted usage through
+  closed early (a barge-in, a transport that stopped reading) fired
+  `ON_AI_RESPONSE` as `completed` and closed its `llm.generate` span `ok`; it
+  now fires nothing and the span ends `cancelled`. A schema turn whose answer
+  was refused fails inside its loop: it fires no `ON_AI_RESPONSE`, `ON_ERROR`
+  fires, and its span ends `error`, in both loops. A turn cancelled from
+  outside left the span open on the non-streaming loop; it ends `cancelled`
+  there too. A Cancel that arrived while a round's calls were announced,
+  after the model's last event, still ran them; none runs now: a call
+  already announced gets its TOOL_CALL_END stored `failed`, and a call not
+  yet announced is never announced. A streamed turn cancelled or failed
+  while a tool ran left its TOOL_CALL_START pending; its end is stored
+  `failed` and delivered to every channel, the one that streamed included.
+  The `error` of such an end names the outcome, never the exception, which
+  goes to the log: `cancelled` for a call a stop or a cancellation kept from
+  running or aborted, `turn failed` for a call still open when the turn
+  failed, and `tool round failed` for a round that raised after a barge-in
+  stopped the response, whose end carried the exception's
+  `<Class>: <message>`. A host that counted usage through
   `ON_AI_RESPONSE` no longer sees a barge-in turn there: its tokens and tool
   count are on its `llm.generate` span, which ends `cancelled`.
 - Gemini declares a tool whose schema has an `enum` of numbers, booleans or
@@ -592,9 +616,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   response was still active and the API rejected it, and the second call's
   output then waited, unspoken, for the caller's next turn. The provider now
   counts the calls of the current response and asks once, when that response
-  has ended and every call has its result. A result for a call of a response
-  the caller has already talked over joins the response in progress, or asks
-  at once when none is; a continuation asked for and not yet begun counts as
+  has ended, every call has its result and the caller is not speaking; while
+  the caller speaks, the request that answers the caller's turn covers it
+  (RMK-288). A result for a call of a response the caller has already talked
+  over joins the response in progress, or asks once none is and the caller is
+  not speaking; a continuation asked for and not yet begun counts as
   in progress, and a result that lands before it begins gets the next one.
 - A turn cut short no longer replays the room's history (RMK-156, RFC §6.4).
   When the provider failed after a tool round on the non-streaming loop and
@@ -610,8 +636,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `InboundResult.error`, the `llm.generate` span in error). A turn cancelled
   between rounds no longer repeats the round's text as a final message, and
   a turn without final text carries `loop_end_reason` and `ai_usage` on its
-  last message. The streaming loop still ends an interrupted turn without the
-  marker (RMK-282).
+  last message. A streamed turn adds no marker: the room keeps what it
+  streamed, and the error surfaces the same way (RFC §6.4).
 - What a tool handler returns reaches the model as JSON, and the outcomes the
   channel decides carry the failure marker (RMK-278, RFC §9.3, §21.4). On
   `AIChannel` a handler returning `[{"id": 1}]` failed the whole turn with a
@@ -699,7 +725,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and was called outside one"}` instead of a delegation in some other room;
   script the call through the model instead, as the orchestration examples
   now do. The private `_room_id_var` is gone.
-
 - A conference's realtime tool calls go through the tool gate (RMK-274,
   RFC §12.10.12). They went straight to `tool_handler`: an undeclared name
   or invalid arguments reached it, `BEFORE_TOOL_USE` and `ON_TOOL_CALL` never
@@ -707,11 +732,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   running. A call must now name one of the configuration's `tools` when it
   declares any, and match its schema; it passes `BEFORE_TOOL_USE`, whose
   arguments, returned or edited in place, meet the schema again; it fires
-  `ON_TOOL_CALL` (sync hooks, then observers, refusals included, a refusal
-  once it is sent); it is bounded at 16384 characters; and a call the
-  provider cancels is interrupted and observed with `cancelled`, once. A
-  handler's exception is logged; the model reads
-  `{"error": "Tool 'x' failed"}` instead of its text.
+  `ON_TOOL_CALL` (sync hooks on a served call, then observers; a refusal
+  reaches the observers only, once it is sent); it is bounded at 16384
+  characters; and a call the provider cancels is interrupted and observed
+  with `cancelled`, once. A handler's exception is logged; the model reads
+  `{"error": "Tool 'x' failed (<ExceptionClass>)"}` (RMK-295) instead of its
+  text.
 - `ON_TOOL_CALL`'s sync hooks chain on one result (RMK-273, RFC §9.3): each
   sees the result as the previous one left it, and a `HookResult.modify(event)`
   carrying a new result now counts, where only `metadata={"result": ...}` did.
@@ -721,9 +747,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or one a failing fail-closed hook withheld, now fires them with `is_error`
   and the reason instead of skipping them. Same on RealtimeVoiceChannel. A
   `modify` whose payload is not the `ToolCallEvent` replaces nothing: the
-  chain carries on from the previous hook's rewrite. An external tool's
-  report (ACP, Claude Agent SDK) reaches the observers as its provider told
-  it, whatever a sync hook returned. `HookEngine.run_sync_hooks` takes a
+  chain carries on from the previous hook's rewrite. A call whose outcome
+  the model already read is a report (RMK-292): an external tool's (ACP,
+  Claude Agent SDK), a call the provider ran itself on the streaming loop,
+  and a realtime Tool Search call reach the observers as delivered, whatever
+  a sync hook returned. `HookEngine.run_sync_hooks` takes a
   `fold` and a `fire_observers` flag for this; other triggers are unchanged.
 - The tool-usage digest of the next turn's prompt records the arguments the
   model sent, not the ones a `BEFORE_TOOL_USE` hook rewrote (RMK-273): a
@@ -733,9 +761,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A tool a `BEFORE_AI_GENERATION` hook removes stays removed for the whole
   turn (RMK-272). Every later round re-filtered from the toolset built before
   the hook ran, so the tool came back from round 1 and could run; a tool the
-  hook added vanished the same way. The tools the hook leaves are now the
-  turn's toolset, and a call to a removed one is refused, a tool the channel
-  provides itself (`activate_skill`, `read_stored_result`...) included.
+  hook added vanished the same way. What the hook leaves of the tools it
+  saw is now the turn's toolset, and a call to a removed one is refused, a
+  tool the channel provides itself (`activate_skill`, `read_stored_result`...)
+  included. A tool the hook never saw (gated by a skill, denied by the
+  policy) stays for those filters to decide.
 - An `ON_TOOL_CALL` hook that blocks `activate_skill` blocks the activation
   (RMK-272). The skill was recorded active before the hook ran, so its gated
   tools opened although the model read the refusal. On AIChannel the
