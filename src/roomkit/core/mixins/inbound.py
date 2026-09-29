@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from roomkit.core.locks import RoomLockManager
     from roomkit.identity.base import IdentityResolver
     from roomkit.models.context import RoomContext
+    from roomkit.models.event import RoomEvent
     from roomkit.models.identity import Identity, IdentityResult
     from roomkit.store.base import ConversationStore
     from roomkit.telemetry.base import TelemetryProvider
@@ -336,52 +337,7 @@ class InboundMixin(HelpersMixin):
         # Let channel process inbound
         event = await channel.handle_inbound(message, context)
 
-        # An instruction is the caller's decision, not the wire's (RFC
-        # §10.1.1): a channel parses content and need not know the type, so
-        # the pipeline applies it, as it does the address below.
-        if message.event_type == EventType.INSTRUCTION:
-            if event.type != EventType.INSTRUCTION:
-                event = event.model_copy(update={"type": EventType.INSTRUCTION})
-            # Standalone is the typed field's word alone (RFC §10.1.1 step 7):
-            # a caller's metadata key of the same name is dropped, never
-            # honoured. The instruction is never stored, so nothing is lost.
-            metadata = {k: v for k, v in event.metadata.items() if k != STANDALONE}
-            if message.standalone:
-                metadata[STANDALONE] = True
-            event = event.model_copy(update={"metadata": metadata})
-
-        # Caller-requested visibility (e.g. ``"transport"`` for a proactive
-        # notification that must not wake the room's intelligence channel).
-        if message.visibility != Visibility.ALL and event.visibility == Visibility.ALL:
-            event = event.model_copy(update={"visibility": message.visibility})
-
-        # In-app thread parent, applied centrally so every channel's
-        # handle_inbound carries it (each builds its own RoomEvent and would
-        # otherwise have to remember to copy it). The locked pipeline then
-        # normalises it to the thread root.
-        if message.parent_event_id is not None and event.parent_event_id is None:
-            event = event.model_copy(update={"parent_event_id": message.parent_event_id})
-
-        # Addressing (RFC §19.3), applied centrally for the same reason. A
-        # channel that reads an address off its own wire format sets it in
-        # handle_inbound and keeps it — the caller's address only fills a gap.
-        if message.addressed_to is not None and event.addressed_to is None:
-            event = event.model_copy(update={"addressed_to": list(message.addressed_to)})
-
-        # Carry the caller's publication key even when the channel only parses
-        # content. The locked pipeline owns deduplication for every transport.
-        if message.idempotency_key is not None and event.idempotency_key is None:
-            event = event.model_copy(update={"idempotency_key": message.idempotency_key})
-
-        # The chain the message continues (RFC §8.3, §23.3): a transport parses
-        # a person's words, which open one, so only the caller sets it.
-        if message.chain_depth:
-            event = event.model_copy(update={"chain_depth": message.chain_depth})
-
-        # Where this message's answer may go — same central application, same
-        # rule: a channel that resolved one itself keeps it.
-        if message.response_visibility is not None and event.response_visibility is None:
-            event = event.model_copy(update={"response_visibility": message.response_visibility})
+        event = _apply_message_fields(event, message)
 
         # Identity resolution pipeline (RFC §11)
         try:
@@ -728,3 +684,65 @@ class InboundMixin(HelpersMixin):
             )
         except Exception:
             logger.exception("Error firing ON_SESSION_STARTED for text channel")
+
+
+def _apply_message_fields(event: RoomEvent, message: InboundMessage) -> RoomEvent:
+    """The event a channel parsed, with the caller's fields it did not set.
+
+    Applied centrally, so every channel's ``handle_inbound`` carries them
+    (each builds its own RoomEvent and would otherwise have to remember to
+    copy each one). A field the channel resolved itself keeps its value.
+    """
+    if message.event_type == EventType.INSTRUCTION:
+        event = _as_instruction(event, message)
+
+    # Caller-requested visibility (e.g. ``"transport"`` for a proactive
+    # notification that must not wake the room's intelligence channel).
+    if message.visibility != Visibility.ALL and event.visibility == Visibility.ALL:
+        event = event.model_copy(update={"visibility": message.visibility})
+
+    # In-app thread parent, applied centrally so every channel's
+    # handle_inbound carries it (each builds its own RoomEvent and would
+    # otherwise have to remember to copy it). The locked pipeline then
+    # normalises it to the thread root.
+    if message.parent_event_id is not None and event.parent_event_id is None:
+        event = event.model_copy(update={"parent_event_id": message.parent_event_id})
+
+    # Addressing (RFC §19.3), applied centrally for the same reason. A
+    # channel that reads an address off its own wire format sets it in
+    # handle_inbound and keeps it — the caller's address only fills a gap.
+    if message.addressed_to is not None and event.addressed_to is None:
+        event = event.model_copy(update={"addressed_to": list(message.addressed_to)})
+
+    # Carry the caller's publication key even when the channel only parses
+    # content. The locked pipeline owns deduplication for every transport.
+    if message.idempotency_key is not None and event.idempotency_key is None:
+        event = event.model_copy(update={"idempotency_key": message.idempotency_key})
+
+    # The chain the message continues (RFC §8.3, §23.3): a transport parses
+    # a person's words, which open one, so only the caller sets it.
+    if message.chain_depth:
+        event = event.model_copy(update={"chain_depth": message.chain_depth})
+
+    # Where this message's answer may go — same central application, same
+    # rule: a channel that resolved one itself keeps it.
+    if message.response_visibility is not None and event.response_visibility is None:
+        event = event.model_copy(update={"response_visibility": message.response_visibility})
+    return event
+
+
+def _as_instruction(event: RoomEvent, message: InboundMessage) -> RoomEvent:
+    """The event as the instruction the caller sent (RFC §10.1.1).
+
+    An instruction is the caller's decision, not the wire's: a channel parses
+    content and need not know the type, so the pipeline applies it, as it
+    does the address. Standalone is the typed field's word alone (step 7): a
+    caller's metadata key of the same name is dropped, never honoured. The
+    instruction is never stored, so nothing is lost.
+    """
+    if event.type != EventType.INSTRUCTION:
+        event = event.model_copy(update={"type": EventType.INSTRUCTION})
+    metadata = {k: v for k, v in event.metadata.items() if k != STANDALONE}
+    if message.standalone:
+        metadata[STANDALONE] = True
+    return event.model_copy(update={"metadata": metadata})

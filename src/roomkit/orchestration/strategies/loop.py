@@ -290,7 +290,6 @@ class Loop(Orchestration):
                         task_desc=arguments.get("task", ""),
                         max_iterations=max_iter,
                         on_done=lambda: running.discard(rid),
-                        chain_depth=_current_turn_chain_depth(),
                     )
                 )
             except BaseException:
@@ -370,13 +369,14 @@ async def _async_loop_and_deliver(
     task_desc: str,
     max_iterations: int,
     on_done: Any,
-    chain_depth: int = 0,
 ) -> None:
     """Background: run loop → deliver results via kit.deliver().
 
-    At ``chain_depth``, the depth of the turn that started the loop, whose
-    chain the results continue (RFC §23.3).
+    Started as a task by the tool call that asked for the loop, so the context
+    it copied is that call's (RFC §21.4): the results continue the chain of
+    the turn that made it (§23.3).
     """
+    chain_depth = _current_turn_chain_depth()
     try:
         result = await _execute_loop(
             kit=kit,

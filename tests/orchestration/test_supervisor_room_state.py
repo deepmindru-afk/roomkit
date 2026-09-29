@@ -17,6 +17,7 @@ from roomkit.channels.agent import Agent
 from roomkit.models.room import Room
 from roomkit.orchestration.strategies.supervisor import Supervisor, _inject_strategy
 from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.tools.context import _current_turn_chain_depth
 from tests.orchestration.test_strategy_supervisor import _make_mock_kit
 from tests.tool_room import tool_call_in
 
@@ -80,10 +81,10 @@ async def test_async_results_continue_the_chain_of_the_turn_that_dispatched(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """RFC §19.7.3, §23.3: the results come back at the dispatching turn's depth."""
-    dispatched: list[dict[str, Any]] = []
+    dispatched: list[tuple[str, int]] = []
 
     async def run_and_deliver(**kwargs: Any) -> None:
-        dispatched.append(kwargs)
+        dispatched.append((kwargs["room_id"], _current_turn_chain_depth()))
         kwargs["on_done"]()
 
     monkeypatch.setattr(_inject_strategy, "_async_run_and_deliver", run_and_deliver)
@@ -96,4 +97,4 @@ async def test_async_results_continue_the_chain_of_the_turn_that_dispatched(
         await boss.tool_handler("delegate_workers", {"task": "look into it"})
     await asyncio.sleep(0)
 
-    assert [(d["room_id"], d["chain_depth"]) for d in dispatched] == [("tenant-A", 2)]
+    assert dispatched == [("tenant-A", 2)]

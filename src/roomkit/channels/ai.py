@@ -618,20 +618,7 @@ class AIChannel(
             except Exception:
                 logger.warning("Memory ingestion failed", exc_info=True)
 
-        # Resolve participant role for role-based tool policy.
-        # Set on a per-invocation _ToolLoopContext visible via contextvar so that
-        # _build_context and the tool loop methods can read it. ``room_id``
-        # rides the same contextvar: the channel object is registered once
-        # per channel_id and shared by every room it serves, so per-call
-        # room resolution (``current_tool_room_id``) is the only safe way
-        # for tool handlers to learn the originating room.
-        event_ctx = _ToolLoopContext()
-        event_ctx.current_participant_role = self._resolve_participant_role(event, context)
-        event_ctx.actor_id = event.source.participant_id
-        event_ctx.chain_depth = event.chain_depth + 1
-        event_ctx.room_id = context.room.id if context.room else event.room_id
-        event_ctx.room = context.room
-        token = _current_loop_ctx.set(event_ctx)
+        token = _current_loop_ctx.set(self._turn_loop_ctx(event, context))
         try:
             if self._provider.supports_streaming or self._provider.supports_structured_streaming:
                 if self._turn_has_tools(binding):
@@ -641,6 +628,26 @@ class AIChannel(
             return await self._generate_response(event, binding, context)
         finally:
             _current_loop_ctx.reset(token)
+
+    def _turn_loop_ctx(self, event: RoomEvent, context: RoomContext) -> _ToolLoopContext:
+        """The per-turn context the turn's tool handlers read (RFC §21.4).
+
+        Set on a per-invocation _ToolLoopContext visible via contextvar so that
+        _build_context and the tool loop methods can read the participant's
+        role (role-based tool policy). ``room_id`` rides the same contextvar:
+        the channel object is registered once per channel_id and shared by
+        every room it serves, so per-call room resolution
+        (``current_tool_room_id``) is the only safe way for tool handlers to
+        learn the originating room. The chain depth is the one this turn's
+        response carries (RFC §8.3).
+        """
+        ctx = _ToolLoopContext()
+        ctx.current_participant_role = self._resolve_participant_role(event, context)
+        ctx.actor_id = event.source.participant_id
+        ctx.chain_depth = event.chain_depth + 1
+        ctx.room_id = context.room.id if context.room else event.room_id
+        ctx.room = context.room
+        return ctx
 
     def _turn_has_tools(self, binding: ChannelBinding) -> bool:
         """Whether a streaming turn goes through the tool loop.

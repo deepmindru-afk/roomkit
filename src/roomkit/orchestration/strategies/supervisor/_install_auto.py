@@ -31,7 +31,6 @@ from roomkit.orchestration.strategies.supervisor.delegate import (
     _two_pass_delegate,
 )
 from roomkit.orchestration.strategies.supervisor.results import _worker_roles_csv
-from roomkit.tools.context import _current_turn_chain_depth
 
 if TYPE_CHECKING:
     from roomkit.channels.agent import Agent
@@ -216,7 +215,6 @@ class _AutoDelegateInstallMixin:
                         task_desc=arguments.get("task", ""),
                         share_channels=share_channels,
                         on_done=lambda **_: running.discard(rid),
-                        chain_depth=_current_turn_chain_depth(),
                     )
                 )
                 task.add_done_callback(log_task_exception)

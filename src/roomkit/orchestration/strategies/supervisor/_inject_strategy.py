@@ -34,7 +34,6 @@ from roomkit.orchestration.strategies.supervisor.supervised import (
     _run_supervised_sequential,
 )
 from roomkit.providers.ai.base import AITool
-from roomkit.tools.context import _current_turn_chain_depth
 
 if TYPE_CHECKING:
     from roomkit.channels.agent import Agent
@@ -188,7 +187,6 @@ class _StrategyToolMixin:
                                 task_desc=task_desc,
                                 share_channels=share_channels,
                                 on_done=_clear,
-                                chain_depth=_current_turn_chain_depth(),
                             )
                         )
                         task.add_done_callback(log_task_exception)

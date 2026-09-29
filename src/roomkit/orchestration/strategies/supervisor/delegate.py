@@ -35,6 +35,7 @@ from roomkit.orchestration.strategies.supervisor.results import (
 from roomkit.orchestration.strategies.supervisor.supervised import (
     _run_supervised_sequential,
 )
+from roomkit.tools.context import _current_turn_chain_depth
 
 if TYPE_CHECKING:
     from roomkit.channels.agent import Agent
@@ -59,12 +60,12 @@ async def _async_run_and_deliver(
     task_desc: str,
     share_channels: list[str] | None = None,
     on_done: Callable[..., None],
-    chain_depth: int = 0,
 ) -> None:
     """Background: run workers → deliver results via kit.deliver().
 
-    ``chain_depth`` is the depth of the turn that dispatched the workers: the
-    results continue its chain (RFC §23.3), so a supervisor re-dispatching on
+    Started as a task by the tool call that dispatched the workers, so the
+    context it copied is that call's (RFC §21.4): the results continue the
+    chain of the turn that made it (§23.3), and a supervisor re-dispatching on
     every result stops at ``max_chain_depth``.
 
     Individual worker lifecycle events are posted to ``kit.status_bus``
@@ -77,6 +78,7 @@ async def _async_run_and_deliver(
     evict cached dispatch responses that should not be re-served after a
     failed pipeline.
     """
+    chain_depth = _current_turn_chain_depth()
     pipeline_meta = {
         "room_id": room_id,
         "strategy": str(strategy) if strategy else None,
@@ -92,14 +94,7 @@ async def _async_run_and_deliver(
             task_desc,
             share_channels=share_channels,
         )
-        results_text = _format_worker_results(worker_results)
-        logger.info("[async_delegate] Workers completed, delivering results")
-
-        await kit.deliver(
-            room_id,
-            f"Analysis results are ready. Here's what the analysts found:\n\n{results_text}",
-            chain_depth=chain_depth,
-        )
+        await _deliver_worker_results(kit, room_id, worker_results, chain_depth)
         _post_worker_status(
             kit,
             "orchestration",
@@ -121,6 +116,35 @@ async def _async_run_and_deliver(
         )
     finally:
         on_done(success=pipeline_success)
+
+
+async def _deliver_worker_results(
+    kit: RoomKit, room_id: str, worker_results: list[Any], chain_depth: int
+) -> None:
+    """Hand the workers' results back to the room, at the dispatching turn's depth."""
+    results_text = _format_worker_results(worker_results)
+    logger.info("[async_delegate] Workers completed, delivering results")
+    await kit.deliver(
+        room_id,
+        f"Analysis results are ready. Here's what the analysts found:\n\n{results_text}",
+        chain_depth=chain_depth,
+    )
+
+
+def _results_event(event: RoomEvent, body: str) -> RoomEvent:
+    """The workers' results, standing in for the event the supervisor answers.
+
+    As deep as the event and in its thread, so the supervisor's answer stays
+    one deeper than the event it answers (RFC §8.3, §19.7.3).
+    """
+    return RoomEvent(
+        room_id=event.room_id,
+        type=event.type,
+        source=EventSource(channel_id="system", channel_type=_ChannelType.SYSTEM),
+        content=TextContent(body=body),
+        chain_depth=event.chain_depth,
+        parent_event_id=event.parent_event_id,
+    )
 
 
 async def _run_workers(
@@ -223,16 +247,8 @@ async def _two_pass_delegate(
         task_timeout=task_timeout,
     )
 
-    # Pass 2: inject worker results and generate final response. The results
-    # stand in for the event, so the answer stays one deeper than it (§8.3).
-    results_event = RoomEvent(
-        room_id=event.room_id,
-        type=event.type,
-        source=EventSource(channel_id="system", channel_type=_ChannelType.SYSTEM),
-        content=TextContent(body=_present_worker_results(worker_results)),
-        chain_depth=event.chain_depth,
-        parent_event_id=event.parent_event_id,
-    )
+    # Pass 2: inject worker results and generate final response
+    results_event = _results_event(event, _present_worker_results(worker_results))
 
     # Ingest the results so the supervisor sees them in context
     try:
@@ -283,17 +299,9 @@ async def _one_pass_delegate(
         task_timeout=task_timeout,
     )
 
-    # Inject results into context and let supervisor present. The results
-    # stand in for the event, so the answer stays one deeper than it (§8.3).
-    results_event = RoomEvent(
-        room_id=event.room_id,
-        type=event.type,
-        source=EventSource(channel_id="system", channel_type=_ChannelType.SYSTEM),
-        content=TextContent(
-            body=(f"The user asked: {user_message}\n\n{_present_worker_results(worker_results)}")
-        ),
-        chain_depth=event.chain_depth,
-        parent_event_id=event.parent_event_id,
+    # Inject results into context and let supervisor present
+    results_event = _results_event(
+        event, f"The user asked: {user_message}\n\n{_present_worker_results(worker_results)}"
     )
 
     try:
