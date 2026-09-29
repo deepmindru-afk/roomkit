@@ -340,6 +340,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A streamed turn no longer reads the room for each row it writes
+  (RMK-302): the closed-room gate (RMK-283) cost a `store.get_room`, a
+  SELECT on Postgres, per segment and per tool row. The stream holds the
+  room as its context read it and reads it again only when the kit closed
+  or archived a room since, and the gate now runs before `BEFORE_BROADCAST`,
+  as on the inbound pipeline. A room closed by another process, or through
+  the store directly, is seen at the next turn.
 - Data framed for a model cannot close its own block (RMK-314): a tool
   result in the tool-usage digest (system prompt) escaped only the exact
   `</tool_result>`, so `</TOOL_RESULT>` or `</tool_result >` ended the block

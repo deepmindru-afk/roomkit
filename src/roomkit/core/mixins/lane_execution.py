@@ -209,6 +209,7 @@ class LaneExecutionMixin(HelpersMixin):
         policy_aware: bool = True,
         cascade: DeliveryCascade | None = None,
         hook_result: SyncPipelineResult | None = None,
+        gate_status: bool = True,
     ) -> RoomEvent | None:
         """Commit an event and hand its delivery to the room's lane.
 
@@ -242,14 +243,18 @@ class LaneExecutionMixin(HelpersMixin):
         pipeline. Tasks and observations join the plan's post-delivery work;
         injected events are committed after their triggering event.
 
+        The room's status gate (RFC §5.1) reads the room before the commit.
+        A run that gates its rows itself, against the room it read once
+        (a stream's :class:`LaneSink`), passes ``gate_status=False``: with a
+        resolved ``source`` the commit then reads nothing.
+
         Returns the committed event, or ``None`` when the persistence
         policy excluded it (delivered, unstored — RFC §14.3).
         """
         from roomkit.core.lanes import DeliveryCascade
 
-        # The status gate holds at every point the timeline grows (RFC §5.1):
-        # a room closed mid-stream takes no further segment.
-        if await self._room_refuses_writes(room_id):
+        # The status gate holds at every point the timeline grows (RFC §5.1).
+        if gate_status and await self._room_refuses_writes(room_id):
             logger.debug("Room %s refuses writes; %s not committed", room_id, event.type.value)
             return None
         own_cascade = cascade is None

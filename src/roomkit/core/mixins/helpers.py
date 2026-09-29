@@ -169,6 +169,7 @@ class HelpersMixin:
     _persistence_policy: Any  # PersistencePolicy | None — set by RoomKit.__init__
     _resource_lease: Any  # RoomKit._resource_lease — the close()-ordering hold on the store
     _lanes: Any  # RoomLaneRegistry — set by RoomKit.__init__
+    _room_close_epoch: int  # bumped by _note_room_closed — set by RoomKit.__init__
 
     # -- Persistence helpers (policy-aware) --
     #
@@ -195,6 +196,17 @@ class HelpersMixin:
         holds) ask here; a missing room refuses too.
         """
         return _refuses_writes(await self._store.get_room(room_id))
+
+    def _note_room_closed(self) -> None:
+        """Record that this kit closed or archived a room.
+
+        A stream checks the room it read at its start before each row and
+        reads it again only when this moved, so a row after a close is
+        refused without a store read per row (RFC §5.1). A room closed by
+        another process, or through the store directly, is seen at the next
+        turn.
+        """
+        self._room_close_epoch += 1
 
     async def _refuse_closed_room(
         self,

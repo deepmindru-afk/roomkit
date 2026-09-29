@@ -10,7 +10,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Protocol
 
 from roomkit.channels._tool_event_result import tool_event_payload
-from roomkit.core.mixins.helpers import _RECENT_EVENTS_LIMIT
+from roomkit.core.mixins.helpers import _RECENT_EVENTS_LIMIT, _refuses_writes
 from roomkit.models.enums import EventStatus, EventType, HookTrigger, Visibility
 from roomkit.models.event import EventSource, RoomEvent, TextContent, ToolCallContent
 from roomkit.models.streaming import (
@@ -393,7 +393,8 @@ class SegmentWriter:
 
 
 class LaneSink:
-    """A room's streamed rows: gated on ``BEFORE_BROADCAST``, committed on its lane."""
+    """A room's streamed rows: refused once the room refuses writes, gated on
+    ``BEFORE_BROADCAST``, committed on its lane."""
 
     def __init__(
         self,
@@ -409,13 +410,33 @@ class LaneSink:
         self._context = context
         self._cascade = cascade
         self._plan_source = plan_source
+        # The room as the run's context read it, and the kit's close count then.
+        self._refusing = _refuses_writes(context.room)
+        self._close_epoch = kit._room_close_epoch
 
     async def commit(self, event: RoomEvent, *, exclude: set[str] | None) -> RoomEvent | None:
+        if await self._room_refuses_writes():
+            logger.debug("Room %s refuses writes; %s not committed", self._room_id, event.type)
+            return None
         gated = await self._gate(event)
         if gated is None:
             return None
         event, hook_result = gated
         return await self._lane(event, exclude=exclude, hook_result=hook_result)
+
+    async def _room_refuses_writes(self) -> bool:
+        """Whether the room refuses this row (RFC §5.1), read once per run.
+
+        The status gate holds at every point the timeline grows: a room closed
+        mid-stream takes no further row. The run holds the room as its context
+        read it, and reads it again only when the kit closed or archived a
+        room since, so a stream does not cost a store read per row.
+        """
+        epoch = self._kit._room_close_epoch
+        if epoch != self._close_epoch:
+            self._close_epoch = epoch
+            self._refusing = await self._kit._room_refuses_writes(self._room_id)
+        return self._refusing
 
     async def _gate(self, event: RoomEvent) -> tuple[RoomEvent, SyncPipelineResult] | None:
         """Run the BEFORE_BROADCAST sync hooks on a row before it commits.
@@ -490,6 +511,7 @@ class LaneSink:
             exclude_delivery=exclude,
             cascade=self._cascade,
             hook_result=hook_result,
+            gate_status=False,
         )
         if stored is not None:
             self._plan_source = _with_row(self._plan_source, stored)

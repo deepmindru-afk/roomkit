@@ -243,6 +243,10 @@ class RoomKit(
         self._identity_resolver = identity_resolver
         self._identity_channel_types = identity_channel_types
         self._max_chain_depth = max_chain_depth
+        # Bumped each time this kit closes or archives a room: a stream holds
+        # the room as it read it at its start, and reads it again only when
+        # this moved (RFC §5.1).
+        self._room_close_epoch = 0
         self._default_agent_response_policy = agent_response_policy
         self._identity_timeout = identity_timeout
         self._process_timeout = process_timeout
