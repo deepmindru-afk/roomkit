@@ -7,14 +7,12 @@ from collections.abc import Callable, Container
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.channels._skill_constants import (
-    SKILL_INFRA_TOOL_NAMES,
     TOOL_ACTIVATE_SKILL,
     TOOL_READ_REFERENCE,
 )
 from roomkit.channels._tool_search_constants import (
     TOOL_FIND_TOOLS,
     TOOL_LIST_TOOLS,
-    TOOL_SEARCH_INFRA_TOOL_NAMES,
 )
 from roomkit.models.tool_call import DeclaredTool, ToolDeclarationOrigin
 from roomkit.providers.ai.base import AITool
@@ -133,14 +131,6 @@ class AIToolPolicyMixin:
             return None
         return self._tool_policy.resolve(self._get_loop_ctx().current_participant_role)
 
-    # Channel-managed tool names: dispatched by the channel itself and never
-    # deferred by Tool Search. Not an exemption from the policy — that is
-    # POLICY_EXEMPT_TOOL_NAMES, a narrower set.
-    _SKILL_INFRA_TOOLS: frozenset[str] = SKILL_INFRA_TOOL_NAMES | frozenset(
-        {"read_stored_result", "plan_tasks"}
-    )
-    _NEVER_DEFERRED: frozenset[str] = _SKILL_INFRA_TOOLS | TOOL_SEARCH_INFRA_TOOL_NAMES
-
     @property
     def _gated_tool_names(self) -> set[str]:
         """Collect tool names gated by skills that have NOT been activated yet.
@@ -196,7 +186,7 @@ class AIToolPolicyMixin:
         """
         return (
             self._tool_search_pinned
-            | self._NEVER_DEFERRED
+            | set(self._channel_tool_dispatch)
             | self._orchestration_tool_names(loop_ctx.room_id)
             | loop_ctx.hook_pinned
         )

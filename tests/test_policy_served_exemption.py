@@ -9,15 +9,21 @@ channel that does not serve it, is governed like any other.
 from __future__ import annotations
 
 import json
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
 
-from roomkit import RoomKit
+from roomkit import ConferenceRealtimeConfig, RoomKit
+from roomkit.channels._conference_tools import declared_tools
+from roomkit.channels._served_tools import CollisionLog
 from roomkit.channels.ai import AIChannel
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
+from roomkit.core.hooks import SyncPipelineResult
+from roomkit.models.tool_call import AIGenerationEvent
 from roomkit.providers.ai.base import AITool
 from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.tools.human_input import HumanInputToolHandler
 from roomkit.tools.policy import ToolPolicy
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
 from tests.test_hook_tool_restrictions import _DONE, _Recorder, _round, _turn
@@ -192,3 +198,107 @@ class TestOneDeclarationPerName:
         assert [t["name"] for t in composed or []].count("find_tools") == 1
         assert all(t.get("description") != "host" for t in composed or [])
         assert [t["description"] for t in composed or [] if t["name"] == "lookup"] == ["later"]
+
+
+class TestEveryEntryReadsTheSameDeclaration:
+    """RMK-294 review: the delegation gate, the realtime gate's schema, the
+    generation hook and the conference follow the same rule (RFC §21.1)."""
+
+    async def _session(self, **kwargs: Any) -> tuple[RoomKit, RealtimeVoiceChannel, Any]:
+        channel = RealtimeVoiceChannel(
+            "rt",
+            provider=MockRealtimeProvider(),
+            transport=MockRealtimeTransport(),
+            tool_handler=AsyncMock(return_value="host ran"),
+            **kwargs,
+        )
+        kit = RoomKit()
+        kit.register_channel(channel)
+        room = await kit.create_room()
+        await kit.attach_channel(room.id, "rt")
+        session = await channel.start_session(room.id, "participant", object())
+        return kit, channel, session
+
+    async def test_a_backend_call_to_a_channel_tool_name_is_refused(self) -> None:
+        """A reasoning backend reaches the handler only: no name is the channel's there."""
+        kit, channel, session = await self._session(
+            tools=[{"name": "lookup_order", "description": "Look up", "parameters": {}}],
+            tool_search=True,
+            tool_policy=ToolPolicy(allow=["lookup_*"]),
+        )
+        try:
+            _, denial, _ = await channel._authorize_realtime_tool(
+                "list_tools", {}, "c1", session.room_id, session, channel_serves=False
+            )
+        finally:
+            await kit.close()
+
+        assert denial is not None and "not declared" in denial
+
+    async def test_the_gate_validates_against_the_declared_duplicate(self) -> None:
+        schema_a = {"type": "object", "properties": {"a": {"type": "string"}}, "required": ["a"]}
+        schema_b = {"type": "object", "properties": {"b": {"type": "string"}}, "required": ["b"]}
+        kit, channel, session = await self._session(
+            tools=[
+                {"name": "lookup", "description": "first", "parameters": schema_a},
+                {"name": "lookup", "description": "later", "parameters": schema_b},
+            ],
+        )
+        try:
+            _, denial, _ = await channel._authorize_realtime_tool(
+                "lookup", {"b": "x"}, "c1", session.room_id, session
+            )
+        finally:
+            await kit.close()
+
+        assert denial is None
+
+    async def test_a_generation_hook_cannot_declare_a_served_name(
+        self, streaming: bool, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        provider = MockAIProvider(ai_responses=[_DONE], streaming=streaming)
+        ch = AIChannel(
+            "ai1",
+            provider=provider,
+            tools=[AITool(name="search_docs", description="Search", parameters={})],
+        )
+        forged = AITool(name="read_stored_result", description="the hook's", parameters={})
+
+        async def hook(gen_event: AIGenerationEvent) -> SyncPipelineResult:
+            tools = [*gen_event.ai_context.tools, forged]
+            gen_event.ai_context = gen_event.ai_context.model_copy(update={"tools": tools})
+            return SyncPipelineResult(allowed=True)
+
+        ch._before_generation_hook = hook
+
+        await _turn(ch)
+
+        declared = {t.name: t.description for t in provider.calls[0].tools or []}
+        assert declared.get("read_stored_result") != "the hook's"
+        assert "read_stored_result" in caplog.text
+
+    def test_the_conference_declares_a_name_once(self) -> None:
+        provider = MockRealtimeProvider()
+        config = ConferenceRealtimeConfig(
+            provider=provider,
+            tools=[
+                {"name": "lookup", "description": "first", "parameters": {}},
+                {"name": "lookup", "description": "later", "parameters": {}},
+            ],
+        )
+
+        declared = declared_tools(config, CollisionLog("conf"))
+
+        assert [t["description"] for t in declared or []] == ["later"]
+
+    def test_a_static_tool_under_a_human_input_tool_name_is_refused(self) -> None:
+        ask = AITool(name="ask", description="Ask the user", parameters={})
+        with pytest.raises(ValueError, match="ask"):
+            AIChannel(
+                "ai1",
+                provider=MockAIProvider(),
+                tools=[ask],
+                human_input_handler=HumanInputToolHandler(
+                    tool_names={"ask"}, tool_definitions=[ask]
+                ),
+            )

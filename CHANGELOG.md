@@ -87,11 +87,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a sandbox command, a human-input tool; `tool_search=False` frees
   `find_tools` and `list_tools`): it was declared with the host's schema and
   served by the channel. One that arrives later (a binding's or a turn's
-  tools, orchestration, a realtime session's tools) is not declared, and a
-  warning names it once. A name given twice is declared once, with the later
-  definition, the one of whoever serves the call (orchestration's over the
-  host's): a host `delegate_task` or `submit_result` beside orchestration's
-  was declared twice, which a provider rejects.
+  tools, orchestration, a realtime session's tools, a `BEFORE_AI_GENERATION`
+  hook) is not declared, and a warning names it once; a hook may withdraw a
+  tool the channel serves, not redefine it. A realtime session's `call_tool`
+  is dropped the same way instead of raising at session start. A name given
+  twice is declared once, with the later definition, the one of whoever
+  serves the call (orchestration's over the host's): a host `delegate_task` or
+  `submit_result` beside orchestration's was declared twice, which a provider
+  rejects. The realtime gate validates against that same definition, and the
+  conference declares a name once too. A reasoning backend's call and a
+  recovered spoken call reach the handler only, so no name counts as the
+  channel's on them: a backend naming `list_tools` ran the host's tool.
 - Under Tool Search, a `BEFORE_AI_GENERATION` hook sees the turn's whole
   catalogue (every tool the tool policy and skill gating let the turn reach),
   not only the first round's declaration (RMK-293, RFC §6.4). Tool Search

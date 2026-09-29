@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._ai_policy import policy_admits, policy_refusal
 from roomkit.channels._realtime_tools import result_text
+from roomkit.channels._served_tools import CollisionLog, declared_once, dict_tool_name
 from roomkit.core.exceptions import ToolRefusedError
 from roomkit.models.enums import ChannelType, HookTrigger
 from roomkit.models.tool_call import (
@@ -45,13 +46,17 @@ MAX_RESULT_CHARS = 16384
 _NO_CHANNEL_TOOLS: frozenset[str] = frozenset()
 
 
-def declared_tools(config: ConferenceRealtimeConfig) -> list[dict[str, Any]] | None:
-    """The tools a conference declares to its provider: what its policy admits."""
+def declared_tools(
+    config: ConferenceRealtimeConfig, collisions: CollisionLog
+) -> list[dict[str, Any]] | None:
+    """The tools a conference declares to its provider: what its policy admits,
+    each name once, the later definition kept as its gate reads it (RFC §21.1)."""
     if config.tools is None:
         return None
+    tools = declared_once(config.tools, dict_tool_name, _NO_CHANNEL_TOOLS, collisions)
     return [
         t
-        for t in config.tools
+        for t in tools
         if policy_admits(config.tool_policy, str(t.get("name", "")), _NO_CHANNEL_TOOLS)
     ]
 

@@ -334,7 +334,6 @@ class AIContextMixin:
 
         # Inject sandbox tools and preamble
         if self._sandbox is not None:
-            user_tool_names = {t.name for t in tools}
             sandbox_allowed = False
             for tdef in self._sandbox.tool_definitions():
                 name = tdef["name"]
@@ -345,8 +344,6 @@ class AIContextMixin:
                         _SANDBOX_TOOL_PREFIX,
                     )
                     continue
-                if name in user_tool_names:
-                    logger.warning("Sandbox tool %r shadows an existing tool", name)
                 sandbox_allowed = sandbox_allowed or self._policy_allows(name)
                 tools.append(
                     AITool(

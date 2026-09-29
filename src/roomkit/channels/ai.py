@@ -37,6 +37,7 @@ from roomkit.channels._ai_resilience import AIResilienceMixin
 from roomkit.channels._ai_steering import AISteeringMixin
 from roomkit.channels._ai_streaming import AIStreamingMixin
 from roomkit.channels._ai_tools import AIToolsMixin
+from roomkit.channels._served_tools import CollisionLog, refuse_served_names
 from roomkit.channels._skill_activation import SkillActivationMemory
 from roomkit.channels._task_planner import TaskPlanner
 from roomkit.channels._tool_eviction import ToolEviction
@@ -461,35 +462,35 @@ class AIChannel(
         # context to register above (see ``active_turns``).
         self._text_streams = 0
 
-        # Realtime backend for ephemeral tool call events (set by register_channel)
+        self._init_framework_callbacks()
+        # External tool handler for provider-executed tools (e.g. Claude Code)
+        self._external_tool_handler = external_tool_handler
+        # Host tools that collide with the channel's own (RFC §21.1), each
+        # reported once.
+        self._collisions = CollisionLog(channel_id)
+        served = self._channel_tool_names()
+        refuse_served_names((tool.name for tool in self._user_tools), served, channel_id)
+
+    def _init_framework_callbacks(self) -> None:
+        """The callbacks the framework injects on ``register_channel``, unset until then."""
+        # Realtime backend for ephemeral tool call events
         self._realtime: RealtimeBackend | None = None
-        # Unified tool call hook callback (injected by framework on register_channel)
+        # Unified tool call hook callback
         self._tool_call_hook: ToolCallCallback | None = None
         # Fired for a call that failed or was refused — observers only.
         self._tool_observer_hook: ToolCallObserver | None = None
         # Fired for a call a provider already ran — a report, nothing applied.
         self._tool_report_hook: ToolCallObserver | None = None
-        # Pre-tool-use hook callback (injected by framework on register_channel)
         self._before_tool_call_hook: Any = None
-        # AI response hook callback (injected by framework on register_channel)
         self._after_response_hook: Any = None
-        # BEFORE_AI_GENERATION hook callback (injected by framework on register_channel)
         self._before_generation_hook: Any = None
-        # ON_AI_THINKING hook callback (injected by framework on register_channel)
         self._thinking_hook: Any = None
-        # ON_PLAN_UPDATED hook callback (injected by framework on register_channel)
         self._plan_updated_hook: Any = None
-        # Tool-usage hydration loader (injected by framework on register_channel):
-        # fetches a room's persisted TOOL_CALL_END history so ToolUsageMemory
-        # survives channel-object lifetimes (restarts, cache expiry) — the
-        # in-memory store dies with the object while conversations outlive it.
+        # Tool-usage hydration loader: fetches a room's persisted
+        # TOOL_CALL_END history so ToolUsageMemory survives channel-object
+        # lifetimes (restarts, cache expiry) — the in-memory store dies with
+        # the object while conversations outlive it.
         self._tool_usage_loader: Any = None
-        # External tool handler for provider-executed tools (e.g. Claude Code)
-        self._external_tool_handler = external_tool_handler
-        # Host tool names already reported as not declared (RFC §21.1): a
-        # wiring diagnostic, not a per-turn event.
-        self._warned_tool_collisions: set[str] = set()
-        self._refuse_reserved_names(self._user_tools)
 
     @property
     def tool_handler(self) -> ToolHandler | None:

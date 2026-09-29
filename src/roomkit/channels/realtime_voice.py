@@ -29,6 +29,12 @@ from roomkit.channels._realtime_speech import RealtimeSpeechMixin
 from roomkit.channels._realtime_tool_recovery import RealtimeToolRecoveryMixin
 from roomkit.channels._realtime_tools import RealtimeToolsMixin
 from roomkit.channels._realtime_transcription import RealtimeTranscriptionMixin
+from roomkit.channels._served_tools import (
+    CollisionLog,
+    declared_once,
+    dict_tool_name,
+    refuse_served_names,
+)
 from roomkit.channels._voice_pipeline import VoicePipelineMixin
 from roomkit.channels.ai import ToolResult
 from roomkit.channels.base import Channel, FrameworkAwareChannel
@@ -366,6 +372,11 @@ class RealtimeVoiceChannel(
             else:
                 tool_defs = tools
 
+        # Host tools that collide with the channel's own (RFC §21.1), each
+        # reported once; a name given twice is declared once.
+        self._collisions = CollisionLog(channel_id)
+        if tool_defs:
+            tool_defs = declared_once(tool_defs, dict_tool_name, (), self._collisions)
         self._tools = tool_defs
 
         # Merge explicit tool_handler with handlers extracted from Tool objects
@@ -417,47 +428,23 @@ class RealtimeVoiceChannel(
                 script_executor,
                 delivery_mode=resolved_mode,
                 reconfigure_capable=provider.supports_mid_session_reconfigure,
+                channel_tools=self._channel_tool_names,
             )
             if self._skill_support.uses_tool_result and not provider.supports_context_preservation:
                 raise ValueError("on_demand skills require provider context preservation")
 
-        # Tool Search support — only activates when the catalogue is large
-        # enough to overflow the realtime model's reliable tool-selection
-        # window (Google Gemini Live: 10–20 active tools). Auto-detect by
-        # default; ``tool_search=True/False`` forces. Composed into the
-        # tool list at session start the same way skills are.
-        #
-        # Reconfigurable providers receive native declarations on discovery.
-        # Fixed-declaration providers receive schemas through list_tools and
-        # carry execution through call_tool into the same channel dispatch.
-        self._tool_search_support: RealtimeToolSearchSupport | None = None
-        # Host tool names already reported as not declared (RFC §21.1).
-        self._warned_tool_collisions: set[str] = set()
-        catalogue_size = len(tool_defs or [])
-        fixed_skill_gates = bool(
-            self._skill_support
-            and skills is not None
-            and not provider.supports_mid_session_reconfigure
-            and any(meta.gated_tool_names for meta in skills.all_metadata())
+        self._tool_search_support = self._tool_search_for(
+            tool_defs,
+            skills,
+            tool_search=tool_search,
+            threshold=tool_search_threshold,
+            pinned=tool_search_pinned,
         )
-        if fixed_skill_gates and tool_search is False:
-            raise ValueError("Fixed-provider skill gates require Tool Search; tool_search=False")
-        should_enable = tool_search is True or (
-            tool_search is None and (catalogue_size > tool_search_threshold or fixed_skill_gates)
+        refuse_served_names(
+            (dict_tool_name(tool) for tool in tool_defs or []),
+            self._channel_tool_names(),
+            channel_id,
         )
-        if should_enable and (tool_defs or fixed_skill_gates):
-            from roomkit.channels._realtime_tool_search import RealtimeToolSearchSupport
-
-            self._tool_search_support = RealtimeToolSearchSupport(
-                tool_defs or [],
-                pinned=tool_search_pinned,
-                threshold=tool_search_threshold,
-                reconfigure_capable=provider.supports_mid_session_reconfigure,
-                reachable=self._tool_reachable,
-            )
-            if self._skill_support is not None:
-                self._skill_support.channel_tools |= self._tool_search_support.tool_names
-        self._refuse_reserved_names(tool_defs or [])
 
         # Lock for shared state accessed from both asyncio and audio threads
         self._state_lock = threading.Lock()
@@ -1219,7 +1206,7 @@ class RealtimeVoiceChannel(
         # Under the lock its readers take: a recovered tool call reaches them
         # from a background task.
         with self._state_lock:
-            self._session_tools[session.id] = deepcopy(tools) if tools else []
+            self._session_tools[session.id] = self._declared_once(deepcopy(tools or []))
 
         if self._tool_search_support:
             self._tool_search_support.init_session(session.id, self._session_tools[session.id])
@@ -1582,6 +1569,50 @@ class RealtimeVoiceChannel(
             prompt = (prompt or "") + "\n\n" + self._tool_search_support.preamble
         return prompt
 
+    def _tool_search_for(
+        self,
+        tool_defs: list[dict[str, Any]] | None,
+        skills: SkillRegistry | None,
+        *,
+        tool_search: bool | None,
+        threshold: int,
+        pinned: list[str] | None,
+    ) -> RealtimeToolSearchSupport | None:
+        """This channel's Tool Search, when its catalogue calls for one.
+
+        It activates when the catalogue is large enough to overflow the
+        realtime model's reliable tool-selection window (Google Gemini Live:
+        10–20 active tools), or when a fixed-declaration provider needs it to
+        open a skill's gated tools. Auto-detect by default; ``tool_search=True``
+        or ``False`` forces. Reconfigurable providers receive native
+        declarations on discovery; fixed-declaration providers receive schemas
+        through ``list_tools`` and carry execution through ``call_tool`` into
+        the same channel dispatch.
+        """
+        provider = self._provider
+        fixed_skill_gates = bool(
+            self._skill_support
+            and skills is not None
+            and not provider.supports_mid_session_reconfigure
+            and any(meta.gated_tool_names for meta in skills.all_metadata())
+        )
+        if fixed_skill_gates and tool_search is False:
+            raise ValueError("Fixed-provider skill gates require Tool Search; tool_search=False")
+        should_enable = tool_search is True or (
+            tool_search is None and (len(tool_defs or []) > threshold or fixed_skill_gates)
+        )
+        if not (should_enable and (tool_defs or fixed_skill_gates)):
+            return None
+        from roomkit.channels._realtime_tool_search import RealtimeToolSearchSupport
+
+        return RealtimeToolSearchSupport(
+            tool_defs or [],
+            pinned=pinned,
+            threshold=threshold,
+            reconfigure_capable=provider.supports_mid_session_reconfigure,
+            reachable=self._tool_reachable,
+        )
+
     def _compose_session_tools(
         self,
         session_id: str,
@@ -1599,9 +1630,7 @@ class RealtimeVoiceChannel(
                 session_id, visible, reset_exposure=reset_exposure
             )
         if self._skill_support:
-            skill_defs = self._skill_support.skill_tool_dicts()
-            names = {tool["name"] for tool in skill_defs}
-            visible = skill_defs + [tool for tool in visible if tool.get("name") not in names]
+            visible = self._skill_support.skill_tool_dicts() + visible
             visible = self._skill_support.get_visible_tools(visible, session_id, pending_skill)
         return self._policy_filter(session_id, visible)
 
@@ -1672,9 +1701,10 @@ class RealtimeVoiceChannel(
                 self._tools = deepcopy(caller_tools)
                 with self._state_lock:
                     if session.id in self._sessions:
-                        self._session_tools[session.id] = caller_tools
+                        stored = self._declared_once(deepcopy(caller_tools))
+                        self._session_tools[session.id] = stored
                         if self._tool_search_support:
-                            self._tool_search_support.init_session(session.id, caller_tools)
+                            self._tool_search_support.init_session(session.id, stored)
 
             logger.info("Realtime session %s reconfigured", session.id)
 

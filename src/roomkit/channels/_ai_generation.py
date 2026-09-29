@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Mapping
+from collections.abc import Container, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from uuid import uuid4
@@ -18,6 +18,7 @@ from roomkit.channels._ai_loop_rules import (
     require_schema_answer,
     turn_span_status,
 )
+from roomkit.channels._served_tools import CollisionLog
 from roomkit.channels._tool_event_result import tool_event_payload
 from roomkit.models.channel import ChannelOutput
 from roomkit.models.enums import EventType
@@ -206,6 +207,8 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
     # AIContextMixin whose return type must be preserved for subclasses
     # (Agent.super()._build_context()). Call sites use type: ignore instead.
     _drain_steering_queue: Any  # see AIGenerationHost
+    _channel_tool_names: Any  # AIToolsMixin: the tools the channel serves itself
+    _collisions: CollisionLog
     _generate_with_retry: Any  # see AIGenerationHost
     _record_declared_tools: Any  # see AIGenerationHost
     _publish_thinking_event: Any  # see AIGenerationHost
@@ -248,7 +251,13 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
         loop_ctx = _current_loop_ctx.get()
         if loop_ctx is not None:
             loop_ctx.response_metadata = gen_event.ai_context.response_metadata
-            _adopt_hook_toolset(loop_ctx, declared, gen_event.ai_context.tools)
+            _adopt_hook_toolset(
+                loop_ctx,
+                declared,
+                gen_event.ai_context.tools,
+                served=self._channel_tool_names(),
+                collisions=self._collisions,
+            )
         return gen_event.ai_context, False
 
     def _log_provider_error(self, exc: ProviderError) -> None:
@@ -764,7 +773,12 @@ def _final_message_metadata(
 
 
 def _adopt_hook_toolset(
-    loop_ctx: _ToolLoopContext, declared: set[str], left: list[AITool] | None
+    loop_ctx: _ToolLoopContext,
+    declared: set[str],
+    left: list[AITool] | None,
+    *,
+    served: Container[str],
+    collisions: CollisionLog,
 ) -> None:
     """Make what BEFORE_AI_GENERATION left of the toolset it saw the turn's base.
 
@@ -774,15 +788,25 @@ def _adopt_hook_toolset(
     Search's catalogue included, so a tool it removes is gone from every
     round, reveal and call; one it never saw (gated by a skill, denied by the
     policy) stays in the base for those filters to decide. A tool it adds is
-    pinned for the turn: Tool Search never defers it (RFC §6.4).
+    pinned for the turn: Tool Search never defers it (RFC §6.4). A name the
+    channel serves itself keeps the channel's definition: the hook may
+    withdraw it, never redefine it, nor add a tool under it (RFC §21.1).
     """
     if loop_ctx.all_context_tools is None:
         return
     kept = {tool.name: tool for tool in left or []}
     withdrawn = declared - kept.keys()
-    base = [kept.get(t.name, t) for t in loop_ctx.all_context_tools if t.name not in withdrawn]
+    base = [
+        t if t.name in served else kept.get(t.name, t)
+        for t in loop_ctx.all_context_tools
+        if t.name not in withdrawn
+    ]
     known = {tool.name for tool in base}
-    added = {name for name in kept if name not in known}
+    unknown = [name for name in kept if name not in known]
+    for name in unknown:
+        if name in served:
+            collisions.served(name)
+    added = {name for name in unknown if name not in served}
     base.extend(kept[name] for name in kept if name in added)
     loop_ctx.all_context_tools = base
     loop_ctx.withdrawn_tools = loop_ctx.withdrawn_tools | withdrawn

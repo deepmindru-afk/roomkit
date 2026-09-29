@@ -7,6 +7,7 @@ import json
 import logging
 import threading
 import time
+from collections.abc import Container
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.channels._ai_policy import policy_admits, policy_refusal
@@ -16,6 +17,7 @@ from roomkit.channels._realtime_context import (
     serving_call,
     spare_own_orphaned_call,
 )
+from roomkit.channels._served_tools import CollisionLog, declared_once, dict_tool_name
 from roomkit.channels._skill_constants import SKILL_INFRA_TOOL_NAMES, TOOL_ACTIVATE_SKILL
 from roomkit.channels._tool_search_constants import TOOL_CALL_TOOL
 from roomkit.channels.ai import _current_loop_ctx, _ToolLoopContext
@@ -113,7 +115,7 @@ class RealtimeToolsHost(Protocol):
     _skill_support: Any
     _tool_policy: ToolPolicy | None
     _session_roles: dict[str, str | None]
-    _warned_tool_collisions: set[str]
+    _collisions: CollisionLog
     _tool_search_support: Any
     _provider: RealtimeVoiceProvider
     _transport: VoiceBackend
@@ -177,7 +179,7 @@ class RealtimeToolsMixin:
     _skill_support: Any
     _tool_policy: ToolPolicy | None
     _session_roles: dict[str, str | None]
-    _warned_tool_collisions: set[str]
+    _collisions: CollisionLog
     _tool_search_support: Any
     _provider: RealtimeVoiceProvider
     _transport: VoiceBackend
@@ -829,7 +831,9 @@ class RealtimeToolsMixin:
                 return params if isinstance(params, dict) else None
         return None
 
-    def _is_declared_realtime_tool(self, name: str, session: VoiceSession) -> bool:
+    def _is_declared_realtime_tool(
+        self, name: str, session: VoiceSession, served: Container[str] | None = None
+    ) -> bool:
         """Return whether *name* is in a non-empty session tool catalogue.
 
         An empty catalogue retains the historical hook-only/dynamic-handler
@@ -840,17 +844,13 @@ class RealtimeToolsMixin:
         rather than by the caller's catalogue, so they answer ``True`` without
         appearing in it.
         """
-        if self._is_infrastructure_tool(name):
+        if name in (self._channel_tool_names() if served is None else served):
             return True
         with self._state_lock:
             tools = self._session_tools.get(session.id, self._tools or [])
         if not tools:
             return True
         return any(isinstance(tool, dict) and tool.get("name") == name for tool in tools)
-
-    def _is_infrastructure_tool(self, name: str) -> bool:
-        """Whether *name* is served by the channel itself, not by the host."""
-        return name in self._channel_tool_names()
 
     def _channel_tool_names(self) -> frozenset[str]:
         """The tools this channel serves itself: Tool Search's and the skills'."""
@@ -861,44 +861,11 @@ class RealtimeToolsMixin:
             names |= SKILL_INFRA_TOOL_NAMES
         return names
 
-    def _refuse_reserved_names(self, tools: list[dict[str, Any]]) -> None:
-        """Refuse a host tool given at construction under a name the channel serves."""
-        served = self._channel_tool_names()
-        for tool in tools:
-            name = tool.get("name") if isinstance(tool, dict) else None
-            if name in served:
-                raise ValueError(
-                    f"Tool {name!r} is a tool channel {self.channel_id!r} serves itself: "
-                    "rename it (RFC §21.1)"
-                )
-
     def _declared_once(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """A session's host tools, each name declared once and none the channel serves.
-
-        The channel's own tools are composed in afterwards; a name given twice
-        keeps its later definition (RFC §21.1). What is dropped is named once
-        per channel in a warning.
-        """
-        served = self._channel_tool_names()
-        kept: dict[Any, dict[str, Any]] = {}
-        for tool in tools:
-            name = tool.get("name") if isinstance(tool, dict) else None
-            if name in served:
-                self._warn_tool_collision(str(name), "the channel serves it itself")
-                continue
-            if name in kept:
-                self._warn_tool_collision(str(name), "it is declared twice; the later is kept")
-                del kept[name]
-            kept[name] = tool
-        return list(kept.values())
-
-    def _warn_tool_collision(self, name: str, why: str) -> None:
-        if name in self._warned_tool_collisions:
-            return
-        self._warned_tool_collisions.add(name)
-        logger.warning(
-            "Channel %s does not declare a host tool %r: %s", self.channel_id, name, why
-        )
+        """A session's host tools: none under a name the channel serves, each name
+        once (RFC §21.1, :func:`declared_once`). The channel's own tools are
+        composed in afterwards."""
+        return declared_once(tools, dict_tool_name, self._channel_tool_names(), self._collisions)
 
     def _tool_reachable(self, name: str, session_id: str) -> bool:
         """Whether the session may call *name*: its tool policy and skill gating.
@@ -960,9 +927,16 @@ class RealtimeToolsMixin:
         call_id: str,
         room_id: str | None,
         session: VoiceSession,
+        *,
+        channel_serves: bool = True,
     ) -> tuple[dict[str, Any], str | None, RoomContext | None]:
         """Pre-execution gate for realtime tool calls (parity with the classic
         AI path), in RFC §12.4's order.
+
+        *channel_serves* says whether this entry serves the channel's own
+        tools (Tool Search, skills): the provider's function calls do; a
+        reasoning backend's calls and a recovered spoken call reach the
+        handler only, so on them no name is the channel's (RFC §21.1).
 
         Checks the tool is declared, folds a flattened hub-tool call back into
         ``params`` and validates the arguments against the declared schema,
@@ -976,7 +950,8 @@ class RealtimeToolsMixin:
         hands that context to :meth:`_fire_tool_hook` as ``carrying`` so one
         tool call deserialises the room history once instead of twice.
         """
-        if not self._is_declared_realtime_tool(name, session):
+        served = self._channel_tool_names() if channel_serves else frozenset()
+        if not self._is_declared_realtime_tool(name, session, served):
             logger.warning("Realtime provider requested undeclared tool %s", name)
             return arguments, json.dumps({"error": f"Tool '{name}' is not declared"}), None
         params = self._tool_parameters(name, session)
@@ -984,7 +959,7 @@ class RealtimeToolsMixin:
         if invalid is not None:
             return arguments, invalid, None
         await self._refresh_session_role(session, room_id)
-        refusal = self._access_refusal(name, session.id)
+        refusal = self._access_refusal(name, session.id, served)
         if refusal is not None:
             return arguments, refusal, None
         return await self._before_realtime_tool_use(
@@ -1021,10 +996,10 @@ class RealtimeToolsMixin:
             return arguments, json.dumps({"error": f"Invalid arguments for '{name}': {arg_error}"})
         return arguments, None
 
-    def _access_refusal(self, name: str, session_id: str) -> str | None:
+    def _access_refusal(self, name: str, session_id: str, served: Container[str]) -> str | None:
         """Why the session may not call *name*: its tool policy, resolved for
         its participant, then skill gating, as on the classic path."""
-        if not policy_admits(self._session_policy(session_id), name, self._channel_tool_names()):
+        if not policy_admits(self._session_policy(session_id), name, served):
             logger.warning("Realtime tool %s blocked by policy", name)
             return json.dumps({"error": policy_refusal(name)})
         # Hiding a gated tool from the catalogue is not enforcement — the model

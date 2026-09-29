@@ -374,7 +374,7 @@ class RealtimeDelegationMixin:
         )
         try:
             arguments, denial, gate_context = await self._authorize_realtime_tool(
-                name, arguments, call_id, room_id, session
+                name, arguments, call_id, room_id, session, channel_serves=False
             )
             if denial is not None:
                 logger.info(

@@ -74,6 +74,8 @@ class RealtimeToolRecoveryHost(Protocol):
         call_id: str,
         room_id: str | None,
         session: VoiceSession,
+        *,
+        channel_serves: bool = True,
     ) -> tuple[dict[str, Any], str | None, Any]: ...
 
     async def _fire_tool_hook(
@@ -283,7 +285,7 @@ class RealtimeToolRecoveryMixin:
             # arguments here were reconstructed from free text, so they are
             # less trustworthy than a real function call's, not more.
             arguments, denial, gate_context = await self._authorize_realtime_tool(
-                tool_name, arguments, call_id, room_id, session
+                tool_name, arguments, call_id, room_id, session, channel_serves=False
             )
             if session.state == VoiceSessionState.ENDED:
                 telemetry.end_span(span_id, status="cancelled")

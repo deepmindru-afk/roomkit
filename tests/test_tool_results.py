@@ -254,7 +254,8 @@ async def test_the_channels_own_outcomes_are_refusals_no_sync_hook_serves(
     streaming: bool,
 ) -> None:
     """A repeat the guard stops, and a tool outside the turn's toolset: here
-    ``activate_skill``, a channel tool, on a channel with no skills."""
+    ``activate_skill`` on a channel with no skills, which serves no such tool
+    and so refuses it as undeclared (RMK-294, RFC §21.1)."""
 
     async def handler(name: str, arguments: dict[str, Any]) -> str:
         return "ok"
@@ -273,7 +274,7 @@ async def test_the_channels_own_outcomes_are_refusals_no_sync_hook_serves(
 
     assert [parts[c].is_error for c in ("c0", "c1", "c2", "c3")] == [False, False, True, True]
     assert "already called" in parts["c2"].result
-    assert "not available in the current turn" in parts["c3"].result
+    assert "not declared" in parts["c3"].result
     assert sorted(round_.hook_saw) == ["c0", "c1"]
     observed = {e.tool_call_id: e.is_error for e in round_.observed}
     assert observed == {"c0": False, "c1": False, "c2": True, "c3": True}

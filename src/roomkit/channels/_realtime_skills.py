@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import Callable, Container
 from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._ai_policy import is_exempt
@@ -63,6 +64,7 @@ class RealtimeSkillSupport:
         *,
         delivery_mode: SkillDeliveryMode = "on_demand",
         reconfigure_capable: bool = True,
+        channel_tools: Callable[[], Container[str]] | None = None,
     ) -> None:
         if delivery_mode not in {"inline_full", "on_demand"}:
             raise ValueError(f"Unknown skill delivery mode: {delivery_mode}")
@@ -72,9 +74,11 @@ class RealtimeSkillSupport:
         self._delivery_mode: SkillDeliveryMode = delivery_mode
         # session_id -> set of activated skill names
         self._activated_skills: dict[str, set[str]] = {}
-        # The tools the channel serves itself: the skills' own, and Tool
-        # Search's once the channel adds it (RealtimeVoiceChannel).
-        self.channel_tools: frozenset[str] = SKILL_INFRA_TOOL_NAMES
+        # The tools the channel serves itself, read when asked: the skills'
+        # own, and Tool Search's when the channel has it.
+        self._channel_tools: Callable[[], Container[str]] = channel_tools or (
+            lambda: SKILL_INFRA_TOOL_NAMES
+        )
         # session_id -> ordered list of (skill_name, instructions) tuples
         # for skills activated so far in this session. Concatenated into
         # the system_instruction on the next reconfigure_session call.
@@ -218,17 +222,17 @@ class RealtimeSkillSupport:
         well as at listing time.
 
         The tools that only read or unlock are never gated when the channel
-        serves them itself (RFC §21.1, :func:`is_exempt` over
-        :attr:`channel_tools`): activation and reference reading are how a
-        skill gets unlocked, and the Tool Search tools are how a gated name is
-        found in the first place. Gating them would leave the model told to
-        activate a skill it has no way left to name. ``run_skill_script`` acts,
+        serves them itself (RFC §21.1, :func:`is_exempt`): activation and
+        reference reading are how a skill gets unlocked, and the Tool Search
+        tools are how a gated name is found in the first place. Gating them
+        would leave the model told to activate a skill it has no way left to
+        name. ``run_skill_script`` acts,
         and is gated like any other tool.
 
         *gated* lets a caller filtering a whole catalogue compute the gated set
         once instead of once per tool.
         """
-        if is_exempt(name, self.channel_tools):
+        if is_exempt(name, self._channel_tools()):
             return False
         if gated is None:
             gated = self._gated_tool_names(session_id)

@@ -39,6 +39,7 @@ from roomkit.channels._conference_tools import (
     declared_tools,
     warn_unused_role_overrides,
 )
+from roomkit.channels._served_tools import CollisionLog
 from roomkit.core.task_utils import log_task_exception
 from roomkit.models.event import TextContent
 from roomkit.models.tool_call import ToolCallEvent
@@ -139,6 +140,8 @@ class ConferenceRealtime:
         ensure_bot: EnsureBot,
     ) -> None:
         self._channel_id = channel_id
+        # Tools the config gives twice (RFC §21.1), each reported once.
+        self._collisions = CollisionLog(channel_id)
         self._bot_identity = bot_identity
         self._voice = voice
         self._operations = operations
@@ -263,7 +266,7 @@ class ConferenceRealtime:
                         session,
                         system_prompt=config.system_prompt,
                         voice=config.voice,
-                        tools=declared_tools(config),
+                        tools=declared_tools(config, self._collisions),
                         temperature=config.temperature,
                         input_sample_rate=config.input_sample_rate,
                         output_sample_rate=config.output_sample_rate,

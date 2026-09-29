@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.channels._sandbox_handlers import handle_sandbox_command
+from roomkit.channels._served_tools import CollisionLog, declared_once
 from roomkit.channels._skill_constants import (
     ACTIVATE_SKILL_SCHEMA,
     ALREADY_ACTIVE_NOTE,
@@ -125,7 +126,6 @@ class AIToolsHost(Protocol):
 
     Properties / methods provided by other mixins:
         _effective_tool_policy: ``AIToolPolicyMixin`` property — resolved policy.
-        _SKILL_INFRA_TOOLS: ``AIToolPolicyMixin`` class var — infra tool names.
         _gated_tool_names: ``AIToolPolicyMixin`` property — gated tool names.
         _maybe_truncate_result: ``AIResilienceMixin`` — truncate large results.
         _get_loop_ctx: ``AISteeringMixin`` — returns current tool-loop context.
@@ -148,7 +148,7 @@ class AIToolsHost(Protocol):
     _skill_activation: SkillActivationMemory
     _planner: TaskPlanner | None
     _human_input_handler: HumanInputToolHandler | None
-    _warned_tool_collisions: set[str]
+    _collisions: CollisionLog
     _realtime: RealtimeBackend | None
     _plan_updated_hook: Any  # ON_PLAN_UPDATED callback — injected by register_channel
     _tool_call_hook: ToolCallCallback | None
@@ -165,8 +165,6 @@ class AIToolsHost(Protocol):
     @property
     def _gated_tool_names(self) -> set[str]: ...
 
-    _SKILL_INFRA_TOOLS: frozenset[str]
-
     def _maybe_truncate_result(
         self,
         result: str | list[AITextPart | AIImagePart],
@@ -177,6 +175,10 @@ class AIToolsHost(Protocol):
     def _apply_tool_filters(self, tools: list[AITool]) -> list[AITool]: ...
     def _reachable_tools(self, tools: Iterable[AITool]) -> list[AITool]: ...
     def _gate_refusal(self, name: str) -> dict[str, str] | None: ...
+
+
+def _tool_name(tool: AITool) -> str:
+    return tool.name
 
 
 def _cut_call_error(tc: Any) -> dict[str, Any]:
@@ -202,7 +204,7 @@ class AIToolsMixin:
     _skill_activation: SkillActivationMemory
     _planner: TaskPlanner | None
     _human_input_handler: HumanInputToolHandler | None
-    _warned_tool_collisions: set[str]
+    _collisions: CollisionLog
     _realtime: RealtimeBackend | None
     _plan_updated_hook: Any  # ON_PLAN_UPDATED callback — injected by register_channel
     _tool_call_hook: ToolCallCallback | None
@@ -216,7 +218,6 @@ class AIToolsMixin:
 
     # Cross-mixin methods — Any annotations avoid MRO shadowing
     _effective_tool_policy: Any  # see AIToolsHost
-    _SKILL_INFRA_TOOLS: Any  # see AIToolsHost
     _gated_tool_names: Any  # see AIToolsHost
     _maybe_truncate_result: Any  # see AIToolsHost
     _get_loop_ctx: Any  # see AIToolsHost
@@ -287,11 +288,7 @@ class AIToolsMixin:
         """
         params = self._tool_parameters(name, declared_tools)
         declared_names = {tool.name for tool in declared_tools or []}
-        channel_managed = (
-            name in self._SKILL_INFRA_TOOLS
-            or name in TOOL_SEARCH_INFRA_TOOL_NAMES
-            or name in self._sandbox_tool_names()
-        )
+        channel_managed = name in self._channel_tool_names()
         resolved = bool(declared_names) or self._get_loop_ctx().all_context_tools is not None
         if not resolved or name in declared_names or channel_managed:
             return params, None
@@ -761,47 +758,10 @@ class AIToolsMixin:
             names |= {tool.name for tool in self._human_input_handler.tools or ()}
         return names
 
-    def _refuse_reserved_names(self, tools: Iterable[AITool]) -> None:
-        """Refuse a host tool given at construction under a name the channel serves."""
-        served = self._channel_tool_names()
-        for tool in tools:
-            if tool.name not in served:
-                continue
-            hint = (
-                " or pass tool_search=False" if tool.name in TOOL_SEARCH_INFRA_TOOL_NAMES else ""
-            )
-            raise ValueError(
-                f"Tool {tool.name!r} is a tool channel {self.channel_id!r} serves itself: "
-                f"rename it{hint} (RFC §21.1)"
-            )
-
     def _declared_once(self, tools: list[AITool]) -> list[AITool]:
-        """The host's part of a turn's toolset, each name declared once (RFC §21.1).
-
-        A name the channel serves itself is its own to declare. A name given
-        twice keeps its later definition, the one of whoever serves the call
-        (orchestration's tools are added after the host's). What is dropped is
-        named once per channel in a warning.
-        """
-        served = self._channel_tool_names()
-        kept: dict[str, AITool] = {}
-        for tool in tools:
-            if tool.name in served:
-                self._warn_tool_collision(tool.name, "the channel serves it itself")
-                continue
-            if tool.name in kept:
-                self._warn_tool_collision(tool.name, "it is declared twice; the later is kept")
-                del kept[tool.name]
-            kept[tool.name] = tool
-        return list(kept.values())
-
-    def _warn_tool_collision(self, name: str, why: str) -> None:
-        if name in self._warned_tool_collisions:
-            return
-        self._warned_tool_collisions.add(name)
-        logger.warning(
-            "Channel %s does not declare a host tool %r: %s", self.channel_id, name, why
-        )
+        """The host's part of a turn's toolset: no tool under a name the channel
+        serves, and each name once (RFC §21.1, :func:`declared_once`)."""
+        return declared_once(tools, _tool_name, self._channel_tool_names(), self._collisions)
 
     async def _channel_tool_handler(self, name: str, arguments: dict[str, Any]) -> ToolResult:
         """Unified tool dispatcher: channel-managed -> sandbox -> skill -> user tools.

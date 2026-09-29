@@ -229,12 +229,17 @@ async def test_integration_failure_is_returned_without_a_success() -> None:
         handler.assert_awaited_once()
 
 
-async def test_call_tool_collision_is_rejected_in_session_overrides() -> None:
+async def test_a_session_s_own_call_tool_is_not_declared(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """``call_tool`` is the channel's own under Tool Search: a session's tool of
+    that name is not declared, and a warning names it (RMK-294, RFC §21.1)."""
     async with channel_context() as (_, channel, provider, session, handler):
-        with pytest.raises(ValueError, match="call_tool is reserved"):
-            await channel.start_session(
-                "unused", "other", object(), metadata={"tools": [tool("call_tool")]}
-            )
+        other = await channel.start_session(
+            session.room_id, "other", object(), metadata={"tools": [tool("call_tool")]}
+        )
+        assert channel._session_tools[other.id] == []
+        assert "call_tool" in caplog.text
         assert await call(
             channel,
             provider,
