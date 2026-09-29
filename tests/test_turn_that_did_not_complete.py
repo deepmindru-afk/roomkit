@@ -1,0 +1,172 @@
+"""A turn that did not complete reports nothing and runs nothing more (RMK-282).
+
+ON_AI_RESPONSE reports a turn whose loop reached its end; a turn whose
+response stream was closed first (a barge-in, a consumer that refused the
+answer) or that was cancelled from outside fires nothing, and its span never
+ends ``ok`` (RFC §6.4). A Cancel that lands while a round's calls are
+announced, before they run, stops them (RFC §21.3).
+"""
+
+from __future__ import annotations
+
+import asyncio
+from typing import Any
+
+from roomkit import HookExecution, HookResult, HookTrigger, RoomKit
+from roomkit.channels.ai import AIChannel
+from roomkit.models.channel import ChannelOutput
+from roomkit.models.delivery import InboundMessage
+from roomkit.models.enums import ChannelCategory, EventType
+from roomkit.models.event import TextContent
+from roomkit.models.steering import Cancel
+from roomkit.providers.ai.base import AIContext, AIResponse, AITool, AIToolCall
+from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.telemetry.base import SpanKind
+from roomkit.telemetry.mock import MockTelemetryProvider
+from tests.test_framework import SimpleChannel
+
+_LOOKUP = AITool(name="lookup", description="Look up")
+
+
+def _round(text: str = "Let me check that for you.") -> AIResponse:
+    return AIResponse(
+        content=text,
+        finish_reason="tool_calls",
+        tool_calls=[AIToolCall(id="tc1", name="lookup", arguments={"q": "wire-money"})],
+    )
+
+
+class _BargeIn(SimpleChannel):
+    """A voice transport: the user speaks over the first streamed chunk."""
+
+    @property
+    def supports_streaming_delivery(self) -> bool:
+        return True
+
+    async def deliver_stream(self, text_stream, event, binding, context):  # type: ignore[no-untyped-def]
+        async for chunk in text_stream:
+            if isinstance(chunk, str):
+                return ChannelOutput.empty()
+        return ChannelOutput.empty()
+
+
+class _Turn:
+    """A room with one AI channel, what ran and what was reported."""
+
+    def __init__(self) -> None:
+        self.telemetry = MockTelemetryProvider()
+        self.kit = RoomKit(telemetry=self.telemetry)
+        self.ran: list[dict[str, Any]] = []
+        self.reports: list[Any] = []
+
+    async def handler(self, name: str, arguments: dict[str, Any]) -> str:
+        self.ran.append(arguments)
+        return "ok"
+
+    async def build(self, provider: MockAIProvider, **channel: Any) -> AIChannel:
+        ai = AIChannel(
+            "ai1", provider=provider, tool_handler=self.handler, tools=[_LOOKUP], **channel
+        )
+        self.kit.register_channel(SimpleChannel("sms1"))
+        self.kit.register_channel(ai)
+        await self.kit.create_room(room_id="r1")
+        await self.kit.attach_channel("r1", "sms1")
+        await self.kit.attach_channel("r1", "ai1", category=ChannelCategory.INTELLIGENCE)
+
+        @self.kit.hook(HookTrigger.ON_AI_RESPONSE, execution=HookExecution.ASYNC, name="spy")
+        async def spy(event: Any, ctx: Any) -> None:
+            self.reports.append(event)
+
+        return ai
+
+    async def say(self, body: str = "go") -> None:
+        await self.kit.process_inbound(
+            InboundMessage(channel_id="sms1", sender_id="u1", content=TextContent(body=body))
+        )
+        await asyncio.sleep(0.1)
+
+    def spans(self) -> list[Any]:
+        return self.telemetry.get_spans(SpanKind.LLM_GENERATE)
+
+    async def rows(self, kind: EventType) -> list[Any]:
+        events = await self.kit.store.list_events("r1")
+        return [e for e in events if e.type == kind and e.source.channel_id == "ai1"]
+
+
+async def test_a_barge_in_on_a_streamed_tool_turn_reports_nothing() -> None:
+    turn = _Turn()
+    turn.kit.register_channel(_BargeIn("tts1"))
+    await turn.build(MockAIProvider(streaming=True, ai_responses=[_round(), _round("Done.")]))
+    await turn.kit.attach_channel("r1", "tts1")
+
+    await turn.say()
+
+    assert turn.reports == []
+    assert turn.ran == []
+    assert [span.status for span in turn.spans()] == ["cancelled"]
+    [message] = await turn.rows(EventType.MESSAGE)
+    assert message.metadata.get("cancelled") is True
+
+
+async def test_a_schema_turn_cut_short_reports_nothing_in_either_loop(streaming: bool) -> None:
+    turn = _Turn()
+    provider = MockAIProvider(
+        streaming=streaming,
+        response_schema=True,
+        response_schema_with_tools=True,
+        ai_responses=[_round("")],
+    )
+    schema = {
+        "type": "object",
+        "properties": {"a": {"type": "string"}},
+        "required": ["a"],
+        "additionalProperties": False,
+    }
+    await turn.build(provider, response_schema=schema, max_tool_rounds=1)
+    errors: list[Any] = []
+
+    @turn.kit.hook(HookTrigger.ON_ERROR, execution=HookExecution.ASYNC, name="card")
+    async def card(event: Any, ctx: Any) -> None:
+        errors.append(event)
+
+    await turn.say()
+
+    assert turn.reports == []
+    assert len(errors) == 1
+
+
+async def test_a_stop_while_the_calls_are_announced_runs_none() -> None:
+    turn = _Turn()
+    ai = await turn.build(MockAIProvider(streaming=True, ai_responses=[_round(""), _round()]))
+
+    @turn.kit.hook(HookTrigger.BEFORE_BROADCAST, name="stop_on_start")
+    async def stop(event: Any, ctx: Any) -> HookResult:
+        if event.type == EventType.TOOL_CALL_START:
+            ai.steer(Cancel(reason="user pressed stop"))
+        return HookResult.allow()
+
+    await turn.say()
+
+    assert turn.ran == []
+    [end] = await turn.rows(EventType.TOOL_CALL_END)
+    assert end.content.status == "failed"
+    assert [(r.loop_end_reason, r.tool_calls_count) for r in turn.reports] == [("cancelled", 0)]
+
+
+class _Hang(MockAIProvider):
+    async def generate(self, context: AIContext) -> AIResponse:
+        await asyncio.sleep(3600)
+        raise AssertionError("never answers")
+
+
+async def test_a_turn_cancelled_from_outside_closes_its_span(streaming: bool) -> None:
+    turn = _Turn()
+    await turn.build(_Hang(streaming=streaming))
+    task = asyncio.create_task(turn.say())
+    await asyncio.sleep(0.1)
+
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+    assert turn.reports == []
+    assert [span.status for span in turn.spans()] == ["cancelled"]

@@ -139,6 +139,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A turn that did not complete no longer reports as one, and a stop keeps its
+  tools from running (RMK-282, RFC §6.4, §12.2 step 13s, §21.3). On the
+  streaming tool loop, the one production uses, a turn whose stream was
+  closed early (a barge-in, a transport that stopped reading, a schema turn
+  whose answer was refused) fired `ON_AI_RESPONSE` as `completed` and closed
+  its `llm.generate` span `ok`; it now fires nothing and the span ends
+  `cancelled`. A turn cancelled from outside left the span open on the
+  non-streaming loop; it ends `cancelled` there too. A Cancel that arrived
+  while a round's calls were announced, after the model's last event, still
+  ran them; none runs now, and each call's TOOL_CALL_END is stored `failed`.
+  A streamed turn cancelled or failed while a tool ran left its
+  TOOL_CALL_START pending; its end is stored `failed`.
 - Gemini declares a tool whose schema has an `enum` of numbers, booleans or
   mixed values (RMK-281). Gemini's `enum` holds strings only, so a
   `Literal[1, 2, 3]` parameter failed inside `FunctionDeclaration` with the

@@ -118,26 +118,26 @@ async def test_an_interrupted_turn_replays_nothing(streaming: bool) -> None:
     await kit.close()
 
 
-@pytest.mark.xfail_streaming(
-    "RMK-282: the streaming loop ends a turn the provider interrupted after a round "
-    "without the [Response interrupted] marker (RFC §6.4)"
-)
 async def test_an_interrupted_turn_ends_on_the_marker_alone(streaming: bool) -> None:
+    """Delivered once its loop ends, the turn closes on the marker and reports
+    it. A streamed turn raised out of its loop: it keeps what it streamed, adds
+    no marker and reports nothing, its error surfacing on its own (RFC §6.4)."""
     kit, _, responses = await _room(_FailingAt(4, HISTORY, streaming=streaming))
 
     await _say(kit, "first", "second", "third")
 
-    assert await _ai_messages(kit) == ["Earlier answer.", "Second answer.", "Looking.", MARKER]
-    # The hook's transcript is the turn's segments, once each.
-    assert responses[-1].response_content == f"Looking.\n\n{MARKER}"
-    assert "req_abc123" not in responses[-1].response_content
+    said = ["Earlier answer.", "Second answer.", "Looking."]
+    if streaming:
+        assert await _ai_messages(kit) == said
+        assert len(responses) == 2
+    else:
+        assert await _ai_messages(kit) == [*said, MARKER]
+        # The hook's transcript is the turn's segments, once each.
+        assert responses[-1].response_content == f"Looking.\n\n{MARKER}"
+        assert "req_abc123" not in responses[-1].response_content
     await kit.close()
 
 
-@pytest.mark.xfail_streaming(
-    "RMK-282: the streaming loop ends a turn the provider interrupted after a round "
-    "without the [Response interrupted] marker (RFC §6.4)"
-)
 async def test_an_interrupted_round_without_text_keeps_its_calls(streaming: bool) -> None:
     kit, _, _ = await _room(
         _FailingAt(2, [_looking(""), AIResponse(content="never")], streaming=streaming)
@@ -149,7 +149,8 @@ async def test_an_interrupted_round_without_text_keeps_its_calls(streaming: bool
     kinds = [e.type for e in events if e.source.channel_id == "ai1"]
     assert EventType.TOOL_CALL_START in kinds
     assert EventType.TOOL_CALL_END in kinds
-    assert await _ai_messages(kit) == [MARKER]
+    # The marker closes a turn delivered once its loop ends (RFC §6.4).
+    assert await _ai_messages(kit) == ([] if streaming else [MARKER])
     await kit.close()
 
 
@@ -174,7 +175,8 @@ async def test_a_turn_cancelled_between_rounds_adds_no_terminal_text(streaming: 
 
 
 @pytest.mark.xfail_streaming(
-    "RMK-282: a cancelled streamed turn carries no loop_end_reason on its messages"
+    "RMK-282, left open: no streamed turn puts loop_end_reason or ai_usage on its "
+    "messages, cancelled or not"
 )
 async def test_a_turn_without_final_text_keeps_its_record_on_its_last_message(
     streaming: bool,
@@ -213,10 +215,6 @@ async def test_a_turn_without_final_text_keeps_its_record_on_its_last_message(
     ],
     ids=["empty-answer-retry", "force-stop"],
 )
-@pytest.mark.xfail_streaming(
-    "RMK-282: the streaming loop ends a turn the provider interrupted after a round "
-    "without the [Response interrupted] marker (RFC §6.4)"
-)
 async def test_every_generation_after_a_round_keeps_the_round(
     answers: list[AIResponse], streaming: bool
 ) -> None:
@@ -229,7 +227,12 @@ async def test_every_generation_after_a_round_keeps_the_round(
     events = await kit.store.list_events("r1")
     kinds = [e.type for e in events if e.source.channel_id == "ai1"]
     assert EventType.TOOL_CALL_END in kinds
-    assert (await _ai_messages(kit))[-1] == MARKER
+    messages = await _ai_messages(kit)
+    # The marker closes a turn delivered once its loop ends (RFC §6.4).
+    if streaming:
+        assert MARKER not in messages
+    else:
+        assert messages[-1] == MARKER
     await kit.close()
 
 

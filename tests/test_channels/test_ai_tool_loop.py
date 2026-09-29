@@ -500,7 +500,7 @@ class TestContextOverflowRecovery:
         assert result.reason == "error"
 
     @staticmethod
-    def _overflowing_channel() -> AIChannel:
+    def _overflowing_channel(tool_handler: AsyncMock | None = None) -> AIChannel:
         """A first round, then an overflow compaction does not cure."""
         call_count = 0
 
@@ -517,7 +517,7 @@ class TestContextOverflowRecovery:
         return AIChannel(
             "ai1",
             provider=provider,
-            tool_handler=AsyncMock(return_value="ok"),
+            tool_handler=tool_handler or AsyncMock(return_value="ok"),
             max_tool_rounds=200,
             tool_loop_timeout_seconds=None,
         )
@@ -528,18 +528,22 @@ class TestContextOverflowRecovery:
         # still overflows.
         return AIContext(messages=[AIMessage(role="user", content=f"msg{i}") for i in range(10)])
 
-    @pytest.mark.xfail_streaming(
-        "RMK-282: the streaming loop raises on an overflow after a round and "
-        "delivers no [Response interrupted] marker (RFC §6.4)"
-    )
     async def test_compaction_still_overflowing_ends_the_turn_on_the_marker(
         self, streaming: bool
     ) -> None:
         """After a round, an overflow compaction does not cure interrupts the
-        turn: the round is kept and the turn ends on the marker (RFC §6.4)."""
-        channel, context = self._overflowing_channel(), self._long_context()
+        turn. Delivered once its loop ends, it keeps the round and ends on the
+        marker; streamed, its round is out already and the error raises
+        (RFC §6.4)."""
+        handler = AsyncMock(return_value="ok")
+        channel, context = self._overflowing_channel(handler), self._long_context()
 
-        run = await run_tool_loop(channel, context, streaming=streaming)
+        if streaming:
+            with pytest.raises(ProviderError, match="context length exceeded"):
+                await run_tool_loop(channel, context, streaming=True)
+            handler.assert_awaited_once()
+            return
+        run = await run_tool_loop(channel, context, streaming=False)
 
         assert run.text == "[Response interrupted]"
         assert run.reason == "error"

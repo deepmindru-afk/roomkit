@@ -114,9 +114,6 @@ async def test_caller_cancellation_drains_tool_and_preserves_other_room(streamin
         await kit.close()
 
 
-@pytest.mark.xfail_streaming(
-    "RMK-282: a streamed turn cancelled while its tool runs leaves the TOOL_CALL_START pending"
-)
 async def test_queued_turn_in_same_room_survives_cancelled_cascade(streaming: bool) -> None:
     tool = PausedTool(slow_cleanup=True)
     kit, ai, provider = await setup(tool, streaming=streaming)

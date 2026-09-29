@@ -493,16 +493,18 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                 },
             )
             turn = _StreamTurnState(loop_ctx, telemetry, span_id, room_id)
-            failed = False
             try:
                 yield turn
             except Exception as exc:
-                failed = True
                 telemetry.end_span(span_id, status="error", error_message=str(exc))
                 raise
-            finally:
-                if not failed:
-                    await self._finish_streaming_tool_turn(turn)
+            except BaseException:
+                # Closed at a yield (a barge-in, a transport that stopped
+                # reading, a consumer that refused the answer) or cancelled:
+                # no response was delivered, so none is reported (RFC §6.4).
+                telemetry.end_span(span_id, status="cancelled")
+                raise
+            await self._finish_streaming_tool_turn(turn)
         finally:
             # Finalization may itself be cancelled while publishing a hook.
             self._active_loops.pop(loop_ctx.loop_id, None)
@@ -560,6 +562,18 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
             yield ToolCallStartMarker(
                 tool_name=call.name, tool_id=call.id, arguments=call.arguments
             )
+        if turn.loop_ctx.cancel_event.is_set():
+            # A stop that came while the calls were announced: none runs, and
+            # the loop ends cancelled at its next check (RFC §21.3).
+            for call in calls:
+                yield ToolCallEndMarker(
+                    tool_name=call.name,
+                    tool_id=call.id,
+                    arguments=call.arguments,
+                    status="failed",
+                    error="cancelled",
+                )
+            return
         results, duration_ms, executed_arguments = await self._execute_round_tools(
             context, calls, turn.telemetry, turn.room_id, index, parent_span_id=turn.span_id
         )
@@ -638,8 +652,10 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                         yield delta
                 state = round_.state
 
-                if state.cancelled or loop_ctx.force_stop:
-                    turn.reason = "cancelled" if state.cancelled else "force_stopped"
+                # A stop that came after the model's last event counts too.
+                cancelled = state.cancelled or loop_ctx.cancel_event.is_set()
+                if cancelled or loop_ctx.force_stop:
+                    turn.reason = "cancelled" if cancelled else "force_stopped"
                     yield LoopEndMarker(reason=turn.reason, rounds=index)
                     return
                 if not state.tool_calls:

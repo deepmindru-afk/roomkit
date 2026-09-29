@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections.abc import Mapping
@@ -297,6 +298,10 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
             # Propagate so the broadcast path fires ON_ERROR — mirrors the
             # streaming path (which raises out of stream consumption). Swallowing
             # into an empty output would leave the turn with no error surfaced.
+            raise
+        except asyncio.CancelledError:
+            # Cancelled from outside: the span ends, never left open (RFC §6.4).
+            telemetry.end_span(span_id, status="cancelled")
             raise
         except Exception:
             telemetry.end_span(span_id, status="error", error_message="AI provider failed")

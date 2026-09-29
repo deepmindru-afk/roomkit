@@ -80,7 +80,25 @@ class ResponseReader:
             except Exception as exc:
                 logger.exception("A running tool round failed after the response was stopped")
                 error = f"{type(exc).__name__}: {exc}"
-        ends.extend(
+        ends.extend(self._close_open(error))
+        return ends
+
+    async def abandon(
+        self, error: str = "cancelled"
+    ) -> list[tuple[ToolCallStartMarker, ToolCallEndMarker]]:
+        """Cancel a running tool's read (the turn itself was cancelled or failed).
+
+        Returns every call still open, closed as ``failed`` with *error*, so
+        no start row stays pending (RFC §12.2 step 13s).
+        """
+        pending, self._pending = self._pending, None
+        if pending is not None and not pending.done():
+            pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
+        return self._close_open(error)
+
+    def _close_open(self, error: str) -> list[tuple[ToolCallStartMarker, ToolCallEndMarker]]:
+        closed = [
             (
                 start,
                 ToolCallEndMarker(
@@ -92,16 +110,9 @@ class ResponseReader:
                 ),
             )
             for start in self._open.values()
-        )
+        ]
         self._open.clear()
-        return ends
-
-    async def abandon(self) -> None:
-        """Cancel a running tool's read (the turn itself was cancelled)."""
-        pending, self._pending = self._pending, None
-        if pending is not None and not pending.done():
-            pending.cancel()
-            await asyncio.gather(pending, return_exceptions=True)
+        return closed
 
     def _track(self, item: Any) -> None:
         if isinstance(item, ToolCallStartMarker):
