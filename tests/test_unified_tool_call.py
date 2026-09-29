@@ -1180,6 +1180,8 @@ class TestRealtimeGateParityWithTheAIPath:
             provider=rt_provider,
             transport=rt_transport,
             skills=self._registry_gating(tmp_path, "'*'"),
+            tools=[{"name": "refund", "description": "Refund", "parameters": {}}],
+            tool_search=True,
         )
         assert ch._skill_support is not None
         session = await ch.start_session("room-1", "u1", "ws")
@@ -1191,6 +1193,27 @@ class TestRealtimeGateParityWithTheAIPath:
         assert ch._skill_support.is_gated("refund", session.id) is True
         # A skill script acts: it is gated like any other tool (RFC §21.1).
         assert ch._skill_support.is_gated("run_skill_script", session.id) is True
+
+    async def test_an_exempt_name_the_channel_does_not_serve_is_gated(
+        self,
+        rt_provider: MockRealtimeProvider,
+        rt_transport: MockRealtimeTransport,
+        tmp_path: Path,
+    ) -> None:
+        """RMK-294: without Tool Search, ``find_tools`` is no tool of the channel's:
+        one of the host's under that name is gated like any other (RFC §21.1)."""
+        ch = RealtimeVoiceChannel(
+            "rt-no-search",
+            provider=rt_provider,
+            transport=rt_transport,
+            skills=self._registry_gating(tmp_path, "'*'"),
+            tool_search=False,
+        )
+        assert ch._skill_support is not None
+        session = await ch.start_session("room-1", "u1", "ws")
+
+        assert ch._skill_support.is_gated("find_tools", session.id) is True
+        assert ch._skill_support.is_gated("activate_skill", session.id) is False
 
     async def test_invalid_arguments_are_named_before_the_gating_verdict(
         self,

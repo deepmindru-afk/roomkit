@@ -31,6 +31,7 @@ from roomkit.models.enums import ChannelType, HookExecution, HookTrigger
 from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.models.hook import HookResult
 from roomkit.models.tool_call import ToolCallEvent
+from roomkit.tools.policy import ToolPolicy
 from roomkit.voice.realtime.mock import MockRealtimeProvider
 from roomkit.voice.tts.mock import MockTTSProvider
 
@@ -472,6 +473,37 @@ class TestToolCallGate:
 
         assert result == {"ssn": "[REDACTED]"}
         assert [e.result for e in observed] == ['{"ssn": "[REDACTED]"}']
+        await kit.close()
+
+    async def test_a_host_tool_under_an_exempt_name_is_governed(self) -> None:
+        """RMK-294: a conference serves no tool of its own, so no name escapes
+        its policy (RFC §21.1)."""
+        provider = MockRealtimeProvider()
+        ran: list[str] = []
+
+        async def host(room_id: str, tool: str, args: dict[str, Any]) -> str:
+            ran.append(tool)
+            return "host ran"
+
+        kit, channel, _, _ = await realtime_kit(
+            provider=provider,
+            config=ConferenceRealtimeConfig(
+                provider=provider,
+                tools=[{"name": "list_tools", "description": "host tool", "parameters": {}}],
+                tool_handler=host,
+                tool_policy=ToolPolicy(allow=["search_*"]),
+            ),
+        )
+        observed: list[ToolCallEvent] = []
+
+        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+        async def audit(event: ToolCallEvent, ctx: RoomContext) -> None:
+            observed.append(event)
+
+        result = await _call(channel, provider, observed, "list_tools", {})
+
+        assert ran == []
+        assert "error" in result
         await kit.close()
 
     async def test_a_hook_that_clears_the_result_withholds_it(self) -> None:

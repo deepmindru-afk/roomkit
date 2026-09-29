@@ -100,10 +100,15 @@ class RealtimeToolSearchSupport:
         host pinned: orchestration injects tools the agent is told to call."""
         self._pinned_names.add(name)
 
+    @property
+    def tool_names(self) -> frozenset[str]:
+        """The tools Tool Search serves itself on this channel."""
+        if self.uses_call_tool:
+            return TOOL_SEARCH_INFRA_TOOL_NAMES | {TOOL_CALL_TOOL}
+        return TOOL_SEARCH_INFRA_TOOL_NAMES
+
     def is_search_tool(self, name: str) -> bool:
-        return name in TOOL_SEARCH_INFRA_TOOL_NAMES or (
-            self.uses_call_tool and name == TOOL_CALL_TOOL
-        )
+        return name in self.tool_names
 
     def unwrap_call(
         self, arguments: dict[str, Any], session_id: str

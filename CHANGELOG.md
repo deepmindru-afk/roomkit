@@ -219,6 +219,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The tool policy's exemption (`activate_skill`, `read_skill_reference`,
+  `read_stored_result`, `find_tools`, `list_tools`) covers the tool the
+  channel serves itself, not a name (RMK-294, RFC §21.1). A host or MCP tool
+  that carried one of these names escaped the policy and skill gating
+  whenever the channel's own was inactive: with `ToolPolicy(allow=["read_*"])`
+  a host `list_tools` ran, on the AI channel (both loops), the realtime
+  channel and the conference. A conference serves none of them and exempts
+  nothing. `plan_tasks` is served by the channel only when a planner is
+  configured: a host tool of that name answered "Planning is not enabled".
 - An ON_TOOL_CALL SYNC hook that clears a served result
   (`metadata={"result": None}`) replaces it, on every channel (RMK-292, RFC
   §9.3): an AI channel ignored an empty replacement, so the model read and

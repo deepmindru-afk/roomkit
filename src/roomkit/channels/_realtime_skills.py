@@ -11,7 +11,7 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
-from roomkit.channels._ai_policy import POLICY_EXEMPT_TOOL_NAMES
+from roomkit.channels._ai_policy import is_exempt
 from roomkit.channels._skill_constants import (
     ACTIVATE_SKILL_SCHEMA,
     READ_REFERENCE_SCHEMA,
@@ -72,6 +72,9 @@ class RealtimeSkillSupport:
         self._delivery_mode: SkillDeliveryMode = delivery_mode
         # session_id -> set of activated skill names
         self._activated_skills: dict[str, set[str]] = {}
+        # The tools the channel serves itself: the skills' own, and Tool
+        # Search's once the channel adds it (RealtimeVoiceChannel).
+        self.channel_tools: frozenset[str] = SKILL_INFRA_TOOL_NAMES
         # session_id -> ordered list of (skill_name, instructions) tuples
         # for skills activated so far in this session. Concatenated into
         # the system_instruction on the next reconfigure_session call.
@@ -214,9 +217,10 @@ class RealtimeSkillSupport:
         transcript — can still call it. Callers ask this at execution time as
         well as at listing time.
 
-        The tools that only read or unlock are never gated (RFC §21.1,
-        ``POLICY_EXEMPT_TOOL_NAMES``): activation and reference reading are how
-        a skill gets unlocked, and the Tool Search tools are how a gated name is
+        The tools that only read or unlock are never gated when the channel
+        serves them itself (RFC §21.1, :func:`is_exempt` over
+        :attr:`channel_tools`): activation and reference reading are how a
+        skill gets unlocked, and the Tool Search tools are how a gated name is
         found in the first place. Gating them would leave the model told to
         activate a skill it has no way left to name. ``run_skill_script`` acts,
         and is gated like any other tool.
@@ -224,7 +228,7 @@ class RealtimeSkillSupport:
         *gated* lets a caller filtering a whole catalogue compute the gated set
         once instead of once per tool.
         """
-        if name in POLICY_EXEMPT_TOOL_NAMES:
+        if is_exempt(name, self.channel_tools):
             return False
         if gated is None:
             gated = self._gated_tool_names(session_id)

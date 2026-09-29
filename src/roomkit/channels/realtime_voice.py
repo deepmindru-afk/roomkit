@@ -453,6 +453,8 @@ class RealtimeVoiceChannel(
                 reconfigure_capable=provider.supports_mid_session_reconfigure,
                 reachable=self._tool_reachable,
             )
+            if self._skill_support is not None:
+                self._skill_support.channel_tools |= self._tool_search_support.tool_names
 
         # Lock for shared state accessed from both asyncio and audio threads
         self._state_lock = threading.Lock()

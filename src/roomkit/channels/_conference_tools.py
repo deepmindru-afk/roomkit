@@ -40,11 +40,20 @@ MAX_RESULT_CHARS = 16384
 """The bound on a result the model reads: RealtimeVoiceChannel's default."""
 
 
+#: A conference serves no tool of its own: the policy governs every name
+#: (RFC §21.1).
+_NO_CHANNEL_TOOLS: frozenset[str] = frozenset()
+
+
 def declared_tools(config: ConferenceRealtimeConfig) -> list[dict[str, Any]] | None:
     """The tools a conference declares to its provider: what its policy admits."""
     if config.tools is None:
         return None
-    return [t for t in config.tools if policy_admits(config.tool_policy, str(t.get("name", "")))]
+    return [
+        t
+        for t in config.tools
+        if policy_admits(config.tool_policy, str(t.get("name", "")), _NO_CHANNEL_TOOLS)
+    ]
 
 
 def warn_unused_role_overrides(config: ConferenceRealtimeConfig, channel_id: str) -> None:
@@ -181,7 +190,7 @@ class ConferenceToolGate:
             error = fold_error or validate_tool_arguments(schema, arguments)
             if error is not None:
                 return arguments, f"Invalid arguments for '{name}': {error}"
-        if not policy_admits(config.tool_policy, name):
+        if not policy_admits(config.tool_policy, name, _NO_CHANNEL_TOOLS):
             logger.warning("Conference tool %s blocked by policy", name)
             return arguments, policy_refusal(name)
         return await self._before_tool_use(event, arguments, schema)

@@ -16,7 +16,7 @@ from roomkit.channels._realtime_context import (
     serving_call,
     spare_own_orphaned_call,
 )
-from roomkit.channels._skill_constants import TOOL_ACTIVATE_SKILL
+from roomkit.channels._skill_constants import SKILL_INFRA_TOOL_NAMES, TOOL_ACTIVATE_SKILL
 from roomkit.channels._tool_search_constants import TOOL_CALL_TOOL
 from roomkit.channels.ai import _current_loop_ctx, _ToolLoopContext
 from roomkit.core.exceptions import ToolRefusedError
@@ -848,9 +848,16 @@ class RealtimeToolsMixin:
 
     def _is_infrastructure_tool(self, name: str) -> bool:
         """Whether *name* is served by the channel itself, not by the host."""
-        if self._tool_search_support and self._tool_search_support.is_search_tool(name):
-            return True
-        return bool(self._skill_support and self._skill_support.is_skill_tool(name))
+        return name in self._channel_tool_names()
+
+    def _channel_tool_names(self) -> frozenset[str]:
+        """The tools this channel serves itself: Tool Search's and the skills'."""
+        names: frozenset[str] = frozenset()
+        if self._tool_search_support is not None:
+            names |= self._tool_search_support.tool_names
+        if self._skill_support is not None:
+            names |= SKILL_INFRA_TOOL_NAMES
+        return names
 
     def _tool_reachable(self, name: str, session_id: str) -> bool:
         """Whether the session may call *name*: its tool policy and skill gating.
@@ -858,7 +865,7 @@ class RealtimeToolsMixin:
         What Tool Search may name in its results and listings (RFC §21.1); the
         pre-execution gate enforces the same rule on the call itself.
         """
-        if not policy_admits(self._session_policy(session_id), name):
+        if not policy_admits(self._session_policy(session_id), name, self._channel_tool_names()):
             return False
         support = self._skill_support
         return support is None or not support.is_gated(name, session_id)
@@ -879,11 +886,12 @@ class RealtimeToolsMixin:
         if policy is None:
             return tools
         search = self._tool_search_support
+        served = self._channel_tool_names()
         return [
             t
             for t in tools
             if (search is not None and search.is_search_tool(str(t.get("name", ""))))
-            or policy_admits(policy, str(t.get("name", "")))
+            or policy_admits(policy, str(t.get("name", "")), served)
         ]
 
     async def _refresh_session_role(self, session: VoiceSession, room_id: str | None) -> None:
@@ -975,7 +983,7 @@ class RealtimeToolsMixin:
     def _access_refusal(self, name: str, session_id: str) -> str | None:
         """Why the session may not call *name*: its tool policy, resolved for
         its participant, then skill gating, as on the classic path."""
-        if not policy_admits(self._session_policy(session_id), name):
+        if not policy_admits(self._session_policy(session_id), name, self._channel_tool_names()):
             logger.warning("Realtime tool %s blocked by policy", name)
             return json.dumps({"error": policy_refusal(name)})
         # Hiding a gated tool from the catalogue is not enforcement — the model
