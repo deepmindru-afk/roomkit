@@ -340,6 +340,9 @@ class ConversationPipeline:
                 "tools": _agent_session_tools(rtv, agent, tool),
             }
 
+        # The handoff tool stays declared under Tool Search (RFC §21.1).
+        rtv._pin_orchestration_tool("handoff_conversation")
+
         # Set initial agent config on the RealtimeVoiceChannel
         default_stage = self._stage_map.get(self._default_phase or "")
         default_agent_id = default_stage.agent_id if default_stage else agents[0].channel_id

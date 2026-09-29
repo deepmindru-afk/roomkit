@@ -126,6 +126,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Tool Search no longer hides the tools orchestration injects (RMK-277, RFC
+  §21.1). With a catalogue large enough to collapse behind `find_tools`,
+  `handoff_conversation`, `delegate_task`, a supervisor's tools and a
+  delegation's `submit_result` disappeared too, while the worker's prompt
+  said it MUST call `submit_result`. They now stay declared as a pinned tool
+  does, on `AIChannel` (both tool loops) and on `RealtimeVoiceChannel` (the
+  voice supervisor, the voice `Loop`, `setup_realtime_delegation` and a
+  voice pipeline's handoff), and they no longer count toward the catalogue
+  that decides whether Tool Search switches on.
 - A strategy installed in several rooms keeps what it adds per room (RMK-276,
   RFC §19.7). The voice supervisor (`auto_delegate=True, async_delivery=True`)
   and the voice `Loop` appended their tool (`delegate_workers`,

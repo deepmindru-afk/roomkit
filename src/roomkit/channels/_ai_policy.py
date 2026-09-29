@@ -82,6 +82,7 @@ class ToolPolicyHost(Protocol):
     _tool_search_pinned: set[str]
 
     def _get_loop_ctx(self) -> _ToolLoopContext: ...
+    def _orchestration_tool_names(self, room_id: str | None) -> set[str]: ...
 
 
 class AIToolPolicyMixin:
@@ -95,6 +96,7 @@ class AIToolPolicyMixin:
     _skill_activation: SkillActivationMemory
     _tool_search_pinned: set[str]
     _get_loop_ctx: Callable[[], _ToolLoopContext]
+    _orchestration_tool_names: Callable[[str | None], set[str]]
 
     def _resolve_participant_role(self, event: RoomEvent, context: RoomContext) -> str | None:
         """Look up the participant role for the event source."""
@@ -254,10 +256,11 @@ class AIToolPolicyMixin:
         loop. The re-filter runs every round, so a tool revealed in round N
         becomes visible in round N+1 — the same mechanism as skill gating.
         Channel-managed tools (``run_skill_script``, ``plan_tasks``) are never
-        deferred. Sandbox tools are: a sandbox can expose ~10 tools, which on a
-        small model would crowd the context window, so they wait behind
-        ``find_tools`` like any other discretionary tool unless the host pins
-        them via ``tool_search_pinned``.
+        deferred, nor are the tools orchestration injected for this room (RFC
+        §21.1): the agent is told to call them. Sandbox tools are: a sandbox
+        can expose ~10 tools, which on a small model would crowd the context
+        window, so they wait behind ``find_tools`` like any other
+        discretionary tool unless the host pins them via ``tool_search_pinned``.
         """
         gated = self._gated_tool_names
         policy = self._effective_tool_policy
@@ -267,14 +270,21 @@ class AIToolPolicyMixin:
         keep: set[str] | None = None
         if loop_ctx.tool_search_active:
             # pinned (config) + revealed (find_tools this loop) + sticky (tools
-            # already used this conversation, re-exposed so they stay callable).
-            keep = self._tool_search_pinned | loop_ctx.revealed_tools | loop_ctx.sticky_tools
+            # already used this conversation, re-exposed so they stay callable)
+            # + the channel's own and orchestration's, never deferred.
+            keep = (
+                self._tool_search_pinned
+                | loop_ctx.revealed_tools
+                | loop_ctx.sticky_tools
+                | self._NEVER_DEFERRED
+                | self._orchestration_tool_names(loop_ctx.room_id)
+            )
         result: list[AITool] = []
         for tool in tools:
             name = tool.name
             if not self._is_reachable(name, policy, gated):
                 continue
-            if keep is not None and name not in self._NEVER_DEFERRED and name not in keep:
+            if keep is not None and name not in keep:
                 continue
             result.append(tool)
         return result

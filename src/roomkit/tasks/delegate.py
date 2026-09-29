@@ -321,6 +321,7 @@ def setup_realtime_delegation(
         channel._tools = [tool_def]
     else:
         channel._tools.append(tool_def)
+    channel._pin_orchestration_tool(tool_def["name"])
 
     original = channel._tool_handler
 

@@ -95,6 +95,11 @@ class RealtimeToolSearchSupport:
     def preamble(self) -> str:
         return FIXED_TOOL_SEARCH_PREAMBLE if self.uses_call_tool else TOOL_SEARCH_PREAMBLE
 
+    def pin(self, name: str) -> None:
+        """Keep *name* declared whatever the catalogue's size, like a tool the
+        host pinned: orchestration injects tools the agent is told to call."""
+        self._pinned_names.add(name)
+
     def is_search_tool(self, name: str) -> bool:
         return name in TOOL_SEARCH_INFRA_TOOL_NAMES or (
             self.uses_call_tool and name == TOOL_CALL_TOOL

@@ -655,6 +655,12 @@ class AIChannel(
         """The tools declared in *room_id*'s turns only (RFC §19.7)."""
         return self._room_tools.get(room_id, [])
 
+    def _orchestration_tool_names(self, room_id: str | None) -> set[str]:
+        """The tools orchestration injected, channel-wide or for *room_id*:
+        never deferred behind Tool Search (RFC §21.1)."""
+        injected = [*self._injected_tools, *self._room_tool_defs(room_id or "")]
+        return {tool.name for tool in injected}
+
     async def deliver(
         self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
     ) -> ChannelOutput:

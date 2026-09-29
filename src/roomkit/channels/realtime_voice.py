@@ -748,6 +748,12 @@ class RealtimeVoiceChannel(
             "voice": self._voice,
         }
 
+    def _pin_orchestration_tool(self, name: str) -> None:
+        """Keep a tool orchestration injected declared under Tool Search (RFC
+        §21.1): the agent is told to call it, not to go and find it."""
+        if self._tool_search_support is not None:
+            self._tool_search_support.pin(name)
+
     def configure(
         self,
         *,

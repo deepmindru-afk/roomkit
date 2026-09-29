@@ -142,6 +142,7 @@ class AIContextHost(Protocol):
     @property
     def extra_tools(self) -> list[AITool]: ...
     def _room_tool_defs(self, room_id: str) -> list[AITool]: ...
+    def _orchestration_tool_names(self, room_id: str | None) -> set[str]: ...
     def _skill_tools(self) -> list[AITool]: ...
     def _apply_tool_filters(self, tools: list[AITool]) -> list[AITool]: ...
     def _policy_allows(self, name: str) -> bool: ...
@@ -187,6 +188,7 @@ class AIContextMixin:
     # Cross-mixin methods — Any annotations avoid MRO shadowing
     extra_tools: Any  # see AIContextHost
     _room_tool_defs: Any  # see AIContextHost
+    _orchestration_tool_names: Any  # see AIContextHost
     _skill_tools: Any  # see AIContextHost
     _apply_tool_filters: Any  # see AIContextHost
     _policy_allows: Any  # see AIContextHost
@@ -383,9 +385,12 @@ class AIContextMixin:
         # Unlike realtime, no provider.reconfigure is needed: the tool loop
         # re-sends its (re-filtered) tool list every round.
         window = self._provider.context_window
+        # What orchestration injected stays declared (RFC §21.1), outside the
+        # catalogue whose size decides the collapse.
+        orchestration = self._orchestration_tool_names(binding.room_id)
         loop_ctx.tool_search_active = should_activate_tool_search(
             mode=self._tool_search,
-            catalogue=tools,
+            catalogue=[t for t in tools if t.name not in orchestration],
             pinned=self._tool_search_pinned,
             window=window,
             threshold_pct=self._tool_search_threshold_pct,
@@ -399,7 +404,7 @@ class AIContextMixin:
                 "Tool Search active: %d tools deferred behind find_tools/list_tools "
                 "(pinned=%d, window=%s)",
                 len(tools),
-                len(self._tool_search_pinned & catalogue_names),
+                len((self._tool_search_pinned | orchestration) & catalogue_names),
                 window if window else "unknown",
             )
             tools.extend(t for t in search_tool_defs() if t.name not in catalogue_names)
