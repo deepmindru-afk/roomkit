@@ -18,6 +18,7 @@ from roomkit.channels._task_planner import TaskPlanner
 from roomkit.channels._tool_eviction import ToolEviction
 from roomkit.channels._tool_search import search_tool_defs, should_activate_tool_search
 from roomkit.channels._tool_search_constants import TOOL_SEARCH_PREAMBLE
+from roomkit.channels._turn_notes import turn_notes, with_turn_notes
 from roomkit.core.visibility import visible_events
 from roomkit.memory.base import MemoryResult
 from roomkit.models.channel import ChannelCapabilities
@@ -74,13 +75,6 @@ _SPEAKER_ATTRIBUTION_NOTE = (
     'prefixed with the sender\'s name ("Name: message"). The prefix is '
     "transcript metadata, not text they typed: rely on it to know who said "
     "what, and never prefix your own replies with a name."
-)
-
-# Opens the notes a turn's input carries: they are the channel's, not the
-# participant's, and ask for nothing.
-_TURN_NOTES_HEADER = (
-    "[Notes kept by the assistant's runtime for this turn. The user did not "
-    "write them and they ask for nothing: answer the user's message above.]"
 )
 
 
@@ -337,12 +331,10 @@ class AIContextMixin:
             )
 
         messages, attribute_speakers = self._turn_messages(event, context, memory_result, loop_ctx)
-        messages = _with_turn_notes(
-            messages, self._turn_notes(event, context, standalone=standalone)
+        messages = with_turn_notes(
+            messages,
+            self._turn_notes(loop_ctx, standalone=standalone, speakers=attribute_speakers),
         )
-
-        if attribute_speakers:
-            system_prompt = (system_prompt or "") + f"\n\n{_SPEAKER_ATTRIBUTION_NOTE}"
 
         # Determine target channel capabilities for capability-aware generation
         # Use intersection of all transport bindings' media types (weakest common)
@@ -542,32 +534,31 @@ class AIContextMixin:
         return current_content, current_speaker
 
     def _turn_notes(
-        self, event: RoomEvent, context: RoomContext, *, standalone: bool
+        self, loop_ctx: _ToolLoopContext, *, standalone: bool, speakers: bool
     ) -> str | None:
-        """What the room's working memories tell this turn, as the notes its
-        input carries: the room's plan and the tools already used here.
+        """What changes from one turn to the next, as the notes the turn's
+        input carries (RFC §6.4): how speakers are named when several speak,
+        the room's plan, and the tools already used here.
 
-        ``None`` when there are none, or when the turn stands alone: its
-        input reads nothing of the room (RFC §10.1.1). Both change from one
-        turn to the next, so they ride the turn's input rather than the
-        system prompt (RFC §6.4).
+        A standalone turn reads none of the room's working memories (RFC
+        §10.1.1). Each is read under the tool loop's room, as its writer keys
+        it.
         """
-        if standalone:
-            return None
-        blocks: list[str] = []
-        if self._planner is not None:
-            room_id = context.room.id if context.room else event.room_id
-            plan = self._planner.plan_for(room_id)
-            if plan:
-                blocks.append(TaskPlanner.format_plan_prompt(plan).strip())
+        blocks = [_SPEAKER_ATTRIBUTION_NOTE] if speakers else []
+        room_id = loop_ctx.room_id
+        if standalone or room_id is None:
+            return turn_notes(blocks)
+        plan = self._planner.plan_for(room_id) if self._planner is not None else None
+        if plan:
+            blocks.append(TaskPlanner.format_plan_prompt(plan))
         # "Tools you've already used" digest — the rebuilt context drops
         # tool-call events, so without this the model forgets, across turns,
         # which tools/source it used (it would re-ask the user). Injected for
         # every model, not just small ones — the loss is provider-agnostic.
-        digest = self._tool_usage.render_digest(event.room_id)
+        digest = self._tool_usage.render_digest(room_id)
         if digest:
             blocks.append(digest)
-        return "\n\n".join([_TURN_NOTES_HEADER, *blocks]) if blocks else None
+        return turn_notes(blocks)
 
     def _add_skills(
         self,
@@ -598,9 +589,9 @@ class AIContextMixin:
         # above, this is RUNTIME state, not the catalogue: a host that
         # renders its own manifest (``skills_in_prompt=False``) still cannot
         # know what the model activated mid-conversation, so this block is
-        # injected either way — exactly like the tool-usage digest, the Tool
-        # Search preamble and the sandbox preamble. Its mutability is also
-        # why it belongs here rather than in the host's cache-stable prefix.
+        # injected either way, like the Tool Search and sandbox preambles. It
+        # stays in the system prompt although it changes when a skill is
+        # activated: it is instructions, not notes (RFC §24.4, §6.4).
         # This is what makes ``activate_skill``'s later ACKs safe: the rules
         # are in front of the model without the body being re-sent.
         active_skills = (
@@ -709,7 +700,7 @@ class AIContextMixin:
         Each setting from the binding metadata, else the config provider,
         else the channel default (:meth:`_turn_settings`). The system prompt
         resolved here is the one the turn starts from, before the channel's
-        own blocks (skills, sandbox, plan, digest).
+        own blocks (skills, sandbox, Tool Search).
         """
         turn = None
         if self._config_provider is not None:
@@ -838,26 +829,3 @@ def _with_speaker_prefix(content: str | list[_ContentPart], name: str) -> str | 
     if isinstance(content, str):
         return f"{name}: {content}"
     return [AITextPart(text=f"{name}:"), *content]
-
-
-def _with_turn_notes(messages: list[AIMessage], notes: str | None) -> list[AIMessage]:
-    """*messages* with *notes* after the last message's text when it is the
-    participant's, or as a message of its own when the conversation does not
-    end on one (RFC §6.4).
-
-    After the participant's words, not before: a provider that caches up to
-    the last messages keeps the history's prefix only if what changes comes
-    last. In the same message, not a message of its own: some chat formats
-    refuse two user messages in a row. A text input stays text, so a provider
-    that only takes text reads it as it does today.
-    """
-    if not notes:
-        return messages
-    last = messages[-1] if messages else None
-    if last is None or last.role != "user":
-        return [*messages, AIMessage(role="user", content=notes)]
-    if isinstance(last.content, str):
-        content: str | list[_ContentPart] = f"{last.content}\n\n{notes}" if last.content else notes
-    else:
-        content = [*last.content, AITextPart(text=notes)]
-    return [*messages[:-1], last.model_copy(update={"content": content})]

@@ -8,14 +8,14 @@ and — under Tool Search — it can't re-call a tool it already used because th
 catalogue is re-hidden every turn. This in-memory, per-room record closes both
 gaps, which have DIFFERENT shapes and costs, so each is bounded on its own axis:
 
-* a **digest** is added to the system prompt so the model knows what it did and
+* a **digest** rides each turn's input (RFC §6.4) so the model knows what it did and
   what it got — bounded by recent *calls* (``_DIGEST_MAX_CALLS``). The most
   recent ``_RESULTS_SHOWN`` calls carry their result, up to
   ``_RESULT_KEEP_CHARS``: the data a follow-up question is about ("and the
   fifteenth board?") has to be there, or the model invents it. Each result sits
   in a ``<tool_result>`` block framed as data, never as instructions: it came
-  from a tool, not from whoever wrote the system prompt. Older calls shrink to
-  one line with a short preview;
+  from a tool, not from whoever wrote the prompt. Older calls shrink to their
+  name, arguments and a short preview, set apart as data too;
 * the set of distinct **tool names** it called — or that ``find_tools`` already
   revealed (``record_revealed``) — is re-revealed each turn (see
   ``_build_context``) so a tool used or found once stays callable while Tool
@@ -28,7 +28,7 @@ Scoped per room on a channel object shared by every room it serves — same shap
 and lifetime as :class:`ToolEviction`. Kept in memory and rebuilt once per room
 from the persisted ``TOOL_CALL_END`` events (:meth:`ToolUsageMemory.seed`). Those
 carry what the model was given, so a result that had been evicted comes back as
-a one-line preview, never as its placeholder.
+a short preview, never as its placeholder.
 """
 
 from __future__ import annotations
@@ -51,7 +51,7 @@ from roomkit.tools.fence import fence
 # pointlessly re-reveal tools that are never hidden.
 _INFRA_NAMES = TOOL_SEARCH_INFRA_TOOL_NAMES | SKILL_INFRA_TOOL_NAMES | frozenset({REREAD_TOOL})
 
-# Recent calls shown in the digest: one line each, except the most recent
+# Recent calls shown in the digest: a short preview each, except the most recent
 # ``_RESULTS_SHOWN``, which carry their result. The bound is readability — a
 # "what you did" block longer than this is noise, not memory.
 _DIGEST_MAX_CALLS = 8
@@ -125,7 +125,7 @@ class ToolUsageMemory:
 
         text = self._result_text(result)
         # An eviction placeholder is not data: kept whole it would show a stored
-        # id that may no longer resolve. It stays a one-line preview, wherever
+        # id that may no longer resolve. It stays a short preview, wherever
         # it sits in a part list (an image may come first).
         evicted = is_eviction_placeholder(text) or (
             isinstance(result, list)

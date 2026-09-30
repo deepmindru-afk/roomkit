@@ -67,10 +67,12 @@ class TestMultiSpeakerAttribution:
         assert any(t == "Alice: Tuesday works for me." for t in texts)
         assert any(t == "Bob: I would rather ship Thursday." for t in texts)
         # The trigger turn is attributed too.
-        assert any(t == "Alice: Who proposed what?" for t in texts)
-        # The model is told how to read the prefixes, once.
-        assert last.system_prompt is not None
-        assert last.system_prompt.count(_SPEAKER_ATTRIBUTION_NOTE) == 1
+        assert texts[-1].startswith("Alice: Who proposed what?")
+        # The model is told how to read the prefixes, once, in the turn's
+        # notes: which speakers the window holds changes from turn to turn,
+        # and the system prompt does not (RFC §6.4).
+        assert texts[-1].count(_SPEAKER_ATTRIBUTION_NOTE) == 1
+        assert _SPEAKER_ATTRIBUTION_NOTE not in (last.system_prompt or "")
 
     async def test_assistant_turns_are_never_prefixed(self) -> None:
         kit, provider = await _kit(["first answer", "a2"])
@@ -92,6 +94,7 @@ class TestMultiSpeakerAttribution:
         assert "second message" in texts
         assert not any(t.startswith("Alice:") for t in texts)
         assert _SPEAKER_ATTRIBUTION_NOTE not in (last.system_prompt or "")
+        assert _SPEAKER_ATTRIBUTION_NOTE not in texts[-1]
 
     async def test_unnamed_turn_stays_bare_in_a_multi_speaker_room(self) -> None:
         kit, provider = await _kit(["a1", "a2", "a3"])

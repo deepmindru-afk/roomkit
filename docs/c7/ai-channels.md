@@ -674,7 +674,7 @@ OpenAI-family providers (OpenAI, Azure, OpenRouter, LiteLLM, xAI) and PolarGrid 
 
 ## Multi-Speaker Rooms
 
-AIChannel builds the model's history from the room's events, and every event that is not the AI's own becomes a `user` turn. In a room where several people speak — a Teams channel, a WhatsApp group, a shared inbox — that flattening erases who said what, and the model guesses the addressee wrong (a reply opening with the wrong colleague's name). So when the history window holds **two or more distinct speakers**, each attributable user turn reaches the model as `"Name: text"` and a one-line note is appended to the system prompt:
+AIChannel builds the model's history from the room's events, and every event that is not the AI's own becomes a `user` turn. In a room where several people speak — a Teams channel, a WhatsApp group, a shared inbox — that flattening erases who said what, and the model guesses the addressee wrong (a reply opening with the wrong colleague's name). So when the history window holds **two or more distinct speakers**, each attributable user turn reaches the model as `"Name: text"` and a one-line note joins the notes the turn's input carries (not the system prompt, which stays the same from turn to turn while the speakers in the window change):
 
 ```text
 Several people take part in this conversation. Their messages are prefixed with

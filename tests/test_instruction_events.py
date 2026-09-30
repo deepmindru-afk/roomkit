@@ -14,6 +14,7 @@ import pytest
 from pydantic import ValidationError
 
 from roomkit import AIChannel, HookResult, HookTrigger, RoomKit
+from roomkit.channels._turn_notes import TURN_NOTES_HEADER
 from roomkit.channels.base import Channel
 from roomkit.memory import BudgetAwareMemory, MemoryProvider, MemoryResult, SlidingWindowMemory
 from roomkit.models.channel import ChannelBinding, ChannelOutput
@@ -282,18 +283,21 @@ async def test_a_standalone_instruction_reads_nothing_of_the_room(via: str, stre
     await kit.close()
 
 
+@pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("via", ["process_inbound", "send_event"])
-async def test_an_instruction_without_standalone_reads_the_room(via: str):
+async def test_an_instruction_without_standalone_reads_the_room(via: str, streaming: bool):
     """A metadata key of the same name is not the flag: only the typed field is."""
-    kit, provider, memory = await _talking_room()
+    kit, provider, memory = await _talking_room(streaming=streaming)
 
     await _send_instruction(kit, via, metadata={"standalone": True})
 
     assert memory.retrieved == 2
     contents = [str(m.content) for m in provider.calls[-1].messages]
     assert any("Allô" in c for c in contents) and INSTRUCTION in contents[-1]
-    # The room's working memories ride the turn's input (RFC §6.4).
+    # The room's working memories ride the turn's input (RFC §6.4), under a
+    # header that asks nothing of the instruction above it.
     assert "PREVIOUS-TOOL-RESULT" in contents[-1]
+    assert contents[-1].index(INSTRUCTION) < contents[-1].index(TURN_NOTES_HEADER)
     assert "PREVIOUS-TOOL-RESULT" not in (provider.calls[-1].system_prompt or "")
     await kit.close()
 

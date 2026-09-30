@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from roomkit.channels._ai_context import _with_turn_notes
+from roomkit.channels._turn_notes import with_turn_notes
 from roomkit.channels.ai import AIChannel
 from roomkit.core.hooks import SyncPipelineResult
 from roomkit.models.channel import ChannelBinding
@@ -127,7 +127,7 @@ def test_notes_follow_a_multimodal_input_as_its_last_part() -> None:
     image = AIImagePart(url="https://example.com/a.png")
     messages = [AIMessage(role="user", content=[AITextPart(text="see this"), image])]
 
-    [message] = _with_turn_notes(messages, "NOTES")
+    [message] = with_turn_notes(messages, "NOTES")
 
     assert message.content == [AITextPart(text="see this"), image, AITextPart(text="NOTES")]
 
@@ -138,9 +138,9 @@ def test_notes_stand_alone_when_the_conversation_does_not_end_on_the_participant
         AIMessage(role="assistant", content="hello"),
     ]
 
-    result = _with_turn_notes(messages, "NOTES")
+    result = with_turn_notes(messages, "NOTES")
 
     assert result[:2] == messages
     assert result[2] == AIMessage(role="user", content="NOTES")
-    assert _with_turn_notes(messages, None) == messages
-    assert _with_turn_notes([AIMessage(role="user", content="")], "NOTES")[0].content == "NOTES"
+    assert with_turn_notes(messages, None) == messages
+    assert with_turn_notes([AIMessage(role="user", content="")], "NOTES")[0].content == "NOTES"

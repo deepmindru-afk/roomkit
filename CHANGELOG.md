@@ -119,9 +119,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   at their own size. On the cost suite (`claude-sonnet-5`), a conversation
   whose history outgrows its notes (`long_cost`) costs 53 % less; a very short
   one whose notes weigh as much as its history (`tool_cost`) costs 5 % more.
+  How speakers are named in a room where several speak rides the notes too,
+  since which speakers the history window holds changes from turn to turn.
   An active skill's instructions stay in the system prompt (§24.4). A
   `BEFORE_AI_GENERATION` hook that read the digest or the plan in
-  `system_prompt` finds them in the last message.
+  `system_prompt` finds them in the last message; one that reads the last
+  message as the participant's words (a guardrail, a translation, a PII
+  filter) now reads the notes after them too, tool results they quote
+  included.
 - A tool loop's declaration holds from round to round (RMK-317, RFC §6.4).
   `read_stored_result` is declared from the first round of any turn that
   declares a tool or whose room holds a stored result, after the other tools

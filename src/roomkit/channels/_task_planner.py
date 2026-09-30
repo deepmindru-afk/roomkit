@@ -31,7 +31,7 @@ class TaskPlanner:
     """Manages room-scoped structured task plans for an AI agent.
 
     Provides the ``plan_tasks`` tool for creating/updating plans,
-    formats the plan into system prompt context, and publishes
+    formats the plan for the notes each turn's input carries, and publishes
     ephemeral events for real-time UI rendering.
     """
 
@@ -141,8 +141,8 @@ class TaskPlanner:
 
     @staticmethod
     def format_plan_prompt(tasks: list[dict[str, Any]]) -> str:
-        """Format the current plan as a system prompt block."""
-        lines = ["\n\n## Current Task Plan"]
+        """Format the current plan as a block of the turn's notes (RFC §6.4)."""
+        lines = ["## Current Task Plan"]
         for t in tasks:
             icon = _STATUS_ICONS.get(t.get("status", "pending"), "[ ]")
             title = t.get("title", "Untitled")

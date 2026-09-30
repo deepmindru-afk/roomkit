@@ -2,8 +2,8 @@
 
 When ``enable_planning=True``, AIChannel exposes a ``plan_tasks`` tool
 that lets the AI create and update structured task lists. The current
-plan is automatically injected into the system prompt on every turn so
-the AI always knows where it left off.
+plan rides every turn's input, after the user's words, so the AI always
+knows where it left off.
 
 Run with:
     ANTHROPIC_API_KEY=sk-... uv run python examples/ai_planning.py
