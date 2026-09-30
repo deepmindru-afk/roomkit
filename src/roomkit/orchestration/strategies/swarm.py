@@ -15,7 +15,8 @@ from roomkit.orchestration.base import Orchestration
 from roomkit.orchestration.handoff import (
     HandoffHandler,
     build_handoff_tool,
-    setup_handoff,
+    handoff_entry,
+    set_up_handoffs,
 )
 from roomkit.orchestration.router import ConversationRouter
 from roomkit.orchestration.state import (
@@ -98,6 +99,7 @@ class Swarm(Orchestration):
 
         # Wire bidirectional handoff — each agent can reach all others, in
         # this room, with this install's handler (RFC §19.7)
+        handoffs = []
         for agent in self._agents:
             targets = [
                 (a.channel_id, getattr(a, "description", None))
@@ -105,7 +107,8 @@ class Swarm(Orchestration):
                 if a.channel_id != agent.channel_id
             ]
             tool = build_handoff_tool(targets)
-            setup_handoff(agent, handler, tool=tool, room_id=room_id)
+            handoffs.append((agent, handoff_entry(agent, handler, tool)))
+        set_up_handoffs(handoffs, room_id=room_id, owner=self)
 
         # Set initial conversation state
         room = await kit.get_room(room_id)

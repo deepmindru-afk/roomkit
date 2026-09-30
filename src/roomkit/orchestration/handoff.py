@@ -8,11 +8,12 @@ preserves context, and optionally escalates channels.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
-from roomkit.channels._tool_registry import orchestration_tool
+from roomkit.channels._tool_registry import ToolEntry, orchestration_tool
 from roomkit.memory.base import MemoryProvider, MemoryResult
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.context import RoomContext
@@ -706,6 +707,25 @@ def setup_handoff(
     if channel._registry.lookup(HANDOFF_TOOL_NAME, room_id) is not None:
         msg = f"setup_handoff() already called for channel '{channel.channel_id}'"
         raise RuntimeError(msg)
+    channel._registry.register(
+        handoff_entry(channel, handler, tool), room_id=room_id, owner=handler
+    )
+
+
+def set_up_handoffs(
+    handoffs: Sequence[tuple[AIChannel, ToolEntry]], *, room_id: str, owner: object
+) -> None:
+    """Serve each agent's handoff in *room_id* for the strategy *owner*: all of
+    them, or none when one is refused. Installing *owner* again replaces its own
+    (RFC §19.7, §21.1)."""
+    for channel, entry in handoffs:
+        channel._registry.check(entry, room_id=room_id, owner=owner)
+    for channel, entry in handoffs:
+        channel._registry.register(entry, room_id=room_id, owner=owner)
+
+
+def handoff_entry(channel: AIChannel, handler: HandoffHandler, tool: AITool | None) -> ToolEntry:
+    """The handoff tool *channel* serves with *handler*, in the room of each call."""
 
     async def hand_off(call_room_id: str, name: str, arguments: dict[str, Any]) -> str:
         result = await handler.handle(
@@ -715,5 +735,4 @@ def setup_handoff(
         )
         return result.model_dump_json()
 
-    entry = orchestration_tool(tool or HANDOFF_TOOL, in_call_room(HANDOFF_TOOL_NAME, hand_off))
-    channel._registry.register(entry, room_id=room_id, owner=handler)
+    return orchestration_tool(tool or HANDOFF_TOOL, in_call_room(HANDOFF_TOOL_NAME, hand_off))

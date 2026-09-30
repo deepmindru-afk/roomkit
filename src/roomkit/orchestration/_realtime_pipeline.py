@@ -74,15 +74,16 @@ class RealtimePipeline:
         # Declared by each agent's configuration, with its own targets: never
         # hidden by Tool Search, served by the handoff handler.
         handoff = orchestration_tool(HANDOFF_TOOL, self.serve_handoff, always_declared=False)
-        registry.register(handoff, owner=self)
-        for name, definition in self._agent_tools().items():
-            entry = orchestration_tool(
+        agent_tools = [
+            orchestration_tool(
                 definition,
                 functools.partial(self.serve_agent_tool, name),
                 always_declared=False,
                 deferrable=True,
             )
-            registry.register(entry, owner=self)
+            for name, definition in self._agent_tools().items()
+        ]
+        registry.register_all([handoff, *agent_tools], owner=self)
         registry.set_session_source(self.session_config, owner=self)
 
     def _agent_tools(self) -> dict[str, AITool]:

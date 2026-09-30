@@ -36,9 +36,13 @@ def set_up_for_voice_room(
     entry_for: Callable[[RealtimeVoiceChannel], ToolEntry],
 ) -> None:
     """Set up, on every realtime channel of *kit*, the tool *entry_for* builds
-    for that channel, served in *room_id*."""
+    for that channel, served in *room_id*: on all of them, or on none when one
+    refuses it."""
     channels = realtime_channels(kit)
     if not channels:
         logger.warning("async_delivery=True but no RealtimeVoiceChannel found")
-    for channel in channels:
-        channel._registry.register(entry_for(channel), room_id=room_id, owner=owner)
+    entries = [(channel, entry_for(channel)) for channel in channels]
+    for channel, entry in entries:
+        channel._registry.check(entry, room_id=room_id, owner=owner)
+    for channel, entry in entries:
+        channel._registry.register(entry, room_id=room_id, owner=owner)

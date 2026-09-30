@@ -204,16 +204,33 @@ class ChannelRegistry:
         declared (:class:`ToolNameCollisionError`); the same *owner* registering the
         same name in the same scope again replaces its own entry.
         """
-        held = (self._channel if room_id is None else self._rooms.get(room_id, {})).get(entry.name)
-        if held is None or owner is None or held.owner is not owner:
-            clash = self._clash(entry.name, room_id, host=entry.source is ToolSource.ORCHESTRATION)
-            if clash is not None:
-                raise ToolNameCollisionError(
-                    f"Tool {entry.name!r} is already {clash} on channel {self._channel_id!r}: "
-                    "rename one of them (RFC §21.1)"
-                )
+        self.check(entry, room_id=room_id, owner=owner)
         scope = self._channel if room_id is None else self._rooms.setdefault(room_id, {})
         scope[entry.name] = _Held(entry, owner)
+
+    def register_all(
+        self, entries: list[ToolEntry], *, room_id: str | None = None, owner: object
+    ) -> None:
+        """Serve every one of *entries*, or none when one of them is refused."""
+        for entry in entries:
+            self.check(entry, room_id=room_id, owner=owner)
+        for entry in entries:
+            self.register(entry, room_id=room_id, owner=owner)
+
+    def check(
+        self, entry: ToolEntry, *, room_id: str | None = None, owner: object | None = None
+    ) -> None:
+        """Refuse *entry* where something else already serves its name
+        (:class:`ToolNameCollisionError`); *owner*'s own entry is replaceable."""
+        held = (self._channel if room_id is None else self._rooms.get(room_id, {})).get(entry.name)
+        if held is not None and owner is not None and held.owner is owner:
+            return
+        clash = self._clash(entry.name, room_id, host=entry.source is ToolSource.ORCHESTRATION)
+        if clash is not None:
+            raise ToolNameCollisionError(
+                f"Tool {entry.name!r} is already {clash} on channel {self._channel_id!r}: "
+                "rename one of them (RFC §21.1)"
+            )
 
     def _clash(self, name: str, room_id: str | None, *, host: bool) -> str | None:
         """What already serves *name* where an entry for *room_id* would be declared.

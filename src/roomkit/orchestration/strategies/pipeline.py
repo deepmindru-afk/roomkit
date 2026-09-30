@@ -16,7 +16,8 @@ from roomkit.orchestration.base import Orchestration
 from roomkit.orchestration.handoff import (
     HandoffHandler,
     build_handoff_tool,
-    setup_handoff,
+    handoff_entry,
+    set_up_handoffs,
 )
 from roomkit.orchestration.pipeline import ConversationPipeline, PipelineStage
 from roomkit.orchestration.state import (
@@ -160,10 +161,11 @@ class Pipeline(Orchestration):
         agent_map: dict[str, Agent] = {a.channel_id: a for a in agents}
         stage_by_agent: dict[str, PipelineStage] = {s.agent_id: s for s in cp.stages}
 
+        handoffs = []
         for agent in agents:
             stage = stage_by_agent.get(agent.channel_id)
             if stage is None:
-                setup_handoff(agent, handler, room_id=room_id)
+                handoffs.append((agent, handoff_entry(agent, handler, None)))
                 continue
 
             reachable_phases: set[str] = set()
@@ -181,4 +183,5 @@ class Pipeline(Orchestration):
                     targets.append((s.agent_id, desc))
 
             tool = build_handoff_tool(targets)
-            setup_handoff(agent, handler, tool=tool, room_id=room_id)
+            handoffs.append((agent, handoff_entry(agent, handler, tool)))
+        set_up_handoffs(handoffs, room_id=room_id, owner=self)

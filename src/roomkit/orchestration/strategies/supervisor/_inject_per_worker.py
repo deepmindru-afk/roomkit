@@ -52,10 +52,11 @@ class _PerWorkerToolMixin:
             wait=self._wait_for_result,
             share_channels=self._share_channels,
         )
-        for worker in self._workers:
-            tool = _worker_tool(worker)
-            entry = orchestration_tool(tool, in_call_room(tool.name, server.serve))
-            self._supervisor._registry.register(entry, room_id=room_id, owner=self)
+        entries = [
+            orchestration_tool(tool, in_call_room(tool.name, server.serve))
+            for tool in map(_worker_tool, self._workers)
+        ]
+        self._supervisor._registry.register_all(entries, room_id=room_id, owner=self)
 
 
 class _PerWorkerToolServer:

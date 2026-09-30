@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from roomkit import RoomKit
+from roomkit.channels._tool_registry import ToolNameCollisionError
 from roomkit.channels.agent import Agent
 from roomkit.channels.ai import AIChannel
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
@@ -31,7 +32,9 @@ from roomkit.orchestration.pipeline import ConversationPipeline, PipelineStage
 from roomkit.orchestration.state import ConversationState, set_conversation_state
 from roomkit.orchestration.strategies import loop as loop_module
 from roomkit.orchestration.strategies.loop import Loop
+from roomkit.orchestration.strategies.pipeline import Pipeline
 from roomkit.orchestration.strategies.supervisor import Supervisor, _install_auto
+from roomkit.orchestration.strategies.swarm import Swarm
 from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.tasks.delegate import DelegateHandler, setup_delegation
@@ -39,6 +42,7 @@ from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransp
 from tests.conftest import make_event
 from tests.test_framework import SimpleChannel
 from tests.tool_loop_modes import respond
+from tests.tool_room import room_tool_names
 
 TENANTS = ("bank-A", "clinic-B")
 
@@ -448,4 +452,95 @@ async def test_a_handoff_to_an_agent_with_many_tools_hides_them_behind_search() 
     assert declared[:2] == ["find_tools", "list_tools"]
     assert "handoff_conversation" in declared
     assert len(declared) < 10
+    await kit.close()
+
+
+def _strategies() -> dict[str, Callable[[], tuple[Any, list[Any]]]]:
+    """Each strategy with the channels it sets tools or turns up on."""
+
+    def agent(name: str, **kwargs: Any) -> Agent:
+        return Agent(name, provider=MockAIProvider(responses=["ok"]), tool_search=False, **kwargs)
+
+    def supervisor(**kwargs: Any) -> tuple[Any, list[Any]]:
+        sup = agent("sup")
+        return Supervisor(sup, [agent("w1"), agent("w2")], **kwargs), [sup]
+
+    def loop() -> tuple[Any, list[Any]]:
+        writer = agent("writer")
+        return Loop(agent=writer, reviewer=agent("editor")), [writer]
+
+    def swarm() -> tuple[Any, list[Any]]:
+        agents = [agent("a"), agent("b")]
+        return Swarm(agents=agents), agents
+
+    def pipeline() -> tuple[Any, list[Any]]:
+        agents = [agent("a"), agent("b")]
+        return Pipeline(agents=agents), agents
+
+    def voice(orchestration: Callable[[], Any]) -> Callable[[], tuple[Any, list[Any]]]:
+        def build() -> tuple[Any, list[Any]]:
+            rtv = RealtimeVoiceChannel(
+                "voice", provider=MockRealtimeProvider(), transport=MockRealtimeTransport()
+            )
+            return orchestration(), [rtv]
+
+        return build
+
+    return {
+        "supervisor-per-worker": lambda: supervisor(),
+        "supervisor-team": lambda: supervisor(strategy="parallel"),
+        "supervisor-auto": lambda: supervisor(strategy="parallel", auto_delegate=True),
+        "loop": loop,
+        "swarm": swarm,
+        "pipeline": pipeline,
+        "voice-supervisor": voice(
+            lambda: Supervisor(
+                agent("sup"),
+                [agent("w1")],
+                strategy="parallel",
+                auto_delegate=True,
+                async_delivery=True,
+            )
+        ),
+        "voice-loop": voice(
+            lambda: Loop(agent=agent("writer"), reviewer=agent("editor"), async_delivery=True)
+        ),
+    }
+
+
+@pytest.mark.parametrize("kind", list(_strategies()))
+async def test_installing_a_strategy_again_in_its_room_replaces_its_own(kind: str) -> None:
+    """RFC §21.1: the same strategy installed again for a room replaces what it
+    set up there, declaring nothing twice and refusing nothing."""
+    orchestration, channels = _strategies()[kind]()
+    kit = RoomKit()
+    for channel in channels:
+        if channel.channel_id not in kit.channels:
+            kit.register_channel(channel)
+    await kit.create_room(room_id="room-A", orchestration=orchestration)
+    before = {c.channel_id: room_tool_names(c, "room-A") for c in channels}
+
+    await orchestration.install(kit, "room-A")
+
+    assert {c.channel_id: room_tool_names(c, "room-A") for c in channels} == before
+    await kit.close()
+
+
+async def test_an_install_refused_halfway_sets_nothing_up() -> None:
+    """A per-worker install whose second tool collides with a host tool of the
+    supervisor sets up neither: an install is all or nothing."""
+    sup = Agent(
+        "sup",
+        provider=MockAIProvider(responses=["ok"]),
+        tools=[AITool(name="delegate_to_w2", description="host", parameters={})],
+    )
+    workers = [Agent(w, provider=MockAIProvider(responses=["ok"])) for w in ("w1", "w2")]
+    kit = RoomKit()
+    kit.register_channel(sup)
+    await kit.create_room(room_id="room-A")
+
+    with pytest.raises(ToolNameCollisionError, match="delegate_to_w2"):
+        await Supervisor(sup, workers).install(kit, "room-A")
+
+    assert room_tool_names(sup, "room-A") == []
     await kit.close()
