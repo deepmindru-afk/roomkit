@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from roomkit.channels._ai_policy import declared_for
 from roomkit.models.channel import RetryPolicy
 from roomkit.providers.ai.base import (
     AIContext,
@@ -67,6 +68,7 @@ class AIResilienceMixin:
     _provider: AIProvider
     _fallback_provider: AIProvider | None
     _eviction: ToolEviction
+    _show_summarized_references: Any  # AIToolPolicyMixin: held tools a summary unreferences
 
     async def _generate_with_retry(self, context: AIContext) -> AIResponse:
         """Call provider.generate() with compaction, retry and optional fallback.
@@ -124,7 +126,8 @@ class AIResilienceMixin:
                 policy.max_retries + 1,
             )
             try:
-                return await self._fallback_provider.generate(context)
+                fallback = self._fallback_provider
+                return await fallback.generate(declared_for(fallback, context))
             except ProviderError as fallback_exc:
                 logger.error("Fallback provider also failed: %s", fallback_exc)
                 raise last_error from fallback_exc
@@ -218,7 +221,8 @@ class AIResilienceMixin:
         if self._fallback_provider and last_error:
             logger.warning("Trying fallback provider for stream.")
             projected_composition = False
-            stream = self._structured_stream(self._fallback_provider, context)
+            fallback = self._fallback_provider
+            stream = self._structured_stream(fallback, declared_for(fallback, context))
             try:
                 async for event in stream:
                     if isinstance(event, StreamToolCallDelta):
@@ -284,6 +288,7 @@ class AIResilienceMixin:
             split += 1
         old_messages = messages[:split]
         recent_messages = messages[split:]
+        self._show_summarized_references(old_messages)
 
         # Build a quick summary of old messages
         summary_parts: list[str] = []

@@ -221,9 +221,9 @@ def _apply_cache_control(kwargs: dict[str, Any]) -> None:
     marker = {"type": "ephemeral"}
     # On the last tool the prefix holds: a deferred one is out of it, and the
     # API refuses a marker there.
-    held = [t for t in kwargs.get("tools") or [] if not t.get("defer_loading")]
-    if held:
-        held[-1]["cache_control"] = marker
+    shown = [t for t in kwargs.get("tools") or [] if not t.get("defer_loading")]
+    if shown:
+        shown[-1]["cache_control"] = marker
     system = kwargs.get("system")
     if isinstance(system, str) and system:
         kwargs["system"] = [{"type": "text", "text": system, "cache_control": marker}]

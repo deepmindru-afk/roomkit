@@ -23,7 +23,7 @@ channel's. Outside a tool call (a direct call) every accessor returns
 from __future__ import annotations
 
 import contextvars
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from roomkit.models.response_metadata import ResponseMetadata
@@ -53,11 +53,6 @@ class ToolCallContext:
     tool_call_id: str = ""
     channel_id: str = ""
     structured_content: dict[str, Any] | None = None
-    references: list[str] = field(default_factory=list)
-    """Tools the result makes callable where the provider holds them unseen
-    (``AITool.defer_loading``): what the channel's ``find_tools`` found, what
-    its ``activate_skill`` opened. Carried on the result only if the call
-    stands (RFC §6.4)."""
 
 
 _current_tool_call: contextvars.ContextVar[ToolCallContext | None] = contextvars.ContextVar(

@@ -243,6 +243,7 @@ class AIToolLoopRulesHost(Protocol):
     _eviction: ToolEviction
 
     def _apply_tool_filters(self, tools: list[Any]) -> list[Any]: ...
+    def _held_declaration(self, loop_ctx: _ToolLoopContext, shown: list[Any]) -> list[Any]: ...
     async def _publish_tool_event(
         self,
         event_type: EphemeralEventType,

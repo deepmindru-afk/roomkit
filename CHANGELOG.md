@@ -20,8 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   14 % less. A result carrying references reaches Anthropic as a
   `tool_result` of `tool_reference` blocks, its text following the message's
   tool results (the API refuses a reference mixed with other content). Other
-  providers receive the declaration they received before. A tool used in one
-  turn is visible from the next, so the list still changes once per newly
+  providers receive the declaration they received before, and so does
+  Anthropic behind a `base_url`; a `fallback_provider` that cannot hold a tool
+  receives the tools the turn made callable, declared plainly. A tool used in
+  one turn is visible from the next, so the list still changes once per newly
   used tool, between turns.
 - `--suite cost` in `benchmarks/chat` (RMK-329): a fixed tool conversation
   (Tool Search reveal, an evicted result paged back, a skill that unlocks a

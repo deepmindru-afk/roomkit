@@ -99,9 +99,10 @@ def first_change(previous: AIContext | None, current: AIContext) -> str:
     return "append"
 
 
-def _tools_key(tools: list[AITool]) -> list[tuple[str, str, str]]:
-    # Unsorted: a provider's cache is byte-exact, so reordered keys are a change.
-    return [(t.name, t.description, json.dumps(t.parameters)) for t in tools]
+def _tools_key(tools: list[AITool]) -> list[tuple[str, str, str, str]]:
+    # Unsorted: a provider's cache is byte-exact, so reordered keys are a change;
+    # and a tool held unseen that becomes shown is one too.
+    return [(t.name, t.description, json.dumps(t.parameters), str(t.defer_loading)) for t in tools]
 
 
 def cost_rows(h: Harness, turn_starts: list[int]) -> list[dict[str, Any]]:

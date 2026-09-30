@@ -193,7 +193,13 @@ class AnthropicAIProvider(AIProvider):
 
     @property
     def supports_deferred_tools(self) -> bool:
-        """Read from the catalogue: a model it does not carry is assumed not to."""
+        """Read from the catalogue: a model it does not carry is assumed not to.
+
+        Never behind a ``base_url``: a proxy or gateway gets the request shape
+        it always got, as the configuration's other shape defaults leave it.
+        """
+        if self._config.base_url is not None:
+            return False
         entry = self.catalog_entry()
         return entry is not None and "deferred_tools" in entry.capabilities
 

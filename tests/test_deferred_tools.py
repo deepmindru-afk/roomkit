@@ -11,19 +11,23 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from roomkit.channels.ai import AIChannel
-from roomkit.models.channel import ChannelBinding
+import pytest
+
+from roomkit.channels.ai import AIChannel, _current_loop_ctx, _ToolLoopContext
+from roomkit.models.channel import ChannelBinding, RetryPolicy
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import ChannelCategory, ChannelType
 from roomkit.models.room import Room
-from roomkit.models.tool_call import AIResponseEvent
+from roomkit.models.tool_call import AIResponseEvent, ToolCallVerdict
 from roomkit.providers.ai.base import (
     AIContext,
     AIMessage,
     AIResponse,
+    AITextPart,
     AITool,
     AIToolCall,
     AIToolResultPart,
+    ProviderError,
 )
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.providers.anthropic import AnthropicAIProvider, AnthropicConfig
@@ -196,7 +200,7 @@ async def test_a_held_tool_is_reported_once_referenced(streaming: bool) -> None:
     assert "refund" not in declared and "export" not in declared  # held, never referenced
 
 
-async def test_a_provider_that_cannot_hold_keeps_today_s_declaration(streaming: bool) -> None:
+async def test_a_provider_that_cannot_hold_declares_what_it_shows(streaming: bool) -> None:
     provider = MockAIProvider(
         ai_responses=[
             _round("c0", "find_tools", {"query": "track shipment", "max_results": 1}),
@@ -272,3 +276,147 @@ def test_the_anthropic_catalogue_says_which_models_hold_tools() -> None:
 
     assert holds("claude-sonnet-5") and holds("claude-haiku-4-5")
     assert not holds("claude-opus-4-1") and not holds("claude-unknown-model")
+
+
+async def test_a_held_tool_called_without_a_search_references_itself(streaming: bool) -> None:
+    """A call to a held tool nothing referenced goes through recovery: it runs,
+    its result references it, and the turn reports it as revealed."""
+    provider = HoldingProvider(ai_responses=[_round("c0", "refund"), _DONE], streaming=streaming)
+    ch = _searching(provider)
+    seen: list[AIResponseEvent] = []
+
+    async def observe(event: AIResponseEvent) -> None:
+        seen.append(event)
+
+    ch._after_response_hook = observe
+
+    run = await _turn(ch, _CATALOGUE)
+
+    assert not run.calls[0].failed
+    [refund] = [p for p in _results(provider.calls[-1]) if p.name == "refund"]
+    assert refund.references == ["refund"]
+    assert {t.name: t.origin for t in seen[0].declared_tools}["refund"] == "revealed"
+    assert [_declaration(call) for call in provider.calls] == [_declaration(provider.calls[0])] * 2
+
+
+async def test_a_confused_skill_name_references_the_tools_it_reveals(streaming: bool) -> None:
+    registry = SkillRegistry()
+    registry.discover(_FIXTURES)
+    provider = HoldingProvider(
+        ai_responses=[_round("c0", "activate_skill", {"name": "track"}), _DONE],
+        streaming=streaming,
+    )
+    ch = _searching(provider, skills=registry)
+
+    await _turn(ch, _CATALOGUE)
+
+    [hint] = [p for p in _results(provider.calls[-1]) if p.name == "activate_skill"]
+    assert hint.references == ["track_shipment"]
+
+
+async def test_an_activation_references_only_what_it_would_have_shown(streaming: bool) -> None:
+    """Under Tool Search an activated skill's tool stays behind find_tools, as
+    it does on a provider that cannot hold tools: nothing is referenced."""
+    registry = SkillRegistry()
+    registry.discover(_FIXTURES)
+    provider = HoldingProvider(
+        ai_responses=[_round("c0", "activate_skill", {"name": "quote-policy"}), _DONE],
+        streaming=streaming,
+    )
+    ch = _searching(provider, skills=registry)
+
+    await _turn(ch, [*_CATALOGUE, _tool("inventory")])
+
+    [activation] = [p for p in _results(provider.calls[-1]) if p.name == "activate_skill"]
+    assert activation.references == []
+
+
+async def test_a_blocked_activation_references_nothing(streaming: bool) -> None:
+    registry = SkillRegistry()
+    registry.discover(_FIXTURES)
+    provider = HoldingProvider(
+        ai_responses=[_round("c0", "activate_skill", {"name": "quote-policy"}), _DONE],
+        streaming=streaming,
+    )
+    ch = AIChannel("ai1", provider=provider, tool_handler=_served, skills=registry)
+
+    async def block(event: Any) -> ToolCallVerdict:
+        return ToolCallVerdict(result='{"error": "no"}', blocked=True)
+
+    ch._tool_call_hook = block
+
+    await _turn(ch, [_tool("lookup"), _tool("inventory")])
+
+    [activation] = [p for p in _results(provider.calls[-1]) if p.name == "activate_skill"]
+    assert activation.references == []
+
+
+class FailingHolder(HoldingProvider):
+    async def generate(self, context: AIContext) -> AIResponse:
+        raise ProviderError("down", provider="holding", retryable=True, status_code=503)
+
+
+async def test_a_fallback_that_cannot_hold_receives_what_the_turn_shows(streaming: bool) -> None:
+    fallback = MockAIProvider(ai_responses=[_DONE], streaming=streaming)
+    ch = _searching(
+        FailingHolder(streaming=streaming),
+        fallback_provider=fallback,
+        retry_policy=RetryPolicy(max_retries=0),
+    )
+
+    await _turn(ch, _CATALOGUE)
+
+    declared = _declaration(fallback.calls[0])
+    assert all(not held for _, held in declared)
+    assert "refund" not in {name for name, _ in declared}  # held, never referenced
+
+
+def test_a_compaction_shows_the_tools_whose_references_it_summarized() -> None:
+    ch = _searching(HoldingProvider())
+    loop_ctx = _ToolLoopContext(room_id="r1")
+    loop_ctx.first_shown = frozenset({"lookup", "find_tools"})
+    found = AIToolResultPart(
+        tool_call_id="c0", name="find_tools", result="{}", references=["track_shipment"]
+    )
+    token = _current_loop_ctx.set(loop_ctx)
+    try:
+        ch._show_summarized_references([AIMessage(role="tool", content=[found])])
+    finally:
+        _current_loop_ctx.reset(token)
+
+    assert "track_shipment" in loop_ctx.first_shown
+
+
+def test_anthropic_behind_a_base_url_holds_no_tool() -> None:
+    config = AnthropicConfig(api_key="k", model="claude-sonnet-5", base_url="https://gw.example")
+    assert not AnthropicAIProvider(config).supports_deferred_tools
+
+
+@pytest.mark.parametrize(
+    ("result", "expected"),
+    [
+        ("", []),
+        ([], []),
+        (
+            [AITextPart(text="body")],
+            [
+                {"type": "text", "text": "[Result of activate_skill]"},
+                {"type": "text", "text": "body"},
+            ],
+        ),
+    ],
+    ids=["empty-text", "empty-parts", "parts"],
+)
+def test_anthropic_renders_a_referencing_result_of_any_shape(
+    result: Any, expected: list[dict[str, Any]]
+) -> None:
+    part = AIToolResultPart(
+        tool_call_id="c0", name="activate_skill", result=result, references=["inventory"]
+    )
+    messages = [AIMessage(role="user", content="hi"), AIMessage(role="tool", content=[part])]
+
+    blocks = _anthropic_kwargs([_tool("x")], messages)["messages"][1]["content"]
+
+    assert blocks[0]["content"] == [{"type": "tool_reference", "tool_name": "inventory"}]
+    unmarked = [{k: v for k, v in b.items() if k != "cache_control"} for b in blocks[1:]]
+    assert unmarked == expected

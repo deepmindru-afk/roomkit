@@ -159,6 +159,8 @@ class _ToolLoopContext:
     # holds the others unseen (``_held_declaration``): fixed for the loop, so
     # a reveal or a skill activation references a tool instead of declaring it.
     first_shown: frozenset[str] | None = None
+    # Held tools a result has referenced this loop, so each is referenced once.
+    referenced: set[str] = field(default_factory=set)
     # ``activate_skill`` calls whose activation waits for the call's outcome,
     # by tool_call_id: committed once the call is served, dropped when
     # ON_TOOL_CALL blocks it or it fails, so a refused activation opens no gate.

@@ -16,7 +16,7 @@ from roomkit.channels._tool_search_constants import (
     TOOL_LIST_TOOLS,
 )
 from roomkit.models.tool_call import DeclaredTool, ToolDeclarationOrigin
-from roomkit.providers.ai.base import AITool
+from roomkit.providers.ai.base import AIContext, AIMessage, AITool, AIToolResultPart
 from roomkit.tools.policy import ToolPolicy, matches_any_pattern
 
 if TYPE_CHECKING:
@@ -164,7 +164,8 @@ class AIToolPolicyMixin:
         """Record the toolset one generation round hands the provider.
 
         Called with the ``AIContext.tools`` of every provider call of the turn,
-        by the loop that makes the call. Not from ``_apply_tool_filters``: its
+        by the loop that makes the call, and with the held tools a result
+        references (``_reference_shown``). Not from ``_apply_tool_filters``: its
         output is not the round's declaration (a ``BEFORE_AI_GENERATION`` hook
         may edit the tools, the eviction tool is added per round after them)
         and it also serves as a single-tool probe. A name is recorded once per
@@ -328,21 +329,86 @@ class AIToolPolicyMixin:
         held unseen (RFC §6.4); *shown* where it cannot.
 
         Held from the first round on, what Tool Search hides and what a
-        skill's gating keeps closed stay declared as they were: a reveal or
-        an activation references its tools (``_reference_held``) instead of
-        declaring them, and the declaration does not change within the turn.
+        skill's gating keeps closed stay declared as they were: a result that
+        makes one callable references it (``_reference_shown``) instead of
+        declaring it, and the declaration does not change within the turn.
         The policy still decides what is declared: a tool it denies is not.
         """
         if loop_ctx.all_context_tools is None or not self._provider.supports_deferred_tools:
             return shown
         if loop_ctx.first_shown is None:
             loop_ctx.first_shown = frozenset(t.name for t in shown)
-        first = loop_ctx.first_shown
-        policy = self._effective_tool_policy
-        served = self._channel_tool_dispatch
-        held = [
-            t.model_copy(update={"defer_loading": True})
-            for t in loop_ctx.all_context_tools
-            if t.name not in first and policy_admits(policy, t.name, served)
+        first, held = loop_ctx.first_shown, self._held_names(loop_ctx)
+        return [
+            *(t for t in shown if t.name in first),
+            *(
+                t.model_copy(update={"defer_loading": True})
+                for t in loop_ctx.all_context_tools
+                if t.name in held
+            ),
         ]
-        return [*(t for t in shown if t.name in first), *held]
+
+    def _held_names(self, loop_ctx: _ToolLoopContext) -> set[str]:
+        """The tools the turn holds unseen: declared from its first round, not
+        shown there, and admitted by the policy. Empty where nothing is held."""
+        if loop_ctx.first_shown is None:
+            return set()
+        policy, served = self._effective_tool_policy, self._channel_tool_dispatch
+        return {
+            t.name
+            for t in loop_ctx.all_context_tools or ()
+            if t.name not in loop_ctx.first_shown and policy_admits(policy, t.name, served)
+        }
+
+    def _reference_shown(self, loop_ctx: _ToolLoopContext) -> list[str]:
+        """The held tools the turn now shows, each referenced once: what a
+        provider that cannot hold a tool would have seen declared after the
+        call just served (a reveal, an activation, a call-time recovery).
+
+        Recorded in the turn's declaration (RFC §6.4) and returned for the
+        call's result, which makes them callable.
+        """
+        held = self._held_names(loop_ctx) - loop_ctx.referenced
+        if not held:
+            return []
+        shown = [
+            t for t in self._apply_tool_filters(loop_ctx.all_context_tools or []) if t.name in held
+        ]
+        loop_ctx.referenced |= {t.name for t in shown}
+        self._record_declared_tools(loop_ctx, shown)
+        return [t.name for t in shown]
+
+    def _show_summarized_references(self, summarized: list[AIMessage]) -> None:
+        """Show the held tools whose references a compaction summarized away:
+        the references were what made them callable (RFC §6.4)."""
+        loop_ctx = self._get_loop_ctx()
+        lost = _references_in(summarized)
+        if lost and loop_ctx.first_shown is not None:
+            loop_ctx.first_shown = loop_ctx.first_shown | lost
+
+
+def declared_for(provider: Any, context: AIContext) -> AIContext:
+    """*context* as *provider* can take it: where it cannot hold a tool unseen,
+    the held tools are dropped and those a result referenced declared plainly
+    (a fallback provider receives what the turn made visible, RFC §6.4)."""
+    if provider.supports_deferred_tools or not any(t.defer_loading for t in context.tools):
+        return context
+    referenced = _references_in(context.messages)
+    tools = [
+        t.model_copy(update={"defer_loading": False}) if t.defer_loading else t
+        for t in context.tools
+        if not t.defer_loading or t.name in referenced
+    ]
+    return context.model_copy(update={"tools": tools})
+
+
+def _references_in(messages: list[AIMessage]) -> set[str]:
+    """The tools the tool results of *messages* reference."""
+    return {
+        name
+        for message in messages
+        if isinstance(message.content, list)
+        for part in message.content
+        if isinstance(part, AIToolResultPart)
+        for name in part.references
+    }
