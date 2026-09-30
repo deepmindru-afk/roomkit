@@ -356,11 +356,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- An AI channel's tool call builds no room context for `BEFORE_TOOL_USE` when
-  no such hook is registered (RMK-316): the gate read the room, its bindings,
-  its participants and its history from the store on every call of every
-  round, for nobody. The realtime and conference gates already skipped it.
-  The `before_tool_use` framework event is still emitted.
+- The kit builds a room context for a hook only when a hook of that trigger
+  is registered (RMK-316). `BEFORE_TOOL_USE` and `ON_TOOL_CALL` read the room,
+  its bindings, its participants and its history from the store on every tool
+  call of every round (served, reported by an external handler, refused, or
+  made in a realtime session), `ON_AI_THINKING` on every round that thinks,
+  and `BEFORE_AI_GENERATION`, `ON_AI_RESPONSE`, `ON_PLAN_UPDATED` and
+  `ON_USER_INPUT_REQUIRED` once per turn, all for nobody when no hook
+  listened. The framework events are emitted as before.
 - A realtime channel's skills preamble says scripts cannot run when its tool
   policy denies `run_skill_script` (RMK-290, RFC §21.1), as `AIChannel`'s
   does: it promised a tool the gate then refused.

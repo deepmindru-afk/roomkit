@@ -1343,7 +1343,9 @@ async def _ai_room(
     return kit, ch, room.id, observed, served
 
 
-async def _call_one_tool(kit: RoomKit, ch: AIChannel, room_id: str, name: str) -> LoopRun:
+async def _call_one_tool(
+    kit: RoomKit, ch: AIChannel, room_id: str, name: str, *, context: RoomContext | None = None
+) -> LoopRun:
     ch._provider._ai_responses = [
         AIResponse(
             content="",
@@ -1363,7 +1365,7 @@ async def _call_one_tool(kit: RoomKit, ch: AIChannel, room_id: str, name: str) -
     binding = ChannelBinding(
         channel_id=ch.channel_id, room_id=room_id, channel_type=ChannelType.AI
     )
-    return await respond(ch, event, binding, await kit._build_context(room_id))
+    return await respond(ch, event, binding, context or await kit._build_context(room_id))
 
 
 async def _ok_handler(name: str, arguments: dict[str, Any]) -> str:
@@ -1767,46 +1769,126 @@ class TestCancelledRealtimeToolCallsAreObserved:
         assert not any(e.cancelled for e in observed)
 
 
-class TestTheTextGateReadsTheRoomOnlyForAHook:
-    """BEFORE_TOOL_USE builds the room's context only when a hook will read it.
+class TestAToolCallReadsTheRoomOnlyForAHook:
+    """The kit builds a room context for a hook only when one is registered.
 
     A context is several store reads (the room, its bindings, its
-    participants, its history), and the gate runs on every call of every
-    round: with no hook registered it built one for nobody (RMK-316).
+    participants, its history), and the tool-call hooks fire on every call of
+    every round (RMK-316): each callback asks whether a hook listens first.
+    The framework events are emitted either way.
     """
 
-    async def _gate_contexts(self, streaming: bool, *, with_hook: bool) -> tuple[int, list[Any]]:
-        kit, ch, room_id, _, _ = await _ai_room(streaming=streaming, tool_handler=_ok_handler)
-        if with_hook:
-
-            @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="allow")
-            async def allow(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
-                return HookResult.allow()
-
+    @staticmethod
+    def _spy(kit: RoomKit) -> tuple[list[str], list[str]]:
+        """Count the kit's context builds and record its framework events."""
         built: list[str] = []
+        announced: list[str] = []
         real_build = kit._build_context
+        real_emit = kit._emit_framework_event
 
         async def counting_build(rid: str, *args: Any, **kwargs: Any) -> RoomContext:
             built.append(rid)
             return await real_build(rid, *args, **kwargs)
 
-        announced: list[dict[str, Any]] = []
-        real_emit = kit._emit_framework_event
-
         async def capture(event_type: str, **kwargs: Any) -> Any:
-            if event_type == "before_tool_use":
-                announced.append(kwargs.get("data", {}))
+            announced.append(event_type)
             return await real_emit(event_type, **kwargs)
 
         kit._build_context = counting_build  # type: ignore[method-assign]
         kit._emit_framework_event = capture  # type: ignore[method-assign]
-        await _call_one_tool(kit, ch, room_id, "get_weather")
+        return built, announced
+
+    async def _turn(self, streaming: bool, trigger: HookTrigger | None) -> tuple[int, list[str]]:
+        """Context builds and framework events of one AI turn with one call."""
+        ch = AIChannel(
+            "ai-quiet",
+            provider=MockAIProvider(streaming=streaming),
+            tool_handler=_ok_handler,
+            tools=[_WEATHER_TOOL],
+        )
+        kit = RoomKit()
+        kit.register_channel(ch)
+        room = await kit.create_room()
+        await kit.attach_channel(room.id, "ai-quiet")
+        if trigger is not None:
+
+            @kit.hook(trigger, execution=HookExecution.SYNC, name="listens")
+            async def listens(event: Any, ctx: RoomContext) -> HookResult:
+                return HookResult.allow()
+
+        context = await kit._build_context(room.id)
+        built, announced = self._spy(kit)
+        await _call_one_tool(kit, ch, room.id, "get_weather", context=context)
+        await asyncio.sleep(0)
         await kit.close()
         return len(built), announced
 
-    async def test_no_context_is_built_when_no_hook_listens(self, streaming: bool) -> None:
-        without, announced = await self._gate_contexts(streaming, with_hook=False)
-        with_hook, _ = await self._gate_contexts(streaming, with_hook=True)
+    async def test_an_ai_turn_builds_no_context_when_no_hook_listens(
+        self, streaming: bool
+    ) -> None:
+        built, announced = await self._turn(streaming, None)
 
-        assert with_hook == without + 1
-        assert [(a["tool_name"], a["allowed"]) for a in announced] == [("get_weather", True)]
+        assert built == 0
+        for event_type in ("before_ai_generation", "before_tool_use", "tool_call", "ai_response"):
+            assert event_type in announced
+
+    @pytest.mark.parametrize(
+        "trigger",
+        [
+            HookTrigger.BEFORE_AI_GENERATION,
+            HookTrigger.BEFORE_TOOL_USE,
+            HookTrigger.ON_TOOL_CALL,
+            HookTrigger.ON_AI_RESPONSE,
+        ],
+    )
+    async def test_a_hook_gets_the_context_it_reads(
+        self, streaming: bool, trigger: HookTrigger
+    ) -> None:
+        built, _ = await self._turn(streaming, trigger)
+
+        assert built == 1
+
+    async def test_the_observer_report_thinking_and_plan_callbacks_build_none(self) -> None:
+        kit = RoomKit()
+        room = await kit.create_room()
+        built, announced = self._spy(kit)
+        refused = ToolCallEvent(
+            channel_id="ch",
+            channel_type=ChannelType.AI,
+            tool_call_id="c1",
+            name="x",
+            arguments={},
+            result='{"error": "denied"}',
+            is_error=True,
+            room_id=room.id,
+        )
+
+        await kit._build_tool_observer_hook("ch")(refused)
+        await kit._report_tool_call(refused, "ch")
+        await kit._build_thinking_hook("ch")(room.id, "hmm", 0)
+        await kit._build_plan_updated_hook("ch")(room.id, [])
+
+        assert built == []
+        assert announced.count("tool_call") == 2
+
+    async def test_a_realtime_call_builds_no_context_when_no_hook_listens(
+        self,
+        rt_provider: MockRealtimeProvider,
+        rt_transport: MockRealtimeTransport,
+    ) -> None:
+        ch = RealtimeVoiceChannel(
+            "rt-quiet", provider=rt_provider, transport=rt_transport, tool_handler=_ok_handler
+        )
+        kit = RoomKit()
+        kit.register_channel(ch)
+        room = await kit.create_room()
+        await kit.attach_channel(room.id, "rt-quiet")
+        session = await ch.start_session(room.id, "u1", "ws")
+        built, announced = self._spy(kit)
+
+        await rt_provider.simulate_tool_call(session, "c1", "get_weather", {})
+        await asyncio.sleep(0.1)
+
+        assert built == []
+        assert "tool_call" in announced
+        assert len(rt_provider.tool_results) == 1

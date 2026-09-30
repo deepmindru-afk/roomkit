@@ -879,18 +879,10 @@ class HelpersMixin:
         async def _callback(event: ToolCallEvent) -> ToolCallVerdict | None:
             if not event.room_id:
                 return None
-            context = await kit_ref._tool_hook_context(event.room_id)
-            if context is None:
+            chain = await kit_ref._run_tool_call_chain(event, event.room_id)
+            if chain is None:
                 return kit_ref._unreachable_tool_call_verdict(event.room_id)
-            hook_result = await kit_ref._hook_engine.run_sync_hooks(
-                event.room_id,
-                HookTrigger.ON_TOOL_CALL,
-                event,
-                context,
-                skip_event_filter=True,
-                fold=fold_tool_call_rewrite,
-                fire_observers=False,
-            )
+            hook_result, context = chain
             verdict = tool_call_verdict(hook_result, event)
             read = verdict.result if verdict.result is not None else event.result
             if read is None:
@@ -898,13 +890,38 @@ class HelpersMixin:
                 # with its own framework event, and what any hook that
                 # failed said for the observers.
                 return replace(verdict, error_detail=hook_errors_detail(hook_result))
-            await kit_ref._observe_tool_call(
-                observed_call_event(hook_result, event, read), context
-            )
+            if context is not None:
+                await kit_ref._observe_tool_call(
+                    observed_call_event(hook_result, event, read), context
+                )
             await kit_ref._emit_tool_call_event(event, channel_id)
             return verdict
 
         return _callback
+
+    async def _run_tool_call_chain(
+        self, event: ToolCallEvent, room_id: str
+    ) -> tuple[SyncPipelineResult, RoomContext | None] | None:
+        """ON_TOOL_CALL's SYNC chain on a served call, and the context it ran with.
+
+        With no ON_TOOL_CALL hook registered the call stands as served, and no
+        context is built. ``None`` when the context would not build.
+        """
+        if not self._hook_engine.has_hooks(HookTrigger.ON_TOOL_CALL):
+            return SyncPipelineResult(event=event), None
+        context = await self._hook_context(room_id, HookTrigger.ON_TOOL_CALL)
+        if context is None:
+            return None
+        hook_result = await self._hook_engine.run_sync_hooks(
+            room_id,
+            HookTrigger.ON_TOOL_CALL,
+            event,
+            context,
+            skip_event_filter=True,
+            fold=fold_tool_call_rewrite,
+            fire_observers=False,
+        )
+        return hook_result, context
 
     def _build_tool_report_hook(self, channel_id: str) -> Any:
         """Build the ON_TOOL_CALL callback for a call an external handler ran.
@@ -931,27 +948,34 @@ class HelpersMixin:
         """
         if not event.room_id:
             return
-        context = await self._tool_hook_context(event.room_id)
-        if context is None:
-            return
-        await self._hook_engine.run_sync_hooks(
-            event.room_id,
-            HookTrigger.ON_TOOL_CALL,
-            event,
-            context,
-            skip_event_filter=True,
-            fire_observers=False,
-        )
-        await self._observe_tool_call(event, context)
+        if self._hook_engine.has_hooks(HookTrigger.ON_TOOL_CALL):
+            context = await self._hook_context(event.room_id, HookTrigger.ON_TOOL_CALL)
+            if context is None:
+                return
+            await self._hook_engine.run_sync_hooks(
+                event.room_id,
+                HookTrigger.ON_TOOL_CALL,
+                event,
+                context,
+                skip_event_filter=True,
+                fire_observers=False,
+            )
+            await self._observe_tool_call(event, context)
         await self._emit_tool_call_event(event, channel_id)
 
-    async def _tool_hook_context(self, room_id: str) -> RoomContext | None:
-        """The room's context for ON_TOOL_CALL, or ``None`` when it will not build."""
+    async def _hook_context(self, room_id: str, trigger: HookTrigger) -> RoomContext | None:
+        """The room's context for *trigger*'s hooks, or ``None`` when it will not build.
+
+        A context is store reads (the room, its bindings, its participants, its
+        history), and some triggers fire on every tool call of every round: a
+        caller builds one only when ``has_hooks`` says a hook will read it.
+        """
         try:
             return await self._build_context(room_id)
         except Exception:
             logger.warning(
-                "Failed to build context for ON_TOOL_CALL hook in room %s",
+                "Failed to build context for %s hook in room %s",
+                trigger.name,
                 room_id,
                 exc_info=True,
             )
@@ -1005,23 +1029,17 @@ class HelpersMixin:
         async def _callback(event: ToolCallEvent) -> None:
             if not event.room_id:
                 return
-            try:
-                context = await kit_ref._build_context(event.room_id)
-            except Exception:
-                logger.warning(
-                    "Failed to build context for ON_TOOL_CALL observation in room %s",
+            if kit_ref._hook_engine.has_hooks(HookTrigger.ON_TOOL_CALL):
+                context = await kit_ref._hook_context(event.room_id, HookTrigger.ON_TOOL_CALL)
+                if context is None:
+                    return
+                await kit_ref._hook_engine.run_observers(
                     event.room_id,
-                    exc_info=True,
+                    HookTrigger.ON_TOOL_CALL,
+                    event,
+                    context,
+                    skip_event_filter=True,
                 )
-                return
-
-            await kit_ref._hook_engine.run_observers(
-                event.room_id,
-                HookTrigger.ON_TOOL_CALL,
-                event,
-                context,
-                skip_event_filter=True,
-            )
 
             data: dict[str, Any] = {
                 "tool_name": event.name,
@@ -1047,16 +1065,10 @@ class HelpersMixin:
         kit_ref = self
 
         async def _callback(room_id: str, thinking: str, round_idx: int) -> None:
-            if not room_id:
+            if not room_id or not kit_ref._hook_engine.has_hooks(HookTrigger.ON_AI_THINKING):
                 return
-            try:
-                context = await kit_ref._build_context(room_id)
-            except Exception:
-                logger.warning(
-                    "Failed to build context for ON_AI_THINKING hook in room %s",
-                    room_id,
-                    exc_info=True,
-                )
+            context = await kit_ref._hook_context(room_id, HookTrigger.ON_AI_THINKING)
+            if context is None:
                 return
 
             await kit_ref._hook_engine.run_async_hooks(
@@ -1079,16 +1091,10 @@ class HelpersMixin:
         kit_ref = self
 
         async def _callback(room_id: str, tasks: list[dict[str, Any]]) -> None:
-            if not room_id:
+            if not room_id or not kit_ref._hook_engine.has_hooks(HookTrigger.ON_PLAN_UPDATED):
                 return
-            try:
-                context = await kit_ref._build_context(room_id)
-            except Exception:
-                logger.warning(
-                    "Failed to build context for ON_PLAN_UPDATED hook in room %s",
-                    room_id,
-                    exc_info=True,
-                )
+            context = await kit_ref._hook_context(room_id, HookTrigger.ON_PLAN_UPDATED)
+            if context is None:
                 return
 
             await kit_ref._hook_engine.run_async_hooks(
@@ -1119,6 +1125,7 @@ class HelpersMixin:
             if hook_result is None:
                 # Fail-closed: an authorization failure MUST NOT silently permit
                 # the tool call. Denying is the safe default.
+                logger.warning("BEFORE_TOOL_USE could not run: tool %s denied", event.name)
                 return BeforeToolDecision(allowed=False)
 
             await kit_ref._emit_framework_event(
@@ -1143,21 +1150,12 @@ class HelpersMixin:
         """What the BEFORE_TOOL_USE hooks decide about *event*, or ``None``
         when the room's context could not be built for them.
 
-        With no hook registered there is nothing to run and no context is
-        built: a context costs store reads (the room, its bindings, its
-        participants, its history) on every tool call of every round.
+        With no hook registered there is nothing to run and no context is built.
         """
         if not self._hook_engine.has_hooks(HookTrigger.BEFORE_TOOL_USE):
-            return SyncPipelineResult()
-        try:
-            context = await self._build_context(room_id)
-        except Exception:
-            logger.warning(
-                "Failed to build context for BEFORE_TOOL_USE hook in room %s "
-                "— denying tool call (fail-closed)",
-                room_id,
-                exc_info=True,
-            )
+            return SyncPipelineResult(event=event)
+        context = await self._hook_context(room_id, HookTrigger.BEFORE_TOOL_USE)
+        if context is None:
             return None
         return await self._hook_engine.run_sync_hooks(
             room_id,
@@ -1189,23 +1187,20 @@ class HelpersMixin:
         async def _callback(event: PendingInputEvent) -> bool:
             if not event.room_id:
                 return True  # Allow if no room context
-            try:
-                context = await kit_ref._build_context(event.room_id)
-            except Exception:
-                logger.warning(
-                    "Failed to build context for ON_USER_INPUT_REQUIRED hook in room %s",
-                    event.room_id,
-                    exc_info=True,
+            hook_result = SyncPipelineResult(event=event)
+            if kit_ref._hook_engine.has_hooks(HookTrigger.ON_USER_INPUT_REQUIRED):
+                context = await kit_ref._hook_context(
+                    event.room_id, HookTrigger.ON_USER_INPUT_REQUIRED
                 )
-                return True  # Allow on error (fail-open)
-
-            hook_result = await kit_ref._hook_engine.run_sync_hooks(
-                event.room_id,
-                HookTrigger.ON_USER_INPUT_REQUIRED,
-                event,
-                context,
-                skip_event_filter=True,
-            )
+                if context is None:
+                    return True  # Allow on error (fail-open)
+                hook_result = await kit_ref._hook_engine.run_sync_hooks(
+                    event.room_id,
+                    HookTrigger.ON_USER_INPUT_REQUIRED,
+                    event,
+                    context,
+                    skip_event_filter=True,
+                )
 
             await kit_ref._emit_framework_event(
                 "user_input_required",
@@ -1239,23 +1234,17 @@ class HelpersMixin:
         async def _callback(event: AIResponseEvent) -> None:
             if not event.room_id:
                 return
-            try:
-                context = await kit_ref._build_context(event.room_id)
-            except Exception:
-                logger.warning(
-                    "Failed to build context for ON_AI_RESPONSE hook in room %s",
+            if kit_ref._hook_engine.has_hooks(HookTrigger.ON_AI_RESPONSE):
+                context = await kit_ref._hook_context(event.room_id, HookTrigger.ON_AI_RESPONSE)
+                if context is None:
+                    return
+                await kit_ref._hook_engine.run_async_hooks(
                     event.room_id,
-                    exc_info=True,
+                    HookTrigger.ON_AI_RESPONSE,
+                    event,
+                    context,
+                    skip_event_filter=True,
                 )
-                return
-
-            await kit_ref._hook_engine.run_async_hooks(
-                event.room_id,
-                HookTrigger.ON_AI_RESPONSE,
-                event,
-                context,
-                skip_event_filter=True,
-            )
 
             await kit_ref._emit_framework_event(
                 "ai_response",
@@ -1277,7 +1266,6 @@ class HelpersMixin:
         the framework's hook engine.  Returns a :class:`SyncPipelineResult`
         that indicates whether generation should proceed or be blocked.
         """
-        from roomkit.core.hooks import SyncPipelineResult
         from roomkit.models.enums import HookTrigger
         from roomkit.models.tool_call import AIGenerationEvent
 
@@ -1286,23 +1274,20 @@ class HelpersMixin:
         async def _callback(event: AIGenerationEvent) -> SyncPipelineResult:
             if not event.room_id:
                 return SyncPipelineResult(allowed=True)
-            try:
-                context = await kit_ref._build_context(event.room_id)
-            except Exception:
-                logger.warning(
-                    "Failed to build context for BEFORE_AI_GENERATION hook in room %s",
-                    event.room_id,
-                    exc_info=True,
+            sync_result = SyncPipelineResult(event=event)
+            if kit_ref._hook_engine.has_hooks(HookTrigger.BEFORE_AI_GENERATION):
+                context = await kit_ref._hook_context(
+                    event.room_id, HookTrigger.BEFORE_AI_GENERATION
                 )
-                return SyncPipelineResult(allowed=True)
-
-            sync_result = await kit_ref._hook_engine.run_sync_hooks(
-                event.room_id,
-                HookTrigger.BEFORE_AI_GENERATION,
-                event,
-                context,
-                skip_event_filter=True,
-            )
+                if context is None:
+                    return SyncPipelineResult(allowed=True)
+                sync_result = await kit_ref._hook_engine.run_sync_hooks(
+                    event.room_id,
+                    HookTrigger.BEFORE_AI_GENERATION,
+                    event,
+                    context,
+                    skip_event_filter=True,
+                )
 
             await kit_ref._emit_framework_event(
                 "before_ai_generation",

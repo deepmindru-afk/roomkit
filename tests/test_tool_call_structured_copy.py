@@ -234,7 +234,14 @@ async def test_a_fail_closed_hook_that_cannot_run_withholds_the_result() -> None
 
 
 async def test_without_a_fail_closed_hook_the_result_stands() -> None:
+    """The room's context would not build for a hook that does not fail
+    closed: the result stands."""
     kit, _ = await _kit(streaming=True)
+
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="audit")
+    async def audit(event: ToolCallEvent, ctx: Any) -> HookResult:
+        return HookResult.allow()
+
     callback = kit._build_tool_call_hook("ai1")
     kit._build_context = AsyncMock(side_effect=RuntimeError("store down"))  # type: ignore[method-assign]
     event = ToolCallEvent(

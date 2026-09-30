@@ -22,6 +22,7 @@ from roomkit.channels._skill_constants import SKILL_INFRA_TOOL_NAMES, TOOL_ACTIV
 from roomkit.channels._tool_search_constants import TOOL_CALL_TOOL
 from roomkit.channels.ai import _current_loop_ctx, _ToolLoopContext
 from roomkit.core.exceptions import ToolRefusedError
+from roomkit.core.hooks import SyncPipelineResult
 from roomkit.models.enums import ChannelType, HookTrigger
 from roomkit.models.tool_call import (
     ToolCallEvent,
@@ -1204,19 +1205,23 @@ class RealtimeToolsMixin:
         """
         assert self._framework is not None  # guarded by caller  # noqa: S101
         t_seg = time.perf_counter()
-        context = await self._framework._build_context(room_id, carrying=carrying)
-        # The observers wait for the outcome: they see the result the model
-        # reads, and a call nothing served is the hooks' chance to serve it,
-        # not a report (RFC §9.3).
-        hook_result = await self._framework.hook_engine.run_sync_hooks(
-            room_id,
-            HookTrigger.ON_TOOL_CALL,
-            tool_event,
-            context,
-            skip_event_filter=True,
-            fold=fold_tool_call_rewrite,
-            fire_observers=False,
-        )
+        # No hook, no chain to run and no context to build for one: the call
+        # stands as served. The observers wait for the outcome: they see the
+        # result the model reads, and a call nothing served is the hooks'
+        # chance to serve it, not a report (RFC §9.3).
+        context: RoomContext | None = None
+        hook_result = SyncPipelineResult(event=tool_event)
+        if self._framework.hook_engine.has_hooks(HookTrigger.ON_TOOL_CALL):
+            context = await self._framework._build_context(room_id, carrying=carrying)
+            hook_result = await self._framework.hook_engine.run_sync_hooks(
+                room_id,
+                HookTrigger.ON_TOOL_CALL,
+                tool_event,
+                context,
+                skip_event_filter=True,
+                fold=fold_tool_call_rewrite,
+                fire_observers=False,
+            )
         if handler_result is not None:
             # The firing carried the handler's result: that was the report. A
             # cancellation landing between here and the wire must not add a
@@ -1241,7 +1246,7 @@ class RealtimeToolsMixin:
         handler_result: str | None,
         result_str: str,
         failed: bool,
-        context: RoomContext,
+        context: RoomContext | None,
         session: VoiceSession,
     ) -> None:
         """Tell ON_TOOL_CALL's observers the call's outcome, once (RFC §9.3).
@@ -1271,13 +1276,14 @@ class RealtimeToolsMixin:
             return
         if handler_result is None and hook_result.allowed:
             self._mark_tool_call_reported(session.id, call_id)
-        await engine.run_observers(
-            room_id,
-            HookTrigger.ON_TOOL_CALL,
-            observed_call_event(hook_result, tool_event, result_str),
-            context,
-            skip_event_filter=True,
-        )
+        if context is not None:  # None when no ON_TOOL_CALL hook is registered
+            await engine.run_observers(
+                room_id,
+                HookTrigger.ON_TOOL_CALL,
+                observed_call_event(hook_result, tool_event, result_str),
+                context,
+                skip_event_filter=True,
+            )
         await self._framework._emit_framework_event(
             "tool_call",
             room_id=room_id,
