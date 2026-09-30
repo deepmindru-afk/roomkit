@@ -9,16 +9,18 @@ from __future__ import annotations
 
 import pytest
 
+from roomkit import ToolNameCollisionError
 from roomkit.channels._tool_registry import (
     ChannelRegistry,
-    ToolNameCollisionError,
     ToolSource,
     channel_tool,
     orchestration_tool,
 )
 from roomkit.channels.ai import AIChannel
+from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 from roomkit.providers.ai.base import AITool
 from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
 
 
 def _tool(name: str, description: str = "") -> AITool:
@@ -155,3 +157,15 @@ class TestHostTools:
         own = {e.name for e in channel._registry.entries(None, source=ToolSource.CHANNEL)}
         assert own == {"read_stored_result", "plan_tasks", "find_tools", "list_tools"}
         assert channel._exempt_tool_names == {"read_stored_result", "find_tools", "list_tools"}
+
+    def test_a_realtime_configure_refuses_what_the_constructor_refuses(self) -> None:
+        """A tool under a name the channel serves itself, or given twice, is
+        refused by ``configure(tools=)`` as at construction (RFC §21.1)."""
+        channel = RealtimeVoiceChannel(
+            "rt", provider=MockRealtimeProvider(), transport=MockRealtimeTransport()
+        )
+
+        with pytest.raises(ValueError, match="'find_tools' is a tool channel 'rt' serves"):
+            channel.configure(tools=[{"name": "find_tools", "description": "", "parameters": {}}])
+        with pytest.raises(ValueError, match="'a' is given twice"):
+            channel.configure(tools=[{"name": "a"}, {"name": "a"}])

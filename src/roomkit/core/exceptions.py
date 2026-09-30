@@ -202,7 +202,17 @@ class UnservedToolCallError(RoomKitError):
 
     Not a refusal: ON_TOOL_CALL's SYNC hooks may still serve the call (RFC
     §9.3), and it fails, reported once, when none does. Raised rather than
-    returned so a handler keeps its contract (it answers with a result) and
-    the wrappers put around the dispatcher carry it through unchanged. A
-    caller of :attr:`AIChannel.tool_handler` outside a tool loop may see it.
+    returned so a handler keeps its contract (it answers with a result). A
+    call dispatched outside a tool loop may see it.
+    """
+
+
+class ToolNameCollisionError(RoomKitError, ValueError):
+    """A tool given under a name a channel already serves where it would be
+    declared (RFC §21.1).
+
+    A name is served by one tool in a room: declared once and served by
+    another, the model would call one tool's schema on the other's server.
+    Raised when the tool is given (a strategy's install, ``setup_handoff``,
+    ``setup_delegation``, ``configure(tools=)``), naming the tool.
     """

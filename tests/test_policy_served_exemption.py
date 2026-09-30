@@ -14,10 +14,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from roomkit import ConferenceRealtimeConfig, RoomKit
+from roomkit import ConferenceRealtimeConfig, RoomKit, ToolNameCollisionError
 from roomkit.channels._conference_tools import declared_tools
 from roomkit.channels._served_tools import CollisionLog
-from roomkit.channels._tool_registry import ToolNameCollisionError
 from roomkit.channels.ai import AIChannel
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 from roomkit.core.hooks import SyncPipelineResult

@@ -808,11 +808,12 @@ class RealtimeVoiceChannel(
         """Update channel defaults for future sessions.
 
         Active sessions are not affected — use ``reconfigure_session``
-        for those. A tool under a name orchestration serves is refused
-        (RFC §21.1).
+        for those. A tool under a name the channel or orchestration serves,
+        or given twice, is refused (RFC §21.1).
         """
         if tools is not None:
             names = [dict_tool_name(tool) for tool in tools]
+            refuse_served_names(names, self._channel_tool_names(), self.channel_id)
             refuse_given_twice(names, self.channel_id)
             self._registry.refuse_host_names(names)
         if system_prompt is not None:

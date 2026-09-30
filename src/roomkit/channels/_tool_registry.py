@@ -40,6 +40,7 @@ from roomkit.channels._tool_search_constants import (
     TOOL_FIND_TOOLS,
     TOOL_LIST_TOOLS,
 )
+from roomkit.core.exceptions import ToolNameCollisionError
 from roomkit.providers.ai.base import AITool
 
 if TYPE_CHECKING:
@@ -162,10 +163,6 @@ def orchestration_tool(definition: AITool, serve: ToolServe, **traits: bool) -> 
     return ToolEntry(
         definition, serve, ToolSource.ORCHESTRATION, replace(ORCHESTRATION_TRAITS, **traits)
     )
-
-
-class ToolNameCollisionError(ValueError):
-    """A tool given under a name the channel already serves in that scope (RFC §21.1)."""
 
 
 @dataclass(slots=True)

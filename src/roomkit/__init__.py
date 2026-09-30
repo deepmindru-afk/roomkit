@@ -77,6 +77,7 @@ from roomkit.core.exceptions import (
     ParticipantNotAdmittedError,
     ProviderDeliveryError,
     RoomNotAttachedError,
+    ToolNameCollisionError,
     ToolRefusedError,
     UnservedToolCallError,
     VoiceSessionEndedError,
@@ -293,6 +294,7 @@ __all__ = [
     "ToolRefusedError",
     "ChannelRefusalError",
     "UnservedToolCallError",
+    "ToolNameCollisionError",
     # Delivery
     "DeliveryBackend",
     "DeliveryItem",

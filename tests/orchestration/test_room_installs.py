@@ -17,8 +17,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from roomkit import RoomKit
-from roomkit.channels._tool_registry import ToolNameCollisionError
+from roomkit import RoomKit, ToolNameCollisionError
 from roomkit.channels.agent import Agent
 from roomkit.channels.ai import AIChannel
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
