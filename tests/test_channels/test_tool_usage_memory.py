@@ -171,7 +171,7 @@ class TestToolUsageMemory:
         assert "result-4 " + "y" * 500 in digest
         assert "result-2 " + "y" * 500 in digest
         assert "result-1 " + "y" * 500 not in digest
-        assert "- tool1() → result-1 " in digest
+        assert "- tool1() → <tool_result>\nresult-1 " in digest
         assert "- tool4() returned:" in digest
 
     def test_a_result_is_framed_as_data_not_instructions(self) -> None:
@@ -216,8 +216,9 @@ class TestToolUsageMemory:
         mem = ToolUsageMemory()
         mem.seed("r1", [{"name": "card_mine", "arguments": {}, "result": placeholder}])
         digest = mem.render_digest("r1") or ""
-        assert "- card_mine() → Result too large" in digest
-        assert "\n<tool_result>\n" not in digest  # no data block, only the line
+        # A short preview, set apart as data like any tool output.
+        assert "- card_mine() → <tool_result>\nResult too large" in digest
+        assert "card_mine() returned:" not in digest  # not a kept result
         assert "z" * 500 not in digest
 
     def test_a_hydrated_part_list_keeps_its_text(self) -> None:
@@ -365,8 +366,12 @@ class TestToolUsageInContext:
             ctx = await _first_round(ch)
         finally:
             _current_loop_ctx.set(None)
-        assert "Tools you've already used here" in (ctx.system_prompt or "")
-        assert "SpotifyPlayback" in (ctx.system_prompt or "")
+        # It changes from turn to turn: it rides the turn's input, after the
+        # user's words, never the system prompt (RFC §6.4).
+        notes = str(ctx.messages[-1].content)
+        assert "Tools you've already used here" in notes
+        assert "SpotifyPlayback" in notes
+        assert "SpotifyPlayback" not in (ctx.system_prompt or "")
 
     async def test_the_next_turn_sees_the_data_a_tool_returned(self, streaming: bool) -> None:
         """A call executed through the tool loop reaches the next turn whole,
@@ -396,9 +401,9 @@ class TestToolUsageInContext:
             ctx = await _first_round(ch)
         finally:
             _current_loop_ctx.set(None)
-        prompt = ctx.system_prompt or ""
-        assert "Board 20" in prompt
-        assert "Result too large" not in prompt
+        notes = str(ctx.messages[-1].content)
+        assert "Board 20" in notes
+        assert "Result too large" not in notes
 
     async def _digest_after_one_call(self, ch: AIChannel, *, streaming: bool) -> str:
         _current_loop_ctx.set(_ToolLoopContext(room_id="r1"))
@@ -505,7 +510,7 @@ class TestToolUsageInContext:
             finally:
                 _current_loop_ctx.set(None)
         loader.assert_awaited_once_with("r1")
-        assert "SpotifyPlayback" in (ctx.system_prompt or "")  # digest rebuilt
+        assert "SpotifyPlayback" in str(ctx.messages[-1].content)  # digest rebuilt
         assert "SpotifyPlayback" in {t.name for t in ctx.tools}  # re-revealed
 
     async def test_build_context_survives_loader_failure(self) -> None:

@@ -270,7 +270,9 @@ class ToolUsageMemory:
 
     @classmethod
     def _format_call(cls, call: _Call) -> str:
-        return f"{call.name}({cls._format_args(call.arguments)}) → {call.result_preview}"
+        # The preview is a tool's output too: data, set apart like a result.
+        preview = fence("tool_result", call.result_preview)
+        return f"{call.name}({cls._format_args(call.arguments)}) → {preview}"
 
     @staticmethod
     def _format_args(arguments: dict[str, Any]) -> str:

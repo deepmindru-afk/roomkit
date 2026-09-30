@@ -264,7 +264,8 @@ async def _send_instruction(kit: RoomKit, via: str, **fields: object) -> None:
 @pytest.mark.parametrize("via", ["process_inbound", "send_event"])
 async def test_a_standalone_instruction_reads_nothing_of_the_room(via: str, streaming: bool):
     """RFC §10.1.1 step 7: no history, no memory provider call, and none of the
-    room's working memories (here the tool-usage digest) in the system prompt."""
+    room's working memories (here the tool-usage digest), in the system prompt
+    or with the input."""
     kit, provider, memory = await _talking_room(streaming=streaming)
 
     await _send_instruction(kit, via, standalone=True)
@@ -273,6 +274,7 @@ async def test_a_standalone_instruction_reads_nothing_of_the_room(via: str, stre
     [only] = provider.calls[-1].messages
     assert only.role == "user" and INSTRUCTION in str(only.content)
     assert "Allô" not in str(only.content)
+    assert "PREVIOUS-TOOL-RESULT" not in str(only.content)
     assert "PREVIOUS-TOOL-RESULT" not in (provider.calls[-1].system_prompt or "")
     stored = await _messages(kit)
     assert stored[-1].metadata["instruction"] == FINGERPRINT
@@ -290,7 +292,9 @@ async def test_an_instruction_without_standalone_reads_the_room(via: str):
     assert memory.retrieved == 2
     contents = [str(m.content) for m in provider.calls[-1].messages]
     assert any("Allô" in c for c in contents) and INSTRUCTION in contents[-1]
-    assert "PREVIOUS-TOOL-RESULT" in (provider.calls[-1].system_prompt or "")
+    # The room's working memories ride the turn's input (RFC §6.4).
+    assert "PREVIOUS-TOOL-RESULT" in contents[-1]
+    assert "PREVIOUS-TOOL-RESULT" not in (provider.calls[-1].system_prompt or "")
     await kit.close()
 
 

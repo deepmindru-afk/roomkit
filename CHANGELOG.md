@@ -106,6 +106,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- An AI channel's system prompt stays the same from one turn to the next
+  (RMK-318, RFC §6.4). The tool-usage digest and the room's plan, which
+  change after every turn that calls a tool or plans, ride the turn's input
+  instead: after the participant's words, in the same message, opened by a
+  line saying they are the runtime's notes and ask for nothing. The digest's
+  older calls now set their result preview apart as data too, and no tool
+  result reaches the system role. A provider caches the system prompt ahead
+  of the whole history, so a changing one had the turn after every tool call
+  re-bill the whole history; the notes are now re-billed instead, every turn,
+  at their own size. On the cost suite (`claude-sonnet-5`), a conversation
+  whose history outgrows its notes (`long_cost`) costs 53 % less; a very short
+  one whose notes weigh as much as its history (`tool_cost`) costs 5 % more.
+  An active skill's instructions stay in the system prompt (§24.4). A
+  `BEFORE_AI_GENERATION` hook that read the digest or the plan in
+  `system_prompt` finds them in the last message.
 - A tool loop's declaration holds from round to round (RMK-317, RFC §6.4).
   `read_stored_result` is declared from the first round of any turn that
   declares a tool or whose room holds a stored result, after the other tools

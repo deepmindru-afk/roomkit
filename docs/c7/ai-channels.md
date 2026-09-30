@@ -742,7 +742,7 @@ ai = AIChannel(
 ```
 
 When enabled, the AI gets a `plan_tasks` tool that accepts up to 100 tasks with a title of at most 500 characters and a `status` (`pending`, `in_progress`, `completed`, `blocked`). Undeclared task fields are discarded. The current plan is:
-- Injected into the system prompt on each turn (so the AI sees its progress)
+- Carried with each turn's input, after the user's words and marked as the runtime's notes, so the AI sees its progress; not in the system prompt, which stays the same from turn to turn so a provider's prompt cache holds (RFC §6.4)
 - Published as an ephemeral `CUSTOM` event with `data.type = "plan_updated"` for real-time UI rendering
 
 Subscribe to plan updates for UI:

@@ -76,6 +76,13 @@ _SPEAKER_ATTRIBUTION_NOTE = (
     "what, and never prefix your own replies with a name."
 )
 
+# Opens the notes a turn's input carries: they are the channel's, not the
+# participant's, and ask for nothing.
+_TURN_NOTES_HEADER = (
+    "[Notes kept by the assistant's runtime for this turn. The user did not "
+    "write them and they ask for nothing: answer the user's message above.]"
+)
+
 
 @runtime_checkable
 class AIContextHost(Protocol):
@@ -389,6 +396,9 @@ class AIContextMixin:
             if attribute_speakers and current_speaker:
                 content = _with_speaker_prefix(content, current_speaker)
             messages.append(AIMessage(role="user", content=content))
+        messages = _with_turn_notes(
+            messages, self._turn_notes(event, context, standalone=standalone)
+        )
 
         if attribute_speakers:
             system_prompt = (system_prompt or "") + f"\n\n{_SPEAKER_ATTRIBUTION_NOTE}"
@@ -470,8 +480,11 @@ class AIContextMixin:
         standalone: bool,
     ) -> str | None:
         """The turn's system prompt with what the channel's own features add to
-        it: skills, sandbox, planner, tool-usage digest, Tool Search and the
-        large-result re-read, in that order. Their tools join *tools* in place.
+        it: skills, sandbox, planner, Tool Search and the large-result re-read,
+        in that order. Their tools join *tools* in place.
+
+        What changes from turn to turn is not here but in ``_turn_notes``: the
+        system prompt stays the same between turns (RFC §6.4).
         """
         # Skill activation is keyed on the tool loop's room — the very id
         # ``activate_skill`` will write under (``handle_event`` stamps it on this
@@ -491,23 +504,10 @@ class AIContextMixin:
         )
         system_prompt = self._add_sandbox(tools, system_prompt)
 
-        # Inject planning tool and plan context when enabled
+        # The planning tool; the plan itself travels with the turn's input
+        # (``_turn_notes``), since it changes from one turn to the next.
         if self._planner is not None:
             tools.append(TaskPlanner.tool_definition())
-            room_id = context.room.id if context.room else event.room_id
-            current_plan = None if standalone else self._planner.plan_for(room_id)
-            if current_plan:
-                system_prompt = (system_prompt or "") + TaskPlanner.format_plan_prompt(
-                    current_plan
-                )
-
-        # "Tools you've already used" digest — the rebuilt context drops
-        # tool-call events, so without this the model forgets, across turns,
-        # which tools/source it used (it would re-ask the user). Injected for
-        # every model, not just small ones — the loss is provider-agnostic.
-        usage_digest = None if standalone else self._tool_usage.render_digest(event.room_id)
-        if usage_digest:
-            system_prompt = (system_prompt or "") + f"\n\n{usage_digest}"
 
         system_prompt = self._collapse_behind_tool_search(
             tools, system_prompt, loop_ctx, binding, event, standalone
@@ -518,6 +518,34 @@ class AIContextMixin:
         if self._eviction.has_evicted:
             tools.append(ToolEviction.tool_definition())
         return system_prompt
+
+    def _turn_notes(
+        self, event: RoomEvent, context: RoomContext, *, standalone: bool
+    ) -> str | None:
+        """What the room's working memories tell this turn, as the notes its
+        input carries: the room's plan and the tools already used here.
+
+        ``None`` when there are none, or when the turn stands alone: its
+        input reads nothing of the room (RFC §10.1.1). Both change from one
+        turn to the next, so they ride the turn's input rather than the
+        system prompt (RFC §6.4).
+        """
+        if standalone:
+            return None
+        blocks: list[str] = []
+        if self._planner is not None:
+            room_id = context.room.id if context.room else event.room_id
+            plan = self._planner.plan_for(room_id)
+            if plan:
+                blocks.append(TaskPlanner.format_plan_prompt(plan).strip())
+        # "Tools you've already used" digest — the rebuilt context drops
+        # tool-call events, so without this the model forgets, across turns,
+        # which tools/source it used (it would re-ask the user). Injected for
+        # every model, not just small ones — the loss is provider-agnostic.
+        digest = self._tool_usage.render_digest(event.room_id)
+        if digest:
+            blocks.append(digest)
+        return "\n\n".join([_TURN_NOTES_HEADER, *blocks]) if blocks else None
 
     def _add_skills(
         self,
@@ -788,3 +816,26 @@ def _with_speaker_prefix(content: str | list[_ContentPart], name: str) -> str | 
     if isinstance(content, str):
         return f"{name}: {content}"
     return [AITextPart(text=f"{name}:"), *content]
+
+
+def _with_turn_notes(messages: list[AIMessage], notes: str | None) -> list[AIMessage]:
+    """*messages* with *notes* after the last message's text when it is the
+    participant's, or as a message of its own when the conversation does not
+    end on one (RFC §6.4).
+
+    After the participant's words, not before: a provider that caches up to
+    the last messages keeps the history's prefix only if what changes comes
+    last. In the same message, not a message of its own: some chat formats
+    refuse two user messages in a row. A text input stays text, so a provider
+    that only takes text reads it as it does today.
+    """
+    if not notes:
+        return messages
+    last = messages[-1] if messages else None
+    if last is None or last.role != "user":
+        return [*messages, AIMessage(role="user", content=notes)]
+    if isinstance(last.content, str):
+        content: str | list[_ContentPart] = f"{last.content}\n\n{notes}" if last.content else notes
+    else:
+        content = [*last.content, AITextPart(text=notes)]
+    return [*messages[:-1], last.model_copy(update={"content": content})]

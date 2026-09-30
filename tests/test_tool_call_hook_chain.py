@@ -226,7 +226,7 @@ async def test_the_next_prompt_keeps_the_model_s_arguments(streaming: bool) -> N
     await _say(kit)
     await _say(kit, "and then?")
 
-    prompt = provider.calls[-1].system_prompt or ""
+    prompt = str(provider.calls[-1].messages[-1].content)  # the turn's notes
     assert "<EMAIL_1>" in prompt  # the digest quotes the model's arguments...
     assert "alice@real.example" not in prompt  # ...never the real address
     await kit.close()
@@ -250,7 +250,7 @@ async def test_a_cold_digest_keeps_the_model_s_arguments_too(streaming: bool) ->
     agent._tool_usage = ToolUsageMemory()  # the process restarted: nothing in memory
     await _say(kit, "and then?")
 
-    prompt = provider.calls[-1].system_prompt or ""
+    prompt = str(provider.calls[-1].messages[-1].content)  # the turn's notes
     assert "<EMAIL_1>" in prompt
     assert "alice@real.example" not in prompt
     await kit.close()
