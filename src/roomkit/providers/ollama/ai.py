@@ -39,6 +39,7 @@ from roomkit.providers.ai.base import (
     StreamToolCall,
 )
 from roomkit.providers.ai.image_parts import image_part_base64
+from roomkit.providers.ai.reasoning import thinking_switch
 from roomkit.providers.ai.response_schema import (
     check_schema_answer,
     checked_stream,
@@ -53,6 +54,16 @@ from roomkit.providers.utils import _aclose_stream, http_timeout
 # ``list_models``. Local Ollama serialises heavy work anyway; 8 keeps the
 # model picker snappy without thundering the server.
 _SHOW_CONCURRENCY = 8
+
+# Ollama's ``think`` level for each effort a turn may ask, the nearest where
+# Ollama has no such level.
+_THINK_LEVELS = {
+    "minimal": "low",
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "high",
+}
 
 
 def _ollama_image_payload(part: AIImagePart, *, provider: str) -> str:
@@ -292,28 +303,26 @@ class OllamaAIProvider(AIProvider):
         return options
 
     def _resolve_think(self, context: AIContext) -> bool | str | None:
-        """Decide the ``think`` value for this request.
+        """Decide the ``think`` value for this request (RFC §6.7).
 
-        Precedence:
-        1. If ``context.thinking_budget`` is set, it gates on/off:
-           ``None``/``0`` → ``think=False``; ``>0`` → honors the
-           provider config's effort string when set (so per-channel
-           ``thinking_budget=4096`` preserves a ``think="high"``
-           default), otherwise ``think=True``.
-        2. Otherwise pass the provider config's ``think`` through
-           verbatim — boolean or effort string.
-        3. ``None`` lets the model decide.
+        The turn states whether the model thinks (:func:`thinking_switch`)
+        and how much (``reasoning_effort``); the configured ``think``
+        supplies what it leaves unstated, and ``None`` lets the model decide.
+        A level goes only to a model configured with one: Ollama refuses a
+        level on a model that takes none (``think value "low" is not
+        supported for this model``, qwen3 on Ollama 0.17), and a configured
+        level is the one sign the model takes levels. So with
+        ``think="high"``, ``thinking_budget=4096`` sends ``"high"`` and
+        ``reasoning_effort="low"`` sends ``"low"``.
         """
-        budget = context.thinking_budget
-        if budget is not None:
-            if budget <= 0:
-                return False
-            # >0 means "thinking on" — honor a configured effort level,
-            # otherwise plain True.
-            if isinstance(self._config.think, str):
-                return self._config.think
-            return True
-        return self._config.think
+        configured = self._config.think
+        levels = isinstance(configured, str)
+        switch = thinking_switch(context, True if levels else configured)
+        if switch is False:
+            return False
+        if levels:
+            return _THINK_LEVELS.get(context.reasoning_effort or "", configured)
+        return switch
 
     def _build_kwargs(self, context: AIContext, stream: bool) -> dict[str, Any]:
         kwargs: dict[str, Any] = {

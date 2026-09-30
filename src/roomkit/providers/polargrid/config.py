@@ -38,9 +38,12 @@ class PolarGridConfig(BaseModel):
             on — qwen emits it inline as ``<think>...</think>``, which the
             provider surfaces as ``AIResponse.thinking`` /
             ``StreamThinkingDelta``. ``False`` turns it off. ``None``
-            (default) leaves the flag unset (model/edge default). Thinking
-            responses are larger and slower, so raise ``timeout`` and
-            ``max_tokens`` when enabling it.
+            (default) leaves the flag unset (model/edge default). The
+            turn outranks it (RFC §6.7): ``thinking_budget`` (``0`` off,
+            above ``0`` on), ``enable_thinking``, or a
+            ``reasoning_effort`` of ``"none"``. Thinking responses are
+            larger and slower, so raise ``timeout`` and ``max_tokens``
+            when enabling it.
         timeout: HTTP request timeout in seconds.
         connect_timeout: TCP connect timeout in seconds, kept apart from
             ``timeout`` so a host that no longer accepts connections is given

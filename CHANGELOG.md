@@ -86,6 +86,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reasoning passed back as `<think>` text, and an OpenAI model takes an
   effort alongside tools. The seven upstream families of the catalogue
   answered two tool rounds with reasoning on.
+- A provider's own reasoning setting yields to the turn on what the turn
+  states (RMK-337, RFC §6.7): Ollama's `think`, Gemini's `thinking_level` and
+  PolarGrid's `thinking` now read the turn's `thinking_budget`,
+  `enable_thinking` and `reasoning_effort`, which they ignored or let the
+  configuration override. The budget, then `enable_thinking`, say whether the
+  model reasons, a `reasoning_effort` of `none` says off, and
+  `reasoning_effort` says how much; the configuration supplies the rest. With
+  `think="high"`, a turn's `reasoning_effort="low"` sends `"low"`; a
+  configured Gemini `thinking_level` no longer outranks a turn's
+  `thinking_budget=0`; `enable_thinking=False` reaches Ollama and PolarGrid. A
+  level goes only where the model takes one, which Gemini reads from two new
+  catalogue tags (`thinking_level`, `thinking_level_minimal`) and Ollama from
+  a configured level, since both refuse a level elsewhere. On Qwen and
+  DeepSeek too, a `reasoning_effort` of `none` now turns thinking off.
+  Measured on the wire: `reasoning_effort="low"` on `gemini-3.7-flash` goes
+  from 158 thought tokens (nothing sent) to 48 (`low`), `enable_thinking=True`
+  on `gemini-3.1-flash-lite` from 0 to 200, and `enable_thinking=False` on
+  Ollama `qwen3:4b` from about 1,900 thinking characters to none.
 
 ### Fixed
 

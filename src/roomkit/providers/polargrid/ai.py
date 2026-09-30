@@ -67,6 +67,7 @@ from roomkit.providers.ai.openai_dialect import (
     extract_think_tags,
     json_schema_format,
 )
+from roomkit.providers.ai.reasoning import thinking_switch
 from roomkit.providers.ai.response_schema import (
     check_schema_answer,
     checked_stream,
@@ -419,11 +420,13 @@ class PolarGridAIProvider(AIProvider):
             # defaults to "auto". Forcing a tool is steered, not hard
             # guaranteed, on their backend anyway.
             req["tools"] = tools
-        if self._config.thinking is not None:
+        thinking = thinking_switch(context, self._config.thinking)
+        if thinking is not None:
             # polargrid-sdk 0.8.5+ exposes the enable_thinking flag; qwen
             # then emits its reasoning inline as <think>...</think>, which
-            # the streaming/non-streaming paths split out as thinking.
-            req["enable_thinking"] = self._config.thinking
+            # the streaming/non-streaming paths split out as thinking. The
+            # turn's switch outranks the configured one (RFC §6.7).
+            req["enable_thinking"] = thinking
         max_tokens = context.max_tokens or self._config.max_tokens
         if max_tokens is not None:
             req["max_tokens"] = max_tokens

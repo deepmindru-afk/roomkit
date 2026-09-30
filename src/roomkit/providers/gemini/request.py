@@ -15,6 +15,7 @@ provider rather than imported here: the SDK is an optional dependency that
 from __future__ import annotations
 
 import base64
+from collections.abc import Collection
 from typing import Any
 
 from roomkit.providers.ai.base import (
@@ -28,6 +29,7 @@ from roomkit.providers.ai.base import (
     ProviderError,
 )
 from roomkit.providers.ai.image_parts import image_part_payload
+from roomkit.providers.ai.reasoning import thinking_switch
 from roomkit.providers.gemini.config import GeminiConfig
 from roomkit.providers.gemini.schema import function_declaration
 
@@ -178,8 +180,14 @@ def _image_part(types: Any, item: AIImagePart) -> Any:
     )
 
 
-def build_gen_config(types: Any, config: GeminiConfig, context: AIContext) -> Any:
-    """Build Gemini generation config from AIContext."""
+def build_gen_config(
+    types: Any, config: GeminiConfig, context: AIContext, capabilities: Collection[str] = ()
+) -> Any:
+    """Build Gemini generation config from AIContext.
+
+    *capabilities* are what the model catalogue declares of the model: the
+    thinking levels it takes (RFC §6.7).
+    """
     gen_config = types.GenerateContentConfig(
         temperature=context.temperature,
         max_output_tokens=context.max_tokens or config.max_tokens,
@@ -189,25 +197,9 @@ def build_gen_config(types: Any, config: GeminiConfig, context: AIContext) -> An
         automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
     )
 
-    # Thinking config. ``include_thoughts=True`` is required for Gemini to
-    # stream thought summaries — without it the model still reasons but the
-    # reasoning never reaches the response. ``thinking_level`` targets Gemini
-    # 3.x; ``thinking_budget`` (from the per-turn context) targets 2.5.
-    thinking_level = config.thinking_level
-    thinking_budget = context.thinking_budget
-    if thinking_level:
-        gen_config.thinking_config = types.ThinkingConfig(
-            thinking_level=thinking_level,
-            include_thoughts=True,
-        )
-    elif thinking_budget is not None:
-        # ``0`` turns reasoning off, as it does on every other provider. The
-        # models that cannot run without it answer 400 — measured 2026-09-27:
-        # ``gemini-3.1-pro-preview`` and ``gemini-3.5-flash-lite``.
-        gen_config.thinking_config = types.ThinkingConfig(
-            thinking_budget=thinking_budget,
-            include_thoughts=thinking_budget != 0,
-        )
+    thinking = thinking_config(types, config, context, capabilities)
+    if thinking is not None:
+        gen_config.thinking_config = thinking
 
     if context.system_prompt:
         gen_config.system_instruction = context.system_prompt
@@ -226,6 +218,69 @@ def build_gen_config(types: Any, config: GeminiConfig, context: AIContext) -> An
         gen_config.response_json_schema = context.response_schema
 
     return gen_config
+
+
+# Gemini's thinking level for each effort a turn may ask, the nearest where
+# Gemini has no such level.
+_THINKING_LEVELS = {
+    "minimal": "minimal",
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "high",
+}
+
+
+def thinking_config(
+    types: Any, config: GeminiConfig, context: AIContext, capabilities: Collection[str]
+) -> Any | None:
+    """Gemini's thinking config for this turn, ``None`` for the model's default.
+
+    The turn states whether the model thinks (:func:`thinking_switch`) and
+    how much (``reasoning_effort``); the configured ``thinking_level``
+    supplies what it leaves unstated (RFC §6.7). Gemini takes a level or a
+    token budget, never both (400). ``include_thoughts=True`` is what streams
+    the thought summaries: without it the model reasons, and the reasoning
+    never reaches the response.
+    """
+    budget = context.thinking_budget
+    # A negative budget is Gemini's dynamic one (-1): on, the model sizing it.
+    dynamic = budget is not None and budget < 0
+    switch = True if dynamic else thinking_switch(context, bool(config.thinking_level) or None)
+    if switch is False:
+        # ``0`` turns reasoning off, as it does on every other provider. The
+        # models that cannot run without it answer 400 — measured 2026-09-27:
+        # ``gemini-3.1-pro-preview`` and ``gemini-3.5-flash-lite``.
+        return types.ThinkingConfig(thinking_budget=0, include_thoughts=False)
+    level = _thinking_level(context.reasoning_effort, config.thinking_level, capabilities)
+    if level is not None:
+        return types.ThinkingConfig(thinking_level=level, include_thoughts=True)
+    if budget:
+        return types.ThinkingConfig(thinking_budget=budget, include_thoughts=True)
+    if switch:
+        # Thinking on, the model sizing it: what turns it on for a model
+        # that thinks by default not at all (gemini-3.1-flash-lite).
+        return types.ThinkingConfig(thinking_budget=-1, include_thoughts=True)
+    return None
+
+
+def _thinking_level(
+    effort: str | None, configured: str | None, capabilities: Collection[str]
+) -> str | None:
+    """The level to send: the turn's *effort* on a model that takes levels,
+    else the *configured* one.
+
+    A model takes levels when the catalogue says so, or when a level is
+    configured for it; ``minimal`` goes to a model the catalogue says takes
+    it, and is ``low`` elsewhere (400 on gemini-3.8-flash, measured
+    2026-09-30).
+    """
+    level = _THINKING_LEVELS.get(effort or "")
+    if level is None or ("thinking_level" not in capabilities and configured is None):
+        return configured
+    if level == "minimal" and "thinking_level_minimal" not in capabilities:
+        return "low"
+    return level
 
 
 def reject_model_turn_tail(contents: list[Any]) -> None:

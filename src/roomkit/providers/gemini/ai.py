@@ -212,7 +212,9 @@ class GeminiAIProvider(AIProvider):
     def _build_gen_config(self, context: AIContext) -> Any:
         """The generation config for one turn, overridable by a subclass whose
         config carries a field this API refuses (Vertex's billing labels)."""
-        return build_gen_config(self._types, self._config, context)
+        entry = self.catalog_entry()
+        capabilities = entry.capabilities if entry is not None else []
+        return build_gen_config(self._types, self._config, context, capabilities)
 
     @property
     def supports_response_schema(self) -> bool:

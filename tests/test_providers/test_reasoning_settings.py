@@ -2,7 +2,9 @@
 
 One table of every provider whose configuration carries a reasoning setting
 under the name the turn uses, and of where each puts it on the request: a
-provider that reads its configuration alone fails here.
+provider that reads its configuration alone fails here. A vendor setting of
+the provider's own (Ollama's ``think``, Gemini's ``thinking_level``,
+PolarGrid's ``thinking``) yields to the turn on what the turn states.
 """
 
 from __future__ import annotations
@@ -18,16 +20,22 @@ from roomkit.providers.cerebras.ai import CerebrasAIProvider
 from roomkit.providers.cerebras.config import CerebrasConfig
 from roomkit.providers.deepseek.ai import DeepSeekAIProvider
 from roomkit.providers.deepseek.config import DeepSeekConfig
+from roomkit.providers.gemini.ai import GeminiAIProvider
+from roomkit.providers.gemini.config import GeminiConfig
 from roomkit.providers.litellm.ai import LiteLLMAIProvider
 from roomkit.providers.litellm.config import LiteLLMConfig
 from roomkit.providers.meta.ai import MetaAIProvider
 from roomkit.providers.meta.config import MetaConfig
 from roomkit.providers.mistral.ai import MistralAIProvider
 from roomkit.providers.mistral.config import MistralConfig
+from roomkit.providers.ollama.ai import OllamaAIProvider
+from roomkit.providers.ollama.config import OllamaConfig
 from roomkit.providers.openai.ai import OpenAIAIProvider
 from roomkit.providers.openai.config import OpenAIConfig
 from roomkit.providers.openrouter.ai import OpenRouterAIProvider
 from roomkit.providers.openrouter.config import OpenRouterConfig
+from roomkit.providers.polargrid.ai import PolarGridAIProvider
+from roomkit.providers.polargrid.config import PolarGridConfig
 from roomkit.providers.qwen.ai import QwenAIProvider
 from roomkit.providers.qwen.config import QwenConfig
 from roomkit.providers.xai.ai import XAIAIProvider
@@ -161,3 +169,81 @@ def test_an_effort_of_none_turns_a_configured_switch_off(
     sent = read(_sampled(provider, _context(tools=_TOOLS, reasoning_effort="none")))
 
     assert sent in ({"type": "disabled"}, False)
+
+
+# A vendor setting of the provider's own yields to the turn on what the turn
+# states, whether the model reasons or how much, and supplies the rest (RFC
+# §6.7). The cases are the ones the rule was decided on.
+
+
+def _think(think: Any, **turn: Any) -> Any:
+    provider = _provider(OllamaAIProvider, OllamaConfig(model="m", think=think))
+    return provider._resolve_think(_context(tools=_TOOLS, **turn))
+
+
+@pytest.mark.parametrize(
+    ("think", "turn", "sent"),
+    [
+        ("high", {"thinking_budget": 4096}, "high"),
+        ("high", {"reasoning_effort": "low"}, "low"),
+        ("high", {"reasoning_effort": "xhigh"}, "high"),
+        ("high", {"enable_thinking": False}, False),
+        ("high", {"reasoning_effort": "none"}, False),
+        (True, {"thinking_budget": 0}, False),
+        (False, {"enable_thinking": True}, True),
+        # A model with no configured level may take none: Ollama refuses a
+        # level there, so the turn's is not sent.
+        (None, {"reasoning_effort": "low"}, None),
+        (None, {}, None),
+    ],
+)
+def test_ollama_think_yields_to_the_turn(think: Any, turn: dict[str, Any], sent: Any) -> None:
+    assert _think(think, **turn) == sent
+
+
+def _gemini_thinking(model: str, level: str | None, **turn: Any) -> Any:
+    genai_types = pytest.importorskip("google.genai.types")
+    provider = _provider(
+        GeminiAIProvider, GeminiConfig(api_key="k", model=model, thinking_level=level)
+    )
+    provider._types = genai_types
+    return provider._build_gen_config(_context(tools=_TOOLS, **turn)).thinking_config
+
+
+def test_gemini_thinking_level_yields_to_the_turn() -> None:
+    off = _gemini_thinking("gemini-3.8-flash", "high", thinking_budget=0)
+    kept = _gemini_thinking("gemini-3.8-flash", "high", thinking_budget=4096)
+    low = _gemini_thinking("gemini-3.7-flash", None, reasoning_effort="low")
+
+    assert (off.thinking_level, off.thinking_budget) == (None, 0)
+    assert kept.thinking_level.value == "HIGH"
+    assert low.thinking_level.value == "LOW"
+
+
+def test_gemini_reads_the_levels_a_model_takes_from_the_catalogue() -> None:
+    minimal = _gemini_thinking("gemini-3.5-flash", None, reasoning_effort="minimal")
+    nearest = _gemini_thinking("gemini-3.8-flash", None, reasoning_effort="minimal")
+
+    assert minimal.thinking_level.value == "MINIMAL"
+    assert nearest.thinking_level.value == "LOW"
+    # Gemini 2.5 refuses a level: the turn's is not sent.
+    assert _gemini_thinking("gemini-2.5-flash", None, reasoning_effort="low") is None
+
+
+@pytest.mark.parametrize(
+    ("configured", "turn", "sent"),
+    [
+        (True, {"enable_thinking": False}, False),
+        (True, {"thinking_budget": 0}, False),
+        (False, {"thinking_budget": 2048}, True),
+        (None, {"reasoning_effort": "none"}, False),
+        (None, {"reasoning_effort": "high"}, None),
+    ],
+)
+def test_polargrid_thinking_yields_to_the_turn(
+    configured: bool | None, turn: dict[str, Any], sent: bool | None
+) -> None:
+    provider = _provider(PolarGridAIProvider, PolarGridConfig(api_key="k", thinking=configured))
+    request = provider._build_request(_context(tools=_TOOLS, **turn), stream=False)
+
+    assert request.get("enable_thinking") == sent

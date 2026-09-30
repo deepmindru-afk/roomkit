@@ -43,14 +43,14 @@ class OllamaConfig(BaseModel):
             default" — reasoning models think, others don't.
             ``True``/``False`` force thinking on or off as a boolean.
             One of ``"low"``, ``"medium"``, ``"high"`` selects an
-            effort level for models that support it (Ollama 0.7+ on
-            reasoning-capable models like gpt-oss and deepseek-r1).
-            Effort strings pass straight through to the Ollama API;
-            unsupported models silently downgrade to boolean
-            behavior. ``AIContext.thinking_budget`` overrides this at
-            request time: ``None``/``0`` → ``think=False``, ``>0`` →
-            uses this config value if it's a string, otherwise
-            ``think=True``.
+            effort level for models that take one (gpt-oss); a model
+            that takes none refuses it (Ollama 0.17). The turn outranks
+            it on what it states (RFC §6.7): ``thinking_budget`` (``0``
+            off, above ``0`` on), ``enable_thinking`` and a
+            ``reasoning_effort`` of ``"none"`` turn thinking off or on,
+            and a ``reasoning_effort`` replaces a configured level. A
+            turn's level is sent only when this is a level, the one sign
+            the model takes levels.
         keep_alive: How long the model stays loaded in memory after
             the request. Maps to Ollama's ``keep_alive`` parameter.
             A duration string with a unit (``"5m"``, ``"30s"``) or an
