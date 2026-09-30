@@ -151,6 +151,15 @@ async def run_suite(
     return samples, warmups
 
 
+def catalog_for(args: argparse.Namespace) -> list[Scenario]:
+    """The scenarios of the suite the command line selected."""
+    if args.suite == "quality":
+        from benchmarks.chat.quality import quality_scenarios
+
+        return quality_scenarios(args.seed, args.variants)
+    return scenarios()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--provider", choices=["cerebras", "openai", "mock"], default="cerebras")
@@ -175,12 +184,7 @@ def main() -> int:
     args = parser.parse_args()
     if args.variants < 1:
         parser.error("variants must be positive")
-    if args.suite == "quality":
-        from benchmarks.chat.quality import quality_scenarios
-
-        catalog = quality_scenarios(args.seed, args.variants)
-    else:
-        catalog = scenarios()
+    catalog = catalog_for(args)
     if args.list:
         for scenario in catalog:
             sys.stdout.write(f"{scenario.name:20} {scenario.description}\n")
