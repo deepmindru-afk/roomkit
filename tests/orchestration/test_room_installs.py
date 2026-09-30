@@ -13,24 +13,28 @@ import asyncio
 import json
 from collections.abc import Callable
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
 from roomkit import RoomKit
 from roomkit.channels.agent import Agent
 from roomkit.channels.ai import AIChannel
+from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelCategory, ChannelType
 from roomkit.models.event import TextContent
 from roomkit.models.room import Room
+from roomkit.orchestration.pipeline import ConversationPipeline, PipelineStage
 from roomkit.orchestration.strategies import loop as loop_module
 from roomkit.orchestration.strategies.loop import Loop
 from roomkit.orchestration.strategies.supervisor import Supervisor, _install_auto
-from roomkit.providers.ai.base import AIResponse, AIToolCall
+from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.tasks.delegate import DelegateHandler, setup_delegation
+from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
 from tests.conftest import make_event
 from tests.test_framework import SimpleChannel
 from tests.tool_loop_modes import respond
@@ -229,4 +233,141 @@ async def test_each_room_s_loop_runs_with_its_own_reviewers(
     )
 
     assert ran == [("clinic-B", ["editor-clinic-B"])]
+    await kit.close()
+
+
+# -- Realtime ------------------------------------------------------------------
+
+
+def _connected(provider: MockRealtimeProvider, session: Any) -> dict[str, Any]:
+    """What *session* was given when it connected."""
+    return [
+        c.args
+        for c in provider.calls
+        if c.method == "connect" and c.args["session_id"] == session.id
+    ][-1]
+
+
+async def test_each_room_s_voice_supervisor_runs_its_own_workers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Room B's call runs B's workers though room A installed a supervisor on
+    the same voice channel first; a room with no install declares nothing (VF1)."""
+    ran: list[tuple[str, list[str]]] = []
+
+    async def run_and_deliver(**kwargs: Any) -> None:
+        ran.append((kwargs["room_id"], [w.channel_id for w in kwargs["workers"]]))
+        kwargs["on_done"]()
+
+    monkeypatch.setattr(_install_auto, "_async_run_and_deliver", run_and_deliver)
+    provider = MockRealtimeProvider()
+    voice = RealtimeVoiceChannel("voice", provider=provider, transport=MockRealtimeTransport())
+    kit = RoomKit()
+    kit.register_channel(voice)
+    sup = Agent("sup", provider=MockAIProvider(responses=["ok"]), tool_search=False)
+    sessions = {}
+    for tenant in (*TENANTS, "plain"):
+        worker = Agent(f"worker-{tenant}", provider=MockAIProvider(responses=["w"]))
+        orchestration = (
+            None
+            if tenant == "plain"
+            else Supervisor(
+                sup, [worker], strategy="sequential", auto_delegate=True, async_delivery=True
+            )
+        )
+        await kit.create_room(room_id=tenant, orchestration=orchestration)
+        await kit.attach_channel(tenant, "voice")
+        sessions[tenant] = await voice.start_session(tenant, f"user-{tenant}", "ws")
+
+    await provider.simulate_tool_call(
+        sessions["clinic-B"], "c1", "delegate_workers", {"task": "B"}
+    )
+    await _until(lambda: len(provider.tool_results) == 1)
+
+    assert ran == [("clinic-B", ["worker-clinic-B"])]
+    assert [t["name"] for t in _connected(provider, sessions["bank-A"])["tools"]] == [
+        "delegate_workers"
+    ]
+    assert not _connected(provider, sessions["plain"])["tools"]
+    await kit.close()
+
+
+async def test_a_handoff_in_one_room_leaves_another_room_s_sessions() -> None:
+    """A pipeline's handoff in room A reconfigures A's sessions; a session that
+    starts in room B starts with B's active agent, and the channel's own
+    configuration is left as it was (VF2)."""
+    provider = MockRealtimeProvider()
+    voice = RealtimeVoiceChannel(
+        "voice",
+        provider=provider,
+        transport=MockRealtimeTransport(),
+        system_prompt="I am the channel",
+        tool_handler=AsyncMock(return_value="host"),
+    )
+    triage = Agent(
+        "triage",
+        system_prompt="I am TRIAGE",
+        tools=[AITool(name="lookup", description="l", parameters={})],
+    )
+    billing = Agent(
+        "billing",
+        system_prompt="I am BILLING",
+        tools=[AITool(name="refund", description="r", parameters={})],
+    )
+    kit = RoomKit()
+    for channel in (voice, triage, billing):
+        kit.register_channel(channel)
+    ConversationPipeline(
+        stages=[
+            PipelineStage(phase="triage", agent_id="triage", next="billing"),
+            PipelineStage(phase="billing", agent_id="billing", next=None),
+        ]
+    ).install(kit, [triage, billing], voice_channel_id="voice")
+    for room_id in ("room-A", "room-B"):
+        await kit.create_room(room_id=room_id)
+        await kit.attach_channel(room_id, "voice")
+    in_a = await voice.start_session("room-A", "caller-a", "ws")
+
+    handed = {"target": "billing", "reason": "r", "summary": "s"}
+    await provider.simulate_tool_call(in_a, "c1", "handoff_conversation", handed)
+    await _until(lambda: len(provider.tool_results) == 1)
+    in_b = await voice.start_session("room-B", "caller-b", "ws")
+
+    connected = _connected(provider, in_b)
+    assert connected["system_prompt"].startswith("I am TRIAGE")
+    assert [t["name"] for t in connected["tools"]] == ["lookup", "handoff_conversation"]
+    assert (voice._system_prompt, voice._tools) == ("I am the channel", None)
+    await kit.close()
+
+
+async def test_reconfiguring_a_session_changes_that_session_only() -> None:
+    """An application changing one call's instructions leaves the channel's
+    configuration, so the next session of another room starts with it (RFC §12.4)."""
+    provider = MockRealtimeProvider()
+    voice = RealtimeVoiceChannel(
+        "voice",
+        provider=provider,
+        transport=MockRealtimeTransport(),
+        system_prompt="default",
+        tools=[{"name": "lookup", "description": "l", "parameters": {}}],
+    )
+    kit = RoomKit()
+    kit.register_channel(voice)
+    for room_id in ("room-A", "room-B"):
+        await kit.create_room(room_id=room_id)
+        await kit.attach_channel(room_id, "voice")
+    in_a = await voice.start_session("room-A", "caller-a", "ws")
+
+    await voice.reconfigure_session(
+        in_a,
+        system_prompt="a playful attitude",
+        voice="other",
+        tools=[{"name": "joke", "description": "j", "parameters": {}}],
+    )
+    in_b = await voice.start_session("room-B", "caller-b", "ws")
+
+    connected = _connected(provider, in_b)
+    assert connected["system_prompt"] == "default"
+    assert [t["name"] for t in connected["tools"]] == ["lookup"]
+    assert in_a.metadata["system_prompt"] == "a playful attitude"
     await kit.close()

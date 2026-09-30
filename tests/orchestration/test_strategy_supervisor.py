@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from roomkit.channels._tool_registry import ChannelRegistry
 from roomkit.channels.agent import Agent
 from roomkit.core.exceptions import UnservedToolCallError
 from roomkit.models.channel import ChannelBinding
@@ -424,8 +425,7 @@ class TestSupervisorShareChannels:
         # Create a mock that passes isinstance check for RealtimeVoiceChannel
         mock_voice = MagicMock(spec=RealtimeVoiceChannel)
         mock_voice.channel_id = "voice"
-        mock_voice._tools = None
-        mock_voice.tool_handler = None
+        mock_voice._registry = ChannelRegistry("voice", list)
         kit.channels = {"voice": mock_voice}
 
         s = Supervisor(
@@ -438,9 +438,10 @@ class TestSupervisorShareChannels:
         )
         await s.install(kit, "r1")
 
-        # Call the injected tool handler, as the voice channel's session in r1 would
+        # Call the tool set up for r1, as the voice channel's session in r1 would
+        entry = mock_voice._registry.lookup("delegate_workers", "r1")
         with tool_call_in("r1"):
-            result = await mock_voice.tool_handler("delegate_workers", {"task": "Analyze"})
+            result = await entry.serve({"task": "Analyze"})
         parsed = json.loads(result)
         assert parsed["status"] == "dispatched"
 

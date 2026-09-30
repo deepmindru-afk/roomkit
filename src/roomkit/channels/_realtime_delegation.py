@@ -98,6 +98,7 @@ class RealtimeDelegationMixin:
     _session_rooms: dict[str, str]
     _session_spans: dict[str, str]
     _session_tools: dict[str, list[dict[str, Any]]]
+    _session_catalogue: Any  # cross-mixin (RealtimeToolsMixin)
     _framework: RoomKit | None
     _provider: RealtimeVoiceProvider
     _reasoning_backend: ReasoningBackend | None
@@ -318,7 +319,8 @@ class RealtimeDelegationMixin:
         """The session's tools a backend may call: none its policy denies or a
         skill gates, so a tool the backend is offered is one it may call."""
         with self._state_lock:
-            tools = list(self._session_tools.get(session_id, []))
+            declared = session_id in self._session_tools
+        tools = self._session_catalogue(session_id) if declared else []
         return [dict(t) for t in tools if self._tool_reachable(str(t.get("name", "")), session_id)]
 
     async def _fallback(self, session: VoiceSession, delegation_id: str, text: str) -> None:

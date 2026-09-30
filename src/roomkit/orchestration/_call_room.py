@@ -10,7 +10,7 @@ channel install around each call, and refuses a call made outside one.
 from __future__ import annotations
 
 import json
-from collections.abc import Awaitable, Callable, Collection
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from roomkit.tools.context import current_tool_room_id
@@ -22,8 +22,6 @@ NO_CALL_ROOM = json.dumps(
 
 RoomToolServe = Callable[[str, str, dict[str, Any]], Awaitable[Any]]
 """Serves one call: ``(room_id, name, arguments)`` to the result."""
-
-ToolHandlerFn = Callable[[str, dict[str, Any]], Awaitable[Any]]
 
 
 def in_call_room(name: str, serve: RoomToolServe) -> Callable[[dict[str, Any]], Awaitable[Any]]:
@@ -37,22 +35,3 @@ def in_call_room(name: str, serve: RoomToolServe) -> Callable[[dict[str, Any]], 
         return await serve(room_id, name, arguments)
 
     return run
-
-
-def call_room_handler(
-    names: Collection[str], serve: RoomToolServe, fallback: ToolHandlerFn | None
-) -> ToolHandlerFn:
-    """A tool handler serving *names* in the room of each call, the other
-    tools by *fallback* (the handler it wraps), or as unknown without one."""
-
-    async def handler(name: str, arguments: dict[str, Any]) -> Any:
-        if name not in names:
-            if fallback is not None:
-                return await fallback(name, arguments)
-            return json.dumps({"error": f"Unknown tool: {name}"})
-        room_id = current_tool_room_id()
-        if room_id is None:
-            return NO_CALL_ROOM
-        return await serve(room_id, name, arguments)
-
-    return handler

@@ -2,17 +2,26 @@
 
 On a realtime channel the active agent is the session's configuration: its
 prompt (with its identity block), its voice and its tools, the handoff tool
-among them. A call to the handoff tool hands the room off; a call to one of the
-active agent's own tools is served by the handler the agent was given; a
-handoff reconfigures the room's sessions to the next agent's.
+among them. The active agent is the room's: a session starts with its room's,
+and a handoff reconfigures that room's sessions to the next agent's, leaving
+the channel and the other rooms as they are. A call to the handoff tool hands
+the room off; a call to one of the active agent's own tools is served by the
+handler the agent was given.
 """
 
 from __future__ import annotations
 
+import functools
 import json
 from typing import TYPE_CHECKING, Any
 
-from roomkit.orchestration.handoff import HandoffHandler, build_handoff_tool
+from roomkit.channels._tool_registry import SessionConfig, orchestration_tool
+from roomkit.orchestration.handoff import (
+    HANDOFF_TOOL,
+    HANDOFF_TOOL_NAME,
+    HandoffHandler,
+    build_handoff_tool,
+)
 from roomkit.orchestration.state import get_conversation_state
 from roomkit.tools.context import current_tool_room_id
 
@@ -21,6 +30,7 @@ if TYPE_CHECKING:
     from roomkit.channels.ai import ToolResult
     from roomkit.channels.realtime_voice import RealtimeVoiceChannel
     from roomkit.core.framework import RoomKit
+    from roomkit.models.room import Room
     from roomkit.orchestration.pipeline import PipelineStage
     from roomkit.providers.ai.base import AITool
 
@@ -56,6 +66,60 @@ class RealtimePipeline:
         self.agent_configs: dict[str, dict[str, Any]] = {
             agent.channel_id: self._agent_config(agent, stages) for agent in agents
         }
+
+    def install(self) -> None:
+        """Serve the handoff and the agents' own tools on the channel, and start
+        each new session with its room's active agent."""
+        registry = self._rtv._registry
+        # Declared by each agent's configuration, with its own targets: never
+        # hidden by Tool Search, served by the handoff handler.
+        handoff = orchestration_tool(HANDOFF_TOOL, self.serve_handoff, always_declared=False)
+        registry.register(handoff, owner=self)
+        for name, definition in self._agent_tools().items():
+            entry = orchestration_tool(
+                definition,
+                functools.partial(self.serve_agent_tool, name),
+                always_declared=False,
+                deferrable=True,
+            )
+            registry.register(entry, owner=self)
+        registry.set_session_source(self.session_config, owner=self)
+
+    def _agent_tools(self) -> dict[str, AITool]:
+        """The agents' own tools the pipeline serves: a name the channel's host
+        tools carry is the channel's to serve (RFC §19.5)."""
+        host = {tool.get("name") for tool in self._rtv._tools or []}
+        tools: dict[str, AITool] = {}
+        for agent in self._agent_map.values():
+            for tool in agent._user_tools:
+                if tool.name not in host and tool.name != HANDOFF_TOOL_NAME:
+                    tools.setdefault(tool.name, tool)
+        return tools
+
+    async def session_config(self, room_id: str) -> SessionConfig | None:
+        """What a new session of *room_id* starts with: its active agent's."""
+        room = await self._kit.get_room(room_id)
+        state = get_conversation_state(room)
+        agent_id = state.active_agent_id or self._default_agent_id
+        config = self.agent_configs.get(agent_id)
+        if config is None:
+            return None
+        return SessionConfig(
+            system_prompt=self._prompt_for(agent_id, room),
+            voice=config["voice"],
+            tools=config["tools"],
+        )
+
+    def _prompt_for(self, agent_id: str, room: Room) -> str | None:
+        """*agent_id*'s prompt in *room*, its identity in the room's language."""
+        prompt = self.agent_configs[agent_id]["system_prompt"]
+        lang = self._handler.get_room_language(room, agent_id)
+        agent = self._agent_map.get(agent_id)
+        if lang and agent is not None:
+            base = getattr(agent, "system_prompt", None) or ""
+            identity = agent.build_identity_block(language=lang)
+            prompt = (base + identity) if identity else prompt
+        return prompt
 
     def _agent_config(self, agent: Agent, stages: list[PipelineStage]) -> dict[str, Any]:
         """The prompt, voice and tools *agent*'s sessions run with."""
@@ -141,12 +205,11 @@ class RealtimePipeline:
             output["message"] = self.greeting(target, language=lang)
         return json.dumps(output)
 
-    async def serve_agent_tool(
-        self, channel_handler: Any, name: str, arguments: dict[str, Any]
-    ) -> ToolResult:
-        """Serve a call other than the handoff (RFC §19.5): the active agent's
-        own tool by the handler the agent was given, any other tool, and an
-        agent tool the agent has no handler for, by the channel's."""
+    async def serve_agent_tool(self, name: str, arguments: dict[str, Any]) -> ToolResult:
+        """Serve a call to an agent's tool (RFC §19.5): the active agent's own
+        by the handler the agent was given, and one the agent has no handler
+        for, or does not declare, by the channel's."""
+        channel_handler = self._rtv._tool_handler
         agent = await self._active_agent()
         agent_handler = agent._user_tool_handler if agent is not None else None
         agent_tools = agent._user_tools if agent is not None else []
@@ -171,19 +234,9 @@ class RealtimePipeline:
             return
         config = self.agent_configs[new_id]
         rtv = self._rtv
-
-        # Check for per-room language override
         room = await self._kit.get_room(room_id)
+        prompt = self._prompt_for(new_id, room)
         lang = self._handler.get_room_language(room, new_id)
-
-        # Rebuild prompt with language if needed
-        prompt = config["system_prompt"]
-        if lang:
-            agent = self._agent_map.get(new_id)
-            if agent is not None:
-                base = getattr(agent, "system_prompt", None) or ""
-                identity = agent.build_identity_block(language=lang)
-                prompt = (base + identity) if identity else prompt
 
         for session in rtv.get_room_sessions(room_id):
             await rtv.reconfigure_session(

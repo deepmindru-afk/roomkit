@@ -42,7 +42,12 @@ from roomkit.channels._skill_constants import (
     RUN_SCRIPT_SCHEMA,
     TOOL_RUN_SCRIPT,
 )
-from roomkit.channels._tool_registry import ChannelRegistry, channel_tool, schema_tool
+from roomkit.channels._tool_registry import (
+    ChannelRegistry,
+    SessionConfig,
+    channel_tool,
+    schema_tool,
+)
 from roomkit.channels._voice_pipeline import VoicePipelineMixin
 from roomkit.channels.ai import ToolResult
 from roomkit.channels.base import Channel, FrameworkAwareChannel
@@ -793,18 +798,6 @@ class RealtimeVoiceChannel(
             "voice": self._voice,
         }
 
-    def _inject_orchestration_tool(self, tool_def: dict[str, Any]) -> None:
-        """Declare a tool orchestration wires on this channel, pinned under
-        Tool Search (RFC §21.1)."""
-        self._tools = [*(self._tools or []), tool_def]
-        self._pin_orchestration_tool(tool_def["name"])
-
-    def _pin_orchestration_tool(self, name: str) -> None:
-        """Keep a tool orchestration injected declared under Tool Search (RFC
-        §21.1): the agent is told to call it, not to go and find it."""
-        if self._tool_search_support is not None:
-            self._tool_search_support.pin(name)
-
     def configure(
         self,
         *,
@@ -815,8 +808,13 @@ class RealtimeVoiceChannel(
         """Update channel defaults for future sessions.
 
         Active sessions are not affected — use ``reconfigure_session``
-        for those.
+        for those. A tool under a name orchestration serves is refused
+        (RFC §21.1).
         """
+        if tools is not None:
+            names = [dict_tool_name(tool) for tool in tools]
+            refuse_given_twice(names, self.channel_id)
+            self._registry.refuse_host_names(names)
         if system_prompt is not None:
             self._system_prompt = system_prompt
         if voice is not None:
@@ -1209,21 +1207,31 @@ class RealtimeVoiceChannel(
         if self._closing or (pending is not None and pending.disconnected):
             raise asyncio.CancelledError("Voice transport disconnected during connection")
 
-    def _session_config(
-        self, meta: dict[str, Any]
+    async def _session_config(
+        self, session: VoiceSession
     ) -> tuple[str | None, str | None, Any, float | None, dict[str, Any] | None]:
         """The prompt, voice, tools, temperature and provider settings a new
-        session starts with."""
-        # Per-room config overrides from metadata
-        system_prompt = meta.get("system_prompt", self._system_prompt)
+        session starts with (RFC §12.4): what the session was opened with, else
+        what was set for its room (a pipeline's active agent), else the
+        channel's."""
+        meta = session.metadata
+        room = await self._room_session_config(session.room_id)
+        system_prompt = meta.get(
+            "system_prompt", room.system_prompt if room is not None else self._system_prompt
+        )
         meta["system_prompt"] = system_prompt
-        voice = meta.get("voice", self._voice)
-        tools = meta.get("tools", self._tools)
+        voice = meta.get("voice", room.voice if room is not None else self._voice)
+        tools = meta.get("tools", room.tools if room is not None else self._tools)
         temperature = meta.get("temperature", self._temperature)
         provider_config = meta.get("provider_config")
         if self._skill_support and self._skill_support.uses_tool_result:
             provider_config = {**(provider_config or {}), "preserve_context": True}
         return system_prompt, voice, tools, temperature, provider_config
+
+    async def _room_session_config(self, room_id: str) -> SessionConfig | None:
+        """What orchestration set for *room_id*'s sessions, if it set anything."""
+        source = self._registry.session_source
+        return await source(room_id) if source is not None else None
 
     async def _connect_session(self, session: VoiceSession, connection: Any) -> VoiceSession:
         room_id, participant_id = session.room_id, session.participant_id
@@ -1265,20 +1273,22 @@ class RealtimeVoiceChannel(
         if self._skill_support:
             self._skill_support.init_session(session.id)
 
-        system_prompt, voice, tools, temperature, provider_config = self._session_config(meta)
+        system_prompt, voice, tools, temperature, provider_config = await self._session_config(
+            session
+        )
 
         # Cache the resolved base tool list (channel defaults + metadata
         # overrides) so skill activation can reconfigure without losing them.
         # Under the lock its readers take: a recovered tool call reaches them
         # from a background task.
         with self._state_lock:
-            self._session_tools[session.id] = self._declared_once(deepcopy(tools or []))
+            self._session_tools[session.id] = self._declared_once(deepcopy(tools or []), room_id)
 
         if self._tool_search_support:
             self._tool_search_support.init_session(session.id, self._session_tools[session.id])
         system_prompt = self._compose_session_prompt(session, system_prompt)
 
-        tools = self._compose_session_tools(session.id, tools)
+        tools = self._compose_session_tools(session, tools)
 
         # Set up audio pipeline BEFORE accept() so that the PortAudio
         # callback closure captures the pipeline's on_audio_received
@@ -1682,24 +1692,45 @@ class RealtimeVoiceChannel(
             threshold=threshold,
             reconfigure_capable=provider.supports_mid_session_reconfigure,
             reachable=self._tool_reachable,
+            never_deferred=self._session_never_deferred,
         )
+
+    def _session_never_deferred(self, session_id: str) -> set[str]:
+        """The tools Tool Search never hides in the session's room (RFC §21.1)."""
+        with self._state_lock:
+            room_id = self._session_rooms.get(session_id)
+        return self._registry.names(room_id, lambda traits: not traits.deferrable)
 
     def _compose_session_tools(
         self,
-        session_id: str,
+        session: VoiceSession,
         tools: list[dict[str, Any]] | None,
         *,
         reset_exposure: bool = False,
         pending_skill: Skill | None = None,
     ) -> list[dict[str, Any]] | None:
-        """Compose the same infrastructure and skill gates on connect and handoff."""
-        if tools is None and not self._tool_search_support and not self._skill_support:
+        """Compose the same infrastructure, orchestration and skill gates on
+        connect, discovery, activation and handoff."""
+        session_id, room_id = session.id, session.room_id
+        orchestration = self._orchestration_dicts(room_id)
+        if (
+            tools is None
+            and not orchestration
+            and not self._tool_search_support
+            and not self._skill_support
+        ):
             return None
-        visible = self._declared_once(deepcopy(tools or []))
+        visible = self._declared_once(deepcopy(tools or []), room_id)
         if self._tool_search_support:
             visible = self._tool_search_support.visible_tools(
-                session_id, visible, reset_exposure=reset_exposure
+                session_id,
+                visible,
+                reset_exposure=reset_exposure,
+                keep=self._registry.names(room_id, lambda traits: not traits.deferrable),
             )
+        # What orchestration set up for the room is declared whatever Tool
+        # Search hides (RFC §21.1).
+        visible += orchestration
         if self._skill_support:
             visible = self._skill_support.skill_tool_dicts() + visible
             visible = self._skill_support.get_visible_tools(visible, session_id, pending_skill)
@@ -1735,9 +1766,9 @@ class RealtimeVoiceChannel(
         async with lock:
             if session.state == VoiceSessionState.ENDED:
                 return
-            # Save caller values before skills mutation — self._tools and
-            # self._system_prompt must store the *user* values, not the
-            # skill-enriched versions, to avoid doubling on the next session.
+            # Save caller values before skills mutation: the session keeps the
+            # *user* values, not the skill-enriched versions, to avoid doubling
+            # on its next reconfiguration.
             caller_tools = deepcopy(tools)
             caller_prompt = system_prompt
 
@@ -1748,7 +1779,7 @@ class RealtimeVoiceChannel(
                 else session.metadata.get("system_prompt", self._system_prompt),
             )
             if tools is not None:
-                tools = self._compose_session_tools(session.id, tools, reset_exposure=True)
+                tools = self._compose_session_tools(session, tools, reset_exposure=True)
 
             await self._provider.reconfigure(
                 session,
@@ -1761,18 +1792,15 @@ class RealtimeVoiceChannel(
 
             if session.state == VoiceSessionState.ENDED:
                 return
-            # Update channel defaults so new sessions use the current config.
-            # Store the original caller values (without skill enrichment).
+            # The session's own configuration: the channel's, for future
+            # sessions and other rooms, is not this session's to change (RFC
+            # §12.4). Stored as the caller gave it (without skill enrichment).
             if caller_prompt is not None:
-                self._system_prompt = caller_prompt
                 session.metadata["system_prompt"] = caller_prompt
-            if voice is not None:
-                self._voice = voice
             if caller_tools is not None:
-                self._tools = deepcopy(caller_tools)
                 with self._state_lock:
                     if session.id in self._sessions:
-                        stored = self._declared_once(deepcopy(caller_tools))
+                        stored = self._declared_once(deepcopy(caller_tools), session.room_id)
                         self._session_tools[session.id] = stored
                         if self._tool_search_support:
                             self._tool_search_support.init_session(session.id, stored)

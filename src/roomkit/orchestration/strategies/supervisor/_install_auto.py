@@ -10,19 +10,18 @@ from __future__ import annotations
 
 import asyncio
 import json
-import weakref
 from typing import TYPE_CHECKING, Any
 
+from roomkit.channels._tool_registry import ToolEntry, orchestration_tool, schema_tool
 from roomkit.core.task_utils import log_task_exception
 from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import ChannelType as _ChannelType
 from roomkit.models.event import RoomEvent
-from roomkit.orchestration._call_room import call_room_handler
-from roomkit.orchestration._installs import first_install
+from roomkit.orchestration._call_room import in_call_room
+from roomkit.orchestration._installs import set_up_for_voice_room
 from roomkit.orchestration.strategies.supervisor._common import (
     WorkerStrategy,
-    logger,
 )
 from roomkit.orchestration.strategies.supervisor.delegate import (
     _async_run_and_deliver,
@@ -33,13 +32,8 @@ from roomkit.orchestration.strategies.supervisor.results import _worker_roles_cs
 
 if TYPE_CHECKING:
     from roomkit.channels.agent import Agent
+    from roomkit.channels.realtime_voice import RealtimeVoiceChannel
     from roomkit.core.framework import RoomKit
-
-# The voice channels already serving ``delegate_workers``: a second room's
-# install wraps nothing.
-_VOICE_SERVING: weakref.WeakSet[Any] = weakref.WeakSet()
-# The rooms each voice channel's ``delegate_workers`` was installed in.
-_VOICE_ROOMS: weakref.WeakKeyDictionary[Any, set[str]] = weakref.WeakKeyDictionary()
 
 
 class _AutoDelegateInstallMixin:
@@ -89,49 +83,22 @@ class _AutoDelegateInstallMixin:
         self._supervisor._registry.set_turn_runner(room_id, turns.run, owner=self)
 
     def _install_async_auto_delegate(self, kit: RoomKit, room_id: str) -> None:
-        """Inject delegate_workers tool into RealtimeVoiceChannel.
+        """Serve ``delegate_workers`` in *room_id*'s realtime sessions.
 
-        The tool handler runs workers in the background and returns
-        immediately. Results are delivered via kit.deliver().
+        The tool runs this install's workers in the background and returns
+        immediately; results are delivered via kit.deliver(). It is set up for
+        the room (RFC §19.7): another room's sessions do not declare it, and a
+        second room's install serves its own team.
         """
-        from roomkit.channels.realtime_voice import RealtimeVoiceChannel
+        tool = schema_tool(_voice_delegate_tool(self._workers, self._strategy))
 
-        strategy = self._strategy
-        workers = self._workers
-        share_channels = self._share_channels
+        def entry_for(voice_channel: RealtimeVoiceChannel) -> ToolEntry:
+            server = _VoiceDelegateServer(
+                kit, voice_channel.channel_id, self._workers, self._strategy, self._share_channels
+            )
+            return orchestration_tool(tool, in_call_room(tool.name, server.serve))
 
-        # Find the RealtimeVoiceChannel in registered channels
-        voice_channel: RealtimeVoiceChannel | None = None
-        for ch in kit.channels.values():
-            if isinstance(ch, RealtimeVoiceChannel):
-                voice_channel = ch
-                break
-
-        if voice_channel is None:
-            logger.warning("async_delivery=True but no RealtimeVoiceChannel found")
-            return
-
-        tool_def = _voice_delegate_tool(workers, strategy)
-
-        # Declared and served once per voice channel: a second room's install
-        # adds its room, and one handler serves the installed rooms' calls. The
-        # channel declares the same tools in every room, so a call from a room
-        # the supervisor was not installed in is refused (RFC §19.7).
-        rooms = _VOICE_ROOMS.setdefault(voice_channel, set())
-        rooms.add(room_id)
-        if not first_install(_VOICE_SERVING, voice_channel):
-            return
-        voice_channel._inject_orchestration_tool(tool_def)
-
-        # Wrap tool handler for async delegation
-        original_handler = voice_channel.tool_handler
-        server = _VoiceDelegateServer(
-            kit, voice_channel.channel_id, rooms, workers, strategy, share_channels
-        )
-
-        voice_channel.tool_handler = call_room_handler(
-            {"delegate_workers"}, server.serve, original_handler
-        )
+        set_up_for_voice_room(kit, room_id, self, entry_for)
 
 
 class _DelegatingTurns:
@@ -234,14 +201,12 @@ class _VoiceDelegateServer:
         self,
         kit: RoomKit,
         voice_channel_id: str,
-        rooms: set[str],
         workers: list[Agent],
         strategy: WorkerStrategy | None,
         share_channels: list[str],
     ) -> None:
         self._kit = kit
         self._voice_channel_id = voice_channel_id
-        self._rooms = rooms
         self._workers = workers
         self._strategy = strategy
         self._share_channels = share_channels
@@ -249,8 +214,6 @@ class _VoiceDelegateServer:
 
     async def serve(self, rid: str, name: str, arguments: dict[str, Any]) -> str:
         """Answer one ``delegate_workers`` call made in room *rid*."""
-        if rid not in self._rooms:
-            return json.dumps({"error": "delegate_workers is not available in this room"})
         running = self._running
         if rid in running:
             return json.dumps(

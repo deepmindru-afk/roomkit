@@ -54,7 +54,17 @@ call's (``current_tool_room_id``, RFC §21.4)."""
 TurnRunner = Callable[["RoomEvent", "ChannelBinding", "RoomContext"], Awaitable["ChannelOutput"]]
 """Takes one of a room's turns in place of the channel's own answer."""
 
-SessionSource = Callable[[str], Awaitable[Any]]
+
+@dataclass(frozen=True, slots=True)
+class SessionConfig:
+    """What a realtime session of a room starts with: a pipeline's active agent."""
+
+    system_prompt: str | None
+    voice: str | None
+    tools: list[dict[str, Any]] | None
+
+
+SessionSource = Callable[[str], Awaitable[SessionConfig | None]]
 """A realtime session's configuration for a room id, or ``None`` for the channel's."""
 
 
@@ -130,6 +140,15 @@ def schema_tool(schema: dict[str, Any]) -> AITool:
         description=schema.get("description", ""),
         parameters=schema.get("parameters", {}),
     )
+
+
+def tool_dict(definition: AITool) -> dict[str, Any]:
+    """The declaration a realtime provider takes for *definition*."""
+    return {
+        "name": definition.name,
+        "description": definition.description,
+        "parameters": definition.parameters,
+    }
 
 
 def channel_tool(definition: AITool, serve: ToolServe | None) -> ToolEntry:
@@ -214,6 +233,19 @@ class ChannelRegistry:
             if name in scope:
                 return f"served in room {rid!r}"
         return None
+
+    def refuse_host_names(self, names: Iterable[str | None]) -> None:
+        """Refuse host tools given under a name orchestration serves in any room."""
+        scopes = [self._channel, *self._rooms.values()]
+        for name in names:
+            if name is not None and any(
+                name in scope and scope[name].entry.source is ToolSource.ORCHESTRATION
+                for scope in scopes
+            ):
+                raise ToolNameCollisionError(
+                    f"Tool {name!r} is already served by orchestration on channel "
+                    f"{self._channel_id!r}: rename it (RFC §21.1)"
+                )
 
     def unregister(self, name: str, *, room_id: str | None = None, owner: object) -> None:
         """Stop serving the entry *owner* registered under *name* in that scope."""

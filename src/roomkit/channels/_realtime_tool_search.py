@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from copy import deepcopy
 from typing import Any
 
@@ -53,12 +53,17 @@ class RealtimeToolSearchSupport:
         threshold: int = 20,
         reconfigure_capable: bool = True,
         reachable: Callable[[str, str], bool] | None = None,
+        never_deferred: Callable[[str], Iterable[str]] | None = None,
     ) -> None:
         self._catalogue: list[dict[str, Any]] = list(catalogue)
         # (tool name, session id) -> whether the session may call it. Search
         # results and listings name nothing else (RFC §21.1): a match the
         # model can never call is a false promise and discloses the gate.
         self._reachable = reachable
+        # session id -> the tools never hidden in its room: the channel's own
+        # and what orchestration set up (RFC §21.1). Declared already, so
+        # ``find_tools`` never names them.
+        self._never_deferred = never_deferred or (lambda _session_id: ())
         self._pinned_names: set[str] = set(pinned or [])
         self._threshold = threshold
         self.uses_call_tool = not reconfigure_capable
@@ -94,11 +99,6 @@ class RealtimeToolSearchSupport:
     @property
     def preamble(self) -> str:
         return FIXED_TOOL_SEARCH_PREAMBLE if self.uses_call_tool else TOOL_SEARCH_PREAMBLE
-
-    def pin(self, name: str) -> None:
-        """Keep *name* declared whatever the catalogue's size, like a tool the
-        host pinned: orchestration injects tools the agent is told to call."""
-        self._pinned_names.add(name)
 
     @property
     def tool_names(self) -> frozenset[str]:
@@ -155,20 +155,26 @@ class RealtimeToolSearchSupport:
     # -- Visibility (replaces the channel's full tool list) --
 
     def visible_tools(
-        self, session_id: str, base_tools: list[dict[str, Any]], *, reset_exposure: bool = False
+        self,
+        session_id: str,
+        base_tools: list[dict[str, Any]],
+        *,
+        reset_exposure: bool = False,
+        keep: Iterable[str] = (),
     ) -> list[dict[str, Any]]:
         """Return the slice of the catalogue that should be live right now.
 
-        Always includes search infra + pinned + currently-exposed matches.
-        ``base_tools`` is the original list the channel was constructed
-        with; we use it only to preserve ordering for deterministic output.
+        Always includes search infra + pinned + *keep* (what is never deferred
+        in the session's room) + currently-exposed matches. ``base_tools`` is
+        the session's catalogue; we use it only to preserve ordering for
+        deterministic output.
         """
         exposed = (
             set()
             if reset_exposure or self.uses_call_tool
             else self._exposed.get(session_id, set())
         )
-        keep = self._pinned_names | exposed | TOOL_SEARCH_INFRA_TOOL_NAMES
+        keep = self._pinned_names | set(keep) | exposed | TOOL_SEARCH_INFRA_TOOL_NAMES
         result: list[dict[str, Any]] = []
         seen: set[str] = set()
         # Search tools first so they sit at the top of the model's
@@ -219,7 +225,11 @@ class RealtimeToolSearchSupport:
             )
 
         max_results = normalize_max_results(arguments.get("max_results"), self._threshold)
-        exclude = self._pinned_names | TOOL_SEARCH_INFRA_TOOL_NAMES
+        exclude = (
+            self._pinned_names
+            | set(self._never_deferred(session_id))
+            | TOOL_SEARCH_INFRA_TOOL_NAMES
+        )
         catalogue = self._searchable(
             session_id,
             self._session_catalogues.get(

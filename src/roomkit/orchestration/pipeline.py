@@ -20,7 +20,6 @@ from roomkit.orchestration.router import ConversationRouter, RoutingConditions, 
 
 if TYPE_CHECKING:
     from roomkit.channels.agent import Agent
-    from roomkit.channels.ai import ToolResult
     from roomkit.core.framework import RoomKit
 
 logger = logging.getLogger("roomkit.orchestration")
@@ -288,9 +287,9 @@ class ConversationPipeline:
         """Wire speech-to-speech orchestration on a RealtimeVoiceChannel.
 
         Builds per-agent configurations (system prompt with identity block,
-        voice, handoff tools), sets the initial agent config, and installs
-        a tool handler that intercepts ``handoff_conversation`` calls and
-        reconfigures the provider session on handoff.
+        voice, handoff tools), serves the handoff and the agents' tools on the
+        channel, starts each new session with its room's active agent, and
+        reconfigures a room's sessions on its handoffs (RFC §19.5).
         """
         from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 
@@ -311,34 +310,8 @@ class ConversationPipeline:
             greet_on_handoff=greet_on_handoff,
             greeting_prompt=greeting_prompt,
         )
-        agent_configs = wiring.agent_configs
-
-        # The handoff tool stays declared under Tool Search (RFC §21.1).
-        rtv._pin_orchestration_tool("handoff_conversation")
-
-        # Set initial agent config on the RealtimeVoiceChannel
-        if default_agent_id in agent_configs:
-            initial = agent_configs[default_agent_id]
-            rtv.configure(
-                system_prompt=initial["system_prompt"],
-                voice=initial["voice"],
-                tools=initial["tools"],
-            )
-
-        # Install tool handler that intercepts handoff_conversation
-        original_handler = rtv.tool_handler
-
-        async def _realtime_tool_handler(
-            name: str,
-            arguments: dict[str, Any],
-        ) -> ToolResult:
-            if name != "handoff_conversation":
-                return await wiring.serve_agent_tool(original_handler, name, arguments)
-            return await wiring.serve_handoff(arguments)
-
-        rtv.tool_handler = _realtime_tool_handler
-
-        # on_handoff_complete: reconfigure the realtime session
+        wiring.install()
+        # on_handoff_complete: reconfigure the room's realtime sessions
         handler.on_handoff_complete = wiring.on_handoff_complete
 
         logger.info(

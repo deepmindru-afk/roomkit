@@ -284,62 +284,37 @@ def setup_delegation(
     channel._registry.register(entry, owner=handler)
 
 
-def _aitool_to_dict(tool: AITool) -> dict[str, Any]:
-    """Convert an AITool to the dict format used by RealtimeVoiceChannel."""
-    return {
-        "name": tool.name,
-        "description": tool.description,
-        "parameters": tool.parameters,
-    }
-
-
 def setup_realtime_delegation(
     channel: RealtimeVoiceChannel,
     handler: DelegateHandler,
     *,
     tool: AITool | None = None,
 ) -> None:
-    """Wire delegation into a RealtimeVoiceChannel's tool chain.
+    """Serve the delegate tool on a RealtimeVoiceChannel.
 
-    Injects the delegate tool dict into ``channel._tools`` and wraps
-    ``channel._tool_handler`` to intercept ``delegate_task`` calls.
-    Room ID is resolved from the current voice session via
-    ``get_current_voice_session()`` + ``channel.session_rooms``.
+    Declares ``delegate_task`` in the channel's sessions and serves its calls
+    with *handler*, delegating from the room of the call: the session's room,
+    which the channel installs as the tool call context (RFC §21.4, §23.4).
 
     Args:
         channel: The realtime voice channel to wire delegation into.
         handler: The delegate handler that processes tool calls.
         tool: Optional custom delegate tool (e.g. from :func:`build_delegate_tool`).
+
+    Raises:
+        RuntimeError: Delegation is already set up on the channel.
     """
-    from roomkit.channels.realtime_voice import get_current_voice_session
-
-    tool_def = _aitool_to_dict(tool or DELEGATE_TOOL)
-
-    # Guard against double setup
-    if channel._tools and any(t.get("name") == "delegate_task" for t in channel._tools):
+    if channel._registry.lookup(DELEGATE_TOOL_NAME, None) is not None:
         msg = f"setup_realtime_delegation() already called for channel '{channel.channel_id}'"
         raise RuntimeError(msg)
 
-    channel._inject_orchestration_tool(tool_def)
+    async def delegate(room_id: str, name: str, arguments: dict[str, Any]) -> str:
+        result = await handler.handle(
+            room_id=room_id,
+            calling_agent_id=channel.channel_id,
+            arguments=arguments,
+        )
+        return json.dumps(result)
 
-    original = channel._tool_handler
-
-    async def delegate_aware_handler(name: str, arguments: dict[str, Any]) -> str:
-        if name == "delegate_task":
-            session = get_current_voice_session()
-            room_id: str | None = None
-            if session is not None:
-                room_id = channel.session_rooms.get(session.id)
-            if room_id is None:
-                return json.dumps({"error": "No voice session context (room_id unavailable)"})
-            result = await handler.handle(
-                room_id=room_id,
-                calling_agent_id=channel.channel_id,
-                arguments=arguments,
-            )
-            return json.dumps(result)
-        if original:
-            return await original(name, arguments)
-        return json.dumps({"error": f"Unknown tool: {name}"})
-
-    channel._tool_handler = delegate_aware_handler
+    entry = orchestration_tool(tool or DELEGATE_TOOL, in_call_room(DELEGATE_TOOL_NAME, delegate))
+    channel._registry.register(entry, owner=handler)

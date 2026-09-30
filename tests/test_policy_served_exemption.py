@@ -27,6 +27,7 @@ from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.tasks.delegate import DELEGATE_TOOL, DelegateHandler, setup_delegation
 from roomkit.tools.human_input import HumanInputToolHandler
 from roomkit.tools.policy import ToolPolicy
+from roomkit.voice.base import VoiceSession
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
 from tests.test_hook_tool_restrictions import _DONE, _Recorder, _round, _turn
 from tests.test_realtime_fixed_tools import call
@@ -202,8 +203,9 @@ class TestOneDeclarationPerName:
             tool_search=True,
             tool_search_pinned=["lookup"],
         )
+        session = VoiceSession(id="s1", room_id="r1", participant_id="p", channel_id="rt")
         composed = channel._compose_session_tools(
-            "s1",
+            session,
             [
                 {"name": "find_tools", "description": "host", "parameters": {}},
                 {"name": "lookup", "description": "first", "parameters": {}},

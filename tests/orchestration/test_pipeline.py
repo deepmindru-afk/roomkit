@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -916,6 +917,11 @@ def _mock_kit_with_rtv(rtv_channel_id: str = "rtv"):
     return kit, rtv
 
 
+async def _serve(rtv: Any, session: Any, name: str, arguments: dict[str, Any]) -> Any:
+    """Serve one call the way the channel serves a provider's, in the session's room."""
+    return await rtv._call_tool_handler(session, name, arguments, session.room_id, None)
+
+
 class TestRealtimeInstall:
     def test_install_detects_realtime_channel(self):
         """install() detects RealtimeVoiceChannel and uses _wire_realtime."""
@@ -933,15 +939,17 @@ class TestRealtimeInstall:
         pipeline.install(kit, [a, b], voice_channel_id="rtv")
 
         # Agents should NOT have handoff tools injected directly
-        # (they're config-only, wiring goes through the RTV tool handler)
+        # (they're config-only, the RTV serves the handoff)
         assert len(a.extra_tools) == 0
         assert len(b.extra_tools) == 0
 
-        # RTV should have a tool handler installed
-        assert rtv.tool_handler is not None
+        # The RTV serves the handoff, beside the host's handler it leaves alone
+        assert rtv._registry.lookup("handoff_conversation", None) is not None
+        assert rtv.tool_handler is None
 
-    def test_wire_realtime_sets_initial_config(self):
-        """Initial agent's config is applied to the RTV channel."""
+    async def test_wire_realtime_sets_initial_config(self):
+        """A room's sessions start with the initial agent's config; the RTV
+        channel's own defaults are left as they are (RFC §19.5)."""
         pipeline = ConversationPipeline(
             stages=[
                 PipelineStage(phase="triage", agent_id="agent-triage", next="handling"),
@@ -962,20 +970,24 @@ class TestRealtimeInstall:
             system_prompt="Give advice.",
         )
 
+        kit.get_room = AsyncMock(return_value=Room(id="r1"))
         pipeline.install(kit, [triage, advisor], voice_channel_id="rtv")
 
+        config = await rtv._room_session_config("r1")
+
         # Initial config should be the first stage (triage)
-        assert rtv._voice == "v-triage"
-        assert rtv._system_prompt is not None
-        assert "Greet callers." in rtv._system_prompt
-        assert "Role: Triage" in rtv._system_prompt
+        assert config.voice == "v-triage"
+        assert config.system_prompt is not None
+        assert "Greet callers." in config.system_prompt
+        assert "Role: Triage" in config.system_prompt
 
         # Tools should contain the handoff tool
-        assert rtv._tools is not None
-        assert len(rtv._tools) == 1
-        assert rtv._tools[0]["name"] == "handoff_conversation"
+        assert [t["name"] for t in config.tools] == ["handoff_conversation"]
 
-    def test_wire_realtime_per_agent_tool_has_enum(self):
+        # The channel's defaults are not the room's
+        assert (rtv._voice, rtv._system_prompt, rtv._tools) == (None, None, None)
+
+    async def test_wire_realtime_per_agent_tool_has_enum(self):
         """Per-agent handoff tool has enum-constrained targets."""
         pipeline = ConversationPipeline(
             stages=[
@@ -1004,10 +1016,11 @@ class TestRealtimeInstall:
             system_prompt="Help.",
         )
 
+        kit.get_room = AsyncMock(return_value=Room(id="r1"))
         pipeline.install(kit, [triage, advisor], voice_channel_id="rtv")
 
         # Initial tool (triage) should have enum=["agent-advisor"]
-        tool = rtv._tools[0]
+        tool = (await rtv._room_session_config("r1")).tools[0]
         assert tool["parameters"]["properties"]["target"]["enum"] == ["agent-advisor"]
 
     def test_wire_realtime_known_agents_on_handler(self):
@@ -1081,7 +1094,9 @@ class TestRealtimeInstall:
         # Call the tool handler with session set via contextvar
         token = _current_voice_session.set(session)
         try:
-            result = await rtv.tool_handler(
+            result = await _serve(
+                rtv,
+                session,
                 "handoff_conversation",
                 {"target": "agent-advisor", "reason": "needs help", "summary": "context"},
             )
@@ -1140,7 +1155,9 @@ class TestRealtimeInstall:
         # Trigger handoff via tool handler with session set via contextvar
         token = _current_voice_session.set(session)
         try:
-            await rtv.tool_handler(
+            await _serve(
+                rtv,
+                session,
                 "handoff_conversation",
                 {"target": "agent-advisor", "reason": "help", "summary": "ctx"},
             )
@@ -1207,7 +1224,9 @@ class TestRealtimeInstall:
 
         token = _current_voice_session.set(session)
         try:
-            result = await rtv.tool_handler(
+            result = await _serve(
+                rtv,
+                session,
                 "handoff_conversation",
                 {"target": "agent-advisor", "reason": "help", "summary": "ctx"},
             )
@@ -1251,7 +1270,9 @@ class TestRealtimeInstall:
 
         token = _current_voice_session.set(session)
         try:
-            await rtv.tool_handler(
+            await _serve(
+                rtv,
+                session,
                 "handoff_conversation",
                 {"target": "agent-advisor", "reason": "help", "summary": "ctx"},
             )

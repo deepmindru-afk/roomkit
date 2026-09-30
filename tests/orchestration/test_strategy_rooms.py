@@ -73,11 +73,17 @@ async def _voice_rooms(
     return kit, voice, provider, sessions
 
 
-def _declared(voice: RealtimeVoiceChannel) -> list[str]:
-    return [tool["name"] for tool in voice._tools or []]
+def _declared(provider: MockRealtimeProvider, session: Any) -> list[str]:
+    """The tools *session* was declared when it connected."""
+    connects = [
+        c.args
+        for c in provider.calls
+        if c.method == "connect" and c.args["session_id"] == session.id
+    ]
+    return [tool["name"] for tool in connects[-1]["tools"] or []]
 
 
-async def test_a_voice_supervisor_in_two_rooms_declares_once_and_runs_for_the_calling_room(
+async def test_a_voice_supervisor_in_two_rooms_is_declared_in_each_and_runs_for_the_calling_room(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     ran_for: list[str] = []
@@ -99,13 +105,13 @@ async def test_a_voice_supervisor_in_two_rooms_declares_once_and_runs_for_the_ca
     )
     await _until(lambda: len(provider.tool_results) == 1)
 
-    assert _declared(voice) == ["delegate_workers"]
+    assert all(_declared(provider, sessions[t]) == ["delegate_workers"] for t in TENANTS)
     assert ran_for == ["tenant-A"]
     assert json.loads(provider.tool_results[0][2])["status"] == "dispatched"
     await kit.close()
 
 
-async def test_a_voice_loop_in_two_rooms_declares_once_and_runs_for_the_calling_room(
+async def test_a_voice_loop_in_two_rooms_is_declared_in_each_and_runs_for_the_calling_room(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     ran_for: list[str] = []
@@ -123,7 +129,7 @@ async def test_a_voice_loop_in_two_rooms_declares_once_and_runs_for_the_calling_
     await provider.simulate_tool_call(sessions["tenant-A"], "c1", "delegate_loop", {"task": "A"})
     await _until(lambda: len(provider.tool_results) == 1)
 
-    assert _declared(voice) == ["delegate_loop"]
+    assert all(_declared(provider, sessions[t]) == ["delegate_loop"] for t in TENANTS)
     assert ran_for == ["tenant-A"]
     await kit.close()
 
@@ -171,7 +177,7 @@ async def test_voice_results_continue_the_chain_of_the_models_answer(
     assert dispatched == [("supervisor", 4), ("loop", 4)]
 
 
-async def test_a_voice_supervisor_refuses_a_room_it_was_not_installed_in(
+async def test_a_voice_supervisor_is_not_served_in_a_room_it_was_not_installed_in(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     ran_for: list[str] = []
@@ -194,7 +200,9 @@ async def test_a_voice_supervisor_refuses_a_room_it_was_not_installed_in(
     await provider.simulate_tool_call(session, "c1", "delegate_workers", {"task": "C"})
     await _until(lambda: len(provider.tool_results) == 1)
 
-    assert "not available in this room" in json.loads(provider.tool_results[0][2])["error"]
+    # Not declared in that room's session, and nothing serves it there.
+    assert _declared(provider, session) == []
+    assert "error" in json.loads(provider.tool_results[0][2])
     assert ran_for == []
     await kit.close()
 
@@ -415,7 +423,7 @@ async def test_a_realtime_pipeline_declares_the_channels_and_the_active_agents_t
     agent_tool = await pipeline.call(session, "c1", "lookup_order")
     channel_tool = await pipeline.call(session, "c2", "describe_webcam")
 
-    assert _declared(pipeline.voice) == [
+    assert _declared(pipeline.provider, session) == [
         "describe_webcam",
         "lookup_order",
         "handoff_conversation",

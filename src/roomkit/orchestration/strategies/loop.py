@@ -10,16 +10,16 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import weakref
 from typing import TYPE_CHECKING, Any
 
+from roomkit.channels._tool_registry import orchestration_tool, schema_tool
 from roomkit.core.task_utils import log_task_exception
 from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import ChannelType
 from roomkit.models.event import EventSource, RoomEvent, TextContent
-from roomkit.orchestration._call_room import call_room_handler
-from roomkit.orchestration._installs import first_install
+from roomkit.orchestration._call_room import in_call_room
+from roomkit.orchestration._installs import set_up_for_voice_room
 from roomkit.orchestration.base import Orchestration
 from roomkit.orchestration.state import (
     ConversationState,
@@ -36,12 +36,6 @@ if TYPE_CHECKING:
     from roomkit.core.framework import RoomKit
 
 logger = logging.getLogger("roomkit.orchestration.strategies.loop")
-
-# A loop installed in several rooms wires a voice channel once (RFC §19.7):
-# the voice channels it serves ``delegate_loop`` on, with the rooms each one
-# was installed in.
-_LOOP_VOICE_SERVING: weakref.WeakSet[Any] = weakref.WeakSet()
-_LOOP_VOICE_ROOMS: weakref.WeakKeyDictionary[Any, set[str]] = weakref.WeakKeyDictionary()
 
 
 class Loop(Orchestration):
@@ -182,44 +176,18 @@ class Loop(Orchestration):
     # -- Async delivery (voice) -----------------------------------------------
 
     def _install_async_loop(self, kit: RoomKit, room_id: str) -> None:
-        """Inject the ``delegate_loop`` tool into RealtimeVoiceChannel, once.
+        """Serve ``delegate_loop`` in *room_id*'s realtime sessions.
 
-        The voice channel serves every room the loop is installed in (RFC
-        §19.7): a second room's install adds its room, each call runs the loop
-        for the room it came from, and a call from a room the loop was not
-        installed in is refused, since the channel declares the same tools in
-        every room.
+        The tool runs this install's loop in the background for the room of
+        the call (RFC §19.7): another room's sessions do not declare it, and a
+        second room's install serves its own reviewers.
         """
-        from roomkit.channels.realtime_voice import RealtimeVoiceChannel
-
-        producer = self._agent
-        reviewers = self._reviewers
-        max_iter = self._max_iterations
-        strategy = self._strategy
-
-        voice_channel: RealtimeVoiceChannel | None = None
-        for ch in kit.channels.values():
-            if isinstance(ch, RealtimeVoiceChannel):
-                voice_channel = ch
-                break
-
-        if voice_channel is None:
-            logger.warning("async_delivery=True but no RealtimeVoiceChannel found")
-            return
-
-        tool_def = _loop_tool(reviewers)
-
-        rooms = _LOOP_VOICE_ROOMS.setdefault(voice_channel, set())
-        rooms.add(room_id)
-        if not first_install(_LOOP_VOICE_SERVING, voice_channel):
-            return
-        voice_channel._inject_orchestration_tool(tool_def)
-
-        original_handler = voice_channel.tool_handler
-        server = _VoiceLoopServer(kit, rooms, producer, reviewers, strategy, max_iter)
-        voice_channel.tool_handler = call_room_handler(
-            {"delegate_loop"}, server.serve, original_handler
+        tool = schema_tool(_loop_tool(self._reviewers))
+        server = _VoiceLoopServer(
+            kit, self._agent, self._reviewers, self._strategy, self._max_iterations
         )
+        entry = orchestration_tool(tool, in_call_room(tool.name, server.serve))
+        set_up_for_voice_room(kit, room_id, self, lambda _channel: entry)
 
 
 class _LoopTurns:
@@ -289,14 +257,12 @@ class _VoiceLoopServer:
     def __init__(
         self,
         kit: RoomKit,
-        rooms: set[str],
         producer: Agent,
         reviewers: list[Agent],
         strategy: WorkerStrategy | None,
         max_iterations: int,
     ) -> None:
         self._kit = kit
-        self._rooms = rooms
         self._producer = producer
         self._reviewers = reviewers
         self._strategy = strategy
@@ -305,8 +271,6 @@ class _VoiceLoopServer:
 
     async def serve(self, rid: str, name: str, arguments: dict[str, Any]) -> ToolResult:
         """Answer one ``delegate_loop`` call made in room *rid*."""
-        if rid not in self._rooms:
-            return json.dumps({"error": "delegate_loop is not available in this room"})
         running = self._running
         if rid in running:
             return json.dumps({"status": "already_running", "message": "Loop is already running."})

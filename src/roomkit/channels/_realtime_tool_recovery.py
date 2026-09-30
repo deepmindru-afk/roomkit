@@ -139,6 +139,8 @@ class RealtimeToolRecoveryMixin:
     _fire_gate_refusal: Any  # cross-mixin (RealtimeToolsMixin)
     _report_raised_call: Any  # cross-mixin (RealtimeToolsMixin)
     _call_tool_handler: Any  # cross-mixin (RealtimeToolsMixin)
+    _serves_tool: Any  # cross-mixin (RealtimeToolsMixin)
+    _session_catalogue: Any  # cross-mixin (RealtimeToolsMixin)
     _truncate_tool_result: Any  # cross-mixin (RealtimeToolsMixin)
 
     # ------------------------------------------------------------------
@@ -207,26 +209,18 @@ class RealtimeToolRecoveryMixin:
     # ------------------------------------------------------------------
 
     def _known_tool_names(self, session_id: str) -> set[str]:
-        with self._state_lock:
-            session_tools = self._session_tools.get(session_id)
-        tools = session_tools if session_tools is not None else self._tools or []
+        tools = self._session_catalogue(session_id)
         return {t["name"] for t in tools if isinstance(t, dict) and "name" in t}
 
     def _tool_param_names(self, tool_name: str, session_id: str) -> list[str]:
-        with self._state_lock:
-            session_tools = self._session_tools.get(session_id)
-        tools = session_tools if session_tools is not None else self._tools or []
-        for t in tools:
+        for t in self._session_catalogue(session_id):
             if isinstance(t, dict) and t.get("name") == tool_name:
                 return list(t.get("parameters", {}).get("properties", {}).keys())
         return []
 
     def _tool_param_types(self, tool_name: str, session_id: str) -> dict[str, str]:
         """Return ``{param_name: json_type}`` for the given tool."""
-        with self._state_lock:
-            session_tools = self._session_tools.get(session_id)
-        tools = session_tools if session_tools is not None else self._tools or []
-        for t in tools:
+        for t in self._session_catalogue(session_id):
             if isinstance(t, dict) and t.get("name") == tool_name:
                 props = t.get("parameters", {}).get("properties", {})
                 return {k: v.get("type", "string") for k, v in props.items()}
@@ -324,7 +318,7 @@ class RealtimeToolRecoveryMixin:
 
             # Run tool_handler.
             handler_result: str | None = None
-            if self._tool_handler is not None:
+            if self._serves_tool(tool_name, room_id or session.room_id):
                 refused: str | None = None
                 try:
                     raw = await self._call_tool_handler(

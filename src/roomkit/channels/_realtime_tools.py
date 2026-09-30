@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import threading
@@ -19,7 +20,7 @@ from roomkit.channels._realtime_context import (
 )
 from roomkit.channels._served_tools import CollisionLog, declared_once, dict_tool_name
 from roomkit.channels._skill_constants import TOOL_ACTIVATE_SKILL
-from roomkit.channels._tool_registry import ChannelRegistry, ToolSource
+from roomkit.channels._tool_registry import ChannelRegistry, ToolSource, tool_dict
 from roomkit.channels._tool_search_constants import TOOL_CALL_TOOL
 from roomkit.channels.ai import _current_loop_ctx, _ToolLoopContext
 from roomkit.core.exceptions import ToolRefusedError
@@ -560,7 +561,7 @@ class RealtimeToolsMixin:
         in its log, so the caller is where the distinction is spent.
         """
         handler_result: str | None = None
-        if self._tool_handler is not None:
+        if self._serves_tool(name, room_id or session.room_id):
             logger.info(
                 "Executing tool %s(%s) via handler for session %s",
                 name,
@@ -633,16 +634,27 @@ class RealtimeToolsMixin:
         room_id: str | None,
         gate_context: RoomContext | None,
     ) -> Any:
-        """The host handler's answer to one call, run inside the tool call
-        context (RFC §21.4), whichever path brought the call."""
+        """The answer to one call, run inside the tool call context (RFC §21.4),
+        whichever path brought the call: the tool orchestration set up for the
+        room, else the host's handler."""
         loop_ctx = await self._realtime_loop_context(session, room_id, gate_context)
         token = _current_voice_session.set(session)
         loop_token = _current_loop_ctx.set(loop_ctx)
         try:
+            entry = self._registry.lookup(name, loop_ctx.room_id)
+            if entry is not None and entry.serve is not None:
+                result = entry.serve(arguments)
+                return await result if inspect.isawaitable(result) else result
             return await self._tool_handler(name, arguments)
         finally:
             _current_loop_ctx.reset(loop_token)
             _current_voice_session.reset(token)
+
+    def _serves_tool(self, name: str, room_id: str | None) -> bool:
+        """Whether something serves a call to *name* in *room_id*: what
+        orchestration set up there, or the host's handler."""
+        entry = self._registry.lookup(name, room_id)
+        return (entry is not None and entry.serve is not None) or self._tool_handler is not None
 
     async def _realtime_loop_context(
         self, session: VoiceSession, room_id: str | None, gate_context: RoomContext | None
@@ -729,7 +741,7 @@ class RealtimeToolsMixin:
         support = self._skill_support
         if self._provider.supports_mid_session_reconfigure:
             base_tools = self._session_base_tools(session.id)
-            visible = self._compose_session_tools(session.id, base_tools, pending_skill=skill)
+            visible = self._compose_session_tools(session, base_tools, pending_skill=skill)
             addendum = support.activated_skills_prompt(session.id, skill)
             if addendum or skill.metadata.gated_tool_names:
                 prompt = self._compose_session_prompt(
@@ -745,6 +757,26 @@ class RealtimeToolsMixin:
         """The session's authorized catalogue, read under the state lock."""
         with self._state_lock:
             return self._session_tools.get(session_id, self._tools or [])
+
+    def _session_catalogue(self, session_id: str) -> list[dict[str, Any]]:
+        """Every tool the session declares beside the channel's own: its base
+        catalogue, then what orchestration set up for its room (RFC §19.7).
+        What a call is checked, validated and recovered against."""
+        with self._state_lock:
+            base = list(self._session_tools.get(session_id, self._tools or []))
+            room_id = self._session_rooms.get(session_id)
+        return base + self._orchestration_dicts(room_id, {dict_tool_name(t) for t in base})
+
+    def _orchestration_dicts(
+        self, room_id: str | None, skip: Container[str | None] = ()
+    ) -> list[dict[str, Any]]:
+        """The declarations of the tools orchestration declares in *room_id*'s
+        sessions, bar the names in *skip*."""
+        return [
+            tool_dict(entry.definition)
+            for entry in self._registry.entries(room_id, source=ToolSource.ORCHESTRATION)
+            if entry.traits.always_declared and entry.name not in skip
+        ]
 
     def _realtime_tool_event(
         self,
@@ -819,9 +851,7 @@ class RealtimeToolsMixin:
                 if tool["name"] == name:
                     params = tool.get("parameters")
                     return params if isinstance(params, dict) else None
-        with self._state_lock:
-            tools = self._session_tools.get(session.id, self._tools or [])
-        for t in tools:
+        for t in self._session_catalogue(session.id):
             if isinstance(t, dict) and t.get("name") == name:
                 params = t.get("parameters")
                 return params if isinstance(params, dict) else None
@@ -842,8 +872,7 @@ class RealtimeToolsMixin:
         """
         if name in (self._channel_tool_names() if served is None else served):
             return True
-        with self._state_lock:
-            tools = self._session_tools.get(session.id, self._tools or [])
+        tools = self._session_catalogue(session.id)
         if not tools:
             return True
         return any(isinstance(tool, dict) and tool.get("name") == name for tool in tools)
@@ -856,11 +885,16 @@ class RealtimeToolsMixin:
         """The channel's own tools that escape the policy and skill gating (RFC §21.1)."""
         return frozenset(self._registry.names(None, lambda traits: traits.exempt))
 
-    def _declared_once(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """A session's host tools: none under a name the channel serves, each name
-        once (RFC §21.1, :func:`declared_once`). The channel's own tools are
-        composed in afterwards."""
-        return declared_once(tools, dict_tool_name, self._channel_tool_names(), self._collisions)
+    def _declared_once(
+        self, tools: list[dict[str, Any]], room_id: str | None
+    ) -> list[dict[str, Any]]:
+        """A session's host tools in *room_id*: none under a name the channel or
+        orchestration declares itself there, each name once (RFC §21.1,
+        :func:`declared_once`). Those are composed in afterwards."""
+        served = self._channel_tool_names() | self._registry.names(
+            room_id, lambda traits: traits.always_declared
+        )
+        return declared_once(tools, dict_tool_name, served, self._collisions)
 
     def _tool_reachable(self, name: str, session_id: str) -> bool:
         """Whether the session may call *name*: its tool policy and skill gating.
@@ -1327,7 +1361,7 @@ class RealtimeToolsMixin:
                     base_tools = self._session_tools.get(session.id, self._tools or [])
                 await self._provider.reconfigure(
                     session,
-                    tools=self._compose_session_tools(session.id, base_tools),
+                    tools=self._compose_session_tools(session, base_tools),
                     system_prompt=self._compose_session_prompt(
                         session, session.metadata.get("system_prompt", self._system_prompt)
                     ),
