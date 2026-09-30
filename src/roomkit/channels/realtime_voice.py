@@ -569,38 +569,7 @@ class RealtimeVoiceChannel(
         tool_search_pinned: list[str] | None,
     ) -> None:
         """The tools the channel serves itself: the skills' and Tool Search's."""
-        provider = self._provider
-        # Skills support — skill defs are composed into the tool list at
-        # session-start / reconfigure time, NOT stored in self._tools, to
-        # avoid doubling when reconfigure_session updates self._tools.
-        #
-        # Delivery mode is resolved from the explicit kwarg if given,
-        # otherwise from the provider's reconfigure capability: providers
-        # that cannot safely reconfigure mid-session (Gemini 3.x) must
-        # default to ``inline_full`` so every skill body is in the
-        # initial system_instruction. Others default to ``on_demand`` so
-        # the prompt stays short until a skill is activated.
-        self._skill_support: RealtimeSkillSupport | None = None
-        if skills and (skills.skill_count > 0 or skills.unavailable_skills):
-            from roomkit.channels._realtime_skills import RealtimeSkillSupport
-
-            if skill_delivery_mode is None:
-                resolved_mode = (
-                    "on_demand" if provider.supports_mid_session_reconfigure else "inline_full"
-                )
-            else:
-                resolved_mode = skill_delivery_mode
-
-            self._skill_support = RealtimeSkillSupport(
-                skills,
-                script_executor,
-                delivery_mode=resolved_mode,
-                reconfigure_capable=provider.supports_mid_session_reconfigure,
-                exempt_tools=self._exempt_tool_names,
-            )
-            if self._skill_support.uses_tool_result and not provider.supports_context_preservation:
-                raise ValueError("on_demand skills require provider context preservation")
-
+        self._skill_support = self._skill_support_for(skills, script_executor, skill_delivery_mode)
         self._tool_search_support = self._tool_search_for(
             self._tools,
             skills,
@@ -614,6 +583,47 @@ class RealtimeVoiceChannel(
             self._channel_tool_names(),
             self.channel_id,
         )
+
+    def _skill_support_for(
+        self,
+        skills: SkillRegistry | None,
+        script_executor: ScriptExecutor | None,
+        skill_delivery_mode: str | None,
+    ) -> RealtimeSkillSupport | None:
+        """This channel's skills support, when it has skills to deliver.
+
+        Skill defs are composed into the tool list at session-start and
+        reconfigure time, NOT stored in self._tools, so a session's own
+        reconfiguration does not double them.
+
+        Delivery mode is resolved from the explicit kwarg if given,
+        otherwise from the provider's reconfigure capability: providers
+        that cannot safely reconfigure mid-session (Gemini 3.x) must
+        default to ``inline_full`` so every skill body is in the
+        initial system_instruction. Others default to ``on_demand`` so
+        the prompt stays short until a skill is activated.
+        """
+        if not (skills and (skills.skill_count > 0 or skills.unavailable_skills)):
+            return None
+        from roomkit.channels._realtime_skills import RealtimeSkillSupport
+
+        provider = self._provider
+        if skill_delivery_mode is None:
+            resolved_mode = (
+                "on_demand" if provider.supports_mid_session_reconfigure else "inline_full"
+            )
+        else:
+            resolved_mode = skill_delivery_mode
+        support = RealtimeSkillSupport(
+            skills,
+            script_executor,
+            delivery_mode=resolved_mode,
+            reconfigure_capable=provider.supports_mid_session_reconfigure,
+            exempt_tools=self._exempt_tool_names,
+        )
+        if support.uses_tool_result and not provider.supports_context_preservation:
+            raise ValueError("on_demand skills require provider context preservation")
+        return support
 
     def _register_channel_tools(self) -> None:
         """Register the tools the channel serves itself, each with its traits.
@@ -1638,7 +1648,12 @@ class RealtimeVoiceChannel(
         logger.info("Realtime session %s ended", session.id)
 
     def _compose_session_prompt(
-        self, session: VoiceSession, prompt: str | None, *, pending_skill: Skill | None = None
+        self,
+        session: VoiceSession,
+        prompt: str | None,
+        *,
+        pending_skill: Skill | None = None,
+        search_active: bool | None = None,
     ) -> str | None:
         """One composition path for connection, discovery, activation and handoff."""
         if self._skill_support:
@@ -1651,8 +1666,9 @@ class RealtimeVoiceChannel(
             addendum = self._skill_support.activated_skills_prompt(session.id, pending_skill)
             if addendum:
                 prompt += "\n\n" + addendum
-        if self._tool_search_support and self._tool_search_support.active(session.id):
-            prompt = (prompt or "") + "\n\n" + self._tool_search_support.preamble
+        support = self._tool_search_support
+        if support and (support.active(session.id) if search_active is None else search_active):
+            prompt = (prompt or "") + "\n\n" + support.preamble
         return prompt
 
     def _tool_search_for(
@@ -1712,9 +1728,11 @@ class RealtimeVoiceChannel(
         *,
         reset_exposure: bool = False,
         pending_skill: Skill | None = None,
+        search_active: bool | None = None,
     ) -> list[dict[str, Any]] | None:
         """Compose the same infrastructure, orchestration and skill gates on
-        connect, discovery, activation and handoff."""
+        connect, discovery, activation and handoff; *search_active* decides Tool
+        Search for tools the session is about to declare."""
         session_id, room_id = session.id, session.room_id
         orchestration = self._orchestration_dicts(room_id)
         if (
@@ -1731,6 +1749,7 @@ class RealtimeVoiceChannel(
                 visible,
                 reset_exposure=reset_exposure,
                 keep=self._registry.names(room_id, lambda traits: not traits.deferrable),
+                active=search_active,
             )
         # What orchestration set up for the room is declared whatever Tool
         # Search hides (RFC §21.1).
@@ -1775,19 +1794,22 @@ class RealtimeVoiceChannel(
             # on its next reconfiguration.
             caller_tools = deepcopy(tools)
             caller_prompt = system_prompt
-            # The new catalogue first: whether Tool Search hides it decides
-            # both the prompt's preamble and the declaration (RFC §21.1).
-            if caller_tools is not None:
-                self._store_session_tools(session, caller_tools)
+            # Whether Tool Search hides the new catalogue decides both the
+            # prompt's preamble and the declaration; it is kept only once the
+            # provider took them.
+            search_active = self._search_activates(session, caller_tools)
 
             system_prompt = self._compose_session_prompt(
                 session,
                 system_prompt
                 if system_prompt is not None
                 else session.metadata.get("system_prompt", self._system_prompt),
+                search_active=search_active,
             )
             if tools is not None:
-                tools = self._compose_session_tools(session, tools, reset_exposure=True)
+                tools = self._compose_session_tools(
+                    session, tools, reset_exposure=True, search_active=search_active
+                )
 
             await self._provider.reconfigure(
                 session,
@@ -1805,8 +1827,20 @@ class RealtimeVoiceChannel(
             # §12.4). Stored as the caller gave it (without skill enrichment).
             if caller_prompt is not None:
                 session.metadata["system_prompt"] = caller_prompt
+            if caller_tools is not None:
+                self._store_session_tools(session, caller_tools)
 
             logger.info("Realtime session %s reconfigured", session.id)
+
+    def _search_activates(
+        self, session: VoiceSession, tools: list[dict[str, Any]] | None
+    ) -> bool | None:
+        """Whether Tool Search would hide *tools* in *session*; ``None`` when
+        they change nothing it decides on."""
+        if tools is None or self._tool_search_support is None:
+            return None
+        candidate = self._declared_once(deepcopy(tools), session.room_id)
+        return self._tool_search_support.activates(session.id, candidate)
 
     def _store_session_tools(self, session: VoiceSession, tools: list[dict[str, Any]]) -> None:
         """Keep *tools* as a live session's base catalogue, and let Tool Search

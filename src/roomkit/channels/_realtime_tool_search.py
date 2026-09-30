@@ -158,9 +158,11 @@ class RealtimeToolSearchSupport:
         self._validate_catalogue(effective)
         self._exposed[session_id] = set()
         self._session_catalogues[session_id] = list(effective)
-        self._active[session_id] = not self._auto or (
-            self._deferrable_count(session_id, effective) > self._threshold
-        )
+        self._active[session_id] = self.activates(session_id, effective)
+
+    def activates(self, session_id: str, catalogue: list[dict[str, Any]]) -> bool:
+        """Whether *catalogue*, declared by the session, is hidden behind search."""
+        return not self._auto or self._deferrable_count(session_id, catalogue) > self._threshold
 
     def _deferrable_count(self, session_id: str, catalogue: list[dict[str, Any]]) -> int:
         """How many of *catalogue*'s tools search could hide: what is never
@@ -186,6 +188,7 @@ class RealtimeToolSearchSupport:
         *,
         reset_exposure: bool = False,
         keep: Iterable[str] = (),
+        active: bool | None = None,
     ) -> list[dict[str, Any]]:
         """Return the slice of the catalogue that should be live right now.
 
@@ -193,9 +196,10 @@ class RealtimeToolSearchSupport:
         in the session's room) + currently-exposed matches. ``base_tools`` is
         the session's catalogue; we use it only to preserve ordering for
         deterministic output. A session whose catalogue is small enough sees
-        it whole, without the search tools.
+        it whole, without the search tools. *active* decides it for a
+        catalogue the session is about to declare.
         """
-        if not self.active(session_id):
+        if not (self.active(session_id) if active is None else active):
             return list(base_tools)
         exposed = (
             set()
