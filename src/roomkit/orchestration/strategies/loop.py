@@ -240,25 +240,7 @@ class Loop(Orchestration):
             logger.warning("async_delivery=True but no RealtimeVoiceChannel found")
             return
 
-        reviewer_roles = ", ".join(getattr(r, "role", None) or r.channel_id for r in reviewers)
-        tool_def = {
-            "name": "delegate_loop",
-            "description": (
-                f"Submit work for review by specialists ({reviewer_roles}). "
-                f"The producer will create content and reviewers will evaluate it. "
-                f"Pass the topic or task description."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "task": {
-                        "type": "string",
-                        "description": "The topic or task",
-                    },
-                },
-                "required": ["task"],
-            },
-        }
+        tool_def = _loop_tool(reviewers)
 
         rooms = _LOOP_VOICE_ROOMS.setdefault(voice_channel, set())
         rooms.add(room_id)
@@ -267,44 +249,88 @@ class Loop(Orchestration):
         voice_channel._inject_orchestration_tool(tool_def)
 
         original_handler = voice_channel.tool_handler
-        running: set[str] = set()  # rooms whose loop is running
-
-        async def delegate_loop(rid: str, name: str, arguments: dict[str, Any]) -> ToolResult:
-            if rid not in rooms:
-                return json.dumps({"error": "delegate_loop is not available in this room"})
-            if rid in running:
-                return json.dumps(
-                    {"status": "already_running", "message": "Loop is already running."}
-                )
-            running.add(rid)
-            # If create_task raises (shutdown race), release the room so it
-            # isn't stuck in already_running.
-            try:
-                task = asyncio.create_task(
-                    _async_loop_and_deliver(
-                        kit=kit,
-                        room_id=rid,
-                        producer=producer,
-                        reviewers=reviewers,
-                        strategy=strategy,
-                        task_desc=arguments.get("task", ""),
-                        max_iterations=max_iter,
-                        on_done=lambda: running.discard(rid),
-                    )
-                )
-            except BaseException:
-                running.discard(rid)
-                raise
-            task.add_done_callback(log_task_exception)
-            return json.dumps(
-                {
-                    "status": "started",
-                    "message": "Loop is running. Results will be delivered when ready.",
-                }
-            )
-
+        server = _VoiceLoopServer(kit, rooms, producer, reviewers, strategy, max_iter)
         voice_channel.tool_handler = call_room_handler(
-            {"delegate_loop"}, delegate_loop, original_handler
+            {"delegate_loop"}, server.serve, original_handler
+        )
+
+
+def _loop_tool(reviewers: list[Agent]) -> dict[str, Any]:
+    """The ``delegate_loop`` declaration a voice channel carries."""
+    reviewer_roles = ", ".join(getattr(r, "role", None) or r.channel_id for r in reviewers)
+    return {
+        "name": "delegate_loop",
+        "description": (
+            f"Submit work for review by specialists ({reviewer_roles}). "
+            f"The producer will create content and reviewers will evaluate it. "
+            f"Pass the topic or task description."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "task": {
+                    "type": "string",
+                    "description": "The topic or task",
+                },
+            },
+            "required": ["task"],
+        },
+    }
+
+
+class _VoiceLoopServer:
+    """Serves a voice channel's ``delegate_loop``: runs the loop in the
+    background for the room of the call, and answers at once."""
+
+    def __init__(
+        self,
+        kit: RoomKit,
+        rooms: set[str],
+        producer: Agent,
+        reviewers: list[Agent],
+        strategy: WorkerStrategy | None,
+        max_iterations: int,
+    ) -> None:
+        self._kit = kit
+        self._rooms = rooms
+        self._producer = producer
+        self._reviewers = reviewers
+        self._strategy = strategy
+        self._max_iterations = max_iterations
+        self._running: set[str] = set()  # rooms whose loop is running
+
+    async def serve(self, rid: str, name: str, arguments: dict[str, Any]) -> ToolResult:
+        """Answer one ``delegate_loop`` call made in room *rid*."""
+        if rid not in self._rooms:
+            return json.dumps({"error": "delegate_loop is not available in this room"})
+        running = self._running
+        if rid in running:
+            return json.dumps({"status": "already_running", "message": "Loop is already running."})
+        running.add(rid)
+        # If create_task raises (shutdown race), release the room so it
+        # isn't stuck in already_running.
+        try:
+            task = asyncio.create_task(
+                _async_loop_and_deliver(
+                    kit=self._kit,
+                    room_id=rid,
+                    producer=self._producer,
+                    reviewers=self._reviewers,
+                    strategy=self._strategy,
+                    task_desc=arguments.get("task", ""),
+                    max_iterations=self._max_iterations,
+                    on_done=lambda: running.discard(rid),
+                )
+            )
+        except BaseException:
+            running.discard(rid)
+            raise
+        task.add_done_callback(log_task_exception)
+        return json.dumps(
+            {
+                "status": "started",
+                "message": "Loop is running. Results will be delivered when ready.",
+            }
         )
 
 

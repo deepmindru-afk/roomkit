@@ -8,24 +8,20 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
-import json
 import logging
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
 from roomkit.models.enums import EventType, HookExecution, HookTrigger
+from roomkit.orchestration._realtime_pipeline import RealtimePipeline
 from roomkit.orchestration.handoff import HandoffHandler, build_handoff_tool, setup_handoff
 from roomkit.orchestration.router import ConversationRouter, RoutingConditions, RoutingRule
-from roomkit.orchestration.state import get_conversation_state
-from roomkit.tools.context import current_tool_room_id
 
 if TYPE_CHECKING:
     from roomkit.channels.agent import Agent
     from roomkit.channels.ai import ToolResult
-    from roomkit.channels.realtime_voice import RealtimeVoiceChannel
     from roomkit.core.framework import RoomKit
-    from roomkit.providers.ai.base import AITool
 
 logger = logging.getLogger("roomkit.orchestration")
 
@@ -303,49 +299,24 @@ class ConversationPipeline:
             msg = f"voice_channel_id={rtv_channel_id!r} does not point to a RealtimeVoiceChannel"
             raise TypeError(msg)
 
-        agent_map: dict[str, Agent] = {a.channel_id: a for a in agents}
-        stage_by_agent: dict[str, PipelineStage] = {s.agent_id: s for s in self._stages}
-
-        # Build per-agent configurations
-        agent_configs: dict[str, dict[str, Any]] = {}
-        for agent in agents:
-            prompt = agent.system_prompt or ""
-            identity = agent.build_identity_block()
-            if identity:
-                prompt = prompt + identity
-
-            # Build handoff tool with enum-constrained targets
-            stage = stage_by_agent.get(agent.channel_id)
-            if stage:
-                reachable: set[str] = set()
-                if stage.next:
-                    reachable.add(stage.next)
-                reachable.update(stage.can_return_to)
-
-                targets: list[tuple[str, str | None]] = []
-                for s in self._stages:
-                    if s.phase in reachable and s.agent_id != agent.channel_id:
-                        ta = agent_map.get(s.agent_id)
-                        desc = ta.description if ta else None
-                        if desc is None:
-                            desc = s.description
-                        targets.append((s.agent_id, desc))
-                tool = build_handoff_tool(targets)
-            else:
-                tool = build_handoff_tool([])
-
-            agent_configs[agent.channel_id] = {
-                "system_prompt": prompt or None,
-                "voice": agent.voice,
-                "tools": _agent_session_tools(rtv, agent, tool),
-            }
+        default_stage = self._stage_map.get(self._default_phase or "")
+        default_agent_id = default_stage.agent_id if default_stage else agents[0].channel_id
+        wiring = RealtimePipeline(
+            kit,
+            rtv,
+            agents,
+            self._stages,
+            handler,
+            default_agent_id,
+            greet_on_handoff=greet_on_handoff,
+            greeting_prompt=greeting_prompt,
+        )
+        agent_configs = wiring.agent_configs
 
         # The handoff tool stays declared under Tool Search (RFC §21.1).
         rtv._pin_orchestration_tool("handoff_conversation")
 
         # Set initial agent config on the RealtimeVoiceChannel
-        default_stage = self._stage_map.get(self._default_phase or "")
-        default_agent_id = default_stage.agent_id if default_stage else agents[0].channel_id
         if default_agent_id in agent_configs:
             initial = agent_configs[default_agent_id]
             rtv.configure(
@@ -353,34 +324,6 @@ class ConversationPipeline:
                 voice=initial["voice"],
                 tools=initial["tools"],
             )
-
-        # Per-agent greeting builder (identity + language aware)
-        default_greet = (
-            "Handoff complete. You are now the active agent. "
-            "Please introduce yourself briefly to the caller."
-        )
-
-        def _build_greet(agent_id: str, language: str | None = None) -> str:
-            """Build a greeting message for the given agent and language."""
-            if greeting_prompt:
-                msg = greeting_prompt
-            else:
-                target = agent_map.get(agent_id)
-                role = target.role if target else None
-                if role:
-                    msg = (
-                        f"Handoff complete. You are now the {role}. "
-                        f"Your previous identity in this conversation no longer "
-                        f"applies — introduce yourself in your new role."
-                    )
-                else:
-                    msg = default_greet
-            lang = language
-            if not lang and agent_id in agent_map:
-                lang = getattr(agent_map[agent_id], "language", None)
-            if lang:
-                msg = f"[Respond in {lang}] {msg}"
-            return msg
 
         # Install tool handler that intercepts handoff_conversation
         original_handler = rtv.tool_handler
@@ -390,84 +333,13 @@ class ConversationPipeline:
             arguments: dict[str, Any],
         ) -> ToolResult:
             if name != "handoff_conversation":
-                return await _serve_agent_or_channel_tool(
-                    kit, agent_map, default_agent_id, original_handler, name, arguments
-                )
-
-            # Lazy import to avoid circular dependency
-            from roomkit.channels.realtime_voice import get_current_voice_session
-
-            session = get_current_voice_session()
-            session_id = session.id if session else None
-            room_id = rtv.session_rooms.get(session_id) if session_id else None
-            if not room_id:
-                return json.dumps({"error": "No room context for this session"})
-
-            room = await kit.get_room(room_id)
-            state = get_conversation_state(room)
-            calling_agent = state.active_agent_id or default_agent_id
-
-            result = await handler.handle(
-                room_id=room_id,
-                calling_agent_id=calling_agent,
-                arguments=arguments,
-            )
-
-            output = result.model_dump()
-            if result.accepted and greet_on_handoff:
-                target = arguments.get("target", "")
-                # Re-read room for current language
-                room = await kit.get_room(room_id)
-                lang = handler.get_room_language(room, target)
-                output["message"] = _build_greet(target, language=lang)
-            return json.dumps(output)
+                return await wiring.serve_agent_tool(original_handler, name, arguments)
+            return await wiring.serve_handoff(arguments)
 
         rtv.tool_handler = _realtime_tool_handler
 
         # on_handoff_complete: reconfigure the realtime session
-        async def _on_complete(room_id: str, result: Any) -> None:
-            new_id = result.new_agent_id
-            if not new_id or new_id not in agent_configs:
-                return
-            config = agent_configs[new_id]
-
-            # Check for per-room language override
-            room = await kit.get_room(room_id)
-            lang = handler.get_room_language(room, new_id)
-
-            # Rebuild prompt with language if needed
-            prompt = config["system_prompt"]
-            if lang:
-                agent = agent_map.get(new_id)
-                if agent is not None:
-                    base = getattr(agent, "system_prompt", None) or ""
-                    identity = agent.build_identity_block(language=lang)
-                    prompt = (base + identity) if identity else prompt
-
-            for session in rtv.get_room_sessions(room_id):
-                await rtv.reconfigure_session(
-                    session,
-                    system_prompt=prompt,
-                    voice=config["voice"],
-                    tools=config["tools"],
-                )
-
-                if greet_on_handoff:
-                    # Session resumption doesn't preserve pending function-
-                    # call state, so the tool result alone won't trigger a
-                    # response.  Inject a language-aware instruction to give
-                    # the new agent a turn to speak in its new role. It
-                    # directs the model, so it carries the system intent: a
-                    # full-duplex provider voices a user injection instead
-                    # of following it (RFC §12.4).
-                    msg = _build_greet(new_id, language=lang)
-                    await rtv.provider.inject_text(
-                        session,
-                        msg,
-                        role="system",
-                    )
-
-        handler.on_handoff_complete = _on_complete
+        handler.on_handoff_complete = wiring.on_handoff_complete
 
         logger.info(
             "Wired speech-to-speech orchestration: %d agents on %s",
@@ -601,52 +473,3 @@ class ConversationPipeline:
                 if ctx.room.id in _handoff_pending:
                     return HookResult.block("handoff_transition")
                 return HookResult.allow()
-
-
-def _agent_session_tools(
-    rtv: RealtimeVoiceChannel, agent: Agent, handoff: AITool
-) -> list[dict[str, Any]]:
-    """The tools an agent's realtime session declares (RFC §19.5).
-
-    The channel's own tools, which stay declared under every agent, the
-    agent's, then the handoff tool; a later tool replaces an earlier one of
-    the same name, so an agent may specialise one.
-    """
-    declared = [
-        *(dict(t) for t in rtv._tools or []),
-        *(t.model_dump() for t in agent._user_tools),
-        handoff.model_dump(),
-    ]
-    return list({tool["name"]: tool for tool in declared}.values())
-
-
-async def _serve_agent_or_channel_tool(
-    kit: RoomKit,
-    agent_map: dict[str, Agent],
-    default_agent_id: str,
-    channel_handler: Any,
-    name: str,
-    arguments: dict[str, Any],
-) -> ToolResult:
-    """Serve a call other than the handoff (RFC §19.5): the active agent's
-    own tool by the handler the agent was given, any other tool, and an agent
-    tool the agent has no handler for, by the channel's."""
-    agent = await _active_agent(kit, agent_map, default_agent_id)
-    agent_handler = agent._user_tool_handler if agent is not None else None
-    agent_tools = agent._user_tools if agent is not None else []
-    if agent_handler is not None and any(t.name == name for t in agent_tools):
-        return await agent_handler(name, arguments)
-    if channel_handler is not None:
-        return await channel_handler(name, arguments)
-    return json.dumps({"error": f"Unknown tool: {name}"})
-
-
-async def _active_agent(
-    kit: RoomKit, agent_map: dict[str, Agent], default_agent_id: str
-) -> Agent | None:
-    """The agent the call's room is talking to, by its conversation state."""
-    room_id = current_tool_room_id()
-    if room_id is None:
-        return None
-    state = get_conversation_state(await kit.get_room(room_id))
-    return agent_map.get(state.active_agent_id or default_agent_id)

@@ -159,26 +159,7 @@ class _AutoDelegateInstallMixin:
             logger.warning("async_delivery=True but no RealtimeVoiceChannel found")
             return
 
-        # Build tool definition
-        worker_roles = _worker_roles_csv(workers)
-        tool_def = {
-            "name": "delegate_workers",
-            "description": (
-                f"Delegate analysis to specialist workers ({worker_roles}). "
-                f"Call when the user requests analysis, research, or investigation. "
-                f"Workers run in {strategy} mode. Pass the topic."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "task": {
-                        "type": "string",
-                        "description": "The topic to analyze",
-                    },
-                },
-                "required": ["task"],
-            },
-        }
+        tool_def = _voice_delegate_tool(workers, strategy)
 
         # Declared and served once per voice channel: a second room's install
         # adds its room, and one handler serves the installed rooms' calls. The
@@ -192,44 +173,93 @@ class _AutoDelegateInstallMixin:
 
         # Wrap tool handler for async delegation
         original_handler = voice_channel.tool_handler
-        running: set[str] = set()  # rooms whose workers are running
-
-        async def delegate_workers(rid: str, name: str, arguments: dict[str, Any]) -> str:
-            if rid not in rooms:
-                return json.dumps({"error": "delegate_workers is not available in this room"})
-            if rid in running:
-                return json.dumps(
-                    {"status": "already_running", "message": "Workers are already running."}
-                )
-            running.add(rid)
-            # Launch in the same step as the flag, so a second call of this
-            # room's cannot slip between them. If create_task raises (shutdown
-            # race), release the room so it isn't stuck in already_running.
-            try:
-                task = asyncio.create_task(
-                    _async_run_and_deliver(
-                        kit=kit,
-                        room_id=rid,
-                        supervisor_id=voice_channel.channel_id,
-                        strategy=strategy,
-                        workers=workers,
-                        task_desc=arguments.get("task", ""),
-                        share_channels=share_channels,
-                        on_done=lambda **_: running.discard(rid),
-                    )
-                )
-                task.add_done_callback(log_task_exception)
-            except BaseException:
-                running.discard(rid)
-                raise
-            return json.dumps(
-                {
-                    "status": "dispatched",
-                    "workers": worker_roles,
-                    "message": "Workers are running. Results will be delivered when ready.",
-                }
-            )
+        server = _VoiceDelegateServer(
+            kit, voice_channel.channel_id, rooms, workers, strategy, share_channels
+        )
 
         voice_channel.tool_handler = call_room_handler(
-            {"delegate_workers"}, delegate_workers, original_handler
+            {"delegate_workers"}, server.serve, original_handler
+        )
+
+
+def _voice_delegate_tool(workers: list[Agent], strategy: WorkerStrategy | None) -> dict[str, Any]:
+    """The ``delegate_workers`` declaration a voice channel carries."""
+    worker_roles = _worker_roles_csv(workers)
+    return {
+        "name": "delegate_workers",
+        "description": (
+            f"Delegate analysis to specialist workers ({worker_roles}). "
+            f"Call when the user requests analysis, research, or investigation. "
+            f"Workers run in {strategy} mode. Pass the topic."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "task": {
+                    "type": "string",
+                    "description": "The topic to analyze",
+                },
+            },
+            "required": ["task"],
+        },
+    }
+
+
+class _VoiceDelegateServer:
+    """Serves a voice channel's ``delegate_workers``: runs the workers in the
+    background for the room of the call, and answers at once."""
+
+    def __init__(
+        self,
+        kit: RoomKit,
+        voice_channel_id: str,
+        rooms: set[str],
+        workers: list[Agent],
+        strategy: WorkerStrategy | None,
+        share_channels: list[str],
+    ) -> None:
+        self._kit = kit
+        self._voice_channel_id = voice_channel_id
+        self._rooms = rooms
+        self._workers = workers
+        self._strategy = strategy
+        self._share_channels = share_channels
+        self._running: set[str] = set()  # rooms whose workers are running
+
+    async def serve(self, rid: str, name: str, arguments: dict[str, Any]) -> str:
+        """Answer one ``delegate_workers`` call made in room *rid*."""
+        if rid not in self._rooms:
+            return json.dumps({"error": "delegate_workers is not available in this room"})
+        running = self._running
+        if rid in running:
+            return json.dumps(
+                {"status": "already_running", "message": "Workers are already running."}
+            )
+        running.add(rid)
+        # Launch in the same step as the flag, so a second call of this
+        # room's cannot slip between them. If create_task raises (shutdown
+        # race), release the room so it isn't stuck in already_running.
+        try:
+            task = asyncio.create_task(
+                _async_run_and_deliver(
+                    kit=self._kit,
+                    room_id=rid,
+                    supervisor_id=self._voice_channel_id,
+                    strategy=self._strategy,
+                    workers=self._workers,
+                    task_desc=arguments.get("task", ""),
+                    share_channels=self._share_channels,
+                    on_done=lambda **_: running.discard(rid),
+                )
+            )
+            task.add_done_callback(log_task_exception)
+        except BaseException:
+            running.discard(rid)
+            raise
+        return json.dumps(
+            {
+                "status": "dispatched",
+                "workers": _worker_roles_csv(self._workers),
+                "message": "Workers are running. Results will be delivered when ready.",
+            }
         )
