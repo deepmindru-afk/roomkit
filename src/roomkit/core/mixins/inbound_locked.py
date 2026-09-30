@@ -19,6 +19,7 @@ from roomkit.core.mixins.helpers import (
     _RECENT_EVENTS_LIMIT,
     _REFUSING_STATUSES,
     HelpersMixin,
+    _source_block_reason,
 )
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundResult
@@ -533,8 +534,8 @@ class InboundLockedMixin(HelpersMixin):
         # effects are ALWAYS collected), and stop before broadcast. The source
         # binding is fetched once here and reused for broadcast below.
         source_binding = await self._store.get_binding(room_id, event.source.channel_id)
-        if source_binding is not None and not source_binding.can_write:
-            reason = "source_muted" if source_binding.muted else "source_read_only"
+        reason = _source_block_reason(source_binding)
+        if reason is not None:
             return _Blocked(
                 event,
                 context,

@@ -18,7 +18,12 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.core.event_router import CHAIN_DEPTH_LIMIT
 from roomkit.core.exceptions import RoomNotFoundError
-from roomkit.core.mixins.helpers import _RECENT_EVENTS_LIMIT, HelpersMixin, _refuses_writes
+from roomkit.core.mixins.helpers import (
+    _RECENT_EVENTS_LIMIT,
+    HelpersMixin,
+    _refuses_writes,
+    _source_block_reason,
+)
 from roomkit.models.delivery import DeliveryError, DeliveryResult
 from roomkit.models.enums import ChannelCategory, EventStatus, EventType, HookTrigger
 from roomkit.models.event import EventSource, RoomEvent
@@ -107,6 +112,21 @@ class DeliverySource:
 
     binding: ChannelBinding
     context: RoomContext
+
+
+def _delivery_source(context: RoomContext, channel_id: str) -> DeliverySource | None:
+    """Who sends and against what state, read off *context*.
+
+    ``None`` when the sender has no binding: there is nothing to broadcast
+    from, and the event commits as a plain cursor entry.
+    """
+    binding = context.get_binding(channel_id)
+    return DeliverySource(binding=binding, context=context) if binding is not None else None
+
+
+def _log_refused(room_id: str, event: RoomEvent) -> None:
+    """Log that *event* was refused by the room's status gate (RFC §5.1)."""
+    logger.debug("Room %s refuses writes; %s not committed", room_id, event.type.value)
 
 
 @runtime_checkable
@@ -249,24 +269,26 @@ class LaneExecutionMixin(HelpersMixin):
         reads the status once and again after a close) passes
         ``gate_status=False``. With a resolved ``source`` the commit then
         takes no lock and reads nothing, but for the anchor of a row the
-        persistence policy excludes; a ``str`` source is resolved per event.
+        persistence policy excludes. A ``str`` source is resolved per event,
+        from one read of the room's context under its lock, which the status
+        gate and the sender's binding read too (RFC §10.1 steps 6 and 12).
 
         Returns the committed event, or ``None`` when the persistence
         policy excluded it (delivered, unstored — RFC §14.3).
         """
         from roomkit.core.lanes import DeliveryCascade
 
-        # The status gate holds at every point the timeline grows (RFC §5.1).
-        if gate_status and await self._room_refuses_writes(room_id):
-            logger.debug("Room %s refuses writes; %s not committed", room_id, event.type.value)
-            return None
         own_cascade = cascade is None
         if cascade is None:
             cascade = DeliveryCascade(room_id, reentry_budget=self._max_chain_depth * 10)
 
         if isinstance(source, str):
             async with self._lock_manager.locked(room_id):
-                resolved = await self._resolve_delivery_source(room_id, source)
+                context = await self._existing_room_context(room_id)
+                if context is None or (gate_status and _refuses_writes(context.room)):
+                    _log_refused(room_id, event)
+                    return None
+                resolved = _delivery_source(context, source)
                 committed = await self._commit_to_lane(
                     room_id,
                     event,
@@ -275,6 +297,10 @@ class LaneExecutionMixin(HelpersMixin):
                     policy_aware=policy_aware,
                 )
         else:
+            # The status gate holds at every point the timeline grows (RFC §5.1).
+            if gate_status and await self._room_refuses_writes(room_id):
+                _log_refused(room_id, event)
+                return None
             resolved = source
             committed = await self._commit_to_lane(
                 room_id,
@@ -308,18 +334,13 @@ class LaneExecutionMixin(HelpersMixin):
             await self._finish_cascade(cascade, room_id)
         return committed
 
-    async def _resolve_delivery_source(
-        self, room_id: str, source_channel_id: str
-    ) -> DeliverySource | None:
-        """Resolve who sends and against what state. Call under the room lock.
-
-        ``None`` when the sender has no binding: there is nothing to
-        broadcast from, and the event commits as a plain cursor entry.
-        """
-        binding = await self._store.get_binding(room_id, source_channel_id)
-        if binding is None:
+    async def _existing_room_context(self, room_id: str) -> RoomContext | None:
+        """The room's context, or ``None`` when the room is gone. Call under
+        the room lock, so the context is what the lock protects."""
+        try:
+            return await self._build_context(room_id)
+        except RoomNotFoundError:
             return None
-        return DeliverySource(binding=binding, context=await self._build_context(room_id))
 
     def _plan_factory(
         self,
@@ -835,14 +856,13 @@ class LaneExecutionMixin(HelpersMixin):
 
     async def _reentry_context(self, room_id: str, reentry: RoomEvent) -> RoomContext | None:
         """The room's context for a reentry pass, or ``None`` when the room is
-        gone: then, as for a closed room, nothing is written."""
-        try:
-            return await self._build_context(room_id)
-        except RoomNotFoundError:
+        gone, the refusal announced with a null status (RFC §8.2)."""
+        context = await self._existing_room_context(room_id)
+        if context is None:
             await self._refuse_closed_room(
                 room_id, status=None, operation="reentry", event=reentry
             )
-            return None
+        return context
 
     async def _refuse_reentry(
         self,
@@ -852,20 +872,29 @@ class LaneExecutionMixin(HelpersMixin):
         binding: ChannelBinding | None,
         cascade: DeliveryCascade,
     ) -> bool:
-        """Whether this reentry pass must not write, the refusal handled: a
-        room that refuses writes records nothing, a source that cannot write
-        has its response stored BLOCKED."""
+        """Whether this reentry pass must not write, the refusal handled.
+
+        RFC §10.1 step 6 / §5.1: a reentry re-enters the locked section, so it
+        meets the same status gate as any other write. The room may have been
+        closed while the trigger's delivery set was executing, and an answer
+        landing after ``close_room()`` records nothing, not even a BLOCKED
+        row; the blocked result :meth:`_refuse_closed_room` returns is for a
+        caller with someone to answer, and a pass has none. A room gone
+        meanwhile was refused already, when its context could not be read
+        (:meth:`_reentry_context`). RFC §7.5 rule 2: a source that cannot
+        write has its response stored BLOCKED.
+        """
         if _refuses_writes(context.room):
             await self._refuse_closed_room(
                 room_id, status=context.room.status, operation="reentry", event=reentry
             )
             return True
-        if binding is not None and not binding.can_write:
+        reason = _source_block_reason(binding)
+        if reason is not None:
             # RFC §7.5 rule 2 — a source that cannot write MUST NOT inject a
             # DELIVERED event: a READ_ONLY observer's answer belongs in the
             # timeline as an audit record, not as a message every channel
             # reads. Stored BLOCKED, never broadcast.
-            reason = "source_muted" if binding.muted else "source_read_only"
             await self._handle_block(
                 room_id=room_id,
                 event=reentry,
@@ -888,13 +917,6 @@ class LaneExecutionMixin(HelpersMixin):
         """One response event's own commit pass, under a fresh room lock."""
         router = self._get_router()
         async with self._lock_manager.locked(room_id):
-            # RFC §10.1 step 6 / §5.1 — a reentry re-enters the locked section,
-            # so it meets the same status gate as any other write. The room may
-            # have been closed while the trigger's delivery set was executing:
-            # an AI answer that lands after close_room() must not grow a closed
-            # room's timeline. Nothing is written, not even a BLOCKED record.
-            # The blocked result the helper returns is for a caller with
-            # someone to answer; a reentry pass has none, so it is dropped.
             # One read of what the lock protects (RFC §10.1 steps 6 and 12):
             # the status gate, the source's right to write and the delivery
             # plan all read this context, fresh under the lock, since

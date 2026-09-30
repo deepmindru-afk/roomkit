@@ -74,8 +74,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gate and its source's right to write read that context. On the cost
   suite's buffered tool turn, 18 room reads and 18 binding reads fewer (55 to
   37, 26 to 8); a room deleted meanwhile is still refused with a null status.
+  Each answer `regenerate_response` commits, and a greeting, likewise read the
+  room once instead of three times. A pass refused because the room is
+  closed now reads the whole context before refusing, where it read the room
+  alone: a rare case, and nothing it writes changes.
 
 ### Fixed
+
+- A greeting or an answer `regenerate_response` commits no longer lands in a
+  room closed just before it takes the room lock (RMK-331, RFC §5.1): its
+  status gate read the room before the lock, and now reads it under the lock.
 
 - A page `read_stored_result` returns writes non-ASCII text as it is instead
   of `\uXXXX` escapes (RMK-321): escaped, a page of Chinese text weighed

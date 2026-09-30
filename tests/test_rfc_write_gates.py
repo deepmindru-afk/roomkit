@@ -79,6 +79,24 @@ class DeletingAIChannel(ClosingAIChannel):
         return output
 
 
+class MutingAIChannel(ClosingAIChannel):
+    """Mutes itself while answering: the response's own commit pass, which
+    reads the binding fresh under the lock, finds its source muted."""
+
+    async def on_event(
+        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        await self._kit.mute(event.room_id, self.channel_id)
+        resp = RoomEvent(
+            room_id=event.room_id,
+            source=EventSource(channel_id=self.channel_id, channel_type=ChannelType.AI),
+            content=TextContent(body="answer after mute"),
+            chain_depth=event.chain_depth + 1,
+        )
+        self.responses.append(resp)
+        return ChannelOutput(responded=True, response_events=[resp])
+
+
 def _user_msg() -> InboundMessage:
     return InboundMessage(
         channel_id="sms1",
@@ -190,6 +208,26 @@ class TestNonWritableSourceResponses:
         assert ai_events[0].blocked_by == "source_muted"
         # Still not broadcast — the transport saw nothing.
         assert [e.content for e in sms.delivered if e.source.channel_id == "ai1"] == []
+
+    async def test_a_source_muted_while_answering_has_its_response_blocked(self) -> None:
+        """RFC §7.5 rule 2 in the response's own pass: muted after the trigger
+        was planned, the source's answer is stored BLOCKED ``source_muted``."""
+        kit = RoomKit()
+        sms = SimpleChannel("sms1")
+        kit.register_channel(sms)
+        kit.register_channel(MutingAIChannel("ai1", kit))
+        await kit.create_room(room_id="r1")
+        await kit.attach_channel("r1", "sms1")
+        await kit.attach_channel("r1", "ai1")
+
+        await kit.process_inbound(_user_msg())
+
+        events = await kit.store.list_events("r1", event_filter=EventFilter(include_blocked=True))
+        ai_events = [e for e in events if e.source.channel_type == ChannelType.AI]
+        assert [(e.status, e.blocked_by) for e in ai_events] == [
+            (EventStatus.BLOCKED, "source_muted")
+        ]
+        assert [e for e in sms.delivered if e.source.channel_id == "ai1"] == []
 
 
 class TestLifecycleSystemEventsMeetTheStatusGate:

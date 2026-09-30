@@ -87,6 +87,15 @@ def _refuses_writes(room: Room | None) -> bool:
     return room is None or room.status in _REFUSING_STATUSES
 
 
+def _source_block_reason(binding: ChannelBinding | None) -> str | None:
+    """Why an event from a source bound by *binding* is stored BLOCKED
+    (RFC §7.5 rule 2): ``source_muted`` or ``source_read_only`` for a source
+    that cannot write, ``None`` for one that can or has no binding."""
+    if binding is None or binding.can_write:
+        return None
+    return "source_muted" if binding.muted else "source_read_only"
+
+
 if TYPE_CHECKING:
     from roomkit.channels.base import Channel
     from roomkit.core.hooks import HookEngine, IdentityHookRegistration
