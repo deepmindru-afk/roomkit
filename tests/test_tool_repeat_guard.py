@@ -194,8 +194,8 @@ async def test_unknown_skill_matching_tools_redirects_and_reveals(
 
 async def test_force_stop_ends_loop_when_model_ignores_guard(streaming: bool) -> None:
     """When a model keeps re-issuing a blocked identical call, the guard pulls
-    the ripcord: tools are stripped and a final plain-text answer is forced,
-    instead of hammering the same call to the round limit (observed: 37×)."""
+    the ripcord: one last generation is asked for a plain-text answer, instead
+    of hammering the same call to the round limit (observed: 37×)."""
     executions = 0
 
     async def handler(name: str, arguments: dict) -> str:
@@ -221,9 +221,9 @@ async def test_force_stop_ends_loop_when_model_ignores_guard(streaming: bool) ->
     # Executed at most twice (retry latitude), then blocked + force-stopped —
     # nowhere near 10 calls.
     assert executions <= 2
-    # The final generation ran WITHOUT tools (force-stop strips them).
-    last_call = provider.calls[-1]
-    assert not last_call.tools
+    # The final generation kept the declaration (RFC §6.4), told to answer.
+    assert provider.calls[-1].tools == provider.calls[-2].tools
+    assert "further tool calls are disabled" in str(provider.calls[-1].messages[-1].content)
 
 
 async def test_force_stop_also_ends_the_streaming_loop() -> None:

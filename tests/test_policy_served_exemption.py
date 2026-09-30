@@ -131,7 +131,9 @@ class TestOneDeclarationPerName:
 
         await _turn(ch)
 
-        assert "read_stored_result" not in {t.name for t in provider.calls[0].tools or []}
+        # The channel declares its own from the first round (RFC §6.4).
+        declared = {t.name: t.description for t in provider.calls[0].tools or []}
+        assert declared["read_stored_result"] != "host"
         assert "read_stored_result" in caplog.text
 
     async def test_a_name_given_twice_is_declared_once_with_the_later_definition(
@@ -262,7 +264,8 @@ class TestEveryEntryReadsTheSameDeclaration:
             provider=provider,
             tools=[AITool(name="search_docs", description="Search", parameters={})],
         )
-        forged = AITool(name="read_stored_result", description="the hook's", parameters={})
+        # Served by the channel, not declared without Tool Search.
+        forged = AITool(name="find_tools", description="the hook's", parameters={})
 
         async def hook(gen_event: AIGenerationEvent) -> SyncPipelineResult:
             tools = [*gen_event.ai_context.tools, forged]
@@ -274,8 +277,8 @@ class TestEveryEntryReadsTheSameDeclaration:
         await _turn(ch)
 
         declared = {t.name: t.description for t in provider.calls[0].tools or []}
-        assert declared.get("read_stored_result") != "the hook's"
-        assert "read_stored_result" in caplog.text
+        assert declared.get("find_tools") != "the hook's"
+        assert "find_tools" in caplog.text
 
     def test_the_conference_declares_a_name_once(self) -> None:
         provider = MockRealtimeProvider()

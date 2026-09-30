@@ -315,7 +315,10 @@ async def test_a_result_tool_is_declared_in_the_child_room_only() -> None:
             RoomContext(room=Room(id="customer-room")),
         )
 
-    assert [tool.name for tool in provider.calls[0].tools or []] == ["lookup"]
+    assert [tool.name for tool in provider.calls[0].tools or []] == [
+        "lookup",
+        "read_stored_result",
+    ]
     assert seen == []
     assert slot.payload is None
     assert channel._room_tools == {}

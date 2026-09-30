@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from collections import Counter, OrderedDict
+from collections.abc import Sequence
 from typing import Any
 
 from roomkit.memory.token_estimator import estimate_tokens
@@ -42,6 +43,9 @@ _PREVIEW_TAIL_LINES = 5
 # a placeholder is what TOOL_CALL_END persists for an evicted result, and its
 # ``evicted_…`` id dies with the process, so it must not be replayed as data.
 EVICTION_PLACEHOLDER_PREFIX = "Result too large ("
+
+# The tool that pages a stored result back.
+REREAD_TOOL = "read_stored_result"
 
 
 def is_eviction_placeholder(text: str) -> bool:
@@ -336,11 +340,23 @@ class ToolEviction:
                 lines.extend(line[i : i + budget] for i in range(0, len(line), budget))
         return lines
 
+    def with_reread_tool(self, tools: Sequence[AITool]) -> list[AITool]:
+        """*tools* with the re-read tool last, when they declare a tool or the
+        room holds a stored result, and lack it.
+
+        Declared from the first round of such a turn, not from the round a
+        result is first stored (RFC §6.4): a declaration that gains a tool
+        invalidates everything a provider cached after the tools.
+        """
+        if any(t.name == REREAD_TOOL for t in tools) or not (tools or self.has_evicted):
+            return list(tools)
+        return [*tools, self.tool_definition()]
+
     @staticmethod
     def tool_definition() -> AITool:
         """Return the AITool definition for read_stored_result."""
         return AITool(
-            name="read_stored_result",
+            name=REREAD_TOOL,
             description=(
                 "Read a previously evicted large tool result. "
                 "Supports line-based pagination via offset and limit; pages "

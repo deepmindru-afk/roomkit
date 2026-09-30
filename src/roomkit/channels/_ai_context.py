@@ -470,8 +470,8 @@ class AIContextMixin:
         standalone: bool,
     ) -> str | None:
         """The turn's system prompt with what the channel's own features add to
-        it: skills, sandbox, the large-result re-read, planner, tool-usage
-        digest and Tool Search, in that order. Their tools join *tools* in place.
+        it: skills, sandbox, planner, tool-usage digest, Tool Search and the
+        large-result re-read, in that order. Their tools join *tools* in place.
         """
         # Skill activation is keyed on the tool loop's room — the very id
         # ``activate_skill`` will write under (``handle_event`` stamps it on this
@@ -491,10 +491,6 @@ class AIContextMixin:
         )
         system_prompt = self._add_sandbox(tools, system_prompt)
 
-        # Inject eviction re-read tool when large results have been stored
-        if self._eviction.has_evicted:
-            tools.append(ToolEviction.tool_definition())
-
         # Inject planning tool and plan context when enabled
         if self._planner is not None:
             tools.append(TaskPlanner.tool_definition())
@@ -513,9 +509,13 @@ class AIContextMixin:
         if usage_digest:
             system_prompt = (system_prompt or "") + f"\n\n{usage_digest}"
 
-        return self._collapse_behind_tool_search(
+        system_prompt = self._collapse_behind_tool_search(
             tools, system_prompt, loop_ctx, binding, event, standalone
         )
+        # Last, and whether or not a result was stored yet: the declaration
+        # holds from round to round and turn to turn (RFC §6.4).
+        tools[:] = self._eviction.with_reread_tool(tools)
+        return system_prompt
 
     def _add_skills(
         self,

@@ -82,7 +82,7 @@ class TestConfigProvider:
         ai_ctx = await ch._build_context(make_event(), binding, _ctx(binding))
 
         assert ai_ctx.system_prompt.startswith("static prompt")
-        assert {t.name for t in ai_ctx.tools} == {"gmail"}
+        assert {t.name for t in ai_ctx.tools} == {"gmail", "read_stored_result"}
 
     async def test_provider_returning_none_keeps_static_path(self) -> None:
         async def provider(binding, context):
@@ -93,14 +93,14 @@ class TestConfigProvider:
         ai_ctx = await ch._build_context(make_event(), binding, _ctx(binding))
 
         assert ai_ctx.system_prompt.startswith("static prompt")
-        assert {t.name for t in ai_ctx.tools} == {"outlook"}
+        assert {t.name for t in ai_ctx.tools} == {"outlook", "read_stored_result"}
 
     async def test_no_provider_is_byte_identical_to_static_path(self) -> None:
         binding = _binding(metadata={"tools": [TOOL_V1]})
         static_ctx = await _channel()._build_context(make_event(), binding, _ctx(binding))
 
         assert static_ctx.system_prompt.startswith("static prompt")
-        assert {t.name for t in static_ctx.tools} == {"outlook"}
+        assert {t.name for t in static_ctx.tools} == {"outlook", "read_stored_result"}
 
     async def test_provider_tools_flow_through_skill_injection(self) -> None:
         # The resolver result feeds the SAME downstream pipeline (skills,

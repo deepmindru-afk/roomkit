@@ -106,6 +106,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A tool loop's declaration holds from round to round (RMK-317, RFC §6.4).
+  `read_stored_result` is declared from the first round of any turn that
+  declares a tool or whose room holds a stored result, after the other tools,
+  instead of from the round a result is first stored; the anti-loop stop keeps
+  the round's tools, runs none of its last generation's calls and still ends
+  the turn `force_stopped`. A provider caches a request as a prefix, tools
+  first, and a declaration that gains, loses or reorders a tool is billed as
+  if nothing were cached: on the cost suite (`claude-sonnet-5`), the
+  three-turn conversation costs 12 % less and a force-stopped turn 24 % less.
+  `declared_tools` lists `read_stored_result` for such turns.
 - A tool call a realtime model speaks as text (`call:name{...}`) is
   recovered only when it is said as a sentence of its own that ends the
   utterance: at the start of the text or of a line, or after a sentence's

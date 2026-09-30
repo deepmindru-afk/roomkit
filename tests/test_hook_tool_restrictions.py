@@ -316,7 +316,7 @@ async def test_under_tool_search_the_hook_sees_the_catalogue(streaming: bool) ->
 
     assert {"safe_read", "wire_money", "find_tools", "list_tools"} <= seen[0]
     # The first round still declares Tool Search's collapse, in both loops.
-    assert _declared(provider.calls[0]) == {"find_tools", "list_tools"}
+    assert _declared(provider.calls[0]) == {"find_tools", "list_tools", "read_stored_result"}
 
 
 async def test_under_tool_search_a_withdrawn_deferred_tool_is_neither_found_nor_run(
@@ -448,9 +448,8 @@ async def test_under_tool_search_a_kept_deferred_tool_is_recovered_at_call_time(
     ch = _searching(provider, calls, _READ, _WIRE)
 
     async def hook(gen_event: AIGenerationEvent) -> SyncPipelineResult:
-        kept = [
-            t for t in gen_event.ai_context.tools if t.name not in {"find_tools", "list_tools"}
-        ]
+        withdrawn = {"find_tools", "list_tools", "read_stored_result"}
+        kept = [t for t in gen_event.ai_context.tools if t.name not in withdrawn]
         gen_event.ai_context = gen_event.ai_context.model_copy(update={"tools": kept})
         return SyncPipelineResult(allowed=True)
 

@@ -148,7 +148,11 @@ async def test_without_tool_search_the_whole_declaration_is_reported(streaming: 
 
     assert len(seen) == 1
     declared = _by_name(seen[0])
-    assert set(declared) == {"send_sms", "mail_deliver"} == _round_names(provider.calls[0])
+    assert (
+        set(declared)
+        == {"send_sms", "mail_deliver", "read_stored_result"}
+        == _round_names(provider.calls[0])
+    )
     assert {tool.origin for tool in declared.values()} == {"always"}
     assert declared["mail_deliver"].parameters == _MAIL_TOOL["parameters"]
 

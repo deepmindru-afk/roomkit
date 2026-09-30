@@ -118,7 +118,7 @@ class TestActivationGating:
         names = _tool_names(provider.calls[0])
         assert "find_tools" not in names
         assert "list_tools" not in names
-        assert names == {"widget_0", "widget_1", "widget_2"}
+        assert names == {"widget_0", "widget_1", "widget_2", "read_stored_result"}
         assert provider.calls[0].system_prompt == "Be nice."
 
     async def test_auto_activates_above_window_pct(self, streaming: bool) -> None:
@@ -183,7 +183,7 @@ class TestInitialSurface:
         await _run(ch, _binding(_catalogue(5)))
 
         names = _tool_names(provider.calls[0])
-        assert names == {"find_tools", "list_tools", "widget_1"}
+        assert names == {"find_tools", "list_tools", "widget_1", "read_stored_result"}
         # Preamble appended to the system prompt.
         assert "Base." in provider.calls[0].system_prompt
         assert "find_tools" in provider.calls[0].system_prompt
@@ -254,7 +254,7 @@ class TestFindToolsReveal:
 
         # ...but reveals nothing — round 1 surface is still just the infra.
         round1 = _tool_names(provider.calls[1])
-        assert round1 == {"find_tools", "list_tools"}
+        assert round1 == {"find_tools", "list_tools", "read_stored_result"}
 
 
 # ---------------------------------------------------------------------------
@@ -364,7 +364,7 @@ class TestSandboxToolSearch:
 
         # Round 0: sandbox tools deferred behind the discovery tools.
         round0 = _tool_names(provider.calls[0])
-        assert round0 == {"find_tools", "list_tools"}
+        assert round0 == {"find_tools", "list_tools", "read_stored_result"}
 
         result = _tool_result(provider.calls[1])
         assert "error" not in result

@@ -20,7 +20,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from roomkit.channels._tool_eviction import ToolEviction
+from roomkit.channels._tool_eviction import REREAD_TOOL, ToolEviction
 from roomkit.models.streaming import LoopEndReason
 from roomkit.providers.ai.base import (
     AIContext,
@@ -63,8 +63,8 @@ _MALFORMED_CALL_NUDGE = (
     "in plain text."
 )
 
-# Injected when the anti-loop guard force-stops a stuck model. Tools are
-# stripped from the next (final) generation so it cannot keep looping.
+# Injected when the anti-loop guard force-stops a stuck model. The next
+# generation is the last: none of its calls runs.
 _FORCE_STOP_NUDGE = (
     "You have repeated the same tool call with identical arguments several "
     "times; it cannot produce anything new and further tool calls are "
@@ -343,43 +343,34 @@ class AIToolLoopRulesMixin:
         state: _ToolLoopState,
         round_idx: int,
     ) -> AIContext:
-        """Force-stop ripcord (nudge once + strip tools) or per-round tool re-filter.
+        """The round's context: its tools re-filtered, and the force-stop nudge
+        once the anti-loop guard has pulled the ripcord.
 
-        When the anti-loop guard set ``force_stop`` (the model keeps re-issuing
-        a blocked identical call), inject the corrective nudge once and strip
-        tools so the next generation must produce a plain-text answer.
-        Otherwise re-apply the tool policy filters for the next round.
+        The declaration holds from round to round (RFC §6.4): a provider
+        caches a request as a prefix, tools first, and one that gains, loses
+        or reorders a tool is billed as if nothing were cached. So the forced
+        final round keeps its tools, told that no further call will run (the
+        loop ends there, running none of its calls), and a tool shows up only
+        where one must: a reveal, a skill activation.
         """
-        if loop_ctx.force_stop:
-            if not state.force_stop_nudged:
-                logger.warning("%s anti-loop force-stop at round %d", state.log_label, round_idx)
-                context.messages.append(AIMessage(role="user", content=_FORCE_STOP_NUDGE))
-                state.force_stop_nudged = True
-            return context.model_copy(update={"tools": []})
+        if loop_ctx.force_stop and not state.force_stop_nudged:
+            logger.warning("%s anti-loop force-stop at round %d", state.log_label, round_idx)
+            context.messages.append(AIMessage(role="user", content=_FORCE_STOP_NUDGE))
+            state.force_stop_nudged = True
 
-        tools: list[Any] | None = None
         # An empty resolved toolset is a real one (``None`` means the loop was
         # built without context): its re-filter declares nothing.
-        if loop_ctx.all_context_tools is not None:
-            tools = self._apply_tool_filters(loop_ctx.all_context_tools)
-
-        # A result evicted mid-loop replaces itself with a preview that tells
-        # the model to page the full output back with ``read_stored_result`` —
-        # but that tool was only ever injected at ``_build_context`` time, i.e.
-        # on the *next inbound event*, and every round here re-filters from the
-        # frozen ``all_context_tools`` snapshot. So the tool was unreachable in
-        # the very turn whose preview recommends it, and a one-shot automation
-        # run (webhook, schedule) has no next event at all: its evicted content
-        # was simply lost. Inject the definition per round instead — the
-        # dispatch table already accepts the call unconditionally.
-        if self._eviction.has_evicted and "read_stored_result" not in loop_ctx.withdrawn_tools:
-            current = tools if tools is not None else list(context.tools or [])
-            if all(t.name != "read_stored_result" for t in current):
-                tools = [*current, ToolEviction.tool_definition()]
-
-        if tools is not None:
-            return context.model_copy(update={"tools": tools})
-        return context
+        tools = (
+            self._apply_tool_filters(loop_ctx.all_context_tools)
+            if loop_ctx.all_context_tools is not None
+            else list(context.tools or [])
+        )
+        # ``_build_context`` declares the large-result re-read from the first
+        # round; a loop built without it gets it here, as the preview of a
+        # result evicted mid-loop tells the model to page it back with it.
+        if REREAD_TOOL not in loop_ctx.withdrawn_tools:
+            tools = self._eviction.with_reread_tool(tools)
+        return context.model_copy(update={"tools": tools})
 
     def _try_empty_retry(
         self,

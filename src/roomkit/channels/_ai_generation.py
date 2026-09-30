@@ -688,8 +688,8 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
                     response = AIResponse(content="", tool_calls=[])
                     break
 
-                # Anti-loop ripcord (force_stop): strip tools and do one final
-                # generation so the model must answer in plain text, then stop.
+                # Anti-loop ripcord (force_stop): one final generation, told
+                # to answer in plain text, then stop without running its calls.
                 context = self._prepare_round_context(context, loop_ctx, state, round_idx)
                 if loop_ctx.force_stop:
                     response = await _generate_after_round(context)

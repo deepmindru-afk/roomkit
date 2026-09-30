@@ -56,7 +56,8 @@ async def test_invalid_calls_stop_before_budget_and_reset_next_turn(
         assert calls[0].tools
         assert "Invalid arguments" in _tool_results(calls[1])[0]["error"]
         assert "EXACT arguments" in _tool_results(calls[3])[-1]["error"]
-        assert not calls[-1].tools
+        # The forced last round keeps the declaration (RFC §6.4).
+        assert calls[-1].tools == calls[-2].tools
         assert any("never claim an action succeeded" in str(m.content) for m in calls[-1].messages)
     assert not executions
 
@@ -66,7 +67,8 @@ async def test_invalid_calls_stop_before_budget_and_reset_next_turn(
 async def test_force_stop_allows_only_one_final_generation(
     streaming: bool, final_kind: str
 ) -> None:
-    """A provider ignoring the no-tools request cannot restart a stopped loop."""
+    """A model that calls again after the stop cannot restart the loop: the last
+    round keeps its tools (RFC §6.4) and none of its calls runs."""
     executions: list[dict[str, Any]] = []
 
     async def handler(name: str, arguments: dict[str, Any]) -> str:
@@ -97,7 +99,7 @@ async def test_force_stop_allows_only_one_final_generation(
         assert endings[0].reason == "force_stopped"
     assert not executions
     assert len(provider.calls) == 7
-    assert not provider.calls[-1].tools
+    assert provider.calls[-1].tools == provider.calls[-2].tools
 
 
 @pytest.mark.parametrize("streaming", [False, True])

@@ -325,7 +325,8 @@ class TestPerRoomConfiguration:
         await respond(ch, event, binding, ctx)
 
         assert len(provider.calls) == 1
-        assert len(provider.calls[0].tools) == 1
+        # The host's tool, then the channel's large-result re-read (RFC §6.4).
+        assert [t.name for t in provider.calls[0].tools] == ["search", "read_stored_result"]
         tool = provider.calls[0].tools[0]
         assert isinstance(tool, AITool)
         assert tool.name == "search"
@@ -353,9 +354,11 @@ class TestPerRoomConfiguration:
         await respond(ch, event, binding, ctx)
 
         assert len(provider.calls) == 1
-        assert len(provider.calls[0].tools) == 2
-        assert provider.calls[0].tools[0].name == "search"
-        assert provider.calls[0].tools[1].name == "write_note"
+        assert [t.name for t in provider.calls[0].tools] == [
+            "search",
+            "write_note",
+            "read_stored_result",
+        ]
 
     async def test_empty_tools_list_when_not_specified(self) -> None:
         """Tools list is empty when not specified in binding metadata."""
