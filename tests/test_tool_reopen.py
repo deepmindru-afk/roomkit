@@ -339,3 +339,26 @@ def test_without_a_discovery_tool_or_an_input_nothing_is_reopened() -> None:
     stray = AIMessage(role="user", content="not in the list")
     assert not insert_before(messages, stray, [AIMessage(role="assistant", content="x")])
     assert len(messages) == 1
+
+
+async def test_a_standalone_turn_opens_no_gate_the_room_opened(streaming: bool) -> None:
+    """RFC §10.1.1: a skill activated in the room is the room's working state,
+    which a standalone instruction does not read: its gated tool stays shut."""
+    registry = SkillRegistry()
+    registry.discover(_FIXTURES)
+    provider = MockAIProvider(
+        ai_responses=[
+            _round("c0", "activate_skill", {"name": "quote-policy"}),
+            _DONE,
+            _round("c1", "inventory"),
+            _DONE,
+        ],
+        streaming=streaming,
+    )
+    ch = AIChannel("ai1", provider=provider, tool_handler=_served, skills=registry)
+    tools = [_tool("lookup"), _tool("inventory")]
+    await _turn(ch, tools)
+
+    run = await _turn_after(ch, tools, _instruction())
+
+    assert run.calls[0].failed and "gated" in str(run.calls[0].result)

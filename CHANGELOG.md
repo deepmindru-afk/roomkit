@@ -135,6 +135,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A standalone instruction no longer opens a tool a skill activated in the
+  room gates (RMK-345, RFC §10.1.1): skill gating read the room's activation
+  record, which is the room's working state a standalone turn does not read;
+  only a skill it activates itself opens a gate.
 - A tool round that said something besides its calls passes its reasoning
   to the next round on every OpenAI-compatible provider and Mistral (RMK-338):
   the round's text overwrote the `<think>` block its reasoning rode in, so

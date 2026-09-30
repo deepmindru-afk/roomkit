@@ -139,14 +139,16 @@ class AIToolPolicyMixin:
         with the room's activation record. Without that, a skill activated in
         turn N would see its gated tools disappear again in turn N+1 — while
         its instructions, now carried by the system prompt, still tell the
-        model to use them.
+        model to use them. A standalone turn reads none of the room's working
+        state (RFC §10.1.1): only what it activates itself opens a gate.
         """
         if not self._skills:
             return set()
         loop_ctx = self._get_loop_ctx()
-        activated = loop_ctx.activated_skills | self._skill_activation.active_names(
-            loop_ctx.room_id
+        room = (
+            set() if loop_ctx.standalone else self._skill_activation.active_names(loop_ctx.room_id)
         )
+        activated = loop_ctx.activated_skills | room
         gated: set[str] = set()
         for meta in self._skills.all_metadata():
             if meta.name in activated:
