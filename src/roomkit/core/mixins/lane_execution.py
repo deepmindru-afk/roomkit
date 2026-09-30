@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.core.event_router import CHAIN_DEPTH_LIMIT
+from roomkit.core.exceptions import RoomNotFoundError
 from roomkit.core.mixins.helpers import _RECENT_EVENTS_LIMIT, HelpersMixin, _refuses_writes
 from roomkit.models.delivery import DeliveryError, DeliveryResult
 from roomkit.models.enums import ChannelCategory, EventStatus, EventType, HookTrigger
@@ -36,7 +37,6 @@ if TYPE_CHECKING:
     from roomkit.models.channel import ChannelBinding
     from roomkit.models.context import RoomContext
     from roomkit.models.hook import InjectedEvent
-    from roomkit.models.room import Room
     from roomkit.store.base import ConversationStore
     from roomkit.telemetry.base import TelemetryProvider
 
@@ -833,23 +833,31 @@ class LaneExecutionMixin(HelpersMixin):
                     ),
                 )
 
+    async def _reentry_context(self, room_id: str, reentry: RoomEvent) -> RoomContext | None:
+        """The room's context for a reentry pass, or ``None`` when the room is
+        gone: then, as for a closed room, nothing is written."""
+        try:
+            return await self._build_context(room_id)
+        except RoomNotFoundError:
+            await self._refuse_closed_room(
+                room_id, status=None, operation="reentry", event=reentry
+            )
+            return None
+
     async def _refuse_reentry(
         self,
         room_id: str,
         reentry: RoomEvent,
-        room: Room | None,
+        context: RoomContext,
         binding: ChannelBinding | None,
         cascade: DeliveryCascade,
     ) -> bool:
         """Whether this reentry pass must not write, the refusal handled: a
         room that refuses writes records nothing, a source that cannot write
         has its response stored BLOCKED."""
-        if _refuses_writes(room):
+        if _refuses_writes(context.room):
             await self._refuse_closed_room(
-                room_id,
-                status=room.status if room is not None else None,
-                operation="reentry",
-                event=reentry,
+                room_id, status=context.room.status, operation="reentry", event=reentry
             )
             return True
         if binding is not None and not binding.can_write:
@@ -858,7 +866,6 @@ class LaneExecutionMixin(HelpersMixin):
             # timeline as an audit record, not as a message every channel
             # reads. Stored BLOCKED, never broadcast.
             reason = "source_muted" if binding.muted else "source_read_only"
-            context = await self._build_context(room_id)
             await self._handle_block(
                 room_id=room_id,
                 event=reentry,
@@ -888,14 +895,16 @@ class LaneExecutionMixin(HelpersMixin):
             # room's timeline. Nothing is written, not even a BLOCKED record.
             # The blocked result the helper returns is for a caller with
             # someone to answer; a reentry pass has none, so it is dropped.
-            room = await self._store.get_room(room_id)
-            reentry_binding = await self._store.get_binding(room_id, reentry.source.channel_id)
-            if await self._refuse_reentry(room_id, reentry, room, reentry_binding, cascade):
+            # One read of what the lock protects (RFC §10.1 steps 6 and 12):
+            # the status gate, the source's right to write and the delivery
+            # plan all read this context, fresh under the lock, since
+            # concurrent commits may have landed after the trigger's plan.
+            context = await self._reentry_context(room_id, reentry)
+            if context is None:
                 return
-
-            # Fresh context: concurrent commits may have landed since the
-            # trigger's plan was made, and this pass must see them.
-            context = await self._build_context(room_id)
+            reentry_binding = context.get_binding(reentry.source.channel_id)
+            if await self._refuse_reentry(room_id, reentry, context, reentry_binding, cascade):
+                return
 
             # Provisional index for the hook, mirroring the main inbound
             # path; the authoritative index is (re)assigned at commit.

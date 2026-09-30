@@ -68,6 +68,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `AIChannel` turns with tools, the median ran 2 rounds, the 99th percentile
   16 and the longest 62. A host whose agents legitimately run longer passes
   `max_tool_rounds` explicitly.
+- A reentry pass, the commit of each response event of a non-streamed turn,
+  no longer reads the room and its source's binding from the store on top of
+  the fresh context it builds under the lock (RMK-331, RFC §10.1): its status
+  gate and its source's right to write read that context. On the cost
+  suite's buffered tool turn, 18 room reads and 18 binding reads fewer (55 to
+  37, 26 to 8); a room deleted meanwhile is still refused with a null status.
 
 ### Fixed
 
