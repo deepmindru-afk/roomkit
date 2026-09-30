@@ -209,12 +209,27 @@ class _ToolLoopState:
     deadline: float | None
     warn_after: int
     log_label: str
+    timeout_seconds: float | None = None
     empty_retries: int = 0
     force_stop_nudged: bool = False
 
     def deadline_exceeded(self) -> bool:
         """Whether the loop's wall-clock deadline has passed."""
         return self.deadline is not None and asyncio.get_running_loop().time() >= self.deadline
+
+    def limit_reached(self, rounds: int) -> LoopEndReason | None:
+        """The limit of the loop's own that it has reached after *rounds*
+        rounds, or ``None``: its wall-clock deadline. Both loops ask it at
+        each round boundary, before running the round's calls."""
+        if self.deadline_exceeded():
+            logger.warning(
+                "%s timeout after %d rounds (%.0fs)",
+                self.log_label,
+                rounds,
+                self.timeout_seconds,
+            )
+            return "timeout"
+        return None
 
     def warn_if_needed(self, round_idx: int) -> None:
         """Log the soft budget warning when the loop hits ``warn_after`` rounds."""
@@ -336,6 +351,7 @@ class AIToolLoopRulesMixin:
             deadline=deadline,
             warn_after=self._tool_loop_warn_after,
             log_label=log_label,
+            timeout_seconds=self._tool_loop_timeout_seconds,
         )
 
     def _prepare_round_context(

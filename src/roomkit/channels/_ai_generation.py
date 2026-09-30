@@ -626,13 +626,9 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
                     reason = "cancelled"
                     break
 
-                if state.deadline_exceeded():
-                    logger.warning(
-                        "Tool loop timeout after %d rounds (%.0fs)",
-                        round_idx,
-                        self._tool_loop_timeout_seconds,
-                    )
-                    reason = "timeout"
+                limit = state.limit_reached(round_idx)
+                if limit is not None:
+                    reason = limit
                     break
 
                 state.warn_if_needed(round_idx)

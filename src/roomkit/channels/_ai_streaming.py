@@ -781,13 +781,9 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                     )
                     yield turn.end("max_rounds", index)
                     return
-                if rules.deadline_exceeded():
-                    logger.warning(
-                        "Streaming tool loop timeout after %d rounds (%.0fs)",
-                        index,
-                        self._tool_loop_timeout_seconds,
-                    )
-                    yield turn.end("timeout", index)
+                limit = rules.limit_reached(index)
+                if limit is not None:
+                    yield turn.end(limit, index)
                     return
 
                 rules.warn_if_needed(index)
