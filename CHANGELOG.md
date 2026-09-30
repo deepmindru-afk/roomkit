@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `MemoryResult` is exported from `roomkit`, beside `MemoryProvider`, whose
+  `retrieve` returns it (found reviewing RMK-334).
 - `MemoryResult.notes` (RMK-334, RFC §20.2): what a memory provider
   retrieved for the current turn only. The channel carries it with the
   turn's notes, after the input, never in the history a provider caches. A

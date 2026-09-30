@@ -105,7 +105,7 @@ from roomkit.delivery import (
     DeliveryItemStatus,
     InMemoryDeliveryBackend,
 )
-from roomkit.memory import MemoryProvider
+from roomkit.memory import MemoryProvider, MemoryResult
 from roomkit.models.channel import ChannelBinding, ChannelCapabilities, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import (
@@ -437,6 +437,7 @@ __all__ = [
     "RoomLockManager",
     # Memory
     "MemoryProvider",
+    "MemoryResult",
     # Sandbox
     "SandboxExecutor",
     "SandboxResult",
