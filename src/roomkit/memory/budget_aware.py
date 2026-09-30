@@ -7,7 +7,11 @@ from dataclasses import replace
 
 from roomkit.memory._wrapper import _MemoryWrapper
 from roomkit.memory.base import MemoryProvider, MemoryResult
-from roomkit.memory.token_estimator import estimate_event_tokens, history_budget
+from roomkit.memory.token_estimator import (
+    estimate_event_tokens,
+    estimate_notes_tokens,
+    history_budget,
+)
 from roomkit.models.context import RoomContext
 from roomkit.models.event import RoomEvent
 from roomkit.providers.ai.base import ProviderError
@@ -76,7 +80,8 @@ class BudgetAwareMemory(_MemoryWrapper):
         )
         budget = history_budget(
             max_context_tokens=self._max_context_tokens,
-            reserved_tokens=self._reserved_tokens,
+            # The turn's notes ride its input: they occupy the window, untrimmable.
+            reserved_tokens=self._reserved_tokens + estimate_notes_tokens(inner_result.notes),
             messages=inner_result.messages,
             safety_margin_ratio=self._safety_margin_ratio,
             current_event=current_event,

@@ -20,6 +20,7 @@ from roomkit.memory.base import MemoryProvider, MemoryResult
 from roomkit.memory.token_estimator import (
     estimate_event_tokens,
     estimate_message_tokens,
+    estimate_notes_tokens,
     extract_event_text,
 )
 from roomkit.models.context import RoomContext
@@ -96,8 +97,9 @@ class SummarizingMemory(_MemoryWrapper):
         )
         events = inner_result.events
 
-        # Estimate total tokens including prior messages from inner provider
-        msg_tokens = sum(estimate_message_tokens(m) for m in inner_result.messages)
+        # What the inner provider injects occupies the window: its messages
+        # and the turn's notes, which no tier can cut.
+        msg_tokens = self._injected_tokens(inner_result)
         event_tokens = self._estimate_events_tokens(events)
         total_tokens = msg_tokens + event_tokens
 
@@ -111,10 +113,8 @@ class SummarizingMemory(_MemoryWrapper):
         # Tier 2: LLM-based summarization
         tier2_threshold = int(self._max_context_tokens * self._tier2_ratio)
         if total_tokens > tier2_threshold and len(events) > self._min_events:
-            result = await self._apply_tier2(
-                room_id, events, inner_result.messages, tier2_threshold
-            )
-            return self._enforce_budget(replace(result, notes=inner_result.notes))
+            result = await self._apply_tier2(room_id, events, inner_result, tier2_threshold)
+            return self._enforce_budget(result)
 
         return self._enforce_budget(replace(inner_result, events=events))
 
@@ -153,10 +153,12 @@ class SummarizingMemory(_MemoryWrapper):
         self,
         room_id: str,
         events: list[RoomEvent],
-        prior_messages: list[AIMessage],
+        inner: MemoryResult,
         budget: int,
     ) -> MemoryResult:
-        """Summarize older events, keeping recent ones at full fidelity."""
+        """Summarize older events, keeping recent ones at full fidelity, and
+        *inner*'s messages and notes as they are."""
+        prior_messages = inner.messages
         event_costs = [estimate_event_tokens(e) for e in events]
 
         # Reserve space for the summary message in the kept-events budget
@@ -174,7 +176,7 @@ class SummarizingMemory(_MemoryWrapper):
                 break
 
         if keep_from == 0:
-            return MemoryResult(messages=prior_messages, events=events)
+            return replace(inner, events=events)
 
         trimmed = events[:keep_from]
         kept = events[keep_from:]
@@ -194,7 +196,7 @@ class SummarizingMemory(_MemoryWrapper):
             for m in prior_messages
             if not (isinstance(m.content, str) and "[Conversation summary" in m.content)
         ]
-        return MemoryResult(messages=non_summary + [summary_message], events=kept)
+        return replace(inner, messages=non_summary + [summary_message], events=kept)
 
     async def _get_or_create_summary(
         self,
@@ -262,7 +264,7 @@ class SummarizingMemory(_MemoryWrapper):
 
     def _enforce_budget(self, result: MemoryResult) -> MemoryResult:
         """Drop oldest events until total tokens fits within max_context_tokens."""
-        msg_tokens = sum(estimate_message_tokens(m) for m in result.messages)
+        msg_tokens = self._injected_tokens(result)
         events = list(result.events)
 
         total = msg_tokens + self._estimate_events_tokens(events)
@@ -275,6 +277,13 @@ class SummarizingMemory(_MemoryWrapper):
         return result
 
     # -- Helpers ----------------------------------------------------------------
+
+    @staticmethod
+    def _injected_tokens(result: MemoryResult) -> int:
+        """What *result* puts in the window besides its events: its messages
+        and the turn's notes, neither of which a tier trims."""
+        messages = sum(estimate_message_tokens(m) for m in result.messages)
+        return messages + estimate_notes_tokens(result.notes)
 
     @staticmethod
     def _extract_prior_summary(messages: list[AIMessage]) -> str | None:

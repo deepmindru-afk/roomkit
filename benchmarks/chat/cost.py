@@ -30,7 +30,7 @@ from benchmarks.chat.cost_script import (
 )
 from benchmarks.chat.harness import Harness
 from benchmarks.chat.scenarios import Scenario, record_handler
-from roomkit.memory import RetrievalMemory, SlidingWindowMemory
+from roomkit.memory import MemoryProvider, RetrievalMemory, SlidingWindowMemory
 from roomkit.providers.ai.base import (
     AIContext,
     AIProvider,
@@ -191,13 +191,17 @@ CONVERSATIONS: list[tuple[str, str, Turns]] = [
 ]
 
 
+# The memory a conversation runs with, when not the channel's default.
+MEMORIES: dict[str, Callable[[], MemoryProvider]] = {
+    "rag_cost": lambda: RetrievalMemory([HandbookSource()], inner=SlidingWindowMemory()),
+}
+
+
 def scenario_options(name: str, nonce: str | None = None) -> dict[str, Any]:
-    """The channel of conversation *name*: every one's, and for ``rag_cost`` a
-    memory that retrieves a knowledge source's passages at each turn."""
-    options = cost_options(nonce)
-    if name.removesuffix("_buffered") == "rag_cost":
-        options["memory"] = RetrievalMemory([HandbookSource()], inner=SlidingWindowMemory())
-    return options
+    """The channel of scenario *name*: every one's, and the memory its
+    conversation runs with, if it has one."""
+    memory = MEMORIES.get(name.removesuffix("_buffered"))
+    return {**cost_options(nonce), **({"memory": memory()} if memory else {})}
 
 
 def cost_scenarios() -> list[Scenario]:

@@ -13,8 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   retrieved for the current turn only. The channel carries it with the
   turn's notes, after the input, never in the history a provider caches. A
   provider that wraps another and rebuilds its result carries the inner
-  `notes`; `BudgetAwareMemory`, `CompactingMemory` and `SummarizingMemory`
-  do.
+  `notes`, and one that keeps the turn to a token budget counts them, since
+  nothing trims them: `BudgetAwareMemory`, `CompactingMemory` and
+  `SummarizingMemory` do, and `estimate_notes_tokens` measures them. A
+  wrapper of your own that rebuilds `MemoryResult(messages=..., events=...)`
+  around a `RetrievalMemory` drops its passages: build it with
+  `dataclasses.replace(inner_result, ...)`.
 - `read_stored_result` searches a stored result (RMK-321, RFC §21.5): with
   `query`, one line of text, it returns the lines that contain it, case
   aside and never as a pattern, with two lines around each and their

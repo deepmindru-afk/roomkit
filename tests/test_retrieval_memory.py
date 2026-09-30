@@ -185,7 +185,7 @@ class TestRetrieve:
 
         result = await rm.retrieve("room-1", _make_event("What is RoomKit?"), _make_context())
 
-        # Should have knowledge message prepended
+        # The passages are the turn's note, not a message of the history
         assert result.messages == []
         assert len(result.notes) == 1
         knowledge_msg = result.notes[0]

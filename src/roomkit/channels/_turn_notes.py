@@ -1,8 +1,9 @@
 """The notes a turn's input carries (RFC §6.4).
 
 What changes from one turn to the next (how speakers are named, the room's
-plan, the tools already used there and what they returned) rides the turn's
-input rather than the system prompt: a provider caches the system prompt ahead
+plan, the tools already used there and what they returned, what the memory
+retrieved for the turn) rides the turn's input rather than the system prompt
+or the history: a provider caches the system prompt ahead
 of the whole history, so a system prompt that changed had every following turn
 re-bill that history.
 """

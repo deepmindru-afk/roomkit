@@ -24,7 +24,7 @@ class MemoryResult:
     synthetic context) and/or raw room events that AIChannel will convert
     using its own content extraction logic (preserving vision support).
 
-    A provider may populate one or both fields. ``messages`` are prepended
+    A provider may populate any of the fields. ``messages`` are prepended
     first, then ``events`` are converted and appended.
 
     ``notes`` is what the provider retrieved for the current turn only

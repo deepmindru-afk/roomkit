@@ -131,6 +131,12 @@ def estimate_context_tokens(context: AIContext) -> int:
     return total
 
 
+def estimate_notes_tokens(notes: list[str]) -> int:
+    """What a memory's notes for the turn occupy in the window: they ride the
+    turn's input, outside the history, and no trimmer can cut them."""
+    return sum(estimate_tokens(note) for note in notes)
+
+
 def history_budget(
     *,
     max_context_tokens: int,

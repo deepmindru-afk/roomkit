@@ -546,7 +546,7 @@ class AIContextMixin:
         *,
         standalone: bool,
         speakers: bool,
-        retrieved: list[str] | None = None,
+        retrieved: list[str],
     ) -> str | None:
         """What changes from one turn to the next, as the notes the turn's
         input carries (RFC §6.4): how speakers are named when several speak,
@@ -558,7 +558,7 @@ class AIContextMixin:
         it.
         """
         blocks = [_SPEAKER_ATTRIBUTION_NOTE] if speakers else []
-        blocks.extend(retrieved or [])
+        blocks.extend(retrieved)
         room_id = loop_ctx.room_id
         if standalone or room_id is None:
             return turn_notes(blocks)

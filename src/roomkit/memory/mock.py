@@ -41,9 +41,11 @@ class MockMemoryProvider(MemoryProvider):
         self,
         messages: list[AIMessage] | None = None,
         events: list[RoomEvent] | None = None,
+        notes: list[str] | None = None,
     ) -> None:
         self._messages = messages or []
         self._events = events or []
+        self._notes = notes or []
         self.retrieve_calls: list[_RetrieveCall] = []
         self.ingest_calls: list[_IngestCall] = []
         self.clear_calls: list[str] = []
@@ -69,7 +71,9 @@ class MockMemoryProvider(MemoryProvider):
                 channel_id=channel_id,
             )
         )
-        return MemoryResult(messages=list(self._messages), events=list(self._events))
+        return MemoryResult(
+            messages=list(self._messages), events=list(self._events), notes=list(self._notes)
+        )
 
     async def ingest(
         self,

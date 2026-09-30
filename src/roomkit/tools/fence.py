@@ -1,6 +1,7 @@
 """Data set apart inside text a model reads.
 
-A tool's result or a worker's output is external data. Framed in a tagged
+A tool's result, a worker's output or a retrieved knowledge passage is
+external data. Framed in a tagged
 block, it must not be able to end the block early: what followed would read
 as the text around it, prompt or instruction.
 """

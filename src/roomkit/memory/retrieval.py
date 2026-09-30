@@ -25,8 +25,9 @@ class RetrievalMemory(_MemoryWrapper):
     """Wraps an inner provider and enriches context with knowledge sources.
 
     On ``retrieve``, queries all configured knowledge sources concurrently,
-    merges results by score, and prepends a context message with relevant
-    knowledge before the inner provider's messages.
+    merges results by score, and returns the passages as the turn's note
+    (``MemoryResult.notes``), each in a ``<knowledge>`` block: they ride the
+    turn's input, not the history a provider caches (RFC §20.2).
 
     On ``ingest``, forwards to the inner provider and indexes text content
     in all knowledge sources.

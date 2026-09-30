@@ -10,6 +10,7 @@ from roomkit.memory.summarizing import SummarizingMemory
 from roomkit.memory.token_estimator import (
     estimate_context_tokens,
     estimate_event_tokens,
+    estimate_notes_tokens,
     estimate_tokens,
     extract_event_text,
     history_budget,
@@ -26,6 +27,7 @@ __all__ = [
     "SummarizingMemory",
     "estimate_context_tokens",
     "estimate_event_tokens",
+    "estimate_notes_tokens",
     "estimate_tokens",
     "extract_event_text",
     "history_budget",
