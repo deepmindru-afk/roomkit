@@ -28,6 +28,7 @@ from roomkit.models.enums import ChannelCategory, ChannelType
 from roomkit.models.event import TextContent
 from roomkit.models.room import Room
 from roomkit.orchestration.pipeline import ConversationPipeline, PipelineStage
+from roomkit.orchestration.state import ConversationState, set_conversation_state
 from roomkit.orchestration.strategies import loop as loop_module
 from roomkit.orchestration.strategies.loop import Loop
 from roomkit.orchestration.strategies.supervisor import Supervisor, _install_auto
@@ -324,7 +325,9 @@ async def test_a_handoff_in_one_room_leaves_another_room_s_sessions() -> None:
         ]
     ).install(kit, [triage, billing], voice_channel_id="voice")
     for room_id in ("room-A", "room-B"):
-        await kit.create_room(room_id=room_id)
+        room = await kit.create_room(room_id=room_id)
+        triage_state = ConversationState(phase="triage", active_agent_id="triage")
+        await kit.store.update_room(set_conversation_state(room, triage_state))
         await kit.attach_channel(room_id, "voice")
     in_a = await voice.start_session("room-A", "caller-a", "ws")
 
@@ -332,6 +335,11 @@ async def test_a_handoff_in_one_room_leaves_another_room_s_sessions() -> None:
     await provider.simulate_tool_call(in_a, "c1", "handoff_conversation", handed)
     await _until(lambda: len(provider.tool_results) == 1)
     in_b = await voice.start_session("room-B", "caller-b", "ws")
+
+    assert json.loads(provider.tool_results[0][2])["accepted"] is True
+    # Room A's session was reconfigured to billing, a new one there starts with it.
+    in_a_again = await voice.start_session("room-A", "caller-a2", "ws")
+    assert _connected(provider, in_a_again)["system_prompt"].startswith("I am BILLING")
 
     connected = _connected(provider, in_b)
     assert connected["system_prompt"].startswith("I am TRIAGE")
