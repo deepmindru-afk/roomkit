@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import logging
 from collections import OrderedDict
+from dataclasses import replace
 
 from roomkit.memory._wrapper import _MemoryWrapper
 from roomkit.memory.base import MemoryProvider, MemoryResult
@@ -100,9 +101,8 @@ class CompactingMemory(_MemoryWrapper):
             content=f"[Conversation summary — earlier messages compacted]\n{summary}",
         )
 
-        return MemoryResult(
-            messages=inner_result.messages + [summary_message],
-            events=kept_events,
+        return replace(
+            inner_result, messages=inner_result.messages + [summary_message], events=kept_events
         )
 
     @staticmethod

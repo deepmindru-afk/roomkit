@@ -9,13 +9,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import replace
 
 from roomkit.knowledge.base import KnowledgeResult, KnowledgeSource
 from roomkit.memory._wrapper import _MemoryWrapper
 from roomkit.memory.base import MemoryProvider, MemoryResult
 from roomkit.models.context import RoomContext
 from roomkit.models.event import CompositeContent, RoomEvent, TextContent
-from roomkit.providers.ai.base import AIMessage
+from roomkit.tools.fence import fence
 
 logger = logging.getLogger("roomkit.memory.retrieval")
 
@@ -100,11 +101,9 @@ class RetrievalMemory(_MemoryWrapper):
                 seen[r.content] = r
         merged = sorted(seen.values(), key=lambda r: r.score, reverse=True)[: self._max_results]
 
-        knowledge_msg = AIMessage(role="user", content=self._format_results(merged))
-        return MemoryResult(
-            messages=[knowledge_msg] + inner_result.messages,
-            events=inner_result.events,
-        )
+        # For this turn alone: with the turn's notes, not ahead of the history
+        # a provider caches (RFC §20.2).
+        return replace(inner_result, notes=[*inner_result.notes, self._format_results(merged)])
 
     async def ingest(
         self,
@@ -159,9 +158,9 @@ class RetrievalMemory(_MemoryWrapper):
 
     @staticmethod
     def _format_results(results: list[KnowledgeResult]) -> str:
-        """Format knowledge results as a context message."""
-        lines = ["[Relevant context from knowledge sources]"]
+        """The retrieved passages as the turn's note, each set apart as data."""
+        lines = ["Relevant context from knowledge sources:"]
         for r in results:
             source_prefix = f"[{r.source}] " if r.source else ""
-            lines.append(f"- {source_prefix}{r.content}")
+            lines.append(fence("knowledge", f"{source_prefix}{r.content}"))
         return "\n".join(lines)

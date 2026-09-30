@@ -13,20 +13,24 @@ from __future__ import annotations
 import json
 import uuid
 from collections.abc import Awaitable, Callable
+from functools import partial
 from pathlib import Path
 from typing import Any
 
 from benchmarks.chat.cost_script import (
     FORCE_STOP_TURNS,
     LONG_TURNS,
+    RAG_TURNS,
     SYSTEM,
     TOOL_TURNS,
+    HandbookSource,
     Turns,
     catalogue,
     serve,
 )
 from benchmarks.chat.harness import Harness
 from benchmarks.chat.scenarios import Scenario, record_handler
+from roomkit.memory import RetrievalMemory, SlidingWindowMemory
 from roomkit.providers.ai.base import (
     AIContext,
     AIProvider,
@@ -183,7 +187,17 @@ CONVERSATIONS: list[tuple[str, str, Turns]] = [
     ("tool_cost", "Tool Search reveal, eviction, skill, digest over four turns", TOOL_TURNS),
     ("force_stop_cost", "Six identical calls, then the anti-loop ripcord", FORCE_STOP_TURNS),
     ("long_cost", "Six long turns of history, then five turns with tools", LONG_TURNS),
+    ("rag_cost", "Six questions, each with its own knowledge passages", RAG_TURNS),
 ]
+
+
+def scenario_options(name: str, nonce: str | None = None) -> dict[str, Any]:
+    """The channel of conversation *name*: every one's, and for ``rag_cost`` a
+    memory that retrieves a knowledge source's passages at each turn."""
+    options = cost_options(nonce)
+    if name.removesuffix("_buffered") == "rag_cost":
+        options["memory"] = RetrievalMemory([HandbookSource()], inner=SlidingWindowMemory())
+    return options
 
 
 def cost_scenarios() -> list[Scenario]:
@@ -195,7 +209,7 @@ def cost_scenarios() -> list[Scenario]:
             description + ("" if streaming else " (buffered)"),
             _conversation(turns),
             streaming=streaming,
-            options_factory=cost_options,
+            options_factory=partial(scenario_options, name),
             mock_supported=True,
             model=_billed(turns),
         )

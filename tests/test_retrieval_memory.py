@@ -168,13 +168,12 @@ class TestRetrieve:
 
         result = await rm.retrieve("room-1", _make_event("hi"), _make_context())
         assert result.events == events
-        # No knowledge messages should be prepended
-        assert not any(
-            isinstance(m.content, str) and "knowledge sources" in m.content
-            for m in result.messages
-        )
+        # No passage retrieved for the turn
+        assert result.notes == []
 
-    async def test_prepends_knowledge_message(self) -> None:
+    async def test_the_passages_are_the_turns_note_each_set_apart(self) -> None:
+        """The passages change with every question: they ride the turn's
+        notes, never the history a provider caches (RFC §20.2)."""
         inner = StubInnerMemory(events=[_make_event("hello")])
         source = StubKnowledgeSource(
             results=[
@@ -187,12 +186,14 @@ class TestRetrieve:
         result = await rm.retrieve("room-1", _make_event("What is RoomKit?"), _make_context())
 
         # Should have knowledge message prepended
-        assert len(result.messages) >= 1
-        knowledge_msg = result.messages[0]
-        assert isinstance(knowledge_msg.content, str)
-        assert "Relevant fact 1" in knowledge_msg.content
-        assert "[faq]" in knowledge_msg.content
-        assert "Relevant fact 2" in knowledge_msg.content
+        assert result.messages == []
+        assert len(result.notes) == 1
+        knowledge_msg = result.notes[0]
+        assert knowledge_msg.count("<knowledge>") == 2
+        assert isinstance(knowledge_msg, str)
+        assert "Relevant fact 1" in knowledge_msg
+        assert "[faq]" in knowledge_msg
+        assert "Relevant fact 2" in knowledge_msg
 
     async def test_deduplicates_results_by_content(self) -> None:
         """Results with the same content should be deduplicated, keeping highest score."""
@@ -207,10 +208,10 @@ class TestRetrieve:
 
         result = await rm.retrieve("room-1", _make_event("search query here"), _make_context())
 
-        knowledge_msg = result.messages[0]
-        assert isinstance(knowledge_msg.content, str)
+        knowledge_msg = result.notes[0]
+        assert isinstance(knowledge_msg, str)
         # Should only appear once
-        assert knowledge_msg.content.count("same content") == 1
+        assert knowledge_msg.count("same content") == 1
 
     async def test_respects_max_results(self) -> None:
         source = StubKnowledgeSource(
@@ -221,10 +222,10 @@ class TestRetrieve:
 
         result = await rm.retrieve("room-1", _make_event("search query here"), _make_context())
 
-        knowledge_msg = result.messages[0]
-        assert isinstance(knowledge_msg.content, str)
+        knowledge_msg = result.notes[0]
+        assert isinstance(knowledge_msg, str)
         # Count how many facts appear
-        fact_count = sum(1 for i in range(10) if f"fact {i}" in knowledge_msg.content)
+        fact_count = sum(1 for i in range(10) if f"fact {i}" in knowledge_msg)
         assert fact_count <= 3
 
     async def test_returns_inner_when_no_results(self) -> None:
@@ -248,8 +249,8 @@ class TestRetrieve:
 
         result = await rm.retrieve("room-1", _make_event("search query here"), _make_context())
 
-        knowledge_msg = result.messages[0]
-        assert "good result" in knowledge_msg.content
+        knowledge_msg = result.notes[0]
+        assert "good result" in knowledge_msg
 
     async def test_all_sources_fail_returns_inner(self) -> None:
         bad_source = StubKnowledgeSource(fail=True)
@@ -274,7 +275,7 @@ class TestRetrieve:
 
         result = await rm.retrieve("room-1", _make_event("search query here"), _make_context())
 
-        knowledge_text = result.messages[0].content
+        knowledge_text = result.notes[0]
         assert isinstance(knowledge_text, str)
         # "high" should appear before "mid", which should appear before "low"
         high_pos = knowledge_text.index("high")

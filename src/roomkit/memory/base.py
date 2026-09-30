@@ -26,10 +26,18 @@ class MemoryResult:
 
     A provider may populate one or both fields. ``messages`` are prepended
     first, then ``events`` are converted and appended.
+
+    ``notes`` is what the provider retrieved for the current turn only
+    (knowledge passages, say). It changes from one turn to the next, so the
+    channel carries it with the turn's notes, after the input, rather than in
+    the history a provider caches (RFC §20.2). A provider that wraps another
+    and rebuilds its result carries the inner ``notes``
+    (``dataclasses.replace`` keeps them).
     """
 
     messages: list[AIMessage] = field(default_factory=list)
     events: list[RoomEvent] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
 
 
 class MemoryProvider(ABC):

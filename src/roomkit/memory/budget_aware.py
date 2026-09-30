@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 
 from roomkit.memory._wrapper import _MemoryWrapper
 from roomkit.memory.base import MemoryProvider, MemoryResult
@@ -81,10 +82,7 @@ class BudgetAwareMemory(_MemoryWrapper):
             current_event=current_event,
         )
         trimmed_events = self._trim_events_to_budget(inner_result.events, budget)
-        return MemoryResult(
-            messages=inner_result.messages,
-            events=trimmed_events,
-        )
+        return replace(inner_result, events=trimmed_events)
 
     def _trim_events_to_budget(self, events: list[RoomEvent], budget: int) -> list[RoomEvent]:
         if not events:

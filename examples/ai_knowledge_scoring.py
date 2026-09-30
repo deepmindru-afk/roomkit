@@ -2,7 +2,9 @@
 
 Demonstrates:
 1. KnowledgeSource — pluggable retrieval backend
-2. RetrievalMemory — enriches AI context with external knowledge
+2. RetrievalMemory — enriches AI context with external knowledge: the
+   passages ride the turn's notes, after the question, so the history
+   before it stays cached as they change
 3. ConversationScorer — automatic quality scoring
 4. ScoringHook — wires scorers to the AFTER_AI_RESPONSE hook
 5. kit.submit_feedback() — user quality ratings

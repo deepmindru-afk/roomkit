@@ -12,6 +12,7 @@ import json
 from typing import Any
 
 from benchmarks.chat.scenarios import tool
+from roomkit.knowledge.base import KnowledgeResult, KnowledgeSource
 from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
 
 SYSTEM = (
@@ -267,6 +268,42 @@ LONG_TURNS: Turns = [
     ("Check A-2003 please.", [_call("l3", "lookup_order", order_id="A-2003"), _say("Shipped.")]),
     ("And A-2004?", [_call("l4", "lookup_order", order_id="A-2004"), _say("Shipped too.")]),
 ]
+
+# Six questions to an agent backed by a knowledge source whose passages
+# differ at every question: what a turn retrieved must not shift the history
+# the next turn re-reads (RMK-334).
+RAG_TURNS: Turns = [
+    (
+        f"Question {n}: what does the handbook say about {topic}? "
+        + " ".join(f"Detail {d} about {topic} matters to me." for d in range(30)),
+        [
+            _say(
+                f"The handbook on {topic}: "
+                + " ".join(f"Point {p}: {topic} follow rule {p}." for p in range(25))
+            )
+        ],
+    )
+    for n, topic in enumerate(_TOPICS)
+]
+
+
+class HandbookSource(KnowledgeSource):
+    """Passages of a synthetic handbook, a different set for each topic asked."""
+
+    async def search(
+        self, query: str, *, room_id: str | None = None, limit: int = 5
+    ) -> list[KnowledgeResult]:
+        topic = next((t for t in _TOPICS if t in query), "general")
+        return [
+            KnowledgeResult(
+                content=f"Handbook {topic}, section {s}: "
+                + " ".join(f"clause {c} on {topic} applies." for c in range(20)),
+                score=1.0 - s / 10,
+                source="handbook",
+            )
+            for s in range(min(limit, 3))
+        ]
+
 
 # Six identical calls: the third is refused, the sixth pulls the ripcord and
 # the last generation is told to answer; none of its calls runs.

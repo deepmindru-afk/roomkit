@@ -367,10 +367,13 @@ class AIContextMixin:
         sees, then the input carrying the turn's notes."""
         memory_result = await self._visible_memory(event, context, standalone)
         messages, attribute_speakers = self._turn_messages(event, context, memory_result, loop_ctx)
-        messages = with_turn_notes(
-            messages,
-            self._turn_notes(loop_ctx, standalone=standalone, speakers=attribute_speakers),
+        notes = self._turn_notes(
+            loop_ctx,
+            standalone=standalone,
+            speakers=attribute_speakers,
+            retrieved=memory_result.notes,
         )
+        messages = with_turn_notes(messages, notes)
         return messages
 
     def _turn_base_tools(
@@ -538,17 +541,24 @@ class AIContextMixin:
         return current_content, current_speaker
 
     def _turn_notes(
-        self, loop_ctx: _ToolLoopContext, *, standalone: bool, speakers: bool
+        self,
+        loop_ctx: _ToolLoopContext,
+        *,
+        standalone: bool,
+        speakers: bool,
+        retrieved: list[str] | None = None,
     ) -> str | None:
         """What changes from one turn to the next, as the notes the turn's
         input carries (RFC §6.4): how speakers are named when several speak,
-        the room's plan, and the tools already used here.
+        what the memory retrieved for this turn, the room's plan, and the
+        tools already used here.
 
         A standalone turn reads none of the room's working memories (RFC
         §10.1.1). Each is read under the tool loop's room, as its writer keys
         it.
         """
         blocks = [_SPEAKER_ATTRIBUTION_NOTE] if speakers else []
+        blocks.extend(retrieved or [])
         room_id = loop_ctx.room_id
         if standalone or room_id is None:
             return turn_notes(blocks)

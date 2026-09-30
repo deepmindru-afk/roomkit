@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+from dataclasses import replace
 
 from roomkit.memory._wrapper import _MemoryWrapper
 from roomkit.memory.base import MemoryProvider, MemoryResult
@@ -113,9 +114,9 @@ class SummarizingMemory(_MemoryWrapper):
             result = await self._apply_tier2(
                 room_id, events, inner_result.messages, tier2_threshold
             )
-            return self._enforce_budget(result)
+            return self._enforce_budget(replace(result, notes=inner_result.notes))
 
-        return self._enforce_budget(MemoryResult(messages=inner_result.messages, events=events))
+        return self._enforce_budget(replace(inner_result, events=events))
 
     # -- Tier 1: truncation -----------------------------------------------------
 
@@ -270,7 +271,7 @@ class SummarizingMemory(_MemoryWrapper):
             total = msg_tokens + self._estimate_events_tokens(events)
 
         if events is not result.events:
-            return MemoryResult(messages=result.messages, events=events)
+            return replace(result, events=events)
         return result
 
     # -- Helpers ----------------------------------------------------------------

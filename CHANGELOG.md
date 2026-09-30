@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `MemoryResult.notes` (RMK-334, RFC §20.2): what a memory provider
+  retrieved for the current turn only. The channel carries it with the
+  turn's notes, after the input, never in the history a provider caches. A
+  provider that wraps another and rebuilds its result carries the inner
+  `notes`; `BudgetAwareMemory`, `CompactingMemory` and `SummarizingMemory`
+  do.
 - `read_stored_result` searches a stored result (RMK-321, RFC §21.5): with
   `query`, one line of text, it returns the lines that contain it, case
   aside and never as a pattern, with two lines around each and their
@@ -35,6 +41,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `RetrievalMemory` returns the passages it retrieves as the turn's note,
+  each in a `<knowledge>` block set apart as data, instead of a user message
+  at the head of the history (RMK-334). The passages change with every
+  question, and at the head they shifted the whole history, which a provider
+  caching a prefix billed again at every turn. Six questions on
+  `claude-sonnet-5`: $0.064 before, $0.045 after (30 % less), the history
+  read from cache instead of rewritten.
 - Tool Search also switches on for cost (RMK-321): in `auto` mode, past
   `tool_search_threshold_tokens` schema tokens of the tools it can hide
   (8,000 by default, whatever the model's window; `None` removes the cap),

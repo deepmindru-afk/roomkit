@@ -9,9 +9,9 @@ from typing import Any
 import pytest
 from benchmarks.chat.cost import (
     BilledScript,
-    cost_options,
     cost_scenarios,
     first_change,
+    scenario_options,
 )
 from benchmarks.chat.cost_report import cost_markdown, cost_summary, read_rate, turn_totals
 from benchmarks.chat.harness import Harness
@@ -63,7 +63,9 @@ def _scenario(name: str) -> Scenario:
 
 async def _run(scenario: Scenario, billing: MockAIProvider | None) -> Harness:
     model = scenario.model_for(billing or MockAIProvider(), billed=billing is not None)
-    h = Harness(model, streaming=scenario.streaming, **cost_options("fixed-nonce"))
+    h = Harness(
+        model, streaming=scenario.streaming, **scenario_options(scenario.name, "fixed-nonce")
+    )
     try:
         await h.add_room("main")
         await scenario.run(h)

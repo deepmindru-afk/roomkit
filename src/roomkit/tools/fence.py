@@ -24,8 +24,9 @@ def fence(tag: str, text: str) -> str:
     return f"<{tag}>\n{body}\n</{tag}>"
 
 
-# The tags RoomKit fences external data in: a tool's result, a worker's output.
-FENCED_TAGS = ("tool_result", "worker_output")
+# The tags RoomKit fences external data in: a tool's result, a worker's output,
+# a knowledge passage.
+FENCED_TAGS = ("tool_result", "worker_output", "knowledge")
 
 
 def named_blocks(text: str, tags: tuple[str, ...] = FENCED_TAGS) -> str:
