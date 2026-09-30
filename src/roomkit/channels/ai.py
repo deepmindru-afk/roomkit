@@ -407,6 +407,25 @@ class AIChannel(
         self._tool_search_threshold_pct = tool_search_threshold_pct
         self._tool_search_miss_hint = tool_search_miss_hint
 
+        self._init_tool_surface(tool_handler, tools, human_input_handler)
+
+        # Active tool loops for steering (loop_id -> context)
+        self._active_loops: dict[str, _ToolLoopContext] = {}
+        # Text-only streams being produced — the one turn path that has no loop
+        # context to register above (see ``active_turns``).
+        self._text_streams = 0
+
+        self._init_framework_callbacks()
+        # External tool handler for provider-executed tools (e.g. Claude Code)
+        self._external_tool_handler = external_tool_handler
+
+    def _init_tool_surface(
+        self,
+        tool_handler: ToolHandler | None,
+        tools: list[AITool | Tool] | None,
+        human_input_handler: HumanInputToolHandler | None,
+    ) -> None:
+        """The tools this channel declares and the handlers that serve them."""
         # Extract Tool objects: split into AITool definitions + composed handler
         extracted_defs: list[AITool] = []
         extracted_handler: ToolHandler | None = None
@@ -462,20 +481,11 @@ class AIChannel(
             else None
         )
 
-        # Active tool loops for steering (loop_id -> context)
-        self._active_loops: dict[str, _ToolLoopContext] = {}
-        # Text-only streams being produced — the one turn path that has no loop
-        # context to register above (see ``active_turns``).
-        self._text_streams = 0
-
-        self._init_framework_callbacks()
-        # External tool handler for provider-executed tools (e.g. Claude Code)
-        self._external_tool_handler = external_tool_handler
         # Host tools that collide with the channel's own (RFC §21.1), each
         # reported once.
-        self._collisions = CollisionLog(channel_id)
+        self._collisions = CollisionLog(self.channel_id)
         served = self._channel_tool_names()
-        refuse_served_names((tool.name for tool in self._user_tools), served, channel_id)
+        refuse_served_names((tool.name for tool in self._user_tools), served, self.channel_id)
 
     def _init_framework_callbacks(self) -> None:
         """The callbacks the framework injects on ``register_channel``, unset until then."""

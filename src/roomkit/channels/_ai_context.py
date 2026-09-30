@@ -252,30 +252,7 @@ class AIContextMixin:
         # settings reach the context as resolved.
         system_prompt = settings.pop("system_prompt")
 
-        if turn is not None and turn.tools is not None:
-            tools = list(turn.tools)
-        else:
-            raw_tools = binding.metadata.get("tools", [])
-            # Convert raw tool dicts to AITool instances
-            tools = [
-                AITool(
-                    name=t["name"],
-                    description=t.get("description", ""),
-                    parameters=t.get("parameters", {}),
-                    tags=t.get("tags", []) or [],
-                )
-                for t in raw_tools
-            ]
-
-        # Inject extra tools (user-provided + orchestration handoff, etc.),
-        # each name declared once and none the channel serves itself: the
-        # channel's own tools are added below (RFC §21.1).
-        tools.extend([*self.extra_tools, *self._room_tool_defs(binding.room_id)])
-        tools = self._declared_once(tools)
-
-        # Inject human-input tool definitions (e.g. AskUserQuestion)
-        if self._human_input_handler is not None:
-            tools.extend(self._human_input_handler.tools or ())
+        tools = self._turn_base_tools(turn, binding)
 
         loop_ctx = self._get_loop_ctx()
 
@@ -400,6 +377,36 @@ class AIContextMixin:
             response_metadata=loop_ctx.response_metadata,
             **settings,
         )
+
+    def _turn_base_tools(
+        self, turn: AIChannelTurnConfig | None, binding: ChannelBinding
+    ) -> list[AITool]:
+        """The turn's tools before the channel's own features add theirs."""
+        if turn is not None and turn.tools is not None:
+            tools = list(turn.tools)
+        else:
+            raw_tools = binding.metadata.get("tools", [])
+            # Convert raw tool dicts to AITool instances
+            tools = [
+                AITool(
+                    name=t["name"],
+                    description=t.get("description", ""),
+                    parameters=t.get("parameters", {}),
+                    tags=t.get("tags", []) or [],
+                )
+                for t in raw_tools
+            ]
+
+        # Inject extra tools (user-provided + orchestration handoff, etc.),
+        # each name declared once and none the channel serves itself: the
+        # channel's own tools are added below (RFC §21.1).
+        tools.extend([*self.extra_tools, *self._room_tool_defs(binding.room_id)])
+        tools = self._declared_once(tools)
+
+        # Inject human-input tool definitions (e.g. AskUserQuestion)
+        if self._human_input_handler is not None:
+            tools.extend(self._human_input_handler.tools or ())
+        return tools
 
     async def _add_channel_features(
         self,

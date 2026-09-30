@@ -353,45 +353,7 @@ class RealtimeVoiceChannel(
                 provider.name,
             )
 
-        # Extract Tool objects: split into definition dicts + composed handler
-        from roomkit.tools.base import Tool as _ToolProto
-
-        tool_defs: list[dict[str, Any]] | None = None
-        extracted_handler: ToolHandler | None = None
-        if tools:
-            has_tool_objects = any(isinstance(t, _ToolProto) for t in tools)
-            if has_tool_objects:
-                from roomkit.tools.compose import extract_tools
-
-                ai_tools, extracted_handler = extract_tools(tools)
-                tool_defs = [
-                    {
-                        "name": t.name,
-                        "description": t.description,
-                        "parameters": t.parameters,
-                        "tags": getattr(t, "tags", []) or [],
-                    }
-                    for t in ai_tools
-                ]
-            else:
-                tool_defs = tools
-
-        # Host tools that collide with the channel's own (RFC §21.1), each
-        # reported once; a name given twice is declared once.
-        self._collisions = CollisionLog(channel_id)
-        if tool_defs:
-            tool_defs = declared_once(tool_defs, dict_tool_name, (), self._collisions)
-        self._tools = tool_defs
-
-        # Merge explicit tool_handler with handlers extracted from Tool objects
-        effective_handler = tool_handler
-        if extracted_handler and tool_handler:
-            from roomkit.tools.compose import compose_tool_handlers
-
-            effective_handler = compose_tool_handlers(tool_handler, extracted_handler)
-        elif extracted_handler:
-            effective_handler = extracted_handler
-        self._tool_handler = effective_handler
+        self._init_host_tools(tools, tool_handler)
         self._mute_on_tool_call = mute_on_tool_call
         self._tool_result_max_length = tool_result_max_length
         self._tool_policy = tool_policy
@@ -406,48 +368,13 @@ class RealtimeVoiceChannel(
             interruption.allow_during_first_ms if interruption is not None else 0,
         )
 
-        # Skills support — skill defs are composed into the tool list at
-        # session-start / reconfigure time, NOT stored in self._tools, to
-        # avoid doubling when reconfigure_session updates self._tools.
-        #
-        # Delivery mode is resolved from the explicit kwarg if given,
-        # otherwise from the provider's reconfigure capability: providers
-        # that cannot safely reconfigure mid-session (Gemini 3.x) must
-        # default to ``inline_full`` so every skill body is in the
-        # initial system_instruction. Others default to ``on_demand`` so
-        # the prompt stays short until a skill is activated.
-        self._skill_support: RealtimeSkillSupport | None = None
-        if skills and (skills.skill_count > 0 or skills.unavailable_skills):
-            from roomkit.channels._realtime_skills import RealtimeSkillSupport
-
-            if skill_delivery_mode is None:
-                resolved_mode = (
-                    "on_demand" if provider.supports_mid_session_reconfigure else "inline_full"
-                )
-            else:
-                resolved_mode = skill_delivery_mode
-
-            self._skill_support = RealtimeSkillSupport(
-                skills,
-                script_executor,
-                delivery_mode=resolved_mode,
-                reconfigure_capable=provider.supports_mid_session_reconfigure,
-                channel_tools=self._channel_tool_names,
-            )
-            if self._skill_support.uses_tool_result and not provider.supports_context_preservation:
-                raise ValueError("on_demand skills require provider context preservation")
-
-        self._tool_search_support = self._tool_search_for(
-            tool_defs,
+        self._init_channel_tools(
             skills,
+            script_executor,
+            skill_delivery_mode,
             tool_search=tool_search,
-            threshold=tool_search_threshold,
-            pinned=tool_search_pinned,
-        )
-        refuse_served_names(
-            (dict_tool_name(tool) for tool in tool_defs or []),
-            self._channel_tool_names(),
-            channel_id,
+            tool_search_threshold=tool_search_threshold,
+            tool_search_pinned=tool_search_pinned,
         )
 
         # Lock for shared state accessed from both asyncio and audio threads
@@ -573,6 +500,106 @@ class RealtimeVoiceChannel(
             self._transport_unsubscribers.append(
                 transport.on_audio_played(self._on_transport_audio_played)
             )
+
+    def _init_host_tools(
+        self, tools: list[dict[str, Any] | Any] | None, tool_handler: ToolHandler | None
+    ) -> None:
+        """The host's tool definitions and the handler that serves them."""
+        # Extract Tool objects: split into definition dicts + composed handler
+        from roomkit.tools.base import Tool as _ToolProto
+
+        tool_defs: list[dict[str, Any]] | None = None
+        extracted_handler: ToolHandler | None = None
+        if tools:
+            has_tool_objects = any(isinstance(t, _ToolProto) for t in tools)
+            if has_tool_objects:
+                from roomkit.tools.compose import extract_tools
+
+                ai_tools, extracted_handler = extract_tools(tools)
+                tool_defs = [
+                    {
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.parameters,
+                        "tags": getattr(t, "tags", []) or [],
+                    }
+                    for t in ai_tools
+                ]
+            else:
+                tool_defs = tools
+
+        # Host tools that collide with the channel's own (RFC §21.1), each
+        # reported once; a name given twice is declared once.
+        self._collisions = CollisionLog(self.channel_id)
+        if tool_defs:
+            tool_defs = declared_once(tool_defs, dict_tool_name, (), self._collisions)
+        self._tools = tool_defs
+
+        # Merge explicit tool_handler with handlers extracted from Tool objects
+        effective_handler = tool_handler
+        if extracted_handler and tool_handler:
+            from roomkit.tools.compose import compose_tool_handlers
+
+            effective_handler = compose_tool_handlers(tool_handler, extracted_handler)
+        elif extracted_handler:
+            effective_handler = extracted_handler
+        self._tool_handler = effective_handler
+
+    def _init_channel_tools(
+        self,
+        skills: SkillRegistry | None,
+        script_executor: ScriptExecutor | None,
+        skill_delivery_mode: str | None,
+        *,
+        tool_search: bool | None,
+        tool_search_threshold: int,
+        tool_search_pinned: list[str] | None,
+    ) -> None:
+        """The tools the channel serves itself: the skills' and Tool Search's."""
+        provider = self._provider
+        # Skills support — skill defs are composed into the tool list at
+        # session-start / reconfigure time, NOT stored in self._tools, to
+        # avoid doubling when reconfigure_session updates self._tools.
+        #
+        # Delivery mode is resolved from the explicit kwarg if given,
+        # otherwise from the provider's reconfigure capability: providers
+        # that cannot safely reconfigure mid-session (Gemini 3.x) must
+        # default to ``inline_full`` so every skill body is in the
+        # initial system_instruction. Others default to ``on_demand`` so
+        # the prompt stays short until a skill is activated.
+        self._skill_support: RealtimeSkillSupport | None = None
+        if skills and (skills.skill_count > 0 or skills.unavailable_skills):
+            from roomkit.channels._realtime_skills import RealtimeSkillSupport
+
+            if skill_delivery_mode is None:
+                resolved_mode = (
+                    "on_demand" if provider.supports_mid_session_reconfigure else "inline_full"
+                )
+            else:
+                resolved_mode = skill_delivery_mode
+
+            self._skill_support = RealtimeSkillSupport(
+                skills,
+                script_executor,
+                delivery_mode=resolved_mode,
+                reconfigure_capable=provider.supports_mid_session_reconfigure,
+                channel_tools=self._channel_tool_names,
+            )
+            if self._skill_support.uses_tool_result and not provider.supports_context_preservation:
+                raise ValueError("on_demand skills require provider context preservation")
+
+        self._tool_search_support = self._tool_search_for(
+            self._tools,
+            skills,
+            tool_search=tool_search,
+            threshold=tool_search_threshold,
+            pinned=tool_search_pinned,
+        )
+        refuse_served_names(
+            (dict_tool_name(tool) for tool in self._tools or []),
+            self._channel_tool_names(),
+            self.channel_id,
+        )
 
     @property
     def _telemetry_provider(self) -> NoopTelemetryProvider:
@@ -1155,6 +1182,22 @@ class RealtimeVoiceChannel(
         if self._closing or (pending is not None and pending.disconnected):
             raise asyncio.CancelledError("Voice transport disconnected during connection")
 
+    def _session_config(
+        self, meta: dict[str, Any]
+    ) -> tuple[str | None, str | None, Any, float | None, dict[str, Any] | None]:
+        """The prompt, voice, tools, temperature and provider settings a new
+        session starts with."""
+        # Per-room config overrides from metadata
+        system_prompt = meta.get("system_prompt", self._system_prompt)
+        meta["system_prompt"] = system_prompt
+        voice = meta.get("voice", self._voice)
+        tools = meta.get("tools", self._tools)
+        temperature = meta.get("temperature", self._temperature)
+        provider_config = meta.get("provider_config")
+        if self._skill_support and self._skill_support.uses_tool_result:
+            provider_config = {**(provider_config or {}), "preserve_context": True}
+        return system_prompt, voice, tools, temperature, provider_config
+
     async def _connect_session(self, session: VoiceSession, connection: Any) -> VoiceSession:
         room_id, participant_id = session.room_id, session.participant_id
         self._session_config_locks[session.id] = asyncio.Lock()
@@ -1195,15 +1238,7 @@ class RealtimeVoiceChannel(
         if self._skill_support:
             self._skill_support.init_session(session.id)
 
-        # Per-room config overrides from metadata
-        system_prompt = meta.get("system_prompt", self._system_prompt)
-        meta["system_prompt"] = system_prompt
-        voice = meta.get("voice", self._voice)
-        tools = meta.get("tools", self._tools)
-        temperature = meta.get("temperature", self._temperature)
-        provider_config = meta.get("provider_config")
-        if self._skill_support and self._skill_support.uses_tool_result:
-            provider_config = {**(provider_config or {}), "preserve_context": True}
+        system_prompt, voice, tools, temperature, provider_config = self._session_config(meta)
 
         # Cache the resolved base tool list (channel defaults + metadata
         # overrides) so skill activation can reconfigure without losing them.
