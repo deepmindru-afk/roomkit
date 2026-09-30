@@ -154,6 +154,8 @@ MODELS: list[ModelInfo] = [
         display_name="Gemini 2.5 Pro",
         context_window=_CTX,
         supports_vision=True,
+        # 404 "no longer available to new users" (2026-09-30).
+        deprecated=True,
         capabilities=["thinking", "audio", "video"],
         pricing=ModelPricing(
             input_per_million=1.25,
@@ -183,6 +185,8 @@ MODELS: list[ModelInfo] = [
         display_name="Gemini 2.5 Flash-Lite",
         context_window=_CTX,
         supports_vision=True,
+        # 404 "no longer available to new users" (2026-09-30).
+        deprecated=True,
         capabilities=["thinking", "audio", "video"],
         pricing=ModelPricing(
             input_per_million=0.1,

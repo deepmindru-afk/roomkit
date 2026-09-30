@@ -104,6 +104,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from 158 thought tokens (nothing sent) to 48 (`low`), `enable_thinking=True`
   on `gemini-3.1-flash-lite` from 0 to 200, and `enable_thinking=False` on
   Ollama `qwen3:4b` from about 1,900 thinking characters to none.
+- The Gemini catalogue marks `gemini-2.5-pro` and `gemini-2.5-flash-lite`
+  deprecated: the Gemini API answers them 404, "no longer available to new
+  users" (2026-09-30).
 
 ### Fixed
 
