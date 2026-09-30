@@ -315,9 +315,10 @@ class ToolEviction:
             return json.dumps({"error": f"Result '{result_id}' not found", "available": available})
         # Read back, it is in use: the room's least recently read go first.
         self._store.move_to_end((room, result_id))
-        query = arguments.get("query")
-        if query is not None:
-            return search(full_result, str(query), offset, self._page_budget())
+        # A blank query, an optional field a model filled in, reads a page.
+        query = str(arguments.get("query") or "")
+        if query.strip():
+            return search(full_result, query, offset, self._page_budget())
         return page(full_result, offset, limit, self._page_budget())
 
     def _page_budget(self) -> int:

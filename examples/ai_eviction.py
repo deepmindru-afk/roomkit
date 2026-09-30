@@ -108,7 +108,6 @@ async def main() -> None:
         welcome=(
             "\nEviction demo — large tool results are stored and paginated.\n"
             'Try: "Generate a customer report and analyze revenue by department"\n'
-            'Or: "Is customer 137 in the report? Search it rather than reading it all"\n'
         ),
     )
 

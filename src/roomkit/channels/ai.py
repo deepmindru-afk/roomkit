@@ -46,6 +46,7 @@ from roomkit.channels._skill_activation import SkillActivationMemory
 from roomkit.channels._task_planner import TaskPlanner
 from roomkit.channels._tool_eviction import ToolEviction
 from roomkit.channels._tool_registry import ChannelRegistry, ToolSource
+from roomkit.channels._tool_search import checked_threshold_tokens
 from roomkit.channels._tool_search_constants import (
     DEFAULT_TOOL_SEARCH_THRESHOLD,
     DEFAULT_TOOL_SEARCH_THRESHOLD_PCT,
@@ -425,7 +426,7 @@ class AIChannel(
         self._tool_search_pinned: set[str] = set(tool_search_pinned or [])
         self._tool_search_threshold = tool_search_threshold
         self._tool_search_threshold_pct = tool_search_threshold_pct
-        self._tool_search_threshold_tokens = tool_search_threshold_tokens
+        self._tool_search_threshold_tokens = checked_threshold_tokens(tool_search_threshold_tokens)
         self._tool_search_miss_hint = tool_search_miss_hint
 
         self._init_tool_surface(tool_handler, tools, human_input_handler)

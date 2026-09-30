@@ -160,10 +160,10 @@ async def main() -> None:
         system_prompt="You are a helpful assistant.",
         tool_handler=tool_handler,
         # Forced on for a deterministic demo. In production leave tool_search
-        # at its default (None = auto): it self-enables when the deferrable
-        # tools would exceed ~10% of the model's context window
-        # (tool_search_threshold_pct), falling back to a tool count when the
-        # window is unknown. Pin one tool so it stays visible without a search.
+        # at its default (None = auto): it self-enables when the hideable
+        # tools' schemas pass 8,000 tokens (tool_search_threshold_tokens) or
+        # 10% of the model's context window (tool_search_threshold_pct). Pin
+        # one tool so it stays visible without a search.
         tool_search=True,
         tool_search_pinned=["get_help"],
     )

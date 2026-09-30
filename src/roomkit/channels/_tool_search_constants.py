@@ -27,15 +27,15 @@ DEFAULT_TOOL_SEARCH_THRESHOLD = 20
 
 # Text-channel auto-activation threshold as a percentage of the model's
 # context window: defer the catalogue when the deferrable (non-pinned)
-# tools would cost more than this share of the window. Self-tunes to model
-# size — a large window is a no-op, a small one defers early. Mirrors the
+# tools would cost more than this share of the window, so a small window
+# defers early. A large window is left to the token cap below. Mirrors the
 # Hermes ``threshold_pct`` default.
 DEFAULT_TOOL_SEARCH_THRESHOLD_PCT = 10.0
 
 # The deferrable schema tokens past which Tool Search also switches on,
-# whatever the window: measured on claude-sonnet-5 (RMK-321), hiding a
-# catalogue pays for its discovery round from about 15 tools, and a cached
-# 12.8K-token catalogue still costs more per turn than the discovery does.
+# whatever the window: measured over two turns (RMK-321), hiding a 60-tool
+# catalogue costs 76 % less on claude-sonnet-5 and 73 % less on gpt-4.1-mini,
+# prompt caching included, and pays for its discovery round from about 15.
 DEFAULT_TOOL_SEARCH_THRESHOLD_TOKENS = 8000
 
 # Default number of matches returned by find_tools. Small enough to

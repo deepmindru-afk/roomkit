@@ -348,6 +348,18 @@ def search_tool_defs() -> list[AITool]:
     ]
 
 
+def checked_threshold_tokens(value: object) -> int | None:
+    """*value* as a Tool Search token cap: a positive integer, or ``None`` for
+    no cap. Raises ``ValueError`` otherwise."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(
+            f"tool_search_threshold_tokens must be a positive integer or None, got {value!r}"
+        )
+    return value
+
+
 def should_activate_tool_search(
     *,
     mode: bool | None,

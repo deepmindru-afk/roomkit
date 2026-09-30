@@ -10,12 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `read_stored_result` searches a stored result (RMK-321, RFC §21.5): with
-  `query`, it returns the lines that contain the text, case aside and never
-  as a pattern, with two lines around each and their numbers, bounded like a
-  page, `next_offset` continuing past a page of matches. A search covers the
-  whole result, so no match says the text is absent, which paging cannot.
-  Finding one line in a 50K-token result took 17 pages and about 42,000
-  tokens read; the search returns it in about 135.
+  `query`, one line of text, it returns the lines that contain it, case
+  aside and never as a pattern, with two lines around each and their
+  numbers, bounded like a page, a long line cut around the match, and
+  `next_offset` continuing past a page of matches. A search reads every line
+  whole, so no match says the text is absent, which paging cannot. Finding
+  one line in a 50K-token result took 17 pages and about 42,000 tokens read;
+  the search returns it in about 135. A blank `query` reads a page.
 - `turn_budget_tokens` and `turn_budget_usd` on `AIChannel` and
   `AIChannelTurnConfig`, and per room through binding metadata (RMK-320, RFC
   §6.4): what one turn may spend, in billed tokens (cache included) or at
@@ -35,14 +36,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Tool Search also switches on for cost (RMK-321): in `auto` mode, past
-  `tool_search_threshold_tokens` deferrable schema tokens (8,000 by default,
-  whatever the model's window; `None` removes the cap), where it used to
-  wait for 10 % of the window, 100K tokens on a 1M-token model. Measured on
-  `claude-sonnet-5`, prompt caching included: a 60-tool catalogue costs
-  $0.018 over two turns behind Tool Search against $0.074 sent whole, and
-  hiding a catalogue pays from about 15 tools. A channel with a larger
-  catalogue now starts its turns with `find_tools`; `tool_search=False`
-  keeps it whole.
+  `tool_search_threshold_tokens` schema tokens of the tools it can hide
+  (8,000 by default, whatever the model's window; `None` removes the cap),
+  where it used to wait for 10 % of the window, 100K tokens on a 1M-token
+  model. The channel's own tools and orchestration's no longer count toward
+  either threshold, which they never hide. Measured over two turns with
+  prompt caching, a 60-tool catalogue costs $0.018 behind Tool Search
+  against $0.074 sent whole on `claude-sonnet-5`, and 73 % less on
+  `gpt-4.1-mini`; hiding a catalogue pays from about 15 tools. A channel
+  with a larger catalogue now starts its turns with `find_tools`;
+  `tool_search=False` keeps it whole.
 - `max_tool_rounds` defaults to 50 instead of 200, and
   `tool_loop_warn_after` to 25 instead of 50 (RMK-320). On 819 real
   `AIChannel` turns with tools, the median ran 2 rounds, the 99th percentile
@@ -51,6 +54,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A page `read_stored_result` returns writes non-ASCII text as it is instead
+  of `\uXXXX` escapes (RMK-321): escaped, a page of Chinese text weighed
+  about 14,000 tokens against a 5,000-token threshold, and came back stored
+  again under a new id instead of read.
 - An emergency compaction keeps the turn's input and its notes whole
   (RMK-335, RFC §6.4). On a context overflow, the channel used to summarize
   the first half of the messages, the turn's input among them in a long tool

@@ -41,6 +41,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
     from roomkit.channels._skill_activation import SkillActivationMemory
+    from roomkit.channels._tool_registry import ChannelRegistry
     from roomkit.channels._tool_usage import ToolUsageMemory
     from roomkit.channels._turn_config import AIChannelTurnConfig
     from roomkit.channels.ai import _ContentPart, _ToolLoopContext
@@ -108,6 +109,7 @@ class AIContextHost(Protocol):
         _eviction: Tool result eviction / truncation strategy.
         _skill_activation: Per-room record of the skills active in a conversation.
         _planner: Optional task planner for planning tools.
+        _registry: The tools the channel serves, with their traits.
         _user_tools: User-provided tool definitions.
         channel_id: Unique identifier for this channel.
 
@@ -150,6 +152,7 @@ class AIContextHost(Protocol):
     _tool_search_threshold: int
     _tool_search_threshold_pct: float
     _tool_search_threshold_tokens: int | None
+    _registry: ChannelRegistry
     channel_id: str
 
     def _orchestration_tools(self, room_id: str | None) -> list[AITool]: ...
@@ -195,6 +198,7 @@ class AIContextMixin:
     _tool_search_threshold: int
     _tool_search_threshold_pct: float
     _tool_search_threshold_tokens: int | None
+    _registry: ChannelRegistry
     channel_id: str
 
     _warned_unoffered_human_tools: set[str]
@@ -634,6 +638,13 @@ class AIContextMixin:
 
         return system_prompt
 
+    def _never_hidden(self, room_id: str | None) -> set[str]:
+        """What Tool Search never hides in *room_id*: what orchestration
+        injected and the channel's own tools. It stays declared, outside the
+        catalogue whose size decides the collapse (RFC §21.1)."""
+        own = self._registry.names(room_id, lambda traits: not traits.deferrable)
+        return self._orchestration_tool_names(room_id) | own
+
     def _collapse_behind_tool_search(
         self,
         tools: list[AITool],
@@ -654,12 +665,10 @@ class AIContextMixin:
         re-sends its (re-filtered) tool list every round.
         """
         window = self._provider.context_window
-        # What orchestration injected stays declared (RFC §21.1), outside the
-        # catalogue whose size decides the collapse.
-        orchestration = self._orchestration_tool_names(binding.room_id)
+        never = self._never_hidden(binding.room_id)
         loop_ctx.tool_search_active = should_activate_tool_search(
             mode=self._tool_search,
-            catalogue=[t for t in tools if t.name not in orchestration],
+            catalogue=[t for t in tools if t.name not in never],
             pinned=self._tool_search_pinned,
             window=window,
             threshold_pct=self._tool_search_threshold_pct,
@@ -674,7 +683,7 @@ class AIContextMixin:
                 "Tool Search active: %d tools deferred behind find_tools/list_tools "
                 "(pinned=%d, window=%s)",
                 len(tools),
-                len((self._tool_search_pinned | orchestration) & catalogue_names),
+                len((self._tool_search_pinned | never) & catalogue_names),
                 window if window else "unknown",
             )
             tools.extend(t for t in search_tool_defs() if t.name not in catalogue_names)
