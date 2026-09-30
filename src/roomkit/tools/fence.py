@@ -22,3 +22,23 @@ def fence(tag: str, text: str) -> str:
     neutral = f"</{tag}_>"
     body = closing.sub(lambda _match: neutral, text)
     return f"<{tag}>\n{body}\n</{tag}>"
+
+
+# The tags RoomKit fences external data in: a tool's result, a worker's output.
+FENCED_TAGS = ("tool_result", "worker_output")
+
+
+def named_blocks(text: str, tags: tuple[str, ...] = FENCED_TAGS) -> str:
+    """*text* with each block of *tags* replaced by its tag in brackets
+    (``[tool_result]``), a block cut off before its end included.
+
+    For text about to be cut short, such as a summary: quoting part of a block
+    could leave it open, and what follows would then read as data.
+    """
+    for tag in tags:
+        name = re.escape(tag)
+        block = re.compile(
+            rf"<\s*{name}\b[^>]*>.*?(?:<\s*/\s*{name}\b[^>]*>|\Z)", re.IGNORECASE | re.DOTALL
+        )
+        text = block.sub(f"[{tag}]", text)
+    return text

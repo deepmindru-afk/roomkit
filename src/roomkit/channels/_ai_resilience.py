@@ -8,16 +8,13 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.channels._ai_policy import declared_for
-from roomkit.channels._compaction import (
-    compaction_cut,
-    summary_text,
-    with_results_stored,
-    with_summary,
-)
+from roomkit.channels._compaction import compaction_cut, summary_text, with_results_stored
+from roomkit.channels._user_text import with_leading_text
 from roomkit.models.channel import RetryPolicy
 from roomkit.providers.ai.base import (
     AIContext,
     AIImagePart,
+    AIMessage,
     AIProvider,
     AIResponse,
     AITextPart,
@@ -31,9 +28,16 @@ from roomkit.providers.utils import _aclose_stream
 
 if TYPE_CHECKING:
     from roomkit.channels._tool_eviction import ToolEviction
+    from roomkit.channels.ai import _ToolLoopContext
 
 
 logger = logging.getLogger("roomkit.channels.ai")
+
+
+def _gains(summarized: list[AIMessage], rounds: list[AIMessage], kept: list[AIMessage]) -> bool:
+    """Whether a compaction frees anything: messages to summarize, or a
+    result stored."""
+    return bool(summarized) or any(new is not old for new, old in zip(rounds, kept, strict=False))
 
 
 class _StreamRetryBoundary:
@@ -55,12 +59,21 @@ class ResilienceHost(Protocol):
         _provider: Primary AI provider for generation.
         _fallback_provider: Optional fallback when primary exhausts retries.
         _eviction: Tool result eviction / truncation strategy.
+
+    Methods other mixins provide:
+        _get_loop_ctx: ``AISteeringMixin`` — the turn's loop context.
+        _show_summarized_references: ``AIToolPolicyMixin`` — held tools a
+            summary unreferences.
     """
 
     _retry_policy: RetryPolicy | None
     _provider: AIProvider
     _fallback_provider: AIProvider | None
     _eviction: ToolEviction
+
+    def _get_loop_ctx(self) -> _ToolLoopContext: ...
+
+    def _show_summarized_references(self, summarized: list[AIMessage]) -> None: ...
 
 
 class AIResilienceMixin:
@@ -288,17 +301,16 @@ class AIResilienceMixin:
         loop_ctx = self._get_loop_ctx()
         summarized, shortened = compaction_cut(messages, loop_ctx.turn_input)
         rounds = messages[summarized:shortened]
-        kept = with_results_stored(rounds, self._eviction)
-        if summarized == 0 and all(a is b for a, b in zip(rounds, kept, strict=True)):
+        kept = [*with_results_stored(rounds, self._eviction), *messages[shortened:]]
+        summary = summary_text(messages[:summarized])
+        if not _gains(messages[:summarized], rounds, kept):
             raise ProviderError(
                 "Context too large but nothing left to compact before the turn's input",
                 retryable=False,
             )
         self._show_summarized_references(messages[:summarized])
-        compacted = with_summary(
-            summary_text(messages[:summarized]), [*kept, *messages[shortened:]]
-        )
-        if compacted and messages[summarized] is loop_ctx.turn_input:
+        compacted = with_leading_text(summary, kept)
+        if kept and kept[0] is loop_ctx.turn_input:
             loop_ctx.turn_input = compacted[0]
         context.messages[:] = compacted
         return context

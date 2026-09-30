@@ -8,6 +8,7 @@ from collections import Counter, OrderedDict
 from collections.abc import Sequence
 from typing import Any
 
+from roomkit.channels._skill_constants import TOOL_ACTIVATE_SKILL
 from roomkit.memory.token_estimator import estimate_tokens
 from roomkit.providers.ai.base import AIImagePart, AITextPart, AITool
 
@@ -46,6 +47,17 @@ EVICTION_PLACEHOLDER_PREFIX = "Result too large ("
 
 # The tool that pages a stored result back.
 REREAD_TOOL = "read_stored_result"
+
+
+def kept_whole(tool_name: str) -> bool:
+    """Whether the model reads *tool_name*'s result whole, never as a preview.
+
+    A skill's instructions are binding rules the model must hold whole
+    (RFC §24.4), never a head and tail behind a ``read_stored_result``
+    pointer. Every other result is data, and paginating data is what
+    eviction is for.
+    """
+    return tool_name == TOOL_ACTIVATE_SKILL
 
 
 def is_eviction_placeholder(text: str) -> bool:
@@ -249,6 +261,8 @@ class ToolEviction:
         texts = [p.text for p in parts if isinstance(p, AITextPart)]
         if estimate_tokens("\n".join(texts)) <= self.threshold_tokens:
             return parts
+        if any(is_eviction_placeholder(t) for t in texts):
+            return parts
         return self.evict_parts(parts, tool_call_id)
 
     def evict_parts(
@@ -260,7 +274,7 @@ class ToolEviction:
         """*parts* with their text stored as one result and replaced by its
         placeholder where the first text part was, their images kept."""
         texts = [p.text for p in parts if isinstance(p, AITextPart)]
-        if not texts or any(is_eviction_placeholder(t) for t in texts):
+        if not texts:
             return parts
         text = "\n".join(texts)
         placeholder: AITextPart | None = AITextPart(

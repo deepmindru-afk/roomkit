@@ -20,6 +20,7 @@ from roomkit.channels._ai_loop_rules import (
 )
 from roomkit.channels._served_tools import CollisionLog
 from roomkit.channels._tool_event_result import tool_event_payload
+from roomkit.channels._turn_notes import turn_input
 from roomkit.models.channel import ChannelOutput
 from roomkit.models.enums import EventType
 from roomkit.models.event import (
@@ -251,6 +252,8 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
         loop_ctx = _current_loop_ctx.get()
         if loop_ctx is not None:
             loop_ctx.response_metadata = gen_event.ai_context.response_metadata
+            # The input the hook left is the one a compaction keeps whole.
+            loop_ctx.turn_input = turn_input(gen_event.ai_context.messages)
             _adopt_hook_toolset(
                 loop_ctx,
                 declared,

@@ -167,9 +167,9 @@ class _ToolLoopContext:
     first_shown: frozenset[str] | None = None
     # Held tools a result has referenced this loop, so each is referenced once.
     referenced: set[str] = field(default_factory=set)
-    # The turn's input as its first round was built, notes included: what an
-    # emergency compaction keeps whole (RFC §6.4). Found by identity, so a
-    # hook that replaced the messages leaves the compaction as it was.
+    # The turn's input, notes included, as _build_context and then the
+    # BEFORE_AI_GENERATION hook left it: what an emergency compaction keeps
+    # whole (RFC §6.4), found among the messages by identity.
     turn_input: AIMessage | None = None
     # ``activate_skill`` calls whose activation waits for the call's outcome,
     # by tool_call_id: committed once the call is served, dropped when

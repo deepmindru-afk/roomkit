@@ -17,7 +17,6 @@ from roomkit.channels._skill_constants import (
     ALREADY_ACTIVE_NOTE,
     READ_REFERENCE_SCHEMA,
     RUN_SCRIPT_SCHEMA,
-    TOOL_ACTIVATE_SKILL,
 )
 from roomkit.channels._skill_handlers import (
     activation_ack,
@@ -26,7 +25,7 @@ from roomkit.channels._skill_handlers import (
     handle_run_script,
 )
 from roomkit.channels._task_planner import TaskPlanner
-from roomkit.channels._tool_eviction import ToolEviction
+from roomkit.channels._tool_eviction import ToolEviction, kept_whole
 from roomkit.channels._tool_registry import (
     ChannelRegistry,
     ToolSource,
@@ -1142,15 +1141,12 @@ class AIToolsMixin:
 
         Every outcome goes through it (a result, a hook's override, a refusal,
         an error): whichever path a 500 KB body takes, it must not reach the
-        provider whole. A skill's instructions are the exception: binding
-        rules the model must hold whole, never a head/tail preview behind a
-        read_stored_result pointer, which is what eviction would make of a
-        body over the threshold (a 20 KB skill crosses it). Every other tool
-        still evicts, references included: those are data, and paginating
-        data is exactly what eviction is for.
+        provider whole, save a result the model reads whole (``kept_whole``:
+        a skill's instructions, which a 20 KB skill would otherwise see
+        evicted). References are data and still evict.
         """
         result = self._shape_for_model(name, result, tool_call_id)
-        if name == TOOL_ACTIVATE_SKILL:
+        if kept_whole(name):
             return result
         return self._maybe_truncate_result(result, tool_call_id)
 

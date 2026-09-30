@@ -9,12 +9,8 @@ re-bill that history.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-from roomkit.providers.ai.base import AIMessage, AITextPart
-
-if TYPE_CHECKING:
-    from roomkit.channels.ai import _ContentPart
+from roomkit.channels._user_text import joined
+from roomkit.providers.ai.base import AIMessage
 
 # Opens the notes: nobody in the conversation wrote them, and they ask for
 # nothing, whatever the input above them is (a participant's words, an
@@ -46,11 +42,7 @@ def with_turn_notes(messages: list[AIMessage], notes: str | None) -> list[AIMess
     last = messages[-1] if messages else None
     if last is None or last.role != "user":
         return [*messages, AIMessage(role="user", content=notes)]
-    if isinstance(last.content, str):
-        content: str | list[_ContentPart] = f"{last.content}\n\n{notes}" if last.content else notes
-    else:
-        content = [*last.content, AITextPart(text=notes)]
-    return [*messages[:-1], last.model_copy(update={"content": content})]
+    return [*messages[:-1], joined(last, notes, before=False)]
 
 
 def turn_input(messages: list[AIMessage]) -> AIMessage | None:

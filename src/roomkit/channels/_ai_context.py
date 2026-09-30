@@ -19,6 +19,7 @@ from roomkit.channels._tool_eviction import ToolEviction
 from roomkit.channels._tool_search import search_tool_defs, should_activate_tool_search
 from roomkit.channels._tool_search_constants import TOOL_SEARCH_PREAMBLE
 from roomkit.channels._turn_notes import turn_input, turn_notes, with_turn_notes
+from roomkit.channels._user_text import with_leading_text
 from roomkit.core.visibility import visible_events
 from roomkit.memory.base import MemoryResult
 from roomkit.models.channel import ChannelCapabilities
@@ -345,15 +346,11 @@ class AIContextMixin:
             **settings,
         )
 
-    async def _turn_conversation(
-        self,
-        event: RoomEvent,
-        context: RoomContext,
-        loop_ctx: _ToolLoopContext,
-        standalone: bool,
-    ) -> list[AIMessage]:
-        """The conversation the model reads this turn: the history this channel
-        sees, then the input carrying the turn's notes."""
+    async def _visible_memory(
+        self, event: RoomEvent, context: RoomContext, standalone: bool
+    ) -> MemoryResult:
+        """What this channel's memory provider returns of the room as this
+        channel sees it; nothing for a standalone instruction."""
         # Retrieve memory from this channel's view of the room, never the
         # room's whole timeline (RFC §7.5 rule 8): an event visibility kept
         # from this channel at broadcast must not reach the model as history
@@ -367,17 +364,24 @@ class AIContextMixin:
         # view is not a blank page, since a provider may return messages of
         # its own (a summary, a minimum it always keeps).
         if standalone:
-            memory_result = MemoryResult()
-        else:
-            memory_result = await self._memory.retrieve(
-                event.room_id,
-                event,
-                context.model_copy(
-                    update={"recent_events": visible_events(context, self.channel_id)}
-                ),
-                channel_id=self.channel_id,
-            )
+            return MemoryResult()
+        return await self._memory.retrieve(
+            event.room_id,
+            event,
+            context.model_copy(update={"recent_events": visible_events(context, self.channel_id)}),
+            channel_id=self.channel_id,
+        )
 
+    async def _turn_conversation(
+        self,
+        event: RoomEvent,
+        context: RoomContext,
+        loop_ctx: _ToolLoopContext,
+        standalone: bool,
+    ) -> list[AIMessage]:
+        """The conversation the model reads this turn: the history this channel
+        sees, then the input carrying the turn's notes."""
+        memory_result = await self._visible_memory(event, context, standalone)
         messages, attribute_speakers = self._turn_messages(event, context, memory_result, loop_ctx)
         messages = with_turn_notes(
             messages,
@@ -493,7 +497,8 @@ class AIContextMixin:
         attribute_speakers = len(speakers) >= 2
 
         # Pre-built messages from memory (e.g. summaries)
-        messages: list[AIMessage] = list(memory_result.messages)
+        memory = list(memory_result.messages)
+        messages: list[AIMessage] = list(memory)
         for role, content, speaker in past_turns:
             if attribute_speakers and speaker:
                 content = _with_speaker_prefix(content, speaker)
@@ -507,7 +512,7 @@ class AIContextMixin:
             if attribute_speakers and current_speaker:
                 content = _with_speaker_prefix(content, current_speaker)
             messages.append(AIMessage(role="user", content=content))
-        return messages, attribute_speakers
+        return _after_memory(memory, messages[len(memory) :]), attribute_speakers
 
     def _past_turns(
         self, memory_result: MemoryResult, context: RoomContext
@@ -844,3 +849,13 @@ def _with_speaker_prefix(content: str | list[_ContentPart], name: str) -> str | 
     if isinstance(content, str):
         return f"{name}: {content}"
     return [AITextPart(text=f"{name}:"), *content]
+
+
+def _after_memory(memory: list[AIMessage], rest: list[AIMessage]) -> list[AIMessage]:
+    """The messages a memory provider built (a summary, say), then *rest*: a
+    user text the provider ends on joins the user message that follows it
+    rather than forming a second user message in a row."""
+    last = memory[-1] if memory else None
+    if last is None or last.role != "user" or not isinstance(last.content, str):
+        return [*memory, *rest]
+    return [*memory[:-1], *with_leading_text(last.content, rest)]
