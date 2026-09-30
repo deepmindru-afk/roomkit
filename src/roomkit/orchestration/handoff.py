@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
 from roomkit.channels._tool_registry import ToolEntry, orchestration_tool
+from roomkit.memory._wrapper import _MemoryWrapper
 from roomkit.memory.base import MemoryProvider, MemoryResult
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.context import RoomContext
@@ -622,15 +624,16 @@ class HandoffHandler:
 # -- HandoffMemoryProvider ----------------------------------------------------
 
 
-class HandoffMemoryProvider(MemoryProvider):
+class HandoffMemoryProvider(_MemoryWrapper):
     """Injects handoff context (summary, reason) into agent prompts.
 
     Wraps an inner MemoryProvider and prepends handoff information
-    when the conversation state indicates a recent handoff.
+    when the conversation state indicates a recent handoff. Its window,
+    ingestion and lifecycle are the inner provider's.
     """
 
     def __init__(self, inner: MemoryProvider) -> None:
-        self._inner = inner
+        super().__init__(inner)
 
     @property
     def name(self) -> str:
@@ -649,30 +652,14 @@ class HandoffMemoryProvider(MemoryProvider):
         state = get_conversation_state(context.room)
         summary = state.context.get("handoff_summary")
         handoff_from = state.context.get("handoff_from")
-
-        if summary and handoff_from:
-            handoff_msg = AIMessage(
-                role="user",
-                content=(f"[Context from previous agent ({handoff_from})]: {summary}"),
-            )
-            result.messages.insert(0, handoff_msg)
-
-        return result
-
-    async def ingest(
-        self,
-        room_id: str,
-        event: RoomEvent,
-        *,
-        channel_id: str | None = None,
-    ) -> None:
-        await self._inner.ingest(room_id, event, channel_id=channel_id)
-
-    async def clear(self, room_id: str) -> None:
-        await self._inner.clear(room_id)
-
-    async def close(self) -> None:
-        await self._inner.close()
+        if not (summary and handoff_from):
+            return result
+        handoff_msg = AIMessage(
+            role="user",
+            content=(f"[Context from previous agent ({handoff_from})]: {summary}"),
+        )
+        # A new result: the inner provider's may be one it keeps.
+        return replace(result, messages=[handoff_msg, *result.messages])
 
 
 # -- Wiring -------------------------------------------------------------------

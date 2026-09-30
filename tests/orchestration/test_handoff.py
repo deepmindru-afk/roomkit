@@ -402,6 +402,23 @@ class TestHandoffMemoryProvider:
         await provider.close()
         inner.close.assert_called_once()
 
+    async def test_reads_the_inner_window_and_leaves_its_result_alone(self):
+        """The inner provider's window is the one the channel loads (it was
+        the 2,000-event default), and a result it keeps is not edited."""
+        kept = MemoryResult(messages=[AIMessage(role="user", content="hello")])
+        inner = AsyncMock(spec=MemoryProvider)
+        inner.recent_events_window = 30
+        inner.retrieve = AsyncMock(return_value=kept)
+        provider = HandoffMemoryProvider(inner)
+        state = ConversationState(context={"handoff_summary": "s", "handoff_from": "a"})
+        context = RoomContext(room=set_conversation_state(Room(id="r1"), state))
+
+        result = await provider.retrieve("r1", make_event(room_id="r1"), context)
+
+        assert provider.recent_events_window == 30
+        assert len(result.messages) == 2
+        assert [m.content for m in kept.messages] == ["hello"]
+
 
 # -- setup_handoff ------------------------------------------------------------
 

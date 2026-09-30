@@ -135,6 +135,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `HandoffMemoryProvider` reads its inner provider's `recent_events_window`
+  instead of the 2,000-event default, and no longer edits the result its
+  inner provider returned (found reviewing RMK-334).
 - A standalone instruction no longer opens a tool a skill activated in the
   room gates (RMK-345, RFC §10.1.1): skill gating read the room's activation
   record, which is the room's working state a standalone turn does not read;
