@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from roomkit.models.channel import ChannelBinding
     from roomkit.models.context import RoomContext
     from roomkit.models.hook import InjectedEvent
+    from roomkit.models.room import Room
     from roomkit.store.base import ConversationStore
     from roomkit.telemetry.base import TelemetryProvider
 
@@ -832,6 +833,44 @@ class LaneExecutionMixin(HelpersMixin):
                     ),
                 )
 
+    async def _refuse_reentry(
+        self,
+        room_id: str,
+        reentry: RoomEvent,
+        room: Room | None,
+        binding: ChannelBinding | None,
+        cascade: DeliveryCascade,
+    ) -> bool:
+        """Whether this reentry pass must not write, the refusal handled: a
+        room that refuses writes records nothing, a source that cannot write
+        has its response stored BLOCKED."""
+        if _refuses_writes(room):
+            await self._refuse_closed_room(
+                room_id,
+                status=room.status if room is not None else None,
+                operation="reentry",
+                event=reentry,
+            )
+            return True
+        if binding is not None and not binding.can_write:
+            # RFC §7.5 rule 2 — a source that cannot write MUST NOT inject a
+            # DELIVERED event: a READ_ONLY observer's answer belongs in the
+            # timeline as an audit record, not as a message every channel
+            # reads. Stored BLOCKED, never broadcast.
+            reason = "source_muted" if binding.muted else "source_read_only"
+            context = await self._build_context(room_id)
+            await self._handle_block(
+                room_id=room_id,
+                event=reentry,
+                reason=reason,
+                blocked_by=reason,
+                injected_events=[],
+                context=context,
+                cascade=cascade,
+            )
+            return True
+        return False
+
     async def _run_reentry_pass(
         self,
         room_id: str,
@@ -850,32 +889,8 @@ class LaneExecutionMixin(HelpersMixin):
             # The blocked result the helper returns is for a caller with
             # someone to answer; a reentry pass has none, so it is dropped.
             room = await self._store.get_room(room_id)
-            if _refuses_writes(room):
-                await self._refuse_closed_room(
-                    room_id,
-                    status=room.status if room is not None else None,
-                    operation="reentry",
-                    event=reentry,
-                )
-                return
-
             reentry_binding = await self._store.get_binding(room_id, reentry.source.channel_id)
-            if reentry_binding is not None and not reentry_binding.can_write:
-                # RFC §7.5 rule 2 — a source that cannot write MUST NOT inject a
-                # DELIVERED event: a READ_ONLY observer's answer belongs in the
-                # timeline as an audit record, not as a message every channel
-                # reads. Stored BLOCKED, never broadcast.
-                reason = "source_muted" if reentry_binding.muted else "source_read_only"
-                context = await self._build_context(room_id)
-                await self._handle_block(
-                    room_id=room_id,
-                    event=reentry,
-                    reason=reason,
-                    blocked_by=reason,
-                    injected_events=[],
-                    context=context,
-                    cascade=cascade,
-                )
+            if await self._refuse_reentry(room_id, reentry, room, reentry_binding, cascade):
                 return
 
             # Fresh context: concurrent commits may have landed since the
