@@ -76,6 +76,7 @@ from roomkit.models.room import Room
 from roomkit.models.steering import SteeringDirective
 from roomkit.providers.ai.base import (
     AIImagePart,
+    AIMessage,
     AIProvider,
     AITextPart,
     AIThinkingPart,
@@ -166,6 +167,10 @@ class _ToolLoopContext:
     first_shown: frozenset[str] | None = None
     # Held tools a result has referenced this loop, so each is referenced once.
     referenced: set[str] = field(default_factory=set)
+    # The turn's input as its first round was built, notes included: what an
+    # emergency compaction keeps whole (RFC §6.4). Found by identity, so a
+    # hook that replaced the messages leaves the compaction as it was.
+    turn_input: AIMessage | None = None
     # ``activate_skill`` calls whose activation waits for the call's outcome,
     # by tool_call_id: committed once the call is served, dropped when
     # ON_TOOL_CALL blocks it or it fails, so a refused activation opens no gate.
@@ -266,6 +271,9 @@ class _ToolLoopContext:
             # By reference too: round 0 was declared under the parent, the
             # rounds below run under this child, and the turn reports one union.
             ctx.declared_tools = parent.declared_tools
+            # The input _build_context gave the turn, which a compaction in
+            # the loop keeps whole.
+            ctx.turn_input = parent.turn_input
         ctx.room = room if room is not None else (parent.room if parent else None)
         if ctx.room is not None:
             ctx.room_id = ctx.room.id

@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- An emergency compaction keeps the turn's input and its notes whole
+  (RMK-335, RFC §6.4). On a context overflow mid-loop, the channel used to
+  summarize the first half of the messages, the turn's input among them in a
+  long tool loop: the participant's question and the notes it has carried
+  since 0.93.0 (the plan, the tools already used, the speakers) came back
+  cut to 500 characters for the rest of the turn. The history before the
+  input is summarized now, and the long results of the turn's older rounds
+  are stored like an evicted result, a 1,000-character preview in their
+  place, readable with `read_stored_result`. The summary joins the user
+  message that follows it instead of making two user messages in a row, and
+  names a delimited tool result instead of cutting it open. A compaction
+  that finds nothing to shorten before the input fails the round.
+
 ## [0.93.0] — 2026-09-30
 
 ### Added

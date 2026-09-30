@@ -75,8 +75,10 @@ async def test_a_cut_between_plain_messages_is_untouched() -> None:
 
     compacted = await _channel()._compact_context(AIContext(messages=messages))
 
-    # Halfway cut: one summary message + the recent half.
-    assert len(compacted.messages) == 5
+    # Halfway cut: the recent half, the summary joined to its first message,
+    # a user message, so that no two user messages follow each other.
+    assert len(compacted.messages) == 4
+    assert compacted.messages[0].content.endswith("\n\nm4")
     assert compacted.messages[-1].content == "m7"
 
 

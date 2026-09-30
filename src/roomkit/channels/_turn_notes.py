@@ -51,3 +51,10 @@ def with_turn_notes(messages: list[AIMessage], notes: str | None) -> list[AIMess
     else:
         content = [*last.content, AITextPart(text=notes)]
     return [*messages[:-1], last.model_copy(update={"content": content})]
+
+
+def turn_input(messages: list[AIMessage]) -> AIMessage | None:
+    """The turn's input among *messages* as its first round is built: the last
+    message when it is a user message, the one that carries the turn's notes."""
+    last = messages[-1] if messages else None
+    return last if last is not None and last.role == "user" else None

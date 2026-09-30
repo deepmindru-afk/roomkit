@@ -18,7 +18,7 @@ from roomkit.channels._task_planner import TaskPlanner
 from roomkit.channels._tool_eviction import ToolEviction
 from roomkit.channels._tool_search import search_tool_defs, should_activate_tool_search
 from roomkit.channels._tool_search_constants import TOOL_SEARCH_PREAMBLE
-from roomkit.channels._turn_notes import turn_notes, with_turn_notes
+from roomkit.channels._turn_notes import turn_input, turn_notes, with_turn_notes
 from roomkit.core.visibility import visible_events
 from roomkit.memory.base import MemoryResult
 from roomkit.models.channel import ChannelCapabilities
@@ -278,6 +278,7 @@ class AIContextMixin:
         tools = self._reachable_tools(tools)
 
         messages = await self._turn_conversation(event, context, loop_ctx, standalone)
+        loop_ctx.turn_input = turn_input(messages)
 
         # Determine target channel capabilities for capability-aware generation
         # Use intersection of all transport bindings' media types (weakest common)

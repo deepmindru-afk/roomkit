@@ -8,11 +8,16 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.channels._ai_policy import declared_for
+from roomkit.channels._compaction import (
+    compaction_cut,
+    summary_text,
+    with_results_stored,
+    with_summary,
+)
 from roomkit.models.channel import RetryPolicy
 from roomkit.providers.ai.base import (
     AIContext,
     AIImagePart,
-    AIMessage,
     AIProvider,
     AIResponse,
     AITextPart,
@@ -69,6 +74,7 @@ class AIResilienceMixin:
     _fallback_provider: AIProvider | None
     _eviction: ToolEviction
     _show_summarized_references: Any  # AIToolPolicyMixin: held tools a summary unreferences
+    _get_loop_ctx: Any  # AISteeringMixin: the turn's loop context, its input included
 
     async def _generate_with_retry(self, context: AIContext) -> AIResponse:
         """Call provider.generate() with compaction, retry and optional fallback.
@@ -261,7 +267,10 @@ class AIResilienceMixin:
         return is_context_overflow_message(str(exc))
 
     async def _compact_context(self, context: AIContext) -> AIContext:
-        """Emergency compaction: summarize the first half of messages.
+        """Emergency compaction: make room while keeping the turn's input whole.
+
+        Summarizes the history before the turn's input, and stores the long
+        results of the turn's older tool rounds for re-reading (RFC §6.4).
 
         Mutates ``context.messages`` in place and returns the same context.
         In-place is load-bearing, and owned here so no caller can forget it:
@@ -276,42 +285,22 @@ class AIResilienceMixin:
                 "Context too large but cannot compact further (<=4 messages)",
                 retryable=False,
             )
-
-        split = len(messages) // 2
-        # Never split an assistant/tool-result pair: a ``tool`` message whose
-        # assistant tool-call turn fell into the summarized half is an orphan
-        # the provider rejects with a 400 — the compaction meant to recover an
-        # overflow would then kill the turn outright. Tool results always
-        # directly follow their assistant message here, so advancing the split
-        # past them keeps every pair whole (both summarized together).
-        while split < len(messages) and messages[split].role == "tool":
-            split += 1
-        old_messages = messages[:split]
-        recent_messages = messages[split:]
-        self._show_summarized_references(old_messages)
-
-        # Build a quick summary of old messages
-        summary_parts: list[str] = []
-        for msg in old_messages:
-            role = msg.role
-            if isinstance(msg.content, str):
-                text = msg.content[:500]
-            elif isinstance(msg.content, list):
-                text = " ".join(
-                    p.text[:200] if hasattr(p, "text") else f"[{p.type}]"  # ty: ignore[not-subscriptable]
-                    for p in msg.content
-                )[:500]
-            else:
-                text = str(msg.content)[:500]
-            summary_parts.append(f"[{role}]: {text}")
-
-        summary_text = "\n".join(summary_parts)
-        summary_msg = AIMessage(
-            role="user",
-            content=(f"[Context compacted — earlier conversation summary]\n{summary_text}"),
+        loop_ctx = self._get_loop_ctx()
+        summarized, shortened = compaction_cut(messages, loop_ctx.turn_input)
+        rounds = messages[summarized:shortened]
+        kept = with_results_stored(rounds, self._eviction)
+        if summarized == 0 and all(a is b for a, b in zip(rounds, kept, strict=True)):
+            raise ProviderError(
+                "Context too large but nothing left to compact before the turn's input",
+                retryable=False,
+            )
+        self._show_summarized_references(messages[:summarized])
+        compacted = with_summary(
+            summary_text(messages[:summarized]), [*kept, *messages[shortened:]]
         )
-
-        context.messages[:] = [summary_msg] + recent_messages
+        if compacted and messages[summarized] is loop_ctx.turn_input:
+            loop_ctx.turn_input = compacted[0]
+        context.messages[:] = compacted
         return context
 
     def _maybe_truncate_result(

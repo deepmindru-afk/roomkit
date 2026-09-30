@@ -174,10 +174,13 @@ class ToolEviction:
         bounded copy back, at a threshold below the placeholder's own size) it
         would overwrite the text it points to.
         """
-        estimated = estimate_tokens(result)
-        if estimated <= self.threshold_tokens or is_eviction_placeholder(result):
+        if estimate_tokens(result) <= self.threshold_tokens or is_eviction_placeholder(result):
             return result
+        return self.evict(result, tool_call_id)
 
+    def evict(self, result: str, tool_call_id: str = "", preview_chars: int | None = None) -> str:
+        """Store *result* for re-reading and return the placeholder that
+        previews it in *preview_chars*, whatever its size."""
         room = self._room_scope()
         result_id = self._free_id(
             room, f"evicted_{tool_call_id}" if tool_call_id else f"evicted_{id(result)}"
@@ -186,10 +189,11 @@ class ToolEviction:
         self._chars += len(result)
         self._bound(room)
 
+        preview = _preview(result, preview_chars or self._preview_budget())
         return (
-            f"{EVICTION_PLACEHOLDER_PREFIX}{estimated} tokens). Full output saved as "
-            f"'{result_id}'. Use {REREAD_TOOL} to read it with pagination.\n\n"
-            f"Preview:\n{_preview(result, self._preview_budget())}"
+            f"{EVICTION_PLACEHOLDER_PREFIX}{estimate_tokens(result)} tokens). Full output "
+            f"saved as '{result_id}'. Use {REREAD_TOOL} to read it with pagination.\n\n"
+            f"Preview:\n{preview}"
         )
 
     def _free_id(self, room: str, base: str) -> str:
@@ -243,12 +247,25 @@ class ToolEviction:
         replaced by a single placeholder part where the first text part was.
         """
         texts = [p.text for p in parts if isinstance(p, AITextPart)]
+        if estimate_tokens("\n".join(texts)) <= self.threshold_tokens:
+            return parts
+        return self.evict_parts(parts, tool_call_id)
+
+    def evict_parts(
+        self,
+        parts: list[AITextPart | AIImagePart],
+        tool_call_id: str = "",
+        preview_chars: int | None = None,
+    ) -> list[AITextPart | AIImagePart]:
+        """*parts* with their text stored as one result and replaced by its
+        placeholder where the first text part was, their images kept."""
+        texts = [p.text for p in parts if isinstance(p, AITextPart)]
+        if not texts or any(is_eviction_placeholder(t) for t in texts):
+            return parts
         text = "\n".join(texts)
-        if estimate_tokens(text) <= self.threshold_tokens:
-            return parts
-        if any(is_eviction_placeholder(t) for t in texts):
-            return parts
-        placeholder: AITextPart | None = AITextPart(text=self.maybe_evict(text, tool_call_id))
+        placeholder: AITextPart | None = AITextPart(
+            text=self.evict(text, tool_call_id, preview_chars)
+        )
         kept: list[AITextPart | AIImagePart] = []
         for part in parts:
             if not isinstance(part, AITextPart):

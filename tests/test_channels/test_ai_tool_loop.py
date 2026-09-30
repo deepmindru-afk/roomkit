@@ -586,9 +586,10 @@ class TestContextOverflowRecovery:
         assert "[Context compacted" in compacted.messages[0].content
         # Summary includes content from old messages
         assert "msg0" in compacted.messages[0].content
-        # Second half preserved as-is
-        assert len(compacted.messages) == 6  # 1 summary + 5 recent
-        assert compacted.messages[1].content == "msg5"
+        # The recent half kept, the summary joined to its first user message
+        # rather than a second user message in a row
+        assert len(compacted.messages) == 5
+        assert compacted.messages[0].content.endswith("\n\nmsg5")
         assert compacted.messages[-1].content == "msg9"
 
     async def test_compact_context_raises_when_too_few_messages(self) -> None:
