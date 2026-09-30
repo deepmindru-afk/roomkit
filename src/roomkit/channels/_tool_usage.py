@@ -34,22 +34,15 @@ a short preview, never as its placeholder.
 from __future__ import annotations
 
 from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from roomkit.channels._skill_constants import SKILL_INFRA_TOOL_NAMES
 from roomkit.channels._tool_eviction import (
-    REREAD_TOOL,
     eviction_placeholder_size,
     is_eviction_placeholder,
 )
-from roomkit.channels._tool_search_constants import TOOL_SEARCH_INFRA_TOOL_NAMES
 from roomkit.tools.fence import fence
-
-# Discovery / housekeeping tools are not "work the agent did" and are always
-# available anyway — recording them would only add noise to the digest and
-# pointlessly re-reveal tools that are never hidden.
-_INFRA_NAMES = TOOL_SEARCH_INFRA_TOOL_NAMES | SKILL_INFRA_TOOL_NAMES | frozenset({REREAD_TOOL})
 
 # Recent calls shown in the digest: a short preview each, except the most recent
 # ``_RESULTS_SHOWN``, which carry their result. The bound is readability — a
@@ -108,8 +101,15 @@ class ToolUsageMemory:
         digest_max_calls: int = _DIGEST_MAX_CALLS,
         reveal_max_tools: int = _REVEAL_MAX_TOOLS,
         result_keep_chars: int = _RESULT_KEEP_CHARS,
+        recorded: Callable[[str], bool] | None = None,
     ) -> None:
         self._digest_max_calls = digest_max_calls
+        # Whether a call to a tool is work the agent did: the channel's
+        # discovery and housekeeping tools are not, and are always available
+        # anyway, so recording them would only add noise to the digest and
+        # pointlessly re-reveal tools that are never hidden (their
+        # ``in_digest`` trait). Everything is recorded without a channel.
+        self._recorded: Callable[[str], bool] = recorded or (lambda _name: True)
         self._reveal_max_tools = reveal_max_tools
         self._result_keep_chars = result_keep_chars
         self._by_room: OrderedDict[str, _RoomMemory] = OrderedDict()
@@ -118,7 +118,7 @@ class ToolUsageMemory:
         self, room_id: str | None, name: str, arguments: dict[str, Any], result: Any
     ) -> None:
         """Record one completed tool call. No-op for infra tools / missing room."""
-        if not room_id or name in _INFRA_NAMES:
+        if not room_id or not self._recorded(name):
             return
         mem = self._by_room.setdefault(room_id, _RoomMemory())
         self._by_room.move_to_end(room_id)
@@ -205,7 +205,7 @@ class ToolUsageMemory:
         mem = self._by_room.setdefault(room_id, _RoomMemory())
         self._by_room.move_to_end(room_id)
         for name in names:
-            if not name or name in _INFRA_NAMES:
+            if not name or not self._recorded(name):
                 continue
             mem.tools.pop(name, None)
             mem.tools[name] = None

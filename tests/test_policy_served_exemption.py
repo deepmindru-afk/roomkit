@@ -237,23 +237,21 @@ class TestEveryEntryReadsTheSameDeclaration:
 
         assert denial is not None and "not declared" in denial.body
 
-    async def test_the_gate_validates_against_the_declared_duplicate(self) -> None:
+    def test_a_host_tool_given_twice_is_refused(self) -> None:
+        """Declared once and served by the other, the model would call one
+        tool's schema on the other's server (RMK-307)."""
         schema_a = {"type": "object", "properties": {"a": {"type": "string"}}, "required": ["a"]}
         schema_b = {"type": "object", "properties": {"b": {"type": "string"}}, "required": ["b"]}
-        kit, channel, session = await self._session(
-            tools=[
-                {"name": "lookup", "description": "first", "parameters": schema_a},
-                {"name": "lookup", "description": "later", "parameters": schema_b},
-            ],
-        )
-        try:
-            _, denial, _ = await channel._authorize_realtime_tool(
-                "lookup", {"b": "x"}, "c1", session.room_id, session
+        with pytest.raises(ValueError, match="'lookup' is given twice"):
+            RealtimeVoiceChannel(
+                "rt",
+                provider=MockRealtimeProvider(),
+                transport=MockRealtimeTransport(),
+                tools=[
+                    {"name": "lookup", "description": "first", "parameters": schema_a},
+                    {"name": "lookup", "description": "later", "parameters": schema_b},
+                ],
             )
-        finally:
-            await kit.close()
-
-        assert denial is None
 
     @pytest.mark.parametrize(
         ("name", "tool_search"),

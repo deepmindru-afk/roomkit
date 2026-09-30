@@ -18,7 +18,8 @@ from roomkit.channels._realtime_context import (
     spare_own_orphaned_call,
 )
 from roomkit.channels._served_tools import CollisionLog, declared_once, dict_tool_name
-from roomkit.channels._skill_constants import SKILL_INFRA_TOOL_NAMES, TOOL_ACTIVATE_SKILL
+from roomkit.channels._skill_constants import TOOL_ACTIVATE_SKILL
+from roomkit.channels._tool_registry import ChannelRegistry, ToolSource
 from roomkit.channels._tool_search_constants import TOOL_CALL_TOOL
 from roomkit.channels.ai import _current_loop_ctx, _ToolLoopContext
 from roomkit.core.exceptions import ToolRefusedError
@@ -123,6 +124,7 @@ class RealtimeToolsHost(Protocol):
     _tool_policy: ToolPolicy | None
     _session_roles: dict[str, str | None]
     _collisions: CollisionLog
+    _registry: ChannelRegistry
     _tool_search_support: Any
     _provider: RealtimeVoiceProvider
     _transport: VoiceBackend
@@ -185,6 +187,7 @@ class RealtimeToolsMixin:
     _tool_policy: ToolPolicy | None
     _session_roles: dict[str, str | None]
     _collisions: CollisionLog
+    _registry: ChannelRegistry
     _tool_search_support: Any
     _provider: RealtimeVoiceProvider
     _transport: VoiceBackend
@@ -847,12 +850,11 @@ class RealtimeToolsMixin:
 
     def _channel_tool_names(self) -> frozenset[str]:
         """The tools this channel serves itself: Tool Search's and the skills'."""
-        names: frozenset[str] = frozenset()
-        if self._tool_search_support is not None:
-            names |= self._tool_search_support.tool_names
-        if self._skill_support is not None:
-            names |= SKILL_INFRA_TOOL_NAMES
-        return names
+        return frozenset(e.name for e in self._registry.entries(None, source=ToolSource.CHANNEL))
+
+    def _exempt_tool_names(self) -> frozenset[str]:
+        """The channel's own tools that escape the policy and skill gating (RFC §21.1)."""
+        return frozenset(self._registry.names(None, lambda traits: traits.exempt))
 
     def _declared_once(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """A session's host tools: none under a name the channel serves, each name
@@ -866,7 +868,7 @@ class RealtimeToolsMixin:
         What Tool Search may name in its results and listings (RFC §21.1); the
         pre-execution gate enforces the same rule on the call itself.
         """
-        if not policy_admits(self._session_policy(session_id), name, self._channel_tool_names()):
+        if not policy_admits(self._session_policy(session_id), name, self._exempt_tool_names()):
             return False
         support = self._skill_support
         return support is None or not support.is_gated(name, session_id)
@@ -887,12 +889,12 @@ class RealtimeToolsMixin:
         if policy is None:
             return tools
         search = self._tool_search_support
-        served = self._channel_tool_names()
+        exempt = self._exempt_tool_names()
         return [
             t
             for t in tools
             if (search is not None and search.is_search_tool(str(t.get("name", ""))))
-            or policy_admits(policy, str(t.get("name", "")), served)
+            or policy_admits(policy, str(t.get("name", "")), exempt)
         ]
 
     async def _refresh_session_role(self, session: VoiceSession, room_id: str | None) -> None:
@@ -953,7 +955,8 @@ class RealtimeToolsMixin:
         if invalid is not None:
             return arguments, GateRefusal(invalid), None
         await self._refresh_session_role(session, room_id)
-        refusal = self._access_refusal(name, session.id, served)
+        exempt = self._exempt_tool_names() if channel_serves else frozenset()
+        refusal = self._access_refusal(name, session.id, exempt)
         if refusal is not None:
             return arguments, GateRefusal(refusal), None
         return await self._before_realtime_tool_use(
@@ -990,10 +993,10 @@ class RealtimeToolsMixin:
             return arguments, json.dumps({"error": f"Invalid arguments for '{name}': {arg_error}"})
         return arguments, None
 
-    def _access_refusal(self, name: str, session_id: str, served: Container[str]) -> str | None:
+    def _access_refusal(self, name: str, session_id: str, exempt: Container[str]) -> str | None:
         """Why the session may not call *name*: its tool policy, resolved for
         its participant, then skill gating, as on the classic path."""
-        if not policy_admits(self._session_policy(session_id), name, served):
+        if not policy_admits(self._session_policy(session_id), name, exempt):
             logger.warning("Realtime tool %s blocked by policy", name)
             return json.dumps({"error": policy_refusal(name)})
         # Hiding a gated tool from the catalogue is not enforcement — the model

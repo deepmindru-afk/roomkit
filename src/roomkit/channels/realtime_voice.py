@@ -32,11 +32,17 @@ from roomkit.channels._realtime_tools import RealtimeToolsMixin
 from roomkit.channels._realtime_transcription import RealtimeTranscriptionMixin
 from roomkit.channels._served_tools import (
     CollisionLog,
-    declared_once,
     dict_tool_name,
+    refuse_given_twice,
     refuse_served_names,
 )
-from roomkit.channels._skill_constants import TOOL_RUN_SCRIPT
+from roomkit.channels._skill_constants import (
+    ACTIVATE_SKILL_SCHEMA,
+    READ_REFERENCE_SCHEMA,
+    RUN_SCRIPT_SCHEMA,
+    TOOL_RUN_SCRIPT,
+)
+from roomkit.channels._tool_registry import ChannelRegistry, channel_tool, schema_tool
 from roomkit.channels._voice_pipeline import VoicePipelineMixin
 from roomkit.channels.ai import ToolResult
 from roomkit.channels.base import Channel, FrameworkAwareChannel
@@ -529,11 +535,13 @@ class RealtimeVoiceChannel(
                 tool_defs = tools
 
         # Host tools that collide with the channel's own (RFC §21.1), each
-        # reported once; a name given twice is declared once.
+        # reported once; a name given twice is refused.
         self._collisions = CollisionLog(self.channel_id)
-        if tool_defs:
-            tool_defs = declared_once(tool_defs, dict_tool_name, (), self._collisions)
+        refuse_given_twice((dict_tool_name(tool) for tool in tool_defs or []), self.channel_id)
         self._tools = tool_defs
+        # What the channel serves itself and what orchestration sets up on it,
+        # each tool with its traits, for every room or one (RFC §19.7, §21.1).
+        self._registry = ChannelRegistry(self.channel_id, self._host_tool_names)
 
         # Merge explicit tool_handler with handlers extracted from Tool objects
         effective_handler = tool_handler
@@ -583,7 +591,7 @@ class RealtimeVoiceChannel(
                 script_executor,
                 delivery_mode=resolved_mode,
                 reconfigure_capable=provider.supports_mid_session_reconfigure,
-                channel_tools=self._channel_tool_names,
+                exempt_tools=self._exempt_tool_names,
             )
             if self._skill_support.uses_tool_result and not provider.supports_context_preservation:
                 raise ValueError("on_demand skills require provider context preservation")
@@ -595,11 +603,30 @@ class RealtimeVoiceChannel(
             threshold=tool_search_threshold,
             pinned=tool_search_pinned,
         )
+        self._register_channel_tools()
         refuse_served_names(
             (dict_tool_name(tool) for tool in self._tools or []),
             self._channel_tool_names(),
             self.channel_id,
         )
+
+    def _register_channel_tools(self) -> None:
+        """Register the tools the channel serves itself, each with its traits.
+
+        The skills' and Tool Search's run on paths of their own, with the
+        session they act on: their entries carry no server.
+        """
+        schemas: list[dict[str, Any]] = []
+        if self._skill_support is not None:
+            schemas += [ACTIVATE_SKILL_SCHEMA, READ_REFERENCE_SCHEMA, RUN_SCRIPT_SCHEMA]
+        if self._tool_search_support is not None:
+            schemas += self._tool_search_support.search_tool_dicts()
+        for schema in schemas:
+            self._registry.register(channel_tool(schema_tool(schema), None), owner=self)
+
+    def _host_tool_names(self) -> list[str]:
+        """The names the host's own tools carry, served by the handler it gave."""
+        return [name for tool in self._tools or [] if (name := dict_tool_name(tool))]
 
     @property
     def _telemetry_provider(self) -> NoopTelemetryProvider:
@@ -1601,7 +1628,7 @@ class RealtimeVoiceChannel(
         """One composition path for connection, discovery, activation and handoff."""
         if self._skill_support:
             scripts_allowed = policy_admits(
-                self._session_policy(session.id), TOOL_RUN_SCRIPT, self._channel_tool_names()
+                self._session_policy(session.id), TOOL_RUN_SCRIPT, self._exempt_tool_names()
             )
             prompt = self._skill_support.inject_skills_prompt(
                 prompt, scripts_allowed=scripts_allowed

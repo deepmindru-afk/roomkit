@@ -18,8 +18,6 @@ from roomkit.channels._skill_constants import (
     READ_REFERENCE_SCHEMA,
     RUN_SCRIPT_SCHEMA,
     TOOL_ACTIVATE_SKILL,
-    TOOL_READ_REFERENCE,
-    TOOL_RUN_SCRIPT,
 )
 from roomkit.channels._skill_handlers import (
     activation_ack,
@@ -27,17 +25,23 @@ from roomkit.channels._skill_handlers import (
     handle_read_reference,
     handle_run_script,
 )
-from roomkit.channels._tool_eviction import REREAD_TOOL
+from roomkit.channels._task_planner import TaskPlanner
+from roomkit.channels._tool_eviction import ToolEviction
+from roomkit.channels._tool_registry import (
+    ChannelRegistry,
+    ToolSource,
+    channel_tool,
+    schema_tool,
+)
 from roomkit.channels._tool_search import (
     normalize_max_results,
     related_family_tools,
     render_find_payload,
     render_list_payload,
     search_catalogue,
+    search_tool_defs,
 )
 from roomkit.channels._tool_search_constants import (
-    TOOL_FIND_TOOLS,
-    TOOL_LIST_TOOLS,
     TOOL_SEARCH_INFRA_TOOL_NAMES,
 )
 from roomkit.core.exceptions import (
@@ -73,8 +77,6 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterable
 
     from roomkit.channels._skill_activation import SkillActivationMemory
-    from roomkit.channels._task_planner import TaskPlanner
-    from roomkit.channels._tool_eviction import ToolEviction
     from roomkit.channels._tool_usage import ToolUsageMemory
     from roomkit.channels.ai import _ContentPart, _ToolLoopContext
     from roomkit.models.tool_call import ToolCallCallback, ToolCallObserver
@@ -124,6 +126,7 @@ class AIToolsHost(Protocol):
         _script_executor: Script executor for skill scripts.
         _sandbox: Sandbox executor for ad-hoc command execution.
         _eviction: Tool result eviction / truncation strategy.
+        _registry: The tools the channel serves, with their traits.
         _skill_activation: Per-room record of the skills active in a conversation.
         _planner: Optional task planner.
         _realtime: Realtime backend for ephemeral events.
@@ -157,6 +160,7 @@ class AIToolsHost(Protocol):
     _planner: TaskPlanner | None
     _human_input_handler: HumanInputToolHandler | None
     _collisions: CollisionLog
+    _registry: ChannelRegistry
     _realtime: RealtimeBackend | None
     _plan_updated_hook: Any  # ON_PLAN_UPDATED callback — injected by register_channel
     _tool_call_hook: ToolCallCallback | None
@@ -214,6 +218,7 @@ class AIToolsMixin:
     _planner: TaskPlanner | None
     _human_input_handler: HumanInputToolHandler | None
     _collisions: CollisionLog
+    _registry: ChannelRegistry
     _realtime: RealtimeBackend | None
     _plan_updated_hook: Any  # ON_PLAN_UPDATED callback — injected by register_channel
     _tool_call_hook: ToolCallCallback | None
@@ -661,37 +666,35 @@ class AIToolsMixin:
 
     def _skill_tools(self) -> list[AITool]:
         """Build the list of AITool definitions for skill operations."""
-
-        def _to_ai_tool(schema: dict[str, Any]) -> AITool:
-            return AITool(
-                name=schema["name"],
-                description=schema["description"],
-                parameters=schema["parameters"],
-            )
-
-        tools = [_to_ai_tool(ACTIVATE_SKILL_SCHEMA), _to_ai_tool(READ_REFERENCE_SCHEMA)]
+        tools = [schema_tool(ACTIVATE_SKILL_SCHEMA), schema_tool(READ_REFERENCE_SCHEMA)]
         if self._script_executor:
-            tools.append(_to_ai_tool(RUN_SCRIPT_SCHEMA))
+            tools.append(schema_tool(RUN_SCRIPT_SCHEMA))
         return tools
 
-    # Dispatch table for channel-managed and skill tools.
-    # Sync handlers are wrapped to match the async signature.
-    @property
-    def _channel_tool_dispatch(self) -> dict[str, Any]:
-        dispatch: dict[str, Any] = {REREAD_TOOL: self._handle_read_tool_result}
+    def _register_channel_tools(self) -> None:
+        """Register the tools the channel serves itself, each with its traits.
+
+        A handler may be sync or async: the dispatcher awaits what needs it.
+        """
+        served: list[tuple[AITool, Any]] = [
+            (ToolEviction.tool_definition(), self._handle_read_tool_result)
+        ]
         if self._planner is not None:
-            dispatch["plan_tasks"] = self._handle_plan_tasks
+            served.append((TaskPlanner.tool_definition(), self._handle_plan_tasks))
         if self._skills:
-            dispatch[TOOL_ACTIVATE_SKILL] = self._handle_activate_skill
-            dispatch[TOOL_READ_REFERENCE] = self._handle_read_reference
-            dispatch[TOOL_RUN_SCRIPT] = self._handle_run_script
+            served += [
+                (schema_tool(ACTIVATE_SKILL_SCHEMA), self._handle_activate_skill),
+                (schema_tool(READ_REFERENCE_SCHEMA), self._handle_read_reference),
+                (schema_tool(RUN_SCRIPT_SCHEMA), self._handle_run_script),
+            ]
         # Tool Search discovery tools are channel-managed (they reshape the
         # visible tool surface, not the world). Registered unless explicitly
         # disabled; they are only ever injected into context when active.
         if self._tool_search is not False:
-            dispatch[TOOL_FIND_TOOLS] = self._handle_find_tools
-            dispatch[TOOL_LIST_TOOLS] = self._handle_list_tools
-        return dispatch
+            find, inventory = search_tool_defs()
+            served += [(find, self._handle_find_tools), (inventory, self._handle_list_tools)]
+        for definition, serve in served:
+            self._registry.register(channel_tool(definition, serve), owner=self)
 
     # Identical-call ceiling for regular tools: the 3rd repeat short-circuits.
     # Two identical executions can be legitimate (retry after a transient
@@ -699,9 +702,6 @@ class AIToolsMixin:
     # observed failure mode is a small model re-running one find_tools query
     # for an entire turn and never answering.
     _REPEAT_CALL_LIMIT = 3
-    # Pure within a turn (they read the fixed catalogue, mutate nothing): an
-    # identical repeat can never say anything new, so it short-circuits at 2.
-    _REPEAT_PURE_TOOLS = frozenset({TOOL_FIND_TOOLS, TOOL_LIST_TOOLS})
     # After the guard has BLOCKED the same call this many extra times and the
     # model still re-issues it, the advisory clearly isn't landing — force-stop
     # the loop. Small models otherwise ignore the error and hammer the same
@@ -771,7 +771,11 @@ class AIToolsMixin:
         loop_ctx = self._get_loop_ctx()
         counts = loop_ctx.repeated_calls
         counts[key] = count = counts.get(key, 0) + 1
-        limit = 2 if name in self._REPEAT_PURE_TOOLS else self._REPEAT_CALL_LIMIT
+        # A pure tool reads what cannot change within the turn (Tool Search's
+        # fixed catalogue): an identical repeat never says anything new, so it
+        # short-circuits at 2.
+        traits = self._registry.traits(name, loop_ctx.room_id)
+        limit = 2 if traits is not None and traits.pure else self._REPEAT_CALL_LIMIT
         if count < limit:
             return None
         # The model is ignoring the advisory and re-issuing anyway — pull the
@@ -814,7 +818,8 @@ class AIToolsMixin:
         a host tool under one of these names would be declared with the
         host's schema and served by the channel (RFC §21.1).
         """
-        names = set(self._channel_tool_dispatch) | set(self._sandbox_tool_names())
+        names = {e.name for e in self._registry.entries(None, source=ToolSource.CHANNEL)}
+        names |= self._sandbox_tool_names()
         if self._human_input_handler is not None:
             names |= {tool.name for tool in self._human_input_handler.tools or ()}
         return names
@@ -836,9 +841,9 @@ class AIToolsMixin:
         guard = self._repeated_call_guard(name, arguments)
         if guard is not None:
             raise ChannelRefusalError(guard)
-        handler = self._channel_tool_dispatch.get(name)
-        if handler is not None:
-            result = handler(arguments)
+        entry = self._registry.lookup(name, self._get_loop_ctx().room_id)
+        if entry is not None and entry.serve is not None:
+            result = entry.serve(arguments)
             # Support both sync and async handlers
             if asyncio.iscoroutine(result):
                 result = await result

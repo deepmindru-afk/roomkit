@@ -34,6 +34,22 @@ def refuse_served_names(
         )
 
 
+def refuse_given_twice(names: Iterable[str | None], channel_id: str) -> None:
+    """Refuse a host tool given at construction under a name another already
+    carries: declared once and served by the other, the model would call one
+    tool's schema on the other's server (RFC §21.1)."""
+    seen: set[str] = set()
+    for name in names:
+        if name is None:
+            continue
+        if name in seen:
+            raise ValueError(
+                f"Tool {name!r} is given twice to channel {channel_id!r}: two tools "
+                "cannot serve one name, rename one of them (RFC §21.1)"
+            )
+        seen.add(name)
+
+
 class CollisionLog:
     """The collisions a channel reported, each once: a wiring diagnostic, not a turn event."""
 

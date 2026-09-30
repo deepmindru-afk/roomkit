@@ -37,10 +37,15 @@ from roomkit.channels._ai_resilience import AIResilienceMixin
 from roomkit.channels._ai_steering import AISteeringMixin
 from roomkit.channels._ai_streaming import AIStreamingMixin
 from roomkit.channels._ai_tools import AIToolsMixin
-from roomkit.channels._served_tools import CollisionLog, refuse_served_names
+from roomkit.channels._served_tools import (
+    CollisionLog,
+    refuse_given_twice,
+    refuse_served_names,
+)
 from roomkit.channels._skill_activation import SkillActivationMemory
 from roomkit.channels._task_planner import TaskPlanner
 from roomkit.channels._tool_eviction import ToolEviction
+from roomkit.channels._tool_registry import ChannelRegistry
 from roomkit.channels._tool_search_constants import (
     DEFAULT_TOOL_SEARCH_THRESHOLD,
     DEFAULT_TOOL_SEARCH_THRESHOLD_PCT,
@@ -383,7 +388,8 @@ class AIChannel(
         # A result kept for later turns never exceeds what the eviction
         # threshold lets the model see in the turn itself (~4 chars a token).
         self._tool_usage = ToolUsageMemory(
-            result_keep_chars=min(_TOOL_MEMORY_RESULT_CHARS, 4 * evict_threshold_tokens)
+            result_keep_chars=min(_TOOL_MEMORY_RESULT_CHARS, 4 * evict_threshold_tokens),
+            recorded=self._in_usage_digest,
         )
         # Per-conversation record of the skills the model activated. Their bodies
         # ride the system prompt from the next turn on, so ``activate_skill``
@@ -466,6 +472,10 @@ class AIChannel(
         # tools (e.g. HANDOFF_TOOL, DELEGATE_TOOL) are kept separate so that
         # orchestration code can inspect/modify injected tools independently.
         self._user_tools: list[AITool] = extracted_defs
+        # What the channel serves itself and what orchestration sets up on it,
+        # each tool with its traits, for every room or one (RFC §19.7, §21.1).
+        self._registry = ChannelRegistry(self.channel_id, self._host_tool_names)
+        self._register_channel_tools()
         self._injected_tools: list[AITool] = []
         # Tools orchestration declares in one room's turns only, by room id
         # (RFC §19.7); like _injected_tools, never deferred (RFC §21.1).
@@ -486,6 +496,21 @@ class AIChannel(
         self._collisions = CollisionLog(self.channel_id)
         served = self._channel_tool_names()
         refuse_served_names((tool.name for tool in self._user_tools), served, self.channel_id)
+        refuse_given_twice((tool.name for tool in self._user_tools), self.channel_id)
+
+    def _host_tool_names(self) -> list[str]:
+        """The names the host's own tools carry: its definitions and its
+        human-input tools, served by the handlers it gave."""
+        names = [tool.name for tool in self._user_tools]
+        if self._human_input_handler is not None:
+            names.extend(tool.name for tool in self._human_input_handler.tools or ())
+        return names
+
+    def _in_usage_digest(self, name: str) -> bool:
+        """Whether a call to *name* is work the agent did, for the usage digest:
+        not a discovery or housekeeping tool of the channel's own."""
+        traits = self._registry.traits(name)
+        return traits is None or traits.in_digest
 
     def _init_framework_callbacks(self) -> None:
         """The callbacks the framework injects on ``register_channel``, unset until then."""

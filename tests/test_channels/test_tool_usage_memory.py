@@ -42,6 +42,13 @@ from tests.tool_loop_modes import run_tool_loop
 # ---------------------------------------------------------------------------
 
 
+def _channel_memory(**kwargs: int) -> ToolUsageMemory:
+    """The store as a channel builds it: the channel's own discovery and
+    housekeeping tools (their ``in_digest`` trait) are not recorded."""
+    channel = AIChannel("ai", provider=MockAIProvider(responses=["ok"]))
+    return ToolUsageMemory(recorded=channel._in_usage_digest, **kwargs)
+
+
 class TestToolUsageMemory:
     def test_records_and_renders_digest_with_args_and_result(self) -> None:
         mem = ToolUsageMemory()
@@ -76,7 +83,7 @@ class TestToolUsageMemory:
         assert mem.tool_names(None) == set()
 
     def test_infra_tools_are_not_recorded(self) -> None:
-        mem = ToolUsageMemory()
+        mem = _channel_memory()
         mem.record("r1", "find_tools", {"query": "music"}, "{}")
         mem.record("r1", "list_tools", {}, "{}")
         mem.record("r1", "read_stored_result", {"result_id": "x"}, "{}")
@@ -134,7 +141,7 @@ class TestToolUsageMemory:
         assert mem.render_digest("r1") is None
 
     def test_record_revealed_filters_infra_and_shares_the_reveal_cap(self) -> None:
-        mem = ToolUsageMemory(reveal_max_tools=3)
+        mem = _channel_memory(reveal_max_tools=3)
         mem.record("r1", "tool_used", {}, "ok")
         mem.record_revealed("r1", {"find_tools", "read_stored_result"})  # infra: ignored
         assert mem.tool_names("r1") == {"tool_used"}
@@ -278,7 +285,7 @@ class TestToolUsageMemory:
         """A fresh room needs hydration; seeding fills digest + reveal set and
         is one-shot — even an EMPTY history marks the room hydrated so it is
         not re-queried every turn."""
-        mem = ToolUsageMemory()
+        mem = _channel_memory()
         assert mem.needs_hydration("r1") is True
         mem.seed(
             "r1",

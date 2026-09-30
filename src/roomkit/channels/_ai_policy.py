@@ -6,15 +6,6 @@ import logging
 from collections.abc import Callable, Container
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from roomkit.channels._skill_constants import (
-    TOOL_ACTIVATE_SKILL,
-    TOOL_READ_REFERENCE,
-)
-from roomkit.channels._tool_eviction import REREAD_TOOL
-from roomkit.channels._tool_search_constants import (
-    TOOL_FIND_TOOLS,
-    TOOL_LIST_TOOLS,
-)
 from roomkit.models.tool_call import DeclaredTool, ToolDeclarationOrigin
 from roomkit.providers.ai.base import AIContext, AIMessage, AITool, AIToolResultPart
 from roomkit.tools.policy import ToolPolicy, matches_any_pattern
@@ -23,6 +14,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
     from roomkit.channels._skill_activation import SkillActivationMemory
+    from roomkit.channels._tool_registry import ChannelRegistry
     from roomkit.channels.ai import _ToolLoopContext
     from roomkit.models.context import RoomContext
     from roomkit.models.event import RoomEvent
@@ -30,41 +22,18 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("roomkit.channels.ai")
 
-# RFC §21.1: the tools a channel provides that only read or unlock and never
-# act. Served by the channel itself under one of these exact names, they
-# escape the tool policy and skill gating wherever either is applied: the
-# declared list, the execution guards, the Tool Search catalogue. A tool of the
-# host, of MCP or of a hook that carries one of these names is governed like
-# any other, and so is every other tool the channel injects (sandbox
-# commands, run_skill_script, plan_tasks).
-POLICY_EXEMPT_TOOL_NAMES: frozenset[str] = frozenset(
-    {
-        TOOL_ACTIVATE_SKILL,
-        TOOL_READ_REFERENCE,
-        REREAD_TOOL,
-        TOOL_FIND_TOOLS,
-        TOOL_LIST_TOOLS,
-    }
-)
 
-
-def is_exempt(name: str, channel_tools: Container[str]) -> bool:
-    """Whether *name* is an exempt tool the channel serves itself (RFC §21.1).
-
-    *channel_tools* names the tools the channel serves itself; an exempt name
-    it does not serve belongs to someone else, whom the policy governs.
-    """
-    return name in POLICY_EXEMPT_TOOL_NAMES and name in channel_tools
-
-
-def policy_admits(policy: ToolPolicy | None, name: str, channel_tools: Container[str]) -> bool:
+def policy_admits(policy: ToolPolicy | None, name: str, exempt: Container[str]) -> bool:
     """Whether a channel's role-resolved *policy* admits *name* (RFC §21.1).
 
     The one reading of the policy for every channel that carries one, AI or
-    realtime, and for a conference: an exempt tool the channel serves itself
-    passes (:func:`is_exempt`), anything else is the policy's to allow.
+    realtime, and for a conference: a tool in *exempt* passes, anything else is
+    the policy's to allow. *exempt* names the tools the channel serves itself
+    that only read or unlock and never act (the ``exempt`` trait of their
+    entries): a tool of the host, of MCP, of orchestration or of a hook under
+    one of these names is not the channel's, and the policy governs it.
     """
-    return is_exempt(name, channel_tools) or policy is None or policy.is_allowed(name)
+    return name in exempt or policy is None or policy.is_allowed(name)
 
 
 def policy_refusal(name: str) -> str:
@@ -88,6 +57,9 @@ class ToolPolicyHost(Protocol):
     Methods provided by AIChannel:
         _orchestration_tool_names: The tools orchestration injected for a
             room, which Tool Search never defers.
+
+    Provided by AIToolsMixin:
+        _registry: The tools the channel serves, with their traits.
     """
 
     _tool_policy: ToolPolicy | None
@@ -99,7 +71,7 @@ class ToolPolicyHost(Protocol):
     def _get_loop_ctx(self) -> _ToolLoopContext: ...
     def _orchestration_tool_names(self, room_id: str | None) -> set[str]: ...
     @property
-    def _channel_tool_dispatch(self) -> dict[str, Any]: ...
+    def _registry(self) -> ChannelRegistry: ...
 
 
 class AIToolPolicyMixin:
@@ -115,7 +87,7 @@ class AIToolPolicyMixin:
     _provider: Any  # AIChannel: whether it holds a tool unseen
     _get_loop_ctx: Callable[[], _ToolLoopContext]
     _orchestration_tool_names: Callable[[str | None], set[str]]
-    _channel_tool_dispatch: Any  # AIToolsMixin: the tools the channel serves itself
+    _registry: ChannelRegistry  # the tools the channel serves, with their traits
 
     def _resolve_participant_role(self, event: RoomEvent, context: RoomContext) -> str | None:
         """Look up the participant role for the event source."""
@@ -126,6 +98,11 @@ class AIToolPolicyMixin:
             if p.id == pid:
                 return p.role
         return None
+
+    @property
+    def _exempt_tool_names(self) -> set[str]:
+        """The channel's own tools that escape the policy and skill gating (RFC §21.1)."""
+        return self._registry.names(None, lambda traits: traits.exempt)
 
     @property
     def _effective_tool_policy(self) -> ToolPolicy | None:
@@ -193,7 +170,7 @@ class AIToolPolicyMixin:
         """
         return (
             self._tool_search_pinned
-            | set(self._channel_tool_dispatch)
+            | self._registry.names(loop_ctx.room_id, lambda traits: not traits.deferrable)
             | self._orchestration_tool_names(loop_ctx.room_id)
             | loop_ctx.hook_pinned
         )
@@ -226,7 +203,7 @@ class AIToolPolicyMixin:
         Skill gating aside: what the prompt may describe as available, a gated
         tool included, since activating its skill opens it.
         """
-        return policy_admits(self._effective_tool_policy, name, self._channel_tool_dispatch)
+        return policy_admits(self._effective_tool_policy, name, self._exempt_tool_names)
 
     def _gate_refusal(self, name: str) -> dict[str, str] | None:
         """Why the policy or skill gating refuses a call to *name*, or ``None``.
@@ -235,10 +212,10 @@ class AIToolPolicyMixin:
         §21.1): the same exempt names, the same role-resolved policy, the same
         glob-aware gating (RFC §24.2).
         """
-        served = self._channel_tool_dispatch
-        if is_exempt(name, served):
+        exempt = self._exempt_tool_names
+        if name in exempt:
             return None
-        if not policy_admits(self._effective_tool_policy, name, served):
+        if not policy_admits(self._effective_tool_policy, name, exempt):
             logger.warning("Tool %s blocked by policy", name)
             return {"error": policy_refusal(name)}
         if matches_any_pattern(name, self._gated_tool_names):
@@ -260,20 +237,20 @@ class AIToolPolicyMixin:
         """
         policy = self._effective_tool_policy
         gated = self._gated_tool_names
-        served = self._channel_tool_dispatch
-        return [tool for tool in tools if self._is_reachable(tool.name, policy, gated, served)]
+        exempt = self._exempt_tool_names
+        return [tool for tool in tools if self._is_reachable(tool.name, policy, gated, exempt)]
 
     @staticmethod
     def _is_reachable(
-        name: str, policy: ToolPolicy | None, gated: set[str], served: Container[str]
+        name: str, policy: ToolPolicy | None, gated: set[str], exempt: Container[str]
     ) -> bool:
         """Whether the role-resolved *policy* and skill gating admit *name*.
 
-        *served* names the tools the channel serves itself (:func:`is_exempt`).
+        *exempt* names the channel's own tools that escape both (RFC §21.1).
         """
-        if is_exempt(name, served):
+        if name in exempt:
             return True
-        if not policy_admits(policy, name, served):
+        if not policy_admits(policy, name, exempt):
             return False
         # ``gated`` holds ToolPolicy globs, not names (RFC §24.2): an
         # exact-membership test would let ``search_*`` gate nothing at all.
@@ -282,7 +259,7 @@ class AIToolPolicyMixin:
     def _apply_tool_filters(self, tools: list[AITool]) -> list[AITool]:
         """Apply tool policy, skill gating, and Tool Search to a list of tools.
 
-        The policy-exempt tools (``POLICY_EXEMPT_TOOL_NAMES``: skill activation
+        The policy-exempt tools (the ``exempt`` trait: skill activation
         and reference reading, the eviction re-read, Tool Search's discovery
         tools) always pass: they ARE the skill/discovery mechanism and must
         stay reachable while the discretionary catalogue is hidden. Every
@@ -303,7 +280,7 @@ class AIToolPolicyMixin:
         """
         gated = self._gated_tool_names
         policy = self._effective_tool_policy
-        served = self._channel_tool_dispatch
+        exempt = self._exempt_tool_names
         loop_ctx = self._get_loop_ctx()
         # ``None`` = Tool Search inactive (no collapse). Otherwise the set of
         # discretionary tool names that stay visible this round.
@@ -316,7 +293,7 @@ class AIToolPolicyMixin:
         result: list[AITool] = []
         for tool in tools:
             name = tool.name
-            if not self._is_reachable(name, policy, gated, served):
+            if not self._is_reachable(name, policy, gated, exempt):
                 continue
             if keep is not None and name not in keep:
                 continue
@@ -353,11 +330,11 @@ class AIToolPolicyMixin:
         shown there, and admitted by the policy. Empty where nothing is held."""
         if loop_ctx.first_shown is None:
             return set()
-        policy, served = self._effective_tool_policy, self._channel_tool_dispatch
+        policy, exempt = self._effective_tool_policy, self._exempt_tool_names
         return {
             t.name
             for t in loop_ctx.all_context_tools or ()
-            if t.name not in loop_ctx.first_shown and policy_admits(policy, t.name, served)
+            if t.name not in loop_ctx.first_shown and policy_admits(policy, t.name, exempt)
         }
 
     def _reference_shown(self, loop_ctx: _ToolLoopContext) -> list[str]:
