@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from benchmarks.chat.cost import cost_scenarios
 from benchmarks.chat.harness import Harness
 from benchmarks.chat.measurement import MeasuredProvider
 from benchmarks.chat.report import append_sample, sanitize, summarize, write_report
@@ -32,7 +33,7 @@ logger = logging.getLogger("roomkit.benchmark")
 def package_versions() -> dict[str, str | None]:
     """Record optional SDKs without requiring them for an offline mock run."""
     versions: dict[str, str | None] = {}
-    for name in ("openai", "httpx", "pydantic"):
+    for name in ("openai", "anthropic", "httpx", "pydantic"):
         try:
             versions[name] = importlib.metadata.version(name)
         except importlib.metadata.PackageNotFoundError:
@@ -61,6 +62,14 @@ def make_provider(args: argparse.Namespace, key: str) -> AIProvider:
         from roomkit.providers.ai.mock import MockAIProvider
 
         return MockAIProvider(responses=["pong"], streaming=True)
+    if args.provider == "anthropic":
+        from roomkit.providers.anthropic import AnthropicAIProvider, AnthropicConfig
+
+        return AnthropicAIProvider(
+            AnthropicConfig(
+                api_key=key, model=args.model, max_tokens=args.max_tokens, timeout=30.0
+            )
+        )
     common = {
         "api_key": key,
         "model": args.model,
@@ -115,7 +124,8 @@ async def run_suite(
                 workdir / f"{scenario.name}-{iteration}.db" if args.store == "sqlite" else None
             )
             options = await asyncio.to_thread(scenario.make_options)
-            h = Harness(provider, streaming=scenario.streaming, sqlite=sqlite, **options)
+            model = scenario.provider(provider) if scenario.provider else provider
+            h = Harness(model, streaming=scenario.streaming, sqlite=sqlite, **options)
             h.start = time.perf_counter()
             try:
                 await h.add_room("main")
@@ -157,13 +167,17 @@ def catalog_for(args: argparse.Namespace) -> list[Scenario]:
         from benchmarks.chat.quality import quality_scenarios
 
         return quality_scenarios(args.seed, args.variants)
+    if args.suite == "cost":
+        return cost_scenarios()
     return scenarios()
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--provider", choices=["cerebras", "openai", "mock"], default="cerebras")
-    parser.add_argument("--suite", choices=["chat", "quality"], default="chat")
+    parser.add_argument(
+        "--provider", choices=["cerebras", "openai", "anthropic", "mock"], default="cerebras"
+    )
+    parser.add_argument("--suite", choices=["chat", "quality", "cost"], default="chat")
     parser.add_argument(
         "--variants", type=int, default=3, help="Variants per model-quality family"
     )

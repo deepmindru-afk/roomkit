@@ -8,6 +8,8 @@ import statistics
 from pathlib import Path
 from typing import Any
 
+from benchmarks.chat.cost_report import cost_markdown, cost_summary
+
 
 def sanitize(document: dict[str, Any], secret: str) -> dict[str, Any]:
     """Remove a credential even if an upstream exception unexpectedly echoes it."""
@@ -151,29 +153,39 @@ def markdown(document: dict[str, Any], previous: dict[str, Any] | None = None) -
     return "\n".join(lines) + "\n"
 
 
+def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+    """Write *rows* as a CSV with their keys as header; nothing when empty."""
+    if not rows:
+        return
+    with path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def suite_section(directory: Path, document: dict[str, Any]) -> str:
+    """The report section and CSV of a suite that has its own, or ``""``."""
+    suite = document["environment"].get("suite")
+    if suite == "quality":
+        from benchmarks.chat.quality_report import quality_markdown, quality_summary
+
+        document["quality_summary"] = quality_summary(document["samples"])
+        write_csv(directory / "quality.csv", document["quality_summary"])
+        return "\n" + quality_markdown(document)
+    if suite == "cost":
+        document["cost_summary"] = cost_summary(document["samples"])
+        write_csv(directory / "cost.csv", document["cost_summary"])
+        return "\n" + cost_markdown(document)
+    return ""
+
+
 def write_report(
     directory: Path, document: dict[str, Any], previous: dict[str, Any] | None = None
 ) -> None:
     directory.mkdir(parents=True, exist_ok=True)
-    quality_text = ""
-    if document["environment"].get("suite") == "quality":
-        from benchmarks.chat.quality_report import quality_markdown, quality_summary
-
-        document["quality_summary"] = quality_summary(document["samples"])
-        quality_text = "\n" + quality_markdown(document)
-        quality_rows = document["quality_summary"]
-        if quality_rows:
-            with (directory / "quality.csv").open("w", newline="") as handle:
-                writer = csv.DictWriter(handle, fieldnames=list(quality_rows[0]))
-                writer.writeheader()
-                writer.writerows(quality_rows)
+    section = suite_section(directory, document)
     (directory / "results.json").write_text(
         json.dumps(document, indent=2, ensure_ascii=False) + "\n"
     )
-    (directory / "report.md").write_text(markdown(document, previous) + quality_text)
-    rows = document["summary"]
-    if rows:
-        with (directory / "summary.csv").open("w", newline="") as handle:
-            writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
-            writer.writeheader()
-            writer.writerows(rows)
+    (directory / "report.md").write_text(markdown(document, previous) + section)
+    write_csv(directory / "summary.csv", document["summary"])

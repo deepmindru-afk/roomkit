@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `--suite cost` in `benchmarks/chat` (RMK-329): a fixed tool conversation
+  (Tool Search reveal, an evicted result paged back, a skill that unlocks a
+  tool, the anti-loop ripcord) whose model answers are scripted, so every run
+  makes the same requests over the same rounds, in both loops. Each request
+  is also sent to the real provider and its usage is reported per round: cache
+  read, cache write, cost, and the first block of the request that changed.
+  `--provider anthropic` joins the benchmark's providers.
 - `reasoning_tokens` in `AIResponse.usage` (RMK-312, RFC §6) for every
   provider on the OpenAI client (OpenAI, Azure, vLLM, llama.cpp, xAI, Meta,
   OpenRouter, LiteLLM, Qwen, Cerebras), DeepSeek and Gemini: the thinking

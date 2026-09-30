@@ -27,7 +27,13 @@ from roomkit import (
 )
 from roomkit.memory.sliding_window import SlidingWindowMemory
 from roomkit.models.channel import RetryPolicy
-from roomkit.providers.ai.base import AIContext, AIMessage, AITool, StreamTextDelta
+from roomkit.providers.ai.base import (
+    AIContext,
+    AIMessage,
+    AIProvider,
+    AITool,
+    StreamTextDelta,
+)
 from roomkit.realtime.base import EphemeralEventType
 from roomkit.skills import ScriptExecutor, ScriptResult, Skill, SkillRegistry
 from roomkit.tools import current_tool_actor_id, current_tool_room_id
@@ -46,6 +52,9 @@ class Scenario:
     options_factory: Callable[[], dict[str, Any]] | None = None
     mock_supported: bool = False
     fault_injection: bool = False
+    # Dresses the suite's provider for one sample (a scripted model billed by
+    # the real one, say); ``None`` runs the scenario on the provider itself.
+    provider: Callable[[AIProvider], AIProvider] | None = None
 
     def make_options(self) -> dict[str, Any]:
         """Give each sample fresh stateful skills/memory/executor instances."""

@@ -116,6 +116,10 @@ For model evaluations, see the separate [quality suite](QUALITY.md). It tests
 reasoning and task correctness through the same RoomKit pipeline, using
 deterministic oracles and retaining incorrect answers for inspection.
 
+For what a tool conversation is billed, see the [cost suite](COST.md): scripted
+rounds, each request billed by the real provider, cache reads and writes per
+round.
+
 Add an async function taking `Harness`, perform public RoomKit actions, and
 record explicit contracts with `h.check(name, condition)`. Register a `Scenario`
 in `scenarios.py` with feature tags and a description. Use `options_factory`
