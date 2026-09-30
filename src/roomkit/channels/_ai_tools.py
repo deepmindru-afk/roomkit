@@ -597,21 +597,8 @@ class AIToolsMixin:
             outcome = recorded_result if recorded_result is not None else result
             if remember:
                 self._remember_call(room_id, tc.name, call_arguments, outcome)
-            # Annotate an answer this tool already gave this turn. The hash is
-            # taken on the recorded outcome, so the memory above keeps the
-            # tool's own output and only the model's copy carries the note, and
-            # the hash stays stable: annotating before hashing would make every
-            # repeat look new, and so would an evicted copy, whose placeholder
-            # id is unique per call.
-            if isinstance(result, str):
-                hashed = outcome if isinstance(outcome, str) else result
-                result = self._repeated_result_note(tc.name, result, outcome=hashed)
-            return AIToolResultPart(
-                tool_call_id=tc.id,
-                name=tc.name,
-                result=result,
-                structured_content=structured_content,
-                is_error=tool_failed,
+            return self._model_part(
+                tc, result, outcome, structured=structured_content, failed=tool_failed
             )
 
         tasks = [asyncio.create_task(_run_one(tc)) for tc in tool_calls]
@@ -627,6 +614,33 @@ class AIToolsMixin:
             await asyncio.gather(*tasks, return_exceptions=True)
             raise
         return list(results)
+
+    def _model_part(
+        self,
+        tc: Any,
+        result: ToolResult,
+        outcome: Any,
+        *,
+        structured: dict[str, Any] | None,
+        failed: bool,
+    ) -> AIToolResultPart:
+        """What the model reads of a call: its result, noted when this tool
+        already gave that answer this turn."""
+        # The hash is taken on the recorded outcome, so the memory keeps the
+        # tool's own output and only the model's copy carries the note, and
+        # the hash stays stable: annotating before hashing would make every
+        # repeat look new, and so would an evicted copy, whose placeholder id
+        # is unique per call.
+        if isinstance(result, str):
+            hashed = outcome if isinstance(outcome, str) else result
+            result = self._repeated_result_note(tc.name, result, outcome=hashed)
+        return AIToolResultPart(
+            tool_call_id=tc.id,
+            name=tc.name,
+            result=result,
+            structured_content=structured,
+            is_error=failed,
+        )
 
     def _skill_tools(self) -> list[AITool]:
         """Build the list of AITool definitions for skill operations."""
