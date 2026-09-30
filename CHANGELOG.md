@@ -143,6 +143,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   planner, the sandbox) and the tools orchestration sets up keep being served.
   It used to be the whole dispatcher, which orchestration wrapped, and
   assigning it turned the channel's own tools off.
+- `RealtimeVoiceChannel.reconfigure_session()` changes the session it is given
+  and nothing else (RMK-307, RFC §12.4). It used to write the prompt, voice and
+  tools it received into the channel's defaults too, so an application
+  changing one call's instructions, or a pipeline's handoff in one room,
+  changed what every later session of every room started with. A session
+  starts with what it was opened with, else what orchestration set for its
+  room, else the channel's `configure()` defaults.
+- Realtime Tool Search is decided per session, on the tools that session
+  declares (RMK-307): a channel built with a few tools hides the catalogue of a
+  session whose room's active agent or whose own tools overflow
+  `tool_search_threshold`, where it used to stay off for every session. Unless
+  `tool_search=False`, the channel now serves `find_tools` and `list_tools`
+  itself, so a host tool under one of those names is refused at construction,
+  as on `AIChannel`.
 - A turn with tools gets the turn's reasoning settings, as a turn without
   does (RMK-319, RFC §6.7). On OpenAI's own endpoint the model catalogue now
   says what Chat Completions takes with function tools, each entry checked
@@ -458,6 +472,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Orchestration tools are served through the channel's dispatch rather than a
   wrapped handler, so the repeat guard now stops a third identical
   `delegate_task` of a turn as it stops any tool's.
+- A voice strategy's tools are set up for the room it is installed in (RMK-307,
+  RFC §19.7): a voice supervisor's `delegate_workers` and a voice loop's
+  `delegate_loop` are declared in that room's sessions only, and run with that
+  room's install. They used to be declared in every session of the first
+  realtime channel of the kit, with the first install's workers, and refused
+  at call time elsewhere. A pipeline driving a realtime channel starts each new
+  session with its room's active agent: after a handoff in room A, a caller in
+  room B used to start with room A's agent, prompt and tools. A call to a
+  channel tool an agent redeclares is served by the channel's handler (RFC
+  §19.5), where the agent's handler used to answer.
 - A `BEFORE_AI_GENERATION` hook that redefines a tool the channel serves and
   already declares (`find_tools` under Tool Search, say) is named by a
   warning, as one that adds a tool under such a name already was (RMK-317,
