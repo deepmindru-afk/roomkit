@@ -31,6 +31,7 @@ from uuid import uuid4
 
 from roomkit.core._participant_channels import channels_reached, warn_cross_channel
 from roomkit.core.exceptions import RoomNotFoundError
+from roomkit.core.hooks import SyncPipelineResult
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundResult
 from roomkit.models.enums import (
@@ -1114,26 +1115,11 @@ class HelpersMixin:
         async def _callback(event: ToolCallEvent) -> BeforeToolDecision:
             if not event.room_id:
                 return BeforeToolDecision(allowed=True)  # Allow if no room context
-            try:
-                context = await kit_ref._build_context(event.room_id)
-            except Exception:
-                logger.warning(
-                    "Failed to build context for BEFORE_TOOL_USE hook in room %s "
-                    "— denying tool call (fail-closed)",
-                    event.room_id,
-                    exc_info=True,
-                )
+            hook_result = await kit_ref._run_before_tool_use(event, event.room_id)
+            if hook_result is None:
                 # Fail-closed: an authorization failure MUST NOT silently permit
                 # the tool call. Denying is the safe default.
                 return BeforeToolDecision(allowed=False)
-
-            hook_result = await kit_ref._hook_engine.run_sync_hooks(
-                event.room_id,
-                HookTrigger.BEFORE_TOOL_USE,
-                event,
-                context,
-                skip_event_filter=True,
-            )
 
             await kit_ref._emit_framework_event(
                 "before_tool_use",
@@ -1150,6 +1136,36 @@ class HelpersMixin:
             return _before_tool_decision(event.name, hook_result)
 
         return _callback
+
+    async def _run_before_tool_use(
+        self, event: ToolCallEvent, room_id: str
+    ) -> SyncPipelineResult | None:
+        """What the BEFORE_TOOL_USE hooks decide about *event*, or ``None``
+        when the room's context could not be built for them.
+
+        With no hook registered there is nothing to run and no context is
+        built: a context costs store reads (the room, its bindings, its
+        participants, its history) on every tool call of every round.
+        """
+        if not self._hook_engine.has_hooks(HookTrigger.BEFORE_TOOL_USE):
+            return SyncPipelineResult()
+        try:
+            context = await self._build_context(room_id)
+        except Exception:
+            logger.warning(
+                "Failed to build context for BEFORE_TOOL_USE hook in room %s "
+                "— denying tool call (fail-closed)",
+                room_id,
+                exc_info=True,
+            )
+            return None
+        return await self._hook_engine.run_sync_hooks(
+            room_id,
+            HookTrigger.BEFORE_TOOL_USE,
+            event,
+            context,
+            skip_event_filter=True,
+        )
 
     def _build_on_user_input_required_hook(self, channel_id: str) -> Any:
         """Build an ON_USER_INPUT_REQUIRED callback closure.

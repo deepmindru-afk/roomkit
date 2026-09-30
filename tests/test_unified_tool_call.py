@@ -519,10 +519,14 @@ class TestToolCallEvent:
 
 class TestToolAuthorizationH1:
     async def test_before_tool_use_fails_closed_on_context_error(self) -> None:
-        """If building context for BEFORE_TOOL_USE fails, the tool call is denied
-        (fail-closed), never allowed by default."""
+        """If building context for a BEFORE_TOOL_USE hook fails, the tool call is
+        denied (fail-closed), never allowed by default."""
         kit = RoomKit()
         callback = kit._build_before_tool_call_hook("ch-1")
+
+        @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="approve")
+        async def approve(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
+            return HookResult.allow()
 
         async def boom(room_id: str) -> Any:
             raise RuntimeError("context build failed")
@@ -1761,3 +1765,48 @@ class TestCancelledRealtimeToolCallsAreObserved:
         await asyncio.sleep(0.05)
 
         assert not any(e.cancelled for e in observed)
+
+
+class TestTheTextGateReadsTheRoomOnlyForAHook:
+    """BEFORE_TOOL_USE builds the room's context only when a hook will read it.
+
+    A context is several store reads (the room, its bindings, its
+    participants, its history), and the gate runs on every call of every
+    round: with no hook registered it built one for nobody (RMK-316).
+    """
+
+    async def _gate_contexts(self, streaming: bool, *, with_hook: bool) -> tuple[int, list[Any]]:
+        kit, ch, room_id, _, _ = await _ai_room(streaming=streaming, tool_handler=_ok_handler)
+        if with_hook:
+
+            @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="allow")
+            async def allow(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
+                return HookResult.allow()
+
+        built: list[str] = []
+        real_build = kit._build_context
+
+        async def counting_build(rid: str, *args: Any, **kwargs: Any) -> RoomContext:
+            built.append(rid)
+            return await real_build(rid, *args, **kwargs)
+
+        announced: list[dict[str, Any]] = []
+        real_emit = kit._emit_framework_event
+
+        async def capture(event_type: str, **kwargs: Any) -> Any:
+            if event_type == "before_tool_use":
+                announced.append(kwargs.get("data", {}))
+            return await real_emit(event_type, **kwargs)
+
+        kit._build_context = counting_build  # type: ignore[method-assign]
+        kit._emit_framework_event = capture  # type: ignore[method-assign]
+        await _call_one_tool(kit, ch, room_id, "get_weather")
+        await kit.close()
+        return len(built), announced
+
+    async def test_no_context_is_built_when_no_hook_listens(self, streaming: bool) -> None:
+        without, announced = await self._gate_contexts(streaming, with_hook=False)
+        with_hook, _ = await self._gate_contexts(streaming, with_hook=True)
+
+        assert with_hook == without + 1
+        assert [(a["tool_name"], a["allowed"]) for a in announced] == [("get_weather", True)]
