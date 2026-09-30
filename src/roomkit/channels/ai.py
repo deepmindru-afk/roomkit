@@ -642,7 +642,22 @@ class AIChannel(
     async def on_event(
         self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
     ) -> ChannelOutput:
-        """React to an event by generating an AI response.
+        """React to an event: the room's turn runner takes it, or the channel answers.
+
+        A strategy installed in a room (a loop, a supervisor's delegation
+        passes) may take that room's turns in place of the agent's own answer
+        (RFC §19.7); every other room gets the channel's (:meth:`_respond`).
+        """
+        room_id = context.room.id if context.room else event.room_id
+        runner = self._registry.turn_runner(room_id)
+        if runner is not None:
+            return await runner(event, binding, context)
+        return await self._respond(event, binding, context)
+
+    async def _respond(
+        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        """Answer an event with this channel's own turn.
 
         Skips events from this channel to prevent self-loops.
         When the provider supports streaming or structured streaming:

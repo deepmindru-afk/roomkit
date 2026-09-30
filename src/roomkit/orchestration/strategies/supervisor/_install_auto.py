@@ -22,7 +22,6 @@ from roomkit.orchestration._call_room import call_room_handler
 from roomkit.orchestration._installs import first_install
 from roomkit.orchestration.strategies.supervisor._common import (
     WorkerStrategy,
-    _is_subtask_room,
     logger,
 )
 from roomkit.orchestration.strategies.supervisor.delegate import (
@@ -36,10 +35,8 @@ if TYPE_CHECKING:
     from roomkit.channels.agent import Agent
     from roomkit.core.framework import RoomKit
 
-# The supervisors whose ``on_event`` already runs the framework-driven
-# delegation, and the voice channels already serving ``delegate_workers``: a
-# second room's install wraps nothing.
-_AUTO_DELEGATING: weakref.WeakSet[Any] = weakref.WeakSet()
+# The voice channels already serving ``delegate_workers``: a second room's
+# install wraps nothing.
 _VOICE_SERVING: weakref.WeakSet[Any] = weakref.WeakSet()
 # The rooms each voice channel's ``delegate_workers`` was installed in.
 _VOICE_ROOMS: weakref.WeakKeyDictionary[Any, set[str]] = weakref.WeakKeyDictionary()
@@ -68,73 +65,28 @@ class _AutoDelegateInstallMixin:
         if self._async_delivery:
             self._install_async_auto_delegate(kit, room_id)
         else:
-            self._install_sync_auto_delegate(kit)
+            self._install_sync_auto_delegate(kit, room_id)
 
-    def _install_sync_auto_delegate(self, kit: RoomKit) -> None:
-        """Wrap supervisor's on_event — blocks until workers complete."""
-        if not first_install(_AUTO_DELEGATING, self._supervisor):
-            return
-        supervisor = self._supervisor
-        strategy = self._strategy
-        workers = self._workers
-        refine = self._refine_task
-        refine_instruction = self._refine_instruction
-        share_channels = self._share_channels
-        max_revisions = self._max_revisions
-        task_timeout = self._task_timeout
-        original_on_event = supervisor.on_event
+    def _install_sync_auto_delegate(self, kit: RoomKit, room_id: str) -> None:
+        """Take the supervisor's turns in *room_id* with the delegation passes.
 
-        async def auto_delegate_on_event(
-            event: RoomEvent,
-            binding: ChannelBinding,
-            context: RoomContext,
-        ) -> ChannelOutput:
-            if event.source.channel_id == supervisor.channel_id:
-                return ChannelOutput.empty()
-            if event.source.channel_type == _ChannelType.AI:
-                return ChannelOutput.empty()
-
-            rid = context.room.id if context.room else event.room_id
-            # Only the parent room drives delegation. Inside a child task room
-            # (e.g. a supervisor review room created by the supervised loop, or
-            # any delegated worker room), the supervisor must run NORMALLY —
-            # otherwise the review prompt would be treated as a fresh user task
-            # and re-trigger delegation, recursing without bound.
-            if _is_subtask_room(rid):
-                return await original_on_event(event, binding, context)
-
-            if refine:
-                return await _two_pass_delegate(
-                    kit,
-                    rid,
-                    supervisor,
-                    original_on_event,
-                    event,
-                    binding,
-                    context,
-                    strategy,
-                    workers,
-                    instruction=refine_instruction,
-                    share_channels=share_channels,
-                    max_revisions=max_revisions,
-                    task_timeout=task_timeout,
-                )
-            return await _one_pass_delegate(
-                kit,
-                rid,
-                supervisor,
-                original_on_event,
-                event,
-                binding,
-                context,
-                strategy,
-                workers,
-                share_channels=share_channels,
-                max_revisions=max_revisions,
-                task_timeout=task_timeout,
-            )
-
-        supervisor.on_event = auto_delegate_on_event  # ty: ignore[invalid-assignment]
+        Blocks until workers complete. The supervisor serves every room it is
+        attached to (RFC §19.7): the passes run in the room they were installed
+        in, with this install's team, and the supervisor answers as itself
+        everywhere else, a room with no install included.
+        """
+        turns = _DelegatingTurns(
+            kit,
+            self._supervisor,
+            self._workers,
+            self._strategy,
+            refine=self._refine_task,
+            refine_instruction=self._refine_instruction,
+            share_channels=self._share_channels,
+            max_revisions=self._max_revisions,
+            task_timeout=self._task_timeout,
+        )
+        self._supervisor._registry.set_turn_runner(room_id, turns.run, owner=self)
 
     def _install_async_auto_delegate(self, kit: RoomKit, room_id: str) -> None:
         """Inject delegate_workers tool into RealtimeVoiceChannel.
@@ -179,6 +131,75 @@ class _AutoDelegateInstallMixin:
 
         voice_channel.tool_handler = call_room_handler(
             {"delegate_workers"}, server.serve, original_handler
+        )
+
+
+class _DelegatingTurns:
+    """One install's framework-driven delegation: the supervisor's turns run
+    the workers, then the supervisor answers with what they found."""
+
+    def __init__(
+        self,
+        kit: RoomKit,
+        supervisor: Agent,
+        workers: list[Agent],
+        strategy: WorkerStrategy | None,
+        *,
+        refine: bool,
+        refine_instruction: str | None,
+        share_channels: list[str],
+        max_revisions: int,
+        task_timeout: float,
+    ) -> None:
+        self._kit = kit
+        self._supervisor = supervisor
+        self._workers = workers
+        self._strategy = strategy
+        self._refine = refine
+        self._refine_instruction = refine_instruction
+        self._share_channels = share_channels
+        self._max_revisions = max_revisions
+        self._task_timeout = task_timeout
+
+    async def run(
+        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        """Take one of the supervisor's turns in the installed room."""
+        supervisor = self._supervisor
+        if event.source.channel_id == supervisor.channel_id:
+            return ChannelOutput.empty()
+        if event.source.channel_type == _ChannelType.AI:
+            return ChannelOutput.empty()
+        rid = context.room.id if context.room else event.room_id
+        if self._refine:
+            return await _two_pass_delegate(
+                self._kit,
+                rid,
+                supervisor,
+                supervisor._respond,
+                event,
+                binding,
+                context,
+                self._strategy,
+                self._workers,
+                instruction=self._refine_instruction,
+                share_channels=self._share_channels,
+                max_revisions=self._max_revisions,
+                task_timeout=self._task_timeout,
+            )
+        return await _one_pass_delegate(
+            self._kit,
+            rid,
+            supervisor,
+            supervisor._respond,
+            event,
+            binding,
+            context,
+            self._strategy,
+            self._workers,
+            share_channels=self._share_channels,
+            max_revisions=self._max_revisions,
+            task_timeout=self._task_timeout,
         )
 
 

@@ -14,16 +14,20 @@ import json
 from collections.abc import Callable
 from typing import Any
 
+import pytest
+
 from roomkit import RoomKit
 from roomkit.channels.agent import Agent
 from roomkit.channels.ai import AIChannel
-from roomkit.models.channel import ChannelBinding
+from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelCategory, ChannelType
 from roomkit.models.event import TextContent
 from roomkit.models.room import Room
-from roomkit.orchestration.strategies.supervisor import Supervisor
+from roomkit.orchestration.strategies import loop as loop_module
+from roomkit.orchestration.strategies.loop import Loop
+from roomkit.orchestration.strategies.supervisor import Supervisor, _install_auto
 from roomkit.providers.ai.base import AIResponse, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.tasks.delegate import DelegateHandler, setup_delegation
@@ -156,3 +160,73 @@ async def test_the_repeat_guard_holds_on_an_orchestration_tool(streaming: bool) 
     await respond(channel, event, binding, RoomContext(room=Room(id="r1")))
 
     assert len(delegations) == 2
+
+
+async def test_a_room_without_the_install_gets_the_supervisor_s_own_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A supervisor whose delegation passes take room A's turns answers as
+    itself in a room where nothing was installed: no worker runs there (VF3)."""
+    passes: list[str] = []
+
+    async def one_pass(kit: Any, rid: str, *args: Any, **kwargs: Any) -> ChannelOutput:
+        passes.append(rid)
+        return ChannelOutput.empty()
+
+    monkeypatch.setattr(_install_auto, "_one_pass_delegate", one_pass)
+    monkeypatch.setattr(_install_auto, "_two_pass_delegate", one_pass)
+    sup_model = MockAIProvider(responses=["answered as myself"])
+    sup = Agent("sup", provider=sup_model, tool_search=False)
+    worker = Agent("worker", provider=MockAIProvider(responses=["w"]), tool_search=False)
+    kit = RoomKit()
+    for room_id in ("room-A", "room-C"):
+        kit.register_channel(SimpleChannel(f"sms-{room_id}"))
+    orchestration = Supervisor(sup, [worker], strategy="sequential", auto_delegate=True)
+    await kit.create_room(room_id="room-A", orchestration=orchestration)
+    await kit.attach_channel("room-A", "sms-room-A")
+    await kit.create_room(room_id="room-C")
+    await kit.attach_channel("room-C", "sms-room-C")
+    await kit.attach_channel("room-C", "sup", category=ChannelCategory.INTELLIGENCE)
+
+    await kit.process_inbound(
+        InboundMessage(channel_id="sms-room-C", sender_id="u", content=TextContent(body="hi"))
+    )
+    await kit.process_inbound(
+        InboundMessage(channel_id="sms-room-A", sender_id="u", content=TextContent(body="go"))
+    )
+
+    assert passes == ["room-A"]
+    assert len(sup_model.calls) == 1
+    await kit.close()
+
+
+async def test_each_room_s_loop_runs_with_its_own_reviewers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two rooms loop the same producer past different reviewers: each room's
+    turn runs its own (VF1)."""
+    ran: list[tuple[str, list[str]]] = []
+
+    async def run_loop(*, room_id: str, reviewers: list[Agent], **kwargs: Any) -> ChannelOutput:
+        ran.append((room_id, [r.channel_id for r in reviewers]))
+        return ChannelOutput.empty()
+
+    monkeypatch.setattr(loop_module, "_run_loop", run_loop)
+    producer = Agent("writer", provider=MockAIProvider(responses=["draft"]), tool_search=False)
+    kit = await _two_rooms(
+        producer,
+        {
+            tenant: Loop(
+                agent=producer,
+                reviewer=Agent(f"editor-{tenant}", provider=MockAIProvider(responses=["ok"])),
+            )
+            for tenant in TENANTS
+        },
+    )
+
+    await kit.process_inbound(
+        InboundMessage(channel_id="sms-clinic-B", sender_id="u", content=TextContent(body="go"))
+    )
+
+    assert ran == [("clinic-B", ["editor-clinic-B"])]
+    await kit.close()

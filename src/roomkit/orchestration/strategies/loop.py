@@ -37,11 +37,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("roomkit.orchestration.strategies.loop")
 
-# A loop installed in several rooms wires its shared objects once (RFC §19.7):
-# the producers whose on_event it wraps and the voice channels it serves
-# ``delegate_loop`` on, with the rooms each one was installed in.
-_LOOP_WRAPPED: weakref.WeakSet[Any] = weakref.WeakSet()
-_LOOP_ROOMS: weakref.WeakKeyDictionary[Any, set[str]] = weakref.WeakKeyDictionary()
+# A loop installed in several rooms wires a voice channel once (RFC §19.7):
+# the voice channels it serves ``delegate_loop`` on, with the rooms each one
+# was installed in.
 _LOOP_VOICE_SERVING: weakref.WeakSet[Any] = weakref.WeakSet()
 _LOOP_VOICE_ROOMS: weakref.WeakKeyDictionary[Any, set[str]] = weakref.WeakKeyDictionary()
 
@@ -172,45 +170,14 @@ class Loop(Orchestration):
         await kit.store.update_room(room)
 
     def _install_sync_loop(self, kit: RoomKit, room_id: str) -> None:
-        """Wrap the producer's ``on_event`` once, for every room installed.
+        """Take the producer's turns in *room_id* with this loop.
 
-        The producer serves every room it is attached to (RFC §19.7): a second
-        room's install adds its room to the wrapper's, and wraps nothing.
+        The producer serves every room it is attached to (RFC §19.7): the loop
+        runs in the room it was installed in, with this install's reviewers
+        and limits, and the producer answers as itself everywhere else.
         """
-        producer = self._agent
-        reviewers = self._reviewers
-        max_iter = self._max_iterations
-        strategy = self._strategy
-        rooms = _LOOP_ROOMS.setdefault(producer, set())
-        rooms.add(room_id)
-        if not first_install(_LOOP_WRAPPED, producer):
-            return
-        original_on_event = producer.on_event
-
-        async def loop_on_event(
-            event: RoomEvent,
-            binding: ChannelBinding,
-            context: RoomContext,
-        ) -> ChannelOutput:
-            current_room = context.room.id if context.room else event.room_id
-            if current_room not in rooms:
-                return await original_on_event(event, binding, context)
-            if event.source.channel_id == producer.channel_id:
-                return ChannelOutput.empty()
-            if event.source.channel_type in (ChannelType.AI, ChannelType.SYSTEM):
-                return await original_on_event(event, binding, context)
-
-            return await _run_loop(
-                kit=kit,
-                room_id=current_room,
-                producer=producer,
-                reviewers=reviewers,
-                strategy=strategy,
-                event=event,
-                max_iterations=max_iter,
-            )
-
-        producer.on_event = loop_on_event  # ty: ignore[invalid-assignment]
+        turns = _LoopTurns(kit, self._agent, self._reviewers, self._strategy, self._max_iterations)
+        self._agent._registry.set_turn_runner(room_id, turns.run, owner=self)
 
     # -- Async delivery (voice) -----------------------------------------------
 
@@ -252,6 +219,43 @@ class Loop(Orchestration):
         server = _VoiceLoopServer(kit, rooms, producer, reviewers, strategy, max_iter)
         voice_channel.tool_handler = call_room_handler(
             {"delegate_loop"}, server.serve, original_handler
+        )
+
+
+class _LoopTurns:
+    """One loop install's turns: the producer produces, the reviewers review."""
+
+    def __init__(
+        self,
+        kit: RoomKit,
+        producer: Agent,
+        reviewers: list[Agent],
+        strategy: WorkerStrategy | None,
+        max_iterations: int,
+    ) -> None:
+        self._kit = kit
+        self._producer = producer
+        self._reviewers = reviewers
+        self._strategy = strategy
+        self._max_iterations = max_iterations
+
+    async def run(
+        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        """Take one of the producer's turns in the installed room."""
+        producer = self._producer
+        if event.source.channel_id == producer.channel_id:
+            return ChannelOutput.empty()
+        if event.source.channel_type in (ChannelType.AI, ChannelType.SYSTEM):
+            return await producer._respond(event, binding, context)
+        return await _run_loop(
+            kit=self._kit,
+            room_id=context.room.id if context.room else event.room_id,
+            producer=producer,
+            reviewers=self._reviewers,
+            strategy=self._strategy,
+            event=event,
+            max_iterations=self._max_iterations,
         )
 
 

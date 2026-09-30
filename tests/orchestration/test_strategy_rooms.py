@@ -199,17 +199,19 @@ async def test_a_voice_supervisor_refuses_a_room_it_was_not_installed_in(
     await kit.close()
 
 
-async def test_a_sync_loop_in_two_rooms_wraps_its_producer_once() -> None:
+async def test_a_sync_loop_in_two_rooms_takes_their_turns_and_wraps_nothing() -> None:
+    """Each room's install takes that room's turns (RMK-307): the producer's
+    own handling is left as it is, and another room gets the producer's."""
     producer, reviewer = _agent("writer"), _agent("editor")
     kit = RoomKit()
-    wrapped = []
     for tenant in TENANTS:
         await kit.create_room(
             room_id=tenant, orchestration=Loop(agent=producer, reviewer=reviewer)
         )
-        wrapped.append(producer.on_event)
 
-    assert wrapped[0] is wrapped[1]
+    assert "on_event" not in vars(producer)
+    assert all(producer._registry.turn_runner(tenant) is not None for tenant in TENANTS)
+    assert producer._registry.turn_runner("tenant-C") is None
     await kit.close()
 
 
