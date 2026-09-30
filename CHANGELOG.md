@@ -128,13 +128,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - A channel refuses a tool when it is given under a name it already serves in
-  a room (RMK-307, RFC §21.1). Two host tools under one name at construction
-  (two MCP servers both exposing `search`) raise `ValueError` on `AIChannel` and
-  `RealtimeVoiceChannel`: the model used to read the later server's schema for
-  a call the first one served. `setup_handoff`, `setup_delegation` or a
-  strategy setting a tool up under a host tool's name raises
-  `ToolNameCollisionError` (a `ValueError`), where the orchestration's
-  definition used to replace the host's with a warning. A tool the turn brings
+  a room (RMK-307, RFC §21.1). Two host tools under one name (two MCP servers
+  both exposing `search`) raise `ValueError` when given to `AIChannel`, to
+  `RealtimeVoiceChannel` at construction or through `configure(tools=)`, and to
+  a conference's `ConferenceRealtimeConfig`: the model used to read the later
+  server's schema for a call the first one served. `setup_handoff`,
+  `setup_delegation` or a strategy setting a tool up under a host tool's name
+  raises `roomkit.ToolNameCollisionError` (a `ValueError`), where the
+  orchestration's definition used to replace the host's with a warning; the
+  same strategy installed again in a room replaces its own tools. A tool the turn brings
   (binding metadata, a `config_provider`, a `BEFORE_AI_GENERATION` hook) under
   a name the channel or orchestration serves is still left out, with a warning.
 - `AIChannel.tool_handler` is the host's handler (RMK-307): reading it returns
@@ -155,8 +157,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   session whose room's active agent or whose own tools overflow
   `tool_search_threshold`, where it used to stay off for every session. Unless
   `tool_search=False`, the channel now serves `find_tools` and `list_tools`
-  itself, so a host tool under one of those names is refused at construction,
-  as on `AIChannel`.
+  itself, and `call_tool` on a provider whose declarations are fixed, so a host
+  tool under one of those names is refused at construction, as on `AIChannel`.
 - A turn with tools gets the turn's reasoning settings, as a turn without
   does (RMK-319, RFC §6.7). On OpenAI's own endpoint the model catalogue now
   says what Chat Completions takes with function tools, each entry checked
