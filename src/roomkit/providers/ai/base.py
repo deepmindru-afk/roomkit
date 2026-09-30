@@ -318,7 +318,12 @@ class AIContext(BaseModel):
     to the model's default."""
     reasoning_effort: str | None = None
     """Reasoning verbosity for this turn, for providers that grade it.
-    Accepted values are the provider's own; ``None`` defers to its config."""
+    ``none`` turns reasoning off (RFC §6.7). A provider whose vendor takes
+    an effort passes the value as the vendor spells it; one that maps it to
+    a vendor setting of its own (Gemini's ``thinking_level``, Ollama's
+    ``think``) reads ``minimal``, ``low``, ``medium``, ``high`` and
+    ``xhigh``, sent as the nearest level the model takes. ``None`` defers
+    to its config."""
     tools: list[AITool] = Field(default_factory=list)
     response_schema: dict[str, Any] | None = None
     """JSON Schema the answer must satisfy, within the portable subset of
