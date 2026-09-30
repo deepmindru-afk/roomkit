@@ -379,3 +379,73 @@ async def test_reconfiguring_a_session_changes_that_session_only() -> None:
     assert [t["name"] for t in connected["tools"]] == ["lookup"]
     assert in_a.metadata["system_prompt"] == "a playful attitude"
     await kit.close()
+
+
+async def test_what_the_room_s_agent_leaves_unset_is_the_channel_s() -> None:
+    """A pipeline agent with no voice nor prompt of its own: the session speaks
+    with the channel's (RFC §12.4)."""
+    provider = MockRealtimeProvider()
+    voice = RealtimeVoiceChannel(
+        "voice",
+        provider=provider,
+        transport=MockRealtimeTransport(),
+        system_prompt="the channel's prompt",
+        voice="Kore",
+    )
+    triage, billing = Agent("triage"), Agent("billing")
+    kit = RoomKit()
+    for channel in (voice, triage, billing):
+        kit.register_channel(channel)
+    ConversationPipeline(
+        stages=[
+            PipelineStage(phase="triage", agent_id="triage", next="billing"),
+            PipelineStage(phase="billing", agent_id="billing", next=None),
+        ]
+    ).install(kit, [triage, billing], voice_channel_id="voice")
+    await kit.create_room(room_id="room-A")
+    await kit.attach_channel("room-A", "voice")
+
+    session = await voice.start_session("room-A", "caller", "ws")
+
+    connected = _connected(provider, session)
+    assert connected["voice"] == "Kore"
+    assert connected["system_prompt"] == "the channel's prompt"
+    await kit.close()
+
+
+async def test_a_handoff_to_an_agent_with_many_tools_hides_them_behind_search() -> None:
+    """Tool Search is decided on the catalogue the handoff brings, before the
+    session is reconfigured with it."""
+    provider = MockRealtimeProvider()
+    voice = RealtimeVoiceChannel(
+        "voice", provider=provider, transport=MockRealtimeTransport(), tool_search_threshold=3
+    )
+    many = [AITool(name=f"op_{i}", description=f"op {i}", parameters={}) for i in range(10)]
+    triage = Agent("triage", system_prompt="I am TRIAGE")
+    billing = Agent("billing", system_prompt="I am BILLING", tools=many)
+    kit = RoomKit()
+    for channel in (voice, triage, billing):
+        kit.register_channel(channel)
+    ConversationPipeline(
+        stages=[
+            PipelineStage(phase="triage", agent_id="triage", next="billing"),
+            PipelineStage(phase="billing", agent_id="billing", next=None),
+        ]
+    ).install(kit, [triage, billing], voice_channel_id="voice")
+    room = await kit.create_room(room_id="room-A")
+    triage_state = ConversationState(phase="triage", active_agent_id="triage")
+    await kit.store.update_room(set_conversation_state(room, triage_state))
+    await kit.attach_channel("room-A", "voice")
+    session = await voice.start_session("room-A", "caller", "ws")
+    assert "find_tools" not in [t["name"] for t in _connected(provider, session)["tools"]]
+
+    handed = {"target": "billing", "reason": "r", "summary": "s"}
+    await provider.simulate_tool_call(session, "h1", "handoff_conversation", handed)
+    await _until(lambda: len(provider.tool_results) == 1)
+    await _until(lambda: _connected(provider, session)["system_prompt"].startswith("I am BILLING"))
+
+    declared = [t["name"] for t in _connected(provider, session)["tools"]]
+    assert declared[:2] == ["find_tools", "list_tools"]
+    assert "handoff_conversation" in declared
+    assert len(declared) < 10
+    await kit.close()

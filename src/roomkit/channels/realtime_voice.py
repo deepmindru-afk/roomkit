@@ -1216,12 +1216,16 @@ class RealtimeVoiceChannel(
         channel's."""
         meta = session.metadata
         room = await self._room_session_config(session.room_id)
+        # Field by field: what the room's agent leaves unset is the channel's.
+        room_prompt, room_voice, room_tools = (
+            (room.system_prompt, room.voice, room.tools) if room is not None else (None,) * 3
+        )
         system_prompt = meta.get(
-            "system_prompt", room.system_prompt if room is not None else self._system_prompt
+            "system_prompt", room_prompt if room_prompt is not None else self._system_prompt
         )
         meta["system_prompt"] = system_prompt
-        voice = meta.get("voice", room.voice if room is not None else self._voice)
-        tools = meta.get("tools", room.tools if room is not None else self._tools)
+        voice = meta.get("voice", room_voice if room_voice is not None else self._voice)
+        tools = meta.get("tools", room_tools if room_tools is not None else self._tools)
         temperature = meta.get("temperature", self._temperature)
         provider_config = meta.get("provider_config")
         if self._skill_support and self._skill_support.uses_tool_result:
@@ -1770,6 +1774,10 @@ class RealtimeVoiceChannel(
             # on its next reconfiguration.
             caller_tools = deepcopy(tools)
             caller_prompt = system_prompt
+            # The new catalogue first: whether Tool Search hides it decides
+            # both the prompt's preamble and the declaration (RFC §21.1).
+            if caller_tools is not None:
+                self._store_session_tools(session, caller_tools)
 
             system_prompt = self._compose_session_prompt(
                 session,
@@ -1796,8 +1804,6 @@ class RealtimeVoiceChannel(
             # §12.4). Stored as the caller gave it (without skill enrichment).
             if caller_prompt is not None:
                 session.metadata["system_prompt"] = caller_prompt
-            if caller_tools is not None:
-                self._store_session_tools(session, caller_tools)
 
             logger.info("Realtime session %s reconfigured", session.id)
 

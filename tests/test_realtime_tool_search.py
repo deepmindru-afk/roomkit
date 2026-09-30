@@ -807,3 +807,49 @@ class TestCleanup:
         await channel.end_session(session)
 
         assert sid not in channel._tool_search_support._exposed
+
+
+class TestPerSessionOnReconfiguration:
+    """A reconfiguration decides Tool Search on the catalogue it brings, before
+    the prompt and the declaration are built from it (RMK-307)."""
+
+    async def _session(self, provider: MockRealtimeProvider, transport: Any, tools: Any) -> Any:
+        channel = RealtimeVoiceChannel(
+            "rt", provider=provider, transport=transport, tool_search_threshold=3
+        )
+        kit = RoomKit()
+        kit.register_channel(channel)
+        room = await kit.create_room()
+        await kit.attach_channel(room.id, "rt")
+        session = await channel.start_session(room.id, "p", object(), metadata={"tools": tools})
+        return kit, channel, session
+
+    def _last(self, provider: MockRealtimeProvider) -> tuple[list[str], str]:
+        connected = [c.args for c in provider.calls if c.method == "connect"][-1]
+        return [t["name"] for t in connected["tools"] or []], connected["system_prompt"] or ""
+
+    async def test_a_small_catalogue_growing_past_the_threshold_is_hidden(
+        self, provider: MockRealtimeProvider, transport: MockRealtimeTransport
+    ) -> None:
+        kit, channel, session = await self._session(provider, transport, [_tool("a")])
+
+        await channel.reconfigure_session(session, tools=_make_catalogue(10))
+
+        names, prompt = self._last(provider)
+        assert names[:2] == ["find_tools", "list_tools"]
+        assert TOOL_SEARCH_PREAMBLE in prompt
+        assert channel._tool_search_support.active(session.id)
+        await kit.close()
+
+    async def test_a_large_catalogue_shrinking_below_the_threshold_is_shown_whole(
+        self, provider: MockRealtimeProvider, transport: MockRealtimeTransport
+    ) -> None:
+        kit, channel, session = await self._session(provider, transport, _make_catalogue(10))
+
+        await channel.reconfigure_session(session, tools=[_tool("a")])
+
+        names, prompt = self._last(provider)
+        assert names == ["a"]
+        assert TOOL_SEARCH_PREAMBLE not in prompt
+        assert not channel._tool_search_support.active(session.id)
+        await kit.close()
