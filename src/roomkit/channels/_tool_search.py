@@ -356,6 +356,7 @@ def should_activate_tool_search(
     window: int | None,
     threshold_pct: float,
     threshold_count: int,
+    threshold_tokens: int | None = None,
 ) -> bool:
     """Decide whether Tool Search hides the catalogue for a turn.
 
@@ -367,15 +368,18 @@ def should_activate_tool_search(
     ``threshold_count`` tool count — the floor that still protects small local
     models whose window cannot be read.
 
+    ``threshold_tokens`` also switches it on for cost: past that many
+    deferrable schema tokens it is on whatever the window, since a large
+    catalogue re-sent at every round costs more than its discovery round.
+
     ``catalogue`` is the real tool list, BEFORE the search infra tools are
     injected, so it reflects the deferrable surface only.
     """
-    if mode is False:
-        return False
-    if mode is True:
+    if mode is not None:
+        return mode
+    tokens = sum(estimate_tool_tokens(t) for t in catalogue if t.name not in pinned)
+    if threshold_tokens is not None and tokens > threshold_tokens:
         return True
     if window:
-        budget = window * threshold_pct / 100
-        deferrable = (t for t in catalogue if t.name not in pinned)
-        return sum(estimate_tool_tokens(t) for t in deferrable) > budget
+        return tokens > window * threshold_pct / 100
     return len(catalogue) > threshold_count

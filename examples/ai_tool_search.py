@@ -15,10 +15,11 @@ NEXT tool-loop round — the text loop re-sends its (re-filtered) tool list
 every round, so no provider reconfigure is needed (this is what makes Tool
 Search work on any text/HTTP provider, not just realtime voice).
 
-Activation is automatic (``tool_search=None``) when the deferrable tools would
-exceed ``tool_search_threshold_pct`` % of the model's context window (default
-10%), self-tuning to model size; it falls back to a ``tool_search_threshold``
-tool count when the window is unknown. Pass ``tool_search=True``/``False`` to
+Activation is automatic (``tool_search=None``) when the deferrable tools'
+schemas pass ``tool_search_threshold_tokens`` (8,000 by default, for cost,
+whatever the window) or ``tool_search_threshold_pct`` % of the model's context
+window (default 10%); it falls back to a ``tool_search_threshold`` tool count
+when the window is unknown. Pass ``tool_search=True``/``False`` to
 force it on/off (this example forces ``True`` for determinism).
 
 A host that records "what the model was offered" must not read it from

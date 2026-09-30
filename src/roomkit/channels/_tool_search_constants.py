@@ -32,6 +32,12 @@ DEFAULT_TOOL_SEARCH_THRESHOLD = 20
 # Hermes ``threshold_pct`` default.
 DEFAULT_TOOL_SEARCH_THRESHOLD_PCT = 10.0
 
+# The deferrable schema tokens past which Tool Search also switches on,
+# whatever the window: measured on claude-sonnet-5 (RMK-321), hiding a
+# catalogue pays for its discovery round from about 15 tools, and a cached
+# 12.8K-token catalogue still costs more per turn than the discovery does.
+DEFAULT_TOOL_SEARCH_THRESHOLD_TOKENS = 8000
+
 # Default number of matches returned by find_tools. Small enough to
 # stay well inside the ceiling even when the model immediately invokes
 # one of the matches, leaving headroom for further searches.

@@ -2,7 +2,9 @@
 
 When a tool returns more tokens than ``evict_threshold_tokens``, AIChannel
 stores the full output and replaces it with a preview. The AI can then
-paginate through the full result using the ``read_stored_result`` tool.
+paginate through the full result using the ``read_stored_result`` tool, or
+search it (``query="..."``) for the lines that contain a text: one call
+instead of every page, and "no match" is a sure answer.
 
 Run with:
     ANTHROPIC_API_KEY=sk-... uv run python examples/ai_eviction.py
@@ -106,6 +108,7 @@ async def main() -> None:
         welcome=(
             "\nEviction demo — large tool results are stored and paginated.\n"
             'Try: "Generate a customer report and analyze revenue by department"\n'
+            'Or: "Is customer 137 in the report? Search it rather than reading it all"\n'
         ),
     )
 

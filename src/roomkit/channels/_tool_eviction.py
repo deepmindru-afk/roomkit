@@ -32,6 +32,8 @@ _ISSUED_IDS_REMEMBERED = 10_000
 # and a margin, so worst-case escaping of the content still leaves the page
 # under the re-eviction bound (4 * threshold_tokens chars). See handle_read.
 _PAGE_ENVELOPE_CHARS = 512
+# The lines shown around each line a search finds.
+_SEARCH_CONTEXT_LINES = 2
 
 # Ceiling of the preview that stands in for an evicted result, in chars. The
 # budget also shrinks with the threshold (see _preview_budget), so a preview
@@ -295,7 +297,7 @@ class ToolEviction:
         return min(_PREVIEW_MAX_CHARS, 2 * self.threshold_tokens)
 
     def handle_read(self, arguments: dict[str, Any]) -> str:
-        """Paginate a previously evicted result.
+        """Paginate a previously evicted result, or search it for ``query``.
 
         Pages are size-bounded below the eviction threshold: a page that grew
         past it would itself be evicted on return, re-stored under a new id,
@@ -314,22 +316,15 @@ class ToolEviction:
             return json.dumps({"error": f"Result '{result_id}' not found", "available": available})
         # Read back, it is in use: the room's least recently read go first.
         self._store.move_to_end((room, result_id))
+        query = arguments.get("query")
+        if query is not None:
+            return self._search(full_result, str(query), offset)
         return self._page(full_result, offset, limit)
 
     def _page(self, full_result: str, offset: int, limit: int) -> str:
         """The JSON page of *full_result* from line *offset*, at most *limit*
         lines and bounded in chars."""
-        # Char budget per page. The page returns as a JSON string (the content
-        # re-escaped, wrapped in an envelope) and is re-measured against
-        # threshold_tokens on the way back, so it must never itself be evicted
-        # — else the agent chases evicted results forever. The estimator is
-        # len // 4 tokens, so the page must stay under 4 * threshold_tokens
-        # chars. JSON escaping can double the content (already-escaped tool
-        # output re-escapes worst-case ~2x) and the envelope adds a fixed
-        # overhead, so bound the raw content at 2 * threshold_tokens minus an
-        # envelope allowance: worst case 2*budget + envelope stays under
-        # 4 * threshold_tokens.
-        budget = max(1, self.threshold_tokens * 2 - _PAGE_ENVELOPE_CHARS)
+        budget = self._page_budget()
         lines = self._paginable_lines(full_result, budget)
         total_lines = len(lines)
 
@@ -362,6 +357,48 @@ class ToolEviction:
             )
         return json.dumps(envelope)
 
+    def _page_budget(self) -> int:
+        """The chars a page (or a search's matches) may carry.
+
+        The page returns as a JSON string (the content
+        re-escaped, wrapped in an envelope) and is re-measured against
+        threshold_tokens on the way back, so it must never itself be evicted
+        — else the agent chases evicted results forever. The estimator is
+        len // 4 tokens, so the page must stay under 4 * threshold_tokens
+        chars. JSON escaping can double the content (already-escaped tool
+        output re-escapes worst-case ~2x) and the envelope adds a fixed
+        overhead, so bound the raw content at 2 * threshold_tokens minus an
+        envelope allowance: worst case 2*budget + envelope stays under
+        4 * threshold_tokens.
+        """
+        return max(1, self.threshold_tokens * 2 - _PAGE_ENVELOPE_CHARS)
+
+    def _search(self, full_result: str, query: str, offset: int) -> str:
+        """The JSON matches of *query* in *full_result*, case aside, from its
+        *offset*-th match on, bounded as a page is.
+
+        The text is matched as it is, never as a pattern (RFC §21.5), and the
+        search covers the whole result, so no match says the text is absent.
+        """
+        if not query.strip():
+            return json.dumps({"error": "query must not be empty"})
+        lines = self._paginable_lines(full_result, self._page_budget())
+        needle = query.casefold()
+        hits = [n for n, line in enumerate(lines) if needle in line.casefold()]
+        shown, content = _numbered_windows(lines, hits[offset:], self._page_budget())
+        has_more = offset + shown < len(hits)
+        envelope: dict[str, Any] = {
+            "query": query,
+            "content": content,
+            "total_matches": len(hits),
+            "matches_returned": shown,
+            "has_more": has_more,
+            "next_offset": offset + shown if has_more else None,
+        }
+        if not hits:
+            envelope["note"] = "No line contains it: the search covered the whole result."
+        return json.dumps(envelope)
+
     @staticmethod
     def _paginable_lines(text: str, budget: int) -> list[str]:
         """Lines of ``text``, with lines longer than ``budget`` split into
@@ -392,30 +429,72 @@ class ToolEviction:
         """Return the AITool definition for read_stored_result."""
         return AITool(
             name=REREAD_TOOL,
-            description=(
-                "Read a previously evicted large tool result. "
-                "Supports line-based pagination via offset and limit; pages "
-                "are size-bounded, so follow next_offset until has_more is "
-                "false to read everything."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "result_id": {
-                        "type": "string",
-                        "description": "The evicted result ID shown in the preview.",
-                    },
-                    "offset": {
-                        "type": "integer",
-                        "default": 0,
-                        "description": "Line number to start reading from.",
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "default": 800,
-                        "description": "Maximum number of lines to return.",
-                    },
-                },
-                "required": ["result_id"],
-            },
+            description=_REREAD_DESCRIPTION,
+            parameters=_REREAD_PARAMETERS,
         )
+
+
+def _numbered_windows(lines: list[str], hits: list[int], budget: int) -> tuple[int, str]:
+    """How many of *hits* fit in *budget* chars, and their lines with
+    ``_SEARCH_CONTEXT_LINES`` around each, numbered from 1; windows that
+    overlap are merged, and a gap between two is marked ``...``."""
+    shown, used, last = 0, 0, -1
+    out: list[str] = []
+    for hit in hits:
+        window = range(
+            max(hit - _SEARCH_CONTEXT_LINES, last + 1),
+            min(hit + _SEARCH_CONTEXT_LINES + 1, len(lines)),
+        )
+        block = [f"{n + 1}: {lines[n]}" for n in window]
+        size = sum(len(line) + 1 for line in block)
+        if shown and used + size > budget:
+            break
+        if out and window and window.start > last + 1:
+            out.append("...")
+        out.extend(block)
+        used, shown = used + size, shown + 1
+        last = max(last, window.stop - 1)
+    return shown, "\n".join(out)
+
+
+# The read-back tool as the model reads it (RFC §21.5).
+_REREAD_DESCRIPTION = (
+    "Read a previously evicted large tool result. "
+    "Supports line-based pagination via offset and limit; pages "
+    "are size-bounded, so follow next_offset until has_more is "
+    "false to read everything. To find something in it, pass "
+    "query: you get the lines that contain it with their "
+    "neighbours and line numbers, searched across the whole "
+    "result, so no match means it is not there."
+)
+_REREAD_PARAMETERS: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "result_id": {
+            "type": "string",
+            "description": "The evicted result ID shown in the preview.",
+        },
+        "query": {
+            "type": "string",
+            "description": (
+                "Text to find, case aside (matched as written, not a "
+                "pattern). Returns only the lines that contain it, with "
+                "the lines around them."
+            ),
+        },
+        "offset": {
+            "type": "integer",
+            "default": 0,
+            "description": (
+                "Line number to start reading from; with query, the match "
+                "to start from (next_offset)."
+            ),
+        },
+        "limit": {
+            "type": "integer",
+            "default": 800,
+            "description": "Maximum number of lines to return.",
+        },
+    },
+    "required": ["result_id"],
+}

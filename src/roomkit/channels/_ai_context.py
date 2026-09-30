@@ -149,6 +149,7 @@ class AIContextHost(Protocol):
     _tool_search_pinned: set[str]
     _tool_search_threshold: int
     _tool_search_threshold_pct: float
+    _tool_search_threshold_tokens: int | None
     channel_id: str
 
     def _orchestration_tools(self, room_id: str | None) -> list[AITool]: ...
@@ -193,6 +194,7 @@ class AIContextMixin:
     _tool_search_pinned: set[str]
     _tool_search_threshold: int
     _tool_search_threshold_pct: float
+    _tool_search_threshold_tokens: int | None
     channel_id: str
 
     _warned_unoffered_human_tools: set[str]
@@ -662,6 +664,7 @@ class AIContextMixin:
             window=window,
             threshold_pct=self._tool_search_threshold_pct,
             threshold_count=self._tool_search_threshold,
+            threshold_tokens=self._tool_search_threshold_tokens,
         )
         if loop_ctx.tool_search_active:
             catalogue_names = {t.name for t in tools}
