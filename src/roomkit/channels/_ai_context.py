@@ -86,6 +86,8 @@ class AIContextHost(Protocol):
 
     Attributes provided by the host's ``__init__``:
         _provider: AI provider for generation and capability queries.
+        _fallback_provider: Provider a failing generation falls back to; a cost
+            budget prices its generations at the primary's rate.
         _system_prompt: Default system prompt (overridable per room).
         _temperature: Default temperature (overridable per room).
         _max_tokens: Default max tokens (overridable per room); ``None``
@@ -120,6 +122,7 @@ class AIContextHost(Protocol):
     """
 
     _provider: AIProvider
+    _fallback_provider: AIProvider | None
     _system_prompt: str | None
     _temperature: float
     _max_tokens: int | None
@@ -163,6 +166,7 @@ class AIContextMixin:
     """
 
     _provider: AIProvider
+    _fallback_provider: AIProvider | None
     _system_prompt: str | None
     _temperature: float
     _max_tokens: int | None
@@ -238,8 +242,8 @@ class AIContextMixin:
         Config precedence per field:
         1. ``binding.metadata`` explicit overrides (system_prompt,
            temperature, max_tokens, thinking_budget, enable_thinking,
-           reasoning_effort, response_schema) — per-room operator intent,
-           always wins.
+           reasoning_effort, response_schema, turn_budget_tokens,
+           turn_budget_usd) — per-room operator intent, always wins.
         2. The channel's ``config_provider`` result, resolved fresh at the
            start of every turn (see channels/_turn_config.py).
         3. The channel's constructor defaults.
@@ -309,59 +313,16 @@ class AIContextMixin:
         self, context: RoomContext
     ) -> tuple[list[ChannelMediaType], ChannelCapabilities | None]:
         """What every transport the answer reaches can carry: the media types
-        they share, and their capabilities intersected."""
-        # Determine target channel capabilities for capability-aware generation
-        # Use intersection of all transport bindings' media types (weakest common)
-        transport_bindings = [
-            b
+        they share, and their capabilities intersected (``None`` for none)."""
+        transports = [
+            b.capabilities
             for b in context.bindings
             if b.category == ChannelCategory.TRANSPORT and b.channel_id != self.channel_id
         ]
-        if transport_bindings:
-            common_types = set(transport_bindings[0].capabilities.media_types)
-            for b in transport_bindings[1:]:
-                common_types &= set(b.capabilities.media_types)
-            target_media = list(common_types)
-            # Intersect capabilities: AND for booleans, MIN for numeric limits
-            caps0 = transport_bindings[0].capabilities
-            merged = caps0.model_dump()
-            merged["media_types"] = target_media
-            for b in transport_bindings[1:]:
-                other = b.capabilities
-                for field_name in (
-                    "supports_threading",
-                    "supports_reactions",
-                    "supports_edit",
-                    "supports_delete",
-                    "supports_read_receipts",
-                    "supports_typing",
-                    "supports_templates",
-                    "supports_rich_text",
-                    "supports_buttons",
-                    "supports_cards",
-                    "supports_quick_replies",
-                    "supports_media",
-                    "supports_audio",
-                    "supports_video",
-                ):
-                    merged[field_name] = merged[field_name] and getattr(other, field_name)
-                for field_name in (
-                    "max_length",
-                    "max_buttons",
-                    "max_media_size_bytes",
-                    "max_audio_duration_seconds",
-                    "max_video_duration_seconds",
-                ):
-                    a, b_val = merged[field_name], getattr(other, field_name)
-                    if a is not None and b_val is not None:
-                        merged[field_name] = min(a, b_val)
-                    elif b_val is not None:
-                        merged[field_name] = b_val
-            target_caps = ChannelCapabilities(**merged)
-        else:
-            target_media = []
-            target_caps = None
-        return target_media, target_caps
+        if not transports:
+            return [], None
+        shared = _intersected(transports)
+        return list(shared.media_types), shared
 
     async def _visible_memory(
         self, event: RoomEvent, context: RoomContext, standalone: bool
@@ -768,7 +729,7 @@ class AIContextMixin:
         other settings (RFC §6.4)."""
         tokens = self._turn_value("turn_budget_tokens", binding, turn)
         usd = self._turn_value("turn_budget_usd", binding, turn)
-        return turn_budget(tokens, usd, self._provider)
+        return turn_budget(tokens, usd, self._provider, self._fallback_provider)
 
     async def _hydrate_room_memories(
         self, usage_room_id: str, activation_room_id: str | None
@@ -888,3 +849,50 @@ def _after_memory(memory: list[AIMessage], rest: list[AIMessage]) -> list[AIMess
     if last is None or last.role != "user" or not isinstance(last.content, str):
         return [*memory, *rest]
     return [*memory[:-1], *with_leading_text(last.content, rest)]
+
+
+# What an answer may use only where every transport it reaches has it, and the
+# limits the strictest of them sets.
+_SHARED_FLAGS = (
+    "supports_threading",
+    "supports_reactions",
+    "supports_edit",
+    "supports_delete",
+    "supports_read_receipts",
+    "supports_typing",
+    "supports_templates",
+    "supports_rich_text",
+    "supports_buttons",
+    "supports_cards",
+    "supports_quick_replies",
+    "supports_media",
+    "supports_audio",
+    "supports_video",
+)
+_SMALLEST_LIMITS = (
+    "max_length",
+    "max_buttons",
+    "max_media_size_bytes",
+    "max_audio_duration_seconds",
+    "max_video_duration_seconds",
+)
+
+
+def _intersected(capabilities: list[ChannelCapabilities]) -> ChannelCapabilities:
+    """What all of *capabilities* allow: the media types they share, a flag
+    set only where every one sets it, each limit the smallest one set."""
+    merged = capabilities[0].model_dump()
+    merged["media_types"] = list(set.intersection(*(set(c.media_types) for c in capabilities)))
+    for other in capabilities[1:]:
+        for name in _SHARED_FLAGS:
+            merged[name] = merged[name] and getattr(other, name)
+        for name in _SMALLEST_LIMITS:
+            merged[name] = _smallest(merged[name], getattr(other, name))
+    return ChannelCapabilities(**merged)
+
+
+def _smallest(a: int | float | None, b: int | float | None) -> int | float | None:
+    """The smaller of two limits, a limit of ``None`` being no limit."""
+    if a is None or b is None:
+        return b if a is None else a
+    return min(a, b)

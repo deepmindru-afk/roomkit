@@ -149,7 +149,7 @@ def final_round_reason(
     had_tool_round: bool,
     final_text: str,
     finish_reason: str | None,
-    deadline_exceeded: bool,
+    limit: LoopEndReason | None,
     force_stopped: bool = False,
 ) -> LoopEndReason:
     """Why a loop that reached its final-answer round is stopping there.
@@ -165,20 +165,23 @@ def final_round_reason(
     and read as ``completed`` — the one loop-cut this function could not tell
     from an answer. A caller then delivered a cut turn's summary as the result.
 
-    The other exits (round cap, deadline at a round boundary, cancellation)
+    *limit* is the loop's own limit the turn has passed (its deadline, its
+    budget): a round that failed to answer past one ends on that limit.
+
+    The other exits (round cap, a limit at a round boundary, cancellation)
     are named at their own ``return``: they know their reason without asking.
     """
     if force_stopped:
         return "force_stopped"
     if is_malformed_call(finish_reason):
         # Its call never ran: no answer, whatever the round said (RFC §6.4).
-        return "timeout" if deadline_exceeded else "empty_response"
+        return limit or "empty_response"
     if final_text.strip() or not had_tool_round:
         return "completed"
     if is_truncation(finish_reason):
         return "truncated"
-    if deadline_exceeded:
-        return "timeout"
+    if limit is not None:
+        return limit
     return "empty_response"
 
 
@@ -225,8 +228,10 @@ class _ToolLoopState:
     empty_retries: int = 0
     force_stop_nudged: bool = False
 
-    def spend(self, usage: dict[str, Any]) -> None:
-        """Count one generation's usage against the turn's budget, if it has one."""
+    def count(self, total: dict[str, int], usage: dict[str, Any]) -> None:
+        """Count one generation's usage: into the turn's *total*, and against
+        its budget when it has one."""
+        _accumulate_usage(total, usage)
         if self.budget is not None:
             self.billed_tokens += self.budget.tokens_of(usage)
             self.spent += self.budget.cost_of(usage)
@@ -235,20 +240,25 @@ class _ToolLoopState:
         """Whether the loop's wall-clock deadline has passed."""
         return self.deadline is not None and asyncio.get_running_loop().time() >= self.deadline
 
-    def limit_reached(self, rounds: int) -> LoopEndReason | None:
-        """The limit of the loop's own that it has reached after *rounds*
-        rounds, or ``None``: its wall-clock deadline, then the turn's budget
-        (RFC §6.4). Both loops ask it at each round boundary, before running
-        the round's calls."""
+    def limit_passed(self) -> LoopEndReason | None:
+        """The limit of the loop's own the turn has reached, or ``None``: its
+        wall-clock deadline, then its budget (RFC §6.4). Past either, the loop
+        asks for no further generation."""
         if self.deadline_exceeded():
-            logger.warning(
-                "%s timeout after %d rounds (%.0fs)",
-                self.log_label,
-                rounds,
-                self.timeout_seconds,
-            )
             return "timeout"
         if self.budget is not None and self.budget.reached(self.billed_tokens, self.spent):
+            return "budget_exceeded"
+        return None
+
+    def limit_reached(self, rounds: int) -> LoopEndReason | None:
+        """The limit passed at a round boundary after *rounds* rounds, logged.
+        Both loops ask it there, before running the round's calls."""
+        limit = self.limit_passed()
+        if limit == "timeout":
+            logger.warning(
+                "%s timeout after %d rounds (%.0fs)", self.log_label, rounds, self.timeout_seconds
+            )
+        elif limit == "budget_exceeded":
             logger.warning(
                 "%s reached the turn's budget after %d rounds (%d tokens, %.4f)",
                 self.log_label,
@@ -256,8 +266,7 @@ class _ToolLoopState:
                 self.billed_tokens,
                 self.spent,
             )
-            return "budget_exceeded"
-        return None
+        return limit
 
     def warn_if_needed(self, round_idx: int) -> None:
         """Log the soft budget warning when the loop hits ``warn_after`` rounds."""
@@ -446,7 +455,7 @@ class AIToolLoopRulesMixin:
             nudge is not None
             and state.empty_retries < self._max_empty_retries
             and not loop_ctx.cancel_event.is_set()
-            and not state.deadline_exceeded()
+            and state.limit_passed() is None
         ):
             return False
         state.empty_retries += 1

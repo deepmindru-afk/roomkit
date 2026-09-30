@@ -12,7 +12,6 @@ from uuid import uuid4
 
 from roomkit.channels._ai_loop_rules import (
     AIToolLoopRulesMixin,
-    _accumulate_usage,
     final_round_reason,
     interrupts_turn,
     require_schema_answer,
@@ -550,14 +549,14 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
         # under-count by every round but the last (the streaming loop already
         # sums per round; this is the same rule on this path).
         total_usage: dict[str, int] = {}
+        state = self._new_loop_state("Tool loop", loop_ctx.turn_budget)
 
         async def _generate(ctx: AIContext) -> AIResponse:
             # What this round declares, as the provider receives it: after the
             # hook, the re-filter and the loop's own injections.
             self._record_declared_tools(loop_ctx, ctx.tools)
             resp: AIResponse = await self._generate_with_retry(ctx)
-            _accumulate_usage(total_usage, resp.usage or {})
-            state.spend(resp.usage or {})
+            state.count(total_usage, resp.usage or {})
             return resp
 
         async def _generate_after_round(ctx: AIContext) -> AIResponse:
@@ -578,7 +577,6 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
                 return ToolLoopResult(
                     response=AIResponse(content="", tool_calls=[]), reason="cancelled"
                 )
-            state = self._new_loop_state("Tool loop", loop_ctx.turn_budget)
             # The first round is prepared as every later one, and as the
             # streaming loop's: Tool Search collapses what the hook left.
             context = self._prepare_round_context(context, loop_ctx, state, 0)
@@ -617,7 +615,7 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
                         had_tool_round=bool(rounds),
                         final_text=response.content or "",
                         finish_reason=response.finish_reason,
-                        deadline_exceeded=state.deadline_exceeded(),
+                        limit=state.limit_passed(),
                         force_stopped=loop_ctx.force_stop,
                     )
                     break
@@ -728,7 +726,7 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
                         had_tool_round=bool(rounds),
                         final_text=response.content or "",
                         finish_reason=response.finish_reason,
-                        deadline_exceeded=state.deadline_exceeded(),
+                        limit=state.limit_passed(),
                         force_stopped=loop_ctx.force_stop,
                     )
 

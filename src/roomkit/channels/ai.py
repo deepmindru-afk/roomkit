@@ -358,7 +358,7 @@ class AIChannel(
         turn_budget_usd: float | None = None,
     ) -> None:
         super().__init__(channel_id)
-        self._store_turn_budget(turn_budget_tokens, turn_budget_usd, provider)
+        self._store_turn_budget(turn_budget_tokens, turn_budget_usd, provider, fallback_provider)
         self._provider = provider
         self._system_prompt = system_prompt
         # Per-turn config resolution — see channels/_turn_config.py. When
@@ -441,12 +441,16 @@ class AIChannel(
         self._external_tool_handler = external_tool_handler
 
     def _store_turn_budget(
-        self, tokens: int | None, usd: float | None, provider: AIProvider
+        self,
+        tokens: int | None,
+        usd: float | None,
+        provider: AIProvider,
+        fallback: AIProvider | None,
     ) -> None:
         """Keep the channel's default turn budget, which the binding and the
-        config provider may override per turn; a cost budget needs a priced
-        model, checked here (RFC §6.4)."""
-        turn_budget(tokens, usd, provider)
+        config provider may override per turn; a budget that is not a positive
+        number, or a cost budget for an unpriced model, fails here (RFC §6.4)."""
+        turn_budget(tokens, usd, provider, fallback)
         self._turn_budget_tokens = tokens
         self._turn_budget_usd = usd
 

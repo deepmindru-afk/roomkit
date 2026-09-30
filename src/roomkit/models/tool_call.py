@@ -332,7 +332,7 @@ class AIResponseEvent:
     — :attr:`tool_calls_count` reports the calls the turn *ran*, so a healthy
     multi-round answer and one guillotined by the round cap both report a
     positive count. Read this instead: ``"completed"`` is a turn that ended on
-    its own terms, and ``"max_rounds"``, ``"timeout"``, ``"cancelled"``,
+    its own terms, and ``"max_rounds"``, ``"timeout"``, ``"budget_exceeded"``, ``"cancelled"``,
     ``"force_stopped"``, ``"truncated"``, ``"empty_response"`` and ``"error"``
     each name the rule that stopped it (``"error"``: the provider interrupted
     the turn after a tool round and the turn was delivered once its loop

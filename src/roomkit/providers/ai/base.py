@@ -480,6 +480,19 @@ StreamEvent = (
 )
 
 
+# The usage counters a vendor bills, disjoint: a token is counted under one of
+# them only (RFC §6.7). ``reasoning_tokens`` is not one: it is the thinking
+# share of ``output_tokens``.
+BILLED_USAGE_COUNTERS = (
+    "input_tokens",
+    "output_tokens",
+    "cache_read_input_tokens",
+    "cache_creation_input_tokens",
+    "input_image_tokens",
+    "output_image_tokens",
+)
+
+
 class ModelPricing(BaseModel):
     """List price of one model, per million tokens, as its vendor published it.
 
@@ -568,17 +581,7 @@ class ModelPricing(BaseModel):
         Returns:
             The cost of that response, in :attr:`currency`.
         """
-        counters = {
-            name: self._usage_counter(usage, name)
-            for name in (
-                "input_tokens",
-                "output_tokens",
-                "cache_read_input_tokens",
-                "cache_creation_input_tokens",
-                "input_image_tokens",
-                "output_image_tokens",
-            )
-        }
+        counters = {name: self._usage_counter(usage, name) for name in BILLED_USAGE_COUNTERS}
         input_total = counters["input_tokens"] * self.input_per_million
         for counter, rate in (
             ("cache_read_input_tokens", self.cache_read_per_million),

@@ -8,20 +8,29 @@ for do not run, and no further generation is asked for.
 
 from __future__ import annotations
 
+import logging
 from datetime import date
 from typing import Any
 
 import pytest
 
-from roomkit.channels._turn_budget import TurnBudget
+from roomkit.channels._ai_loop_rules import require_schema_answer
 from roomkit.channels._turn_config import AIChannelTurnConfig
 from roomkit.channels.ai import AIChannel
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import ChannelCategory, ChannelType
 from roomkit.models.room import Room
-from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall, ModelInfo, ModelPricing
+from roomkit.providers.ai.base import (
+    AIContext,
+    AIResponse,
+    AITool,
+    AIToolCall,
+    ModelInfo,
+    ModelPricing,
+)
 from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.providers.ai.response_schema import ResponseSchemaError
 from tests.conftest import make_event
 from tests.tool_loop_modes import LoopRun, respond
 
@@ -136,20 +145,97 @@ def test_a_cost_budget_needs_a_priced_model() -> None:
         AIChannel("ai1", provider=MockAIProvider(), turn_budget_usd=0.05)
 
 
-def test_each_generation_is_priced_as_one_response() -> None:
-    """Two generations under the long-context threshold cost their own price
-    each; pricing their sum as one response would apply the multiplier."""
-    budget = TurnBudget(usd=1.0, pricing=_PRICING)
+async def test_each_generation_is_priced_as_one_response(streaming: bool) -> None:
+    """600 input tokens a generation stay under the 1,000-token long-context
+    threshold: each costs its own price, and the turn the sum of them. Pricing
+    the turn's summed usage as one response would apply the multiplier and
+    stop the turn two generations early."""
     usage = {"input_tokens": 600}
+    per_generation = _PRICING.cost_for(usage)
+    assert _PRICING.cost_for({"input_tokens": 1200}) > 3.5 * per_generation
+    script = [
+        AIResponse(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[AIToolCall(id=f"c{n}", name="lookup", arguments={"n": n})],
+            usage=dict(usage),
+        )
+        for n in range(6)
+    ]
+    ch, ran = _channel(
+        _Priced(ai_responses=script, streaming=streaming), turn_budget_usd=3.5 * per_generation
+    )
 
-    per_generation = budget.cost_of(usage)
+    run = await _turn(ch)
 
-    assert budget.cost_of({"input_tokens": 1200}) > 2 * per_generation
-    assert budget.tokens_of(_USAGE) == 500
-    assert not budget.reached(0, 2 * per_generation)
+    assert run.reason == "budget_exceeded"
+    assert ran == [0, 1, 2]
 
 
-def test_fifty_rounds_by_default() -> None:
+async def test_past_its_budget_a_turn_asks_for_no_retry_of_an_empty_answer(
+    streaming: bool,
+) -> None:
+    empty = AIResponse(content="", finish_reason="stop", usage=dict(_USAGE))
+    provider = MockAIProvider(ai_responses=[_round(0), empty, _DONE], streaming=streaming)
+    ch, ran = _channel(provider, turn_budget_tokens=600)
+
+    run = await _turn(ch)
+
+    # The empty answer brings the turn to 1,000 tokens: no retry is asked for.
+    assert run.reason == "budget_exceeded"
+    assert (ran, len(provider.calls)) == ([0], 2)
+
+
+async def test_a_room_budget_the_model_cannot_price_fails_the_turn(streaming: bool) -> None:
+    provider = MockAIProvider(ai_responses=_script(), streaming=streaming)
+    ch, ran = _channel(provider)
+
+    with pytest.raises(ValueError, match="turn_budget_usd needs a model with a known price"):
+        await _turn(ch, {"turn_budget_usd": 0.05})
+    with pytest.raises(ValueError, match="must be a positive number"):
+        await _turn(ch, {"turn_budget_tokens": "1200"})
+    assert (ran, provider.calls) == ([], [])
+
+
+@pytest.mark.parametrize(
+    "options",
+    [{"turn_budget_tokens": -5}, {"turn_budget_tokens": True}, {"turn_budget_usd": 0}],
+)
+def test_a_budget_is_a_positive_number(options: dict[str, Any]) -> None:
+    with pytest.raises(ValueError, match="must be a positive number"):
+        AIChannel("ai1", provider=_Priced(), **options)
+
+
+def test_a_schema_turn_stopped_by_its_budget_has_no_document() -> None:
+    schema = {
+        "type": "object",
+        "properties": {"total": {"type": "number"}},
+        "required": ["total"],
+        "additionalProperties": False,
+    }
+    context = AIContext(messages=[], response_schema=schema)
+
+    with pytest.raises(ResponseSchemaError, match="budget_exceeded"):
+        require_schema_answer(context, "budget_exceeded")
+
+
+def test_a_fallback_priced_otherwise_is_logged_once(caplog: pytest.LogCaptureFixture) -> None:
+    class _Fallback(MockAIProvider):
+        @property
+        def model_name(self) -> str:
+            return "fallback-priced-otherwise"
+
+    with caplog.at_level(logging.WARNING, logger="roomkit.channels.ai"):
+        for _ in range(2):
+            AIChannel(
+                "ai1", provider=_Priced(), fallback_provider=_Fallback(), turn_budget_usd=1.0
+            )
+
+    warnings = [r for r in caplog.records if "priced otherwise" in r.getMessage()]
+    assert len(warnings) == 1
+
+
+def test_fifty_rounds_and_a_warning_at_twenty_five_by_default() -> None:
     ch = AIChannel("ai1", provider=MockAIProvider())
 
-    assert ch._max_tool_rounds == 50
+    assert (ch._max_tool_rounds, ch._tool_loop_warn_after) == (50, 25)

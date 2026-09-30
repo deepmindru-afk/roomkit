@@ -55,22 +55,22 @@ async def lookup_order(_name: str, arguments: dict[str, Any]) -> str:
     return f'{{"id": "{order}", "status": "shipped", "total": 42.0}}'
 
 
-async def main() -> None:
-    env = require_env("ANTHROPIC_API_KEY")
-    kit = RoomKit()
-
-    user = WebSocketChannel("ws-user")
-    ai = AIChannel(
+def assistant(api_key: str) -> AIChannel:
+    """The agent, each of its turns capped at 2 cents."""
+    return AIChannel(
         "ai-assistant",
-        provider=AnthropicAIProvider(
-            AnthropicConfig(api_key=env["ANTHROPIC_API_KEY"], model="claude-sonnet-5")
-        ),
+        provider=AnthropicAIProvider(AnthropicConfig(api_key=api_key, model="claude-sonnet-5")),
         tools=[LOOKUP],
         tool_handler=lookup_order,
         turn_budget_usd=0.02,  # this turn may cost at most 2 cents
     )
-    kit.register_channel(user)
-    kit.register_channel(ai)
+
+
+async def main() -> None:
+    env = require_env("ANTHROPIC_API_KEY")
+    kit = RoomKit()
+    kit.register_channel(WebSocketChannel("ws-user"))
+    kit.register_channel(assistant(env["ANTHROPIC_API_KEY"]))
 
     @kit.hook(HookTrigger.ON_AI_RESPONSE, execution=HookExecution.ASYNC, name="budget")
     async def on_response(event: AIResponseEvent, ctx: RoomContext) -> None:

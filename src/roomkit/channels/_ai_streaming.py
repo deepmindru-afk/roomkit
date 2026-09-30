@@ -13,7 +13,6 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from roomkit.channels._ai_coalescers import _ThinkingCoalescer, _ToolCallDeltaCoalescer
 from roomkit.channels._ai_loop_rules import (
     AIToolLoopRulesMixin,
-    _accumulate_usage,
     _ToolLoopState,
     final_round_reason,
     interrupts_turn,
@@ -522,8 +521,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
     ) -> None:
         """Record a generation's usage: into the turn's total, against its
         budget, and as the input/output metrics."""
-        _accumulate_usage(total, usage)
-        rules.spend(usage)
+        rules.count(total, usage)
         telemetry = self._telemetry_provider
         for counter in ("input_tokens", "output_tokens"):
             telemetry.record_metric(
@@ -769,7 +767,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                         had_tool_round=turn.saw_tool_call,
                         final_text=state.text,
                         finish_reason=state.finish_reason,
-                        deadline_exceeded=rules.deadline_exceeded(),
+                        limit=rules.limit_passed(),
                         force_stopped=loop_ctx.force_stop,
                     )
                     yield turn.end(reason, index)

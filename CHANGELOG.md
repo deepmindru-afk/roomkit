@@ -15,12 +15,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the model's catalogue price, each generation priced as one response. At
   the first round boundary where the turn has reached either, the tool loop
   ends with the new `loop_end_reason` `budget_exceeded`: the calls that
-  round asked for do not run and no further generation is asked for. Both
-  are off by default; a cost budget on a model with no catalogue price
-  raises `ValueError`. On `claude-sonnet-5`, a turn asked to look up thirty
-  orders one by one stops after eleven at $0.0208 with
-  `turn_budget_usd=0.02`, where it cost about $0.043 unbounded.
-  `examples/ai_turn_budget.py` shows it.
+  round asked for do not run, and no further generation is asked for, a
+  retry of an empty answer included. Both are off by default. A budget that
+  is not a positive number, or a cost budget on a model with no catalogue
+  price, raises `ValueError`, when the channel is built or in the turn that
+  reads it. A generation the `fallback_provider` serves is priced at the
+  primary provider's rate, and a fallback priced otherwise is logged once.
+  On `claude-sonnet-5`, a turn asked to look up thirty orders one by one
+  stops after eleven at $0.0208 with `turn_budget_usd=0.02`, where it cost
+  about $0.043 unbounded. `examples/ai_turn_budget.py` shows it.
 
 ### Changed
 
