@@ -1,4 +1,5 @@
-"""AIChannel mixin for tool policy enforcement and skill gating."""
+"""AIChannel mixin for tool policy enforcement, skill gating, and the declaration
+a provider holds unseen, kept from one turn to the next (RFC §6.4)."""
 
 from __future__ import annotations
 
@@ -6,7 +7,12 @@ import logging
 from collections.abc import Callable, Container
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from roomkit.channels._tool_reopen import reopen, room_declaration
+from roomkit.channels._tool_reopen import (
+    REOPENING,
+    insert_before,
+    reopening_exchanges,
+    room_declaration,
+)
 from roomkit.models.tool_call import DeclaredTool, ToolDeclarationOrigin
 from roomkit.providers.ai.base import AIContext, AIMessage, AITool, AIToolResultPart
 from roomkit.tools.policy import ToolPolicy, matches_any_pattern
@@ -62,7 +68,12 @@ class ToolPolicyHost(Protocol):
 
     Provided by AIToolsMixin:
         _registry: The tools the channel serves, with their traits.
+
+    Provided by AIChannel's ``__init__``:
         _tool_usage: The room's tool memory, its kept declaration included.
+
+    Provided by AIContextMixin:
+        _never_hidden: What Tool Search never hides in a room.
     """
 
     _tool_policy: ToolPolicy | None
@@ -71,6 +82,8 @@ class ToolPolicyHost(Protocol):
     _tool_search_pinned: set[str]
     _provider: Any
     _tool_usage: ToolUsageMemory
+
+    def _never_hidden(self, room_id: str | None) -> set[str]: ...
 
     def _get_loop_ctx(self) -> _ToolLoopContext: ...
     def _orchestration_tool_names(self, room_id: str | None) -> set[str]: ...
@@ -93,6 +106,7 @@ class AIToolPolicyMixin:
     _orchestration_tool_names: Callable[[str | None], set[str]]
     _registry: ChannelRegistry  # the tools the channel serves, with their traits
     _tool_usage: ToolUsageMemory  # the room's tool memory, its kept declaration included
+    _never_hidden: Callable[[str | None], set[str]]  # AIContextMixin
 
     def _resolve_participant_role(self, event: RoomEvent, context: RoomContext) -> str | None:
         """Look up the participant role for the event source."""
@@ -173,23 +187,20 @@ class AIToolPolicyMixin:
         the room, and what the generation hook added (RFC §6.4, §21.1): the
         keep-set's floor, and what ``find_tools`` never names.
         """
-        return (
-            self._tool_search_pinned
-            | self._registry.names(loop_ctx.room_id, lambda traits: not traits.deferrable)
-            | self._orchestration_tool_names(loop_ctx.room_id)
-            | loop_ctx.hook_pinned
-        )
+        return self._tool_search_pinned | self._never_held(loop_ctx)
 
     def _never_held(self, loop_ctx: _ToolLoopContext) -> set[str]:
-        """The tools a room's kept declaration always shows (RFC §6.4): the
-        channel's own, what orchestration injected, what a hook added. A tool
-        the host pins is not among them: a skill's gating can hold it, and
-        once a turn opened it, it is reopened like any other."""
-        return (
-            self._registry.names(loop_ctx.room_id, lambda traits: not traits.deferrable)
-            | self._orchestration_tool_names(loop_ctx.room_id)
-            | loop_ctx.hook_pinned
-        )
+        """The tools a room's kept declaration always shows (RFC §6.4): what
+        Tool Search never hides (the channel's own, what orchestration
+        injected) and what a hook added. A tool the host pins is not among
+        them: a skill's gating can hold it, and once a turn opened it, it is
+        reopened like any other."""
+        return self._never_hidden(loop_ctx.room_id) | loop_ctx.hook_pinned
+
+    def _holds_tools(self, loop_ctx: _ToolLoopContext) -> bool:
+        """Whether this turn declares tools held unseen: a loop built with its
+        context, on a provider that can hold a tool (RFC §6.4)."""
+        return loop_ctx.all_context_tools is not None and self._provider.supports_deferred_tools
 
     def _declaration_origin(self, name: str, loop_ctx: _ToolLoopContext) -> ToolDeclarationOrigin:
         """Why a tool is in this round's declaration (``ToolDeclarationOrigin``).
@@ -327,16 +338,17 @@ class AIToolPolicyMixin:
         declaring it, and the declaration does not change within the turn.
         The policy still decides what is declared: a tool it denies is not.
         """
-        if loop_ctx.all_context_tools is None or not self._provider.supports_deferred_tools:
+        if not self._holds_tools(loop_ctx):
             return shown
         if loop_ctx.first_shown is None:
+            # A standalone turn: its own declaration, the room's untouched.
             loop_ctx.first_shown = frozenset(t.name for t in shown)
         first, held = loop_ctx.first_shown, self._held_names(loop_ctx)
         return [
             *(t for t in shown if t.name in first),
             *(
                 t.model_copy(update={"defer_loading": True})
-                for t in loop_ctx.all_context_tools
+                for t in loop_ctx.all_context_tools or ()
                 if t.name in held
             ),
         ]
@@ -344,26 +356,55 @@ class AIToolPolicyMixin:
     def _open_turn_declaration(
         self, context: AIContext, loop_ctx: _ToolLoopContext, shown: list[AITool]
     ) -> None:
-        """Fix the turn's declaration from the room's, reopening at its start
-        what an earlier turn opened (RFC §6.4). A provider that cannot hold a
-        tool unseen keeps the turn's own declaration."""
-        if loop_ctx.all_context_tools is None or not self._provider.supports_deferred_tools:
+        """Fix the turn's declaration from the room's, and reopen before the
+        turn's input what it would show beyond it (RFC §6.4).
+
+        A provider that cannot hold a tool unseen keeps the turn's own
+        declaration, and so does a standalone turn, which reads none of the
+        room's working state (RFC §10.1.1).
+        """
+        if not self._holds_tools(loop_ctx) or loop_ctx.standalone:
             return
         room_id = loop_ctx.room_id
         kept = self._tool_usage.declaration(room_id)
         first = room_declaration(kept, {t.name for t in shown}, self._never_held(loop_ctx))
         opened = [t for t in shown if t.name not in first]
-        active = self._skill_activation.active_names(room_id)
-        call_id = f"reopen_{loop_ctx.loop_id[:12]}"
-        messages, turn_input = context.messages, loop_ctx.turn_input
-        if opened and reopen(messages, turn_input, opened, first, active, call_id):
-            loop_ctx.referenced |= {t.name for t in opened}
-            self._record_declared_tools(loop_ctx, opened)
-        else:
-            # Nothing to reopen them with: declared, as a turn would show them.
-            first = first | {t.name for t in opened}
+        left = self._reopen(context, loop_ctx, opened, first) if opened else []
+        # What nothing could reopen is shown, as a turn would show it.
+        first = first | {t.name for t in left}
         loop_ctx.first_shown = first
         self._tool_usage.keep_declaration(room_id, first)
+        reopened = [t for t in opened if t not in left]
+        if reopened:
+            # The round's own declaration first, then what the exchange opened.
+            self._record_declared_tools(loop_ctx, [t for t in shown if t.name in first])
+            self._mark_referenced(loop_ctx, reopened)
+            logger.debug("Turn reopens %s in room %s", [t.name for t in reopened], room_id)
+
+    def _reopen(
+        self,
+        context: AIContext,
+        loop_ctx: _ToolLoopContext,
+        opened: list[AITool],
+        first: frozenset[str],
+    ) -> list[AITool]:
+        """Place before the turn's input the exchanges that reopen *opened*;
+        the tools they do not reach."""
+        exchanges, left = reopening_exchanges(
+            opened,
+            first,
+            self._skill_activation.active_names(loop_ctx.room_id),
+            self._skills,
+            f"reopen_{loop_ctx.loop_id[:12]}",
+        )
+        if not exchanges or not insert_before(context.messages, loop_ctx.turn_input, exchanges):
+            return opened
+        return left
+
+    def _mark_referenced(self, loop_ctx: _ToolLoopContext, tools: list[AITool]) -> None:
+        """Record *tools*, held unseen, as referenced once, and as declared."""
+        loop_ctx.referenced |= {t.name for t in tools}
+        self._record_declared_tools(loop_ctx, tools)
 
     def _held_names(self, loop_ctx: _ToolLoopContext) -> set[str]:
         """The tools the turn holds unseen: declared from its first round, not
@@ -391,8 +432,7 @@ class AIToolPolicyMixin:
         shown = [
             t for t in self._apply_tool_filters(loop_ctx.all_context_tools or []) if t.name in held
         ]
-        loop_ctx.referenced |= {t.name for t in shown}
-        self._record_declared_tools(loop_ctx, shown)
+        self._mark_referenced(loop_ctx, shown)
         return [t.name for t in shown]
 
     def _show_summarized_references(self, summarized: list[AIMessage]) -> None:
@@ -407,7 +447,9 @@ class AIToolPolicyMixin:
 def declared_for(provider: Any, context: AIContext) -> AIContext:
     """*context* as *provider* can take it: where it cannot hold a tool unseen,
     the held tools are dropped and those a result referenced declared plainly
-    (a fallback provider receives what the turn made visible, RFC §6.4)."""
+    (a fallback provider receives what the turn made visible, RFC §6.4). The
+    exchange that reopened tools at the turn's start is left out: it only
+    stood for their references, and the tools are declared instead."""
     if provider.supports_deferred_tools or not any(t.defer_loading for t in context.tools):
         return context
     referenced = _references_in(context.messages)
@@ -416,7 +458,8 @@ def declared_for(provider: Any, context: AIContext) -> AIContext:
         for t in context.tools
         if not t.defer_loading or t.name in referenced
     ]
-    return context.model_copy(update={"tools": tools})
+    messages = [m for m in context.messages if not m.metadata.get(REOPENING)]
+    return context.model_copy(update={"tools": tools, "messages": messages})
 
 
 def _references_in(messages: list[AIMessage]) -> set[str]:

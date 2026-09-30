@@ -165,9 +165,13 @@ class _ToolLoopContext:
     # never deferred by Tool Search (RFC §6.4). Inherited like the above.
     hook_pinned: frozenset[str] = frozenset()
     # The tools the turn's first round showed the model, when its provider
-    # holds the others unseen (``_held_declaration``): fixed for the loop, so
-    # a reveal or a skill activation references a tool instead of declaring it.
+    # holds the others unseen: the room's kept declaration
+    # (``_open_turn_declaration``), fixed for the loop, so a reveal or a skill
+    # activation references a tool instead of declaring it.
     first_shown: frozenset[str] | None = None
+    # A standalone turn (RFC §10.1.1), which reads none of the room's working
+    # state, the room's kept declaration included. Inherited like the above.
+    standalone: bool = False
     # Held tools a result has referenced this loop, so each is referenced once.
     referenced: set[str] = field(default_factory=set)
     # The turn's input, notes included, as _build_context and then the
@@ -279,6 +283,7 @@ class _ToolLoopContext:
             # The input _build_context gave the turn, which a compaction in
             # the loop keeps whole.
             ctx.turn_input = parent.turn_input
+            ctx.standalone = parent.standalone
             ctx.turn_budget = parent.turn_budget
         ctx.room = room if room is not None else (parent.room if parent else None)
         if ctx.room is not None:

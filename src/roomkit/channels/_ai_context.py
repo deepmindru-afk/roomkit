@@ -276,6 +276,7 @@ class AIContextMixin:
         # earlier tool results) and sticky tools are the room's past in
         # another form. The channel's own prompt, tools and catalogue stay.
         standalone = is_standalone(event)
+        loop_ctx.standalone = standalone
 
         system_prompt = await self._add_channel_features(
             tools, system_prompt, event, binding, context, loop_ctx, standalone=standalone

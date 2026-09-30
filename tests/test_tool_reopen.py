@@ -9,12 +9,32 @@ discovery tool the turn declares, and a result that references it.
 
 from __future__ import annotations
 
-from roomkit.channels._tool_reopen import room_declaration
+import json
+from pathlib import Path
+
+from roomkit.channels._tool_reopen import (
+    REOPENING,
+    insert_before,
+    reopening_exchanges,
+    room_declaration,
+)
 from roomkit.channels.ai import AIChannel
-from roomkit.models.channel import RetryPolicy
-from roomkit.providers.ai.base import AIContext, AIToolCallPart, AIToolResultPart
+from roomkit.models.channel import ChannelBinding, RetryPolicy
+from roomkit.models.context import RoomContext
+from roomkit.models.delivery import STANDALONE
+from roomkit.models.enums import ChannelCategory, ChannelType, EventType
+from roomkit.models.event import RoomEvent
+from roomkit.models.room import Room
+from roomkit.providers.ai.base import (
+    AIContext,
+    AIMessage,
+    AITool,
+    AIToolCallPart,
+    AIToolResultPart,
+)
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.skills import SkillRegistry
+from tests.conftest import make_event
 from tests.test_deferred_tools import (
     _CATALOGUE,
     _DONE,
@@ -28,6 +48,7 @@ from tests.test_deferred_tools import (
     _tool,
     _turn,
 )
+from tests.tool_loop_modes import LoopRun, respond
 
 _REVEAL = _round("c0", "find_tools", {"query": "track shipment", "max_results": 1})
 
@@ -169,3 +190,152 @@ async def test_a_pinned_tool_a_skill_gates_is_reopened_not_shown(streaming: bool
     _call, result = _reopening(provider.calls[2])
     assert result.references == ["inventory"]
     assert [c.name for c in run.calls] == ["inventory"] and not run.calls[0].failed
+
+
+def _history() -> list[RoomEvent]:
+    return [
+        make_event(room_id="r1", body="earlier question", channel_id="sms1"),
+        make_event(
+            room_id="r1", body="earlier answer", channel_id="ai1", channel_type=ChannelType.AI
+        ),
+    ]
+
+
+async def _turn_after(ch: AIChannel, tools: list[AITool], event: RoomEvent) -> LoopRun:
+    binding = ChannelBinding(
+        channel_id="ai1",
+        room_id="r1",
+        channel_type=ChannelType.AI,
+        category=ChannelCategory.INTELLIGENCE,
+        metadata={"tools": [tool.model_dump() for tool in tools]},
+    )
+    context = RoomContext(room=Room(id="r1"), recent_events=_history())
+    return await respond(ch, event, binding, context)
+
+
+def _reopenings(context: AIContext) -> list[AIMessage]:
+    return [m for m in context.messages if m.metadata.get(REOPENING)]
+
+
+async def test_the_exchange_sits_between_the_history_and_the_input(streaming: bool) -> None:
+    provider = HoldingProvider(ai_responses=[_REVEAL, _DONE, _DONE], streaming=streaming)
+    ch = _searching(provider)
+    await _turn(ch, _CATALOGUE)
+
+    await _turn_after(ch, _CATALOGUE, make_event(room_id="r1", body="go", channel_id="sms1"))
+
+    messages = provider.calls[2].messages
+    texts = [m.content if isinstance(m.content, str) else m.role for m in messages]
+    turn_input = texts.index("go")
+    # The history first, then the exchange, then the turn's input.
+    assert texts[turn_input - 3 : turn_input + 1] == ["earlier answer", "assistant", "tool", "go"]
+
+
+def _instruction() -> RoomEvent:
+    return make_event(
+        room_id="r1",
+        body="Summarize.",
+        channel_id="sms1",
+        type=EventType.INSTRUCTION,
+        metadata={STANDALONE: True},
+    )
+
+
+async def test_a_standalone_turn_names_no_skill_of_the_room(streaming: bool) -> None:
+    """RFC §10.1.1: a standalone instruction reads none of the room's working
+    state, its active skills included, so it reopens nothing."""
+    registry = SkillRegistry()
+    registry.discover(_FIXTURES)
+    provider = HoldingProvider(
+        ai_responses=[_round("c0", "activate_skill", {"name": "quote-policy"}), _DONE, _DONE],
+        streaming=streaming,
+    )
+    ch = AIChannel("ai1", provider=provider, tool_handler=_served, skills=registry)
+    tools = [_tool("lookup"), _tool("inventory")]
+    await _turn(ch, tools)
+
+    await _turn_after(ch, tools, _instruction())
+
+    assert not _reopenings(provider.calls[2])
+
+
+async def test_a_standalone_turn_leaves_the_room_declaration_as_it_was(streaming: bool) -> None:
+    """A room's declaration that holds a tool the standalone turn does not
+    show (a sticky one, which it does not read) is not shrunk by it."""
+    provider = HoldingProvider(ai_responses=[_DONE], streaming=streaming)
+    ch = _searching(provider)
+    kept = frozenset({"lookup", "find_tools", "list_tools", "track_shipment"})
+    ch._tool_usage.keep_declaration("r1", kept)
+
+    await _turn_after(ch, _CATALOGUE, _instruction())
+
+    assert ch._tool_usage.declaration("r1") == kept
+
+
+async def test_a_fallback_that_cannot_hold_receives_no_exchange(streaming: bool) -> None:
+    fallback = MockAIProvider(ai_responses=[_DONE], streaming=streaming)
+    ch = _searching(
+        HoldingProvider(ai_responses=[_REVEAL, _DONE], streaming=streaming),
+        fallback_provider=fallback,
+        retry_policy=RetryPolicy(max_retries=0),
+    )
+    await _turn(ch, _CATALOGUE)
+    ch._provider = FailingHolder(streaming=streaming)
+
+    await _turn(ch, _CATALOGUE)
+
+    assert not _reopenings(fallback.calls[0])
+    assert ("track_shipment", False) in _declaration(fallback.calls[0])
+
+
+def _skill(root: Path, name: str, gated: str) -> None:
+    folder = root / name
+    folder.mkdir()
+    front = f"---\nname: {name}\ndescription: The {name} skill.\nallowed_tools: {gated}\n---\n"
+    (folder / "SKILL.md").write_text(f"{front}\nUse {gated}.\n")
+
+
+async def test_each_active_skill_reopens_the_tools_it_gates(
+    streaming: bool, tmp_path: Path
+) -> None:
+    _skill(tmp_path, "alpha", "a_tool")
+    _skill(tmp_path, "zeta", "z_tool")
+    registry = SkillRegistry()
+    registry.discover(tmp_path)
+    provider = HoldingProvider(
+        ai_responses=[
+            _round("c0", "activate_skill", {"name": "alpha"}),
+            _round("c1", "activate_skill", {"name": "zeta"}),
+            _DONE,
+            _round("c2", "z_tool"),
+            _DONE,
+        ],
+        streaming=streaming,
+    )
+    ch = AIChannel("ai1", provider=provider, tool_handler=_served, skills=registry)
+    tools = [_tool("lookup"), _tool("a_tool"), _tool("z_tool")]
+
+    await _turn(ch, tools)
+    run = await _turn(ch, tools)
+
+    exchange = _reopenings(provider.calls[3])
+    calls = [p for m in exchange if m.role == "assistant" for p in m.content]
+    results = [p for m in exchange if m.role == "tool" for p in m.content]
+    assert [(c.name, c.arguments) for c in calls] == [
+        ("activate_skill", {"name": "alpha"}),
+        ("activate_skill", {"name": "zeta"}),
+    ]
+    assert [r.references for r in results] == [["a_tool"], ["z_tool"]]
+    ack = json.loads(str(results[0].result))
+    assert (ack["ok"], ack["name"], ack["already_active"]) == (True, "alpha", True)
+    assert [c.name for c in run.calls] == ["z_tool"] and not run.calls[0].failed
+
+
+def test_without_a_discovery_tool_or_an_input_nothing_is_reopened() -> None:
+    opened = [_tool("track_shipment")]
+
+    assert reopening_exchanges(opened, frozenset({"lookup"}), set(), None, "r") == ([], opened)
+    messages = [AIMessage(role="user", content="go")]
+    stray = AIMessage(role="user", content="not in the list")
+    assert not insert_before(messages, stray, [AIMessage(role="assistant", content="x")])
+    assert len(messages) == 1

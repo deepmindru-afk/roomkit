@@ -118,8 +118,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   declaration from one turn to the next (RMK-345, RFC §6.4): a tool an
   earlier turn opened (revealed by `find_tools`, used, unlocked by a skill)
   stays held, and the turn reopens it with a short exchange before its input,
-  a `find_tools` (or `activate_skill`) call whose result references it,
-  instead of showing it. A changed tool list rewrote the whole cached history
+  a `find_tools` call whose result references it (or, without Tool Search,
+  an `activate_skill` call for each active skill that gates it), instead of
+  showing it. A standalone instruction reads and keeps none of this, and a
+  fallback provider that cannot hold tools gets the tools declared instead of
+  the exchange. A changed tool list rewrote the whole cached history
   at the next turn; now the history is read back. The exchange is context
   only, never stored, delivered or counted as a call. On the cost suite's
   `tool_cost` (`claude-sonnet-5`), turn 2 costs $0.0153 instead of $0.0224

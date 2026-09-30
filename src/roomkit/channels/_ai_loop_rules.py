@@ -411,7 +411,10 @@ class AIToolLoopRulesMixin:
         or reorders a tool is billed as if nothing were cached. So the forced
         final round keeps its tools, told that no further call will run (the
         loop ends there, running none of its calls), and a tool shows up only
-        where one must: a reveal, a skill activation.
+        where one must: a reveal, a skill activation. On a provider that holds
+        tools unseen, round 0 also fixes the turn's declaration from the
+        room's, and may place before the turn's input the exchange that
+        reopens what it holds (``_open_turn_declaration``).
         """
         if loop_ctx.force_stop and not state.force_stop_nudged:
             logger.warning("%s anti-loop force-stop at round %d", state.log_label, round_idx)

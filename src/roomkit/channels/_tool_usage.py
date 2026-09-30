@@ -22,7 +22,11 @@ gaps, which have DIFFERENT shapes and costs, so each is bounded on its own axis:
   Search hides the rest — bounded by recent distinct *tools*
   (``_REVEAL_MAX_TOOLS``): this is the part that costs full tool schemas, so
   it's bounded by the conversation's recent working set of tools, not by call
-  count.
+  count;
+* the room's kept **declaration** (``declaration``), where the provider holds
+  tools unseen: the tools the room's turns show, so the tool block, the head
+  of the cached prefix, stays the same from one turn to the next (RFC §6.4).
+  Not rebuilt from history: a room that lost it takes its next turn's.
 
 Scoped per room on a channel object shared by every room it serves — same shape
 and lifetime as :class:`ToolEviction`. Kept in memory and rebuilt once per room

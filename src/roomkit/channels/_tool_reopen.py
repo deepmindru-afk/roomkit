@@ -3,26 +3,32 @@
 On a provider that holds a tool declared but unseen, a prompt cache reads the
 request as a prefix, tools first: a turn that shows one more tool than the
 last rewrites the whole history after it. So the tools a room's turns show
-stay the ones its first turn showed, and a tool an earlier turn opened (a
-reveal, a use, a skill's unlock) stays held. Its reference, which made it
-callable, rode a tool result the next turn's history does not replay, so the
-turn reopens it with an exchange of its own: a call of the discovery tool the
-turn declares, and a result that references it. The exchange is context,
-never an event of the room.
+stay the ones its first turn showed, and a tool the turn would show beyond
+them (one an earlier turn opened, one added since) stays held. The reference
+that made it callable rode a tool result the next turn's history does not
+replay, so the turn reopens it with an exchange of its own: a call of the
+discovery tool the turn declares, and a result that references it. The
+exchange is context, never an event of the room.
 """
 
 from __future__ import annotations
 
-import json
-from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
-from roomkit.channels._skill_constants import TOOL_ACTIVATE_SKILL
+from roomkit.channels._skill_constants import ALREADY_ACTIVE_NOTE, TOOL_ACTIVATE_SKILL
+from roomkit.channels._skill_handlers import activation_ack
 from roomkit.channels._tool_search import render_find_payload
 from roomkit.channels._tool_search_constants import TOOL_FIND_TOOLS
 from roomkit.providers.ai.base import AIMessage, AITool, AIToolCallPart, AIToolResultPart
 
+if TYPE_CHECKING:
+    from roomkit.skills.registry import SkillRegistry
+
+# Marks the exchange's messages, which a provider that cannot hold a tool
+# does not receive (``declared_for``).
+REOPENING = "reopening"
 # What the reopening find_tools call asks, as the model reads it.
-_REOPEN_QUERY = "tools opened earlier in this conversation"
+_REOPEN_QUERY = "tools this conversation can call"
 
 
 def room_declaration(
@@ -36,47 +42,61 @@ def room_declaration(
     return frozenset((kept & shown) | (shown & never_held))
 
 
-def reopen(
-    messages: list[AIMessage],
-    turn_input: AIMessage | None,
-    opened: Sequence[AITool],
+def reopening_exchanges(
+    opened: list[AITool],
     first: frozenset[str],
-    active_skills: set[str],
+    active: set[str],
+    skills: SkillRegistry | None,
     call_id: str,
-) -> bool:
-    """Insert, before *turn_input*, the exchange that makes *opened* callable.
+) -> tuple[list[AIMessage], list[AITool]]:
+    """The exchanges that reopen *opened*, and the tools none reaches.
 
-    The call is ``find_tools`` where the turn declares it, else
-    ``activate_skill`` for a skill already active. ``False`` when the turn
-    declares neither or has no input to place it before: the caller then
-    declares *opened* plainly.
+    One ``find_tools`` call where the turn declares it; otherwise one
+    ``activate_skill`` call for each *active* skill that gates a tool of
+    *opened*, answered as a call to an active skill is.
     """
-    index = next((i for i, m in enumerate(messages) if m is turn_input), None)
-    names = [t.name for t in opened]
-    if index is None:
-        return False
     if TOOL_FIND_TOOLS in first:
-        arguments: dict[str, str] = {"query": _REOPEN_QUERY}
         matches = [{"name": t.name, "description": t.description} for t in opened]
         result = render_find_payload(matches)
-        tool = TOOL_FIND_TOOLS
-    elif TOOL_ACTIVATE_SKILL in first and active_skills:
-        skill = sorted(active_skills)[0]
-        arguments = {"name": skill}
-        result = json.dumps({"skill": skill, "already_active": True, "tools": names})
-        tool = TOOL_ACTIVATE_SKILL
-    else:
+        return _exchange(call_id, TOOL_FIND_TOOLS, {"query": _REOPEN_QUERY}, result, opened), []
+    if TOOL_ACTIVATE_SKILL not in first or skills is None:
+        return [], opened
+    exchanges: list[AIMessage] = []
+    left = list(opened)
+    for name in sorted(active):
+        skill = skills.get_skill(name)
+        gated = [t for t in left if skill is not None and skill.metadata.gates(t.name)]
+        if skill is None or not gated:
+            continue
+        ack = activation_ack(skill, ALREADY_ACTIVE_NOTE, already_active=True)
+        call = f"{call_id}_{len(exchanges) // 2}"
+        exchanges += _exchange(call, TOOL_ACTIVATE_SKILL, {"name": name}, ack, gated)
+        left = [t for t in left if t not in gated]
+    return exchanges, left
+
+
+def insert_before(
+    messages: list[AIMessage], turn_input: AIMessage | None, exchanges: list[AIMessage]
+) -> bool:
+    """Insert *exchanges* right before *turn_input*; ``False`` when the turn
+    has no input among *messages* to place them before."""
+    index = next((i for i, m in enumerate(messages) if m is turn_input), None)
+    if index is None:
         return False
-    messages[index:index] = [
-        AIMessage(
-            role="assistant",
-            content=[AIToolCallPart(id=call_id, name=tool, arguments=arguments)],
-        ),
-        AIMessage(
-            role="tool",
-            content=[
-                AIToolResultPart(tool_call_id=call_id, name=tool, result=result, references=names)
-            ],
-        ),
-    ]
+    messages[index:index] = exchanges
     return True
+
+
+def _exchange(
+    call_id: str, tool: str, arguments: dict[str, str], result: str, opened: list[AITool]
+) -> list[AIMessage]:
+    """A call of *tool* and its *result*, which references *opened*."""
+    marker = {REOPENING: True}
+    call = AIToolCallPart(id=call_id, name=tool, arguments=arguments)
+    answer = AIToolResultPart(
+        tool_call_id=call_id, name=tool, result=result, references=[t.name for t in opened]
+    )
+    return [
+        AIMessage(role="assistant", content=[call], metadata=marker),
+        AIMessage(role="tool", content=[answer], metadata=marker),
+    ]
