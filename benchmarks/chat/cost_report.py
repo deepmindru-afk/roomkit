@@ -55,16 +55,22 @@ def _fmt(value: Any, spec: str) -> str:
 
 
 def cost_markdown(document: dict[str, Any]) -> str:
-    """The per-turn medians, then every round of each scenario's first passed sample."""
+    """The suite's report section: the turns, then their rounds."""
+    return "\n".join([*_turn_table(document), "", *_round_table(document)]) + "\n"
+
+
+def _turn_table(document: dict[str, Any]) -> list[str]:
+    """Per scenario and turn, the median over the passed samples."""
     lines = [
         "## Cost per turn",
         "",
         "Median over passed samples. Counters are disjoint: input is what was billed "
         "at the full rate, cache read and write at theirs. Read rate is cache read over "
-        "the three input counters.",
+        "the three input counters. Billed is what the provider billed for the requests: "
+        "their input and the one output token each asked for, not the scripted answers.",
         "",
         "| Scenario | Turn | Rounds | Input | Cache read | Cache write | Output | "
-        "Read rate | Cost $ |",
+        "Read rate | Billed $ |",
         "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for row in document.get("cost_summary", []):
@@ -74,8 +80,12 @@ def cost_markdown(document: dict[str, Any]) -> str:
             f"{row['cache_creation_input_tokens']:.0f} | {row['output_tokens']:.0f} | "
             f"{_fmt(row['read_rate'], '.1%')} | {_fmt(row['cost'], '.5f')} |"
         )
-    lines += [
-        "",
+    return lines
+
+
+def _round_table(document: dict[str, Any]) -> list[str]:
+    """Every round of each scenario's first passed sample."""
+    lines = [
         "## Rounds",
         "",
         "First passed sample of each scenario. Changed names the first block of the "
@@ -84,7 +94,7 @@ def cost_markdown(document: dict[str, Any]) -> str:
         "cached prefix stops.",
         "",
         "| Scenario | Turn | Round | Tools | Changed | Input | Cache read | Cache write | "
-        "Cost $ |",
+        "Billed $ |",
         "|---|---:|---:|---:|---|---:|---:|---:|---:|",
     ]
     seen: set[str] = set()
@@ -99,4 +109,4 @@ def cost_markdown(document: dict[str, Any]) -> str:
                 f"{row['cache_read_input_tokens']} | {row['cache_creation_input_tokens']} | "
                 f"{_fmt(row['cost'], '.5f')} |"
             )
-    return "\n".join(lines) + "\n"
+    return lines

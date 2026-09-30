@@ -36,7 +36,8 @@ key or `CEREBRAS_API_KEY=...`; it is read without shell evaluation. Keys and
 their file paths are excluded from results. Outputs are gitignored. Choose a
 fresh output directory for each run; previous results are never overwritten.
 Real runs make billable API calls. The default uses one warm-up, temperature 0,
-`reasoning_effort=none`, 1,024 maximum output tokens, no SDK retries, and a
+`reasoning_effort=none`, 1,024 maximum output tokens, no SDK retries (the
+Anthropic SDK keeps its default two, as `results.json` records), and a
 90-second scenario deadline. The reasoning scenario explicitly overrides
 effort to `low`; the retry scenario injects one recoverable failure.
 

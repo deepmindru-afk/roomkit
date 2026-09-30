@@ -95,7 +95,8 @@ def first_change(previous: AIContext | None, current: AIContext) -> str:
 
 
 def _tools_key(tools: list[AITool]) -> list[tuple[str, str, str]]:
-    return [(t.name, t.description, json.dumps(t.parameters, sort_keys=True)) for t in tools]
+    # Unsorted: a provider's cache is byte-exact, so reordered keys are a change.
+    return [(t.name, t.description, json.dumps(t.parameters)) for t in tools]
 
 
 def cost_rows(h: Harness, turn_starts: list[int]) -> list[dict[str, Any]]:
@@ -144,16 +145,14 @@ def _conversation(turns: Turns) -> Callable[[Harness], Awaitable[None]]:
     return run
 
 
-def _billed(turns: Turns) -> Callable[[AIProvider], AIProvider]:
-    """Dress the suite's provider as the model that plays *turns*."""
+def _billed(turns: Turns) -> Callable[[AIProvider | None], AIProvider]:
+    """The model that plays *turns*, billed by the provider it is handed."""
     responses = [response for _, rounds in turns for response in rounds]
 
-    def wrap(provider: AIProvider) -> AIProvider:
-        # The suite's offline provider (``--provider mock``) bills nothing.
-        billing = None if type(provider) is MockAIProvider else provider
+    def model(billing: AIProvider | None) -> AIProvider:
         return BilledScript(billing, responses)
 
-    return wrap
+    return model
 
 
 def cost_options(nonce: str | None = None) -> dict[str, Any]:
@@ -173,28 +172,26 @@ def cost_options(nonce: str | None = None) -> dict[str, Any]:
     }
 
 
+# Each conversation of the suite: its name, what it exercises, its turns.
+CONVERSATIONS: list[tuple[str, str, Turns]] = [
+    ("tool_cost", "Tool Search reveal, eviction, skill, digest over three turns", TOOL_TURNS),
+    ("force_stop_cost", "Six identical calls, then the anti-loop ripcord", FORCE_STOP_TURNS),
+]
+
+
 def cost_scenarios() -> list[Scenario]:
     """Each conversation, in the streaming loop and in the buffered one."""
-    catalog: list[Scenario] = []
-    for name, description, turns in (
-        (
-            "tool_cost",
-            "Tool Search reveal, eviction, skill, digest over three turns",
-            TOOL_TURNS,
-        ),
-        ("force_stop_cost", "Six identical calls, then the anti-loop ripcord", FORCE_STOP_TURNS),
-    ):
-        for streaming in (True, False):
-            catalog.append(
-                Scenario(
-                    name if streaming else name + "_buffered",
-                    ("cost", "tools", "cache"),
-                    description + ("" if streaming else " (buffered)"),
-                    _conversation(turns),
-                    streaming=streaming,
-                    options_factory=cost_options,
-                    mock_supported=True,
-                    provider=_billed(turns),
-                )
-            )
-    return catalog
+    return [
+        Scenario(
+            name if streaming else name + "_buffered",
+            ("cost", "tools", "cache"),
+            description + ("" if streaming else " (buffered)"),
+            _conversation(turns),
+            streaming=streaming,
+            options_factory=cost_options,
+            mock_supported=True,
+            model=_billed(turns),
+        )
+        for name, description, turns in CONVERSATIONS
+        for streaming in (True, False)
+    ]

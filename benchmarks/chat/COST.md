@@ -39,8 +39,10 @@ OpenAI-compatible service the same way, where it reports cached tokens.
 `report.md` then carries two tables, and `cost.csv` the first one:
 
 - **Cost per turn**: rounds, input, cache read, cache write, output, read rate
-  (cache read over the three input counters, which are disjoint) and cost,
-  median over the passed samples.
+  (cache read over the three input counters, which are disjoint) and what was
+  billed, median over the passed samples. Billed is the requests' input and
+  the one output token each asked for: the input side of the conversation's
+  cost, the scripted answers being free.
 - **Rounds**: every provider call of each scenario's first sample, with the
   first block of its request that differs from the previous request.
   `append` means the previous request is a prefix of this one, which the cache

@@ -61,11 +61,9 @@ def _scenario(name: str) -> Scenario:
     return next(s for s in cost_scenarios() if s.name == name)
 
 
-async def _run(scenario: Scenario, billing: MockAIProvider) -> Harness:
-    assert scenario.provider is not None
-    h = Harness(
-        scenario.provider(billing), streaming=scenario.streaming, **cost_options("fixed-nonce")
-    )
+async def _run(scenario: Scenario, billing: MockAIProvider | None) -> Harness:
+    model = scenario.model_for(billing or MockAIProvider(), billed=billing is not None)
+    h = Harness(model, streaming=scenario.streaming, **cost_options("fixed-nonce"))
     try:
         await h.add_room("main")
         await scenario.run(h)
@@ -88,8 +86,8 @@ def _requests(h: Harness) -> list[Any]:
 
 @pytest.mark.parametrize("name", [s.name for s in cost_scenarios()])
 async def test_two_runs_make_the_same_requests_over_the_same_rounds(name: str) -> None:
-    first = await _run(_scenario(name), MockAIProvider())
-    second = await _run(_scenario(name), MockAIProvider())
+    first = await _run(_scenario(name), None)
+    second = await _run(_scenario(name), None)
 
     assert all(first.checks.values()), first.checks
     assert _requests(first) == _requests(second)

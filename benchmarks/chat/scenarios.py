@@ -52,9 +52,17 @@ class Scenario:
     options_factory: Callable[[], dict[str, Any]] | None = None
     mock_supported: bool = False
     fault_injection: bool = False
-    # Dresses the suite's provider for one sample (a scripted model billed by
-    # the real one, say); ``None`` runs the scenario on the provider itself.
-    provider: Callable[[AIProvider], AIProvider] | None = None
+    # The model a sample talks to, given the provider that bills it (``None``
+    # when nothing does): a scripted model, say. ``None`` runs the scenario on
+    # the suite's provider itself.
+    model: Callable[[AIProvider | None], AIProvider] | None = None
+
+    def model_for(self, provider: AIProvider, *, billed: bool) -> AIProvider:
+        """The model a sample of this scenario talks to, *provider* billing it
+        when *billed*."""
+        if self.model is None:
+            return provider
+        return self.model(provider if billed else None)
 
     def make_options(self) -> dict[str, Any]:
         """Give each sample fresh stateful skills/memory/executor instances."""

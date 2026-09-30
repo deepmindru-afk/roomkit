@@ -6,9 +6,10 @@ import csv
 import json
 import statistics
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from benchmarks.chat.cost_report import cost_markdown, cost_summary
+if TYPE_CHECKING:
+    from benchmarks.chat.suites import Suite
 
 
 def sanitize(document: dict[str, Any], secret: str) -> dict[str, Any]:
@@ -163,27 +164,20 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer.writerows(rows)
 
 
-def suite_section(directory: Path, document: dict[str, Any]) -> str:
-    """The report section and CSV of a suite that has its own, or ``""``."""
-    suite = document["environment"].get("suite")
-    if suite == "quality":
-        from benchmarks.chat.quality_report import quality_markdown, quality_summary
-
-        document["quality_summary"] = quality_summary(document["samples"])
-        write_csv(directory / "quality.csv", document["quality_summary"])
-        return "\n" + quality_markdown(document)
-    if suite == "cost":
-        document["cost_summary"] = cost_summary(document["samples"])
-        write_csv(directory / "cost.csv", document["cost_summary"])
-        return "\n" + cost_markdown(document)
-    return ""
-
-
 def write_report(
-    directory: Path, document: dict[str, Any], previous: dict[str, Any] | None = None
+    directory: Path,
+    document: dict[str, Any],
+    previous: dict[str, Any] | None = None,
+    *,
+    suite: Suite | None = None,
 ) -> None:
+    """Write the run's results, report and CSVs, *suite*'s own included."""
     directory.mkdir(parents=True, exist_ok=True)
-    section = suite_section(directory, document)
+    name = document["environment"].get("suite")
+    if suite is not None and suite.summarize is not None:
+        document[f"{name}_summary"] = suite.summarize(document["samples"])
+        write_csv(directory / f"{name}.csv", document[f"{name}_summary"])
+    section = "\n" + suite.render(document) if suite is not None and suite.render else ""
     (directory / "results.json").write_text(
         json.dumps(document, indent=2, ensure_ascii=False) + "\n"
     )

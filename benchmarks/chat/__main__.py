@@ -19,11 +19,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from benchmarks.chat.cost import cost_scenarios
 from benchmarks.chat.harness import Harness
 from benchmarks.chat.measurement import MeasuredProvider
 from benchmarks.chat.report import append_sample, sanitize, summarize, write_report
-from benchmarks.chat.scenarios import PROMPT, Scenario, scenarios
+from benchmarks.chat.scenarios import PROMPT, Scenario
+from benchmarks.chat.suites import SUITES
 from roomkit import __version__
 from roomkit.providers.ai.base import AIContext, AIMessage, AIProvider
 
@@ -55,6 +55,11 @@ def read_key(path: Path | None, provider: str) -> str:
     if not value:
         raise ValueError(f"Set {variable} or pass --key-file")
     return value
+
+
+# The retries each provider's SDK makes under the benchmark: the OpenAI family
+# is built with none; AnthropicConfig has no setting, so its SDK keeps its 2.
+SDK_RETRIES: dict[str, int] = {"cerebras": 0, "openai": 0, "anthropic": 2}
 
 
 def make_provider(args: argparse.Namespace, key: str) -> AIProvider:
@@ -124,7 +129,7 @@ async def run_suite(
                 workdir / f"{scenario.name}-{iteration}.db" if args.store == "sqlite" else None
             )
             options = await asyncio.to_thread(scenario.make_options)
-            model = scenario.provider(provider) if scenario.provider else provider
+            model = scenario.model_for(provider, billed=args.provider != "mock")
             h = Harness(model, streaming=scenario.streaming, sqlite=sqlite, **options)
             h.start = time.perf_counter()
             try:
@@ -161,23 +166,47 @@ async def run_suite(
     return samples, warmups
 
 
-def catalog_for(args: argparse.Namespace) -> list[Scenario]:
-    """The scenarios of the suite the command line selected."""
-    if args.suite == "quality":
-        from benchmarks.chat.quality import quality_scenarios
-
-        return quality_scenarios(args.seed, args.variants)
-    if args.suite == "cost":
-        return cost_scenarios()
-    return scenarios()
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--provider", choices=["cerebras", "openai", "anthropic", "mock"], default="cerebras"
+def environment(
+    args: argparse.Namespace, provider: AIProvider, started: str, source_sha256: str
+) -> dict[str, Any]:
+    """What the run measured with: the command line, the code and the machine."""
+    # Use the developer's Git on PATH with fixed arguments and no shell/input.
+    commit = subprocess.check_output(  # nosec B603 B607
+        ["git", "rev-parse", "HEAD"], text=True
+    ).strip()
+    dirty = bool(
+        subprocess.check_output(["git", "status", "--porcelain"], text=True)  # nosec B603 B607
     )
-    parser.add_argument("--suite", choices=["chat", "quality", "cost"], default="chat")
+    return {
+        "date": started,
+        "suite": args.suite,
+        "variants": args.variants if args.suite == "quality" else None,
+        "provider": args.provider,
+        "model": provider.model_name,
+        "roomkit": __version__,
+        "python": platform.python_version(),
+        "platform": platform.platform(),
+        "commit": commit,
+        "source_sha256": source_sha256,
+        "packages": package_versions(),
+        "deadline_seconds": args.deadline,
+        "sdk_timeout_seconds": 30,
+        "sdk_retries": SDK_RETRIES.get(args.provider, 0),
+        "dirty": dirty,
+        "store": args.store,
+        # The Anthropic adapter takes no reasoning effort: the flag is not sent.
+        "reasoning_effort": None if args.provider == "anthropic" else args.reasoning_effort,
+        "max_tokens": args.max_tokens,
+        "repetitions": args.repetitions,
+        "seed": args.seed,
+    }
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """The benchmark's command line."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--provider", choices=[*SDK_RETRIES, "mock"], default="cerebras")
+    parser.add_argument("--suite", choices=sorted(SUITES), default="chat")
     parser.add_argument(
         "--variants", type=int, default=3, help="Variants per model-quality family"
     )
@@ -195,10 +224,16 @@ def main() -> int:
     parser.add_argument("--list", action="store_true")
     parser.add_argument("--output", type=Path, default=Path("benchmark-results/chat"))
     parser.add_argument("--compare", type=Path, help="Prior results.json")
+    return parser
+
+
+def main() -> int:
+    parser = build_parser()
     args = parser.parse_args()
     if args.variants < 1:
         parser.error("variants must be positive")
-    catalog = catalog_for(args)
+    suite = SUITES[args.suite]
+    catalog = suite.scenarios(args.seed, args.variants)
     if args.list:
         for scenario in catalog:
             sys.stdout.write(f"{scenario.name:20} {scenario.description}\n")
@@ -234,37 +269,9 @@ def main() -> int:
             fingerprint.update(source.read_bytes())
     with tempfile.TemporaryDirectory(prefix="roomkit-chat-bench-") as folder:
         samples, warmups = asyncio.run(execute(Path(folder)))
-    # Use the developer's Git on PATH with fixed arguments and no shell/input.
-    commit = subprocess.check_output(  # nosec B603 B607
-        ["git", "rev-parse", "HEAD"], text=True
-    ).strip()
-    dirty = bool(
-        subprocess.check_output(["git", "status", "--porcelain"], text=True)  # nosec B603 B607
-    )
     document = {
         "schema_version": 1,
-        "environment": {
-            "date": started,
-            "suite": args.suite,
-            "variants": args.variants if args.suite == "quality" else None,
-            "provider": args.provider,
-            "model": provider.model_name,
-            "roomkit": __version__,
-            "python": platform.python_version(),
-            "platform": platform.platform(),
-            "commit": commit,
-            "source_sha256": fingerprint.hexdigest(),
-            "packages": package_versions(),
-            "deadline_seconds": args.deadline,
-            "sdk_timeout_seconds": 30,
-            "sdk_retries": 0,
-            "dirty": dirty,
-            "store": args.store,
-            "reasoning_effort": args.reasoning_effort,
-            "max_tokens": args.max_tokens,
-            "repetitions": args.repetitions,
-            "seed": args.seed,
-        },
+        "environment": environment(args, provider, started, fingerprint.hexdigest()),
         "warmups": warmups,
         "coverage": [
             {
@@ -281,7 +288,7 @@ def main() -> int:
     # Defense in depth: neither key paths nor keys belong in persisted results.
     document = sanitize(document, key)
     previous = json.loads(args.compare.read_text()) if args.compare else None
-    write_report(args.output, document, previous)
+    write_report(args.output, document, previous, suite=suite)
     sys.stdout.write(f"Results: {args.output / 'report.md'}\n")
     return int(any(sample["status"] == "failed" for sample in samples))
 
