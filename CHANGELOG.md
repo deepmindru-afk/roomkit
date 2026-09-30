@@ -7,12 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.93.0] — 2026-09-30
+
 ### Added
 
 - `setup_handoff(..., room_id=)` (RMK-307, RFC §19.7): the handoff tool is set
   up for one room, served there with the given handler, beside another room's.
-  The swarm and pipeline strategies use it, so each room they are installed in
-  hands off with its own install.
+  The swarm and pipeline strategies set their handoffs up per room the same
+  way, so each room they are installed in hands off with its own install.
 - `AIProvider.supports_deferred_tools`, `AITool.defer_loading` and
   `AIToolResultPart.references` (RMK-330, RFC §6.4): a provider that can hold
   a tool declared but unseen (Anthropic, from the model catalogue) receives
@@ -119,39 +121,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Channel runs no `BEFORE_TTS` hook, a TTS failure ends the AI response
   where it failed with `ON_ERROR` instead of storing it whole with
   `tts_error`, and nothing is stitched across responses. The `elevenlabs`
-  extra declares `websockets`, which the SDK already installed.
+  extra requires `websockets>=14.2`, where the SDK accepted `>=11.0`: the
+  socket client takes `additional_headers` and an unbounded `max_queue`, which
+  older releases refuse, so an environment on an older one is upgraded.
 - ElevenLabs TTS constants `MODEL_V4` (`eleven_v4`) and `MODEL_V4_TURBO`
   (`eleven_v4_turbo`) for the v4 models ElevenLabs released on 2026-09-28.
   A v4 `model_id` already worked; both models take request stitching and
   every voice setting (RMK-263).
+- `claude-sonnet-5-5` joins the Anthropic catalog at Sonnet 5's rates: a
+  1M-token window, image input, $2 / $10 per million, a cache hit at $0.20
+  and a 5-minute cache write at $2.50 (Anthropic's model reference,
+  2026-09-30). It holds deferred tools, checked on the wire, so Tool Search
+  and skill gating keep its prompt cache as on the other current Claude
+  models; the id already worked, and now has its window and prices.
+- `gpt-6.1-sol` joins the OpenAI catalog: $2 / $10 per million, cached input
+  $0.10 (half GPT-6 Sol's), a $2.50 cache write, the same 1.05M window and
+  long-context rule (2x input and 1.5x output above 272k input tokens), and
+  image input (its model and pricing pages, 2026-09-30). Like `gpt-6-astra`
+  it takes no function tools on Chat Completions, so a turn with tools sends
+  it no `reasoning_effort`. The mirror's `gpt-6.1-sol-pro` is recorded in
+  `check_models.py` as a route OpenAI does not document.
 
 ### Changed
 
-- A channel refuses a tool when it is given under a name it already serves in
-  a room (RMK-307, RFC §21.1). Two host tools under one name (two MCP servers
-  both exposing `search`) raise `ValueError` when given to `AIChannel`, to
-  `RealtimeVoiceChannel` at construction or through `configure(tools=)`, and to
-  a conference's `ConferenceRealtimeConfig`: the model used to read the later
-  server's schema for a call the first one served. `setup_handoff`,
-  `setup_delegation` or a strategy setting a tool up under a host tool's name
-  raises `roomkit.ToolNameCollisionError` (a `ValueError`), where the
-  orchestration's definition used to replace the host's with a warning; the
-  same strategy installed again in a room replaces its own tools. A tool the turn brings
-  (binding metadata, a `config_provider`, a `BEFORE_AI_GENERATION` hook) under
-  a name the channel or orchestration serves is still left out, with a warning.
+- **BREAKING — a channel refuses a tool given under a name it already serves
+  in a room** (RMK-307, RFC §21.1). Two host tools under one name (two MCP
+  servers both exposing `search`) raise `ValueError` when given to
+  `AIChannel`, to `RealtimeVoiceChannel` at construction or through
+  `configure(tools=)`, and to a conference's `ConferenceRealtimeConfig`: the
+  model used to read the later server's schema for a call the first one
+  served. `setup_handoff`, `setup_delegation` or a strategy setting a tool up
+  under a host tool's name raises `roomkit.ToolNameCollisionError` (a
+  `ValueError`), where the orchestration's definition used to replace the
+  host's with a warning; the same strategy installed again in a room replaces
+  its own tools. A tool the turn brings (binding metadata, a
+  `config_provider`, a `BEFORE_AI_GENERATION` hook) under a name the channel
+  or orchestration serves is still left out, with a warning. Migration: give
+  each host tool a name of its own (prefix one MCP server's tools, or drop the
+  duplicate), and keep host tools off the names orchestration sets up
+  (`handoff_conversation`, `delegate_task`, `delegate_workers`,
+  `submit_result`...).
 - `AIChannel.tool_handler` is the host's handler (RMK-307): reading it returns
   the handler the channel was given, and assigning it replaces that handler
   only. The channel's own tools (skills, Tool Search, `read_stored_result`, the
   planner, the sandbox) and the tools orchestration sets up keep being served.
   It used to be the whole dispatcher, which orchestration wrapped, and
   assigning it turned the channel's own tools off.
-- `RealtimeVoiceChannel.reconfigure_session()` changes the session it is given
-  and nothing else (RMK-307, RFC §12.4). It used to write the prompt, voice and
-  tools it received into the channel's defaults too, so an application
-  changing one call's instructions, or a pipeline's handoff in one room,
-  changed what every later session of every room started with. A session
-  starts with what it was opened with, else what orchestration set for its
-  room, else the channel's `configure()` defaults.
+- **BREAKING — `RealtimeVoiceChannel.reconfigure_session()` changes the
+  session it is given and nothing else** (RMK-307, RFC §12.4). It used to
+  write the prompt, voice and tools it received into the channel's defaults
+  too, so an application changing one call's instructions, or a pipeline's
+  handoff in one room, changed what every later session of every room started
+  with. A session starts with what it was opened with, else what
+  orchestration set for its room, else the channel's `configure()` defaults.
+  Migration: an application that relied on a reconfiguration to change what
+  later sessions start with calls `configure()` for that.
 - Realtime Tool Search is decided per session, on the tools that session
   declares (RMK-307): a channel built with a few tools hides the catalogue of a
   session whose room's active agent or whose own tools overflow
@@ -220,9 +244,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   form ("type call:lookup{city:Paris} to search"), or a call followed by
   more speech, calls nothing; "Let me check. call:lookup{city:Paris}" still
   runs. A brace later in the speech is no longer read as the call's own.
-- `BEFORE_TOOL_USE` fails closed (RMK-313, RFC §9.3), like `BEFORE_TTS` and
-  `ON_TRANSCRIPTION`: a hook that raises, times out or returns something
-  unusable refuses the call before it runs, where the tool used to run. It
+- **BREAKING — `BEFORE_TOOL_USE` fails closed** (RMK-313, RFC §9.3), like
+  `BEFORE_TTS` and `ON_TRANSCRIPTION`: a hook that raises, times out or
+  returns something unusable refuses the call before it runs, where the tool
+  used to run. It
   is where an approval hook sits, and one that cannot answer must not let the
   call through. The model reads the same refusal on every channel (`Tool 'x'
   denied by pre-execution hook.`), never the hook's error, which goes to
@@ -234,9 +259,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hook's failure refuses the call; ON_TOOL_CALL still reports it. An approval
   hook that waits for a person longer than its `timeout` (30 s by default)
   now refuses the call: set the timeout it needs.
-- `include_stream_usage` defaults to `True` on `OpenAIConfig` (and the
-  providers built on it: DeepSeek, Qwen, OpenRouter, LiteLLM), `AzureAIConfig`
-  and `VLLMConfig`, and so the managed llama.cpp server (RMK-312): every tool
+- **BREAKING — `include_stream_usage` defaults to `True`** on `OpenAIConfig`
+  (and the providers built on it: DeepSeek, Qwen, OpenRouter, LiteLLM),
+  `AzureAIConfig` and `VLLMConfig`, and so the managed llama.cpp server
+  (RMK-312): every tool
   round streams, and without `stream_options.include_usage` a streamed turn
   reported `usage={}` and priced at zero. A compatible server that rejects
   `stream_options` now needs `include_stream_usage=False`. Cerebras keeps
@@ -302,8 +328,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   same. The realtime fallback's "Do not infer an integration outage" hint is
   gone with the rest of the old text. `ToolRefusedError` still hands the
   model its words.
-- A name a channel serves itself is declared once, with the channel's
-  definition (RMK-294, RFC §21.1). `AIChannel(tools=...)` and
+- **BREAKING — a name a channel serves itself is declared once, with the
+  channel's definition** (RMK-294, RFC §21.1). `AIChannel(tools=...)` and
   `RealtimeVoiceChannel(tools=...)` raise `ValueError` for a host tool under
   such a name (`read_stored_result`, `list_tools`, `find_tools`, a skill tool,
   a sandbox command, a human-input tool; `tool_search=False` frees
@@ -313,10 +339,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hook) is not declared, and a warning names it once; a hook may withdraw a
   tool the channel serves, not redefine it. A realtime session's `call_tool`
   is dropped the same way instead of raising at session start. A name given
-  twice is declared once, with the later definition, the one of whoever
-  serves the call (orchestration's over the host's): a host `delegate_task` or
-  `submit_result` beside orchestration's was declared twice, which a provider
-  rejects. The realtime gate validates against that same definition, and the
+  twice is declared once: a host `delegate_task` or `submit_result` beside
+  orchestration's was declared twice, which a provider rejects, and is now
+  refused (see the collision entry above); two tools under one name that
+  arrive with a turn or a session keep the later. Migration: rename the host
+  tool. The realtime gate validates against the channel's definition, and the
   conference declares a name once too. A reasoning backend's call and a
   recovered spoken call reach the handler only, so no name counts as the
   channel's on them: a backend naming `list_tools` ran the host's tool.
@@ -374,18 +401,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A streamed delegated turn returns its worker's last message as the task's
   output, as a buffered one does (RMK-289); it returned every segment's text
   run together, the narration of the tool rounds included.
-- Calling a tool handler directly, outside a tool loop, may now raise where
-  it returned a JSON error body (RMK-278): `HumanInputToolHandler` raises
-  `ToolRefusedError` on a timeout or a rejection, and `AIChannel.tool_handler`
-  raises `ChannelRefusalError` (a `ToolRefusedError`) for a repeat it stops or
-  a tool outside the turn's toolset, and `UnservedToolCallError` for a
-  declared tool no handler serves. Inside the tool loop these are the call's
-  outcomes (RFC §9.3); a host that wraps or calls the handler itself catches
-  them.
-- `ToolPolicy` governs the tools the channel injects itself (RMK-271, RFC
-  §21.1). Sandbox commands (`sandbox_*`), `run_skill_script` and `plan_tasks`
-  escaped it: `deny=["*"]` still declared and ran `sandbox_bash`. They are now
-  allowed or denied like a host tool, and so is a host tool whose name starts
+- **BREAKING — `HumanInputToolHandler` raises `ToolRefusedError` on a timeout
+  or a rejection** (RMK-278), where it returned a JSON error body. Inside the
+  tool loop this is the call's outcome, a refusal (RFC §9.3), as are the
+  outcomes the channel decides itself: `ChannelRefusalError` (a
+  `ToolRefusedError`) for a repeat it stops or a tool outside the turn's
+  toolset, and `UnservedToolCallError` for a declared tool nothing serves,
+  which `ON_TOOL_CALL`'s hooks may then serve. Both are exported from
+  `roomkit`. Migration: a host that wraps or calls `HumanInputToolHandler`
+  itself catches `ToolRefusedError`.
+- **BREAKING — `ToolPolicy` governs the tools the channel injects itself**
+  (RMK-271, RFC §21.1). Sandbox commands (`sandbox_*`), `run_skill_script`
+  and `plan_tasks` escaped it: `deny=["*"]` still declared and ran
+  `sandbox_bash`. They are now allowed or denied like a host tool, and so is
+  a host tool whose name starts
   with `sandbox_`. Only `activate_skill`, `read_skill_reference`,
   `read_stored_result`, `find_tools` and `list_tools` stay exempt, and only
   when the channel serves them itself (RMK-294). A host with an allow list
@@ -450,16 +479,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   merely starts with `data:` (an SSE log) or a field named `data` or `blob`
   without a resource `uri` is left alone, and a failed ACP call's `error`,
   the text of its output, is bounded before it is written.
-- `MCPToolProvider.as_tool_handler()` hands an MCP image to the model as an
-  image (RMK-259): its handler returns `str | list[AITextPart | AIImagePart]`
-  where it returned `str`. A result carrying a PNG, JPEG, GIF or WebP image
-  whose payload decodes comes back as content parts; it used to be flattened
+- **BREAKING — `MCPToolProvider.as_tool_handler()` hands an MCP image to the
+  model as an image** (RMK-259): its handler returns
+  `str | list[AITextPart | AIImagePart]` where it returned `str`. A result
+  carrying a PNG, JPEG, GIF or WebP image whose payload decodes comes back as
+  content parts; it used to be flattened
   to the content's repr, so the model read `type='image' data='iVBOR…'` as
   text, kilobytes of base64 it cannot see. Binary content the model cannot
   take (another image format, a corrupt payload, audio, a blob resource) is a
   one-line note in the handler's string instead of its base64, since a bad
   image would fail the whole request at the vendor. A result without an image
-  is the same string as before, and `call_tool()` is unchanged.
+  is the same string as before, and `call_tool()` is unchanged. Migration: a
+  host that reads the handler's answer itself handles the part list too.
 
 ### Fixed
 
@@ -477,13 +508,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A voice strategy's tools are set up for the room it is installed in (RMK-307,
   RFC §19.7): a voice supervisor's `delegate_workers` and a voice loop's
   `delegate_loop` are declared in that room's sessions only, and run with that
-  room's install. They used to be declared in every session of the first
-  realtime channel of the kit, with the first install's workers, and refused
-  at call time elsewhere. A pipeline driving a realtime channel starts each new
-  session with its room's active agent: after a handoff in room A, a caller in
-  room B used to start with room A's agent, prompt and tools. A call to a
-  channel tool an agent redeclares is served by the channel's handler (RFC
-  §19.5), where the agent's handler used to answer.
+  room's install. They used to be declared in every session of the channel,
+  whatever room it served, and could run with another room's install. A
+  pipeline driving a realtime channel starts each new session with its room's
+  active agent: after a handoff in room A, a caller in room B used to start
+  with room A's agent, prompt and tools. A call to a channel tool an agent
+  redeclares is served by the channel's handler (RFC §19.5).
 - A `BEFORE_AI_GENERATION` hook that redefines a tool the channel serves and
   already declares (`find_tools` under Tool Search, say) is named by a
   warning, as one that adds a tool under such a name already was (RMK-317,
@@ -539,7 +569,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   model now reads `null`, as a realtime model already did. The chain is read
   by one function for the AI channel (both loops), the conference and the
   realtime channel, and ON_TOOL_CALL's observers of a served call see the
-  result as the model reads it: a hook's `dict` replacement reached them raw
+  result in the form the model reads, before eviction: a hook's `dict`
+  replacement reached them raw
   while the model read its JSON. A firing on a call whose outcome the model
   already read is a report (RFC §9.3), its observers seeing that outcome
   whatever a SYNC hook returned: a call the provider ran itself in the
@@ -829,7 +860,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the voice `Loop` appended their tool (`delegate_workers`,
   `delegate_loop`) at each room's install, so a voice channel serving two
   rooms declared it twice (a provider refuses duplicate names) and ran every
-  call for the room installed last. They now declare it once, run each call
+  call for the room installed last. They now declare it once, in the sessions
+  of the rooms they were installed in only (RMK-307, above), run each call
   for the room of the session that made it, refuse a call from a room they
   were not installed in, and track "already running" per room; called
   directly, outside a session's tool call, they answer the `NO_CALL_ROOM`
@@ -841,10 +873,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tools, and a delegation's `submit_result` / `submit_verdict`, were declared
   in every room the agent served, a customer's included, and a supervised
   step took `delegate_workers` away from all the supervisor's rooms while it
-  ran. They are now declared per room (`AIChannel._room_tools`): the
-  supervisor's tools in the rooms it was installed in, the result tool in the
-  delegation's child room. A room created before a restart gets them back by
-  installing the strategy in it again.
+  ran. They are now declared per room: the supervisor's tools in the rooms it
+  was installed in, the result tool in the delegation's child room. A room
+  created before a restart gets them back by installing the strategy in it
+  again.
 - A realtime `ConversationPipeline` keeps the voice channel's own tools and
   declares the active agent's (RMK-276, RFC §19.5). Each agent's session
   declared only the handoff tool, so the channel's tools vanished at install
@@ -1013,9 +1045,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A refusal, an error and an `ON_TOOL_CALL` override are evicted like a
   tool's own result (RMK-259). Only the handler's result used to be measured,
   so a 500 KB error page from an MCP server, an exception carrying an HTTP
-  body, or a hook's rewrite reached the provider whole. Hooks still receive
-  what they did: the refusal observer gets the full message, and
-  `ON_TOOL_CALL` gets the bounded result. The model's copy changes, and with
+  body, or a hook's rewrite reached the provider whole. The refusal observer
+  still gets the full message, and `ON_TOOL_CALL` the whole result, before
+  eviction (RMK-260, above). The model's copy changes, and with
   it the `result`/`error` a `TOOL_CALL_END` event records.
 - The identical-result note fires for an evicted answer (RMK-259). It hashed
   the model's copy, and an evicted copy carries a placeholder id unique per
@@ -10102,7 +10134,8 @@ See entries `0.7.0a1` through `0.7.0a18` below.
 - `STTProvider.transcribe()` returns `TranscriptionResult` (Phase 3.1)
 - Framework event names enriched with payloads (Phase 4)
 
-[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.92.0...HEAD
+[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.93.0...HEAD
+[0.93.0]: https://github.com/roomkit-live/roomkit/compare/v0.92.0...v0.93.0
 [0.92.0]: https://github.com/roomkit-live/roomkit/compare/v0.91.1...v0.92.0
 [0.91.1]: https://github.com/roomkit-live/roomkit/compare/v0.91.0...v0.91.1
 [0.91.0]: https://github.com/roomkit-live/roomkit/compare/v0.90.0...v0.91.0
