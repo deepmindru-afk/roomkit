@@ -181,11 +181,15 @@ async def main() -> None:
     for t in state.phase_history:
         print(f"  {t.from_agent} -> {t.to_agent} ({t.reason})")
 
-    # Show each agent's handoff tool targets
+    # Show each agent's handoff tool targets, as the swarm set them up for the room
     print("\n=== Handoff Tool Targets ===")
     for agent in [ai_sales, ai_support, ai_billing]:
         tool = next(
-            (t for t in agent._injected_tools if t.name == "handoff_conversation"),
+            (
+                t
+                for t in agent._orchestration_tools("swarm-room")
+                if t.name == "handoff_conversation"
+            ),
             None,
         )
         if tool:
