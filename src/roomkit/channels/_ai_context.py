@@ -24,7 +24,7 @@ from roomkit.core.visibility import visible_events
 from roomkit.memory.base import MemoryResult
 from roomkit.models.channel import ChannelCapabilities
 from roomkit.models.delivery import SUPERSEDED
-from roomkit.models.enums import ChannelCategory, EventType
+from roomkit.models.enums import ChannelCategory, ChannelMediaType, EventType
 from roomkit.models.event import CompositeContent, MediaContent, TextContent
 from roomkit.providers.ai.base import (
     AIContext,
@@ -281,6 +281,26 @@ class AIContextMixin:
         messages = await self._turn_conversation(event, context, loop_ctx, standalone)
         loop_ctx.turn_input = turn_input(messages)
 
+        target_media, target_caps = self._target_capabilities(context)
+
+        return AIContext(
+            messages=messages,
+            system_prompt=system_prompt,
+            tools=tools,
+            room=context,
+            target_capabilities=target_caps,
+            target_media_types=target_media,
+            # The turn's record, not a fresh dict: hooks and tool handlers write
+            # into what the loop context already holds (by identity — see the type).
+            response_metadata=loop_ctx.response_metadata,
+            **settings,
+        )
+
+    def _target_capabilities(
+        self, context: RoomContext
+    ) -> tuple[list[ChannelMediaType], ChannelCapabilities | None]:
+        """What every transport the answer reaches can carry: the media types
+        they share, and their capabilities intersected."""
         # Determine target channel capabilities for capability-aware generation
         # Use intersection of all transport bindings' media types (weakest common)
         transport_bindings = [
@@ -332,19 +352,7 @@ class AIContextMixin:
         else:
             target_media = []
             target_caps = None
-
-        return AIContext(
-            messages=messages,
-            system_prompt=system_prompt,
-            tools=tools,
-            room=context,
-            target_capabilities=target_caps,
-            target_media_types=target_media,
-            # The turn's record, not a fresh dict: hooks and tool handlers write
-            # into what the loop context already holds (by identity — see the type).
-            response_metadata=loop_ctx.response_metadata,
-            **settings,
-        )
+        return target_media, target_caps
 
     async def _visible_memory(
         self, event: RoomEvent, context: RoomContext, standalone: bool
