@@ -146,10 +146,14 @@ def _budgeted(kind: str, inner: MemoryProvider, window: int) -> MemoryProvider:
     if kind == "budget_aware":
         return BudgetAwareMemory(inner, max_context_tokens=window, min_events=1)
     summarizer = MockAIProvider(ai_responses=[AIResponse(content="summary")])
+    if kind == "compacting":
+        return CompactingMemory(
+            inner, provider=summarizer, max_context_tokens=window, min_events=1
+        )
     return SummarizingMemory(inner, provider=summarizer, max_context_tokens=window, min_events=1)
 
 
-@pytest.mark.parametrize("kind", ["budget_aware", "summarizing"])
+@pytest.mark.parametrize("kind", ["budget_aware", "summarizing", "compacting"])
 async def test_a_budget_pays_for_the_notes_it_carries(kind: str) -> None:
     """The notes ride the turn's input, where nothing trims them: a memory
     that keeps the turn to a window counts them before it keeps history."""

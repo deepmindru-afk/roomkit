@@ -135,6 +135,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `CompactingMemory` pays for the messages and notes its inner provider
+  returns before it keeps history, as `BudgetAwareMemory` and
+  `SummarizingMemory` do (found reviewing RMK-334): a turn could exceed the
+  window it was given.
 - `HandoffMemoryProvider` reads its inner provider's `recent_events_window`
   instead of the 2,000-event default, and no longer edits the result its
   inner provider returned (found reviewing RMK-334).

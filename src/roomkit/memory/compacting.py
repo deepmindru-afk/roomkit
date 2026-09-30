@@ -10,7 +10,11 @@ from dataclasses import replace
 
 from roomkit.memory._wrapper import _MemoryWrapper
 from roomkit.memory.base import MemoryProvider, MemoryResult
-from roomkit.memory.token_estimator import estimate_tokens
+from roomkit.memory.token_estimator import (
+    estimate_message_tokens,
+    estimate_notes_tokens,
+    estimate_tokens,
+)
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import ChannelType
 from roomkit.models.event import RoomEvent, TextContent
@@ -66,7 +70,12 @@ class CompactingMemory(_MemoryWrapper):
         inner_result = await self._inner.retrieve(
             room_id, current_event, context, channel_id=channel_id
         )
-        budget = int(self._max_context_tokens * (1 - self._safety_margin_ratio))
+        # What the inner provider carries besides its events (its messages,
+        # and the notes that ride the turn's input) is not compacted: it is
+        # paid for first.
+        carried = sum(estimate_message_tokens(m) for m in inner_result.messages)
+        carried += estimate_notes_tokens(inner_result.notes)
+        budget = int(self._max_context_tokens * (1 - self._safety_margin_ratio)) - carried
 
         events = inner_result.events
         event_costs = [self._estimate_event_tokens(e) for e in events]
