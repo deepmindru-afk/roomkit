@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from roomkit.providers.ai.base import AIContext, ModelInfo
-from roomkit.providers.ai.reasoning import turn_setting
+from roomkit.providers.ai.reasoning import thinking_switch, turn_setting
 from roomkit.providers.openai.ai import OpenAIAIProvider
 from roomkit.providers.openrouter.config import OpenRouterConfig
 from roomkit.providers.openrouter.models import MODELS
@@ -88,10 +88,10 @@ class OpenRouterAIProvider(OpenAIAIProvider):
 
         A turn with tools carries it as any other does (RFC §6.7). The
         reasoning of one tool round reaches the next as ``<think>`` text
-        rather than as ``reasoning_details``, and every upstream of the
-        catalogue takes it so, measured on 2026-09-30: Claude answers the next
-        round without asking for its thinking block, and OpenRouter serves an
-        OpenAI model's effort alongside tools through its Responses path.
+        rather than as ``reasoning_details``, and every upstream family of the
+        catalogue answers such rounds, measured on 2026-09-30: Claude takes
+        the next round without its thinking block, and an OpenAI model takes
+        an effort alongside tools.
         """
         if context.temperature is not None and self._config.supports_custom_temperature:
             kwargs["temperature"] = context.temperature
@@ -118,19 +118,23 @@ class OpenRouterAIProvider(OpenAIAIProvider):
     def _resolve_reasoning(self, context: AIContext) -> dict[str, Any] | None:
         """Build OpenRouter's ``reasoning`` object for this turn, or ``None`` to omit it.
 
-        ``thinking_budget`` gates per-turn (mirrors the Mistral provider):
-        ``None`` passes the turn's ``reasoning_effort``, else the configured
-        one, through (omitted when neither is set, so the model decides); ``0``
-        disables reasoning explicitly; ``>0`` maps the budget straight to
-        OpenRouter's Anthropic-style ``max_tokens`` reasoning cap.
+        The turn states whether the model reasons (:func:`thinking_switch`,
+        RFC §6.7): off sends ``{"enabled": false}``. On, a positive
+        ``thinking_budget`` maps straight to OpenRouter's Anthropic-style
+        ``max_tokens`` cap, else the effort, the turn's before the configured
+        one, rides as ``effort``, else ``enable_thinking`` alone sends
+        ``{"enabled": true}``. With nothing set it is omitted, so the model
+        decides.
         """
-        budget = context.thinking_budget
-        if budget is None:
-            effort = turn_setting(context.reasoning_effort, self._config.reasoning_effort)
-            return {"effort": effort} if effort else None
-        if budget <= 0:
+        switch = thinking_switch(context)
+        if switch is False:
             return dict(_REASONING_OFF)
-        return {"max_tokens": budget}
+        if context.thinking_budget:
+            return {"max_tokens": context.thinking_budget}
+        effort = turn_setting(context.reasoning_effort, self._config.reasoning_effort)
+        if effort:
+            return {"effort": effort}
+        return {"enabled": True} if switch else None
 
     @classmethod
     def available_models(cls) -> list[ModelInfo]:

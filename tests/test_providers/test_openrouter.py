@@ -368,6 +368,30 @@ class TestOpenRouterReasoning:
         self._provider()._apply_sampling_kwargs(kwargs, _context(tools=tools, **turn))
         assert kwargs["extra_body"]["reasoning"] == reasoning
 
+    @pytest.mark.parametrize(
+        ("turn", "reasoning"),
+        [
+            ({"enable_thinking": False}, {"enabled": False}),
+            ({"enable_thinking": True}, {"enabled": True}),
+            ({"enable_thinking": True, "reasoning_effort": "low"}, {"effort": "low"}),
+            ({"reasoning_effort": "none"}, {"enabled": False}),
+        ],
+    )
+    def test_the_turn_switch_is_read(
+        self, turn: dict[str, Any], reasoning: dict[str, Any]
+    ) -> None:
+        # RFC §6.7: enable_thinking states whether the model reasons.
+        kwargs: dict[str, Any] = {}
+        self._provider()._apply_sampling_kwargs(kwargs, _context(**turn))
+        assert kwargs["extra_body"]["reasoning"] == reasoning
+
+    def test_switched_on_the_configured_effort_rides(self) -> None:
+        kwargs: dict[str, Any] = {}
+        self._provider(reasoning_effort="high")._apply_sampling_kwargs(
+            kwargs, _context(enable_thinking=True)
+        )
+        assert kwargs["extra_body"]["reasoning"] == {"effort": "high"}
+
     def test_the_turn_effort_outranks_the_config(self) -> None:
         kwargs: dict[str, Any] = {}
         self._provider(reasoning_effort="high")._apply_sampling_kwargs(

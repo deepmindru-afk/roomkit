@@ -32,6 +32,7 @@ from roomkit.providers.ai.openai_dialect import (
     ThinkTagParser,
     ToolCallSlots,
     json_schema_format,
+    round_text,
 )
 from roomkit.providers.ai.reasoning import turn_setting
 from roomkit.providers.ai.response_schema import checked_stream, schema_for_generate
@@ -166,13 +167,9 @@ class MistralAIProvider(AIProvider):
                 isinstance(p, AIToolCallPart) for p in m.content
             ):
                 tool_calls = []
-                content_text = ""
+                content_text = round_text(m.content)
                 for p in m.content:
-                    if isinstance(p, AITextPart):
-                        content_text = p.text
-                    elif isinstance(p, AIThinkingPart):
-                        content_text = f"<think>{p.thinking}</think>" + content_text
-                    elif isinstance(p, AIToolCallPart):
+                    if isinstance(p, AIToolCallPart):
                         tool_calls.append(
                             {
                                 "id": p.id,

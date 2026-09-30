@@ -85,7 +85,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   measured through OpenRouter on 2026-09-30: Claude takes a tool round's
   reasoning passed back as `<think>` text, and an OpenAI model takes an
   effort alongside tools. The seven upstream families of the catalogue
-  answered two tool rounds with reasoning on.
+  answered two tool rounds with reasoning on. A host that configures a
+  `reasoning_effort` or a `thinking_budget` now pays for reasoning on its tool
+  rounds too; `thinking_budget=0` on the turn keeps them without. The turn's
+  `enable_thinking` is read too: `False` sends `{"enabled": false}`, `True`
+  alone `{"enabled": true}`.
 - A provider's own reasoning setting yields to the turn on what the turn
   states (RMK-337, RFC §6.7): Ollama's `think`, Gemini's `thinking_level` and
   PolarGrid's `thinking` now read the turn's `thinking_budget`,
@@ -110,6 +114,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A tool round that said something besides its calls passes its reasoning
+  to the next round on every OpenAI-compatible provider and Mistral (RMK-338):
+  the round's text overwrote the `<think>` block its reasoning rode in, so
+  only a round that said nothing kept it.
 - A greeting or an answer `regenerate_response` commits no longer lands in a
   room closed just before it takes the room lock (RMK-331, RFC §5.1): its
   status gate read the room before the lock, and now reads it under the lock.

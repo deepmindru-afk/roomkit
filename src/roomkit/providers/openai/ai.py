@@ -48,6 +48,7 @@ from roomkit.providers.ai.openai_dialect import (
     json_schema_format,
     merge_thinking,
     overflow_fact,
+    round_text,
 )
 from roomkit.providers.ai.reasoning import turn_setting
 from roomkit.providers.ai.response_schema import (
@@ -239,14 +240,9 @@ class OpenAIAIProvider(AIProvider):
             ):
                 # Assistant message with tool calls
                 tool_calls = []
-                content_text = ""
+                content_text = round_text(m.content)
                 for p in m.content:
-                    if isinstance(p, AITextPart):
-                        content_text = p.text
-                    elif isinstance(p, AIThinkingPart):
-                        # Prepend thinking as <think> tags before text
-                        content_text = f"<think>{p.thinking}</think>" + content_text
-                    elif isinstance(p, AIToolCallPart):
+                    if isinstance(p, AIToolCallPart):
                         tool_calls.append(
                             {
                                 "id": p.id,

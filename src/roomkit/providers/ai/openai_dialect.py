@@ -16,7 +16,12 @@ from __future__ import annotations
 import re
 from typing import Any, Literal
 
-from roomkit.providers.ai.base import StreamToolCall, StreamToolCallDelta
+from roomkit.providers.ai.base import (
+    AITextPart,
+    AIThinkingPart,
+    StreamToolCall,
+    StreamToolCallDelta,
+)
 from roomkit.providers.ai.tool_calls import (
     CallIds,
     arguments_cut,
@@ -39,6 +44,18 @@ def field_reasoning(carrier: Any) -> str | None:
     """
     value = getattr(carrier, "reasoning_content", None) or getattr(carrier, "reasoning", None)
     return value if isinstance(value, str) and value else None
+
+
+def round_text(parts: list[Any]) -> str:
+    """The content of an assistant round that called tools: its reasoning as
+    a leading ``<think>`` block, then what it said.
+
+    Both are kept, whatever their order: a round that said something besides
+    its calls keeps its reasoning too, which is how the next round reads it.
+    """
+    thinking = "".join(p.thinking for p in parts if isinstance(p, AIThinkingPart))
+    text = "".join(p.text for p in parts if isinstance(p, AITextPart))
+    return f"<think>{thinking}</think>{text}" if thinking else text
 
 
 def merge_thinking(inline: str | None, field: str | None) -> str | None:
