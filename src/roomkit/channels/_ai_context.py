@@ -336,66 +336,7 @@ class AIContextMixin:
                 channel_id=self.channel_id,
             )
 
-        messages: list[AIMessage] = []
-
-        # Pre-built messages from memory (e.g. summaries)
-        messages.extend(memory_result.messages)
-
-        # Convert memory events using AIChannel content extraction.
-        # ``_determine_role`` flattens every non-self event into one "user"
-        # stream, which erases who said what in a room where several people
-        # speak — the model can only guess the addressee, and it guesses wrong.
-        # The speaker is a fact of the event (``metadata["sender_name"]``,
-        # stamped at ingress by hosts and transport providers), so when the
-        # window holds two or more distinct speakers each user turn carries its
-        # speaker's name. A single-speaker room (a 1:1 DM) is left untouched.
-        past_turns: list[tuple[str, str | list[_ContentPart], str | None]] = []
-        for past_event in memory_result.events:
-            if past_event.metadata.get("cancellation_reason") == SUPERSEDED:
-                # A response nobody heard: the user continued the turn first,
-                # and replaying it would answer what they never heard (§12.3.12).
-                continue
-            role = self._determine_role(past_event)
-            content = self._extract_content(past_event)
-            if content:
-                speaker = _event_speaker(past_event, context) if role == "user" else None
-                past_turns.append((role, content, speaker))
-
-        current_content = self._extract_content(event)
-        current_speaker = _event_speaker(event, context)
-        if event.type == EventType.INSTRUCTION:
-            # The application's direction for this one turn (RFC §10.1.1). It
-            # is the turn's input — a system-role message after the history is
-            # refused or silently re-roled by several model APIs — marked so the
-            # model never reads it as a participant's words, and recorded on the
-            # turn so every reply it produces says why the agent spoke — as a
-            # fingerprint, never the text: the metadata rides on every reply
-            # and segment, and a copy would store (and deliver to every
-            # transport) what the room never stores.
-            instruction = event.content.body if isinstance(event.content, TextContent) else ""
-            current_content = mark_instruction(instruction) if instruction else None
-            current_speaker = None
-            loop_ctx.response_metadata["instruction"] = instruction_fingerprint(instruction)
-
-        speakers = {speaker for _, _, speaker in past_turns if speaker}
-        if current_content and current_speaker:
-            speakers.add(current_speaker)
-        attribute_speakers = len(speakers) >= 2
-
-        for role, content, speaker in past_turns:
-            if attribute_speakers and speaker:
-                content = _with_speaker_prefix(content, speaker)
-            messages.append(AIMessage(role=role, content=content))
-
-        # Patch orphaned tool calls from interrupted tool loops (barge-in)
-        messages = patch_dangling_tool_calls(messages)
-
-        # Add current event
-        if current_content:
-            content = current_content
-            if attribute_speakers and current_speaker:
-                content = _with_speaker_prefix(content, current_speaker)
-            messages.append(AIMessage(role="user", content=content))
+        messages, attribute_speakers = self._turn_messages(event, context, memory_result, loop_ctx)
         messages = _with_turn_notes(
             messages, self._turn_notes(event, context, standalone=standalone)
         )
@@ -518,6 +459,87 @@ class AIContextMixin:
         if self._eviction.has_evicted:
             tools.append(ToolEviction.tool_definition())
         return system_prompt
+
+    def _turn_messages(
+        self,
+        event: RoomEvent,
+        context: RoomContext,
+        memory_result: MemoryResult,
+        loop_ctx: _ToolLoopContext,
+    ) -> tuple[list[AIMessage], bool]:
+        """The turn's messages, its history then its input, and whether several
+        speakers are named in them.
+
+        ``_determine_role`` flattens every non-self event into one "user"
+        stream, which erases who said what in a room where several people
+        speak — the model can only guess the addressee, and it guesses wrong.
+        The speaker is a fact of the event (``metadata["sender_name"]``,
+        stamped at ingress by hosts and transport providers), so when the
+        window holds two or more distinct speakers each user turn carries its
+        speaker's name. A single-speaker room (a 1:1 DM) is left untouched.
+        """
+        past_turns = self._past_turns(memory_result, context)
+        current_content, current_speaker = self._turn_input(event, context, loop_ctx)
+        speakers = {speaker for _, _, speaker in past_turns if speaker}
+        if current_content and current_speaker:
+            speakers.add(current_speaker)
+        attribute_speakers = len(speakers) >= 2
+
+        # Pre-built messages from memory (e.g. summaries)
+        messages: list[AIMessage] = list(memory_result.messages)
+        for role, content, speaker in past_turns:
+            if attribute_speakers and speaker:
+                content = _with_speaker_prefix(content, speaker)
+            messages.append(AIMessage(role=role, content=content))
+
+        # Patch orphaned tool calls from interrupted tool loops (barge-in)
+        messages = patch_dangling_tool_calls(messages)
+
+        if current_content:
+            content = current_content
+            if attribute_speakers and current_speaker:
+                content = _with_speaker_prefix(content, current_speaker)
+            messages.append(AIMessage(role="user", content=content))
+        return messages, attribute_speakers
+
+    def _past_turns(
+        self, memory_result: MemoryResult, context: RoomContext
+    ) -> list[tuple[str, str | list[_ContentPart], str | None]]:
+        """The history's turns as (role, content, speaker), a user turn's speaker named."""
+        past_turns: list[tuple[str, str | list[_ContentPart], str | None]] = []
+        for past_event in memory_result.events:
+            if past_event.metadata.get("cancellation_reason") == SUPERSEDED:
+                # A response nobody heard: the user continued the turn first,
+                # and replaying it would answer what they never heard (§12.3.12).
+                continue
+            role = self._determine_role(past_event)
+            content = self._extract_content(past_event)
+            if content:
+                speaker = _event_speaker(past_event, context) if role == "user" else None
+                past_turns.append((role, content, speaker))
+        return past_turns
+
+    def _turn_input(
+        self, event: RoomEvent, context: RoomContext, loop_ctx: _ToolLoopContext
+    ) -> tuple[str | list[_ContentPart] | None, str | None]:
+        """The turn's input and its speaker; an instruction marked as the
+        application's, with no speaker."""
+        current_content = self._extract_content(event)
+        current_speaker = _event_speaker(event, context)
+        if event.type == EventType.INSTRUCTION:
+            # The application's direction for this one turn (RFC §10.1.1). It
+            # is the turn's input — a system-role message after the history is
+            # refused or silently re-roled by several model APIs — marked so the
+            # model never reads it as a participant's words, and recorded on the
+            # turn so every reply it produces says why the agent spoke — as a
+            # fingerprint, never the text: the metadata rides on every reply
+            # and segment, and a copy would store (and deliver to every
+            # transport) what the room never stores.
+            instruction = event.content.body if isinstance(event.content, TextContent) else ""
+            current_content = mark_instruction(instruction) if instruction else None
+            current_speaker = None
+            loop_ctx.response_metadata["instruction"] = instruction_fingerprint(instruction)
+        return current_content, current_speaker
 
     def _turn_notes(
         self, event: RoomEvent, context: RoomContext, *, standalone: bool
