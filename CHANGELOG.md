@@ -125,19 +125,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A turn with tools gets the turn's reasoning settings, as a turn without
   does (RMK-319, RFC §6.7). On OpenAI's own endpoint the model catalogue now
-  says what Chat Completions takes with function tools: a reasoning model
-  before GPT-5.4 (`gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `gpt-5.1`, `gpt-5.2`,
-  `o3`, `o3-pro`, `o4-mini`) receives the turn's `reasoning_effort`, where
-  it used to receive none and reason at its own default; GPT-5.4 and later
-  receive `none`, the only value accepted there (a name prefix used to
-  decide it for GPT-5.6 alone). On `gpt-5-mini` with `low` configured, a
-  turn of three lookups reasons 352 tokens on average instead of 1,077 and
-  costs 47 % less, over 3.2 rounds instead of 2.2 (the model batches its
-  calls less at a lower effort). A model the catalogue does not know, a
-  `base_url` and Azure keep omitting it. OpenRouter sends `reasoning` on
-  tool turns too, so a `thinking_budget` of 0 now disables reasoning there.
-  OpenRouter, xAI, Mistral and DeepSeek prefer the turn's `reasoning_effort`
-  to their configuration, as the other providers do.
+  says what Chat Completions takes with function tools, each entry checked
+  on the wire: the reasoning models before GPT-5.4 (`gpt-5`, `gpt-5-mini`,
+  `gpt-5-nano`, `gpt-5.1`, `gpt-5.2`, `o3`, `o4-mini`) receive the turn's
+  `reasoning_effort`, where they used to receive no effort and reason at
+  their own default; GPT-5.4 to GPT-5.6 and GPT-6 Sol and Luna receive
+  `none`, the only value accepted there. A name prefix used to decide it for
+  GPT-5.6 alone, so a GPT-6 Sol or Luna turn with tools answered 400 and now
+  runs. On `gpt-5-mini` with `low` configured, a turn of three lookups
+  reasons 352 tokens on average instead of 1,077 and costs 47 % less, over
+  3.2 rounds instead of 2.2 (the model batches its calls less at a lower
+  effort). A model the catalogue does not tag (`gpt-6-astra`, which refuses
+  function tools on Chat Completions, the Responses-only `-pro` models), a
+  `base_url` and Azure still leave it out. OpenRouter sends `reasoning` on a
+  tool turn when it turns reasoning off, so a `thinking_budget` of 0 now
+  reaches it. Where a provider's configuration carries a reasoning setting
+  under the name the turn uses, the turn's value now outranks it:
+  `reasoning_effort` on OpenRouter, xAI, Mistral and DeepSeek, and
+  `enable_thinking=False` on DeepSeek and Qwen, which a configured `True`
+  used to override.
 - An AI channel's system prompt stays the same from one turn to the next
   (RMK-318, RFC §6.4). The tool-usage digest and the room's plan, which
   change after every turn that calls a tool or plans, ride the turn's input

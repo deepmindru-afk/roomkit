@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, ClassVar
 
 from roomkit.providers.ai.base import AIContext, ModelInfo
+from roomkit.providers.ai.reasoning import turn_setting
 from roomkit.providers.meta.config import MetaConfig
 from roomkit.providers.meta.models import MODELS
 from roomkit.providers.openai.ai import OpenAIAIProvider
@@ -65,12 +66,11 @@ class MetaAIProvider(OpenAIAIProvider):
 
         The turn's own effort outranks the configured one. It is sent on tool
         turns too (the OpenAI parent's rule is its own catalogue's), and
-        ``"none"`` becomes
-        ``"minimal"``: the service cannot turn reasoning off and answers
-        ``"none"`` with a 400.
+        ``"none"`` becomes ``"minimal"``: the service cannot turn reasoning off
+        and answers ``"none"`` with a 400.
         """
         if context.temperature is not None and self._config.supports_custom_temperature:
             kwargs["temperature"] = context.temperature
-        effort = context.reasoning_effort or self._config.reasoning_effort
+        effort = turn_setting(context.reasoning_effort, self._config.reasoning_effort)
         if effort is not None:
             kwargs["reasoning_effort"] = "minimal" if effort == "none" else effort

@@ -59,11 +59,12 @@ class OpenAIConfig(BaseModel):
     ``"none"`` | ``"low"`` | ``"medium"`` | ``"high"`` | ``"xhigh"`` |
     ``"max"`` (availability varies by model). Controls how long the model
     reasons (quality vs latency/cost); the reasoning trace itself stays hidden
-    in the Chat Completions API. ``None`` = the model's default. On a turn
-    with tools, OpenAI's endpoint takes it up to GPT-5.2 and only ``"none"``
-    from GPT-5.4 on, which is then sent instead; a model the catalogue does not
-    know, or one behind ``base_url``, gets none on such a turn (RFC §6.7).
-    Only configure this for reasoning models — others reject the parameter."""
+    in the Chat Completions API. ``None`` = the model's default. The turn's
+    own effort outranks this one. On a turn with tools the model catalogue
+    decides what is sent (RFC §6.7): the effort up to GPT-5.2, ``"none"``
+    instead from GPT-5.4 on, and nothing at all for a model it does not tag or
+    one behind ``base_url``. Only configure this for reasoning models — others
+    reject the parameter."""
     default_headers: dict[str, str] | None = None
     """Extra HTTP headers sent on every request, passed to the SDK's
     ``default_headers``. Use for an OpenAI-compatible endpoint behind a

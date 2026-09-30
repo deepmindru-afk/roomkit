@@ -1440,19 +1440,27 @@ class TestOpenAIToolTurnReasoning:
 
         assert self._sent(context, model="gpt-5-mini", reasoning_effort="high") == "minimal"
 
-    @pytest.mark.parametrize("model", ["gpt-5.4-mini", "gpt-5.5", "gpt-6-astra"])
+    @pytest.mark.parametrize("model", ["gpt-5.4-mini", "gpt-5.5", "gpt-6-sol"])
     def test_from_gpt_5_4_a_tool_turn_sends_none(self, model: str) -> None:
         tools = _context(tools=[self._TOOL], reasoning_effort="high")
 
         assert self._sent(tools, model=model) == "none"
         assert self._sent(_context(reasoning_effort="high"), model=model) == "high"
 
-    def test_a_model_the_catalogue_does_not_know_omits_it_with_tools(self) -> None:
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "gpt-7-preview",  # not in the catalogue
+            "gpt-4.1",  # not a reasoning model
+            "gpt-6-astra",  # refuses function tools on Chat Completions
+            "gpt-5.5-pro",  # served by the Responses API only
+        ],
+    )
+    def test_a_model_the_catalogue_does_not_tag_omits_it_with_tools(self, model: str) -> None:
         tools = _context(tools=[self._TOOL])
 
-        assert self._sent(tools, model="gpt-7-preview", reasoning_effort="low") is None
-        assert self._sent(tools, model="gpt-4.1", reasoning_effort="low") is None
-        assert self._sent(_context(), model="gpt-7-preview", reasoning_effort="low") == "low"
+        assert self._sent(tools, model=model, reasoning_effort="low") is None
+        assert self._sent(_context(), model=model, reasoning_effort="low") == "low"
 
     def test_behind_a_base_url_the_model_is_unknown_and_it_is_omitted(self) -> None:
         tools = _context(tools=[self._TOOL])

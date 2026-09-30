@@ -6,6 +6,7 @@ from datetime import date
 from typing import Any, ClassVar
 
 from roomkit.providers.ai.base import AIContext, ModelInfo, ModelPricing
+from roomkit.providers.ai.reasoning import turn_setting
 from roomkit.providers.litellm.config import LiteLLMConfig
 from roomkit.providers.openai.ai import OpenAIAIProvider
 from roomkit.providers.utils import http_timeout
@@ -99,7 +100,7 @@ class LiteLLMAIProvider(OpenAIAIProvider):
             return
         budget = context.thinking_budget
         if budget is None:
-            effort = context.reasoning_effort or self._config.reasoning_effort
+            effort = turn_setting(context.reasoning_effort, self._config.reasoning_effort)
             if effort is not None:
                 kwargs["reasoning_effort"] = effort
         elif budget > 0:

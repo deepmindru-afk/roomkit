@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, ClassVar
 
 from roomkit.providers.ai.base import AIContext, ModelInfo
+from roomkit.providers.ai.reasoning import turn_setting
 from roomkit.providers.deepseek.config import DeepSeekConfig
 from roomkit.providers.deepseek.models import MODELS
 from roomkit.providers.openai.ai import OpenAIAIProvider
@@ -73,11 +74,13 @@ class DeepSeekAIProvider(OpenAIAIProvider):
         tier would invent a mapping the vendor does not publish. ``None`` falls
         back to ``enable_thinking``, and with neither set the request stays
         silent so the model's own default (thinking on) applies. The turn's
-        effort outranks the configured one (RFC §6.7).
+        ``enable_thinking`` and effort outrank the configured ones (RFC §6.7).
         """
         budget = context.thinking_budget
-        enabled = self._config.enable_thinking if budget is None else budget > 0
-        effort = context.reasoning_effort or self._config.reasoning_effort
+        enabled = turn_setting(context.enable_thinking, self._config.enable_thinking)
+        if budget is not None:
+            enabled = budget > 0
+        effort = turn_setting(context.reasoning_effort, self._config.reasoning_effort)
         if enabled is False:
             return {"type": "disabled"}
         if enabled is None and effort is None:

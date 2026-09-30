@@ -33,6 +33,7 @@ from roomkit.providers.ai.openai_dialect import (
     ToolCallSlots,
     json_schema_format,
 )
+from roomkit.providers.ai.reasoning import turn_setting
 from roomkit.providers.ai.response_schema import checked_stream, schema_for_generate
 from roomkit.providers.mistral.config import MistralConfig
 from roomkit.providers.mistral.models import MODELS
@@ -282,7 +283,7 @@ class MistralAIProvider(AIProvider):
         effort or defaults to ``"high"``. Returns ``None`` to omit the
         parameter entirely (model decides — Magistral always reasons).
         """
-        effort = context.reasoning_effort or self._config.reasoning_effort
+        effort = turn_setting(context.reasoning_effort, self._config.reasoning_effort)
         budget = context.thinking_budget
         if budget is None:
             return effort

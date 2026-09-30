@@ -5,10 +5,14 @@ from __future__ import annotations
 from typing import Any
 
 from roomkit.providers.ai.base import AIContext, ModelInfo
+from roomkit.providers.ai.reasoning import turn_setting
 from roomkit.providers.openai.ai import OpenAIAIProvider
 from roomkit.providers.openrouter.config import OpenRouterConfig
 from roomkit.providers.openrouter.models import MODELS
 from roomkit.providers.utils import http_timeout
+
+# OpenRouter's ``reasoning`` object that turns reasoning off.
+_REASONING_OFF: dict[str, Any] = {"enabled": False}
 
 
 class OpenRouterAIProvider(OpenAIAIProvider):
@@ -79,16 +83,21 @@ class OpenRouterAIProvider(OpenAIAIProvider):
         OpenAI models honour it), OpenRouter normalises thinking across every
         upstream provider through a single ``reasoning`` object — so Claude,
         Gemini, and DeepSeek all surface a reasoning trace. It is sent via the
-        OpenAI SDK's ``extra_body`` passthrough, on a turn with tools as on one
-        without (RFC §6.7): OpenRouter documents ``reasoning`` alongside tools
-        and adapts it to each upstream, so the omission the OpenAI parent keeps
-        for an unknown model is not needed here. The streamed trace is
-        surfaced by the inherited ``delta.reasoning`` reader.
+        OpenAI SDK's ``extra_body`` passthrough. The streamed trace is surfaced
+        by the inherited ``delta.reasoning`` reader.
+
+        On a turn with tools only the switch-off (``thinking_budget=0``) is
+        sent (RFC §6.7). Turning reasoning on there is left to the model: the
+        reasoning of one tool round reaches the next as ``<think>`` text, not as
+        the ``reasoning_details`` OpenRouter asks to be passed back, which an
+        upstream that requires its thinking block before a tool call (Claude)
+        would refuse, and an OpenAI upstream from GPT-5.4 on takes no effort
+        but ``none`` alongside tools.
         """
         if context.temperature is not None and self._config.supports_custom_temperature:
             kwargs["temperature"] = context.temperature
         reasoning = self._resolve_reasoning(context)
-        if reasoning is not None:
+        if reasoning is not None and (not context.tools or reasoning == _REASONING_OFF):
             kwargs.setdefault("extra_body", {})["reasoning"] = reasoning
 
     def _apply_response_format(self, kwargs: dict[str, Any], context: AIContext) -> None:
@@ -118,10 +127,10 @@ class OpenRouterAIProvider(OpenAIAIProvider):
         """
         budget = context.thinking_budget
         if budget is None:
-            effort = context.reasoning_effort or self._config.reasoning_effort
+            effort = turn_setting(context.reasoning_effort, self._config.reasoning_effort)
             return {"effort": effort} if effort else None
         if budget <= 0:
-            return {"enabled": False}
+            return dict(_REASONING_OFF)
         return {"max_tokens": budget}
 
     @classmethod

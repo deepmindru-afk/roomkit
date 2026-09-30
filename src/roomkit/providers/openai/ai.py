@@ -49,6 +49,7 @@ from roomkit.providers.ai.openai_dialect import (
     merge_thinking,
     overflow_fact,
 )
+from roomkit.providers.ai.reasoning import turn_setting
 from roomkit.providers.ai.response_schema import (
     check_schema_answer,
     checked_stream,
@@ -330,7 +331,7 @@ class OpenAIAIProvider(AIProvider):
         """
         if context.temperature is not None and self._config.supports_custom_temperature:
             kwargs["temperature"] = context.temperature
-        effort = context.reasoning_effort or self._config.reasoning_effort
+        effort = turn_setting(context.reasoning_effort, self._config.reasoning_effort)
         if context.tools:
             effort = self._tool_turn_effort(effort)
         if effort is not None:
@@ -339,13 +340,13 @@ class OpenAIAIProvider(AIProvider):
     def _tool_turn_effort(self, effort: str | None) -> str | None:
         """The reasoning effort a turn with tools sends on this endpoint.
 
-        Read from the catalogue on OpenAI's own endpoint: from GPT-5.4 on,
-        Chat Completions takes function tools only with ``none``, which is
-        sent even unset since GPT-5.6 defaults to ``medium``
-        (``tools_reasoning_none``); earlier reasoning models take *effort*
-        (``reasoning``). ``None`` omits it for a model the catalogue does not
-        know, and for any model behind a ``base_url`` or an Azure deployment
-        name, whose real model this provider cannot know.
+        Read from the catalogue on OpenAI's own endpoint: a model tagged
+        ``tools_reasoning_none`` takes function tools only with ``none``, sent
+        even unset since leaving it out answers 400 on the models that default
+        higher; one tagged ``tools_reasoning_effort`` takes *effort*. ``None``
+        omits it for any other model, and for any model behind a ``base_url``
+        or an Azure deployment name, whose real model this provider cannot
+        know.
         """
         if self._provider_name != "openai" or getattr(self._config, "base_url", None) is not None:
             return None
@@ -353,7 +354,7 @@ class OpenAIAIProvider(AIProvider):
         capabilities = info.capabilities if info is not None else []
         if "tools_reasoning_none" in capabilities:
             return "none"
-        return effort if "reasoning" in capabilities else None
+        return effort if "tools_reasoning_effort" in capabilities else None
 
     def _apply_extra_body(self, kwargs: dict[str, Any]) -> None:
         """Merge configured ``extra_body`` (server-specific request fields).

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, ClassVar
 
 from roomkit.providers.ai.base import AIContext, ModelInfo
+from roomkit.providers.ai.reasoning import turn_setting
 from roomkit.providers.openai.ai import OpenAIAIProvider
 from roomkit.providers.xai.config import XAIConfig
 from roomkit.providers.xai.models import MODELS
@@ -111,6 +112,6 @@ class XAIAIProvider(OpenAIAIProvider):
         """
         if context.temperature is not None and self._config.supports_custom_temperature:
             kwargs["temperature"] = context.temperature
-        effort = context.reasoning_effort or self._config.reasoning_effort
+        effort = turn_setting(context.reasoning_effort, self._config.reasoning_effort)
         if effort is not None and self._supports_reasoning():
             kwargs["reasoning_effort"] = effort

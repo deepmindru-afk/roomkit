@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, ClassVar
 
 from roomkit.providers.ai.base import AIContext, ModelInfo
+from roomkit.providers.ai.reasoning import turn_setting
 from roomkit.providers.openai.ai import OpenAIAIProvider
 from roomkit.providers.qwen.config import QwenConfig
 from roomkit.providers.qwen.models import MODELS
@@ -102,12 +103,13 @@ class QwenAIProvider(OpenAIAIProvider):
         Mistral and OpenRouter providers): ``0`` disables thinking, any positive
         value enables it *and* caps the trace, which is the one place roomkit's
         budget maps straight onto a vendor parameter instead of being
-        approximated. ``None`` falls back to ``enable_thinking``, and with
-        neither set the request stays silent so the model's own default applies.
+        approximated. ``None`` falls back to ``enable_thinking``, the turn's
+        before the configured one (RFC §6.7), and with neither set the request
+        stays silent so the model's own default applies.
         """
         budget = context.thinking_budget
         if budget is None:
-            enabled = self._config.enable_thinking
+            enabled = turn_setting(context.enable_thinking, self._config.enable_thinking)
             return {} if enabled is None else {"enable_thinking": enabled}
         if budget <= 0:
             return {"enable_thinking": False}

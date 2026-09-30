@@ -107,8 +107,10 @@ class AzureAIConfig(BaseModel):
 
     reasoning_effort: str | None = None
     """Reasoning depth for reasoning deployments (``"low"``/``"medium"``/
-    ``"high"``); ``None`` uses the model default. Only sent for models that
-    accept it."""
+    ``"high"``); ``None`` uses the model default. Sent on a turn without
+    tools and left out on a turn with tools: a deployment name does not say
+    which model it serves, nor so what that model accepts alongside function
+    tools (RFC §6.7). The turn's own effort outranks this one."""
     extra_body: dict[str, Any] | None = None
     """Extra JSON fields merged into every request body via the SDK's
     ``extra_body`` — for deployment-specific params the OpenAI schema omits.

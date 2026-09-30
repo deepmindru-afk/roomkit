@@ -37,13 +37,17 @@ from roomkit.providers.ai.base import ModelInfo, ModelPricing
 
 _CTX_1M = 1_050_000
 # What a turn with function tools accepts of ``reasoning_effort`` on Chat
-# Completions (RFC §6.7): the turn's effort for the reasoning models before
-# GPT-5.4, only ``none`` from GPT-5.4 on (OpenAI's migration guide to the
-# Responses API; checked on the wire 2026-09-30: gpt-5.4-mini answers 400 to
-# ``low`` with tools, gpt-5-mini takes it). Read by
-# ``OpenAIAIProvider._tool_turn_effort``.
-_REASONING = ["reasoning"]
-_TOOLS_REASONING_NONE = ["reasoning", "tools_reasoning_none"]
+# Completions (RFC §6.7), read by ``OpenAIAIProvider._tool_turn_effort``:
+# the turn's effort for the reasoning models before GPT-5.4, only ``none``
+# for GPT-5.4 to GPT-5.6 and GPT-6 Sol and Luna (OpenAI's migration guide to
+# the Responses API). Every tagged entry checked on the wire 2026-09-30: the
+# first group takes ``low`` with tools, the second takes ``none`` (gpt-5.4-mini
+# answers 400 to ``low``; gpt-6-sol and gpt-6-luna answer 400 when the effort
+# is left out). An untagged entry gets no effort on such
+# a turn: GPT-6 Astra refuses function tools on Chat Completions whatever the
+# effort, and the ``-pro`` models are served by the Responses API only.
+_TOOLS_REASONING_EFFORT = ["tools_reasoning_effort"]
+_TOOLS_REASONING_NONE = ["tools_reasoning_none"]
 _VERIFIED = date(2026, 8, 5)
 
 # Astra and Sol prices rechecked 2026-09-08:
@@ -57,7 +61,6 @@ MODELS: list[ModelInfo] = [
     ModelInfo(
         id="gpt-6-astra",
         display_name="GPT-6 Astra",
-        capabilities=_TOOLS_REASONING_NONE,
         context_window=_CTX_1M,
         supports_vision=True,
         pricing=ModelPricing(
@@ -169,7 +172,6 @@ MODELS: list[ModelInfo] = [
     ModelInfo(
         id="gpt-5.5-pro",
         display_name="GPT-5.5 Pro",
-        capabilities=_TOOLS_REASONING_NONE,
         context_window=_CTX_1M,
         supports_vision=True,
         pricing=ModelPricing(
@@ -194,7 +196,6 @@ MODELS: list[ModelInfo] = [
     ModelInfo(
         id="gpt-5.4-pro",
         display_name="GPT-5.4 Pro",
-        capabilities=_TOOLS_REASONING_NONE,
         context_window=_CTX_1M,
         supports_vision=True,
         pricing=ModelPricing(
@@ -232,7 +233,7 @@ MODELS: list[ModelInfo] = [
     ModelInfo(
         id="gpt-5.1",
         display_name="GPT-5.1",
-        capabilities=_REASONING,
+        capabilities=_TOOLS_REASONING_EFFORT,
         context_window=400_000,
         supports_vision=True,
         pricing=ModelPricing(
@@ -294,7 +295,7 @@ MODELS: list[ModelInfo] = [
     ModelInfo(
         id="gpt-5",
         display_name="GPT-5",
-        capabilities=_REASONING,
+        capabilities=_TOOLS_REASONING_EFFORT,
         context_window=400_000,
         supports_vision=True,
         deprecated=True,
@@ -308,7 +309,7 @@ MODELS: list[ModelInfo] = [
     ModelInfo(
         id="gpt-5-mini",
         display_name="GPT-5 mini",
-        capabilities=_REASONING,
+        capabilities=_TOOLS_REASONING_EFFORT,
         context_window=400_000,
         supports_vision=True,
         deprecated=True,
@@ -322,7 +323,7 @@ MODELS: list[ModelInfo] = [
     ModelInfo(
         id="gpt-5-nano",
         display_name="GPT-5 nano",
-        capabilities=_REASONING,
+        capabilities=_TOOLS_REASONING_EFFORT,
         context_window=400_000,
         supports_vision=True,
         deprecated=True,
@@ -336,7 +337,7 @@ MODELS: list[ModelInfo] = [
     ModelInfo(
         id="gpt-5.2",
         display_name="GPT-5.2",
-        capabilities=_REASONING,
+        capabilities=_TOOLS_REASONING_EFFORT,
         context_window=400_000,
         supports_vision=True,
         deprecated=True,
@@ -350,7 +351,7 @@ MODELS: list[ModelInfo] = [
     ModelInfo(
         id="o3",
         display_name="o3",
-        capabilities=_REASONING,
+        capabilities=_TOOLS_REASONING_EFFORT,
         context_window=200_000,
         supports_vision=True,
         deprecated=True,
@@ -364,7 +365,6 @@ MODELS: list[ModelInfo] = [
     ModelInfo(
         id="o3-pro",
         display_name="o3-pro",
-        capabilities=_REASONING,
         context_window=200_000,
         supports_vision=True,
         deprecated=True,
@@ -377,7 +377,7 @@ MODELS: list[ModelInfo] = [
     ModelInfo(
         id="o4-mini",
         display_name="o4-mini",
-        capabilities=_REASONING,
+        capabilities=_TOOLS_REASONING_EFFORT,
         context_window=200_000,
         supports_vision=True,
         deprecated=True,

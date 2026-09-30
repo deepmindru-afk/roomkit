@@ -15,6 +15,7 @@ from roomkit.providers.ai.base import (
     StreamEvent,
     StreamToolCall,
 )
+from roomkit.providers.ai.reasoning import turn_setting
 from roomkit.providers.cerebras.config import CerebrasConfig
 from roomkit.providers.cerebras.models import MODELS
 from roomkit.providers.openai.ai import OpenAIAIProvider
@@ -127,7 +128,7 @@ class CerebrasAIProvider(OpenAIAIProvider):
         """Keep reasoning controls active during tool calls as well as text turns."""
         if context.temperature is not None and self._config.supports_custom_temperature:
             kwargs["temperature"] = context.temperature
-        effort = context.reasoning_effort or self._config.reasoning_effort
+        effort = turn_setting(context.reasoning_effort, self._config.reasoning_effort)
         if effort is not None:
             kwargs["reasoning_effort"] = effort
         for key in ("reasoning_format", "clear_thinking"):
