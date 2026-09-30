@@ -101,8 +101,14 @@ class RealtimeSkillSupport:
 
     # -- System prompt injection --
 
-    def inject_skills_prompt(self, system_prompt: str | None) -> str:
+    def inject_skills_prompt(
+        self, system_prompt: str | None, *, scripts_allowed: bool = True
+    ) -> str:
         """Append skills preamble + available-skills XML to the prompt.
+
+        *scripts_allowed* is whether the session's tool policy admits
+        ``run_skill_script``: with no executor or a policy that denies it,
+        the model must not be told it can run a skill's scripts (RFC §21.1).
 
         In ``inline_full`` mode every available skill's full body is
         included verbatim so the model has the binding rules in
@@ -115,7 +121,7 @@ class RealtimeSkillSupport:
             preamble = SKILLS_INLINE_PREAMBLE
         else:
             preamble = SKILLS_PREAMBLE
-        if not self._script_executor:
+        if not self._script_executor or not scripts_allowed:
             preamble += SKILLS_NO_SCRIPTS_NOTE
         skills_xml = self._skills.to_prompt_xml()
         skill_block = f"\n\n{preamble}\n\n{skills_xml}"

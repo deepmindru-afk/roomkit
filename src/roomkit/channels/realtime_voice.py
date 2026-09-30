@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from roomkit.channels._ai_policy import policy_admits
 from roomkit.channels._realtime_audio import _MAX_QUEUED_AUDIO_CHUNKS, RealtimeAudioMixin
 from roomkit.channels._realtime_context import (
     _current_voice_session as _current_voice_session,
@@ -35,6 +36,7 @@ from roomkit.channels._served_tools import (
     dict_tool_name,
     refuse_served_names,
 )
+from roomkit.channels._skill_constants import TOOL_RUN_SCRIPT
 from roomkit.channels._voice_pipeline import VoicePipelineMixin
 from roomkit.channels.ai import ToolResult
 from roomkit.channels.base import Channel, FrameworkAwareChannel
@@ -1563,7 +1565,12 @@ class RealtimeVoiceChannel(
     ) -> str | None:
         """One composition path for connection, discovery, activation and handoff."""
         if self._skill_support:
-            prompt = self._skill_support.inject_skills_prompt(prompt)
+            scripts_allowed = policy_admits(
+                self._session_policy(session.id), TOOL_RUN_SCRIPT, self._channel_tool_names()
+            )
+            prompt = self._skill_support.inject_skills_prompt(
+                prompt, scripts_allowed=scripts_allowed
+            )
             addendum = self._skill_support.activated_skills_prompt(session.id, pending_skill)
             if addendum:
                 prompt += "\n\n" + addendum

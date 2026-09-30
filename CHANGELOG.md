@@ -349,6 +349,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A realtime channel's skills preamble says scripts cannot run when its tool
+  policy denies `run_skill_script` (RMK-290, RFC §21.1), as `AIChannel`'s
+  does: it promised a tool the gate then refused.
 - Data framed for a model cannot close its own block (RMK-314): a tool
   result in the tool-usage digest (system prompt) escaped only the exact
   `</tool_result>`, so `</TOOL_RESULT>`, `</tool_result >` or

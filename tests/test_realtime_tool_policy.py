@@ -23,6 +23,7 @@ from roomkit import (
     RoomKit,
     ToolCallEvent,
 )
+from roomkit.channels._skill_constants import SKILLS_NO_SCRIPTS_NOTE
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 from roomkit.models.participant import Participant
 from roomkit.skills.registry import SkillRegistry
@@ -31,6 +32,7 @@ from roomkit.voice.base import VoiceSession
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
 from roomkit.voice.realtime.reasoning import ReasoningBackend, ReasoningOutput, ReasoningRequest
 from tests.conference.test_conference_realtime import ROOM, realtime_kit, until
+from tests.test_skills_integration import MockScriptExecutor
 
 
 def _tool(name: str) -> dict[str, Any]:
@@ -345,3 +347,34 @@ async def test_a_conference_policy_says_its_role_overrides_never_apply(
     )
     assert "role_overrides ['observer'] never apply" in caplog.text
     await kit.close()
+
+
+async def test_the_skills_preamble_says_scripts_cannot_run_when_the_policy_denies_them(
+    tmp_path: Path,
+) -> None:
+    """As on AIChannel: the prompt never promises a tool the policy denies (RFC §21.1)."""
+
+    async def prompt_under(policy: ToolPolicy | None) -> str:
+        provider = MockRealtimeProvider()
+        skill_root = tmp_path / ("open" if policy is None else "denied")
+        skill_root.mkdir()
+        channel = RealtimeVoiceChannel(
+            "rt",
+            provider=provider,
+            transport=MockRealtimeTransport(),
+            skills=_accounts_skill(skill_root),
+            script_executor=MockScriptExecutor(),
+            tool_policy=policy,
+        )
+        kit = RoomKit()
+        kit.register_channel(channel)
+        await kit.create_room(room_id="r1")
+        await kit.attach_channel("r1", "rt")
+        await channel.start_session("r1", "u1", "ws")
+        await kit.close()
+        connected = [c.args for c in provider.calls if c.method == "connect"][-1]
+        return connected["system_prompt"] or ""
+
+    note = SKILLS_NO_SCRIPTS_NOTE.strip()
+    assert note in await prompt_under(ToolPolicy(deny=["run_skill_script"]))
+    assert note not in await prompt_under(None)
