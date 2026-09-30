@@ -108,14 +108,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A tool loop's declaration holds from round to round (RMK-317, RFC §6.4).
   `read_stored_result` is declared from the first round of any turn that
-  declares a tool or whose room holds a stored result, after the other tools,
-  instead of from the round a result is first stored; the anti-loop stop keeps
-  the round's tools, runs none of its last generation's calls and still ends
-  the turn `force_stopped`. A provider caches a request as a prefix, tools
-  first, and a declaration that gains, loses or reorders a tool is billed as
-  if nothing were cached: on the cost suite (`claude-sonnet-5`), the
-  three-turn conversation costs 12 % less and a force-stopped turn 24 % less.
-  `declared_tools` lists `read_stored_result` for such turns.
+  declares a tool or whose room holds a stored result, after the other tools
+  (a tool a `BEFORE_AI_GENERATION` hook added included), so the declaration no
+  longer changes when a result is stored; the anti-loop stop keeps the round's
+  tools, runs none of its last generation's calls and still ends the turn
+  `force_stopped`. A provider caches a request as a prefix, tools first, and a
+  declaration that gains, loses or reorders a tool is billed as if nothing
+  were cached: on the cost suite (`claude-sonnet-5`), the three-turn
+  conversation costs 12 % less and a force-stopped turn 24 % less.
+  `declared_tools` lists `read_stored_result` for such turns; the generation
+  hook still sees it only once the room holds a stored result.
 - A tool call a realtime model speaks as text (`call:name{...}`) is
   recovered only when it is said as a sentence of its own that ends the
   utterance: at the start of the text or of a line, or after a sentence's
@@ -367,6 +369,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A `BEFORE_AI_GENERATION` hook that redefines a tool the channel serves and
+  already declares (`find_tools` under Tool Search, say) is named by a
+  warning, as one that adds a tool under such a name already was (RMK-317,
+  RFC §21.1). The channel's definition was kept, silently.
 - The kit builds a room context for a hook only when a hook of that trigger
   is registered (RMK-316). `BEFORE_TOOL_USE` and `ON_TOOL_CALL` read the room,
   its bindings, its participants and its history from the store on every tool

@@ -799,17 +799,18 @@ def _adopt_hook_toolset(
         return
     kept = {tool.name: tool for tool in left or []}
     withdrawn = declared - kept.keys()
+    original = {tool.name: tool for tool in loop_ctx.all_context_tools}
+    for name, tool in kept.items():
+        # A tool added under a served name, or a served tool redefined.
+        if name in served and original.get(name) != tool:
+            collisions.served(name)
     base = [
         t if t.name in served else kept.get(t.name, t)
         for t in loop_ctx.all_context_tools
         if t.name not in withdrawn
     ]
     known = {tool.name for tool in base}
-    unknown = [name for name in kept if name not in known]
-    for name in unknown:
-        if name in served:
-            collisions.served(name)
-    added = {name for name in unknown if name not in served}
+    added = {name for name in kept if name not in known and name not in served}
     base.extend(kept[name] for name in kept if name in added)
     loop_ctx.all_context_tools = base
     loop_ctx.withdrawn_tools = loop_ctx.withdrawn_tools | withdrawn

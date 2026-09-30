@@ -151,10 +151,10 @@ def final_round_reason(
     turn that ran no tool at all — is a plain completion.
 
     ``force_stopped`` outranks the text, and is the reason this parameter
-    exists: the anti-loop ripcord reaches this round precisely by stripping
-    tools and demanding prose, so its exit produced text and read as
-    ``completed`` — the one loop-cut this function could not tell from an
-    answer. A caller then delivered a cut turn's summary as the result.
+    exists: the anti-loop ripcord reaches this round precisely by demanding
+    prose (and running none of the round's calls), so its exit produced text
+    and read as ``completed`` — the one loop-cut this function could not tell
+    from an answer. A caller then delivered a cut turn's summary as the result.
 
     The other exits (round cap, deadline at a round boundary, cancellation)
     are named at their own ``return``: they know their reason without asking.

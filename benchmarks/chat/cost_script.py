@@ -234,7 +234,7 @@ TOOL_TURNS: Turns = [
 ]
 
 # Six identical calls: the third is refused, the sixth pulls the ripcord and
-# the last generation runs without tools.
+# the last generation is told to answer; none of its calls runs.
 FORCE_STOP_TURNS: Turns = [
     (
         "Look up order A-1.",

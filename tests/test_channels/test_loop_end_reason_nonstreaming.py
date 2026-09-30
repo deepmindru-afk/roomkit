@@ -91,8 +91,8 @@ async def test_an_answer_after_tools_is_still_completed() -> None:
 
 async def test_the_anti_loop_ripcord_is_named_not_disguised_as_an_answer() -> None:
     """Mirror of the streaming test: six identical calls trip the guard, the
-    ripcord strips tools and demands prose — text that is a summary of a cut
-    turn, not an answer, and now says so."""
+    ripcord demands prose — text that is a summary of a cut turn, not an
+    answer, and now says so."""
     ch = _channel([*[_tool(0) for _ in range(6)], AIResponse(content="here is what I found")])
 
     message = await _final_message(ch)

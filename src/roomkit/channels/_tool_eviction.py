@@ -139,13 +139,12 @@ class ToolEviction:
     stored, each room keeping its most recently stored or read results
     within the store's bounds, and replaced with a head/tail preview
     bounded in lines and in chars.
-    The ``read_stored_result`` tool definition is injected into the AI
-    context so the agent can paginate back through the full output.
+    The ``read_stored_result`` tool (``with_reread_tool``) lets the agent
+    paginate back through the full output.
 
     The store is scoped per room: the eviction buffer lives on a channel
     object shared by every room the channel serves, so an unscoped buffer
-    would leak one conversation's tool output into another (and inject
-    the re-read tool into rooms that evicted nothing). The room comes
+    would leak one conversation's tool output into another. The room comes
     from the tool-loop context; paths outside a loop share one fallback
     scope.
     """
@@ -189,7 +188,7 @@ class ToolEviction:
 
         return (
             f"{EVICTION_PLACEHOLDER_PREFIX}{estimated} tokens). Full output saved as "
-            f"'{result_id}'. Use read_stored_result to read it with pagination.\n\n"
+            f"'{result_id}'. Use {REREAD_TOOL} to read it with pagination.\n\n"
             f"Preview:\n{_preview(result, self._preview_budget())}"
         )
 
@@ -342,15 +341,16 @@ class ToolEviction:
 
     def with_reread_tool(self, tools: Sequence[AITool]) -> list[AITool]:
         """*tools* with the re-read tool last, when they declare a tool or the
-        room holds a stored result, and lack it.
+        room holds a stored result.
 
-        Declared from the first round of such a turn, not from the round a
-        result is first stored (RFC §6.4): a declaration that gains a tool
-        invalidates everything a provider cached after the tools.
+        Declared from the first round of such a turn, so the declaration does
+        not change when a result is stored (RFC §6.4): a declaration that gains
+        a tool invalidates everything a provider cached after the tools.
         """
-        if any(t.name == REREAD_TOOL for t in tools) or not (tools or self.has_evicted):
-            return list(tools)
-        return [*tools, self.tool_definition()]
+        if not tools and not self.has_evicted:
+            return []
+        reread = [t for t in tools if t.name == REREAD_TOOL] or [self.tool_definition()]
+        return [*(t for t in tools if t.name != REREAD_TOOL), reread[0]]
 
     @staticmethod
     def tool_definition() -> AITool:

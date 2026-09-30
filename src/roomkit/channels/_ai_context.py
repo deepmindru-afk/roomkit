@@ -512,9 +512,11 @@ class AIContextMixin:
         system_prompt = self._collapse_behind_tool_search(
             tools, system_prompt, loop_ctx, binding, event, standalone
         )
-        # Last, and whether or not a result was stored yet: the declaration
-        # holds from round to round and turn to turn (RFC §6.4).
-        tools[:] = self._eviction.with_reread_tool(tools)
+        # The generation hook sees the re-read tool once the room holds a
+        # stored result, and may withdraw it. The rounds declare it from the
+        # first one either way (``_prepare_round_context``, RFC §6.4).
+        if self._eviction.has_evicted:
+            tools.append(ToolEviction.tool_definition())
         return system_prompt
 
     def _add_skills(
@@ -528,11 +530,11 @@ class AIContextMixin:
         """The system prompt with the skills' manifest and the bodies of the
         skills active in *activation_room*; the skill tools join *tools*
         (infra tools here, gated tools later)."""
-        # The manifest block is skipped when the host renders its own skills
-        # manifest inside ``system_prompt`` (``skills_in_prompt=False``).
         if not self._skills or self._skills.skill_count == 0:
             return system_prompt
         tools.extend(self._skill_tools())
+        # The manifest block is skipped when the host renders its own skills
+        # manifest inside ``system_prompt`` (``skills_in_prompt=False``).
         if self._skills_in_prompt:
             preamble = _SKILLS_PREAMBLE
             # No executor, or a policy that denies the tool: either way

@@ -121,8 +121,8 @@ async def test_the_anti_loop_ripcord_is_named_not_disguised_as_an_answer() -> No
     """The exit that used to read ``completed``, and the reason this value
     exists.
 
-    The ripcord works by stripping tools and demanding prose, so the model
-    DOES produce text — and text was the whole test for "the model answered".
+    The ripcord works by demanding prose, so the model DOES produce text — and
+    text was the whole test for "the model answered".
     A run cut after hammering one call was therefore indistinguishable from a
     finished one, and callers delivered the cut turn's summary as the result.
 

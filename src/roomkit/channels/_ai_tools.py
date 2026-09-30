@@ -27,6 +27,7 @@ from roomkit.channels._skill_handlers import (
     handle_read_reference,
     handle_run_script,
 )
+from roomkit.channels._tool_eviction import REREAD_TOOL
 from roomkit.channels._tool_search import (
     normalize_max_results,
     related_family_tools,
@@ -646,7 +647,7 @@ class AIToolsMixin:
     # Sync handlers are wrapped to match the async signature.
     @property
     def _channel_tool_dispatch(self) -> dict[str, Any]:
-        dispatch: dict[str, Any] = {"read_stored_result": self._handle_read_tool_result}
+        dispatch: dict[str, Any] = {REREAD_TOOL: self._handle_read_tool_result}
         if self._planner is not None:
             dispatch["plan_tasks"] = self._handle_plan_tasks
         if self._skills:

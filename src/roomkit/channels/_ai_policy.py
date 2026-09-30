@@ -10,6 +10,7 @@ from roomkit.channels._skill_constants import (
     TOOL_ACTIVATE_SKILL,
     TOOL_READ_REFERENCE,
 )
+from roomkit.channels._tool_eviction import REREAD_TOOL
 from roomkit.channels._tool_search_constants import (
     TOOL_FIND_TOOLS,
     TOOL_LIST_TOOLS,
@@ -40,7 +41,7 @@ POLICY_EXEMPT_TOOL_NAMES: frozenset[str] = frozenset(
     {
         TOOL_ACTIVATE_SKILL,
         TOOL_READ_REFERENCE,
-        "read_stored_result",
+        REREAD_TOOL,
         TOOL_FIND_TOOLS,
         TOOL_LIST_TOOLS,
     }
@@ -163,10 +164,10 @@ class AIToolPolicyMixin:
         Called with the ``AIContext.tools`` of every provider call of the turn,
         by the loop that makes the call. Not from ``_apply_tool_filters``: its
         output is not the round's declaration (a ``BEFORE_AI_GENERATION`` hook
-        may edit the tools, the eviction tool is injected per round beside it,
-        the force-stop ripcord strips them) and it also serves as a single-tool
-        probe. A name is recorded once per turn, on its first round, with the
-        reason Tool Search let it through as it stood then. The turn's
+        may edit the tools, the eviction tool is added per round after them)
+        and it also serves as a single-tool probe. A name is recorded once per
+        turn, on its first round, with the reason Tool Search let it through as
+        it stood then. The turn's
         ``AIResponseEvent.declared_tools`` reports the union.
         """
         if not tools:

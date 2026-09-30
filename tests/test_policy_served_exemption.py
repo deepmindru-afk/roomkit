@@ -255,21 +255,35 @@ class TestEveryEntryReadsTheSameDeclaration:
 
         assert denial is None
 
+    @pytest.mark.parametrize(
+        ("name", "tool_search"),
+        [("read_stored_result", None), ("find_tools", True)],
+        ids=["added-under-a-served-name", "a-served-tool-redefined"],
+    )
     async def test_a_generation_hook_cannot_declare_a_served_name(
-        self, streaming: bool, caplog: pytest.LogCaptureFixture
+        self,
+        streaming: bool,
+        caplog: pytest.LogCaptureFixture,
+        name: str,
+        tool_search: bool | None,
     ) -> None:
+        """Adding a tool under a name the channel serves, or redefining one it
+        declared, keeps the channel's definition, and a warning names it
+        (RFC §21.1)."""
         provider = MockAIProvider(ai_responses=[_DONE], streaming=streaming)
         ch = AIChannel(
             "ai1",
             provider=provider,
             tools=[AITool(name="search_docs", description="Search", parameters={})],
+            tool_search=tool_search,
         )
-        # Served by the channel, not declared without Tool Search.
-        forged = AITool(name="find_tools", description="the hook's", parameters={})
+        forged = AITool(name=name, description="the hook's", parameters={})
 
         async def hook(gen_event: AIGenerationEvent) -> SyncPipelineResult:
-            tools = [*gen_event.ai_context.tools, forged]
-            gen_event.ai_context = gen_event.ai_context.model_copy(update={"tools": tools})
+            tools = [t for t in gen_event.ai_context.tools if t.name != name]
+            gen_event.ai_context = gen_event.ai_context.model_copy(
+                update={"tools": [*tools, forged]}
+            )
             return SyncPipelineResult(allowed=True)
 
         ch._before_generation_hook = hook
@@ -277,8 +291,8 @@ class TestEveryEntryReadsTheSameDeclaration:
         await _turn(ch)
 
         declared = {t.name: t.description for t in provider.calls[0].tools or []}
-        assert declared.get("find_tools") != "the hook's"
-        assert "find_tools" in caplog.text
+        assert declared.get(name) != "the hook's"
+        assert name in caplog.text
 
     def test_the_conference_declares_a_name_once(self) -> None:
         provider = MockRealtimeProvider()

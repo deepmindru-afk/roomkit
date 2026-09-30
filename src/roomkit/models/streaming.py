@@ -65,10 +65,11 @@ class ThinkingDeltaMarker:
 #: other value is the loop ending on a rule of its own.
 #:
 #: ``force_stopped`` is the anti-loop ripcord: the model kept re-issuing a call
-#: the guard had already blocked, so tools were stripped and it was told to
-#: answer from what it had. It DOES produce text, which is exactly why it needs
-#: its own name — that text is a summary of a turn the platform cut short, not
-#: an answer, and a caller that reads ``completed`` delivers it as one.
+#: the guard had already blocked, so one last generation was told to answer
+#: from what it had, and none of its calls runs. It usually produces text,
+#: which is exactly why it needs its own name — that text is a summary of a
+#: turn the platform cut short, not an answer, and a caller that reads
+#: ``completed`` delivers it as one.
 #:
 #: ``error`` is a turn the provider interrupted after a tool round: the rounds
 #: are kept, each round's text as its own message, and it is an error too

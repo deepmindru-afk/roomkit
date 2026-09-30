@@ -38,16 +38,18 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from roomkit.channels._skill_constants import SKILL_INFRA_TOOL_NAMES
-from roomkit.channels._tool_eviction import eviction_placeholder_size, is_eviction_placeholder
+from roomkit.channels._tool_eviction import (
+    REREAD_TOOL,
+    eviction_placeholder_size,
+    is_eviction_placeholder,
+)
 from roomkit.channels._tool_search_constants import TOOL_SEARCH_INFRA_TOOL_NAMES
 from roomkit.tools.fence import fence
 
 # Discovery / housekeeping tools are not "work the agent did" and are always
 # available anyway — recording them would only add noise to the digest and
 # pointlessly re-reveal tools that are never hidden.
-_INFRA_NAMES = (
-    TOOL_SEARCH_INFRA_TOOL_NAMES | SKILL_INFRA_TOOL_NAMES | frozenset({"read_stored_result"})
-)
+_INFRA_NAMES = TOOL_SEARCH_INFRA_TOOL_NAMES | SKILL_INFRA_TOOL_NAMES | frozenset({REREAD_TOOL})
 
 # Recent calls shown in the digest: one line each, except the most recent
 # ``_RESULTS_SHOWN``, which carry their result. The bound is readability — a
