@@ -432,21 +432,6 @@ class AIChannel(
         human_input_handler: HumanInputToolHandler | None,
     ) -> None:
         """The tools this channel declares and the handlers that serve them."""
-        # Extract Tool objects: split into AITool definitions + composed handler
-        extracted_defs: list[AITool] = []
-        extracted_handler: ToolHandler | None = None
-        if tools:
-            extracted_defs, extracted_handler = extract_tools(list(tools))
-
-        # Merge explicit tool_handler with handlers extracted from Tool objects
-        effective_handler = tool_handler
-        if extracted_handler and tool_handler:
-            effective_handler = compose_tool_handlers(tool_handler, extracted_handler)
-        elif extracted_handler:
-            effective_handler = extracted_handler
-
-        # Human-input handler: compose first (highest priority) so it
-        # intercepts matching tools before the user handler chain.
         self._human_input_handler = human_input_handler
         # Names already reported as intercepted-but-never-offered; the
         # warning is a wiring diagnostic, not a per-turn event.
@@ -457,11 +442,9 @@ class AIChannel(
         # displaced predecessor cannot close the scope out from under the
         # object that replaced it.
         self._human_input_registration: int | None = None
-        if human_input_handler:
-            if effective_handler:
-                effective_handler = compose_tool_handlers(human_input_handler, effective_handler)
-            else:
-                effective_handler = human_input_handler
+        extracted_defs, effective_handler = self._compose_host_tools(
+            tool_handler, tools, human_input_handler
+        )
 
         # The host's handler, kept apart: all dispatch goes through
         # _channel_tool_handler, which routes to the registry's entries (the
@@ -481,6 +464,35 @@ class AIChannel(
         served = self._channel_tool_names()
         refuse_served_names((tool.name for tool in self._user_tools), served, self.channel_id)
         refuse_given_twice((tool.name for tool in self._user_tools), self.channel_id)
+
+    def _compose_host_tools(
+        self,
+        tool_handler: ToolHandler | None,
+        tools: list[AITool | Tool] | None,
+        human_input_handler: HumanInputToolHandler | None,
+    ) -> tuple[list[AITool], ToolHandler | None]:
+        """The host's tool definitions, and the one handler that serves them."""
+        # Extract Tool objects: split into AITool definitions + composed handler
+        extracted_defs: list[AITool] = []
+        extracted_handler: ToolHandler | None = None
+        if tools:
+            extracted_defs, extracted_handler = extract_tools(list(tools))
+
+        # Merge explicit tool_handler with handlers extracted from Tool objects
+        effective_handler = tool_handler
+        if extracted_handler and tool_handler:
+            effective_handler = compose_tool_handlers(tool_handler, extracted_handler)
+        elif extracted_handler:
+            effective_handler = extracted_handler
+
+        # Human-input handler: composed first (highest priority) so it
+        # intercepts matching tools before the user handler chain.
+        if human_input_handler:
+            if effective_handler:
+                effective_handler = compose_tool_handlers(human_input_handler, effective_handler)
+            else:
+                effective_handler = human_input_handler
+        return extracted_defs, effective_handler
 
     def _host_tool_names(self) -> list[str]:
         """The names the host's own tools carry: its definitions and its

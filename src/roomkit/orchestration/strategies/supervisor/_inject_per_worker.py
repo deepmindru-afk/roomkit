@@ -26,6 +26,7 @@ from roomkit.providers.ai.base import AITool
 if TYPE_CHECKING:
     from roomkit.channels.agent import Agent
     from roomkit.core.framework import RoomKit
+    from roomkit.tasks.models import DelegatedTask
 
 
 class _PerWorkerToolMixin:
@@ -121,11 +122,14 @@ class _PerWorkerToolServer:
                 metadata={"room_id": rid, "mode": "per_worker_wait"},
             )
             raise
+        return self._report_result(rid, worker_id, delegated)
+
+    def _report_result(self, rid: str, worker_id: str, delegated: DelegatedTask) -> str:
+        """Post a finished delegation's outcome, and answer the model with it."""
         result = delegated.result
-        result_status = result.status if result else "failed"
         result_output = _result_output(result)
         _post_worker_status(
-            kit,
+            self._kit,
             worker_id,
             StatusLevel.COMPLETED if _result_completed(result) else StatusLevel.FAILED,
             detail=result_output,
@@ -137,7 +141,7 @@ class _PerWorkerToolServer:
         )
         return json.dumps(
             {
-                "status": result_status,
+                "status": result.status if result else "failed",
                 "worker": worker_id,
                 "result": result_output,
             }
@@ -148,17 +152,7 @@ class _PerWorkerToolServer:
         kit = self._kit
         pending = self._pending
         if (rid, worker_id) in pending:
-            return json.dumps(
-                {
-                    "status": "already_running",
-                    "worker": worker_id,
-                    "message": (
-                        f"{worker_id} is already working on this. "
-                        "Do NOT call this tool again. "
-                        "Tell the user to ask again shortly."
-                    ),
-                }
-            )
+            return _already_working(worker_id)
 
         delegated = await kit.delegate(
             rid,
@@ -180,44 +174,61 @@ class _PerWorkerToolServer:
             },
         )
 
-        original_set = delegated._set_result
-        _bus_kit = kit
-        _bus_room = rid
-        _bus_task_id = delegated.id
+        self._track_completion(rid, worker_id, delegated)
+        return _dispatched(worker_id, delegated.id)
 
-        def _patched_set(r: Any, *, _wid: str = worker_id, _rid: str = rid) -> None:
-            pending.discard((_rid, _wid))
-            output = _result_output(r)
-            ok = _result_completed(r)
+    def _track_completion(self, rid: str, worker_id: str, delegated: DelegatedTask) -> None:
+        """Free the worker in *rid* and post its outcome when *delegated* ends."""
+        pending = self._pending
+        kit = self._kit
+        original_set = delegated._set_result
+        task_id = delegated.id
+
+        def _patched_set(r: Any) -> None:
+            pending.discard((rid, worker_id))
             _post_worker_status(
-                _bus_kit,
-                _wid,
-                StatusLevel.COMPLETED if ok else StatusLevel.FAILED,
-                detail=output,
-                metadata={
-                    "room_id": _bus_room,
-                    "mode": "per_worker_async",
-                    "task_id": _bus_task_id,
-                },
+                kit,
+                worker_id,
+                StatusLevel.COMPLETED if _result_completed(r) else StatusLevel.FAILED,
+                detail=_result_output(r),
+                metadata={"room_id": rid, "mode": "per_worker_async", "task_id": task_id},
             )
             original_set(r)
 
         delegated._set_result = _patched_set  # ty: ignore[invalid-assignment]
 
-        return json.dumps(
-            {
-                "status": "delegated",
-                "task_id": delegated.id,
-                "worker": worker_id,
-                "message": (
-                    f"Task dispatched to {worker_id}. "
-                    "It is running in the background. "
-                    "Do NOT call this tool again. "
-                    "Tell the user to ask again shortly "
-                    "for results."
-                ),
-            }
-        )
+
+def _already_working(worker_id: str) -> str:
+    """What the model reads when the worker is still on this room's task."""
+    return json.dumps(
+        {
+            "status": "already_running",
+            "worker": worker_id,
+            "message": (
+                f"{worker_id} is already working on this. "
+                "Do NOT call this tool again. "
+                "Tell the user to ask again shortly."
+            ),
+        }
+    )
+
+
+def _dispatched(worker_id: str, task_id: str) -> str:
+    """What the model reads when the worker was started in the background."""
+    return json.dumps(
+        {
+            "status": "delegated",
+            "task_id": task_id,
+            "worker": worker_id,
+            "message": (
+                f"Task dispatched to {worker_id}. "
+                "It is running in the background. "
+                "Do NOT call this tool again. "
+                "Tell the user to ask again shortly "
+                "for results."
+            ),
+        }
+    )
 
 
 def _worker_tool(worker: Agent) -> AITool:

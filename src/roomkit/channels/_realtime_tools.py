@@ -380,21 +380,9 @@ class RealtimeToolsMixin:
         """
         if session.state == VoiceSessionState.ENDED:
             return
-        transport_error = None
-        if (
-            name == TOOL_CALL_TOOL
-            and self._tool_search_support
-            and self._tool_search_support.uses_call_tool
-            and self._tool_search_support.active(session.id)
-        ):
-            name, arguments, transport_error = self._tool_search_support.unwrap_call(
-                arguments, session.id
-            )
-            # The books name the call the model issued; a cancellation report
-            # should name the tool it wrapped.
-            pending = self._pending_tool_calls.get(session.id)
-            if pending is not None and call_id in pending:
-                pending[call_id] = (name, arguments)
+        name, arguments, transport_error = self._unwrap_call_tool(
+            session, call_id, name, arguments
+        )
         # Order barrier: a tool call must not overtake the transcriptions the
         # provider emitted before it. The user final that closes the current
         # utterance travels the serialised transcription queue, while tool
@@ -538,6 +526,27 @@ class RealtimeToolsMixin:
                 self._transport.set_input_muted(session, False)
             if _rt_tok is not None:
                 reset_span(_rt_tok)
+
+    def _unwrap_call_tool(
+        self, session: VoiceSession, call_id: str, name: str, arguments: dict[str, Any]
+    ) -> tuple[str, dict[str, Any], str | None]:
+        """The tool a fixed-declaration ``call_tool`` carries, its arguments, and
+        why the transport is unreadable, if it is; any other call as it came."""
+        support = self._tool_search_support
+        if not (
+            name == TOOL_CALL_TOOL
+            and support
+            and support.uses_call_tool
+            and support.active(session.id)
+        ):
+            return name, arguments, None
+        name, arguments, transport_error = support.unwrap_call(arguments, session.id)
+        # The books name the call the model issued; a cancellation report
+        # should name the tool it wrapped.
+        pending = self._pending_tool_calls.get(session.id)
+        if pending is not None and call_id in pending:
+            pending[call_id] = (name, arguments)
+        return name, arguments, transport_error
 
     async def _serve_gated_tool_call(
         self,

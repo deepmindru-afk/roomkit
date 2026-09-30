@@ -185,6 +185,25 @@ class _StrategyToolServer:
                     ),
                 }
             )
+        self._start_team(rid, task_desc)
+        dispatched_response = json.dumps(
+            {
+                "status": "dispatched",
+                "workers": [w.channel_id for w in self._workers],
+                "message": (
+                    "Workers are running in the background. "
+                    "Use check_status_bus to follow progress. "
+                    "Their combined results will be handed to you "
+                    "when they are done."
+                ),
+            }
+        )
+        self._remember(rid, dispatched_response)
+        return dispatched_response
+
+    def _start_team(self, rid: str, task_desc: str) -> None:
+        """Run the team for *rid* in the background, the room marked busy
+        until it ends."""
         self._running.add(rid)
 
         def _clear(*, success: bool = True, _rid: str = rid) -> None:
@@ -218,21 +237,6 @@ class _StrategyToolServer:
         except BaseException:
             self._running.discard(rid)
             raise
-
-        dispatched_response = json.dumps(
-            {
-                "status": "dispatched",
-                "workers": [w.channel_id for w in self._workers],
-                "message": (
-                    "Workers are running in the background. "
-                    "Use check_status_bus to follow progress. "
-                    "Their combined results will be handed to you "
-                    "when they are done."
-                ),
-            }
-        )
-        self._remember(rid, dispatched_response)
-        return dispatched_response
 
     async def _run(self, rid: str, task_desc: str) -> str:
         """Run the team for *rid*, and answer with what the supervisor reviews."""
