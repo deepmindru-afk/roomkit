@@ -754,7 +754,7 @@ await kit.subscribe_room("room-1", my_callback)
 # type: "custom", data: {"type": "plan_updated", "tasks": [...]}
 ```
 
-The ephemeral event is the only plan-update signal — the `HookTrigger.ON_PLAN_UPDATED` enum value is reserved and not currently fired.
+`HookTrigger.ON_PLAN_UPDATED` fires too, as an async hook carrying a `PlanUpdatedEvent` (room, channel, tasks): the signal for a host that records or acts on plan changes without a realtime backend.
 
 ### SummarizingMemory
 
