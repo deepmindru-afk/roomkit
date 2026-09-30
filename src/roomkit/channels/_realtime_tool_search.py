@@ -43,7 +43,13 @@ def _reject_json_constant(value: str) -> None:
 
 
 class RealtimeToolSearchSupport:
-    """Session catalogues and schema delivery for tool-heavy realtime channels."""
+    """Session catalogues and schema delivery for tool-heavy realtime channels.
+
+    Whether a session hides its catalogue is decided per session, on what that
+    session declares: a room's active agent, a session's own tools and what
+    orchestration set up for the room all change it after the channel was
+    built. Without *auto*, every session hides it.
+    """
 
     def __init__(
         self,
@@ -54,8 +60,13 @@ class RealtimeToolSearchSupport:
         reconfigure_capable: bool = True,
         reachable: Callable[[str, str], bool] | None = None,
         never_deferred: Callable[[str], Iterable[str]] | None = None,
+        auto: bool = False,
     ) -> None:
         self._catalogue: list[dict[str, Any]] = list(catalogue)
+        # Hide a session's catalogue only when it is larger than the threshold.
+        self._auto = auto
+        # session_id -> whether the session's catalogue is hidden behind search.
+        self._active: dict[str, bool] = {}
         # (tool name, session id) -> whether the session may call it. Search
         # results and listings name nothing else (RFC §21.1): a match the
         # model can never call is a false promise and discloses the gate.
@@ -147,10 +158,24 @@ class RealtimeToolSearchSupport:
         self._validate_catalogue(effective)
         self._exposed[session_id] = set()
         self._session_catalogues[session_id] = list(effective)
+        self._active[session_id] = not self._auto or (
+            self._deferrable_count(session_id, effective) > self._threshold
+        )
+
+    def _deferrable_count(self, session_id: str, catalogue: list[dict[str, Any]]) -> int:
+        """How many of *catalogue*'s tools search could hide: what is never
+        deferred does not count toward the size that decides it (RFC §21.1)."""
+        never = set(self._never_deferred(session_id))
+        return sum(1 for tool in catalogue if tool.get("name") not in never)
+
+    def active(self, session_id: str) -> bool:
+        """Whether the session's catalogue is hidden behind the search tools."""
+        return self._active.get(session_id, not self._auto)
 
     def cleanup_session(self, session_id: str) -> None:
         self._exposed.pop(session_id, None)
         self._session_catalogues.pop(session_id, None)
+        self._active.pop(session_id, None)
 
     # -- Visibility (replaces the channel's full tool list) --
 
@@ -167,8 +192,11 @@ class RealtimeToolSearchSupport:
         Always includes search infra + pinned + *keep* (what is never deferred
         in the session's room) + currently-exposed matches. ``base_tools`` is
         the session's catalogue; we use it only to preserve ordering for
-        deterministic output.
+        deterministic output. A session whose catalogue is small enough sees
+        it whole, without the search tools.
         """
+        if not self.active(session_id):
+            return list(base_tools)
         exposed = (
             set()
             if reset_exposure or self.uses_call_tool

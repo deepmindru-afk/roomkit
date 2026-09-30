@@ -1646,7 +1646,7 @@ class RealtimeVoiceChannel(
             addendum = self._skill_support.activated_skills_prompt(session.id, pending_skill)
             if addendum:
                 prompt += "\n\n" + addendum
-        if self._tool_search_support:
+        if self._tool_search_support and self._tool_search_support.active(session.id):
             prompt = (prompt or "") + "\n\n" + self._tool_search_support.preamble
         return prompt
 
@@ -1659,13 +1659,14 @@ class RealtimeVoiceChannel(
         threshold: int,
         pinned: list[str] | None,
     ) -> RealtimeToolSearchSupport | None:
-        """This channel's Tool Search, when its catalogue calls for one.
+        """This channel's Tool Search, unless ``tool_search=False``.
 
-        It activates when the catalogue is large enough to overflow the
-        realtime model's reliable tool-selection window (Google Gemini Live:
-        10–20 active tools), or when a fixed-declaration provider needs it to
-        open a skill's gated tools. Auto-detect by default; ``tool_search=True``
-        or ``False`` forces. Reconfigurable providers receive native
+        It hides a session's catalogue when that session declares enough tools
+        to overflow the realtime model's reliable tool-selection window (Google
+        Gemini Live: 10–20 active tools), decided per session on what it
+        declares, or in every session when a fixed-declaration provider needs
+        it to open a skill's gated tools. Auto-detect by default;
+        ``tool_search=True`` or ``False`` forces. Reconfigurable providers receive native
         declarations on discovery; fixed-declaration providers receive schemas
         through ``list_tools`` and carry execution through ``call_tool`` into
         the same channel dispatch.
@@ -1679,10 +1680,7 @@ class RealtimeVoiceChannel(
         )
         if fixed_skill_gates and tool_search is False:
             raise ValueError("Fixed-provider skill gates require Tool Search; tool_search=False")
-        should_enable = tool_search is True or (
-            tool_search is None and (len(tool_defs or []) > threshold or fixed_skill_gates)
-        )
-        if not (should_enable and (tool_defs or fixed_skill_gates)):
+        if tool_search is False:
             return None
         from roomkit.channels._realtime_tool_search import RealtimeToolSearchSupport
 
@@ -1693,6 +1691,7 @@ class RealtimeVoiceChannel(
             reconfigure_capable=provider.supports_mid_session_reconfigure,
             reachable=self._tool_reachable,
             never_deferred=self._session_never_deferred,
+            auto=tool_search is None and not fixed_skill_gates,
         )
 
     def _session_never_deferred(self, session_id: str) -> set[str]:
@@ -1798,14 +1797,20 @@ class RealtimeVoiceChannel(
             if caller_prompt is not None:
                 session.metadata["system_prompt"] = caller_prompt
             if caller_tools is not None:
-                with self._state_lock:
-                    if session.id in self._sessions:
-                        stored = self._declared_once(deepcopy(caller_tools), session.room_id)
-                        self._session_tools[session.id] = stored
-                        if self._tool_search_support:
-                            self._tool_search_support.init_session(session.id, stored)
+                self._store_session_tools(session, caller_tools)
 
             logger.info("Realtime session %s reconfigured", session.id)
+
+    def _store_session_tools(self, session: VoiceSession, tools: list[dict[str, Any]]) -> None:
+        """Keep *tools* as a live session's base catalogue, and let Tool Search
+        decide on it (outside the state lock, which its measure takes)."""
+        stored = self._declared_once(deepcopy(tools), session.room_id)
+        with self._state_lock:
+            if session.id not in self._sessions:
+                return
+            self._session_tools[session.id] = stored
+        if self._tool_search_support:
+            self._tool_search_support.init_session(session.id, stored)
 
     async def connect_session(
         self,

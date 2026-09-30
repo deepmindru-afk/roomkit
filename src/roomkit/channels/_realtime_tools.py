@@ -385,6 +385,7 @@ class RealtimeToolsMixin:
             name == TOOL_CALL_TOOL
             and self._tool_search_support
             and self._tool_search_support.uses_call_tool
+            and self._tool_search_support.active(session.id)
         ):
             name, arguments, transport_error = self._tool_search_support.unwrap_call(
                 arguments, session.id

@@ -433,7 +433,7 @@ class TestAutoActivation:
         provider: MockRealtimeProvider,
         transport: MockRealtimeTransport,
     ) -> None:
-        """Catalogue below threshold → no Tool Search support is constructed."""
+        """A session declaring fewer tools than the threshold sees them whole."""
         few_tools = [_tool(f"t{i}") for i in range(5)]
         channel = RealtimeVoiceChannel(
             "rt-small",
@@ -442,7 +442,41 @@ class TestAutoActivation:
             tools=few_tools,
             tool_search_threshold=20,  # default — auto-detect
         )
-        assert channel._tool_search_support is None
+        support = channel._tool_search_support
+        assert support is not None
+        support.init_session("s1", few_tools)
+        assert not support.active("s1")
+        assert support.visible_tools("s1", few_tools) == few_tools
+
+    async def test_decided_on_what_the_session_declares(
+        self,
+        provider: MockRealtimeProvider,
+        transport: MockRealtimeTransport,
+    ) -> None:
+        """A channel built with few tools hides a session's catalogue when that
+        session declares more than the threshold, and not another's (F14)."""
+        channel = RealtimeVoiceChannel(
+            "rt-grows", provider=provider, transport=transport, tools=[_tool("a")]
+        )
+        kit = RoomKit()
+        kit.register_channel(channel)
+        room = await kit.create_room()
+        await kit.attach_channel(room.id, "rt-grows")
+
+        large = await channel.start_session(
+            room.id, "p1", object(), metadata={"tools": _make_catalogue(40)}
+        )
+        small = await channel.start_session(room.id, "p2", object())
+
+        declared = {
+            c.args["session_id"]: [t["name"] for t in c.args["tools"] or []]
+            for c in provider.calls
+            if c.method == "connect"
+        }
+        assert declared[large.id][:2] == ["find_tools", "list_tools"]
+        assert len(declared[large.id]) < 40
+        assert declared[small.id] == ["a"]
+        await kit.close()
 
     async def test_auto_enables_when_catalogue_exceeds_threshold(
         self,
