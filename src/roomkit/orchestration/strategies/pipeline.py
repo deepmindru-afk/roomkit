@@ -121,7 +121,7 @@ class Pipeline(Orchestration):
         )
 
         # Wire handoff tools per agent
-        self._wire_handoff(self._agents, handler, cp)
+        self._wire_handoff(self._agents, handler, cp, room_id)
 
         # Set initial conversation state
         room = await kit.get_room(room_id)
@@ -153,19 +153,17 @@ class Pipeline(Orchestration):
         agents: list[Agent],
         handler: HandoffHandler,
         cp: ConversationPipeline,
+        room_id: str,
     ) -> None:
-        """Set up per-agent handoff tools with constrained targets."""
+        """Set up per-agent handoff tools with constrained targets, in
+        *room_id*, with this install's handler (RFC §19.7)."""
         agent_map: dict[str, Agent] = {a.channel_id: a for a in agents}
         stage_by_agent: dict[str, PipelineStage] = {s.agent_id: s for s in cp.stages}
 
         for agent in agents:
-            # Guard against double registration (shared Agent instances)
-            if any(t.name == "handoff_conversation" for t in agent._injected_tools):
-                continue
-
             stage = stage_by_agent.get(agent.channel_id)
             if stage is None:
-                setup_handoff(agent, handler)
+                setup_handoff(agent, handler, room_id=room_id)
                 continue
 
             reachable_phases: set[str] = set()
@@ -183,4 +181,4 @@ class Pipeline(Orchestration):
                     targets.append((s.agent_id, desc))
 
             tool = build_handoff_tool(targets)
-            setup_handoff(agent, handler, tool=tool)
+            setup_handoff(agent, handler, tool=tool, room_id=room_id)

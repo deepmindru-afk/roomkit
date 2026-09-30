@@ -102,12 +102,11 @@ class AIContextHost(Protocol):
         _skill_activation: Per-room record of the skills active in a conversation.
         _planner: Optional task planner for planning tools.
         _user_tools: User-provided tool definitions.
-        _injected_tools: Orchestration-injected tool definitions.
         channel_id: Unique identifier for this channel.
 
     Properties / methods provided by other mixins:
-        extra_tools: ``AIChannel`` property returning user + injected tools.
-        _room_tool_defs: ``AIChannel`` — the tools declared in one room's turns only.
+        _orchestration_tools: ``AIChannel`` — the tools orchestration set up
+            for every room and for one room.
         _orchestration_tool_names: ``AIChannel`` — what Tool Search never defers.
         _skill_tools: ``AIToolsMixin`` — builds skill tool definitions.
         _reachable_tools: ``AIToolPolicyMixin`` — the tools policy and gating admit.
@@ -135,7 +134,6 @@ class AIContextHost(Protocol):
     _skill_activation: SkillActivationMemory
     _planner: TaskPlanner | None
     _user_tools: list[AITool]
-    _injected_tools: list[AITool]
     _config_provider: Any  # ConfigProvider | None — see channels/_turn_config.py
     _tool_search: bool | None
     _tool_search_pinned: set[str]
@@ -143,9 +141,7 @@ class AIContextHost(Protocol):
     _tool_search_threshold_pct: float
     channel_id: str
 
-    @property
-    def extra_tools(self) -> list[AITool]: ...
-    def _room_tool_defs(self, room_id: str) -> list[AITool]: ...
+    def _orchestration_tools(self, room_id: str | None) -> list[AITool]: ...
     def _orchestration_tool_names(self, room_id: str | None) -> set[str]: ...
     def _skill_tools(self) -> list[AITool]: ...
     def _reachable_tools(self, tools: Iterable[AITool]) -> list[AITool]: ...
@@ -179,7 +175,6 @@ class AIContextMixin:
     _skill_activation: SkillActivationMemory
     _planner: TaskPlanner | None
     _user_tools: list[AITool]
-    _injected_tools: list[AITool]
     _config_provider: Any  # ConfigProvider | None — see channels/_turn_config.py
     _tool_search: bool | None
     _tool_search_pinned: set[str]
@@ -190,8 +185,7 @@ class AIContextMixin:
     _warned_unoffered_human_tools: set[str]
 
     # Cross-mixin methods — Any annotations avoid MRO shadowing
-    extra_tools: Any  # see AIContextHost
-    _room_tool_defs: Any  # see AIContextHost
+    _orchestration_tools: Any  # see AIContextHost
     _orchestration_tool_names: Any  # see AIContextHost
     _skill_tools: Any  # see AIContextHost
     _reachable_tools: Any  # see AIContextHost
@@ -397,11 +391,12 @@ class AIContextMixin:
                 for t in raw_tools
             ]
 
-        # Inject extra tools (user-provided + orchestration handoff, etc.),
-        # each name declared once and none the channel serves itself: the
-        # channel's own tools are added below (RFC §21.1).
-        tools.extend([*self.extra_tools, *self._room_tool_defs(binding.room_id)])
-        tools = self._declared_once(tools)
+        # The host's tools, each name declared once and none the channel or
+        # orchestration serves in this room; then the ones orchestration set up
+        # for the room. The channel's own tools are added below (RFC §21.1).
+        tools.extend(self._user_tools)
+        tools = self._declared_once(tools, binding.room_id)
+        tools.extend(self._orchestration_tools(binding.room_id))
 
         # Inject human-input tool definitions (e.g. AskUserQuestion)
         if self._human_input_handler is not None:

@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
+from roomkit.channels.ai import AIChannel
 from roomkit.memory.base import MemoryProvider, MemoryResult
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.context import RoomContext
@@ -25,8 +29,9 @@ from roomkit.orchestration.state import (
     set_conversation_state,
 )
 from roomkit.providers.ai.base import AIMessage
+from roomkit.providers.ai.mock import MockAIProvider
 from tests.conftest import make_event
-from tests.tool_room import tool_call_in
+from tests.tool_room import room_tool_names, tool_call_in
 
 # -- Helpers ------------------------------------------------------------------
 
@@ -401,35 +406,33 @@ class TestHandoffMemoryProvider:
 # -- setup_handoff ------------------------------------------------------------
 
 
+def _channel(channel_id: str = "agent-a", tool_handler: Any = None) -> AIChannel:
+    return AIChannel(
+        channel_id, provider=MockAIProvider(responses=["ok"]), tool_handler=tool_handler
+    )
+
+
 class TestSetupHandoff:
     def test_injects_handoff_tool(self):
-        channel = MagicMock()
-        channel._injected_tools = []
-        channel.tool_handler = None
+        channel = _channel()
 
         handler = MagicMock(spec=HandoffHandler)
         setup_handoff(channel, handler)
 
-        assert len(channel._injected_tools) == 1
-        assert channel._injected_tools[0].name == "handoff_conversation"
+        assert [t.name for t in channel.extra_tools] == ["handoff_conversation"]
 
-    def test_wraps_tool_handler(self):
-        channel = MagicMock()
-        channel._injected_tools = []
-        channel.tool_handler = AsyncMock(return_value='{"ok": true}')
-        channel.channel_id = "agent-a"
+    def test_leaves_the_host_handler_alone(self):
+        host = AsyncMock(return_value='{"ok": true}')
+        channel = _channel(tool_handler=host)
 
         handler = MagicMock(spec=HandoffHandler)
         setup_handoff(channel, handler)
 
-        # _tool_handler should be replaced with the wrapper
-        assert channel.tool_handler is not None
+        # The handoff is served beside the host's handler, which stays its own.
+        assert channel.tool_handler is host
 
     async def test_handoff_tool_call_dispatched(self):
-        channel = MagicMock()
-        channel._injected_tools = []
-        channel.tool_handler = None
-        channel.channel_id = "agent-a"
+        channel = _channel()
 
         handler = MagicMock(spec=HandoffHandler)
         handler.handle = AsyncMock(
@@ -437,10 +440,9 @@ class TestSetupHandoff:
         )
 
         setup_handoff(channel, handler)
-        wrapped = channel.tool_handler
 
         with tool_call_in("r1"):
-            result_json = await wrapped(
+            result_json = await channel._tool_handler(
                 "handoff_conversation",
                 {
                     "target": "agent-b",
@@ -461,47 +463,48 @@ class TestSetupHandoff:
 
     async def test_non_handoff_tool_delegates(self):
         original = AsyncMock(return_value='{"result": "ok"}')
-        channel = MagicMock()
-        channel._injected_tools = []
-        channel.tool_handler = original
-        channel.channel_id = "agent-a"
+        channel = _channel(tool_handler=original)
 
         handler = MagicMock(spec=HandoffHandler)
         setup_handoff(channel, handler)
-        wrapped = channel.tool_handler
 
-        result = await wrapped("some_other_tool", {"arg": "val"})
+        result = await channel._tool_handler("some_other_tool", {"arg": "val"})
         assert json.loads(result) == {"result": "ok"}
         original.assert_called_once_with("some_other_tool", {"arg": "val"})
 
     async def test_handoff_without_room_id_returns_error(self):
-        channel = MagicMock()
-        channel._injected_tools = []
-        channel.tool_handler = None
-        channel.channel_id = "agent-a"
+        channel = _channel()
 
         handler = MagicMock(spec=HandoffHandler)
         setup_handoff(channel, handler)
-        wrapped = channel.tool_handler
 
         # Called directly, outside any tool loop: no call names a room.
-        result_json = await wrapped("handoff_conversation", {"target": "x"})
+        result_json = await channel._tool_handler("handoff_conversation", {"target": "x"})
 
         result = json.loads(result_json)
         assert "error" in result
 
     def test_double_setup_raises(self):
-        channel = MagicMock()
-        channel._injected_tools = []
-        channel.tool_handler = None
+        channel = _channel()
 
         handler = MagicMock(spec=HandoffHandler)
         setup_handoff(channel, handler)
 
-        import pytest
-
         with pytest.raises(RuntimeError, match="already called"):
             setup_handoff(channel, handler)
+
+    def test_a_room_s_handoff_is_declared_in_that_room_only(self):
+        """A strategy installed in a room sets up its handoff for that room
+        (RFC §19.7): each room's install serves its own."""
+        channel = _channel()
+        in_a, in_b = MagicMock(spec=HandoffHandler), MagicMock(spec=HandoffHandler)
+
+        setup_handoff(channel, in_a, room_id="A")
+        setup_handoff(channel, in_b, room_id="B")
+
+        assert channel.extra_tools == []
+        assert room_tool_names(channel, "A") == ["handoff_conversation"]
+        assert room_tool_names(channel, "C") == []
 
 
 # -- Hook firing --------------------------------------------------------------
@@ -615,26 +618,21 @@ class TestBuildHandoffTool:
 
 class TestSetupHandoffCustomTool:
     def test_custom_tool_injected(self):
-        channel = MagicMock()
-        channel._injected_tools = []
-        channel.tool_handler = None
+        channel = _channel()
 
         custom_tool = build_handoff_tool([("agent-b", "specialist")])
         handler = MagicMock(spec=HandoffHandler)
         setup_handoff(channel, handler, tool=custom_tool)
 
-        assert len(channel._injected_tools) == 1
-        assert channel._injected_tools[0] is custom_tool
+        assert channel.extra_tools == [custom_tool]
 
     def test_default_tool_when_none(self):
-        channel = MagicMock()
-        channel._injected_tools = []
-        channel.tool_handler = None
+        channel = _channel()
 
         handler = MagicMock(spec=HandoffHandler)
         setup_handoff(channel, handler)
 
-        assert channel._injected_tools[0] is HANDOFF_TOOL
+        assert channel.extra_tools == [HANDOFF_TOOL]
 
 
 # -- known_agents + on_handoff_complete ---------------------------------------

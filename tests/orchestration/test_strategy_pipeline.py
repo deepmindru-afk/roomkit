@@ -11,6 +11,7 @@ from roomkit.models.room import Room
 from roomkit.orchestration.state import get_conversation_state
 from roomkit.orchestration.strategies.pipeline import Pipeline
 from roomkit.providers.ai.mock import MockAIProvider
+from tests.tool_room import room_tool_names
 
 # -- Helpers ------------------------------------------------------------------
 
@@ -130,16 +131,14 @@ class TestPipelineInstall:
         p = Pipeline(agents=agents)
         await p.install(kit, "r1")
 
-        # Agent A should have handoff tool targeting B
-        a_tools = [t.name for t in agents[0]._injected_tools]
-        assert "handoff_conversation" in a_tools
+        # Agent A should have handoff tool targeting B, in the installed room
+        assert "handoff_conversation" in room_tool_names(agents[0], "r1")
 
         # Agent B is the last stage — handoff tool with no targets
-        b_tools = [t.name for t in agents[1]._injected_tools]
-        assert "handoff_conversation" in b_tools
+        assert "handoff_conversation" in room_tool_names(agents[1], "r1")
 
     async def test_double_install_skips_handoff(self):
-        """Shared Agent instances should not get handoff wired twice."""
+        """Shared Agent instances get one handoff per installed room (RFC §19.7)."""
         agents = [_make_agent("a"), _make_agent("b")]
         room = Room(id="r1")
         bindings = [_ai_binding("a"), _ai_binding("b")]
@@ -151,9 +150,7 @@ class TestPipelineInstall:
         kit2 = _make_mock_kit(room, bindings)
         await p.install(kit2, "r2")
 
-        # Should still have exactly one handoff tool per agent
+        # Exactly one handoff tool per agent in each room
         for agent in agents:
-            handoff_count = sum(
-                1 for t in agent._injected_tools if t.name == "handoff_conversation"
-            )
-            assert handoff_count == 1, f"{agent.channel_id} has {handoff_count} handoff tools"
+            for room_id in ("r1", "r2"):
+                assert room_tool_names(agent, room_id).count("handoff_conversation") == 1

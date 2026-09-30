@@ -8,7 +8,9 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from typing import Any
 
+from roomkit.channels._tool_registry import ToolSource
 from roomkit.channels.ai import _current_loop_ctx, _ToolLoopContext
 
 
@@ -23,3 +25,9 @@ def tool_call_in(room_id: str, *, chain_depth: int = 0) -> Iterator[None]:
         yield
     finally:
         _current_loop_ctx.reset(token)
+
+
+def room_tool_names(channel: Any, room_id: str) -> list[str]:
+    """The tools orchestration set up on *channel* that *room_id*'s turns declare."""
+    entries = channel._registry.entries(room_id, source=ToolSource.ORCHESTRATION)
+    return [entry.name for entry in entries]

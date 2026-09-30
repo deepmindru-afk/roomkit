@@ -151,6 +151,7 @@ class AIToolsHost(Protocol):
     _provider: AIProvider
     _tool_handler: Any
     _user_tool_handler: Any
+    _user_tools: list[AITool]
     _skills: SkillRegistry | None
     _script_executor: ScriptExecutor | None
     _sandbox: SandboxExecutor | None
@@ -209,6 +210,7 @@ class AIToolsMixin:
     _provider: AIProvider
     _tool_handler: Any
     _user_tool_handler: Any
+    _user_tools: list[AITool]
     _skills: SkillRegistry | None
     _script_executor: ScriptExecutor | None
     _sandbox: SandboxExecutor | None
@@ -240,7 +242,7 @@ class AIToolsMixin:
     _never_deferred: Any  # AIToolPolicyMixin: what Tool Search never defers
     _gate_refusal: Any  # see AIToolsHost
     _reference_shown: Any  # AIToolPolicyMixin: held tools a result makes callable
-    extra_tools: Any  # AIChannel property: user + orchestration-injected tools
+    _orchestration_tools: Any  # AIChannel: the tools orchestration set up for a room
     _orchestration_tool_names: Any  # AIChannel: never deferred behind Tool Search
 
     def _tool_parameters(
@@ -251,7 +253,10 @@ class AIToolsMixin:
         ``None`` when the tool's schema is not known to this channel (infra,
         skill, or sandbox tools) — those skip argument validation.
         """
-        for tool in declared_tools if declared_tools is not None else self.extra_tools:
+        if declared_tools is None:
+            room_id = self._get_loop_ctx().room_id
+            declared_tools = [*self._user_tools, *self._orchestration_tools(room_id)]
+        for tool in declared_tools:
             if tool.name == name:
                 return tool.parameters
         return None
@@ -824,10 +829,17 @@ class AIToolsMixin:
             names |= {tool.name for tool in self._human_input_handler.tools or ()}
         return names
 
-    def _declared_once(self, tools: list[AITool]) -> list[AITool]:
-        """The host's part of a turn's toolset: no tool under a name the channel
-        serves, and each name once (RFC §21.1, :func:`declared_once`)."""
-        return declared_once(tools, _tool_name, self._channel_tool_names(), self._collisions)
+    def _served_tool_names(self, room_id: str | None) -> set[str]:
+        """The tools the channel and orchestration serve in *room_id*, before
+        any host handler: a host tool under one of these is not declared."""
+        return self._channel_tool_names() | self._registry.names(room_id)
+
+    def _declared_once(self, tools: list[AITool], room_id: str | None) -> list[AITool]:
+        """The host's part of a turn's toolset in *room_id*: no tool under a name
+        the channel or orchestration serves there, and each name once (RFC
+        §21.1, :func:`declared_once`)."""
+        served = self._served_tool_names(room_id)
+        return declared_once(tools, _tool_name, served, self._collisions)
 
     async def _channel_tool_handler(self, name: str, arguments: dict[str, Any]) -> ToolResult:
         """Unified tool dispatcher: channel-managed -> sandbox -> skill -> user tools.

@@ -18,10 +18,10 @@ import pytest
 from roomkit import RoomKit
 from roomkit.channels.agent import Agent
 from roomkit.channels.ai import AIChannel
+from roomkit.core.exceptions import UnservedToolCallError
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelCategory
 from roomkit.models.event import TextContent
-from roomkit.orchestration._call_room import NO_CALL_ROOM
 from roomkit.orchestration.state import get_conversation_state
 from roomkit.orchestration.strategies.supervisor import Supervisor
 from roomkit.orchestration.strategies.swarm import Swarm
@@ -211,9 +211,11 @@ async def test_a_worker_delegating_in_turn_hangs_its_task_off_its_own_room(
     [("delegate_to_researcher", None), ("delegate_workers", "sequential")],
     ids=["per-worker", "strategy"],
 )
-async def test_a_supervisor_tool_called_outside_a_tool_call_refuses(
+async def test_a_supervisor_tool_called_outside_a_tool_call_is_not_served(
     tool: str, strategy: str | None
 ) -> None:
+    """The tool is the installed room's (RFC §19.7): a call that names no room
+    reaches nothing, and delegates nothing."""
     supervisor = Agent("sup", provider=_answering("hi", streaming=False), tool_search=False)
     researcher = Agent("researcher", provider=_answering("findings", streaming=False))
     kit = RoomKit()
@@ -222,8 +224,8 @@ async def test_a_supervisor_tool_called_outside_a_tool_call_refuses(
     orchestration = Supervisor(supervisor, [researcher], strategy=strategy)
     await kit.create_room(room_id="r1", orchestration=orchestration)
 
-    result = await supervisor.tool_handler(tool, {"task": "x"})
+    with pytest.raises(UnservedToolCallError):
+        await supervisor._tool_handler(tool, {"task": "x"})
 
-    assert result == NO_CALL_ROOM
     assert await _children(kit) == {}
     await kit.close()

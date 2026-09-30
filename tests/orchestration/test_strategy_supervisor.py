@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from roomkit.channels.agent import Agent
+from roomkit.core.exceptions import UnservedToolCallError
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import ChannelType, EventType
@@ -17,7 +18,7 @@ from roomkit.models.room import Room
 from roomkit.orchestration.state import get_conversation_state
 from roomkit.orchestration.strategies.supervisor import Supervisor
 from roomkit.providers.ai.mock import MockAIProvider
-from tests.tool_room import tool_call_in
+from tests.tool_room import room_tool_names, tool_call_in
 
 # -- Helpers ------------------------------------------------------------------
 
@@ -107,9 +108,9 @@ class TestSupervisorInstall:
         await s.install(kit, "r1")
 
         # Declared in the room it was installed in (RFC §19.7), not channel-wide.
-        tool_names = [t.name for t in boss._room_tools["r1"]]
+        tool_names = room_tool_names(boss, "r1")
         assert tool_names == ["delegate_to_w1", "delegate_to_w2"]
-        assert boss._injected_tools == []
+        assert boss.extra_tools == []
 
     async def test_sets_initial_state(self):
         boss = _make_agent("boss")
@@ -139,7 +140,7 @@ class TestSupervisorInstall:
 
         # Call the delegation tool handler
         with tool_call_in("r1"):
-            result = await boss.tool_handler("delegate_to_w1", {"task": "Do something"})
+            result = await boss._tool_handler("delegate_to_w1", {"task": "Do something"})
         parsed = json.loads(result)
 
         assert parsed["status"] == "delegated"
@@ -147,16 +148,16 @@ class TestSupervisorInstall:
         kit.delegate.assert_called_once()
 
     async def test_unknown_tool_falls_through(self):
-        """Non-delegation tools should fall through to original handler."""
+        """A tool nothing serves reaches no delegation: it is unserved, which
+        ON_TOOL_CALL's hooks may still serve."""
         boss = _make_agent("boss")
         kit = _make_mock_kit(Room(id="r1"))
 
         s = Supervisor(supervisor=boss, workers=[_make_agent("w1")])
         await s.install(kit, "r1")
 
-        result = await boss.tool_handler("unknown_tool", {})
-        parsed = json.loads(result)
-        assert "error" in parsed
+        with tool_call_in("r1"), pytest.raises(UnservedToolCallError):
+            await boss._tool_handler("unknown_tool", {})
 
     async def test_double_install_skips_tools(self):
         """Second install should not duplicate delegation tools."""
@@ -174,7 +175,7 @@ class TestSupervisorInstall:
         await s.install(kit2, "r2")
 
         for room_id in ("r1", "r2"):
-            assert [t.name for t in boss._room_tools[room_id]] == ["delegate_to_w1"]
+            assert room_tool_names(boss, room_id) == ["delegate_to_w1"]
 
 
 class TestSupervisorShareChannels:
@@ -199,7 +200,7 @@ class TestSupervisorShareChannels:
         await s.install(kit, "r1")
 
         with tool_call_in("r1"):
-            await boss.tool_handler("delegate_to_w1", {"task": "Do something"})
+            await boss._tool_handler("delegate_to_w1", {"task": "Do something"})
 
         _, kwargs = kit.delegate.call_args
         assert kwargs["share_channels"] == ["system", "ws-status"]
@@ -224,7 +225,7 @@ class TestSupervisorShareChannels:
         await s.install(kit, "r1")
 
         with tool_call_in("r1"):
-            await boss.tool_handler("delegate_to_w1", {"task": "Do something"})
+            await boss._tool_handler("delegate_to_w1", {"task": "Do something"})
 
         _, kwargs = kit.delegate.call_args
         assert kwargs["share_channels"] == ["email-out"]
@@ -248,7 +249,7 @@ class TestSupervisorShareChannels:
         await s.install(kit, "r1")
 
         with tool_call_in("r1"):
-            await boss.tool_handler("delegate_workers", {"task": "Analyze this"})
+            await boss._tool_handler("delegate_workers", {"task": "Analyze this"})
 
         _, kwargs = kit.delegate.call_args
         assert kwargs["share_channels"] == ["system"]
@@ -273,7 +274,7 @@ class TestSupervisorShareChannels:
         await s.install(kit, "r1")
 
         with tool_call_in("r1"):
-            await boss.tool_handler("delegate_workers", {"task": "Analyze this"})
+            await boss._tool_handler("delegate_workers", {"task": "Analyze this"})
 
         assert kit.delegate.call_count == 2
         for call in kit.delegate.call_args_list:
@@ -294,7 +295,7 @@ class TestSupervisorShareChannels:
         await s.install(kit, "r1")
 
         with tool_call_in("r1"):
-            await boss.tool_handler("delegate_to_w1", {"task": "Do something"})
+            await boss._tool_handler("delegate_to_w1", {"task": "Do something"})
 
         _, kwargs = kit.delegate.call_args
         assert not kwargs["share_channels"]
@@ -402,7 +403,7 @@ class TestSupervisorShareChannels:
 
         await s.install(kit, "r1")
         with tool_call_in("r1"):
-            await boss.tool_handler("delegate_to_w1", {"task": "Do something"})
+            await boss._tool_handler("delegate_to_w1", {"task": "Do something"})
 
         _, kwargs = kit.delegate.call_args
         assert kwargs["share_channels"] == ["system"]

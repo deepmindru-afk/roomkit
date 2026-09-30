@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from roomkit.channels.agent import Agent
+from roomkit.core.exceptions import UnservedToolCallError
 from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import ChannelType
@@ -45,7 +46,7 @@ from roomkit.orchestration.strategies.supervisor.prompts import SUBMIT_VERDICT
 from roomkit.orchestration.strategies.supervisor.supervised import _supervisor_review
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.tasks.models import DelegatedTaskResult
-from tests.tool_room import tool_call_in
+from tests.tool_room import room_tool_names, tool_call_in
 
 # -- Helpers ------------------------------------------------------------------
 
@@ -287,7 +288,7 @@ class TestSupervisorInstall:
         )
         await s.install(kit, "r1")
 
-        assert [t.name for t in boss._room_tools["r1"]] == ["delegate_workers"]
+        assert room_tool_names(boss, "r1") == ["delegate_workers"]
 
     async def test_install_per_worker_tools(self) -> None:
         boss = _make_agent("boss")
@@ -297,7 +298,7 @@ class TestSupervisorInstall:
         s = Supervisor(supervisor=boss, workers=workers)
         await s.install(kit, "r1")
 
-        tool_names = [t.name for t in boss._room_tools["r1"]]
+        tool_names = room_tool_names(boss, "r1")
         assert tool_names == ["delegate_to_w1", "delegate_to_w2"]
 
     async def test_double_install_no_duplicate_tools(self) -> None:
@@ -315,7 +316,7 @@ class TestSupervisorInstall:
         await s.install(kit2, "r2")
 
         for room_id in ("r1", "r2"):
-            assert [t.name for t in boss._room_tools[room_id]] == ["delegate_to_w1"]
+            assert room_tool_names(boss, room_id) == ["delegate_to_w1"]
 
     async def test_double_install_strategy_tool_no_duplicate(self) -> None:
         boss = _make_agent("boss")
@@ -333,7 +334,7 @@ class TestSupervisorInstall:
 
         # Declared once in each room it serves, and served by one handler.
         for room_id in ("r1", "r2"):
-            assert [t.name for t in boss._room_tools[room_id]] == ["delegate_workers"]
+            assert room_tool_names(boss, room_id) == ["delegate_workers"]
         assert boss.tool_handler is handler
 
     async def test_router_hook_installed_in_strategy_tool_async_delivery(self) -> None:
@@ -391,7 +392,7 @@ class TestPerWorkerDelegation:
         await s.install(kit, "r1")
 
         with tool_call_in("r1"):
-            result = await boss.tool_handler("delegate_to_w1", {"task": "Do work"})
+            result = await boss._tool_handler("delegate_to_w1", {"task": "Do work"})
         parsed = json.loads(result)
         assert parsed["result"] == "Worker result"
         assert parsed["worker"] == "w1"
@@ -406,7 +407,7 @@ class TestPerWorkerDelegation:
         await s.install(kit, "r1")
 
         with tool_call_in("r1"):
-            result = await boss.tool_handler("delegate_to_w1", {"task": "Do work"})
+            result = await boss._tool_handler("delegate_to_w1", {"task": "Do work"})
         parsed = json.loads(result)
         # A failed task reads as failed, never with its error (RMK-295).
         assert parsed["result"] == "The task failed."
@@ -421,7 +422,7 @@ class TestPerWorkerDelegation:
         await s.install(kit, "r1")
 
         with tool_call_in("r1"):
-            result = await boss.tool_handler("delegate_to_w1", {"task": "Do work"})
+            result = await boss._tool_handler("delegate_to_w1", {"task": "Do work"})
         parsed = json.loads(result)
         assert parsed["status"] == "failed"
 
@@ -438,7 +439,7 @@ class TestPerWorkerDelegation:
         await s.install(kit, "r1")
 
         with tool_call_in("r1"):
-            result = await boss.tool_handler("delegate_to_w1", {"task": "Do work"})
+            result = await boss._tool_handler("delegate_to_w1", {"task": "Do work"})
         parsed = json.loads(result)
         assert parsed["status"] == "delegated"
         assert parsed["task_id"] == "task-123"
@@ -457,11 +458,11 @@ class TestPerWorkerDelegation:
 
         # First call succeeds
         with tool_call_in("r1"):
-            await boss.tool_handler("delegate_to_w1", {"task": "Do work"})
+            await boss._tool_handler("delegate_to_w1", {"task": "Do work"})
 
         # Second call should detect already running
         with tool_call_in("r1"):
-            result = await boss.tool_handler("delegate_to_w1", {"task": "Do more"})
+            result = await boss._tool_handler("delegate_to_w1", {"task": "Do more"})
         parsed = json.loads(result)
         assert parsed["status"] == "already_running"
 
@@ -476,7 +477,7 @@ class TestPerWorkerDelegation:
 
         # Raised on to the channel, which reads it as any failed call (RMK-295).
         with tool_call_in("r1"), pytest.raises(RuntimeError, match="Connection lost"):
-            await boss.tool_handler("delegate_to_w1", {"task": "Do work"})
+            await boss._tool_handler("delegate_to_w1", {"task": "Do work"})
 
     async def test_unknown_tool_falls_through(self) -> None:
         boss = _make_agent("boss")
@@ -485,9 +486,8 @@ class TestPerWorkerDelegation:
         s = Supervisor(supervisor=boss, workers=[_make_agent("w1")])
         await s.install(kit, "r1")
 
-        result = await boss.tool_handler("unknown_tool", {})
-        parsed = json.loads(result)
-        assert "error" in parsed
+        with tool_call_in("r1"), pytest.raises(UnservedToolCallError):
+            await boss._tool_handler("unknown_tool", {})
 
 
 # -- Tests: Strategy tool handler ---------------------------------------------
@@ -508,7 +508,7 @@ class TestStrategyToolHandler:
         await s.install(kit, "r1")
 
         with tool_call_in("r1"):
-            result = await boss.tool_handler("delegate_workers", {"task": "analyze"})
+            result = await boss._tool_handler("delegate_workers", {"task": "analyze"})
         # The handler hands the supervisor a review brief (prose), not raw JSON:
         # the request, the worker output, and an instruction to verify + deliver.
         assert "analyze" in result
@@ -535,7 +535,7 @@ class TestStrategyToolHandler:
         await s.install(kit, "r1")
 
         with tool_call_in("r1"):
-            result = await boss.tool_handler("delegate_workers", {"task": "analyze"})
+            result = await boss._tool_handler("delegate_workers", {"task": "analyze"})
         # Review brief carries both workers' outputs for the supervisor to verify.
         assert "analyze" in result
         assert "result 1" in result
@@ -552,9 +552,8 @@ class TestStrategyToolHandler:
         )
         await s.install(kit, "r1")
 
-        result = await boss.tool_handler("unknown_tool", {})
-        parsed = json.loads(result)
-        assert "error" in parsed
+        with tool_call_in("r1"), pytest.raises(UnservedToolCallError):
+            await boss._tool_handler("unknown_tool", {})
 
     async def test_strategy_tool_exception_returns_error(self) -> None:
         boss = _make_agent("boss")
@@ -570,7 +569,7 @@ class TestStrategyToolHandler:
 
         # Raised on to the channel, which reads it as any failed call (RMK-295).
         with tool_call_in("r1"), pytest.raises(RuntimeError, match="Boom"):
-            await boss.tool_handler("delegate_workers", {"task": "x"})
+            await boss._tool_handler("delegate_workers", {"task": "x"})
 
     async def test_strategy_tool_dedup_cache(self) -> None:
         """Second call within dedup window returns cached result."""
@@ -586,10 +585,10 @@ class TestStrategyToolHandler:
         await s.install(kit, "r1")
 
         with tool_call_in("r1"):
-            result1 = await boss.tool_handler("delegate_workers", {"task": "analyze"})
+            result1 = await boss._tool_handler("delegate_workers", {"task": "analyze"})
         calls_after_first = kit.delegate.call_count
         with tool_call_in("r1"):
-            result2 = await boss.tool_handler("delegate_workers", {"task": "analyze again"})
+            result2 = await boss._tool_handler("delegate_workers", {"task": "analyze again"})
 
         # Both should return the same cached result
         assert result1 == result2
@@ -798,9 +797,7 @@ class TestSupervisedSequential:
             room_id: str, channel_id: str, task: str, *, wait: bool = False, **kw: Any
         ) -> Any:
             if channel_id == "boss":
-                declared_during.append(
-                    {rid: [t.name for t in tools] for rid, tools in boss._room_tools.items()}
-                )
+                declared_during.append({rid: room_tool_names(boss, rid) for rid in ("r1", "r2")})
             return await router(room_id, channel_id, task, wait=wait, **kw)
 
         kit.delegate = AsyncMock(side_effect=recording)
@@ -811,7 +808,7 @@ class TestSupervisedSequential:
         expected = {"r1": ["delegate_workers"], "r2": ["delegate_workers"]}
         assert declared_during
         assert all(seen == expected for seen in declared_during)
-        assert "delegate_workers" not in [t.name for t in boss._injected_tools]
+        assert "delegate_workers" not in [t.name for t in boss.extra_tools]
 
     async def test_rework_on_rejection_then_approve(self) -> None:
         kit = _make_mock_kit(Room(id="r1"))

@@ -109,7 +109,7 @@ async def test_the_deadline_is_named() -> None:
         await asyncio.sleep(0.05)
         return "ok"
 
-    ch._tool_handler = slow  # type: ignore[assignment]
+    ch.tool_handler = slow
     ch._tool_loop_timeout_seconds = 0.01
 
     marks = _markers(await _run(ch, _ctx()))

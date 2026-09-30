@@ -45,7 +45,7 @@ from roomkit.channels._served_tools import (
 from roomkit.channels._skill_activation import SkillActivationMemory
 from roomkit.channels._task_planner import TaskPlanner
 from roomkit.channels._tool_eviction import ToolEviction
-from roomkit.channels._tool_registry import ChannelRegistry
+from roomkit.channels._tool_registry import ChannelRegistry, ToolSource
 from roomkit.channels._tool_search_constants import (
     DEFAULT_TOOL_SEARCH_THRESHOLD,
     DEFAULT_TOOL_SEARCH_THRESHOLD_PCT,
@@ -463,33 +463,17 @@ class AIChannel(
             else:
                 effective_handler = human_input_handler
 
-        # Store the user/orchestration tool handler separately; all dispatch
-        # goes through _channel_tool_handler which routes to channel-managed
-        # tools (eviction, planning), skill tools, then user tools.
+        # The host's handler, kept apart: all dispatch goes through
+        # _channel_tool_handler, which routes to the registry's entries (the
+        # channel's own tools, orchestration's), the sandbox, then to this.
         self._user_tool_handler = effective_handler
 
-        # User-provided tools (from constructor) and orchestration-injected
-        # tools (e.g. HANDOFF_TOOL, DELEGATE_TOOL) are kept separate so that
-        # orchestration code can inspect/modify injected tools independently.
+        # The host's tools (from the constructor), served by its handler.
         self._user_tools: list[AITool] = extracted_defs
         # What the channel serves itself and what orchestration sets up on it,
         # each tool with its traits, for every room or one (RFC §19.7, §21.1).
         self._registry = ChannelRegistry(self.channel_id, self._host_tool_names)
         self._register_channel_tools()
-        self._injected_tools: list[AITool] = []
-        # Tools orchestration declares in one room's turns only, by room id
-        # (RFC §19.7); like _injected_tools, never deferred (RFC §21.1).
-        self._room_tools: dict[str, list[AITool]] = {}
-
-        # Set _tool_handler to the unified dispatcher only when tools actually
-        # exist.  Keeping it None when no tools are configured preserves the
-        # "no tools" fast-path guard in the tool loop (lines that check
-        # ``self._tool_handler is None``).
-        self._tool_handler: ToolHandler | None = (
-            self._channel_tool_handler
-            if (self._channel_tool_surface() or effective_handler)
-            else None
-        )
 
         # Host tools that collide with the channel's own (RFC §21.1), each
         # reported once.
@@ -535,12 +519,29 @@ class AIChannel(
 
     @property
     def tool_handler(self) -> ToolHandler | None:
-        """The current tool handler (may be wrapped by orchestration)."""
-        return self._tool_handler
+        """The host's tool handler: it serves every tool neither the channel
+        nor orchestration serves (RFC §21.1).
+
+        Replacing it replaces the host's handler only: the channel's own tools
+        and the ones orchestration set up keep being served.
+        """
+        return self._user_tool_handler
 
     @tool_handler.setter
     def tool_handler(self, value: ToolHandler | None) -> None:
-        self._tool_handler = value
+        self._user_tool_handler = value
+
+    @property
+    def _tool_handler(self) -> ToolHandler | None:
+        """The unified dispatcher, or ``None`` while nothing serves a tool here:
+        the "no tools" fast path of the turn."""
+        if (
+            self._channel_tool_surface()
+            or self._user_tool_handler is not None
+            or self._registry.serves_orchestration()
+        ):
+            return self._channel_tool_handler
+        return None
 
     @property
     def provider(self) -> AIProvider:
@@ -567,8 +568,8 @@ class AIChannel(
 
     @property
     def extra_tools(self) -> list[AITool]:
-        """All extra tools (user-provided + orchestration-injected)."""
-        return self._user_tools + self._injected_tools
+        """The host's tools, then the ones orchestration set up for every room."""
+        return self._user_tools + self._orchestration_tools(None)
 
     def active_skill_names(self, room_id: str | None) -> set[str]:
         """Skills whose instructions are binding in *room_id* right now.
@@ -594,7 +595,7 @@ class AIChannel(
         """
         return bool(
             self._user_tools
-            or self._injected_tools
+            or self._registry.entries(None, source=ToolSource.ORCHESTRATION)
             or (self._skills is not None and self._skills.skill_count > 0)
             or self._planner is not None
             or self._sandbox is not None
@@ -710,20 +711,21 @@ class AIChannel(
             bool(binding.metadata.get("tools"))
             or self._config_provider is not None
             or self._channel_tool_surface()
-            or bool(self._room_tool_defs(binding.room_id))
+            or bool(self._orchestration_tools(binding.room_id))
             or self._external_tool_handler is not None
             or (self._human_input_handler is not None and bool(self._human_input_handler.tools))
         )
 
-    def _room_tool_defs(self, room_id: str) -> list[AITool]:
-        """The tools declared in *room_id*'s turns only (RFC §19.7)."""
-        return self._room_tools.get(room_id, [])
+    def _orchestration_tools(self, room_id: str | None) -> list[AITool]:
+        """The tools orchestration set up for every room and for *room_id*
+        (RFC §19.7), declared in *room_id*'s turns."""
+        entries = self._registry.entries(room_id, source=ToolSource.ORCHESTRATION)
+        return [entry.definition for entry in entries]
 
     def _orchestration_tool_names(self, room_id: str | None) -> set[str]:
-        """The tools orchestration injected, channel-wide or for *room_id*:
-        never deferred behind Tool Search (RFC §21.1)."""
-        injected = [*self._injected_tools, *self._room_tool_defs(room_id or "")]
-        return {tool.name for tool in injected}
+        """The tools declared at every round of *room_id*'s turns, outside the
+        catalogue Tool Search measures (RFC §21.1)."""
+        return self._registry.names(room_id, lambda traits: traits.always_declared)
 
     async def deliver(
         self, event: RoomEvent, binding: ChannelBinding, context: RoomContext

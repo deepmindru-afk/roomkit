@@ -25,7 +25,7 @@ from roomkit.orchestration.state import get_conversation_state
 from roomkit.orchestration.strategies.loop import Loop
 from roomkit.orchestration.strategies.supervisor import Supervisor
 from roomkit.providers.ai.mock import MockAIProvider
-from tests.tool_room import tool_call_in
+from tests.tool_room import room_tool_names, tool_call_in
 
 # -- Helpers ------------------------------------------------------------------
 
@@ -111,8 +111,9 @@ def _make_mock_kit(room: Room, bindings: list[ChannelBinding] | None = None) -> 
 
 
 class TestSupervisorHandlerIdempotency:
-    async def test_double_install_does_not_stack_handlers(self):
-        """Second install on a different room must not wrap the handler twice."""
+    async def test_each_room_s_install_serves_its_own_room(self):
+        """A second install on a different room sets up its own tool, served
+        with its own settings, and wraps nothing (RFC §19.7; RMK-307)."""
         boss = _make_agent("boss")
         w1 = _make_agent("w1")
 
@@ -130,18 +131,17 @@ class TestSupervisorHandlerIdempotency:
 
         # One delegation tool per installed room, none channel-wide
         for room_id in ("r1", "r2"):
-            assert [t.name for t in boss._room_tools[room_id]] == ["delegate_to_w1"]
-        assert boss._injected_tools == []
+            assert room_tool_names(boss, room_id) == ["delegate_to_w1"]
+        assert boss.extra_tools == []
 
-        # Handler should still work — call delegation tool
         with tool_call_in("r2"):
-            result = await boss.tool_handler("delegate_to_w1", {"task": "do it"})
+            result = await boss._tool_handler("delegate_to_w1", {"task": "do it"})
         parsed = json.loads(result)
         assert parsed["status"] == "delegated"
 
-        # Only the first kit's delegate should have been called
-        assert kit1.delegate.call_count == 1
-        assert kit2.delegate.call_count == 0
+        # The call of r2 runs r2's install, not the first one's.
+        assert kit1.delegate.call_count == 0
+        assert kit2.delegate.call_count == 1
 
     async def test_delegation_error_is_raised_to_the_channel(self):
         """A delegation failure raises on: the channel reads it as any failed
@@ -155,7 +155,7 @@ class TestSupervisorHandlerIdempotency:
         await s.install(kit, "r1")
 
         with tool_call_in("r1"), pytest.raises(RuntimeError, match="boom"):
-            await boss.tool_handler("delegate_to_w1", {"task": "fail"})
+            await boss._tool_handler("delegate_to_w1", {"task": "fail"})
 
     async def test_original_handler_preserved(self):
         """User-defined tool_handler on supervisor should still be reachable."""
@@ -178,7 +178,7 @@ class TestSupervisorHandlerIdempotency:
         await s.install(kit, "r1")
 
         # Unknown tool should fall through to original
-        result = await boss.tool_handler("my_custom_tool", {"x": 1})
+        result = await boss._tool_handler("my_custom_tool", {"x": 1})
         parsed = json.loads(result)
         assert parsed["custom"] is True
         assert original_called

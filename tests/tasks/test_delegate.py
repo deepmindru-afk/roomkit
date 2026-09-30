@@ -121,16 +121,18 @@ class TestDelegateHandler:
 
 
 class TestSetupDelegation:
-    def test_injects_tool_and_wraps_handler(self):
+    def test_declares_the_tool_and_serves_it(self):
         channel = AIChannel("ai-main", provider=MockAIProvider(responses=["hi"]))
         kit = MagicMock()
         handler = DelegateHandler(kit)
 
         setup_delegation(channel, handler)
 
-        tool_names = [t.name for t in channel._injected_tools]
+        tool_names = [t.name for t in channel.extra_tools]
         assert "delegate_task" in tool_names
         assert channel._tool_handler is not None
+        # The host's handler is left as it was.
+        assert channel.tool_handler is None
 
     def test_double_setup_raises(self):
         channel = AIChannel("ai-main", provider=MockAIProvider(responses=["hi"]))
@@ -190,7 +192,7 @@ class TestSetupDelegation:
             called.append(name)
             return json.dumps({"ok": True})
 
-        channel._tool_handler = original_handler
+        channel.tool_handler = original_handler
 
         kit = MagicMock()
         handler = DelegateHandler(kit)

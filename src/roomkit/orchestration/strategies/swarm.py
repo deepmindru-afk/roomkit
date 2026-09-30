@@ -96,18 +96,16 @@ class Swarm(Orchestration):
             ),
         )
 
-        # Wire bidirectional handoff — each agent can reach all others
+        # Wire bidirectional handoff — each agent can reach all others, in
+        # this room, with this install's handler (RFC §19.7)
         for agent in self._agents:
-            if any(t.name == "handoff_conversation" for t in agent._injected_tools):
-                continue
-
             targets = [
                 (a.channel_id, getattr(a, "description", None))
                 for a in self._agents
                 if a.channel_id != agent.channel_id
             ]
             tool = build_handoff_tool(targets)
-            setup_handoff(agent, handler, tool=tool)
+            setup_handoff(agent, handler, tool=tool, room_id=room_id)
 
         # Set initial conversation state
         room = await kit.get_room(room_id)

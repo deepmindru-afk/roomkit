@@ -26,6 +26,19 @@ RoomToolServe = Callable[[str, str, dict[str, Any]], Awaitable[Any]]
 ToolHandlerFn = Callable[[str, dict[str, Any]], Awaitable[Any]]
 
 
+def in_call_room(name: str, serve: RoomToolServe) -> Callable[[dict[str, Any]], Awaitable[Any]]:
+    """What serves one call to *name*, in the room of the call: the server a
+    channel's registry entry for *name* carries."""
+
+    async def run(arguments: dict[str, Any]) -> Any:
+        room_id = current_tool_room_id()
+        if room_id is None:
+            return NO_CALL_ROOM
+        return await serve(room_id, name, arguments)
+
+    return run
+
+
 def call_room_handler(
     names: Collection[str], serve: RoomToolServe, fallback: ToolHandlerFn | None
 ) -> ToolHandlerFn:

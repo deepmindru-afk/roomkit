@@ -58,12 +58,13 @@ def _declared(context: AIContext) -> set[str]:
     return {tool.name for tool in context.tools or []}
 
 
-async def _turn(ch: AIChannel) -> LoopRun:
+async def _turn(ch: AIChannel, binding_tools: list[dict[str, Any]] | None = None) -> LoopRun:
     binding = ChannelBinding(
         channel_id="ai1",
         room_id="r1",
         channel_type=ChannelType.AI,
         category=ChannelCategory.INTELLIGENCE,
+        metadata={"tools": binding_tools} if binding_tools else {},
     )
     return await respond(
         ch, make_event(body="go", channel_id="sms1"), binding, RoomContext(room=Room(id="r1"))

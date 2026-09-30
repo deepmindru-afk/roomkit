@@ -38,6 +38,7 @@ from roomkit.tools.context import _current_turn_chain_depth
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
 from tests.conftest import make_event
 from tests.test_framework import SimpleChannel
+from tests.tool_room import room_tool_names
 
 TENANTS = ("tenant-A", "tenant-B")
 
@@ -321,7 +322,7 @@ async def test_a_result_tool_is_declared_in_the_child_room_only() -> None:
     ]
     assert seen == []
     assert slot.payload is None
-    assert channel._room_tools == {}
+    assert not channel._registry.serves_orchestration()
 
 
 async def test_the_supervisor_runs_its_sub_runs_without_its_strategy_tool() -> None:
@@ -351,7 +352,7 @@ async def test_the_supervisor_runs_its_sub_runs_without_its_strategy_tool() -> N
     declared = [[tool.name for tool in call.tools or []] for call in sup_model.calls]
     assert "delegate_workers" in declared[0]
     assert all("delegate_workers" not in names for names in declared[1:-1])
-    assert [t.name for t in supervisor._room_tools["tenant-B"]] == ["delegate_workers"]
+    assert room_tool_names(supervisor, "tenant-B") == ["delegate_workers"]
     await kit.close()
 
 

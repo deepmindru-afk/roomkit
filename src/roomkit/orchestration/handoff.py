@@ -12,13 +12,14 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
+from roomkit.channels._tool_registry import orchestration_tool
 from roomkit.memory.base import MemoryProvider, MemoryResult
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import ChannelType, EventStatus, EventType, HookTrigger, Visibility
 from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.models.room import Room
-from roomkit.orchestration._call_room import call_room_handler
+from roomkit.orchestration._call_room import in_call_room
 from roomkit.orchestration.state import (
     get_conversation_state,
     set_conversation_state,
@@ -63,8 +64,10 @@ class HandoffResult(BaseModel):
 # -- Tool definition ----------------------------------------------------------
 
 
+HANDOFF_TOOL_NAME = "handoff_conversation"
+
 HANDOFF_TOOL = AITool(
-    name="handoff_conversation",
+    name=HANDOFF_TOOL_NAME,
     description=(
         "Transfer this conversation to another agent or specialist. "
         "Use when: the user asks to speak with someone else, "
@@ -679,11 +682,13 @@ def setup_handoff(
     handler: HandoffHandler,
     *,
     tool: AITool | None = None,
+    room_id: str | None = None,
 ) -> None:
-    """Wire handoff into an AIChannel's tool chain.
+    """Serve the handoff tool on an AIChannel.
 
-    - Injects the handoff tool into the channel's tool definitions
-    - Wraps the tool handler to intercept ``handoff_conversation`` calls
+    - Declares the handoff tool in the channel's turns: in every room it
+      serves, or in *room_id*'s only (a strategy installed in that room)
+    - Serves ``handoff_conversation`` calls with *handler*
     - Hands off in the room of the call, read from the tool call context
       (RFC §19.6): one agent serves every room it is attached to
 
@@ -692,24 +697,23 @@ def setup_handoff(
         handler: The handoff handler that processes tool calls.
         tool: Optional custom handoff tool (e.g. from :func:`build_handoff_tool`).
             Defaults to the generic :data:`HANDOFF_TOOL`.
+        room_id: The one room the handoff serves, when a strategy installs
+            it for that room (RFC §19.7). ``None`` serves every room.
+
+    Raises:
+        RuntimeError: The handoff is already set up where it would be declared.
     """
-    # Guard against double registration
-    if any(t.name == "handoff_conversation" for t in channel._injected_tools):
+    if channel._registry.lookup(HANDOFF_TOOL_NAME, room_id) is not None:
         msg = f"setup_handoff() already called for channel '{channel.channel_id}'"
         raise RuntimeError(msg)
 
-    # Inject the handoff tool definition
-    channel._injected_tools.append(tool or HANDOFF_TOOL)
-
-    # Wrap the tool handler chain
-    original = channel.tool_handler
-
-    async def hand_off(room_id: str, name: str, arguments: dict[str, Any]) -> str:
+    async def hand_off(call_room_id: str, name: str, arguments: dict[str, Any]) -> str:
         result = await handler.handle(
-            room_id=room_id,
+            room_id=call_room_id,
             calling_agent_id=channel.channel_id,
             arguments=arguments,
         )
         return result.model_dump_json()
 
-    channel.tool_handler = call_room_handler({"handoff_conversation"}, hand_off, original)
+    entry = orchestration_tool(tool or HANDOFF_TOOL, in_call_room(HANDOFF_TOOL_NAME, hand_off))
+    channel._registry.register(entry, room_id=room_id, owner=handler)

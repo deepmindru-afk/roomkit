@@ -10,19 +10,21 @@ from __future__ import annotations
 
 import json
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from roomkit import ConferenceRealtimeConfig, RoomKit
 from roomkit.channels._conference_tools import declared_tools
 from roomkit.channels._served_tools import CollisionLog
+from roomkit.channels._tool_registry import ToolNameCollisionError
 from roomkit.channels.ai import AIChannel
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 from roomkit.core.hooks import SyncPipelineResult
 from roomkit.models.tool_call import AIGenerationEvent
 from roomkit.providers.ai.base import AITool
 from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.tasks.delegate import DELEGATE_TOOL, DelegateHandler, setup_delegation
 from roomkit.tools.human_input import HumanInputToolHandler
 from roomkit.tools.policy import ToolPolicy
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
@@ -127,31 +129,43 @@ class TestOneDeclarationPerName:
             provider=provider,
             tools=[AITool(name="search_docs", description="Search", parameters={})],
         )
-        ch._injected_tools = [AITool(name="read_stored_result", description="host", parameters={})]
+        # A tool the binding brings with the turn, under the channel's own name.
+        host = {"name": "read_stored_result", "description": "host", "parameters": {}}
 
-        await _turn(ch)
+        await _turn(ch, binding_tools=[host])
 
         # The channel declares its own from the first round (RFC §6.4).
         declared = {t.name: t.description for t in provider.calls[0].tools or []}
         assert declared["read_stored_result"] != "host"
         assert "read_stored_result" in caplog.text
 
-    async def test_a_name_given_twice_is_declared_once_with_the_later_definition(
-        self, streaming: bool
-    ) -> None:
+    def test_orchestration_over_a_host_tool_s_name_is_refused(self, streaming: bool) -> None:
+        """Declared once and served by the other, the model would call one
+        tool's schema on the other's server: refused when it is given (RMK-307)."""
         provider = MockAIProvider(ai_responses=[_DONE], streaming=streaming)
         ch = AIChannel(
             "ai1",
             provider=provider,
             tools=[AITool(name="delegate_task", description="host", parameters={})],
         )
-        orchestration = AITool(name="delegate_task", description="orchestration", parameters={})
-        ch._injected_tools = [orchestration]
 
-        await _turn(ch)
+        with pytest.raises(ToolNameCollisionError, match="a tool of the host"):
+            setup_delegation(ch, DelegateHandler(MagicMock()))
+
+    async def test_a_turn_tool_under_an_orchestration_name_is_not_declared(
+        self, streaming: bool
+    ) -> None:
+        """A tool the turn brings under a name orchestration serves comes too
+        late to be refused: the orchestration's definition is declared."""
+        provider = MockAIProvider(ai_responses=[_DONE], streaming=streaming)
+        ch = AIChannel("ai1", provider=provider)
+        setup_delegation(ch, DelegateHandler(MagicMock()))
+        host = {"name": "delegate_task", "description": "host", "parameters": {}}
+
+        await _turn(ch, binding_tools=[host])
 
         declared = [t for t in provider.calls[0].tools or [] if t.name == "delegate_task"]
-        assert [t.description for t in declared] == ["orchestration"]
+        assert [t.description for t in declared] == [DELEGATE_TOOL.description]
 
     async def test_plan_tasks_is_the_host_s_without_a_planner(self, streaming: bool) -> None:
         provider = MockAIProvider(

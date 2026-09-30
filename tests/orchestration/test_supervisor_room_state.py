@@ -38,7 +38,7 @@ async def _installed_in_two_rooms(supervisor: Supervisor) -> MagicMock:
 
 async def _call(agent: Agent, room_id: str, tool: str) -> Any:
     with tool_call_in(room_id):
-        return await agent.tool_handler(tool, {"task": "look into it"})
+        return await agent._tool_handler(tool, {"task": "look into it"})
 
 
 async def test_a_worker_busy_in_one_room_is_free_in_another() -> None:
@@ -94,7 +94,7 @@ async def test_async_results_continue_the_chain_of_the_turn_that_dispatched(
     )
 
     with tool_call_in("tenant-A", chain_depth=2):
-        await boss.tool_handler("delegate_workers", {"task": "look into it"})
+        await boss._tool_handler("delegate_workers", {"task": "look into it"})
     await asyncio.sleep(0)
 
     assert dispatched == [("tenant-A", 2)]

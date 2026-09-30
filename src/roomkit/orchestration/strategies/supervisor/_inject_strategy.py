@@ -14,9 +14,9 @@ import time
 import weakref
 from typing import TYPE_CHECKING, Any
 
+from roomkit.channels._tool_registry import orchestration_tool
 from roomkit.core.task_utils import log_task_exception
-from roomkit.orchestration._call_room import call_room_handler
-from roomkit.orchestration._installs import first_install
+from roomkit.orchestration._call_room import in_call_room
 from roomkit.orchestration.strategies.supervisor._common import (
     _STRATEGY_TOOL_NAME,
     WorkerStrategy,
@@ -38,10 +38,6 @@ from roomkit.providers.ai.base import AITool
 if TYPE_CHECKING:
     from roomkit.channels.agent import Agent
     from roomkit.core.framework import RoomKit
-
-# The supervisors whose tool handler already serves ``delegate_workers``: a
-# second room's install declares the tool for its room, and wraps nothing.
-_SERVING: weakref.WeakSet[Any] = weakref.WeakSet()
 
 
 class _StrategyToolMixin:
@@ -79,22 +75,14 @@ class _StrategyToolMixin:
         )
 
     def _inject_strategy_tool(self, kit: RoomKit, room_id: str) -> None:
-        """Declare ``delegate_workers`` in *room_id*'s turns, and serve it.
+        """Declare ``delegate_workers`` in *room_id*'s turns, and serve it there.
 
-        The tool is declared per installed room (RFC §19.7): not in the
+        The tool is set up for the installed room (RFC §19.7): not in the
         supervisor's other rooms, nor in the ``::task-`` rooms where the
         supervised flow runs the supervisor to frame and judge, where it must
-        answer instead of delegating again. Its handler is installed once per
-        supervisor, and a call delegates from the room of the call (RFC §23.4).
+        answer instead of delegating again. It runs this install's team: a
+        second room's install, with its own workers, serves its own room.
         """
-        tool_name = _STRATEGY_TOOL_NAME
-        room_tools = self._supervisor._room_tools.setdefault(room_id, [])
-        if not any(t.name == tool_name for t in room_tools):
-            room_tools.append(self._strategy_tool())
-        if not first_install(_SERVING, self._supervisor):
-            return
-
-        original = self._supervisor.tool_handler
         server = _StrategyToolServer(
             kit,
             self._supervisor,
@@ -105,7 +93,9 @@ class _StrategyToolMixin:
             task_timeout=self._task_timeout,
             max_revisions=self._max_revisions,
         )
-        self._supervisor.tool_handler = call_room_handler({tool_name}, server.serve, original)
+        serve = in_call_room(_STRATEGY_TOOL_NAME, server.serve)
+        entry = orchestration_tool(self._strategy_tool(), serve)
+        self._supervisor._registry.register(entry, room_id=room_id, owner=self)
 
 
 _SUBTASK_REFUSAL = json.dumps(

@@ -207,7 +207,7 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
     # AIContextMixin whose return type must be preserved for subclasses
     # (Agent.super()._build_context()). Call sites use type: ignore instead.
     _drain_steering_queue: Any  # see AIGenerationHost
-    _channel_tool_names: Any  # AIToolsMixin: the tools the channel serves itself
+    _served_tool_names: Any  # AIToolsMixin: what the channel and orchestration serve
     _collisions: CollisionLog
     _generate_with_retry: Any  # see AIGenerationHost
     _record_declared_tools: Any  # see AIGenerationHost
@@ -255,7 +255,7 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
                 loop_ctx,
                 declared,
                 gen_event.ai_context.tools,
-                served=self._channel_tool_names(),
+                served=self._served_tool_names(loop_ctx.room_id),
                 collisions=self._collisions,
             )
         return gen_event.ai_context, False
@@ -792,7 +792,7 @@ def _adopt_hook_toolset(
     round, reveal and call; one it never saw (gated by a skill, denied by the
     policy) stays in the base for those filters to decide. A tool it adds is
     pinned for the turn: Tool Search never defers it (RFC §6.4). A name the
-    channel serves itself keeps the channel's definition: the hook may
+    channel or orchestration serves keeps its definition: the hook may
     withdraw it, never redefine it, nor add a tool under it (RFC §21.1).
     """
     if loop_ctx.all_context_tools is None:

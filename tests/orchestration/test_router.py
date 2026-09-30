@@ -636,8 +636,8 @@ class TestRouterInstall:
         router.install(kit, agents)
 
         for agent in agents:
-            assert len(agent._injected_tools) == 1
-            assert agent._injected_tools[0].name == "handoff_conversation"
+            assert len(agent.extra_tools) == 1
+            assert agent.extra_tools[0].name == "handoff_conversation"
 
     def test_install_passes_aliases(self):
         router = ConversationRouter(default_agent_id="agent-a")

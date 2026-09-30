@@ -8,10 +8,10 @@ declared as annotations; they are set in ``Supervisor.__init__``.
 from __future__ import annotations
 
 import json
-import weakref
 from typing import TYPE_CHECKING, Any
 
-from roomkit.orchestration._call_room import call_room_handler
+from roomkit.channels._tool_registry import orchestration_tool
+from roomkit.orchestration._call_room import in_call_room
 from roomkit.orchestration.status_bus import StatusLevel
 from roomkit.orchestration.strategies.supervisor._common import (
     _post_worker_status,
@@ -27,10 +27,6 @@ if TYPE_CHECKING:
     from roomkit.channels.agent import Agent
     from roomkit.core.framework import RoomKit
 
-# Per supervisor, the ``delegate_to_<id>`` names its handler serves, to the
-# worker each one reaches: a second room's install adds its workers here.
-_PER_WORKER: weakref.WeakKeyDictionary[Any, dict[str, str]] = weakref.WeakKeyDictionary()
-
 
 class _PerWorkerToolMixin:
     """Inject per-worker ``delegate_to_<id>`` tools (the AI decides)."""
@@ -41,26 +37,14 @@ class _PerWorkerToolMixin:
     _share_channels: list[str]
 
     def _inject_per_worker_tools(self, kit: RoomKit, room_id: str) -> None:
-        """Declare per-worker ``delegate_to_<id>`` tools in *room_id*'s turns.
+        """Declare per-worker ``delegate_to_<id>`` tools in *room_id*'s turns,
+        and serve them there.
 
-        The tools are declared per installed room (RFC §19.7), not in every
-        room the supervisor serves. Their handler is installed once per
-        supervisor and serves the workers of every room it was installed in;
-        a call delegates from the room of the call (RFC §23.4).
+        The tools are set up for the installed room (RFC §19.7), not in every
+        room the supervisor serves, and reach this install's workers with its
+        settings; a call delegates from the room of the call (RFC §23.4).
         """
-        room_tools = self._supervisor._room_tools.setdefault(room_id, [])
-        declared = {t.name for t in room_tools}
-        room_tools.extend(
-            tool for tool in map(_worker_tool, self._workers) if tool.name not in declared
-        )
-        workers = {f"delegate_to_{w.channel_id}": w.channel_id for w in self._workers}
-        tool_to_worker = _PER_WORKER.get(self._supervisor)
-        if tool_to_worker is not None:
-            tool_to_worker.update(workers)
-            return
-        tool_to_worker = _PER_WORKER[self._supervisor] = workers
-
-        original = self._supervisor.tool_handler
+        tool_to_worker = {f"delegate_to_{w.channel_id}": w.channel_id for w in self._workers}
         server = _PerWorkerToolServer(
             kit,
             self._supervisor,
@@ -68,11 +52,10 @@ class _PerWorkerToolMixin:
             wait=self._wait_for_result,
             share_channels=self._share_channels,
         )
-
-        # The names this handler serves grow as other rooms install workers.
-        self._supervisor.tool_handler = call_room_handler(
-            tool_to_worker.keys(), server.serve, original
-        )
+        for worker in self._workers:
+            tool = _worker_tool(worker)
+            entry = orchestration_tool(tool, in_call_room(tool.name, server.serve))
+            self._supervisor._registry.register(entry, room_id=room_id, owner=self)
 
 
 class _PerWorkerToolServer:

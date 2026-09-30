@@ -11,6 +11,7 @@ from roomkit.models.room import Room
 from roomkit.orchestration.state import get_conversation_state
 from roomkit.orchestration.strategies.swarm import Swarm
 from roomkit.providers.ai.mock import MockAIProvider
+from tests.tool_room import room_tool_names
 
 # -- Helpers ------------------------------------------------------------------
 
@@ -105,12 +106,12 @@ class TestSwarmInstall:
         s = Swarm(agents=agents)
         await s.install(kit, "r1")
 
-        # Each agent should have handoff tool
+        # Each agent should have handoff tool, in the installed room
         for agent in agents:
-            assert any(t.name == "handoff_conversation" for t in agent._injected_tools)
+            assert "handoff_conversation" in room_tool_names(agent, "r1")
 
         # Agent A's handoff tool should have B and C as targets
-        a_tool = next(t for t in agents[0]._injected_tools if t.name == "handoff_conversation")
+        a_tool = agents[0]._orchestration_tools("r1")[0]
         target_enum = a_tool.parameters["properties"]["target"].get("enum", [])
         assert "b" in target_enum
         assert "c" in target_enum
@@ -126,7 +127,5 @@ class TestSwarmInstall:
         await s.install(kit2, "r2")
 
         for agent in agents:
-            handoff_count = sum(
-                1 for t in agent._injected_tools if t.name == "handoff_conversation"
-            )
-            assert handoff_count == 1
+            for room_id in ("r1", "r2"):
+                assert room_tool_names(agent, room_id).count("handoff_conversation") == 1

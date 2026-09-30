@@ -11,7 +11,8 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
-from roomkit.orchestration._call_room import call_room_handler
+from roomkit.channels._tool_registry import orchestration_tool
+from roomkit.orchestration._call_room import in_call_room
 from roomkit.providers.ai.base import AITool
 from roomkit.tasks.cache import CompletedTaskCache
 
@@ -26,8 +27,10 @@ logger = logging.getLogger("roomkit.tasks")
 
 # -- Tool definition ----------------------------------------------------------
 
+DELEGATE_TOOL_NAME = "delegate_task"
+
 DELEGATE_TOOL = AITool(
-    name="delegate_task",
+    name=DELEGATE_TOOL_NAME,
     description=(
         "Delegate a task to a background agent. The agent works in its own "
         "room and you can continue the current conversation. Use when: "
@@ -250,25 +253,24 @@ def setup_delegation(
     *,
     tool: AITool | None = None,
 ) -> None:
-    """Wire delegation into an AIChannel's tool chain.
+    """Serve the delegate tool on an AIChannel.
 
-    Injects the delegate tool and wraps the tool handler to intercept
-    ``delegate_task`` calls. Same pattern as ``setup_handoff()``: the task is
-    delegated from the room of the call, read from the tool call context
-    (RFC §23.4), so one agent serving several rooms delegates from each.
+    Declares ``delegate_task`` in the channel's turns and serves its calls with
+    *handler*. Same pattern as ``setup_handoff()``: the task is delegated from
+    the room of the call, read from the tool call context (RFC §23.4), so one
+    agent serving several rooms delegates from each.
 
     Args:
         channel: The AI channel to wire delegation into.
         handler: The delegate handler that processes tool calls.
         tool: Optional custom delegate tool (e.g. from :func:`build_delegate_tool`).
+
+    Raises:
+        RuntimeError: Delegation is already set up on the channel.
     """
-    if any(t.name == "delegate_task" for t in channel._injected_tools):
+    if channel._registry.lookup(DELEGATE_TOOL_NAME, None) is not None:
         msg = f"setup_delegation() already called for channel '{channel.channel_id}'"
         raise RuntimeError(msg)
-
-    channel._injected_tools.append(tool or DELEGATE_TOOL)
-
-    original = channel._tool_handler
 
     async def delegate(room_id: str, name: str, arguments: dict[str, Any]) -> str:
         result = await handler.handle(
@@ -278,7 +280,8 @@ def setup_delegation(
         )
         return json.dumps(result)
 
-    channel._tool_handler = call_room_handler({"delegate_task"}, delegate, original)
+    entry = orchestration_tool(tool or DELEGATE_TOOL, in_call_room(DELEGATE_TOOL_NAME, delegate))
+    channel._registry.register(entry, owner=handler)
 
 
 def _aitool_to_dict(tool: AITool) -> dict[str, Any]:

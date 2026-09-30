@@ -30,6 +30,7 @@ from roomkit.models.store_filter import EventFilter
 from roomkit.providers.utils import _aclose_stream
 
 if TYPE_CHECKING:
+    from roomkit.channels._tool_registry import ChannelRegistry
     from roomkit.core.event_router import BroadcastResult
     from roomkit.core.framework import RoomKit
     from roomkit.models.room import Room
@@ -241,15 +242,14 @@ async def _scan_for_submitted_result(
 
 @runtime_checkable
 class _InjectableToolChannel(Protocol):
-    """A channel that can host an injected tool and a swappable tool handler.
+    """A channel a delegation can set a result tool up on, for one room.
 
     ``_run_with_structured_result`` matches by structure, not by class, so
-    duck-typed agent channels (and test doubles) qualify as long as they expose
-    both members.
+    duck-typed agent channels (and test doubles) qualify as long as they carry
+    a tool registry.
     """
 
-    _room_tools: dict[str, list[Any]]
-    tool_handler: Any
+    _registry: ChannelRegistry
 
 
 async def _run_with_structured_result(
@@ -267,8 +267,8 @@ async def _run_with_structured_result(
     ``on_missing`` payload is returned on its behalf.
 
     Capture is delivery-agnostic and scoped to *child_room_id*: a call made
-    through the channel's tool loop is caught by the handler
-    :func:`~roomkit.core.mixins._result_capture.capture_result` installs, and a
+    through the channel's tool loop is caught by the tool
+    :func:`~roomkit.core.mixins._result_capture.capture_result` sets up there, and a
     call served by an MCP server instead is found in the room's persisted trace.
     Another room's delegation to the same agent never sees this one's result.
     Returns the payload as a JSON string (``on_missing``'s when exhausted)."""

@@ -102,7 +102,7 @@ class TestReviewThroughTheToolLoop:
     async def test_two_reviews_at_once_each_read_their_own_verdict(self, streaming: bool) -> None:
         kit, boss, worker, judge = await _kit_with_supervisor(streaming=streaming)
         handler_before = boss.tool_handler
-        tools_before = list(boss._injected_tools)
+        tools_before = list(boss.extra_tools)
 
         good, bad = await asyncio.gather(
             _review(kit, boss, worker, "room-a", "GOOD: Montréal, StatCan"),
@@ -116,5 +116,5 @@ class TestReviewThroughTheToolLoop:
         assert all(names.count("submit_verdict") == 1 for names in judge.tools_seen)
         # And the shared channel is left as it was found.
         assert boss.tool_handler is handler_before
-        assert boss._injected_tools == tools_before
-        assert boss._room_tools == {}
+        assert boss.extra_tools == tools_before
+        assert not boss._registry.serves_orchestration()

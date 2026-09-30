@@ -113,6 +113,6 @@ class TestLoopInstall:
         loop = Loop(agent=writer, reviewers=[editor])
         await loop.install(kit, "r1")
 
-        assert not any(t.name == "handoff_conversation" for t in writer._injected_tools)
-        assert not any(t.name == "handoff_conversation" for t in editor._injected_tools)
-        assert not any(t.name == "approve_output" for t in editor._injected_tools)
+        assert not any(t.name == "handoff_conversation" for t in writer.extra_tools)
+        assert not any(t.name == "handoff_conversation" for t in editor.extra_tools)
+        assert not any(t.name == "approve_output" for t in editor.extra_tools)
