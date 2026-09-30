@@ -276,13 +276,7 @@ class AIContextMixin:
         if self._human_input_handler is not None:
             tools.extend(self._human_input_handler.tools or ())
 
-        # Skill activation is keyed on the tool loop's room — the very id
-        # ``activate_skill`` will write under (``handle_event`` stamps it on this
-        # ctx, and the loop's child ctx inherits it), so what is written and what
-        # is rendered can never drift apart. It is the event's room in practice;
-        # reading it from the ctx is what makes that a fact rather than a hope.
         loop_ctx = self._get_loop_ctx()
-        activation_room = loop_ctx.room_id
 
         # A standalone instruction reads nothing of the room (RFC §10.1.1 step
         # 7): no history below, and none of the room's working memories either
@@ -291,92 +285,8 @@ class AIContextMixin:
         # another form. The channel's own prompt, tools and catalogue stay.
         standalone = is_standalone(event)
 
-        # Rebuild the room-scoped working memories from persisted history the
-        # first time this process serves the room (see _hydrate_room_memories).
-        # Runs BEFORE the skills block: the active-skill bodies it may restore
-        # are rendered into the prompt just below.
-        await self._hydrate_room_memories(event.room_id, activation_room)
-
-        # Inject skill tools and prompt (infra tools added here, gated tools later).
-        # The manifest block is skipped when the host renders its own skills
-        # manifest inside ``system_prompt`` (``skills_in_prompt=False``).
-        if self._skills and self._skills.skill_count > 0:
-            tools.extend(self._skill_tools())
-            if self._skills_in_prompt:
-                preamble = _SKILLS_PREAMBLE
-                # No executor, or a policy that denies the tool: either way
-                # the model must not be told it can run a skill's scripts.
-                if not self._script_executor or not self._policy_allows(TOOL_RUN_SCRIPT):
-                    preamble += _SKILLS_NO_SCRIPTS_NOTE
-                skills_xml = self._skills.to_prompt_xml()
-                skill_block = f"\n\n{preamble}\n\n{skills_xml}"
-                system_prompt = (system_prompt or "") + skill_block
-            # Bodies of the skills activated in this room. Unlike the manifest
-            # above, this is RUNTIME state, not the catalogue: a host that
-            # renders its own manifest (``skills_in_prompt=False``) still cannot
-            # know what the model activated mid-conversation, so this block is
-            # injected either way — exactly like the tool-usage digest, the Tool
-            # Search preamble and the sandbox preamble. Its mutability is also
-            # why it belongs here rather than in the host's cache-stable prefix.
-            # This is what makes ``activate_skill``'s later ACKs safe: the rules
-            # are in front of the model without the body being re-sent.
-            active_skills = (
-                None
-                if standalone
-                else self._skill_activation.render_prompt(activation_room, self._skills)
-            )
-            if active_skills:
-                system_prompt = (system_prompt or "") + f"\n\n{active_skills}"
-
-        # Inject sandbox tools and preamble
-        if self._sandbox is not None:
-            sandbox_allowed = False
-            for tdef in self._sandbox.tool_definitions():
-                name = tdef["name"]
-                if not name.startswith(_SANDBOX_TOOL_PREFIX):
-                    logger.warning(
-                        "Sandbox tool %r does not start with %r — skipping",
-                        name,
-                        _SANDBOX_TOOL_PREFIX,
-                    )
-                    continue
-                sandbox_allowed = sandbox_allowed or self._policy_allows(name)
-                tools.append(
-                    AITool(
-                        name=name,
-                        description=tdef.get("description", ""),
-                        parameters=tdef.get("parameters", {}),
-                    )
-                )
-            # The preamble describes tools the policy may deny (RFC §21.1): with
-            # none of them allowed it would promise what the model cannot call.
-            if sandbox_allowed:
-                system_prompt = (system_prompt or "") + f"\n\n{_SANDBOX_PREAMBLE}"
-
-        # Inject eviction re-read tool when large results have been stored
-        if self._eviction.has_evicted:
-            tools.append(ToolEviction.tool_definition())
-
-        # Inject planning tool and plan context when enabled
-        if self._planner is not None:
-            tools.append(TaskPlanner.tool_definition())
-            room_id = context.room.id if context.room else event.room_id
-            current_plan = None if standalone else self._planner.plan_for(room_id)
-            if current_plan:
-                system_prompt = (system_prompt or "") + TaskPlanner.format_plan_prompt(
-                    current_plan
-                )
-
-        # "Tools you've already used" digest — the rebuilt context drops
-        # tool-call events, so without this the model forgets, across turns,
-        # which tools/source it used (it would re-ask the user). Injected for
-        # every model, not just small ones — the loss is provider-agnostic.
-        usage_digest = None if standalone else self._tool_usage.render_digest(event.room_id)
-        if usage_digest:
-            system_prompt = (system_prompt or "") + f"\n\n{usage_digest}"
-
-        system_prompt = self._collapse_behind_tool_search(
-            tools, system_prompt, loop_ctx, binding, event, standalone
+        system_prompt = await self._add_channel_features(
+            tools, system_prompt, event, binding, context, loop_ctx, standalone=standalone
         )
 
         # Store unfiltered tool list for re-application after skill activation
@@ -547,6 +457,139 @@ class AIContextMixin:
             response_metadata=loop_ctx.response_metadata,
             **settings,
         )
+
+    async def _add_channel_features(
+        self,
+        tools: list[AITool],
+        system_prompt: str | None,
+        event: RoomEvent,
+        binding: ChannelBinding,
+        context: RoomContext,
+        loop_ctx: _ToolLoopContext,
+        *,
+        standalone: bool,
+    ) -> str | None:
+        """The turn's system prompt with what the channel's own features add to
+        it: skills, sandbox, the large-result re-read, planner, tool-usage
+        digest and Tool Search, in that order. Their tools join *tools* in place.
+        """
+        # Skill activation is keyed on the tool loop's room — the very id
+        # ``activate_skill`` will write under (``handle_event`` stamps it on this
+        # ctx, and the loop's child ctx inherits it), so what is written and what
+        # is rendered can never drift apart. It is the event's room in practice;
+        # reading it from the ctx is what makes that a fact rather than a hope.
+        activation_room = loop_ctx.room_id
+
+        # Rebuild the room-scoped working memories from persisted history the
+        # first time this process serves the room (see _hydrate_room_memories).
+        # Runs BEFORE the skills block: the active-skill bodies it may restore
+        # are rendered into the prompt just below.
+        await self._hydrate_room_memories(event.room_id, activation_room)
+
+        system_prompt = self._add_skills(
+            tools, system_prompt, activation_room, standalone=standalone
+        )
+        system_prompt = self._add_sandbox(tools, system_prompt)
+
+        # Inject eviction re-read tool when large results have been stored
+        if self._eviction.has_evicted:
+            tools.append(ToolEviction.tool_definition())
+
+        # Inject planning tool and plan context when enabled
+        if self._planner is not None:
+            tools.append(TaskPlanner.tool_definition())
+            room_id = context.room.id if context.room else event.room_id
+            current_plan = None if standalone else self._planner.plan_for(room_id)
+            if current_plan:
+                system_prompt = (system_prompt or "") + TaskPlanner.format_plan_prompt(
+                    current_plan
+                )
+
+        # "Tools you've already used" digest — the rebuilt context drops
+        # tool-call events, so without this the model forgets, across turns,
+        # which tools/source it used (it would re-ask the user). Injected for
+        # every model, not just small ones — the loss is provider-agnostic.
+        usage_digest = None if standalone else self._tool_usage.render_digest(event.room_id)
+        if usage_digest:
+            system_prompt = (system_prompt or "") + f"\n\n{usage_digest}"
+
+        return self._collapse_behind_tool_search(
+            tools, system_prompt, loop_ctx, binding, event, standalone
+        )
+
+    def _add_skills(
+        self,
+        tools: list[AITool],
+        system_prompt: str | None,
+        activation_room: str | None,
+        *,
+        standalone: bool,
+    ) -> str | None:
+        """The system prompt with the skills' manifest and the bodies of the
+        skills active in *activation_room*; the skill tools join *tools*
+        (infra tools here, gated tools later)."""
+        # The manifest block is skipped when the host renders its own skills
+        # manifest inside ``system_prompt`` (``skills_in_prompt=False``).
+        if not self._skills or self._skills.skill_count == 0:
+            return system_prompt
+        tools.extend(self._skill_tools())
+        if self._skills_in_prompt:
+            preamble = _SKILLS_PREAMBLE
+            # No executor, or a policy that denies the tool: either way
+            # the model must not be told it can run a skill's scripts.
+            if not self._script_executor or not self._policy_allows(TOOL_RUN_SCRIPT):
+                preamble += _SKILLS_NO_SCRIPTS_NOTE
+            skills_xml = self._skills.to_prompt_xml()
+            skill_block = f"\n\n{preamble}\n\n{skills_xml}"
+            system_prompt = (system_prompt or "") + skill_block
+        # Bodies of the skills activated in this room. Unlike the manifest
+        # above, this is RUNTIME state, not the catalogue: a host that
+        # renders its own manifest (``skills_in_prompt=False``) still cannot
+        # know what the model activated mid-conversation, so this block is
+        # injected either way — exactly like the tool-usage digest, the Tool
+        # Search preamble and the sandbox preamble. Its mutability is also
+        # why it belongs here rather than in the host's cache-stable prefix.
+        # This is what makes ``activate_skill``'s later ACKs safe: the rules
+        # are in front of the model without the body being re-sent.
+        active_skills = (
+            None
+            if standalone
+            else self._skill_activation.render_prompt(activation_room, self._skills)
+        )
+        if active_skills:
+            system_prompt = (system_prompt or "") + f"\n\n{active_skills}"
+
+        return system_prompt
+
+    def _add_sandbox(self, tools: list[AITool], system_prompt: str | None) -> str | None:
+        """The system prompt with the sandbox preamble when the tool policy
+        allows one of its tools; the sandbox tools join *tools*."""
+        if self._sandbox is None:
+            return system_prompt
+        sandbox_allowed = False
+        for tdef in self._sandbox.tool_definitions():
+            name = tdef["name"]
+            if not name.startswith(_SANDBOX_TOOL_PREFIX):
+                logger.warning(
+                    "Sandbox tool %r does not start with %r — skipping",
+                    name,
+                    _SANDBOX_TOOL_PREFIX,
+                )
+                continue
+            sandbox_allowed = sandbox_allowed or self._policy_allows(name)
+            tools.append(
+                AITool(
+                    name=name,
+                    description=tdef.get("description", ""),
+                    parameters=tdef.get("parameters", {}),
+                )
+            )
+        # The preamble describes tools the policy may deny (RFC §21.1): with
+        # none of them allowed it would promise what the model cannot call.
+        if sandbox_allowed:
+            system_prompt = (system_prompt or "") + f"\n\n{_SANDBOX_PREAMBLE}"
+
+        return system_prompt
 
     def _collapse_behind_tool_search(
         self,
