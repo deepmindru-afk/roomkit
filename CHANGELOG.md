@@ -78,6 +78,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   room once instead of three times. A pass refused because the room is
   closed now reads the whole context before refusing, where it read the room
   alone: a rare case, and nothing it writes changes.
+- `OpenRouterAIProvider` sends the turn's `reasoning` on a turn with tools as
+  on any other (RMK-338, RFC §6.7), where it sent only the switch-off: a
+  configured or per-turn `reasoning_effort` or `thinking_budget` never
+  reached a tool turn. The two refusals that held it back do not happen,
+  measured through OpenRouter on 2026-09-30: Claude takes a tool round's
+  reasoning passed back as `<think>` text, and an OpenAI model takes an
+  effort alongside tools. The seven upstream families of the catalogue
+  answered two tool rounds with reasoning on.
 
 ### Fixed
 

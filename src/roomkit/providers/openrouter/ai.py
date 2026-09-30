@@ -86,18 +86,17 @@ class OpenRouterAIProvider(OpenAIAIProvider):
         OpenAI SDK's ``extra_body`` passthrough. The streamed trace is surfaced
         by the inherited ``delta.reasoning`` reader.
 
-        On a turn with tools only the switch-off (``thinking_budget=0``) is
-        sent (RFC §6.7). Turning reasoning on there is left to the model: the
-        reasoning of one tool round reaches the next as ``<think>`` text, not as
-        the ``reasoning_details`` OpenRouter asks to be passed back, which an
-        upstream that requires its thinking block before a tool call (Claude)
-        would refuse, and an OpenAI upstream from GPT-5.4 on takes no effort
-        but ``none`` alongside tools.
+        A turn with tools carries it as any other does (RFC §6.7). The
+        reasoning of one tool round reaches the next as ``<think>`` text
+        rather than as ``reasoning_details``, and every upstream of the
+        catalogue takes it so, measured on 2026-09-30: Claude answers the next
+        round without asking for its thinking block, and OpenRouter serves an
+        OpenAI model's effort alongside tools through its Responses path.
         """
         if context.temperature is not None and self._config.supports_custom_temperature:
             kwargs["temperature"] = context.temperature
         reasoning = self._resolve_reasoning(context)
-        if reasoning is not None and (not context.tools or reasoning == _REASONING_OFF):
+        if reasoning is not None:
             kwargs.setdefault("extra_body", {})["reasoning"] = reasoning
 
     def _apply_response_format(self, kwargs: dict[str, Any], context: AIContext) -> None:

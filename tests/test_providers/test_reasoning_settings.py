@@ -86,9 +86,8 @@ _EFFORT: dict[str, Effort] = {
 }
 
 # Where a turn with tools does not carry an enabling effort, and why (RFC §6.7):
-# LiteLLM cannot know the model behind an alias; OpenRouter cannot pass a
-# tool round's reasoning back as its upstreams require.
-_NOT_ON_TOOL_TURNS = {"litellm", "openrouter"}
+# LiteLLM cannot know the model behind an alias.
+_NOT_ON_TOOL_TURNS = {"litellm"}
 
 
 def _context(**fields: Any) -> AIContext:

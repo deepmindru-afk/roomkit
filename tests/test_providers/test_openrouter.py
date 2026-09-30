@@ -351,18 +351,22 @@ class TestOpenRouterReasoning:
         self._provider()._apply_sampling_kwargs(kwargs, _context())
         assert "extra_body" not in kwargs
 
-    def test_a_tool_turn_carries_only_the_switch_off(self) -> None:
-        # RFC §6.7: the budget of 0 that disables reasoning reaches a tool
-        # turn; turning it on there is left to the model (see the provider).
+    @pytest.mark.parametrize(
+        ("turn", "reasoning"),
+        [
+            ({"thinking_budget": 0}, {"enabled": False}),
+            ({"thinking_budget": 4096}, {"max_tokens": 4096}),
+            ({"reasoning_effort": "high"}, {"effort": "high"}),
+        ],
+    )
+    def test_a_tool_turn_carries_the_turn_reasoning(
+        self, turn: dict[str, Any], reasoning: dict[str, Any]
+    ) -> None:
+        # RFC §6.7: a turn with tools gets the same settings as one without.
         tools = [AITool(name="x", description="d", parameters={})]
         kwargs: dict[str, Any] = {}
-        self._provider()._apply_sampling_kwargs(kwargs, _context(tools=tools, thinking_budget=0))
-        assert kwargs["extra_body"]["reasoning"] == {"enabled": False}
-
-        for enabling in ({"thinking_budget": 4096}, {"reasoning_effort": "high"}):
-            kwargs = {}
-            self._provider()._apply_sampling_kwargs(kwargs, _context(tools=tools, **enabling))
-            assert "extra_body" not in kwargs
+        self._provider()._apply_sampling_kwargs(kwargs, _context(tools=tools, **turn))
+        assert kwargs["extra_body"]["reasoning"] == reasoning
 
     def test_the_turn_effort_outranks_the_config(self) -> None:
         kwargs: dict[str, Any] = {}
