@@ -16,7 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is also sent to the real provider and its usage is reported per round: cache
   read, cache write, what was billed, and the first block of the request that
   changed. `--provider anthropic` joins the benchmark's providers; its SDK
-  keeps its two retries, which `results.json` now records.
+  keeps its two retries, which `results.json` now records. A third
+  conversation, `long_cost`, prices the same changes against a long history.
 - `reasoning_tokens` in `AIResponse.usage` (RMK-312, RFC §6) for every
   provider on the OpenAI client (OpenAI, Azure, vLLM, llama.cpp, xAI, Meta,
   OpenRouter, LiteLLM, Qwen, Cerebras), DeepSeek and Gemini: the thinking

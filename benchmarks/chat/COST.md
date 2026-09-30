@@ -14,8 +14,9 @@ cache write) is what the report counts, priced from the model catalogue.
 
 | Scenario | What it exercises |
 |---|---|
-| `tool_cost` | Three turns: `find_tools` reveals a tool, its result is evicted and paged back with `read_stored_result`; a skill is activated and unlocks the tool it gates; a last turn answers with the tool-usage digest and the active skill in the system prompt |
+| `tool_cost` | Four turns: `find_tools` reveals a tool, its result is evicted and paged back with `read_stored_result`; a skill is activated and unlocks the tool it gates; a turn answers from the tool-usage digest and the active skill; a last turn calls a tool again, the steady state |
 | `force_stop_cost` | Six identical calls: the third is refused, the sixth pulls the anti-loop ripcord and the last generation is told to answer, none of its calls running |
+| `long_cost` | Six policy questions answered at length, then five turns, four of them calling a tool: what changes between turns, priced against a history that outgrows it |
 
 Each has a `_buffered` twin. Every sample marks its tools and system prompt
 with a fresh nonce, so one run never reads the cache another wrote.

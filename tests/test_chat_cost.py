@@ -105,7 +105,7 @@ async def test_every_round_is_billed_by_the_real_provider_at_its_price() -> None
 
     assert all(h.checks.values()), h.checks
     rows = h.details["cost"]
-    assert len(billing.sent) == len(rows) == 9
+    assert len(billing.sent) == len(rows) == 11
     assert all(context.max_tokens == 1 for context in billing.sent)
     assert [c.tools for c in billing.sent] == [c.tools for c in h.provider.contexts]
     assert all(r["cache_read_input_tokens"] == 900 for r in rows)
@@ -120,6 +120,8 @@ async def test_every_round_is_billed_by_the_real_provider_at_its_price() -> None
         (2, 2),
         (2, 3),
         (3, 0),
+        (4, 0),
+        (4, 1),
     ]
 
 

@@ -231,6 +231,41 @@ TOOL_TURNS: Turns = [
         ],
     ),
     ("Thanks. Summarize everything in one line.", [_say("A-1042: out for delivery, 59.70.")]),
+    (
+        "And order A-1043?",
+        [
+            _call("t4-order", "lookup_order", order_id="A-1043"),
+            _say("A-1043 has shipped; its total is 59.70."),
+        ],
+    ),
+]
+
+# A conversation whose history outgrows its notes: six policy questions
+# answered at length, then tool turns. What changes between turns is priced
+# against the whole history here, not against a short one.
+_TOPICS = ["returns", "warranty", "shipping zones", "gift cards", "coupons", "invoices"]
+LONG_TURNS: Turns = [
+    *(
+        (
+            f"Question {n}: explain your policy on {topic}. "
+            + " ".join(f"Detail {d} about {topic} matters to me." for d in range(40)),
+            [
+                _say(
+                    f"Our {topic} policy: "
+                    + " ".join(
+                        f"Point {p}: {topic} are handled case by case under rule {p}."
+                        for p in range(30)
+                    )
+                )
+            ],
+        )
+        for n, topic in enumerate(_TOPICS)
+    ),
+    ("Look up order A-2001.", [_call("l1", "lookup_order", order_id="A-2001"), _say("Shipped.")]),
+    ("And A-2002?", [_call("l2", "lookup_order", order_id="A-2002"), _say("Shipped too.")]),
+    ("Anything else I should know?", [_say("Nothing else for now.")]),
+    ("Check A-2003 please.", [_call("l3", "lookup_order", order_id="A-2003"), _say("Shipped.")]),
+    ("And A-2004?", [_call("l4", "lookup_order", order_id="A-2004"), _say("Shipped too.")]),
 ]
 
 # Six identical calls: the third is refused, the sixth pulls the ripcord and

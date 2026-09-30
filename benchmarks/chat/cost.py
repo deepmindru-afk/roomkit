@@ -18,6 +18,7 @@ from typing import Any
 
 from benchmarks.chat.cost_script import (
     FORCE_STOP_TURNS,
+    LONG_TURNS,
     SYSTEM,
     TOOL_TURNS,
     Turns,
@@ -174,8 +175,9 @@ def cost_options(nonce: str | None = None) -> dict[str, Any]:
 
 # Each conversation of the suite: its name, what it exercises, its turns.
 CONVERSATIONS: list[tuple[str, str, Turns]] = [
-    ("tool_cost", "Tool Search reveal, eviction, skill, digest over three turns", TOOL_TURNS),
+    ("tool_cost", "Tool Search reveal, eviction, skill, digest over four turns", TOOL_TURNS),
     ("force_stop_cost", "Six identical calls, then the anti-loop ripcord", FORCE_STOP_TURNS),
+    ("long_cost", "Six long turns of history, then five turns with tools", LONG_TURNS),
 ]
 
 
