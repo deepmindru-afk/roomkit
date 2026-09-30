@@ -139,3 +139,25 @@ def test_the_turn_switch_off_outranks_a_configured_switch_on(
     sent = read(_sampled(provider, _context(tools=_TOOLS, enable_thinking=False)))
 
     assert sent in ({"type": "disabled"}, False)
+
+
+@pytest.mark.parametrize(
+    ("provider", "read"),
+    [
+        (
+            _provider(DeepSeekAIProvider, DeepSeekConfig(**_SWITCHED_ON)),
+            lambda kwargs: kwargs["extra_body"]["thinking"],
+        ),
+        (
+            _provider(QwenAIProvider, QwenConfig(**_SWITCHED_ON)),
+            lambda kwargs: kwargs["extra_body"]["enable_thinking"],
+        ),
+    ],
+    ids=["deepseek", "qwen"],
+)
+def test_an_effort_of_none_turns_a_configured_switch_off(
+    provider: Any, read: Callable[[dict[str, Any]], Any]
+) -> None:
+    sent = read(_sampled(provider, _context(tools=_TOOLS, reasoning_effort="none")))
+
+    assert sent in ({"type": "disabled"}, False)

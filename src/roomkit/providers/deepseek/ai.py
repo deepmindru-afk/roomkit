@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, ClassVar
 
 from roomkit.providers.ai.base import AIContext, ModelInfo
-from roomkit.providers.ai.reasoning import turn_setting
+from roomkit.providers.ai.reasoning import thinking_switch, turn_setting
 from roomkit.providers.deepseek.config import DeepSeekConfig
 from roomkit.providers.deepseek.models import MODELS
 from roomkit.providers.openai.ai import OpenAIAIProvider
@@ -67,19 +67,16 @@ class DeepSeekAIProvider(OpenAIAIProvider):
     def _resolve_thinking(self, context: AIContext) -> dict[str, Any] | None:
         """Build DeepSeek's ``thinking`` object for this turn, or ``None`` to omit it.
 
-        ``thinking_budget`` gates per-turn and outranks the config (mirrors the
-        Mistral and OpenRouter providers): ``0`` disables thinking, any positive
-        value enables it. The *size* of the budget is deliberately dropped —
-        DeepSeek's API ignores token budgets, and translating one into an effort
-        tier would invent a mapping the vendor does not publish. ``None`` falls
-        back to ``enable_thinking``, and with neither set the request stays
-        silent so the model's own default (thinking on) applies. The turn's
-        ``enable_thinking`` and effort outrank the configured ones (RFC §6.7).
+        The switch is the turn's as :func:`thinking_switch` reads it (RFC
+        §6.7), before the configured ``enable_thinking``: a ``reasoning_effort``
+        of ``none`` turns thinking off, and a ``thinking_budget``'s *size* is
+        deliberately dropped — DeepSeek's API ignores token budgets, and
+        translating one into an effort tier would invent a mapping the vendor
+        does not publish. The effort, the turn's before the configured one,
+        rides the object. With nothing set the request stays silent so the
+        model's own default (thinking on) applies.
         """
-        budget = context.thinking_budget
-        enabled = turn_setting(context.enable_thinking, self._config.enable_thinking)
-        if budget is not None:
-            enabled = budget > 0
+        enabled = thinking_switch(context, self._config.enable_thinking)
         effort = turn_setting(context.reasoning_effort, self._config.reasoning_effort)
         if enabled is False:
             return {"type": "disabled"}

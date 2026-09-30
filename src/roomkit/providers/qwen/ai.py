@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, ClassVar
 
 from roomkit.providers.ai.base import AIContext, ModelInfo
-from roomkit.providers.ai.reasoning import turn_setting
+from roomkit.providers.ai.reasoning import thinking_switch
 from roomkit.providers.openai.ai import OpenAIAIProvider
 from roomkit.providers.qwen.config import QwenConfig
 from roomkit.providers.qwen.models import MODELS
@@ -99,18 +99,17 @@ class QwenAIProvider(OpenAIAIProvider):
     def _resolve_thinking(self, context: AIContext) -> dict[str, Any]:
         """Build Qwen's thinking fields for this turn, empty to leave them out.
 
-        ``thinking_budget`` gates per-turn and outranks the config (mirrors the
-        Mistral and OpenRouter providers): ``0`` disables thinking, any positive
-        value enables it *and* caps the trace, which is the one place roomkit's
-        budget maps straight onto a vendor parameter instead of being
-        approximated. ``None`` falls back to ``enable_thinking``, the turn's
-        before the configured one (RFC §6.7), and with neither set the request
-        stays silent so the model's own default applies.
+        The switch is the turn's as :func:`thinking_switch` reads it (RFC
+        §6.7), before the configured ``enable_thinking``; with nothing stated
+        the request stays silent so the model's own default applies. A
+        positive ``thinking_budget`` also caps the trace, the one place
+        roomkit's budget maps straight onto a vendor parameter instead of being
+        approximated. Qwen has no effort tier, so ``reasoning_effort`` counts
+        only as ``none``, which turns thinking off.
         """
-        budget = context.thinking_budget
-        if budget is None:
-            enabled = turn_setting(context.enable_thinking, self._config.enable_thinking)
-            return {} if enabled is None else {"enable_thinking": enabled}
-        if budget <= 0:
-            return {"enable_thinking": False}
-        return {"enable_thinking": True, "thinking_budget": budget}
+        enabled = thinking_switch(context, self._config.enable_thinking)
+        if enabled is None:
+            return {}
+        if enabled and context.thinking_budget:
+            return {"enable_thinking": True, "thinking_budget": context.thinking_budget}
+        return {"enable_thinking": enabled}
