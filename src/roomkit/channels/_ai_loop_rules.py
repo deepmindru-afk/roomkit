@@ -296,6 +296,9 @@ class AIToolLoopRulesHost(Protocol):
 
     def _apply_tool_filters(self, tools: list[Any]) -> list[Any]: ...
     def _held_declaration(self, loop_ctx: _ToolLoopContext, shown: list[Any]) -> list[Any]: ...
+    def _open_turn_declaration(
+        self, context: AIContext, loop_ctx: _ToolLoopContext, shown: list[Any]
+    ) -> None: ...
     async def _publish_tool_event(
         self,
         event_type: EphemeralEventType,
@@ -339,6 +342,7 @@ class AIToolLoopRulesMixin:
     # Cross-mixin methods — Any annotations avoid MRO shadowing.
     _apply_tool_filters: Any  # see AIToolLoopRulesHost
     _held_declaration: Any  # AIToolPolicyMixin: tools the provider holds unseen
+    _open_turn_declaration: Any  # AIToolPolicyMixin: the room's declaration, reopened
     _publish_tool_event: Any  # see AIToolLoopRulesHost
     _execute_tools_parallel: Any  # see AIToolLoopRulesHost
 
@@ -416,12 +420,14 @@ class AIToolLoopRulesMixin:
 
         # An empty resolved toolset is a real one (``None`` means the loop was
         # built without context): its re-filter declares nothing.
-        tools = self._held_declaration(
-            loop_ctx,
+        shown = (
             self._apply_tool_filters(loop_ctx.all_context_tools)
             if loop_ctx.all_context_tools is not None
-            else list(context.tools or []),
+            else list(context.tools or [])
         )
+        if loop_ctx.first_shown is None:
+            self._open_turn_declaration(context, loop_ctx, shown)
+        tools = self._held_declaration(loop_ctx, shown)
         # ``_build_context`` declares the large-result re-read from the first
         # round; a loop built without it gets it here, as the preview of a
         # result evicted mid-loop tells the model to page it back with it.

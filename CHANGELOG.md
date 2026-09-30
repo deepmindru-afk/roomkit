@@ -114,6 +114,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from 158 thought tokens (nothing sent) to 48 (`low`), `enable_thinking=True`
   on `gemini-3.1-flash-lite` from 0 to 200, and `enable_thinking=False` on
   Ollama `qwen3:4b` from about 1,900 thinking characters to none.
+- On a provider that holds tools unseen (Anthropic), a room keeps its tool
+  declaration from one turn to the next (RMK-345, RFC §6.4): a tool an
+  earlier turn opened (revealed by `find_tools`, used, unlocked by a skill)
+  stays held, and the turn reopens it with a short exchange before its input,
+  a `find_tools` (or `activate_skill`) call whose result references it,
+  instead of showing it. A changed tool list rewrote the whole cached history
+  at the next turn; now the history is read back. The exchange is context
+  only, never stored, delivered or counted as a call. On the cost suite's
+  `tool_cost` (`claude-sonnet-5`), turn 2 costs $0.0153 instead of $0.0224
+  and turn 3 $0.0152 instead of $0.0178; the turn after a reopening rewrites
+  the last turn (turn 4, $0.0123 instead of $0.0109); the four turns cost 12 %
+  less.
 - The Gemini catalogue marks `gemini-2.5-pro` and `gemini-2.5-flash-lite`
   deprecated: the Gemini API answers them 404, "no longer available to new
   users" (2026-09-30).

@@ -6,6 +6,7 @@ import logging
 from collections.abc import Callable, Container
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from roomkit.channels._tool_reopen import reopen, room_declaration
 from roomkit.models.tool_call import DeclaredTool, ToolDeclarationOrigin
 from roomkit.providers.ai.base import AIContext, AIMessage, AITool, AIToolResultPart
 from roomkit.tools.policy import ToolPolicy, matches_any_pattern
@@ -15,6 +16,7 @@ if TYPE_CHECKING:
 
     from roomkit.channels._skill_activation import SkillActivationMemory
     from roomkit.channels._tool_registry import ChannelRegistry
+    from roomkit.channels._tool_usage import ToolUsageMemory
     from roomkit.channels.ai import _ToolLoopContext
     from roomkit.models.context import RoomContext
     from roomkit.models.event import RoomEvent
@@ -60,6 +62,7 @@ class ToolPolicyHost(Protocol):
 
     Provided by AIToolsMixin:
         _registry: The tools the channel serves, with their traits.
+        _tool_usage: The room's tool memory, its kept declaration included.
     """
 
     _tool_policy: ToolPolicy | None
@@ -67,6 +70,7 @@ class ToolPolicyHost(Protocol):
     _skill_activation: SkillActivationMemory
     _tool_search_pinned: set[str]
     _provider: Any
+    _tool_usage: ToolUsageMemory
 
     def _get_loop_ctx(self) -> _ToolLoopContext: ...
     def _orchestration_tool_names(self, room_id: str | None) -> set[str]: ...
@@ -88,6 +92,7 @@ class AIToolPolicyMixin:
     _get_loop_ctx: Callable[[], _ToolLoopContext]
     _orchestration_tool_names: Callable[[str | None], set[str]]
     _registry: ChannelRegistry  # the tools the channel serves, with their traits
+    _tool_usage: ToolUsageMemory  # the room's tool memory, its kept declaration included
 
     def _resolve_participant_role(self, event: RoomEvent, context: RoomContext) -> str | None:
         """Look up the participant role for the event source."""
@@ -171,6 +176,17 @@ class AIToolPolicyMixin:
         return (
             self._tool_search_pinned
             | self._registry.names(loop_ctx.room_id, lambda traits: not traits.deferrable)
+            | self._orchestration_tool_names(loop_ctx.room_id)
+            | loop_ctx.hook_pinned
+        )
+
+    def _never_held(self, loop_ctx: _ToolLoopContext) -> set[str]:
+        """The tools a room's kept declaration always shows (RFC §6.4): the
+        channel's own, what orchestration injected, what a hook added. A tool
+        the host pins is not among them: a skill's gating can hold it, and
+        once a turn opened it, it is reopened like any other."""
+        return (
+            self._registry.names(loop_ctx.room_id, lambda traits: not traits.deferrable)
             | self._orchestration_tool_names(loop_ctx.room_id)
             | loop_ctx.hook_pinned
         )
@@ -324,6 +340,30 @@ class AIToolPolicyMixin:
                 if t.name in held
             ),
         ]
+
+    def _open_turn_declaration(
+        self, context: AIContext, loop_ctx: _ToolLoopContext, shown: list[AITool]
+    ) -> None:
+        """Fix the turn's declaration from the room's, reopening at its start
+        what an earlier turn opened (RFC §6.4). A provider that cannot hold a
+        tool unseen keeps the turn's own declaration."""
+        if loop_ctx.all_context_tools is None or not self._provider.supports_deferred_tools:
+            return
+        room_id = loop_ctx.room_id
+        kept = self._tool_usage.declaration(room_id)
+        first = room_declaration(kept, {t.name for t in shown}, self._never_held(loop_ctx))
+        opened = [t for t in shown if t.name not in first]
+        active = self._skill_activation.active_names(room_id)
+        call_id = f"reopen_{loop_ctx.loop_id[:12]}"
+        messages, turn_input = context.messages, loop_ctx.turn_input
+        if opened and reopen(messages, turn_input, opened, first, active, call_id):
+            loop_ctx.referenced |= {t.name for t in opened}
+            self._record_declared_tools(loop_ctx, opened)
+        else:
+            # Nothing to reopen them with: declared, as a turn would show them.
+            first = first | {t.name for t in opened}
+        loop_ctx.first_shown = first
+        self._tool_usage.keep_declaration(room_id, first)
 
     def _held_names(self, loop_ctx: _ToolLoopContext) -> set[str]:
         """The tools the turn holds unseen: declared from its first round, not

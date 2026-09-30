@@ -85,6 +85,9 @@ class _RoomMemory:
     # Whether persisted history was already loaded (or attempted) for this room —
     # hydration is a one-shot per room per process, even when it finds nothing.
     hydrated: bool = False
+    # The tools the room's turns show, where the provider holds the others
+    # unseen (RFC §6.4); ``None`` until a turn declared them.
+    declared: frozenset[str] | None = None
 
 
 def _part_text(part: Any) -> str | None:
@@ -211,6 +214,22 @@ class ToolUsageMemory:
             mem.tools[name] = None
         while len(mem.tools) > self._reveal_max_tools:
             mem.tools.popitem(last=False)
+        while len(self._by_room) > _MAX_ROOMS:
+            self._by_room.popitem(last=False)
+
+    def declaration(self, room_id: str | None) -> frozenset[str] | None:
+        """The tools the room's turns show, kept from one turn to the next
+        (RFC §6.4); ``None`` when no turn of this process declared them."""
+        mem = self._by_room.get(room_id) if room_id else None
+        return mem.declared if mem is not None else None
+
+    def keep_declaration(self, room_id: str | None, names: frozenset[str]) -> None:
+        """Keep *names* as the tools the room's next turns show."""
+        if not room_id:
+            return
+        mem = self._by_room.setdefault(room_id, _RoomMemory())
+        self._by_room.move_to_end(room_id)
+        mem.declared = names
         while len(self._by_room) > _MAX_ROOMS:
             self._by_room.popitem(last=False)
 
