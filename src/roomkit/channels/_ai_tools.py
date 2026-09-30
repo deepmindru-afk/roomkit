@@ -10,6 +10,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from roomkit.channels._ai_policy import policy_admits
 from roomkit.channels._sandbox_handlers import handle_sandbox_command
 from roomkit.channels._served_tools import CollisionLog, declared_once
 from roomkit.channels._skill_constants import (
@@ -183,6 +184,9 @@ class AIToolsHost(Protocol):
     def _apply_tool_filters(self, tools: list[AITool]) -> list[AITool]: ...
     def _reachable_tools(self, tools: Iterable[AITool]) -> list[AITool]: ...
     def _gate_refusal(self, name: str) -> dict[str, str] | None: ...
+    def _record_declared_tools(
+        self, loop_ctx: _ToolLoopContext, tools: list[AITool] | None
+    ) -> None: ...
 
 
 def _tool_name(tool: AITool) -> str:
@@ -233,6 +237,7 @@ class AIToolsMixin:
     _reachable_tools: Any  # see AIToolsHost
     _never_deferred: Any  # AIToolPolicyMixin: what Tool Search never defers
     _gate_refusal: Any  # see AIToolsHost
+    _record_declared_tools: Any  # AIToolPolicyMixin: the turn's declaration
     extra_tools: Any  # AIChannel property: user + orchestration-injected tools
     _orchestration_tool_names: Any  # AIChannel: never deferred behind Tool Search
 
@@ -598,7 +603,12 @@ class AIToolsMixin:
             if remember:
                 self._remember_call(room_id, tc.name, call_arguments, outcome)
             return self._model_part(
-                tc, result, outcome, structured=structured_content, failed=tool_failed
+                tc,
+                result,
+                outcome,
+                structured=structured_content,
+                failed=tool_failed,
+                references=_tc_ctx.references,
             )
 
         tasks = [asyncio.create_task(_run_one(tc)) for tc in tool_calls]
@@ -623,9 +633,11 @@ class AIToolsMixin:
         *,
         structured: dict[str, Any] | None,
         failed: bool,
+        references: list[str],
     ) -> AIToolResultPart:
         """What the model reads of a call: its result, noted when this tool
-        already gave that answer this turn."""
+        already gave that answer this turn, and the tools it makes callable if
+        the call stands."""
         # The hash is taken on the recorded outcome, so the memory keeps the
         # tool's own output and only the model's copy carries the note, and
         # the hash stays stable: annotating before hashing would make every
@@ -640,7 +652,37 @@ class AIToolsMixin:
             result=result,
             structured_content=structured,
             is_error=failed,
+            references=[] if failed else self._record_references(references),
         )
+
+    def _record_references(self, names: list[str]) -> list[str]:
+        """*names*, recorded in the turn's declaration now a result makes them
+        callable: a tool held unseen is reported once it is (RFC §6.4)."""
+        if names:
+            loop_ctx = self._get_loop_ctx()
+            held = [t for t in loop_ctx.all_context_tools or () if t.name in names]
+            self._record_declared_tools(loop_ctx, held)
+        return list(names)
+
+    def _reference_held(self, names: Iterable[str]) -> None:
+        """Have the running call's result reference those of *names* the turn
+        holds unseen, which makes them callable (RFC §6.4).
+
+        Only a held tool: one the first round showed is callable already, and
+        one the policy denies was never declared, so the provider would refuse
+        a reference to it. Nothing outside a turn whose provider holds tools.
+        """
+        loop_ctx = self._get_loop_ctx()
+        call = _current_tool_call.get()
+        if call is None or loop_ctx.first_shown is None:
+            return
+        policy, served = self._effective_tool_policy, self._channel_tool_dispatch
+        held = {
+            t.name
+            for t in loop_ctx.all_context_tools or ()
+            if t.name not in loop_ctx.first_shown and policy_admits(policy, t.name, served)
+        }
+        call.references = [name for name in dict.fromkeys(names) if name in held]
 
     def _skill_tools(self) -> list[AITool]:
         """Build the list of AITool definitions for skill operations."""
@@ -862,6 +904,7 @@ class AIToolsMixin:
                 matching = sorted(t.name for t in reachable if wanted in t.name.lower())
                 if matching:
                     loop_ctx.revealed_tools.update(matching)
+                    self._reference_held(matching)
                     data = json.loads(result_str)
                     data["tools_hint"] = (
                         f"{skill_name!r} is not a skill, but these TOOLS match and are "
@@ -874,6 +917,10 @@ class AIToolsMixin:
         # blocks the call, or a failure, must open no gate (_settle_activation).
         already_active = self._skill_activation.is_active(loop_ctx.room_id, skill_name)
         self._defer_activation(loop_ctx, skill_name)
+        if skill is not None:
+            self._reference_held(
+                t.name for t in loop_ctx.all_context_tools or () if skill.metadata.gates(t.name)
+            )
         if skill is None or not already_active:
             return result_str
         # Already active: _build_context put these very instructions in front of
@@ -961,6 +1008,7 @@ class AIToolsMixin:
         exclude = self._never_deferred(loop_ctx)
         matches = search_catalogue(catalogue, query, max_results, exclude_names=exclude)
         loop_ctx.revealed_tools = {m["name"] for m in matches if m.get("name")}
+        self._reference_held(m["name"] for m in matches if m.get("name"))
         # Reveals persist across turns via ToolUsageMemory (the tool's own
         # description promises "the rest of the session") — a tool found in
         # turn N is often only called in turn N+1, after the user confirms.

@@ -285,6 +285,7 @@ class AIToolLoopRulesMixin:
 
     # Cross-mixin methods — Any annotations avoid MRO shadowing.
     _apply_tool_filters: Any  # see AIToolLoopRulesHost
+    _held_declaration: Any  # AIToolPolicyMixin: tools the provider holds unseen
     _publish_tool_event: Any  # see AIToolLoopRulesHost
     _execute_tools_parallel: Any  # see AIToolLoopRulesHost
 
@@ -360,10 +361,11 @@ class AIToolLoopRulesMixin:
 
         # An empty resolved toolset is a real one (``None`` means the loop was
         # built without context): its re-filter declares nothing.
-        tools = (
+        tools = self._held_declaration(
+            loop_ctx,
             self._apply_tool_filters(loop_ctx.all_context_tools)
             if loop_ctx.all_context_tools is not None
-            else list(context.tools or [])
+            else list(context.tools or []),
         )
         # ``_build_context`` declares the large-result re-read from the first
         # round; a loop built without it gets it here, as the preview of a

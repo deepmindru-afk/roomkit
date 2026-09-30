@@ -44,6 +44,11 @@ class AITool(BaseModel):
     # English by the model) matches these even when the tool's name/description
     # is in another language. Optional — tools without tags score as before.
     tags: list[str] = Field(default_factory=list)
+    # Declared but unseen: the provider holds the definition out of the
+    # model's view (and out of its prompt cache) until a tool result
+    # references it (``AIToolResultPart.references``). Only a channel whose
+    # provider ``supports_deferred_tools`` sets it (RFC §6.4).
+    defer_loading: bool = False
 
 
 class AIToolCall(BaseModel):
@@ -95,6 +100,11 @@ class AIToolResultPart(BaseModel):
     # it rides the part so tool-call events can hand it to UI surfaces
     # (MCP Apps widgets), unevicted; the event bounds its binary payloads.
     structured_content: dict[str, Any] | None = None
+    # Tools this result makes callable when the provider holds them unseen
+    # (``AITool.defer_loading``): a ``find_tools`` result naming them, an
+    # ``activate_skill`` result opening them. Rendered only by a provider
+    # that ``supports_deferred_tools`` (RFC §6.4).
+    references: list[str] = Field(default_factory=list)
 
     def as_text(self) -> str:
         """Flatten the result to plain text for providers without image support.
@@ -679,6 +689,18 @@ class AIProvider(ABC):
         answer that does not satisfy it. The helpers in
         :mod:`roomkit.providers.ai.response_schema` do both;
         a provider that ignores the field breaks the contract.
+        """
+        return False
+
+    @property
+    def supports_deferred_tools(self) -> bool:
+        """Whether the model can hold a tool declared but unseen.
+
+        Such a tool (``AITool.defer_loading``) stays out of the model's view
+        and out of the cached prompt prefix until a tool result references it
+        (``AIToolResultPart.references``), so a tool that has to appear mid-turn
+        does not change the declaration (RFC §6.4). False by default: a
+        provider that cannot declares only what the model may see.
         """
         return False
 

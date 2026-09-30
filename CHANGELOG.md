@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `AIProvider.supports_deferred_tools`, `AITool.defer_loading` and
+  `AIToolResultPart.references` (RMK-330, RFC §6.4): a provider that can hold
+  a tool declared but unseen (Anthropic, from the model catalogue) receives
+  what Tool Search hides and what a skill's gating keeps closed that way, from
+  the turn's first round, and `find_tools` and `activate_skill` make their
+  tools callable by reference rather than by declaring them. The tool list no
+  longer changes within the turn, so the prompt cache survives a reveal and a
+  skill activation: on the cost suite (`claude-sonnet-5`), `tool_cost` costs
+  14 % less. A result carrying references reaches Anthropic as a
+  `tool_result` of `tool_reference` blocks, its text following the message's
+  tool results (the API refuses a reference mixed with other content). Other
+  providers receive the declaration they received before. A tool used in one
+  turn is visible from the next, so the list still changes once per newly
+  used tool, between turns.
 - `--suite cost` in `benchmarks/chat` (RMK-329): a fixed tool conversation
   (Tool Search reveal, an evicted result paged back, a skill that unlocks a
   tool, the anti-loop ripcord) whose model answers are scripted, so every run

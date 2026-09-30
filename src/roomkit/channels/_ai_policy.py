@@ -94,6 +94,7 @@ class ToolPolicyHost(Protocol):
     _skills: SkillRegistry | None
     _skill_activation: SkillActivationMemory
     _tool_search_pinned: set[str]
+    _provider: Any
 
     def _get_loop_ctx(self) -> _ToolLoopContext: ...
     def _orchestration_tool_names(self, room_id: str | None) -> set[str]: ...
@@ -111,6 +112,7 @@ class AIToolPolicyMixin:
     _skills: SkillRegistry | None
     _skill_activation: SkillActivationMemory
     _tool_search_pinned: set[str]
+    _provider: Any  # AIChannel: whether it holds a tool unseen
     _get_loop_ctx: Callable[[], _ToolLoopContext]
     _orchestration_tool_names: Callable[[str | None], set[str]]
     _channel_tool_dispatch: Any  # AIToolsMixin: the tools the channel serves itself
@@ -174,6 +176,9 @@ class AIToolPolicyMixin:
             return
         declared = loop_ctx.declared_tools
         for tool in tools:
+            # Held unseen: reported once a result references it (RFC §6.4).
+            if tool.defer_loading:
+                continue
             if tool.name not in declared:
                 origin = self._declaration_origin(tool.name, loop_ctx)
                 declared[tool.name] = DeclaredTool.from_tool(tool, origin)
@@ -316,3 +321,28 @@ class AIToolPolicyMixin:
                 continue
             result.append(tool)
         return result
+
+    def _held_declaration(self, loop_ctx: _ToolLoopContext, shown: list[AITool]) -> list[AITool]:
+        """The round's declaration where the provider holds a tool unseen: what
+        the turn's first round showed, then every other tool the policy admits,
+        held unseen (RFC §6.4); *shown* where it cannot.
+
+        Held from the first round on, what Tool Search hides and what a
+        skill's gating keeps closed stay declared as they were: a reveal or
+        an activation references its tools (``_reference_held``) instead of
+        declaring them, and the declaration does not change within the turn.
+        The policy still decides what is declared: a tool it denies is not.
+        """
+        if loop_ctx.all_context_tools is None or not self._provider.supports_deferred_tools:
+            return shown
+        if loop_ctx.first_shown is None:
+            loop_ctx.first_shown = frozenset(t.name for t in shown)
+        first = loop_ctx.first_shown
+        policy = self._effective_tool_policy
+        served = self._channel_tool_dispatch
+        held = [
+            t.model_copy(update={"defer_loading": True})
+            for t in loop_ctx.all_context_tools
+            if t.name not in first and policy_admits(policy, t.name, served)
+        ]
+        return [*(t for t in shown if t.name in first), *held]

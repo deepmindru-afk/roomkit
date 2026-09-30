@@ -192,6 +192,12 @@ class AnthropicAIProvider(AIProvider):
         return True
 
     @property
+    def supports_deferred_tools(self) -> bool:
+        """Read from the catalogue: a model it does not carry is assumed not to."""
+        entry = self.catalog_entry()
+        return entry is not None and "deferred_tools" in entry.capabilities
+
+    @property
     def supports_vision(self) -> bool:
         """Whether the configured Claude model accepts image input.
 

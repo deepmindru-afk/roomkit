@@ -72,6 +72,10 @@ class MeasuredProvider(AIProvider):
     def supports_vision(self) -> bool:
         return self.inner.supports_vision
 
+    @property
+    def supports_deferred_tools(self) -> bool:
+        return self.inner.supports_deferred_tools
+
     def catalog_entry(self) -> ModelInfo | None:
         return self.inner.catalog_entry()
 

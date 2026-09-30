@@ -17,6 +17,7 @@ from roomkit.providers.ai.base import (
     AIMessage,
     AITextPart,
     AIThinkingPart,
+    AITool,
     AIToolCallPart,
     AIToolResultPart,
 )
@@ -42,6 +43,9 @@ def format_content(
         return content
 
     parts: list[dict[str, Any]] = []
+    # What must follow every tool_result block of the message: the result of
+    # a call that references tools (``_result_beside_references``).
+    trailing: list[dict[str, Any]] = []
     for part in content:
         if isinstance(part, AITextPart):
             parts.append({"type": "text", "text": part.text})
@@ -57,13 +61,8 @@ def format_content(
                 }
             )
         elif isinstance(part, AIToolResultPart):
-            parts.append(
-                {
-                    "type": "tool_result",
-                    "tool_use_id": part.tool_call_id,
-                    "content": _tool_result_content(part.result),
-                }
-            )
+            parts.append(_tool_result_block(part))
+            trailing.extend(_result_beside_references(part))
         elif isinstance(part, AIThinkingPart):
             # Anthropic requires thinking blocks preserved in conversation
             # history for round-trip fidelity across tool-loop turns.
@@ -74,7 +73,35 @@ def format_content(
             if part.signature:
                 block["signature"] = part.signature
             parts.append(block)
-    return parts
+    return parts + trailing
+
+
+def _tool_result_block(part: AIToolResultPart) -> dict[str, Any]:
+    """The ``tool_result`` block of a call.
+
+    One that makes tools callable carries their ``tool_reference`` blocks
+    alone, where each deferred definition expands out of the cached prefix:
+    the API refuses a reference mixed with any other content, so the call's
+    result follows the message's tool results instead.
+    """
+    content: str | list[dict[str, Any]] = (
+        [{"type": "tool_reference", "tool_name": name} for name in part.references]
+        if part.references
+        else _tool_result_content(part.result)
+    )
+    return {"type": "tool_result", "tool_use_id": part.tool_call_id, "content": content}
+
+
+def _result_beside_references(part: AIToolResultPart) -> list[dict[str, Any]]:
+    """The result of a call whose ``tool_result`` carries references, as the
+    blocks that follow the message's tool results, named after the call."""
+    if not part.references:
+        return []
+    body = _tool_result_content(part.result)
+    label = f"[Result of {part.name}]"
+    if isinstance(body, str):
+        return [{"type": "text", "text": f"{label}\n{body}"}] if body else []
+    return [{"type": "text", "text": label}, *body] if body else []
 
 
 def _image_block(part: AIImagePart) -> dict[str, Any]:
@@ -134,14 +161,7 @@ def build_kwargs(config: AnthropicConfig, context: AIContext) -> dict[str, Any]:
         kwargs["system"] = context.system_prompt
     kwargs.update(_thinking_or_temperature(config, context))
     if context.tools:
-        kwargs["tools"] = [
-            {
-                "name": t.name,
-                "description": t.description,
-                "input_schema": t.parameters,
-            }
-            for t in context.tools
-        ]
+        kwargs["tools"] = _tool_definitions(context.tools)
     if context.response_schema is not None:
         kwargs["output_config"] = {
             "format": {"type": "json_schema", "schema": context.response_schema}
@@ -149,6 +169,21 @@ def build_kwargs(config: AnthropicConfig, context: AIContext) -> dict[str, Any]:
     if config.enable_prompt_caching:
         _apply_cache_control(kwargs)
     return kwargs
+
+
+def _tool_definitions(tools: list[AITool]) -> list[dict[str, Any]]:
+    """The tools as Anthropic declares them, a deferred one held unseen.
+
+    The API refuses a request whose every tool is deferred: then none is.
+    """
+    defers = not all(t.defer_loading for t in tools)
+    definitions: list[dict[str, Any]] = []
+    for t in tools:
+        definition = {"name": t.name, "description": t.description, "input_schema": t.parameters}
+        if defers and t.defer_loading:
+            definition["defer_loading"] = True
+        definitions.append(definition)
+    return definitions
 
 
 def _thinking_or_temperature(config: AnthropicConfig, context: AIContext) -> dict[str, Any]:
@@ -184,9 +219,11 @@ def _apply_cache_control(kwargs: dict[str, Any]) -> None:
     API; markers there are harmless.
     """
     marker = {"type": "ephemeral"}
-    tools = kwargs.get("tools")
-    if isinstance(tools, list) and tools:
-        tools[-1]["cache_control"] = marker
+    # On the last tool the prefix holds: a deferred one is out of it, and the
+    # API refuses a marker there.
+    held = [t for t in kwargs.get("tools") or [] if not t.get("defer_loading")]
+    if held:
+        held[-1]["cache_control"] = marker
     system = kwargs.get("system")
     if isinstance(system, str) and system:
         kwargs["system"] = [{"type": "text", "text": system, "cache_control": marker}]

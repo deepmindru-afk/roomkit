@@ -64,6 +64,10 @@ class BilledScript(MockAIProvider):
         return self._billing.catalog_entry() if self._billing is not None else None
 
     @property
+    def supports_deferred_tools(self) -> bool:
+        return self._billing is not None and self._billing.supports_deferred_tools
+
+    @property
     def consumed(self) -> bool:
         """Whether the turns asked for exactly the scripted rounds."""
         return self._index == self._scripted
