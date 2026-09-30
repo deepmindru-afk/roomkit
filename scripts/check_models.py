@@ -211,6 +211,11 @@ MIRROR_ONLY: dict[str, str] = {
         "mirror route, not an official model id: 404 on OpenAI's model pages, absent "
         "from its model list and pricing page (official docs, 2026-09-22)"
     ),
+    "openai/gpt-6.1-sol-pro": (
+        "mirror route, not an official model id: 404 on OpenAI's model page, absent "
+        "from its pricing page, and gpt-6.1-sol's page names no pro variant "
+        "(official docs, 2026-09-30)"
+    ),
     "openai/gpt-6-luna-pro": (
         "mirror route, not an official model id: 404 on OpenAI's model pages, absent "
         "from its model list and pricing page (official docs, 2026-09-22)"

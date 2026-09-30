@@ -274,7 +274,7 @@ def test_the_anthropic_catalogue_says_which_models_hold_tools() -> None:
             AnthropicConfig(api_key="k", model=model)
         ).supports_deferred_tools
 
-    assert holds("claude-sonnet-5") and holds("claude-haiku-4-5")
+    assert holds("claude-sonnet-5-5") and holds("claude-sonnet-5") and holds("claude-haiku-4-5")
     assert not holds("claude-opus-4-1") and not holds("claude-unknown-model")
 
 

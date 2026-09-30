@@ -44,8 +44,9 @@ _CTX_1M = 1_050_000
 # first group takes ``low`` with tools, the second takes ``none`` (gpt-5.4-mini
 # answers 400 to ``low``; gpt-6-sol and gpt-6-luna answer 400 when the effort
 # is left out). An untagged entry gets no effort on such
-# a turn: GPT-6 Astra refuses function tools on Chat Completions whatever the
-# effort, and the ``-pro`` models are served by the Responses API only.
+# a turn: GPT-6 Astra and GPT-6.1 Sol refuse function tools on Chat
+# Completions whatever the effort, and the ``-pro`` models are served by the
+# Responses API only.
 _TOOLS_REASONING_EFFORT = ["tools_reasoning_effort"]
 _TOOLS_REASONING_NONE = ["tools_reasoning_none"]
 _VERIFIED = date(2026, 8, 5)
@@ -57,7 +58,26 @@ _VERIFIED = date(2026, 8, 5)
 # page; like Astra they apply 2x input / 1.5x output above 272k input tokens:
 # https://developers.openai.com/api/docs/models/gpt-6-sol
 # https://developers.openai.com/api/docs/models/gpt-6-luna
+# GPT-6.1 Sol added 2026-09-30 from its model page and the pricing page, same
+# long-context rule; its cached input is half GPT-6 Sol's:
+# https://developers.openai.com/api/docs/models/gpt-6.1-sol
 MODELS: list[ModelInfo] = [
+    ModelInfo(
+        id="gpt-6.1-sol",
+        display_name="GPT-6.1 Sol",
+        context_window=_CTX_1M,
+        supports_vision=True,
+        pricing=ModelPricing(
+            input_per_million=2.0,
+            output_per_million=10.0,
+            cache_read_per_million=0.1,
+            cache_write_per_million=2.5,
+            long_context_threshold_tokens=272_000,
+            long_context_input_multiplier=2.0,
+            long_context_output_multiplier=1.5,
+            verified=date(2026, 9, 30),
+        ),
+    ),
     ModelInfo(
         id="gpt-6-astra",
         display_name="GPT-6 Astra",

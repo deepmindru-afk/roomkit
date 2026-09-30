@@ -142,6 +142,23 @@ MODELS: list[ModelInfo] = [
             verified=_VERIFIED,
         ),
     ),
+    # Claude Sonnet 5.5 added 2026-09-30 at Sonnet 5's rates; its
+    # ``deferred_tools`` checked on the wire that day (a ``defer_loading``
+    # tool, then called after a ``tool_reference`` result).
+    ModelInfo(
+        id="claude-sonnet-5-5",
+        display_name="Claude Sonnet 5.5",
+        context_window=1_000_000,
+        supports_vision=True,
+        capabilities=["thinking", "deferred_tools"],
+        pricing=ModelPricing(
+            input_per_million=2.0,
+            output_per_million=10.0,
+            cache_read_per_million=0.2,
+            cache_write_per_million=2.5,
+            verified=date(2026, 9, 30),
+        ),
+    ),
     ModelInfo(
         id="claude-sonnet-5",
         display_name="Claude Sonnet 5",

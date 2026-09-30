@@ -339,13 +339,15 @@ class TestAnthropicAIProvider:
         assert explicit.supports_custom_temperature is True
 
     # Anthropic's own per-model table (extended-thinking troubleshooting and
-    # the sampling-parameter rule, read 2026-09-22): these refuse temperature
-    # and budget_tokens with HTTP 400.
+    # the sampling-parameter rule, read 2026-09-22; Sonnet 5.5 from the model
+    # reference, 2026-09-30): these refuse temperature and budget_tokens with
+    # HTTP 400.
     _MODERN = {
         "claude-opus-5-5",
         "claude-opus-5",
         "claude-opus-4-8",
         "claude-opus-4-7",
+        "claude-sonnet-5-5",
         "claude-sonnet-5",
         "claude-fable-5-1",
         "claude-fable-5",
@@ -362,7 +364,7 @@ class TestAnthropicAIProvider:
         assert cfg.use_adaptive_thinking is modern
         assert cfg.supports_custom_temperature is not modern
 
-    @pytest.mark.parametrize("model", ["claude-opus-6", "claude-haiku-5", "claude-sonnet-5-5"])
+    @pytest.mark.parametrize("model", ["claude-opus-6", "claude-haiku-5", "claude-sonnet-6"])
     def test_a_release_nobody_catalogued_gets_the_modern_contract(self, model: str) -> None:
         # The day a model ships, before any catalog knows it: a request built
         # with the old contract is a 400, so the unknown id is the modern one.
