@@ -79,8 +79,9 @@ class LiteLLMAIProvider(OpenAIAIProvider):
         OpenRouter provider): ``None`` passes the effort through, the turn's
         own effort outranking the configured one; ``>0`` maps to a
         ``thinking`` budget, sent via the SDK's ``extra_body`` passthrough.
-        Reasoning is omitted on tool turns, matching the parent — the gateway
-        fronts the same upstreams that reject it alongside tools.
+        Reasoning is omitted on tool turns: the model behind the alias is not
+        known here, and some upstreams reject it alongside tools (RFC §6.7
+        allows the omission where the model is unknown).
 
         ``0`` sends no reasoning parameters at all. LiteLLM has no disable
         token that survives every translator (verified live on 1.79.0: the

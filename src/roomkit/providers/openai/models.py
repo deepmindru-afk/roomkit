@@ -36,6 +36,14 @@ from datetime import date
 from roomkit.providers.ai.base import ModelInfo, ModelPricing
 
 _CTX_1M = 1_050_000
+# What a turn with function tools accepts of ``reasoning_effort`` on Chat
+# Completions (RFC §6.7): the turn's effort for the reasoning models before
+# GPT-5.4, only ``none`` from GPT-5.4 on (OpenAI's migration guide to the
+# Responses API; checked on the wire 2026-09-30: gpt-5.4-mini answers 400 to
+# ``low`` with tools, gpt-5-mini takes it). Read by
+# ``OpenAIAIProvider._tool_turn_effort``.
+_REASONING = ["reasoning"]
+_TOOLS_REASONING_NONE = ["reasoning", "tools_reasoning_none"]
 _VERIFIED = date(2026, 8, 5)
 
 # Astra and Sol prices rechecked 2026-09-08:
@@ -49,6 +57,7 @@ MODELS: list[ModelInfo] = [
     ModelInfo(
         id="gpt-6-astra",
         display_name="GPT-6 Astra",
+        capabilities=_TOOLS_REASONING_NONE,
         context_window=_CTX_1M,
         supports_vision=True,
         pricing=ModelPricing(
@@ -65,6 +74,7 @@ MODELS: list[ModelInfo] = [
     ModelInfo(
         id="gpt-6-sol",
         display_name="GPT-6 Sol",
+        capabilities=_TOOLS_REASONING_NONE,
         context_window=_CTX_1M,
         supports_vision=True,
         pricing=ModelPricing(
@@ -81,6 +91,7 @@ MODELS: list[ModelInfo] = [
     ModelInfo(
         id="gpt-6-luna",
         display_name="GPT-6 Luna",
+        capabilities=_TOOLS_REASONING_NONE,
         context_window=_CTX_1M,
         supports_vision=True,
         pricing=ModelPricing(
@@ -97,6 +108,7 @@ MODELS: list[ModelInfo] = [
     ModelInfo(
         id="gpt-5.6-sol",
         display_name="GPT-5.6 Sol",
+        capabilities=_TOOLS_REASONING_NONE,
         context_window=_CTX_1M,
         supports_vision=True,
         pricing=ModelPricing(
@@ -113,6 +125,7 @@ MODELS: list[ModelInfo] = [
     ModelInfo(
         id="gpt-5.6-terra",
         display_name="GPT-5.6 Terra",
+        capabilities=_TOOLS_REASONING_NONE,
         context_window=_CTX_1M,
         supports_vision=True,
         pricing=ModelPricing(
@@ -129,6 +142,7 @@ MODELS: list[ModelInfo] = [
     ModelInfo(
         id="gpt-5.6-luna",
         display_name="GPT-5.6 Luna",
+        capabilities=_TOOLS_REASONING_NONE,
         context_window=400_000,
         supports_vision=True,
         pricing=ModelPricing(
@@ -142,6 +156,7 @@ MODELS: list[ModelInfo] = [
     ModelInfo(
         id="gpt-5.5",
         display_name="GPT-5.5",
+        capabilities=_TOOLS_REASONING_NONE,
         context_window=_CTX_1M,
         supports_vision=True,
         pricing=ModelPricing(
@@ -154,6 +169,7 @@ MODELS: list[ModelInfo] = [
     ModelInfo(
         id="gpt-5.5-pro",
         display_name="GPT-5.5 Pro",
+        capabilities=_TOOLS_REASONING_NONE,
         context_window=_CTX_1M,
         supports_vision=True,
         pricing=ModelPricing(
@@ -165,6 +181,7 @@ MODELS: list[ModelInfo] = [
     ModelInfo(
         id="gpt-5.4",
         display_name="GPT-5.4",
+        capabilities=_TOOLS_REASONING_NONE,
         context_window=_CTX_1M,
         supports_vision=True,
         pricing=ModelPricing(
@@ -177,6 +194,7 @@ MODELS: list[ModelInfo] = [
     ModelInfo(
         id="gpt-5.4-pro",
         display_name="GPT-5.4 Pro",
+        capabilities=_TOOLS_REASONING_NONE,
         context_window=_CTX_1M,
         supports_vision=True,
         pricing=ModelPricing(
@@ -188,6 +206,7 @@ MODELS: list[ModelInfo] = [
     ModelInfo(
         id="gpt-5.4-mini",
         display_name="GPT-5.4 mini",
+        capabilities=_TOOLS_REASONING_NONE,
         context_window=400_000,
         supports_vision=True,
         pricing=ModelPricing(
@@ -200,6 +219,7 @@ MODELS: list[ModelInfo] = [
     ModelInfo(
         id="gpt-5.4-nano",
         display_name="GPT-5.4 nano",
+        capabilities=_TOOLS_REASONING_NONE,
         context_window=400_000,
         supports_vision=True,
         pricing=ModelPricing(
@@ -212,6 +232,7 @@ MODELS: list[ModelInfo] = [
     ModelInfo(
         id="gpt-5.1",
         display_name="GPT-5.1",
+        capabilities=_REASONING,
         context_window=400_000,
         supports_vision=True,
         pricing=ModelPricing(
@@ -273,6 +294,7 @@ MODELS: list[ModelInfo] = [
     ModelInfo(
         id="gpt-5",
         display_name="GPT-5",
+        capabilities=_REASONING,
         context_window=400_000,
         supports_vision=True,
         deprecated=True,
@@ -286,6 +308,7 @@ MODELS: list[ModelInfo] = [
     ModelInfo(
         id="gpt-5-mini",
         display_name="GPT-5 mini",
+        capabilities=_REASONING,
         context_window=400_000,
         supports_vision=True,
         deprecated=True,
@@ -299,6 +322,7 @@ MODELS: list[ModelInfo] = [
     ModelInfo(
         id="gpt-5-nano",
         display_name="GPT-5 nano",
+        capabilities=_REASONING,
         context_window=400_000,
         supports_vision=True,
         deprecated=True,
@@ -312,6 +336,7 @@ MODELS: list[ModelInfo] = [
     ModelInfo(
         id="gpt-5.2",
         display_name="GPT-5.2",
+        capabilities=_REASONING,
         context_window=400_000,
         supports_vision=True,
         deprecated=True,
@@ -325,6 +350,7 @@ MODELS: list[ModelInfo] = [
     ModelInfo(
         id="o3",
         display_name="o3",
+        capabilities=_REASONING,
         context_window=200_000,
         supports_vision=True,
         deprecated=True,
@@ -338,6 +364,7 @@ MODELS: list[ModelInfo] = [
     ModelInfo(
         id="o3-pro",
         display_name="o3-pro",
+        capabilities=_REASONING,
         context_window=200_000,
         supports_vision=True,
         deprecated=True,
@@ -350,6 +377,7 @@ MODELS: list[ModelInfo] = [
     ModelInfo(
         id="o4-mini",
         display_name="o4-mini",
+        capabilities=_REASONING,
         context_window=200_000,
         supports_vision=True,
         deprecated=True,

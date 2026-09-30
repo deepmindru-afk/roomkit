@@ -375,3 +375,18 @@ class TestAzureEndpointNormalization:
             model="gpt-image-1",
         )
         assert config.azure_endpoint == "https://res.openai.azure.com"
+
+
+def test_an_azure_tool_turn_omits_the_effort_whatever_the_deployment_is_named() -> None:
+    """A deployment name says nothing of the model behind it (RFC §6.7)."""
+    with patch.dict("sys.modules", {"openai": _mock_openai_module()}):
+        from roomkit.providers.azure.ai import AzureAIProvider
+
+        provider = AzureAIProvider.__new__(AzureAIProvider)
+        provider._config = _config(model="gpt-5.4-mini", reasoning_effort="low")
+        tool = AITool(name="lookup", description="x", parameters={})
+        kwargs: dict[str, Any] = {}
+
+        provider._apply_sampling_kwargs(kwargs, _context(tools=[tool]))
+
+        assert "reasoning_effort" not in kwargs

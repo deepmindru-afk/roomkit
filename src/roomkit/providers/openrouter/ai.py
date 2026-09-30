@@ -79,14 +79,16 @@ class OpenRouterAIProvider(OpenAIAIProvider):
         OpenAI models honour it), OpenRouter normalises thinking across every
         upstream provider through a single ``reasoning`` object — so Claude,
         Gemini, and DeepSeek all surface a reasoning trace. It is sent via the
-        OpenAI SDK's ``extra_body`` passthrough. Reasoning is omitted on tool
-        turns, matching the parent (some models reject it alongside tools); the
-        streamed trace is surfaced by the inherited ``delta.reasoning`` reader.
+        OpenAI SDK's ``extra_body`` passthrough, on a turn with tools as on one
+        without (RFC §6.7): OpenRouter documents ``reasoning`` alongside tools
+        and adapts it to each upstream, so the omission the OpenAI parent keeps
+        for an unknown model is not needed here. The streamed trace is
+        surfaced by the inherited ``delta.reasoning`` reader.
         """
         if context.temperature is not None and self._config.supports_custom_temperature:
             kwargs["temperature"] = context.temperature
         reasoning = self._resolve_reasoning(context)
-        if reasoning is not None and not context.tools:
+        if reasoning is not None:
             kwargs.setdefault("extra_body", {})["reasoning"] = reasoning
 
     def _apply_response_format(self, kwargs: dict[str, Any], context: AIContext) -> None:
@@ -109,14 +111,14 @@ class OpenRouterAIProvider(OpenAIAIProvider):
         """Build OpenRouter's ``reasoning`` object for this turn, or ``None`` to omit it.
 
         ``thinking_budget`` gates per-turn (mirrors the Mistral provider):
-        ``None`` passes the configured ``reasoning_effort`` through (omitted when
-        unset, so the model decides); ``0`` disables reasoning explicitly; ``>0``
-        maps the budget straight to OpenRouter's Anthropic-style ``max_tokens``
-        reasoning cap.
+        ``None`` passes the turn's ``reasoning_effort``, else the configured
+        one, through (omitted when neither is set, so the model decides); ``0``
+        disables reasoning explicitly; ``>0`` maps the budget straight to
+        OpenRouter's Anthropic-style ``max_tokens`` reasoning cap.
         """
         budget = context.thinking_budget
         if budget is None:
-            effort = self._config.reasoning_effort
+            effort = context.reasoning_effort or self._config.reasoning_effort
             return {"effort": effort} if effort else None
         if budget <= 0:
             return {"enabled": False}

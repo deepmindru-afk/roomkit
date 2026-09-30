@@ -289,6 +289,12 @@ class TestDeepSeekThinking:
             "reasoning_effort": "low",
         }
 
+    def test_the_turn_effort_outranks_the_config(self) -> None:
+        assert self._thinking(_context(reasoning_effort="low"), reasoning_effort="high") == {
+            "type": "enabled",
+            "reasoning_effort": "low",
+        }
+
     def test_temperature_still_applied(self) -> None:
         kwargs: dict[str, Any] = {}
         _provider()._apply_sampling_kwargs(kwargs, _context(temperature=0.3))

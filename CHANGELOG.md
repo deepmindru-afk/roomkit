@@ -123,6 +123,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A turn with tools gets the turn's reasoning settings, as a turn without
+  does (RMK-319, RFC §6.7). On OpenAI's own endpoint the model catalogue now
+  says what Chat Completions takes with function tools: a reasoning model
+  before GPT-5.4 (`gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `gpt-5.1`, `gpt-5.2`,
+  `o3`, `o3-pro`, `o4-mini`) receives the turn's `reasoning_effort`, where
+  it used to receive none and reason at its own default; GPT-5.4 and later
+  receive `none`, the only value accepted there (a name prefix used to
+  decide it for GPT-5.6 alone). On `gpt-5-mini` with `low` configured, a
+  turn of three lookups reasons 352 tokens on average instead of 1,077 and
+  costs 47 % less, over 3.2 rounds instead of 2.2 (the model batches its
+  calls less at a lower effort). A model the catalogue does not know, a
+  `base_url` and Azure keep omitting it. OpenRouter sends `reasoning` on
+  tool turns too, so a `thinking_budget` of 0 now disables reasoning there.
+  OpenRouter, xAI, Mistral and DeepSeek prefer the turn's `reasoning_effort`
+  to their configuration, as the other providers do.
 - An AI channel's system prompt stays the same from one turn to the next
   (RMK-318, RFC §6.4). The tool-usage digest and the room's plan, which
   change after every turn that calls a tool or plans, ride the turn's input

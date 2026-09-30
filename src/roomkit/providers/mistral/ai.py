@@ -276,17 +276,19 @@ class MistralAIProvider(AIProvider):
     def _resolve_reasoning_effort(self, context: AIContext) -> str | None:
         """Decide ``reasoning_effort`` for this request.
 
-        ``thinking_budget`` gates per-turn: ``None`` passes the provider config
-        through verbatim; ``0`` forces ``"none"`` (reasoning off); ``>0`` honors
-        the configured effort or defaults to ``"high"``. Returns ``None`` to omit
-        the parameter entirely (model decides — Magistral always reasons).
+        The turn's effort outranks the configured one (RFC §6.7).
+        ``thinking_budget`` gates per-turn: ``None`` passes that effort through
+        verbatim; ``0`` forces ``"none"`` (reasoning off); ``>0`` honors that
+        effort or defaults to ``"high"``. Returns ``None`` to omit the
+        parameter entirely (model decides — Magistral always reasons).
         """
+        effort = context.reasoning_effort or self._config.reasoning_effort
         budget = context.thinking_budget
         if budget is None:
-            return self._config.reasoning_effort
+            return effort
         if budget <= 0:
             return "none"
-        return self._config.reasoning_effort or "high"
+        return effort or "high"
 
     @staticmethod
     def _chunks_to_segments(chunks: list[Any]) -> list[tuple[str, str]]:

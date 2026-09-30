@@ -1407,3 +1407,58 @@ class TestOpenAIResponseSchemaWithTools:
 
         assert exc.value.reason == "unsupported"
         provider._client.chat.completions.create.assert_not_called()
+
+
+class TestOpenAIToolTurnReasoning:
+    """A turn with tools sends what Chat Completions accepts there (RFC §6.7).
+
+    Before GPT-5.4 a reasoning model takes the effort alongside function
+    tools; from GPT-5.4 on only ``none`` passes. The catalogue says which.
+    """
+
+    _TOOL = AITool(name="lookup", description="x", parameters={})
+
+    def _sent(self, context: AIContext, **cfg: Any) -> Any:
+        with patch.dict("sys.modules", {"openai": _mock_openai_module()}):
+            from roomkit.providers.openai.ai import OpenAIAIProvider
+
+            provider = OpenAIAIProvider.__new__(OpenAIAIProvider)
+            provider._config = _config(**cfg)
+            kwargs: dict[str, Any] = {}
+            provider._apply_sampling_kwargs(kwargs, context)
+            return kwargs.get("reasoning_effort")
+
+    @pytest.mark.parametrize("model", ["gpt-5-mini", "gpt-5.1", "o4-mini"])
+    def test_a_model_before_gpt_5_4_takes_the_effort_with_tools(self, model: str) -> None:
+        tools = _context(tools=[self._TOOL])
+
+        assert self._sent(tools, model=model, reasoning_effort="low") == "low"
+        assert self._sent(tools, model=model) is None
+
+    def test_the_turn_effort_outranks_the_config_on_a_tool_turn(self) -> None:
+        context = _context(tools=[self._TOOL], reasoning_effort="minimal")
+
+        assert self._sent(context, model="gpt-5-mini", reasoning_effort="high") == "minimal"
+
+    @pytest.mark.parametrize("model", ["gpt-5.4-mini", "gpt-5.5", "gpt-6-astra"])
+    def test_from_gpt_5_4_a_tool_turn_sends_none(self, model: str) -> None:
+        tools = _context(tools=[self._TOOL], reasoning_effort="high")
+
+        assert self._sent(tools, model=model) == "none"
+        assert self._sent(_context(reasoning_effort="high"), model=model) == "high"
+
+    def test_a_model_the_catalogue_does_not_know_omits_it_with_tools(self) -> None:
+        tools = _context(tools=[self._TOOL])
+
+        assert self._sent(tools, model="gpt-7-preview", reasoning_effort="low") is None
+        assert self._sent(tools, model="gpt-4.1", reasoning_effort="low") is None
+        assert self._sent(_context(), model="gpt-7-preview", reasoning_effort="low") == "low"
+
+    def test_behind_a_base_url_the_model_is_unknown_and_it_is_omitted(self) -> None:
+        tools = _context(tools=[self._TOOL])
+
+        sent = self._sent(
+            tools, model="gpt-5-mini", base_url="http://localhost:8000/v1", reasoning_effort="low"
+        )
+
+        assert sent is None

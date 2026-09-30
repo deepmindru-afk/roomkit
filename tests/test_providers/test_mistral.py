@@ -381,6 +381,20 @@ class TestMistralAIProvider:
             )
 
     @pytest.mark.asyncio
+    async def test_the_turn_effort_outranks_the_config(self) -> None:
+        with patch.dict("sys.modules", _mistral_modules()):
+            from roomkit.providers.mistral.ai import MistralAIProvider
+
+            provider = MistralAIProvider(_config(reasoning_effort="high"))
+            for budget in (None, 4096):
+                provider._client.chat.stream_async.return_value = _stream_events(
+                    text_chunks=["hi"]
+                )
+                await provider.generate(_context(reasoning_effort="low", thinking_budget=budget))
+                sent = provider._client.chat.stream_async.call_args.kwargs
+                assert sent["reasoning_effort"] == "low"
+
+    @pytest.mark.asyncio
     async def test_no_reasoning_effort_by_default(self) -> None:
         with patch.dict("sys.modules", _mistral_modules()):
             from roomkit.providers.mistral.ai import MistralAIProvider

@@ -276,6 +276,13 @@ class TestXAIReasoning:
         self._provider(reasoning_effort="low")._apply_sampling_kwargs(kwargs, ctx)
         assert kwargs["reasoning_effort"] == "low"
 
+    def test_the_turn_effort_outranks_the_config(self) -> None:
+        kwargs: dict[str, Any] = {}
+        self._provider(reasoning_effort="high")._apply_sampling_kwargs(
+            kwargs, _context(reasoning_effort="low")
+        )
+        assert kwargs["reasoning_effort"] == "low"
+
     def test_withheld_from_non_reasoning_model(self) -> None:
         kwargs: dict[str, Any] = {}
         self._provider(

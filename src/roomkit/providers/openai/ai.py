@@ -322,28 +322,38 @@ class OpenAIAIProvider(AIProvider):
         """Add temperature and reasoning_effort to a request when applicable.
 
         Temperature is dropped for models that only accept the default
-        (``supports_custom_temperature=False``). GPT-5.6 function tools on the
-        official Chat Completions endpoint require effective reasoning ``none``;
-        omission is not equivalent because that family defaults to ``medium``.
-        Older models keep the existing conservative behavior of omitting an
-        explicitly configured effort on tool turns. The turn's own effort
+        (``supports_custom_temperature=False``). The turn's own effort
         outranks the configured one, so a per-room or per-turn override
-        reaches the wire rather than being shadowed by static config.
+        reaches the wire rather than being shadowed by static config; on a
+        turn with tools it becomes what the endpoint accepts there
+        (``_tool_turn_effort``, RFC §6.7).
         """
         if context.temperature is not None and self._config.supports_custom_temperature:
             kwargs["temperature"] = context.temperature
-
-        official_gpt_5_6_tool_turn = (
-            bool(context.tools)
-            and self._provider_name == "openai"
-            and getattr(self._config, "base_url", None) is None
-            and self._config.model.startswith("gpt-5.6")
-        )
         effort = context.reasoning_effort or self._config.reasoning_effort
-        if official_gpt_5_6_tool_turn:
-            kwargs["reasoning_effort"] = "none"
-        elif effort is not None and not context.tools:
+        if context.tools:
+            effort = self._tool_turn_effort(effort)
+        if effort is not None:
             kwargs["reasoning_effort"] = effort
+
+    def _tool_turn_effort(self, effort: str | None) -> str | None:
+        """The reasoning effort a turn with tools sends on this endpoint.
+
+        Read from the catalogue on OpenAI's own endpoint: from GPT-5.4 on,
+        Chat Completions takes function tools only with ``none``, which is
+        sent even unset since GPT-5.6 defaults to ``medium``
+        (``tools_reasoning_none``); earlier reasoning models take *effort*
+        (``reasoning``). ``None`` omits it for a model the catalogue does not
+        know, and for any model behind a ``base_url`` or an Azure deployment
+        name, whose real model this provider cannot know.
+        """
+        if self._provider_name != "openai" or getattr(self._config, "base_url", None) is not None:
+            return None
+        info = self.catalog_entry()
+        capabilities = info.capabilities if info is not None else []
+        if "tools_reasoning_none" in capabilities:
+            return "none"
+        return effort if "reasoning" in capabilities else None
 
     def _apply_extra_body(self, kwargs: dict[str, Any]) -> None:
         """Merge configured ``extra_body`` (server-specific request fields).

@@ -99,15 +99,18 @@ class XAIAIProvider(OpenAIAIProvider):
         ``reasoning: {effort: ...}`` object belongs to ``/v1/responses``). Two
         things differ:
 
-        * It is sent on **tool turns too**. The parent omits it there because
-          some OpenAI models reject the pair; xAI does not, and since Grok
-          reasons unconditionally, effort is the only lever over the cost of an
-          agentic turn — dropping it on exactly the turns that spend the most
-          would defeat the setting.
+        * It is sent on **tool turns too**, whatever the model. The parent
+          reads what an OpenAI model accepts there from its catalogue; xAI
+          accepts the pair, and since Grok reasons unconditionally, effort is
+          the only lever over the cost of an agentic turn — dropping it on
+          exactly the turns that spend the most would defeat the setting.
         * It is withheld from a model the catalog marks as non-reasoning, which
           would reject it.
+
+        The turn's effort outranks the configured one (RFC §6.7).
         """
         if context.temperature is not None and self._config.supports_custom_temperature:
             kwargs["temperature"] = context.temperature
-        if self._config.reasoning_effort is not None and self._supports_reasoning():
-            kwargs["reasoning_effort"] = self._config.reasoning_effort
+        effort = context.reasoning_effort or self._config.reasoning_effort
+        if effort is not None and self._supports_reasoning():
+            kwargs["reasoning_effort"] = effort

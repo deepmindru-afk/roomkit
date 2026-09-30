@@ -63,8 +63,9 @@ class MetaAIProvider(OpenAIAIProvider):
     def _apply_sampling_kwargs(self, kwargs: dict[str, Any], context: AIContext) -> None:
         """Add temperature and Meta's ``reasoning_effort`` to a request.
 
-        The turn's own effort outranks the configured one. Unlike the OpenAI
-        parent, the effort is sent on tool turns too, and ``"none"`` becomes
+        The turn's own effort outranks the configured one. It is sent on tool
+        turns too (the OpenAI parent's rule is its own catalogue's), and
+        ``"none"`` becomes
         ``"minimal"``: the service cannot turn reasoning off and answers
         ``"none"`` with a 400.
         """

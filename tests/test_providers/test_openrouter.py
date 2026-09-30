@@ -351,11 +351,25 @@ class TestOpenRouterReasoning:
         self._provider()._apply_sampling_kwargs(kwargs, _context())
         assert "extra_body" not in kwargs
 
-    def test_reasoning_skipped_on_tool_turns(self) -> None:
+    def test_reasoning_rides_tool_turns_too(self) -> None:
+        # RFC §6.7: the budget of 0 that disables reasoning reaches a tool turn.
+        tools = [AITool(name="x", description="d", parameters={})]
         kwargs: dict[str, Any] = {}
-        ctx = _context(tools=[AITool(name="x", description="d", parameters={})])
-        self._provider(reasoning_effort="high")._apply_sampling_kwargs(kwargs, ctx)
-        assert "extra_body" not in kwargs
+        self._provider(reasoning_effort="high")._apply_sampling_kwargs(
+            kwargs, _context(tools=tools)
+        )
+        assert kwargs["extra_body"]["reasoning"] == {"effort": "high"}
+
+        kwargs = {}
+        self._provider()._apply_sampling_kwargs(kwargs, _context(tools=tools, thinking_budget=0))
+        assert kwargs["extra_body"]["reasoning"] == {"enabled": False}
+
+    def test_the_turn_effort_outranks_the_config(self) -> None:
+        kwargs: dict[str, Any] = {}
+        self._provider(reasoning_effort="high")._apply_sampling_kwargs(
+            kwargs, _context(reasoning_effort="low")
+        )
+        assert kwargs["extra_body"]["reasoning"] == {"effort": "low"}
 
     @pytest.mark.asyncio
     async def test_config_extra_body_merges_with_reasoning(self) -> None:
