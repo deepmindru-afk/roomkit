@@ -277,35 +277,7 @@ class AIContextMixin:
         # may withdraw from (RFC §6.4).
         tools = self._reachable_tools(tools)
 
-        # Retrieve memory from this channel's view of the room, never the
-        # room's whole timeline (RFC §7.5 rule 8): an event visibility kept
-        # from this channel at broadcast must not reach the model as history
-        # one turn later. Filtered here rather than inside the providers —
-        # one shared ``RoomContext`` serves every channel of a broadcast, so
-        # the filter can only run where the reader is known, and running it on
-        # the way *in* is what stops a summarizing provider from re-emitting
-        # hidden content as a summary.
-        #
-        # A standalone instruction's provider is not asked at all: an empty
-        # view is not a blank page, since a provider may return messages of
-        # its own (a summary, a minimum it always keeps).
-        if standalone:
-            memory_result = MemoryResult()
-        else:
-            memory_result = await self._memory.retrieve(
-                event.room_id,
-                event,
-                context.model_copy(
-                    update={"recent_events": visible_events(context, self.channel_id)}
-                ),
-                channel_id=self.channel_id,
-            )
-
-        messages, attribute_speakers = self._turn_messages(event, context, memory_result, loop_ctx)
-        messages = with_turn_notes(
-            messages,
-            self._turn_notes(loop_ctx, standalone=standalone, speakers=attribute_speakers),
-        )
+        messages = await self._turn_conversation(event, context, loop_ctx, standalone)
 
         # Determine target channel capabilities for capability-aware generation
         # Use intersection of all transport bindings' media types (weakest common)
@@ -371,6 +343,46 @@ class AIContextMixin:
             response_metadata=loop_ctx.response_metadata,
             **settings,
         )
+
+    async def _turn_conversation(
+        self,
+        event: RoomEvent,
+        context: RoomContext,
+        loop_ctx: _ToolLoopContext,
+        standalone: bool,
+    ) -> list[AIMessage]:
+        """The conversation the model reads this turn: the history this channel
+        sees, then the input carrying the turn's notes."""
+        # Retrieve memory from this channel's view of the room, never the
+        # room's whole timeline (RFC §7.5 rule 8): an event visibility kept
+        # from this channel at broadcast must not reach the model as history
+        # one turn later. Filtered here rather than inside the providers —
+        # one shared ``RoomContext`` serves every channel of a broadcast, so
+        # the filter can only run where the reader is known, and running it on
+        # the way *in* is what stops a summarizing provider from re-emitting
+        # hidden content as a summary.
+        #
+        # A standalone instruction's provider is not asked at all: an empty
+        # view is not a blank page, since a provider may return messages of
+        # its own (a summary, a minimum it always keeps).
+        if standalone:
+            memory_result = MemoryResult()
+        else:
+            memory_result = await self._memory.retrieve(
+                event.room_id,
+                event,
+                context.model_copy(
+                    update={"recent_events": visible_events(context, self.channel_id)}
+                ),
+                channel_id=self.channel_id,
+            )
+
+        messages, attribute_speakers = self._turn_messages(event, context, memory_result, loop_ctx)
+        messages = with_turn_notes(
+            messages,
+            self._turn_notes(loop_ctx, standalone=standalone, speakers=attribute_speakers),
+        )
+        return messages
 
     def _turn_base_tools(
         self, turn: AIChannelTurnConfig | None, binding: ChannelBinding
