@@ -13,6 +13,7 @@ import re
 import pytest
 
 from roomkit.channels._tool_eviction import ToolEviction, is_eviction_placeholder
+from roomkit.memory.token_estimator import estimate_tokens
 from roomkit.providers.ai.base import AIImagePart, AITextPart
 
 _PREVIEW_LABEL = "\n\nPreview:\n"
@@ -238,3 +239,16 @@ def test_part_preview_never_exceeds_the_budget(layout: str, threshold_tokens: in
     ]
     joined = "\n".join(p.text for p in parts if isinstance(p, AITextPart))
     assert ev._store[("", "evicted_tc1")] == joined
+
+
+def test_a_page_of_non_ascii_text_stays_under_the_threshold() -> None:
+    """A page is JSON: escaped as ``\\uXXXX`` each char of Chinese text would
+    weigh six, and the page would come back past the threshold, stored again."""
+    text = "\n".join("订单 编号 " + "中文内容" * 20 for _ in range(400))
+    eviction = ToolEviction()
+    result_id = eviction.maybe_evict(text, "c0").split("'")[1]
+
+    page = eviction.handle_read({"result_id": result_id})
+
+    assert estimate_tokens(page) <= eviction.threshold_tokens
+    assert "中文内容" in page

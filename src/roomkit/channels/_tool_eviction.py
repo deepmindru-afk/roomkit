@@ -355,7 +355,9 @@ class ToolEviction:
                 f"this is the complete result until you have read EVERY page; "
                 f"continue with offset={offset + len(page)}."
             )
-        return json.dumps(envelope)
+        # Text as it is: an escaped \uXXXX is six chars, and a page of non-ASCII
+        # text would come back past the threshold and be stored again.
+        return json.dumps(envelope, ensure_ascii=False)
 
     def _page_budget(self) -> int:
         """The chars a page (or a search's matches) may carry.
