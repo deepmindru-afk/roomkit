@@ -82,9 +82,9 @@ def declared_once[T](
 ) -> list[T]:
     """*tools* with none under a served name, and each name once, the later kept.
 
-    The later definition is the one of whoever serves the call (a channel adds
-    orchestration's tools after the host's). A tool without a name is kept as
-    it is: nothing can collide with it.
+    For the tools that arrive with a turn or a session, which come too late to
+    be refused (RFC §21.1): the later is kept, as the last word of whoever gave
+    them. A tool without a name is kept as it is: nothing can collide with it.
     """
     kept: dict[object, T] = {}
     for index, tool in enumerate(tools):

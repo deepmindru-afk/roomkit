@@ -454,7 +454,7 @@ class TestAutoActivation:
         transport: MockRealtimeTransport,
     ) -> None:
         """A channel built with few tools hides a session's catalogue when that
-        session declares more than the threshold, and not another's (F14)."""
+        session declares more than the threshold, and not another's."""
         channel = RealtimeVoiceChannel(
             "rt-grows", provider=provider, transport=transport, tools=[_tool("a")]
         )

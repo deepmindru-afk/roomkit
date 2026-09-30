@@ -85,7 +85,7 @@ async def _two_rooms(sup: Agent, installs: dict[str, Supervisor]) -> RoomKit:
 
 async def test_each_room_s_per_worker_tools_run_with_its_own_install(streaming: bool) -> None:
     """Room B's delegation runs B's worker with B's settings, though room A
-    installed a supervisor on the same agent first (VF1)."""
+    installed a supervisor on the same agent first."""
     worker_a = Agent("worker_a", provider=MockAIProvider(responses=["a"]), tool_search=False)
     worker_b = Agent("worker_b", provider=MockAIProvider(responses=["b"]), tool_search=False)
     sup_model = _calling("delegate_to_worker_b", {"task": "file it"}, times=1, streaming=streaming)
@@ -115,7 +115,7 @@ async def test_each_room_s_per_worker_tools_run_with_its_own_install(streaming: 
 
 
 async def test_each_room_s_team_tool_runs_its_own_team(streaming: bool) -> None:
-    """``delegate_workers`` declares room B's team and runs it (VF1)."""
+    """``delegate_workers`` declares room B's team and runs it."""
     worker_a = Agent("worker_a", provider=MockAIProvider(responses=["a"]), tool_search=False)
     worker_b = Agent("worker_b", provider=MockAIProvider(responses=["b"]), tool_search=False)
     sup_model = _calling("delegate_workers", {"task": "file it"}, times=1, streaming=streaming)
@@ -144,7 +144,7 @@ async def test_each_room_s_team_tool_runs_its_own_team(streaming: bool) -> None:
 async def test_the_repeat_guard_holds_on_an_orchestration_tool(streaming: bool) -> None:
     """The third identical ``delegate_task`` of a turn is stopped like any
     other tool's: orchestration tools are served through the channel's
-    dispatch, not around it (F14)."""
+    dispatch, not around it."""
     delegations: list[dict[str, Any]] = []
 
     class Recording(DelegateHandler):
@@ -174,7 +174,7 @@ async def test_a_room_without_the_install_gets_the_supervisor_s_own_answer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A supervisor whose delegation passes take room A's turns answers as
-    itself in a room where nothing was installed: no worker runs there (VF3)."""
+    itself in a room where nothing was installed: no worker runs there."""
     passes: list[str] = []
 
     async def one_pass(kit: Any, rid: str, *args: Any, **kwargs: Any) -> ChannelOutput:
@@ -212,7 +212,7 @@ async def test_each_room_s_loop_runs_with_its_own_reviewers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Two rooms loop the same producer past different reviewers: each room's
-    turn runs its own (VF1)."""
+    turn runs its own."""
     ran: list[tuple[str, list[str]]] = []
 
     async def run_loop(*, room_id: str, reviewers: list[Agent], **kwargs: Any) -> ChannelOutput:
@@ -256,7 +256,7 @@ async def test_each_room_s_voice_supervisor_runs_its_own_workers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Room B's call runs B's workers though room A installed a supervisor on
-    the same voice channel first; a room with no install declares nothing (VF1)."""
+    the same voice channel first; a room with no install declares nothing."""
     ran: list[tuple[str, list[str]]] = []
 
     async def run_and_deliver(**kwargs: Any) -> None:
@@ -299,7 +299,7 @@ async def test_each_room_s_voice_supervisor_runs_its_own_workers(
 async def test_a_handoff_in_one_room_leaves_another_room_s_sessions() -> None:
     """A pipeline's handoff in room A reconfigures A's sessions; a session that
     starts in room B starts with B's active agent, and the channel's own
-    configuration is left as it was (VF2)."""
+    configuration is left as it was."""
     provider = MockRealtimeProvider()
     voice = RealtimeVoiceChannel(
         "voice",
@@ -542,4 +542,30 @@ async def test_an_install_refused_halfway_sets_nothing_up() -> None:
         await Supervisor(sup, workers).install(kit, "room-A")
 
     assert room_tool_names(sup, "room-A") == []
+    await kit.close()
+
+
+async def test_a_structured_delegation_to_an_agent_with_its_own_result_tool_fails_naming_it() -> (
+    None
+):
+    """The result tool is set up for the child room when the delegation runs: an
+    agent whose host tool carries its name fails the delegation, and the task's
+    error names the tool to rename (RFC §21.1)."""
+    worker = Agent(
+        "worker",
+        provider=MockAIProvider(responses=["x"]),
+        tools=[AITool(name="submit_result", description="host", parameters={})],
+        tool_handler=AsyncMock(return_value="host"),
+    )
+    kit = RoomKit()
+    kit.register_channel(worker)
+    await kit.create_room(room_id="parent")
+
+    task = await kit.delegate(
+        "parent", "worker", "do it", wait=True, require_structured_result=True
+    )
+
+    assert task.result is not None
+    assert task.result.status == "failed"
+    assert "'submit_result'" in (task.result.error or "")
     await kit.close()
