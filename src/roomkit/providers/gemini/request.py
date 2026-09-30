@@ -29,8 +29,9 @@ from roomkit.providers.ai.base import (
     ProviderError,
 )
 from roomkit.providers.ai.image_parts import image_part_payload
-from roomkit.providers.ai.reasoning import thinking_switch
+from roomkit.providers.ai.reasoning import nearest_level, thinking_switch
 from roomkit.providers.gemini.config import GeminiConfig
+from roomkit.providers.gemini.models import CANNOT_STOP, TAKES_LEVELS, TAKES_MINIMAL
 from roomkit.providers.gemini.schema import function_declaration
 
 
@@ -220,17 +221,6 @@ def build_gen_config(
     return gen_config
 
 
-# Gemini's thinking level for each effort a turn may ask, the nearest where
-# Gemini has no such level.
-_THINKING_LEVELS = {
-    "minimal": "minimal",
-    "low": "low",
-    "medium": "medium",
-    "high": "high",
-    "xhigh": "high",
-}
-
-
 def thinking_config(
     types: Any, config: GeminiConfig, context: AIContext, capabilities: Collection[str]
 ) -> Any | None:
@@ -247,12 +237,10 @@ def thinking_config(
     # A negative budget is Gemini's dynamic one (-1): on, the model sizing it.
     dynamic = budget is not None and budget < 0
     switch = True if dynamic else thinking_switch(context, bool(config.thinking_level) or None)
+    levels = _levels(config, capabilities)
     if switch is False:
-        # ``0`` turns reasoning off, as it does on every other provider. The
-        # models that cannot run without it answer 400 — measured 2026-09-27:
-        # ``gemini-3.1-pro-preview`` and ``gemini-3.5-flash-lite``.
-        return types.ThinkingConfig(thinking_budget=0, include_thoughts=False)
-    level = _thinking_level(context.reasoning_effort, config.thinking_level, capabilities)
+        return _off(types, levels, capabilities)
+    level = nearest_level(context.reasoning_effort, levels) or config.thinking_level
     if level is not None:
         return types.ThinkingConfig(thinking_level=level, include_thoughts=True)
     if budget:
@@ -264,23 +252,25 @@ def thinking_config(
     return None
 
 
-def _thinking_level(
-    effort: str | None, configured: str | None, capabilities: Collection[str]
-) -> str | None:
-    """The level to send: the turn's *effort* on a model that takes levels,
-    else the *configured* one.
+def _levels(config: GeminiConfig, capabilities: Collection[str]) -> tuple[str, ...]:
+    """The thinking levels the model takes, least to most: from the
+    catalogue, or the usual three where a level is configured for a model it
+    does not carry (RFC §6.7)."""
+    if TAKES_MINIMAL in capabilities:
+        return ("minimal", "low", "medium", "high")
+    if TAKES_LEVELS in capabilities or config.thinking_level is not None:
+        return ("low", "medium", "high")
+    return ()
 
-    A model takes levels when the catalogue says so, or when a level is
-    configured for it; ``minimal`` goes to a model the catalogue says takes
-    it, and is ``low`` elsewhere (400 on gemini-3.8-flash, measured
-    2026-09-30).
-    """
-    level = _THINKING_LEVELS.get(effort or "")
-    if level is None or ("thinking_level" not in capabilities and configured is None):
-        return configured
-    if level == "minimal" and "thinking_level_minimal" not in capabilities:
-        return "low"
-    return level
+
+def _off(types: Any, levels: tuple[str, ...], capabilities: Collection[str]) -> Any:
+    """Reasoning off: a budget of ``0``, as on every other provider, or the
+    lowest level for a model that cannot stop reasoning, which answers 400 to
+    that budget (``gemini-3.1-pro-preview``, ``gemini-3.5-flash-lite``,
+    measured 2026-09-27)."""
+    if CANNOT_STOP in capabilities and levels:
+        return types.ThinkingConfig(thinking_level=levels[0], include_thoughts=False)
+    return types.ThinkingConfig(thinking_budget=0, include_thoughts=False)
 
 
 def reject_model_turn_tail(contents: list[Any]) -> None:

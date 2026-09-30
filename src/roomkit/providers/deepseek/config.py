@@ -38,8 +38,9 @@ class DeepSeekConfig(OpenAIConfig):
     enable_thinking: bool | None = None
     """Force DeepSeek's thinking mode on (``True``) or off (``False``) for
     every turn. ``None`` sends nothing and leaves the model's own default,
-    which is thinking **on** for both V4 models. A per-turn
-    ``AIContext.thinking_budget`` overrides this."""
+    which is thinking **on** for both V4 models. The turn outranks it
+    (RFC §6.7): its ``thinking_budget`` (``0`` off, above ``0`` on), its
+    ``enable_thinking``, or a ``reasoning_effort`` of ``"none"``."""
 
     reasoning_effort: str | None = None
     """Reasoning depth — ``"low"`` | ``"high"`` | ``"max"``. DeepSeek takes it

@@ -22,6 +22,7 @@ from roomkit.providers.ai.base import (
     AIToolResultPart,
 )
 from roomkit.providers.ai.image_parts import image_part_base64
+from roomkit.providers.ai.reasoning import thinking_switch
 from roomkit.providers.anthropic.config import AnthropicConfig
 
 # Block types that accept a cache_control marker — notably NOT
@@ -195,14 +196,20 @@ def _thinking_or_temperature(config: AnthropicConfig, context: AIContext) -> dic
     ``display: "summarized"`` keeps the reasoning trace visible (its default
     is "omitted" on those models).
 
+    Thinking is on as the turn states it (RFC §6.7): a positive budget, or
+    ``enable_thinking=True``. A model without adaptive thinking needs its
+    budget, so ``enable_thinking=True`` alone leaves it off there.
+
     ``messages.stream()`` has no ``temperature`` parameter in anthropic 1.x,
     while the models profiled as taking one still do, so it rides
     ``extra_body``, which the SDK merges into the request JSON as it is.
     """
-    if context.thinking_budget is not None and context.thinking_budget > 0:
+    budget = context.thinking_budget
+    if thinking_switch(context):
         if config.use_adaptive_thinking:
             return {"thinking": {"type": "adaptive", "display": "summarized"}}
-        return {"thinking": {"type": "enabled", "budget_tokens": context.thinking_budget}}
+        if budget:
+            return {"thinking": {"type": "enabled", "budget_tokens": budget}}
     if context.temperature is not None and config.supports_custom_temperature:
         return {"extra_body": {"temperature": context.temperature}}
     return {}

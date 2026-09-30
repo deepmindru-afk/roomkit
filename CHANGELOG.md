@@ -103,7 +103,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   level goes only where the model takes one, which Gemini reads from two new
   catalogue tags (`thinking_level`, `thinking_level_minimal`) and Ollama from
   a configured level, since both refuse a level elsewhere. On Qwen and
-  DeepSeek too, a `reasoning_effort` of `none` now turns thinking off.
+  DeepSeek too, a `reasoning_effort` of `none` now turns thinking off, and
+  vLLM, llama.cpp, Mistral, LiteLLM and Anthropic read the turn's
+  `enable_thinking` as the switch (on Anthropic, `True` alone turns adaptive
+  thinking on where the model has it). Off on a Gemini model that cannot stop
+  reasoning (`gemini-3.1-pro-preview`, `gemini-3.5-flash-lite`, which answer
+  400 to a budget of 0) is sent as the lowest level it takes, a new
+  `thinking_required` catalogue tag.
   Measured on the wire: `reasoning_effort="low"` on `gemini-3.7-flash` goes
   from 158 thought tokens (nothing sent) to 48 (`low`), `enable_thinking=True`
   on `gemini-3.1-flash-lite` from 0 to 200, and `enable_thinking=False` on

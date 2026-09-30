@@ -371,13 +371,12 @@ class GeminiAIProvider(AIProvider):
                     # turn ("Function call is missing a thought_signature").
                     logger.warning(
                         "Gemini round of %d function call(s) %s carries no "
-                        "thought_signature (thinking_level=%s, thinking_budget=%s) — "
+                        "thought_signature (thinking config %s) — "
                         "nothing to replay them signed with; Gemini 3 rejects the next "
                         "turn when the model was thinking",
                         len(fcall_order),
                         [fcalls[k]["name"] for k in fcall_order],
-                        self._config.thinking_level,
-                        context.thinking_budget,
+                        getattr(gen_config, "thinking_config", None),
                     )
             for key in fcall_order:
                 fc_data = fcalls[key]

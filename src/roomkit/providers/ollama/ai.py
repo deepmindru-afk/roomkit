@@ -39,7 +39,7 @@ from roomkit.providers.ai.base import (
     StreamToolCall,
 )
 from roomkit.providers.ai.image_parts import image_part_base64
-from roomkit.providers.ai.reasoning import thinking_switch
+from roomkit.providers.ai.reasoning import nearest_level, thinking_switch
 from roomkit.providers.ai.response_schema import (
     check_schema_answer,
     checked_stream,
@@ -55,15 +55,8 @@ from roomkit.providers.utils import _aclose_stream, http_timeout
 # model picker snappy without thundering the server.
 _SHOW_CONCURRENCY = 8
 
-# Ollama's ``think`` level for each effort a turn may ask, the nearest where
-# Ollama has no such level.
-_THINK_LEVELS = {
-    "minimal": "low",
-    "low": "low",
-    "medium": "medium",
-    "high": "high",
-    "xhigh": "high",
-}
+# The ``think`` levels Ollama takes, on a model that takes any (gpt-oss).
+_THINK_LEVELS = ("low", "medium", "high")
 
 
 def _ollama_image_payload(part: AIImagePart, *, provider: str) -> str:
@@ -321,7 +314,7 @@ class OllamaAIProvider(AIProvider):
         if switch is False:
             return False
         if levels:
-            return _THINK_LEVELS.get(context.reasoning_effort or "", configured)
+            return nearest_level(context.reasoning_effort, _THINK_LEVELS) or configured
         return switch
 
     def _build_kwargs(self, context: AIContext, stream: bool) -> dict[str, Any]:

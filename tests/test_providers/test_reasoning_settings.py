@@ -15,7 +15,9 @@ from typing import Any
 import pytest
 
 from roomkit.providers.ai.base import AIContext, AIMessage, AITool
-from roomkit.providers.ai.reasoning import turn_setting
+from roomkit.providers.ai.reasoning import nearest_level, thinking_switch, turn_setting
+from roomkit.providers.anthropic import AnthropicConfig
+from roomkit.providers.anthropic.request import build_kwargs
 from roomkit.providers.cerebras.ai import CerebrasAIProvider
 from roomkit.providers.cerebras.config import CerebrasConfig
 from roomkit.providers.deepseek.ai import DeepSeekAIProvider
@@ -38,6 +40,8 @@ from roomkit.providers.polargrid.ai import PolarGridAIProvider
 from roomkit.providers.polargrid.config import PolarGridConfig
 from roomkit.providers.qwen.ai import QwenAIProvider
 from roomkit.providers.qwen.config import QwenConfig
+from roomkit.providers.vllm import _openai_config, _VLLMProvider
+from roomkit.providers.vllm.config import VLLMConfig
 from roomkit.providers.xai.ai import XAIAIProvider
 from roomkit.providers.xai.config import XAIConfig
 
@@ -173,7 +177,7 @@ def test_an_effort_of_none_turns_a_configured_switch_off(
 
 # A vendor setting of the provider's own yields to the turn on what the turn
 # states, whether the model reasons or how much, and supplies the rest (RFC
-# §6.7). The cases are the ones the rule was decided on.
+# §6.7).
 
 
 def _think(think: Any, **turn: Any) -> Any:
@@ -247,3 +251,123 @@ def test_polargrid_thinking_yields_to_the_turn(
     request = provider._build_request(_context(tools=_TOOLS, **turn), stream=False)
 
     assert request.get("enable_thinking") == sent
+
+
+def test_the_switch_reads_the_budget_then_enable_thinking_then_an_effort_of_none() -> None:
+    assert thinking_switch(_context(thinking_budget=0, enable_thinking=True)) is False
+    assert thinking_switch(_context(thinking_budget=512, reasoning_effort="none")) is True
+    assert thinking_switch(_context(enable_thinking=True, reasoning_effort="none")) is True
+    assert thinking_switch(_context(reasoning_effort="none"), configured=True) is False
+    assert thinking_switch(_context(thinking_budget=-1)) is False
+    assert thinking_switch(_context(reasoning_effort="low"), configured=None) is None
+
+
+def test_an_effort_goes_as_the_nearest_level_the_model_takes() -> None:
+    three = ("low", "medium", "high")
+    assert nearest_level("minimal", three) == "low"
+    assert nearest_level("xhigh", three) == "high"
+    assert nearest_level("minimal", ("minimal", *three)) == "minimal"
+    assert nearest_level("none", three) is None and nearest_level("max", three) is None
+    assert nearest_level("low", ()) is None
+
+
+def _off_gemini(provider: Any, context: AIContext) -> bool:
+    genai_types = pytest.importorskip("google.genai.types")
+    provider._types = genai_types
+    return provider._build_gen_config(context).thinking_config.thinking_budget == 0
+
+
+# Every implementation of "whether the model reasons, as the turn states it",
+# each configured to reason, and what it sends when the turn says off.
+_SWITCHES_OFF: dict[str, tuple[Any, Callable[[Any, AIContext], bool]]] = {
+    "qwen": (
+        _provider(QwenAIProvider, QwenConfig(**_SWITCHED_ON)),
+        lambda p, c: _sampled(p, c)["extra_body"]["enable_thinking"] is False,
+    ),
+    "deepseek": (
+        _provider(DeepSeekAIProvider, DeepSeekConfig(**_SWITCHED_ON)),
+        lambda p, c: _sampled(p, c)["extra_body"]["thinking"] == {"type": "disabled"},
+    ),
+    "vllm": (
+        _provider(_VLLMProvider, _openai_config(VLLMConfig(model="m", enable_thinking=True))),
+        lambda p, c: (
+            _sampled(p, c)["extra_body"]["chat_template_kwargs"]["enable_thinking"] is False
+        ),
+    ),
+    "ollama": (
+        _provider(OllamaAIProvider, OllamaConfig(model="m", think="high")),
+        lambda p, c: p._resolve_think(c) is False,
+    ),
+    "polargrid": (
+        _provider(PolarGridAIProvider, PolarGridConfig(api_key="k", thinking=True)),
+        lambda p, c: p._build_request(c, stream=False)["enable_thinking"] is False,
+    ),
+    "gemini": (
+        _provider(
+            GeminiAIProvider,
+            GeminiConfig(api_key="k", model="gemini-3.8-flash", thinking_level="high"),
+        ),
+        _off_gemini,
+    ),
+    "mistral": (
+        _provider(MistralAIProvider, MistralConfig(api_key="k", reasoning_effort="high")),
+        lambda p, c: p._resolve_reasoning_effort(c) == "none",
+    ),
+    "openrouter": (
+        _provider(
+            OpenRouterAIProvider, OpenRouterConfig(api_key="k", model="m", reasoning_effort="high")
+        ),
+        lambda p, c: _sampled(p, c)["extra_body"]["reasoning"] == {"enabled": False},
+    ),
+    "litellm": (
+        _provider(
+            LiteLLMAIProvider, LiteLLMConfig(api_key="k", model="m", reasoning_effort="high")
+        ),
+        lambda p, c: "reasoning_effort" not in _sampled(p, c),
+    ),
+    "anthropic": (
+        None,
+        lambda _p, c: (
+            "thinking"
+            not in build_kwargs(AnthropicConfig(api_key="k", model="claude-opus-4-8"), c)
+        ),
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(_SWITCHES_OFF))
+@pytest.mark.parametrize(
+    "off",
+    [{"thinking_budget": 0}, {"enable_thinking": False}, {"reasoning_effort": "none"}],
+    ids=["budget_0", "enable_thinking_false", "effort_none"],
+)
+def test_the_turn_switch_off_reaches_every_implementation(name: str, off: dict[str, Any]) -> None:
+    provider, is_off = _SWITCHES_OFF[name]
+
+    assert is_off(provider, _context(**off))
+
+
+@pytest.mark.parametrize(
+    ("model", "level"),
+    [("gemini-3.1-pro-preview", "LOW"), ("gemini-3.5-flash-lite", "MINIMAL")],
+)
+def test_gemini_sends_its_lowest_level_for_off_where_the_model_cannot_stop(
+    model: str, level: str
+) -> None:
+    """A budget of 0 answers 400 on these two (measured 2026-09-27)."""
+    thinking = _gemini_thinking(model, "high", enable_thinking=False)
+
+    assert thinking.thinking_budget is None
+    assert thinking.thinking_level.value == level
+
+
+def test_anthropic_turns_adaptive_thinking_on_from_enable_thinking() -> None:
+    """RFC §6.7: enable_thinking states the switch; a model without adaptive
+    thinking needs its budget, so the switch alone leaves it off there."""
+    adaptive = AnthropicConfig(api_key="k", model="claude-opus-4-8")
+    budgeted = AnthropicConfig(api_key="k", model="claude-opus-4-8", use_adaptive_thinking=False)
+
+    assert build_kwargs(adaptive, _context(enable_thinking=True))["thinking"]["type"] == "adaptive"
+    assert "thinking" not in build_kwargs(budgeted, _context(enable_thinking=True))
+    budget = build_kwargs(budgeted, _context(enable_thinking=True, thinking_budget=2048))
+    assert budget["thinking"] == {"type": "enabled", "budget_tokens": 2048}

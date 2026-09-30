@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, ClassVar
 
 from roomkit.providers.ai.base import AIContext, ModelInfo
+from roomkit.providers.ai.reasoning import thinking_switch
 from roomkit.providers.openai.ai import OpenAIAIProvider
 from roomkit.providers.openai.config import OpenAIConfig
 from roomkit.providers.vllm.config import VLLMConfig
@@ -74,9 +75,12 @@ class _VLLMProvider(OpenAIAIProvider):
         """
         configured = (self._config.extra_body or {}).get("chat_template_kwargs", {})
         resolved: dict[str, Any] = dict(configured)
-        if context.enable_thinking is not None:
-            resolved["enable_thinking"] = context.enable_thinking
-        if context.reasoning_effort is not None:
+        # The turn's switch before the configured one (RFC §6.7): its budget,
+        # then its enable_thinking, then an effort of ``none``.
+        enabled = thinking_switch(context, configured.get("enable_thinking"))
+        if enabled is not None:
+            resolved["enable_thinking"] = enabled
+        if context.reasoning_effort not in (None, "none"):
             resolved["reasoning_effort"] = context.reasoning_effort
         return resolved
 

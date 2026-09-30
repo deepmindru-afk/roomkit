@@ -6,7 +6,7 @@ from datetime import date
 from typing import Any, ClassVar
 
 from roomkit.providers.ai.base import AIContext, ModelInfo, ModelPricing
-from roomkit.providers.ai.reasoning import turn_setting
+from roomkit.providers.ai.reasoning import thinking_switch, turn_setting
 from roomkit.providers.litellm.config import LiteLLMConfig
 from roomkit.providers.openai.ai import OpenAIAIProvider
 from roomkit.providers.utils import http_timeout
@@ -96,18 +96,19 @@ class LiteLLMAIProvider(OpenAIAIProvider):
         """
         if context.temperature is not None and self._config.supports_custom_temperature:
             kwargs["temperature"] = context.temperature
-        if context.tools:
+        # Off, as the turn states it (RFC §6.7), sends nothing: see above.
+        if context.tools or thinking_switch(context) is False:
             return
         budget = context.thinking_budget
-        if budget is None:
-            effort = turn_setting(context.reasoning_effort, self._config.reasoning_effort)
-            if effort is not None:
-                kwargs["reasoning_effort"] = effort
-        elif budget > 0:
+        if budget:
             kwargs.setdefault("extra_body", {})["thinking"] = {
                 "type": "enabled",
                 "budget_tokens": budget,
             }
+            return
+        effort = turn_setting(context.reasoning_effort, self._config.reasoning_effort)
+        if effort is not None:
+            kwargs["reasoning_effort"] = effort
 
     async def list_models(self) -> list[ModelInfo]:
         """List the models this proxy deployment exposes, with live metadata.

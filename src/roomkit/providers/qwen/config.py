@@ -53,8 +53,9 @@ class QwenConfig(OpenAIConfig):
     enable_thinking: bool | None = None
     """Force Qwen's thinking mode on (``True``) or off (``False``) for every
     turn. ``None`` sends nothing and leaves the model's own default, which
-    differs across the lineup. A per-turn ``AIContext.thinking_budget``
-    overrides this."""
+    differs across the lineup. The turn outranks it (RFC §6.7): its
+    ``thinking_budget`` (``0`` off, above ``0`` on), its ``enable_thinking``,
+    or a ``reasoning_effort`` of ``"none"``."""
 
     reasoning_effort: str | None = None
     """Not sent to Model Studio, and kept only because the inherited config

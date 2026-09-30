@@ -34,7 +34,7 @@ from roomkit.providers.ai.openai_dialect import (
     json_schema_format,
     round_text,
 )
-from roomkit.providers.ai.reasoning import turn_setting
+from roomkit.providers.ai.reasoning import thinking_switch, turn_setting
 from roomkit.providers.ai.response_schema import checked_stream, schema_for_generate
 from roomkit.providers.mistral.config import MistralConfig
 from roomkit.providers.mistral.models import MODELS
@@ -281,10 +281,10 @@ class MistralAIProvider(AIProvider):
         parameter entirely (model decides — Magistral always reasons).
         """
         effort = turn_setting(context.reasoning_effort, self._config.reasoning_effort)
-        budget = context.thinking_budget
-        if budget is None:
+        switch = thinking_switch(context)
+        if switch is None:
             return effort
-        if budget <= 0:
+        if switch is False:
             return "none"
         return effort or "high"
 

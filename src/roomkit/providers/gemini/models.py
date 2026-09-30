@@ -48,11 +48,15 @@ from roomkit.providers.ai.base import ModelInfo, ModelPricing
 _CTX = 1_048_576
 _VERIFIED = date(2026, 9, 3)
 
-# The thinking levels a model takes (RFC §6.7), measured on 2026-09-30: every
-# Gemini 3 model takes ``low``, ``medium`` and ``high``, and some ``minimal``
-# too; a Gemini 2.5 model refuses a level and takes a token budget only.
-_THINKING_LEVELS = ["thinking_level"]
-_THINKING_LEVELS_MINIMAL = [*_THINKING_LEVELS, "thinking_level_minimal"]
+# What a model takes of thinking (RFC §6.7), measured on 2026-09-30: every
+# Gemini 3 model takes the levels ``low``, ``medium`` and ``high``, and some
+# ``minimal`` too; a Gemini 2.5 model refuses a level and takes a token budget
+# only. Two cannot stop reasoning: a budget of 0 answers 400.
+TAKES_LEVELS = "thinking_level"
+TAKES_MINIMAL = "thinking_level_minimal"
+CANNOT_STOP = "thinking_required"
+_LEVELS = [TAKES_LEVELS]
+_LEVELS_MINIMAL = [TAKES_LEVELS, TAKES_MINIMAL]
 
 MODELS: list[ModelInfo] = [
     ModelInfo(
@@ -60,7 +64,7 @@ MODELS: list[ModelInfo] = [
         display_name="Gemini 3.8 Flash",
         context_window=_CTX,
         supports_vision=True,
-        capabilities=["thinking", "audio", "video", *_THINKING_LEVELS],
+        capabilities=["thinking", "audio", "video", *_LEVELS],
         pricing=ModelPricing(
             input_per_million=0.75,
             output_per_million=3.75,
@@ -73,7 +77,7 @@ MODELS: list[ModelInfo] = [
         display_name="Gemini 3.7 Flash",
         context_window=_CTX,
         supports_vision=True,
-        capabilities=["thinking", "audio", "video", *_THINKING_LEVELS],
+        capabilities=["thinking", "audio", "video", *_LEVELS],
         pricing=ModelPricing(
             input_per_million=0.75,
             output_per_million=3.75,
@@ -86,7 +90,7 @@ MODELS: list[ModelInfo] = [
         display_name="Gemini 3.6 Flash",
         context_window=_CTX,
         supports_vision=True,
-        capabilities=["thinking", "audio", "video", *_THINKING_LEVELS_MINIMAL],
+        capabilities=["thinking", "audio", "video", *_LEVELS_MINIMAL],
         pricing=ModelPricing(
             input_per_million=0.75,
             output_per_million=3.75,
@@ -99,7 +103,7 @@ MODELS: list[ModelInfo] = [
         display_name="Gemini 3.5 Flash",
         context_window=_CTX,
         supports_vision=True,
-        capabilities=["thinking", "audio", "video", *_THINKING_LEVELS_MINIMAL],
+        capabilities=["thinking", "audio", "video", *_LEVELS_MINIMAL],
         pricing=ModelPricing(
             input_per_million=1.5,
             output_per_million=9.0,
@@ -112,7 +116,7 @@ MODELS: list[ModelInfo] = [
         display_name="Gemini 3.5 Flash-Lite",
         context_window=_CTX,
         supports_vision=True,
-        capabilities=["thinking", "audio", "video", *_THINKING_LEVELS_MINIMAL],
+        capabilities=["thinking", "audio", "video", *_LEVELS_MINIMAL, CANNOT_STOP],
         pricing=ModelPricing(
             input_per_million=0.3,
             output_per_million=2.5,
@@ -125,7 +129,7 @@ MODELS: list[ModelInfo] = [
         display_name="Gemini 3.1 Pro (Preview)",
         context_window=_CTX,
         supports_vision=True,
-        capabilities=["thinking", "audio", "video", *_THINKING_LEVELS],
+        capabilities=["thinking", "audio", "video", *_LEVELS, CANNOT_STOP],
         pricing=ModelPricing(
             input_per_million=2.0,
             output_per_million=12.0,
@@ -141,7 +145,7 @@ MODELS: list[ModelInfo] = [
         display_name="Gemini 3.1 Flash-Lite",
         context_window=_CTX,
         supports_vision=True,
-        capabilities=["thinking", "audio", "video", *_THINKING_LEVELS_MINIMAL],
+        capabilities=["thinking", "audio", "video", *_LEVELS_MINIMAL],
         pricing=ModelPricing(
             input_per_million=0.25,
             output_per_million=1.5,
@@ -200,7 +204,7 @@ MODELS: list[ModelInfo] = [
         display_name="Gemini 3 Flash (Preview)",
         context_window=_CTX,
         supports_vision=True,
-        capabilities=_THINKING_LEVELS_MINIMAL,
+        capabilities=["thinking", *_LEVELS_MINIMAL],
         deprecated=True,
         pricing=ModelPricing(
             input_per_million=0.5,
