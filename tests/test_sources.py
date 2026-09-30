@@ -449,8 +449,12 @@ class TestSourceAutoRestart:
             restart_delay=0.05,
         )
 
-        # Wait for failures and restarts
-        await asyncio.sleep(0.5)
+        # Wait for the failures and the restarts: on a condition, since a fixed
+        # sleep leaves too few attempts when the machine is loaded.
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 5.0
+        while source._attempts < 3 and loop.time() < deadline:
+            await asyncio.sleep(0.01)
 
         # Should have attempted 3 times (2 failures + 1 success)
         assert source._attempts >= 3
