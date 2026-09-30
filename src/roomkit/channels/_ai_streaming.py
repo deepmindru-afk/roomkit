@@ -14,6 +14,7 @@ from roomkit.channels._ai_coalescers import _ThinkingCoalescer, _ToolCallDeltaCo
 from roomkit.channels._ai_loop_rules import (
     AIToolLoopRulesMixin,
     _accumulate_usage,
+    _ToolLoopState,
     final_round_reason,
     interrupts_turn,
     require_schema_answer,
@@ -516,9 +517,13 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
             response_metadata=ai_context.response_metadata,
         )
 
-    def _record_stream_usage(self, total: dict[str, int], usage: dict[str, Any]) -> None:
-        """Accumulate every counter and project the input/output metrics."""
+    def _record_stream_usage(
+        self, total: dict[str, int], rules: _ToolLoopState, usage: dict[str, Any]
+    ) -> None:
+        """Record a generation's usage: into the turn's total, against its
+        budget, and as the input/output metrics."""
         _accumulate_usage(total, usage)
+        rules.spend(usage)
         telemetry = self._telemetry_provider
         for counter in ("input_tokens", "output_tokens"):
             telemetry.record_metric(
@@ -717,7 +722,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
             if cancelled:
                 yield turn.end("cancelled", 0)
                 return
-            rules = self._new_loop_state("Streaming tool loop")
+            rules = self._new_loop_state("Streaming tool loop", loop_ctx.turn_budget)
 
             for index in range(self._max_tool_rounds + 1):
                 if loop_ctx.cancel_event.is_set():
@@ -732,7 +737,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                     new_composition=partial(self._new_tool_call_coalescer, turn.room_id, index),
                     publish_thinking=self._publish_thinking_event,
                     close_thinking=self._close_thinking_window,
-                    record_usage=partial(self._record_stream_usage, turn.usage),
+                    record_usage=partial(self._record_stream_usage, turn.usage, rules),
                     prefix=turn.dedup_prefix,
                     external_tools=external if self._tool_handler is None else None,
                 )

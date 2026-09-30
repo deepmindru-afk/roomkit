@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `turn_budget_tokens` and `turn_budget_usd` on `AIChannel` and
+  `AIChannelTurnConfig`, and per room through binding metadata (RMK-320, RFC
+  §6.4): what one turn may spend, in billed tokens (cache included) or at
+  the model's catalogue price, each generation priced as one response. At
+  the first round boundary where the turn has reached either, the tool loop
+  ends with the new `loop_end_reason` `budget_exceeded`: the calls that
+  round asked for do not run and no further generation is asked for. Both
+  are off by default; a cost budget on a model with no catalogue price
+  raises `ValueError`. On `claude-sonnet-5`, a turn asked to look up thirty
+  orders one by one stops after eleven at $0.0208 with
+  `turn_budget_usd=0.02`, where it cost about $0.043 unbounded.
+  `examples/ai_turn_budget.py` shows it.
+
+### Changed
+
+- `max_tool_rounds` defaults to 50 instead of 200, and
+  `tool_loop_warn_after` to 25 instead of 50 (RMK-320). On 819 real
+  `AIChannel` turns with tools, the median ran 2 rounds, the 99th percentile
+  16 and the longest 62. A host whose agents legitimately run longer passes
+  `max_tool_rounds` explicitly.
+
 ### Fixed
 
 - An emergency compaction keeps the turn's input and its notes whole

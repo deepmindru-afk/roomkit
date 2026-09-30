@@ -71,6 +71,10 @@ class ThinkingDeltaMarker:
 #: turn the platform cut short, not an answer, and a caller that reads
 #: ``completed`` delivers it as one.
 #:
+#: ``budget_exceeded`` is a turn that reached its token or cost budget at a
+#: round boundary: the calls its last generation asked for do not run, and no
+#: further generation is asked for (RFC §6.4).
+#:
 #: ``error`` is a turn the provider interrupted after a tool round: the rounds
 #: are kept, each round's text as its own message, and it is an error too
 #: (ON_ERROR fires, the caller reads it on ``InboundResult.error``). The
@@ -81,6 +85,7 @@ LoopEndReason = Literal[
     "completed",
     "max_rounds",
     "timeout",
+    "budget_exceeded",
     "truncated",
     "empty_response",
     "force_stopped",

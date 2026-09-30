@@ -18,6 +18,7 @@ from roomkit.channels._task_planner import TaskPlanner
 from roomkit.channels._tool_eviction import ToolEviction
 from roomkit.channels._tool_search import search_tool_defs, should_activate_tool_search
 from roomkit.channels._tool_search_constants import TOOL_SEARCH_PREAMBLE
+from roomkit.channels._turn_budget import TurnBudget, turn_budget
 from roomkit.channels._turn_notes import turn_input, turn_notes, with_turn_notes
 from roomkit.channels._user_text import with_leading_text
 from roomkit.core.visibility import visible_events
@@ -94,6 +95,9 @@ class AIContextHost(Protocol):
         _reasoning_effort: Default reasoning verbosity (overridable per room).
         _response_schema: Default JSON Schema the answer must follow (overridable
             per room); ``None`` leaves the answer free.
+        _turn_budget_tokens: Default billed tokens a turn may spend (overridable
+            per room and per turn); ``None`` for no cap.
+        _turn_budget_usd: Default cost a turn may reach at the catalogue price.
         _skills: Skill registry for tool injection.
         _skills_in_prompt: Whether to auto-inject the skills manifest into the prompt.
         _script_executor: Script executor for skill scripts.
@@ -123,6 +127,8 @@ class AIContextHost(Protocol):
     _enable_thinking: bool | None
     _reasoning_effort: str | None
     _response_schema: dict[str, Any] | None
+    _turn_budget_tokens: int | None
+    _turn_budget_usd: float | None
     _skills: SkillRegistry | None
     _skills_in_prompt: bool
     _script_executor: ScriptExecutor | None
@@ -164,6 +170,8 @@ class AIContextMixin:
     _enable_thinking: bool | None
     _reasoning_effort: str | None
     _response_schema: dict[str, Any] | None
+    _turn_budget_tokens: int | None
+    _turn_budget_usd: float | None
     _skills: SkillRegistry | None
     _skills_in_prompt: bool
     _script_executor: ScriptExecutor | None
@@ -250,6 +258,7 @@ class AIContextMixin:
         tools = self._turn_base_tools(turn, binding)
 
         loop_ctx = self._get_loop_ctx()
+        loop_ctx.turn_budget = self._turn_budget(binding, turn)
 
         # A standalone instruction reads nothing of the room (RFC §10.1.1 step
         # 7): no history below, and none of the room's working memories either
@@ -740,14 +749,26 @@ class AIContextMixin:
     ) -> dict[str, Any]:
         """Each per-turn setting from the binding metadata, else the config
         provider's result, else the channel default."""
-        settings: dict[str, Any] = {}
-        for key in _TURN_SETTINGS:
-            if key in binding.metadata:
-                settings[key] = binding.metadata[key]
-                continue
-            turn_value = getattr(turn, key) if turn is not None else None
-            settings[key] = turn_value if turn_value is not None else getattr(self, f"_{key}")
-        return settings
+        return {key: self._turn_value(key, binding, turn) for key in _TURN_SETTINGS}
+
+    def _turn_value(
+        self, key: str, binding: ChannelBinding, turn: AIChannelTurnConfig | None
+    ) -> Any:
+        """The turn's *key*: from the binding metadata, else the config
+        provider's result, else the channel default."""
+        if key in binding.metadata:
+            return binding.metadata[key]
+        turn_value = getattr(turn, key) if turn is not None else None
+        return turn_value if turn_value is not None else getattr(self, f"_{key}")
+
+    def _turn_budget(
+        self, binding: ChannelBinding, turn: AIChannelTurnConfig | None
+    ) -> TurnBudget | None:
+        """What this turn may spend, each budget resolved like the turn's
+        other settings (RFC §6.4)."""
+        tokens = self._turn_value("turn_budget_tokens", binding, turn)
+        usd = self._turn_value("turn_budget_usd", binding, turn)
+        return turn_budget(tokens, usd, self._provider)
 
     async def _hydrate_room_memories(
         self, usage_room_id: str, activation_room_id: str | None

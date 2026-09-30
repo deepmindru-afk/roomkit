@@ -33,6 +33,10 @@ class AIChannelTurnConfig:
     thinking_budget: int | None = None
     enable_thinking: bool | None = None
     reasoning_effort: str | None = None
+    turn_budget_tokens: int | None = None
+    """Billed tokens the turn may spend, cache included (RFC §6.4)."""
+    turn_budget_usd: float | None = None
+    """What the turn may cost at the model's catalogue price (RFC §6.4)."""
     response_schema: dict[str, Any] | None = None
     """JSON Schema the turn's answer must satisfy (RFC §6.7): the final message
     is then one JSON document, or the turn fails with ``ResponseSchemaError``."""

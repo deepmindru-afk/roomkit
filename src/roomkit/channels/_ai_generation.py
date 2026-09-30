@@ -557,6 +557,7 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
             self._record_declared_tools(loop_ctx, ctx.tools)
             resp: AIResponse = await self._generate_with_retry(ctx)
             _accumulate_usage(total_usage, resp.usage or {})
+            state.spend(resp.usage or {})
             return resp
 
         async def _generate_after_round(ctx: AIContext) -> AIResponse:
@@ -577,7 +578,7 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
                 return ToolLoopResult(
                     response=AIResponse(content="", tool_calls=[]), reason="cancelled"
                 )
-            state = self._new_loop_state("Tool loop")
+            state = self._new_loop_state("Tool loop", loop_ctx.turn_budget)
             # The first round is prepared as every later one, and as the
             # streaming loop's: Tool Search collapses what the hook left.
             context = self._prepare_round_context(context, loop_ctx, state, 0)

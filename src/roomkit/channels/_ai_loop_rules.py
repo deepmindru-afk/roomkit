@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.channels._tool_eviction import REREAD_TOOL, ToolEviction
+from roomkit.channels._turn_budget import TurnBudget
 from roomkit.models.streaming import LoopEndReason
 from roomkit.providers.ai.base import (
     AIContext,
@@ -92,7 +93,15 @@ def _accumulate_usage(total: dict[str, int], round_usage: dict[str, Any]) -> Non
 # How a tool loop can stop short of its final answer. A turn constrained to a
 # response schema that ends this way has no checked document to deliver.
 _CUT_SHORT: frozenset[str] = frozenset(
-    {"max_rounds", "timeout", "force_stopped", "empty_response", "truncated", "error"}
+    {
+        "max_rounds",
+        "timeout",
+        "budget_exceeded",
+        "force_stopped",
+        "empty_response",
+        "truncated",
+        "error",
+    }
 )
 
 
@@ -210,8 +219,17 @@ class _ToolLoopState:
     warn_after: int
     log_label: str
     timeout_seconds: float | None = None
+    budget: TurnBudget | None = None
+    billed_tokens: int = 0
+    spent: float = 0.0
     empty_retries: int = 0
     force_stop_nudged: bool = False
+
+    def spend(self, usage: dict[str, Any]) -> None:
+        """Count one generation's usage against the turn's budget, if it has one."""
+        if self.budget is not None:
+            self.billed_tokens += self.budget.tokens_of(usage)
+            self.spent += self.budget.cost_of(usage)
 
     def deadline_exceeded(self) -> bool:
         """Whether the loop's wall-clock deadline has passed."""
@@ -219,8 +237,9 @@ class _ToolLoopState:
 
     def limit_reached(self, rounds: int) -> LoopEndReason | None:
         """The limit of the loop's own that it has reached after *rounds*
-        rounds, or ``None``: its wall-clock deadline. Both loops ask it at
-        each round boundary, before running the round's calls."""
+        rounds, or ``None``: its wall-clock deadline, then the turn's budget
+        (RFC §6.4). Both loops ask it at each round boundary, before running
+        the round's calls."""
         if self.deadline_exceeded():
             logger.warning(
                 "%s timeout after %d rounds (%.0fs)",
@@ -229,6 +248,15 @@ class _ToolLoopState:
                 self.timeout_seconds,
             )
             return "timeout"
+        if self.budget is not None and self.budget.reached(self.billed_tokens, self.spent):
+            logger.warning(
+                "%s reached the turn's budget after %d rounds (%d tokens, %.4f)",
+                self.log_label,
+                rounds,
+                self.billed_tokens,
+                self.spent,
+            )
+            return "budget_exceeded"
         return None
 
     def warn_if_needed(self, round_idx: int) -> None:
@@ -340,7 +368,7 @@ class AIToolLoopRulesMixin:
         )
         return kept
 
-    def _new_loop_state(self, log_label: str) -> _ToolLoopState:
+    def _new_loop_state(self, log_label: str, budget: TurnBudget | None = None) -> _ToolLoopState:
         """Create the per-run loop state, computing the wall-clock deadline."""
         deadline = (
             asyncio.get_running_loop().time() + self._tool_loop_timeout_seconds
@@ -352,6 +380,7 @@ class AIToolLoopRulesMixin:
             warn_after=self._tool_loop_warn_after,
             log_label=log_label,
             timeout_seconds=self._tool_loop_timeout_seconds,
+            budget=budget,
         )
 
     def _prepare_round_context(

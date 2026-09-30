@@ -51,6 +51,7 @@ from roomkit.channels._tool_search_constants import (
     DEFAULT_TOOL_SEARCH_THRESHOLD_PCT,
 )
 from roomkit.channels._tool_usage import ToolUsageMemory
+from roomkit.channels._turn_budget import TurnBudget, turn_budget
 from roomkit.channels._turn_config import ConfigProvider
 from roomkit.channels.base import Channel
 from roomkit.memory.base import MemoryProvider
@@ -171,6 +172,8 @@ class _ToolLoopContext:
     # BEFORE_AI_GENERATION hook left it: what an emergency compaction keeps
     # whole (RFC §6.4), found among the messages by identity.
     turn_input: AIMessage | None = None
+    # What the turn may spend, resolved with its other settings (RFC §6.4).
+    turn_budget: TurnBudget | None = None
     # ``activate_skill`` calls whose activation waits for the call's outcome,
     # by tool_call_id: committed once the call is served, dropped when
     # ON_TOOL_CALL blocks it or it fails, so a refused activation opens no gate.
@@ -274,6 +277,7 @@ class _ToolLoopContext:
             # The input _build_context gave the turn, which a compaction in
             # the loop keeps whole.
             ctx.turn_input = parent.turn_input
+            ctx.turn_budget = parent.turn_budget
         ctx.room = room if room is not None else (parent.room if parent else None)
         if ctx.room is not None:
             ctx.room_id = ctx.room.id
@@ -322,9 +326,9 @@ class AIChannel(
         max_context_events: int = 50,
         tool_handler: ToolHandler | None = None,
         tools: list[AITool | Tool] | None = None,
-        max_tool_rounds: int = 200,
+        max_tool_rounds: int = 50,
         tool_loop_timeout_seconds: float | None = 300.0,
-        tool_loop_warn_after: int = 50,
+        tool_loop_warn_after: int = 25,
         max_empty_retries: int = 1,
         thinking_coalesce_ms: float = 80.0,
         thinking_coalesce_chars: int = 256,
@@ -350,8 +354,11 @@ class AIChannel(
         tool_search_threshold: int = DEFAULT_TOOL_SEARCH_THRESHOLD,
         tool_search_threshold_pct: float = DEFAULT_TOOL_SEARCH_THRESHOLD_PCT,
         tool_search_miss_hint: str | None = None,
+        turn_budget_tokens: int | None = None,
+        turn_budget_usd: float | None = None,
     ) -> None:
         super().__init__(channel_id)
+        self._store_turn_budget(turn_budget_tokens, turn_budget_usd, provider)
         self._provider = provider
         self._system_prompt = system_prompt
         # Per-turn config resolution — see channels/_turn_config.py. When
@@ -432,6 +439,16 @@ class AIChannel(
         self._init_framework_callbacks()
         # External tool handler for provider-executed tools (e.g. Claude Code)
         self._external_tool_handler = external_tool_handler
+
+    def _store_turn_budget(
+        self, tokens: int | None, usd: float | None, provider: AIProvider
+    ) -> None:
+        """Keep the channel's default turn budget, which the binding and the
+        config provider may override per turn; a cost budget needs a priced
+        model, checked here (RFC §6.4)."""
+        turn_budget(tokens, usd, provider)
+        self._turn_budget_tokens = tokens
+        self._turn_budget_usd = usd
 
     def _init_tool_surface(
         self,
