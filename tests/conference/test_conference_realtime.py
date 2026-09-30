@@ -13,6 +13,7 @@ import asyncio
 import json
 from collections.abc import Awaitable, Callable
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -132,6 +133,22 @@ class TestConfigurationRefusals:
                 realtime=ConferenceRealtimeConfig(
                     provider=MockRealtimeProvider(),
                     tools=[{"name": "lookup"}],
+                ),
+            )
+
+    async def test_two_tools_under_one_name_are_refused(self) -> None:
+        """Declared once and served by the other, the model would call one
+        tool's schema on the other's server (RFC §21.1)."""
+        tools = [
+            {"name": "lookup", "description": "server A", "parameters": {}},
+            {"name": "lookup", "description": "server B", "parameters": {}},
+        ]
+        with pytest.raises(ValueError, match="'lookup' is given twice"):
+            ConferenceChannel(
+                "conf",
+                backend=MockConferenceBackend(),
+                realtime=ConferenceRealtimeConfig(
+                    provider=MockRealtimeProvider(), tools=tools, tool_handler=AsyncMock()
                 ),
             )
 
