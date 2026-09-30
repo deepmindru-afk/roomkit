@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `setup_handoff(..., room_id=)` (RMK-307, RFC §19.7): the handoff tool is set
+  up for one room, served there with the given handler, beside another room's.
+  The swarm and pipeline strategies use it, so each room they are installed in
+  hands off with its own install.
 - `AIProvider.supports_deferred_tools`, `AITool.defer_loading` and
   `AIToolResultPart.references` (RMK-330, RFC §6.4): a provider that can hold
   a tool declared but unseen (Anthropic, from the model catalogue) receives
@@ -123,6 +127,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A channel refuses a tool when it is given under a name it already serves in
+  a room (RMK-307, RFC §21.1). Two host tools under one name at construction
+  (two MCP servers both exposing `search`) raise `ValueError` on `AIChannel` and
+  `RealtimeVoiceChannel`: the model used to read the later server's schema for
+  a call the first one served. `setup_handoff`, `setup_delegation` or a
+  strategy setting a tool up under a host tool's name raises
+  `ToolNameCollisionError` (a `ValueError`), where the orchestration's
+  definition used to replace the host's with a warning. A tool the turn brings
+  (binding metadata, a `config_provider`, a `BEFORE_AI_GENERATION` hook) under
+  a name the channel or orchestration serves is still left out, with a warning.
+- `AIChannel.tool_handler` is the host's handler (RMK-307): reading it returns
+  the handler the channel was given, and assigning it replaces that handler
+  only. The channel's own tools (skills, Tool Search, `read_stored_result`, the
+  planner, the sandbox) and the tools orchestration sets up keep being served.
+  It used to be the whole dispatcher, which orchestration wrapped, and
+  assigning it turned the channel's own tools off.
 - A turn with tools gets the turn's reasoning settings, as a turn without
   does (RMK-319, RFC §6.7). On OpenAI's own endpoint the model catalogue now
   says what Chat Completions takes with function tools, each entry checked
@@ -427,6 +447,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A strategy installed in several rooms runs each room's own configuration
+  (RMK-307, RFC §19.7). Its tools (`delegate_workers`, `delegate_to_<worker>`, a
+  swarm's or a pipeline's handoff) are set up for the room it was installed
+  in, with that install's workers, strategy, reviewers and settings, and a
+  `Loop` or an auto-delegating `Supervisor` takes the turns of its own rooms
+  only. The first install used to serve every room: room B declared its own
+  `delegate_workers` and ran room A's workers with room A's instruction, and a
+  supervisor attached to a room with no strategy ran room A's workers there.
+  Orchestration tools are served through the channel's dispatch rather than a
+  wrapped handler, so the repeat guard now stops a third identical
+  `delegate_task` of a turn as it stops any tool's.
 - A `BEFORE_AI_GENERATION` hook that redefines a tool the channel serves and
   already declares (`find_tools` under Tool Search, say) is named by a
   warning, as one that adds a tool under such a name already was (RMK-317,
