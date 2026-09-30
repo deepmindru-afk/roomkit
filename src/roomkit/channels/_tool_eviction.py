@@ -314,7 +314,11 @@ class ToolEviction:
             return json.dumps({"error": f"Result '{result_id}' not found", "available": available})
         # Read back, it is in use: the room's least recently read go first.
         self._store.move_to_end((room, result_id))
+        return self._page(full_result, offset, limit)
 
+    def _page(self, full_result: str, offset: int, limit: int) -> str:
+        """The JSON page of *full_result* from line *offset*, at most *limit*
+        lines and bounded in chars."""
         # Char budget per page. The page returns as a JSON string (the content
         # re-escaped, wrapped in an envelope) and is re-measured against
         # threshold_tokens on the way back, so it must never itself be evicted
