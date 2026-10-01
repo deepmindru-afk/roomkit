@@ -333,6 +333,9 @@ class VoiceChannel(
         self._state_lock = threading.Lock()
         # Map session_id -> (room_id, binding) for routing
         self._session_bindings: dict[str, tuple[str, ChannelBinding]] = {}
+        # Room of a session being unbound, for the recording-stopped report
+        # the pipeline makes while the binding is already gone
+        self._ending_session_rooms: dict[str, str] = {}
         # Track TTS playback for barge-in detection
         self._playing_sessions: dict[str, TTSPlaybackState] = {}
         # Signalled when send_audio() returns for a session (before drain delay)
@@ -1032,10 +1035,10 @@ class VoiceChannel(
         """Handle recording stopped from pipeline — fire hook."""
         with self._state_lock:
             binding_info = self._session_bindings.get(session.id)
-        if not binding_info or not self._framework:
+        room_id = binding_info[0] if binding_info else self._ending_session_rooms.get(session.id)
+        if room_id is None or not self._framework:
             return
 
-        room_id, _ = binding_info
         self._schedule(
             self._fire_recording_stopped_hook(session, result, room_id),
             name=f"recording_stopped:{session.id}",
@@ -1288,8 +1291,15 @@ class VoiceChannel(
                         False,
                         source="bridge",
                     )
-        # Notify pipeline of session end
-        self._pipeline_session_ended(session)
+        # Notify pipeline of session end. It stops the session's recording
+        # and reports it synchronously from inside this call, after the
+        # binding is gone: the room rides along so ON_RECORDING_STOPPED
+        # still knows where to fire.
+        self._ending_session_rooms[session.id] = binding_info[0]
+        try:
+            self._pipeline_session_ended(session)
+        finally:
+            self._ending_session_rooms.pop(session.id, None)
         self._release_tts_context(session.id)
         # Clear pending turns, audio, and interrupt cooldown
         self._pending_turns.pop(session.id, None)
