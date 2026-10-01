@@ -18,6 +18,7 @@ from roomkit import (
     RoomKit,
     TextContent,
 )
+from roomkit.channels._realtime_tool_executor import tool_loop_context
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 from roomkit.models.enums import ChannelType
 from roomkit.models.event import EventSource, RoomEvent
@@ -692,27 +693,21 @@ class TestToolCalls:
         assert (call.tool_call_id, call.channel_id) == ("call-gate", "rt-gate")
         assert seen == {"tenant": "acme", "record": None, "names": None}
 
-    async def test_realtime_loop_context_branches(
-        self,
-        provider: MockRealtimeProvider,
-        transport: MockRealtimeTransport,
-    ) -> None:
-        """The three ways the Room is resolved: the gate's when one was built,
-        None without a framework, and the session names the room and actor in
-        every case."""
-        ch = RealtimeVoiceChannel("rt-solo", provider=provider, transport=transport)
-        session = VoiceSession(
-            id="s1", room_id="room-x", participant_id="user-2", channel_id="rt-solo"
-        )
+    async def test_realtime_loop_context_branches(self) -> None:
+        """The ways the Room is resolved: the gate's when one was built, None
+        without a framework; the call names the room and actor in every case."""
         gate_room = Room(id="room-x")
 
-        with_gate = await ch._realtime_loop_context(session, "room-x", RoomContext(room=gate_room))
+        with_gate = await tool_loop_context(
+            None, "room-x", actor_id="user-2", chain_depth=0, room=gate_room
+        )
         assert with_gate.room is gate_room
         assert (with_gate.room_id, with_gate.actor_id) == ("room-x", "user-2")
         assert with_gate.has_turn is False
 
-        assert ch._framework is None
-        without_framework = await ch._realtime_loop_context(session, None, None)
+        without_framework = await tool_loop_context(
+            None, "room-x", actor_id="user-2", chain_depth=0
+        )
         assert without_framework.room is None
         assert (without_framework.room_id, without_framework.actor_id) == ("room-x", "user-2")
 

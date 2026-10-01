@@ -35,15 +35,27 @@ from typing import TYPE_CHECKING, Any
 from roomkit.channels._conference_mixer import ConferenceMixer
 from roomkit.channels._conference_operations import ConferenceResource
 from roomkit.channels._conference_tools import (
-    REPORTED_BY_GATE,
     ConferenceToolGate,
+    bound_result,
     declared_tools,
     warn_unused_role_overrides,
 )
+from roomkit.channels._realtime_tool_calls import RealtimeToolCall, ToolCallBook
+from roomkit.channels._realtime_tool_executor import (
+    ToolCallDoor,
+    report_failed_call,
+    run_tool_call,
+    serving_tool_call,
+    tool_loop_context,
+)
 from roomkit.channels._served_tools import CollisionLog
+from roomkit.core.exceptions import ToolRefusedError
 from roomkit.core.task_utils import log_task_exception
 from roomkit.models.event import TextContent
 from roomkit.models.tool_call import ToolCallEvent
+from roomkit.tools._outcome import OutcomeKind, ToolOutcome
+from roomkit.tools.result import GateRefusal, declined_answer, result_text
+from roomkit.tools.timeout import answer_within
 from roomkit.voice.base import AudioChunk, VoiceSession
 from roomkit.voice.realtime._answer_depth import AnswerDepth
 
@@ -54,6 +66,7 @@ if TYPE_CHECKING:
     from roomkit.channels._conference_voice import ConferencePlayback, ConferenceVoice
     from roomkit.conference.models import BotSession, ConferenceRealtimeConfig
     from roomkit.core.framework import RoomKit
+    from roomkit.models.context import RoomContext
     from roomkit.voice.realtime.provider import RealtimeVoiceProvider
 
 logger = logging.getLogger("roomkit.channels.conference")
@@ -92,15 +105,6 @@ class _Utterance:
 
 
 @dataclass
-class _ToolCall:
-    """One call in flight, and whether ON_TOOL_CALL already has its outcome."""
-
-    task: asyncio.Task[None]
-    event: ToolCallEvent
-    reported: bool = False
-
-
-@dataclass
 class _RoomRealtime:
     """One room's share of the provider: its session, and the response in flight."""
 
@@ -109,8 +113,6 @@ class _RoomRealtime:
     next_connect_at: float = 0.0
     utterance: _Utterance | None = None
     tasks: set[asyncio.Task[None]] = field(default_factory=set)
-    tool_calls: dict[str, _ToolCall] = field(default_factory=dict)
-    """Calls in flight, by call id: what a provider cancellation interrupts."""
     answer_depth: AnswerDepth = field(default_factory=AnswerDepth)
     """What the room's model heard last, which its answer's depth follows."""
 
@@ -151,12 +153,18 @@ class ConferenceRealtime:
         self._framework: RoomKit | None = None
         self._rooms: dict[str, _RoomRealtime] = {}
         self._tools = ConferenceToolGate(channel_id)
+        # The tool calls in flight, per session, each delivered and reported once.
+        self._tool_calls = ToolCallBook()
         # Providers register callbacks append-only, so each instance is wired
         # exactly once, ever — a re-plug of the same provider reuses the
         # registration, and the per-session identity guards make callbacks
         # for a session this channel no longer holds a no-op.
         self._wired: dict[int, RealtimeVoiceProvider] = {}
         self.mixer = ConferenceMixer(send=self.send_mixed)
+
+    @property
+    def channel_id(self) -> str:
+        return self._channel_id
 
     @property
     def config(self) -> ConferenceRealtimeConfig | None:
@@ -517,43 +525,50 @@ class ConferenceRealtime:
         room = self._guarded(session)
         if room is None:
             return
-        event = self._tools.event(session, call_id, name, arguments)
-        task = room.spawn(self._answer_tool(room, session, event))
-        room.tool_calls[call_id] = _ToolCall(task, event)
-        task.add_done_callback(lambda done: _forget_call(room, call_id, done))
+        call = RealtimeToolCall(session, call_id, name, arguments, room_id=session.room_id)
+        if not self._tool_calls.open(call):
+            # The id's one result is the first call's, which runs on (RFC §12.4).
+            body = json.dumps({"error": f"Tool call '{call_id}' is already running"})
+            room.spawn(report_failed_call(self, call, ToolOutcome(OutcomeKind.REFUSED, body)))
+            return
+        call.task = room.spawn(self._answer_tool(call))
+        call.task.add_done_callback(lambda _: self._tool_calls.close(call))
 
     async def _on_tool_call_cancelled(self, session: VoiceSession, call_ids: list[str]) -> None:
         """The model abandoned these calls: interrupt their handlers, send
         nothing, and report them to ON_TOOL_CALL's observers as cancelled.
 
-        A call whose outcome ON_TOOL_CALL already has is left to finish: a
-        second report would put two outcomes on one call, and the result it
-        is submitting is the provider's to drop.
+        A call whose result went out, or whose outcome ON_TOOL_CALL already
+        has, is left to finish: a second report would put two outcomes on one
+        call, and the result it is submitting is the provider's to drop.
         """
         room = self._guarded(session)
         if room is None:
             return
         for call_id in call_ids:
-            call = room.tool_calls.get(call_id)
-            if call is None or call.reported or call.task.done():
+            call = self._tool_calls.get(session.id, call_id)
+            if call is None or call.delivered or call.reported or call.task is None:
                 continue
-            del room.tool_calls[call_id]
+            if call.task.done():
+                continue
             call.task.cancel()
-            body = json.dumps(
-                {
-                    "error": "Tool call cancelled",
-                    "tool": call.event.name,
-                    "hint": "The model abandoned this call before its result; nothing was sent.",
-                }
-            )
             # Off the provider's callback: an audit hook must not hold up the
             # interruption it reports.
-            room.spawn(self._tools.report_refusal(call.event, body, cancelled=True))
+            room.spawn(self._report_cancelled(call, "The model abandoned this call"))
 
-    async def _answer_tool(
-        self, room: _RoomRealtime, session: VoiceSession, event: ToolCallEvent
-    ) -> None:
-        """Answer one tool call through the gate, with an error rather than silence.
+    async def _report_cancelled(self, call: RealtimeToolCall, why: str) -> None:
+        """Report an interrupted call, once, as cancelled (RFC §9.3)."""
+        body = json.dumps(
+            {
+                "error": "Tool call cancelled",
+                "tool": call.name,
+                "hint": f"{why} before its result; nothing was sent.",
+            }
+        )
+        await report_failed_call(self, call, ToolOutcome(OutcomeKind.CANCELLED, body))
+
+    async def _answer_tool(self, call: RealtimeToolCall) -> None:
+        """Answer one tool call through the realtime tool executor.
 
         A refused or failing call still submits a result: the provider's turn
         is waiting on it, and a turn nothing answers wedges the conversation.
@@ -562,45 +577,78 @@ class ConferenceRealtime:
         config = self._config
         if config is None:
             return
-        try:
-            ran, outcome = await self._tools.execute(config, event)
-        except Exception as exc:
-            logger.exception(
-                "Conference channel %r: the tool gate failed on %r in room %s",
-                self._channel_id,
-                event.name,
-                session.room_id,
+        await run_tool_call(self, call, _ConferenceDoor(self, config))
+
+    # -- ToolCallHost: the steps the executor serves a call with -------------
+
+    def _tool_framework(self, call: RealtimeToolCall) -> RoomKit | None:
+        return self._framework if call.room_id else None
+
+    def _tool_event(self, call: RealtimeToolCall, result: str | None) -> ToolCallEvent:
+        return self._tools.event(call, result)
+
+    async def _authorize_call(
+        self, call: RealtimeToolCall, door: ToolCallDoor
+    ) -> tuple[GateRefusal | None, RoomContext | None]:
+        config = self._config
+        if config is None:
+            return GateRefusal(
+                json.dumps({"error": "The conference has no realtime model."})
+            ), None
+        return await self._tools.authorize(config, call), None
+
+    def _call_ended(self, call: RealtimeToolCall) -> bool:
+        room = self._rooms.get(call.room_id or "")
+        return room is None or room.session is not call.session
+
+    async def _serve_channel_tool(
+        self, call: RealtimeToolCall, door: ToolCallDoor, carrying: RoomContext | None
+    ) -> ToolOutcome | None:
+        return None  # a conference serves no tool of its own (RFC §21.1)
+
+    async def _answer_call(self, call: RealtimeToolCall, carrying: RoomContext | None) -> str:
+        """The configured handler's answer, inside the call's tool call context,
+        at the depth of the answer that issued it (RFC §21.4, §8.3)."""
+        config = self._config
+        if config is None or config.tool_handler is None:
+            raise ToolRefusedError(
+                json.dumps({"error": f"no handler is configured for tool {call.name!r}"})
             )
-            ran, outcome = self._tools.failure(event, exc)
-        call = room.tool_calls.get(event.tool_call_id)
-        if call is not None:
-            call.reported = True
-        final = await self._tools.result(ran, outcome)
-        await self._submit_tool_result(config, session, event, str(final.result))
-        if final.kind in REPORTED_BY_GATE:
-            await self._tools.report_refusal(ran, str(final.result), detail=final.detail)
+        room_id = str(call.room_id)
+        room = self._rooms.get(room_id)
+        loop_ctx = await tool_loop_context(
+            self._framework,
+            room_id,
+            actor_id=None,  # the mix names no participant
+            chain_depth=room.answer_depth.answer if room is not None else 0,
+        )
+        with serving_tool_call(call, self._channel_id, loop_ctx):
+            answer = config.tool_handler(room_id, call.name, call.arguments)
+            answered = await answer_within(config.tool_bound(call.name), call.name, answer)
+        return result_text(declined_answer(answered, call.name))
+
+    def _bound_call_result(self, call: RealtimeToolCall, text: str) -> str:
+        return bound_result(text, call.name)
 
     async def _submit_tool_result(
-        self,
-        config: ConferenceRealtimeConfig,
-        session: VoiceSession,
-        event: ToolCallEvent,
-        result: str,
-    ) -> None:
+        self, config: ConferenceRealtimeConfig, call: RealtimeToolCall, result: str
+    ) -> bool:
         try:
             with self._operations.use(
-                ConferenceResource.REALTIME, what=f"tool result for room {session.room_id}"
+                ConferenceResource.REALTIME, what=f"tool result for room {call.room_id}"
             ):
-                await config.provider.submit_tool_result(session, event.tool_call_id, result)
+                await config.provider.submit_tool_result(call.session, call.call_id, result)
         except Exception:
             logger.warning(
                 "Conference channel %r could not return the result of tool %r to the "
                 "realtime provider in room %s",
                 self._channel_id,
-                event.name,
-                session.room_id,
+                call.name,
+                call.room_id,
                 exc_info=True,
             )
+            return False
+        return True
 
     # -------------------------------------------------------------------------
     # Lifecycle — the session ends where the bot does
@@ -630,7 +678,15 @@ class ConferenceRealtime:
         for task in list(room.tasks):
             task.cancel()
         session, room.session = room.session, None
+        if session is not None:
+            self._report_detached_calls(room, session)
         return session
+
+    def _report_detached_calls(self, room: _RoomRealtime, session: VoiceSession) -> None:
+        """Report each call the detach interrupted, once, as cancelled (RFC §12.4)."""
+        for call in self._tool_calls.take(session.id):
+            if not call.delivered:
+                room.spawn(self._report_cancelled(call, "The conference left the room"))
 
     def abandon_all(self) -> list[VoiceSession]:
         """Every room off the books at once — the channel is closing."""
@@ -698,8 +754,17 @@ class ConferenceRealtime:
             await config.provider.close()
 
 
-def _forget_call(room: _RoomRealtime, call_id: str, task: asyncio.Task[None]) -> None:
-    """Drop a finished call from the room's in-flight calls, if it is still that one."""
-    call = room.tool_calls.get(call_id)
-    if call is not None and call.task is task:
-        del room.tool_calls[call_id]
+class _ConferenceDoor:
+    """A conference provider's function call: its outcome goes back as the
+    call's result, through the realtime resource."""
+
+    channel_serves = False
+
+    def __init__(self, realtime: ConferenceRealtime, config: ConferenceRealtimeConfig) -> None:
+        self._realtime = realtime
+        self._config = config
+
+    async def deliver(self, call: RealtimeToolCall, outcome: ToolOutcome) -> bool:
+        return await self._realtime._submit_tool_result(
+            self._config, call, result_text(outcome.result)
+        )

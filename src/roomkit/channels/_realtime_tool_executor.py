@@ -12,13 +12,17 @@ the call and knows how to gate it and how to answer it.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+from collections.abc import Iterator
 from dataclasses import replace
 from typing import TYPE_CHECKING, Protocol
 
+from roomkit.channels.ai import _current_loop_ctx, _ToolLoopContext
 from roomkit.core.exceptions import ToolRefusedError, UnservedToolCallError
 from roomkit.models.tool_call import ToolCallVerdict
 from roomkit.tools._outcome import OutcomeKind, ToolOutcome, read_outcome
+from roomkit.tools.context import ToolCallContext, _current_tool_call
 from roomkit.tools.result import (
     GateRefusal,
     failure_detail,
@@ -32,6 +36,7 @@ if TYPE_CHECKING:
     from roomkit.channels._realtime_tool_calls import RealtimeToolCall
     from roomkit.core.framework import RoomKit
     from roomkit.models.context import RoomContext
+    from roomkit.models.room import Room
     from roomkit.models.tool_call import ToolCallEvent
 
 logger = logging.getLogger("roomkit.channels.realtime_tools")
@@ -53,7 +58,8 @@ class ToolCallDoor(Protocol):
 class ToolCallHost(Protocol):
     """The channel that owns a call: how it gates the call and answers it."""
 
-    channel_id: str
+    @property
+    def channel_id(self) -> str: ...
 
     def _tool_framework(self, call: RealtimeToolCall) -> RoomKit | None:
         """The kit whose hooks judge and observe *call*; ``None`` without one
@@ -232,3 +238,52 @@ def failed_outcome(call: RealtimeToolCall, exc: BaseException) -> ToolOutcome:
     return ToolOutcome(
         OutcomeKind.FAILED, tool_failure(call.name, exc), detail=failure_detail(exc)
     )
+
+
+async def tool_loop_context(
+    framework: RoomKit | None,
+    room_id: str | None,
+    *,
+    actor_id: str | None,
+    chain_depth: int,
+    room: Room | None = None,
+) -> _ToolLoopContext:
+    """The per-call context a handler reads through ``roomkit.tools`` (RFC §21.4).
+
+    A realtime door runs no turn, so the context is built around the handler
+    call: the call's room and actor, the chain depth of the answer that issued
+    it, no response record to merge (``has_turn`` is off, so
+    ``current_response_metadata()`` answers ``None``), and the Room as loaded
+    for this call: *room* when a gate already loaded it, one indexed read
+    under the framework's lease otherwise. A handler shared with an
+    ``AIChannel`` then answers the same questions on every path.
+    """
+    ctx = _ToolLoopContext()
+    ctx.has_turn = False
+    ctx.room_id = room_id
+    ctx.actor_id = actor_id
+    ctx.chain_depth = chain_depth
+    if room is not None:
+        ctx.room = room
+    elif framework is not None and room_id:
+        with framework._resource_lease():
+            ctx.room = await framework.store.get_room(room_id)
+    return ctx
+
+
+@contextlib.contextmanager
+def serving_tool_call(
+    call: RealtimeToolCall, channel_id: str, loop_ctx: _ToolLoopContext
+) -> Iterator[None]:
+    """Run a handler inside *call*'s tool call context: ``current_tool_call()``
+    names the call, its room and the channel, as on every channel (RFC §21.4)."""
+    call_ctx = ToolCallContext(
+        room_id=loop_ctx.room_id or "", tool_call_id=call.call_id, channel_id=channel_id
+    )
+    call_token = _current_tool_call.set(call_ctx)
+    loop_token = _current_loop_ctx.set(loop_ctx)
+    try:
+        yield
+    finally:
+        _current_loop_ctx.reset(loop_token)
+        _current_tool_call.reset(call_token)

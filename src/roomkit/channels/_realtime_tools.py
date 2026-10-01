@@ -25,12 +25,13 @@ from roomkit.channels._realtime_tool_executor import (
     judge_tool_call,
     report_failed_call,
     run_tool_call,
+    serving_tool_call,
+    tool_loop_context,
 )
 from roomkit.channels._served_tools import CollisionLog, declared_once, dict_tool_name
 from roomkit.channels._skill_constants import TOOL_ACTIVATE_SKILL
 from roomkit.channels._tool_registry import ChannelRegistry, ToolSource, tool_dict
 from roomkit.channels._tool_search_constants import TOOL_CALL_TOOL, TOOL_LIST_TOOLS
-from roomkit.channels.ai import _current_loop_ctx, _ToolLoopContext
 from roomkit.core.exceptions import UnservedToolCallError
 from roomkit.models.enums import ChannelType
 from roomkit.models.tool_call import (
@@ -39,7 +40,6 @@ from roomkit.models.tool_call import (
 from roomkit.telemetry.base import Attr, SpanKind
 from roomkit.telemetry.context import reset_span, set_current_span
 from roomkit.tools._outcome import OutcomeKind, ToolOutcome
-from roomkit.tools.context import ToolCallContext, _current_tool_call
 from roomkit.tools.result import (
     GateRefusal,
     bounded_result,
@@ -583,23 +583,23 @@ class RealtimeToolsMixin:
     ) -> Any:
         """The answer to one call, run inside the tool call context (RFC §21.4),
         whichever door brought the call: the tool orchestration set up for the
-        room, else the host's handler. ``current_tool_call()`` names the call,
-        its room and this channel, as on every channel."""
+        room, else the host's handler."""
         session = call.session
-        loop_ctx = await self._realtime_loop_context(session, call.room_id, gate_context)
-        call_ctx = ToolCallContext(
-            room_id=loop_ctx.room_id or "", tool_call_id=call.call_id, channel_id=self.channel_id
+        loop_ctx = await tool_loop_context(
+            self._framework,
+            call.room_id or session.room_id,
+            actor_id=session.participant_id,
+            # The call belongs to the model's answer, as deep as its transcript.
+            chain_depth=self._session_answer_depth(session.id).answer,
+            room=gate_context.room if gate_context is not None else None,
         )
         token = _current_voice_session.set(session)
-        loop_token = _current_loop_ctx.set(loop_ctx)
-        call_token = _current_tool_call.set(call_ctx)
         try:
-            timeout = self._call_timeout(call.name, loop_ctx.room_id)
-            answer = self._answer(call.name, call.arguments, loop_ctx.room_id)
-            return await answer_within(timeout, call.name, answer)
+            with serving_tool_call(call, self.channel_id, loop_ctx):
+                timeout = self._call_timeout(call.name, loop_ctx.room_id)
+                answer = self._answer(call.name, call.arguments, loop_ctx.room_id)
+                return await answer_within(timeout, call.name, answer)
         finally:
-            _current_tool_call.reset(call_token)
-            _current_loop_ctx.reset(loop_token)
             _current_voice_session.reset(token)
 
     def _call_timeout(self, name: str, room_id: str | None) -> float | None:
@@ -626,35 +626,6 @@ class RealtimeToolsMixin:
         orchestration set up there, or the host's handler."""
         entry = self._registry.lookup(name, room_id)
         return (entry is not None and entry.serve is not None) or self._tool_handler is not None
-
-    async def _realtime_loop_context(
-        self, session: VoiceSession, room_id: str | None, gate_context: RoomContext | None
-    ) -> _ToolLoopContext:
-        """The per-call context a handler reads through ``roomkit.tools`` (RFC §21.4).
-
-        The realtime path runs no turn, so it builds the context itself around
-        the handler call: the session's room and participant as the room and
-        actor, no response record to merge (``has_turn`` is off, so
-        ``current_response_metadata()`` answers ``None``), and the Room as
-        loaded for this call: the gate's when a BEFORE_TOOL_USE hook made it
-        build a context, one indexed read otherwise, taken under the
-        framework's lease like every store read a channel makes. That read is
-        the price of a sync accessor on a path that awaits the handler anyway;
-        the two session values cost nothing. A handler shared with an
-        ``AIChannel`` then answers the same questions on both paths.
-        """
-        ctx = _ToolLoopContext()
-        ctx.has_turn = False
-        ctx.room_id = room_id or session.room_id
-        ctx.actor_id = session.participant_id
-        # The call belongs to the model's answer, as deep as its transcript.
-        ctx.chain_depth = self._session_answer_depth(session.id).answer
-        if gate_context is not None:
-            ctx.room = gate_context.room
-        elif self._framework is not None and ctx.room_id:
-            with self._framework._resource_lease():
-                ctx.room = await self._framework.store.get_room(ctx.room_id)
-        return ctx
 
     async def _serve_skill_activation(
         self, call: RealtimeToolCall, door: ToolCallDoor, carrying: RoomContext | None

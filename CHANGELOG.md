@@ -123,7 +123,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     reads are not. The truncation note says how long the result was, not
     that "the full content has been delivered to the client";
   - a recovered call whose outcome cannot be injected is reported with the
-    call's own failure.
+    call's own failure;
+  - a conference's calls take the same sequence: its handler runs inside the
+    call's tool call context, at the chain depth of the answer that issued
+    it (`current_tool_room_id()` and `current_tool_call()` were `None` and
+    the depth 0, so a delegation started from a conference was not bounded);
+    a second call under an id in flight sends nothing; a call the detach
+    interrupts, or that the provider cancels while ON_TOOL_CALL judges it, is
+    reported once, as cancelled (neither was reported).
 
 - A realtime session and a conference emit the `before_tool_use` framework
   event for every tool call, as an `AIChannel` does (RMK-306): they emitted it
