@@ -12,6 +12,7 @@ from functools import partial
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.channels._stream_fanout import StreamBranch, StreamFanOut
+from roomkit.channels._tts_sentence_gate import SentenceHookGate
 from roomkit.channels._voice_unheard import UnheardTurns
 from roomkit.models.enums import EventType, HookTrigger, Visibility
 from roomkit.telemetry.base import Attr, SpanKind, TelemetryProvider
@@ -461,7 +462,11 @@ class VoiceTTSMixin:
                 token_source = filtered_stream(token_source, self._tts_filter)
             else:
                 token_source = _filter_sentences_plain(token_source, self._tts_filter)
-        fan_out = StreamFanOut(split_sentences(token_source), len(target_sessions))
+        sentence_source = split_sentences(token_source)
+        gate = self._sentence_gate(room_id, context)
+        if gate is not None:
+            sentence_source = gate.run(sentence_source)
+        fan_out = StreamFanOut(sentence_source, len(target_sessions))
         producer = asyncio.create_task(fan_out.run(), name=f"tts_fan_out:{event.id}")
         voice = self._resolve_voice(event.source.channel_id)
         try:
@@ -501,10 +506,7 @@ class VoiceTTSMixin:
             raise fan_out.error
         delivered = _served_sessions(target_sessions, results)
 
-        full_text = "".join(accumulated)
-        # Apply TTS filter to the accumulated text for transcription/hooks
-        if self._tts_filter is not None and full_text:
-            full_text = self._tts_filter(full_text)
+        full_text = self._streamed_text(accumulated, gate)
         # Replace the relayed prefix with the whole streamed text
         for session in delivered:
             with self._state_lock:
@@ -524,7 +526,7 @@ class VoiceTTSMixin:
                     session, full_text, "assistant"
                 )
 
-        # Fire AFTER_TTS hooks (BEFORE_TTS skipped — can't block mid-stream)
+        # BEFORE_TTS ran on each sentence (12s.b); AFTER_TTS reports what was sent
         if self._framework and full_text:
             from roomkit.telemetry.context import reset_span, set_current_span
 
@@ -542,6 +544,32 @@ class VoiceTTSMixin:
                     reset_span(_tok)
 
         return ChannelOutputModel.empty()
+
+    def _sentence_gate(self, room_id: str, context: RoomContext) -> SentenceHookGate | None:
+        """BEFORE_TTS on each sentence of a streamed response (RFC §12.2 step 12s.b).
+
+        ``None`` when no BEFORE_TTS hook is registered: the sentences then go to
+        the TTS untouched, as they always did.
+        """
+        if self._framework is None:
+            return None
+        hooks = self._framework.hook_engine
+        if not hooks.has_hooks(HookTrigger.BEFORE_TTS):
+            return None
+        return SentenceHookGate(hooks, room_id, context)
+
+    def _streamed_text(self, accumulated: list[str], gate: SentenceHookGate | None) -> str:
+        """The text a streamed response leaves for its transcript and AFTER_TTS.
+
+        What the sessions were sent: the sentences as BEFORE_TTS left them when
+        a hook changed or dropped one, the whole filtered stream otherwise.
+        """
+        if gate is not None and gate.changed:
+            return gate.text()
+        full_text = "".join(accumulated)
+        if self._tts_filter is not None and full_text:
+            full_text = self._tts_filter(full_text)
+        return full_text
 
     async def _stream_to_session(
         self,

@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING — `BEFORE_TTS` runs on each sentence of a streamed response**
+  (RMK-268, RFC §9.3 and §12.2 step 12s.b), a hook-trigger behaviour change.
+  A Voice Channel whose TTS reads text as it streams (`supports_streaming_input`:
+  Gradium and Grok always, ElevenLabs with `stream_input=True`) used to skip
+  `BEFORE_TTS` on an AI response it spoke while it streamed, so a redaction or
+  moderation hook was bypassed and the original text was spoken. The hook now
+  judges each sentence before the TTS reads it, once for all sessions: a
+  `MODIFY` replaces the sentence, a `BLOCK` drops it and the next one is judged
+  on its own, and the fail-closed rule applies sentence by sentence — a hook
+  that raises, times out or returns something unusable drops its sentence. A
+  sentence redacted to an empty string is not synthesized. The hook sees the
+  sentence after the TTS text filter, and `AFTER_TTS` and the final assistant
+  transcript carry the text as spoken. Without a `BEFORE_TTS` hook nothing
+  changes. A SYNC `BEFORE_TTS` hook that returns no `HookResult` now silences
+  the sentences of a streamed response, as it already silenced a non-streamed
+  one: return `HookResult.allow()`, or register it as ASYNC.
+
 ### Fixed
 
 - `RealtimeVoiceChannel` fires `ON_RECORDING_STARTED` and
