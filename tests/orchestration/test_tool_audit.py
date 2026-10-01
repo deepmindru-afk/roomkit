@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 from pathlib import Path
 from typing import Any
 
+import pytest
+
+from roomkit.core.exceptions import ToolRefusedError, UnservedToolCallError
 from roomkit.orchestration.tool_audit import (
     JSONLToolAuditor,
     ToolAuditEntry,
     audit_tool_handler,
 )
+from roomkit.providers.ai.base import AIImagePart, AITextPart
 
 # ---------------------------------------------------------------------------
 # ToolAuditEntry model
@@ -140,3 +145,71 @@ async def test_audit_tool_handler_truncates(tmp_path: Path) -> None:
     assert len(result) == 1000
     # But the recorded entry IS truncated
     assert len(auditor.entries[0].result) == 500
+
+
+# -- The wrapper hands the channel the answer itself (RFC §15.8.1, RMK-305) --
+
+
+@pytest.mark.parametrize(
+    ("answer", "recorded", "status"),
+    [
+        (
+            [AITextPart(text="a chart"), AIImagePart(url="https://x/c.png")],
+            "a chart\n[image]",
+            "ok",
+        ),
+        ({"found": 3}, '{"found": 3}', "ok"),
+        ({"error": "quota exceeded"}, '{"error": "quota exceeded"}', "failed"),
+    ],
+    ids=["parts", "mapping", "error-mapping"],
+)
+async def test_audit_returns_the_answer_unchanged(
+    tmp_path: Path, answer: Any, recorded: str, status: str
+) -> None:
+    auditor = JSONLToolAuditor(tmp_path / "audit.jsonl")
+
+    async def handler(name: str, args: dict[str, Any]) -> Any:
+        return answer
+
+    wrapped = audit_tool_handler(handler, auditor, "a")
+
+    assert await wrapped("tool", {}) is answer
+    assert (auditor.entries[0].result, auditor.entries[0].status) == (recorded, status)
+
+
+@pytest.mark.parametrize(
+    "declined",
+    [ToolRefusedError("not allowed here"), UnservedToolCallError("not mine")],
+    ids=["refused", "unserved"],
+)
+async def test_audit_records_a_declined_call_as_failed_and_lets_it_through(
+    tmp_path: Path, declined: Exception
+) -> None:
+    auditor = JSONLToolAuditor(tmp_path / "audit.jsonl")
+
+    async def handler(name: str, args: dict[str, Any]) -> str:
+        raise declined
+
+    wrapped = audit_tool_handler(handler, auditor, "a")
+
+    with pytest.raises(type(declined)):
+        await wrapped("tool", {})
+    assert (auditor.entries[0].status, auditor.entries[0].result) == ("failed", str(declined))
+
+
+async def test_audit_records_a_cancelled_call(tmp_path: Path) -> None:
+    auditor = JSONLToolAuditor(tmp_path / "audit.jsonl")
+    started = asyncio.Event()
+
+    async def handler(name: str, args: dict[str, Any]) -> str:
+        started.set()
+        await asyncio.Event().wait()
+        return "never"
+
+    task = asyncio.create_task(audit_tool_handler(handler, auditor, "a")("tool", {}))
+    await started.wait()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert auditor.entries[0].status == "cancelled"

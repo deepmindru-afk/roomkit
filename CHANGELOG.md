@@ -25,6 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   delegation, a supervisor's or a loop's strategy tool, marked by the new
   `ToolTraits.waits`), a `HumanInputToolHandler`'s tools, and `sandbox_bash`,
   whose `timeout` argument the sandbox enforces.
+- `status` (`completed` or `failed`) on each call of an `AIChannel`'s
+  ephemeral `TOOL_CALL_END` (RMK-305, RFC §6.4), as the ACP channel's and the
+  stored event carry it: a live surface read a refused, failed or cancelled
+  call out of the result preview.
 - `MediaRecordingConfig.encryption` and `storage_encrypted_at_rest`, and the
   same two fields on `ConferenceRecordingConfig`, which hands them to every
   track recording it opens (RMK-69, RFC §17.6). `encryption` takes the
@@ -121,6 +125,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `read_stored_result` on an id that is not stored is a refusal (RMK-305): the
   call read as a success, and the room's tool memory kept the miss as the
   answer to that read.
+- `audit_tool_handler` hands the channel the handler's answer itself
+  (RMK-305, RFC §15.8.1): it returned `str()` of it, so a content-part list
+  or a mapping reached the model as Python's printing of it. A cancelled call
+  is recorded `cancelled`, where it was recorded `ok`, and a refusal or a
+  declined call `failed`, where it was `error`.
 - A room recorder that refuses to start no longer leaves a half-created room
   (RMK-365, RFC §12.11): `create_room` wrote the room, then started its
   recorders, so a refusal (an unencrypted `PyAVMediaRecorder` since RMK-69)

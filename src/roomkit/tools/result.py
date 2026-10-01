@@ -46,6 +46,22 @@ def as_tool_result(value: Any) -> ToolResult:
     return json.dumps(value, default=_json_default, ensure_ascii=False)
 
 
+def result_text(raw: Any) -> str:
+    """A tool handler's answer as text, for a reader that takes no image.
+
+    A handler shared with an ``AIChannel`` may answer with a content-part
+    list (text + images); a speech provider or an audit record cannot hold
+    an image, so the list flattens the way ``AIToolResultPart.as_text()`` does — text joined,
+    ``[image]`` placeholders. ``json.dumps`` on such a list would raise on
+    the pydantic parts instead. Anything else is JSON, as on every channel
+    (RFC §21.4).
+    """
+    value = as_tool_result(raw)
+    if isinstance(value, str):
+        return value
+    return "\n".join(p.text if isinstance(p, AITextPart) else "[image]" for p in value)
+
+
 def tool_call_verdict(hook_result: Any, event: ToolCallEvent) -> ToolCallVerdict:
     """ON_TOOL_CALL's SYNC chain on *event*, as the verdict the channel applies.
 

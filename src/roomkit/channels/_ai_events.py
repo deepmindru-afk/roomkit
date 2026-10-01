@@ -72,11 +72,15 @@ class AIEventsMixin:
                     for tc in tool_calls
                 ]
             else:  # TOOL_CALL_END — tool_calls are AIToolResultPart
+                # ``status`` as the stored row and the ACP channel's END carry
+                # it: a live surface tells a failed call from a served one
+                # without reading the preview.
                 tc_data = [
                     {
                         "id": tc.tool_call_id,
                         "name": tc.name,
                         "result": tc.as_text()[:result_preview],
+                        "status": "failed" if tc.is_error else "completed",
                     }
                     for tc in tool_calls
                     if isinstance(tc, AIToolResultPart)

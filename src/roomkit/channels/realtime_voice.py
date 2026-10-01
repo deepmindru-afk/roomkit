@@ -93,7 +93,7 @@ if TYPE_CHECKING:
 # Tool handler: async callable (name, arguments) -> result. Same contract as
 # roomkit.channels.ai.ToolHandler — a handler shared with an AIChannel may
 # answer with a content-part list; the realtime paths flatten it to text
-# before it reaches the voice provider (see _realtime_tools.result_text).
+# before it reaches the voice provider (see tools.result.result_text).
 ToolHandler = Callable[[str, dict[str, Any]], Awaitable[ToolResult]]
 
 logger = logging.getLogger("roomkit.channels.realtime_voice")

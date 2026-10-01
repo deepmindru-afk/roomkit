@@ -23,12 +23,12 @@ import threading
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 from uuid import uuid4
 
-from roomkit.channels._realtime_tools import _hook_outcome, result_text
+from roomkit.channels._realtime_tools import _hook_outcome
 from roomkit.core.exceptions import ToolRefusedError, UnservedToolCallError
 from roomkit.models.enums import ChannelType
 from roomkit.models.tool_call import ToolCallEvent
 from roomkit.telemetry.base import Attr, SpanKind
-from roomkit.tools.result import tool_failure
+from roomkit.tools.result import result_text, tool_failure
 from roomkit.voice.base import VoiceSessionState
 
 if TYPE_CHECKING:

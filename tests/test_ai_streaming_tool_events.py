@@ -120,7 +120,7 @@ async def test_streaming_tool_loop_publishes_tool_events() -> None:
 
     assert len(ends) == 1
     assert ends[0].data["tool_calls"] == [
-        {"id": "tc1", "name": "search", "result": "result of search"}
+        {"id": "tc1", "name": "search", "result": "result of search", "status": "completed"}
     ]
     assert ends[0].data["round"] == 0
     assert isinstance(ends[0].data["duration_ms"], int)
@@ -197,6 +197,34 @@ async def test_non_streaming_tool_loop_publishes_tool_events() -> None:
     await kit.close()
 
 
+@pytest.mark.parametrize("streaming", [False, True], ids=["buffered", "streaming"])
+async def test_a_failed_call_ends_failed_on_the_bus(streaming: bool) -> None:
+    """END carries each call's status, so a live surface tells a failed call
+    from a served one without reading the preview (RMK-305)."""
+
+    async def tool_handler(name: str, args: dict[str, Any]) -> str:
+        raise RuntimeError("backend down")
+
+    provider = MockAIProvider(
+        streaming=streaming,
+        ai_responses=[
+            AIResponse(
+                content="",
+                finish_reason="tool_calls",
+                tool_calls=[AIToolCall(id="tc1", name="search", arguments={})],
+            ),
+            AIResponse(content="Sorry.", finish_reason="stop"),
+        ],
+    )
+    kit = RoomKit()
+    ai = AIChannel("ai1", provider=provider, tool_handler=tool_handler)
+
+    _, ends = _tool_events(await _run_turn(kit, ai))
+
+    assert [c["status"] for c in ends[0].data["tool_calls"]] == ["failed"]
+    await kit.close()
+
+
 async def test_external_handler_streaming_publishes_tool_events() -> None:
     """External-handler path (provider executed the tool) publishes START/END."""
     provider = MockAIProvider(
@@ -230,7 +258,9 @@ async def test_external_handler_streaming_publishes_tool_events() -> None:
         {"id": "tc1", "name": "Bash", "arguments": {"cmd": "ls"}}
     ]
     assert len(ends) == 1
-    assert ends[0].data["tool_calls"] == [{"id": "tc1", "name": "Bash", "result": "file.txt"}]
+    assert ends[0].data["tool_calls"] == [
+        {"id": "tc1", "name": "Bash", "result": "file.txt", "status": "completed"}
+    ]
     # The provider embedded ``_result``, so the side effect already happened.
     # A retroactive BEFORE_TOOL_USE decision would be misleading and unsafe.
     process_tool_call.assert_not_awaited()
@@ -266,6 +296,7 @@ async def test_external_handler_is_not_asked_about_a_cut_call() -> None:
 
     process_tool_call.assert_not_awaited()
     assert "cut off" in ends[0].data["tool_calls"][0]["result"]
+    assert ends[0].data["tool_calls"][0]["status"] == "failed"
 
     await kit.close()
 
@@ -473,7 +504,7 @@ async def test_composition_deltas_reach_the_bus_before_the_call_completes() -> N
     ]
     assert len(ends) == 1
     assert ends[0].data["tool_calls"] == [
-        {"id": "tc1", "name": "search", "result": "result of search"}
+        {"id": "tc1", "name": "search", "result": "result of search", "status": "completed"}
     ]
 
     await kit.close()

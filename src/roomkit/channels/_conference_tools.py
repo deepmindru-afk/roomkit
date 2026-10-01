@@ -16,7 +16,6 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._ai_policy import policy_admits, policy_refusal
-from roomkit.channels._realtime_tools import result_text
 from roomkit.channels._served_tools import CollisionLog, declared_once, dict_tool_name
 from roomkit.core.exceptions import ToolRefusedError, UnservedToolCallError
 from roomkit.models.enums import ChannelType, HookTrigger
@@ -33,6 +32,7 @@ from roomkit.tools.result import (
     failure_detail,
     pre_execution_denial,
     read_tool_call_verdict,
+    result_text,
     tool_failure,
     unserved_tool_error,
 )

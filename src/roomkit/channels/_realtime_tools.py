@@ -30,17 +30,16 @@ from roomkit.models.tool_call import (
     ToolCallVerdict,
     observed_call_event,
 )
-from roomkit.providers.ai.base import AITextPart
 from roomkit.telemetry.base import Attr, SpanKind
 from roomkit.tools.result import (
     GateRefusal,
-    as_tool_result,
     before_tool_use_detail,
     declined_answer,
     failure_detail,
     hook_errors_detail,
     pre_execution_denial,
     read_tool_call_verdict,
+    result_text,
     tool_call_verdict,
     tool_failure,
 )
@@ -65,22 +64,6 @@ The SIP pacer's jitter headroom is 60ms — one fused stretch beyond it is
 an audible drop-out on a concurrent call.  Tool-call segments are timed
 individually so the culprit is named in the logs without an asyncio
 set_debug hunt."""
-
-
-def result_text(raw: Any) -> str:
-    """Flatten a tool handler result for a voice provider.
-
-    A handler shared with an ``AIChannel`` may answer with a content-part
-    list (text + images); a speech provider cannot consume an image, so the
-    list flattens the way ``AIToolResultPart.as_text()`` does — text joined,
-    ``[image]`` placeholders. ``json.dumps`` on such a list would raise on
-    the pydantic parts instead. Anything else is JSON, as on every channel
-    (RFC §21.4).
-    """
-    value = as_tool_result(raw)
-    if isinstance(value, str):
-        return value
-    return "\n".join(p.text if isinstance(p, AITextPart) else "[image]" for p in value)
 
 
 @runtime_checkable

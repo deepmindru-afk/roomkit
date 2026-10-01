@@ -17,6 +17,7 @@ Usage::
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -26,6 +27,9 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
+
+from roomkit.core.exceptions import ToolRefusedError, UnservedToolCallError
+from roomkit.tools.result import result_text
 
 logger = logging.getLogger("roomkit.orchestration.tool_audit")
 
@@ -40,7 +44,7 @@ class ToolAuditEntry(BaseModel):
     tool_name: str
     arguments: dict[str, Any]
     result: str
-    status: str  # ok | failed | error
+    status: str  # ok | failed | error | cancelled
     duration_ms: float
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -198,8 +202,15 @@ def audit_tool_handler(
 ) -> Any:
     """Wrap a tool handler to automatically record audit entries.
 
+    The wrapper returns the handler's answer itself, content parts and
+    structured values included, and re-raises what the handler raised: the
+    channel reads the call as it would without the audit. The record reads
+    the answer as text. A refusal (``ToolRefusedError``) or a decline
+    (``UnservedToolCallError``) records ``failed``, an exception ``error``,
+    a cancellation ``cancelled`` (RFC §15.8.1).
+
     Args:
-        handler: The original async tool handler ``(name, args) -> str``.
+        handler: The original async tool handler ``(name, args) -> result``.
         auditor: The ToolAuditor to record entries to.
         agent_id: Agent ID for the audit entries.
 
@@ -207,17 +218,26 @@ def audit_tool_handler(
         A wrapped handler with the same signature.
     """
 
-    async def _audited(name: str, arguments: dict[str, Any]) -> str:
+    async def _audited(name: str, arguments: dict[str, Any]) -> Any:
         t0 = time.monotonic()
-        status = "ok"
-        result = ""
+        status, recorded = "ok", ""
         try:
-            result = str(await handler(name, arguments))
-            status = _detect_status(result)
-            return result
+            answer = await handler(name, arguments)
+            # The record reads the answer as text; the channel gets the answer
+            # itself, content parts and structured values intact (RFC §15.8.1).
+            recorded = result_text(answer)
+            status = _detect_status(recorded)
+            return answer
+        except asyncio.CancelledError:
+            status = "cancelled"
+            raise
+        except (ToolRefusedError, UnservedToolCallError) as declined:
+            # Refused in the handler's words, or not its tool: the call did
+            # not run, which an audit must not count as an error or as ok.
+            status, recorded = "failed", str(declined)
+            raise
         except Exception as exc:
-            status = "error"
-            result = str(exc)
+            status, recorded = "error", str(exc)
             raise
         finally:
             elapsed = (time.monotonic() - t0) * 1000
@@ -227,7 +247,7 @@ def audit_tool_handler(
                     agent_id=agent_id,
                     tool_name=name,
                     arguments=dict(arguments),
-                    result=result[:_MAX_RESULT_LEN],
+                    result=recorded[:_MAX_RESULT_LEN],
                     status=status,
                     duration_ms=elapsed,
                 )
