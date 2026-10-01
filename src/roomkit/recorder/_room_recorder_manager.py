@@ -32,9 +32,11 @@ class RoomRecorderManager:
     ) -> list[MediaRecordingHandle]:
         """Start recordings for all bindings in a room, all or nothing, and file them.
 
-        Returns the handles started, so the caller can announce them
-        (ON_RECORDING_STARTED, RFC §17.6). A room recorder captures nothing
-        until a track is added, so the announcement still precedes any audio.
+        For a room that already exists. Returns the handles started, so the
+        caller can announce them (ON_RECORDING_STARTED, RFC §17.6); a room
+        recorder captures nothing until a track is added, so the announcement
+        still precedes any audio. ``create_room`` calls :meth:`start` and
+        :meth:`adopt` itself, to write the room in between.
         """
         return self.adopt(room_id, self.start(room_id, bindings))
 

@@ -105,6 +105,13 @@ class RoomLifecycleMixin(HelpersMixin):
                 idle clock starts at creation time. See
                 :meth:`check_room_timers` / :meth:`check_all_timers` for
                 evaluating the thresholds.
+
+        Raises:
+            Exception: A recorder's refusal to start (``ValueError`` from a
+                file recorder without encryption at rest, RFC §17.6), raised
+                as the recorder raised it. The recorders start before the room
+                is written, so no room exists afterwards and the recordings
+                already started are stopped (RFC §12.11).
         """
         if timers is not None and timers.last_activity_at is None:
             timers = timers.model_copy(update={"last_activity_at": datetime.now(UTC)})

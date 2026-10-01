@@ -9,9 +9,11 @@ from typing import Any
 
 import pytest
 
+from roomkit import RoomKit
 from roomkit.recorder.base import (
     MediaRecordingConfig,
     RecordingTrack,
+    RoomRecorderBinding,
 )
 from roomkit.voice.pipeline.recorder.base import RecordingEncryption
 
@@ -87,6 +89,19 @@ class TestEncryptionAtRest:
             recorder.on_recording_start(self._wav_config(tmp_path))
 
         assert not (tmp_path / "rec").exists(), "a refused recording must create nothing"
+
+    async def test_create_room_refused_by_the_recorder_writes_no_room(
+        self, tmp_path: Path
+    ) -> None:
+        """RFC §12.11: the recorder starts before the room is written, and refuses first."""
+        kit = RoomKit()
+        binding = RoomRecorderBinding(recorder=_get_recorder(), config=self._wav_config(tmp_path))
+
+        with pytest.raises(ValueError, match=r"requires MediaRecordingConfig\.encryption"):
+            await kit.create_room(room_id="r1", recorders=[binding])
+
+        assert await kit.store.get_room("r1") is None
+        await kit.close()
 
     def test_encrypted_storage_can_be_declared_explicitly(self, tmp_path: Path) -> None:
         result = _record_one_second(self._wav_config(tmp_path, storage_encrypted_at_rest=True))

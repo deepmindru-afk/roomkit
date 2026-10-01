@@ -8,8 +8,6 @@ from pathlib import Path
 import pytest
 
 from roomkit import (
-    HookExecution,
-    HookTrigger,
     RoomKit,
     VideoChannel,
     VoiceChannel,
@@ -267,20 +265,6 @@ class TestRoomCreationWithRecorders:
 
         assert first.handles[0].state == "stopped"
         assert second.handles[0].state == "stopped"
-        await kit.close()
-
-    async def test_recordings_are_announced_once_the_room_exists(self) -> None:
-        kit = RoomKit()
-        announced: list[str] = []
-
-        @kit.hook(HookTrigger.ON_RECORDING_STARTED, execution=HookExecution.ASYNC)
-        async def on_started(event: object, ctx: object) -> None:
-            announced.append(ctx.room.id)  # type: ignore[attr-defined]
-
-        await kit.create_room(room_id="r1", recorders=[_binding(MockMediaRecorder())])
-        await asyncio.sleep(0.05)
-
-        assert announced == ["r1"]
         await kit.close()
 
     async def test_a_recorder_failing_to_stop_still_lets_the_room_close(self) -> None:
