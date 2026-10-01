@@ -78,6 +78,9 @@ from roomkit.conference._livekit_mapping import (
     video_grant_kwargs,
 )
 from roomkit.conference._livekit_session import ConferenceEmissions, LiveKitBotSession
+from roomkit.conference._livekit_voice import (
+    VoicePublicationError as VoicePublicationError,  # raised by publish_audio
+)
 from roomkit.conference.base import ConferenceBackend
 from roomkit.conference.models import (
     BotSession,
@@ -458,8 +461,8 @@ class LiveKitConferenceBackend(ConferenceBackend):
         """
         try:
             await self.remove_participant(room_id, identity)
-        except self._api_module.TwirpError as exc:
-            if exc.code != self._api_module.TwirpErrorCode.NOT_FOUND:
+        except self._api_module.ServerError as exc:
+            if exc.code != self._api_module.ServerErrorCode.NOT_FOUND:
                 raise
 
     async def mute_track(self, room_id: str, track_id: str) -> None:
@@ -632,6 +635,13 @@ class LiveKitConferenceBackend(ConferenceBackend):
         await self._session(bot).unsubscribe(track_id)
 
     async def publish_audio(self, bot: BotSession, chunk: AudioChunk) -> None:
+        """Put one chunk of the bot's voice on its track.
+
+        Raises:
+            VoicePublicationError: LiveKit did not publish the voice track —
+                usually a bot granted no ``publish_audio``. The session ends as
+                unhealthy and is reported through ``on_bot_session_ended``.
+        """
         await self._session(bot).publish(chunk)
 
     async def stop_playback(self, bot: BotSession) -> None:

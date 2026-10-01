@@ -38,8 +38,11 @@ from uuid import uuid4
 
 import pytest
 
-from roomkit.conference._livekit_voice import VoicePublicationError
-from roomkit.conference.livekit import LiveKitConferenceBackend, LiveKitConfig
+from roomkit.conference.livekit import (
+    LiveKitConferenceBackend,
+    LiveKitConfig,
+    VoicePublicationError,
+)
 from roomkit.conference.models import (
     ConferenceGrants,
     ConferenceParticipant,
@@ -244,9 +247,14 @@ class Participant:
             with contextlib.suppress(Exception):
                 await source.aclose()
         # Bounded: after a publication the server refused, the SDK's
-        # disconnect can wait on a renegotiation that never completes.
+        # disconnect waits on a room listener the refusal left stuck
+        # (livekit-rtc 1.1.20), so the listener is released past the bound.
         with contextlib.suppress(Exception):
-            await asyncio.wait_for(self.room.disconnect(), TIMEOUT_S)
+            disconnecting = asyncio.ensure_future(self.room.disconnect())
+            done, _ = await asyncio.wait({disconnecting}, timeout=2.0)
+            if not done:
+                self.room._task.cancel()
+                await asyncio.wait({disconnecting}, timeout=2.0)
 
 
 async def publish_track(room: Any, track: Any, source: Any) -> str:
@@ -878,9 +886,10 @@ class TestScreenShareAudio:
         connected. The bot is the session this backend can re-permission, so
         it stands in — the grant, not who holds it, is under test.
 
-        No refused control here: a bot refused a publication cannot leave
-        (the SDK's disconnect never returns), which would hang the fixture's
-        teardown. Without the update, the same publication is refused.
+        No refused control in this session: a refused publication leaves the
+        SDK's room listener stuck, and the update's own publication would then
+        never be confirmed. ``TestAStuckSdkDoesNotHoldTheBot`` refuses the
+        same publication on a session that was not updated.
         """
         held = ConferenceGrants.for_bot(speaks=True)
         bot = await backend.join_as_bot(room_id, "roomkit", held)
@@ -904,10 +913,14 @@ class TestAStuckSdkDoesNotHoldTheBot:
         with pytest.raises(rtc.participant.PublishTrackError):
             await publish_screen_share_audio(backend._sessions[bot.id]._room)
 
+        room = backend._sessions[bot.id]._room
         await asyncio.wait_for(backend.leave(bot), timeout=TIMEOUT_S)
 
         assert bot.id not in backend._sessions
         assert await backend.list_participants(room_id) == []
+        # The SDK's stuck listener is released, which is what frees the room's
+        # FFI subscription; this reaches into the SDK, and that is the point.
+        assert room._task.done()
 
     async def test_a_refused_voice_ends_the_session_and_says_why(
         self, backend: LiveKitConferenceBackend, room_id: str

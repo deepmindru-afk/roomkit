@@ -51,6 +51,8 @@ class BotVoiceTrack:
         self._queue_ms = queue_ms
         self._lock = asyncio.Lock()
         self._source: Any | None = None
+        # The published track, held for as long as the source it plays: the
+        # SDK disposes of a track whose Python object is collected.
         self._track: Any | None = None
         self._format: tuple[int, int] | None = None
         self._utterance_open = False

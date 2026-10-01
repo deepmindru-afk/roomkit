@@ -156,14 +156,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   down; the unpublish failed intermittently with "internal webrtc failure"
   and hung about two runs in three of the live suite). A departure whose
   SDK disconnect has not returned after 2 s is settled by the server: the
-  bot is removed through `RemoveParticipant`, a bot the server no longer
-  knows counts as out, and the stuck listener is released; a removal that
-  fails is a failed departure, retried like a refused disconnect. An end
-  reported by the SFU is reported even when the SDK hangs. A voice the SFU
-  refuses (explicit `bot_grants` without `publish_audio`, for example) ends
-  the session as unhealthy, so the channel re-joins rather than keeping a
-  session that no longer hears the room, and the error names
-  `publish_audio`.
+  bot is removed through `RemoveParticipant` (itself bounded to 2 s), a bot
+  the server no longer knows counts as out, and the stuck listener is
+  released; a removal that fails is a failed departure, retried like a
+  refused disconnect, and a caller cancelled while it ran finds it done on
+  the retry. An end reported by the SFU is reported even when the SDK hangs.
+  A voice the SFU refuses (explicit `bot_grants` without `publish_audio`,
+  for example) raises `VoicePublicationError` (importable from
+  `roomkit.conference.livekit`) and ends the session as unhealthy, so the
+  channel re-joins rather than keeping a session that no longer hears the
+  room, and the error names `publish_audio`.
 - An agent's response meets its `BEFORE_BROADCAST` hooks before its source's
   right to write on every path that commits it (RMK-344, RFC §10.1, §7.5):
   - a read-only or muted agent's answer was stored `BLOCKED` before any hook

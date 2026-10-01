@@ -17,11 +17,13 @@ import contextlib
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from roomkit.channels import _conference_activity
 from roomkit.conference import _livekit_session as session_module
 from roomkit.conference._livekit_session import ConferenceEmissions, LiveKitBotSession
 from roomkit.conference._livekit_voice import BotVoiceTrack, VoicePublicationError
@@ -1196,6 +1198,96 @@ class TestTheDepartureIsBounded:
         assert session._disconnected is True
         assert room.disconnects == 1, "a second disconnect reached the SDK beside the first"
 
+    async def test_a_caller_cancelled_during_the_eviction_finds_the_departure_done(
+        self,
+    ) -> None:
+        """The departure outlives the caller a budget cancelled: the retry gets
+        its answer instead of a second disconnect into an SDK that already let
+        the room go, and the bridge is still taken down.
+        """
+        room = _WedgedRoom()
+        evicted = asyncio.Event()
+
+        async def _slow_eviction() -> None:
+            await asyncio.sleep(0.2)
+            evicted.set()
+
+        session = _session_for(SimpleNamespace(Room=lambda: room), evict=_slow_eviction)
+        session._consumer = asyncio.create_task(asyncio.Event().wait())
+
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(session.leave(), timeout=0.1)
+        await asyncio.wait_for(evicted.wait(), timeout=2.0)
+
+        await asyncio.wait_for(session.leave(), timeout=2.0)
+
+        assert room.disconnects == 1
+        assert session._disconnected is True
+        assert session._consumer is None
+
+    async def test_an_eviction_that_outlasts_its_bound_is_a_failed_departure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(session_module, "EVICTION_TIMEOUT_S", 0.05)
+        room = _WedgedRoom()
+        attempts = 0
+
+        async def _eviction() -> None:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                await asyncio.Event().wait()
+
+        session = _session_for(SimpleNamespace(Room=lambda: room), evict=_eviction)
+
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(session.leave(), timeout=2.0)
+        assert session._disconnected is False
+
+        await asyncio.wait_for(session.leave(), timeout=2.0)
+
+        assert attempts == 2
+        assert session._disconnected is True
+
+    async def test_an_unhealthy_end_on_a_stuck_sdk_is_settled_and_reported(self) -> None:
+        """The overflow and refused-voice ends disconnect through the same
+        bounded departure, so a stuck SDK delays their report by the bound
+        rather than forever.
+        """
+        room = _WedgedRoom()
+        evictions = _Evictions()
+        reported: list[str] = []
+
+        async def _ended(bot: Any, reason: str) -> None:
+            reported.append(reason)
+
+        session = _session_for(SimpleNamespace(Room=lambda: room), ended=_ended, evict=evictions)
+
+        session._start_unhealthy_end("voice publication failed: refused")
+        assert session._ender is not None
+        await asyncio.wait_for(session._ender, timeout=2.0)
+
+        assert reported == ["voice publication failed: refused"]
+        assert evictions.calls == 1
+
+    async def test_closing_the_backend_settles_a_stuck_session(self) -> None:
+        backend = _backend()
+        service = _served(backend)
+        room = _WedgedRoom()
+        bot = BotSession(id="lk-1", room_id="room-1", identity="roomkit")
+        session = _session_for(
+            SimpleNamespace(Room=lambda: room),
+            session=bot,
+            evict=partial(backend._evict, "room-1", "roomkit"),
+        )
+        backend._sessions[bot.id] = session
+
+        await asyncio.wait_for(backend.close(), timeout=2.0)
+
+        assert [name for name, _ in service.calls] == ["remove_participant"]
+        assert bot.id not in backend._sessions
+        assert backend._api is None
+
     async def test_an_sfu_side_end_is_reported_though_the_disconnect_never_returns(
         self,
     ) -> None:
@@ -1218,6 +1310,13 @@ class TestTheDepartureIsBounded:
         assert reported == ["SIGNAL_CLOSE"]
         assert evictions.calls == 0
         assert room._task is not None and room._task.cancelled()
+
+
+def test_the_departure_bounds_fit_inside_the_channels_detach_budget() -> None:
+    """The backend settles a stuck departure before the channel gives up on it."""
+    settled_within = session_module.DISCONNECT_TIMEOUT_S + session_module.EVICTION_TIMEOUT_S
+
+    assert settled_within < _conference_activity.DRAIN_TIMEOUT_S
 
 
 class _FakeRoom:
@@ -1284,7 +1383,7 @@ class TestTheBackendEvictsThroughTheServer:
     async def test_a_participant_already_gone_counts_as_removed(self) -> None:
         backend = _backend()
         room = _served(backend)
-        room.remove_error = api.TwirpError("not_found", "participant does not exist", status=404)
+        room.remove_error = api.ServerError("not_found", "participant does not exist", status=404)
 
         await backend._evict("room-1", "roomkit")
 
@@ -1295,7 +1394,7 @@ class TestTheBackendEvictsThroughTheServer:
     async def test_any_other_server_error_is_a_failed_eviction(self) -> None:
         backend = _backend()
         room = _served(backend)
-        room.remove_error = api.TwirpError("unavailable", "down", status=503)
+        room.remove_error = api.ServerError("unavailable", "down", status=503)
 
-        with pytest.raises(api.TwirpError):
+        with pytest.raises(api.ServerError):
             await backend._evict("room-1", "roomkit")

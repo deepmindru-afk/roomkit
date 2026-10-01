@@ -71,9 +71,13 @@ OVERFLOW_DISCONNECT_DELAYS_S: tuple[float, ...] = (1.0, 2.0, 4.0)
 # How long the SDK's disconnect may take before the server is asked to confirm
 # the bot is out. A disconnect normally returns in milliseconds; one that does
 # not is waiting on the SDK's room listener, which a failed publish or unpublish
-# leaves stuck for good (livekit-rtc 1.1.20). Kept under the channel's detach
-# budget, so the backend settles the departure before the channel gives up on it.
+# leaves stuck for good (livekit-rtc 1.1.20).
 DISCONNECT_TIMEOUT_S = 2.0
+
+# How long that confirmation may take. The two bounds together stay under the
+# channel's detach budget (``_conference_activity.DRAIN_TIMEOUT_S``, checked by
+# a test), so the backend settles a departure before the channel gives up on it.
+EVICTION_TIMEOUT_S = 2.0
 
 
 @dataclass(frozen=True)
@@ -240,16 +244,19 @@ class LiveKitBotSession:
         calls into the SDK, and two owners for one outcome. Single-flight:
         the first caller starts the call, later callers await the same one
         (shielded, so a budget cancelling *a caller* does not cancel the call
-        the other still awaits). Success marks the session disconnected for
-        everyone; failure propagates to every waiter and is not terminal —
-        the next caller starts a fresh attempt.
+        the other still awaits). A call that succeeded stays the answer: a
+        caller cancelled while it ran finds it done on its retry, rather than a
+        second disconnect into an SDK that has already let the room go. A call
+        that failed propagates to every waiter and is not terminal — the next
+        caller starts a fresh attempt.
         """
         if self._disconnected:
             return
-        if self._disconnecting is None or self._disconnecting.done():
-            self._disconnecting = asyncio.create_task(self._leave_the_sfu())
-            self._disconnecting.add_done_callback(_consume_exception)
-        await asyncio.shield(self._disconnecting)
+        call = self._disconnecting
+        if call is None or (call.done() and (call.cancelled() or call.exception() is not None)):
+            call = self._disconnecting = asyncio.create_task(self._leave_the_sfu())
+            call.add_done_callback(_consume_exception)
+        await asyncio.shield(call)
         self._disconnected = True
 
     async def _leave_the_sfu(self) -> None:
@@ -259,9 +266,10 @@ class LiveKitBotSession:
         not a departure anyone can book, and waiting on it is a channel that
         never finishes leaving. The server is the authority on who is in the
         room, so it is asked to remove the bot; a bot it no longer knows is out.
-        Only then is the stuck listener released. An eviction that fails
-        propagates, exactly as a refused disconnect does, and the next attempt
-        waits on the same SDK call again before asking the server once more.
+        Only then is the stuck listener released. An eviction that fails or
+        outlasts :data:`EVICTION_TIMEOUT_S` propagates, exactly as a refused
+        disconnect does, and the next attempt waits on the same SDK call again
+        before asking the server once more.
         """
         if await self._sdk_disconnect():
             return
@@ -271,7 +279,7 @@ class LiveKitBotSession:
             self.room_id,
             DISCONNECT_TIMEOUT_S,
         )
-        await self._evict()
+        await asyncio.wait_for(self._evict(), EVICTION_TIMEOUT_S)
         self._release_sdk_listener()
 
     async def _sdk_disconnect(self) -> bool:
