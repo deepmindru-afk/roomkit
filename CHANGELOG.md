@@ -137,6 +137,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An agent's response meets its `BEFORE_BROADCAST` hooks before its source's
+  right to write on every path that commits it (RMK-344, RFC §10.1, §7.5):
+  - a read-only or muted agent's answer was stored `BLOCKED` before any hook
+    saw it, and the tasks and observations a hook would have filed were lost;
+    the hooks now run, a hook that blocks it names the block, and the answer
+    is then stored `BLOCKED` (`source_read_only`, `source_muted`);
+  - `regenerate_response()` committed its non-streamed answer with no hook,
+    no right-to-write check and no reentry budget, and returned an empty
+    `response_events` for either loop; a regenerated answer now re-enters like
+    a first-time one and comes back in `response_events`;
+  - a read-only agent whose provider streams had its answer stored
+    `DELIVERED`; it is now stored `BLOCKED` row by row, and none of it is piped
+    live to a streaming channel. A muted agent's stream is still closed before
+    generation;
+  - a hook error on a response now emits the `hook_error` framework event, as
+    on an inbound event.
+
+  The inbound, reentry and streamed-row paths share one gate
+  (`_gate_commit`), which reads the source's binding from the context built
+  under the room lock: an inbound event no longer reads it from the store a
+  second time.
 - A `null` in a binding's metadata now defers to the next level for every
   per-turn setting (`system_prompt`, `temperature`, `max_tokens`,
   `thinking_budget`, `enable_thinking`, `reasoning_effort`, `response_schema`,

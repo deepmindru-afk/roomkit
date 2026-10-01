@@ -55,12 +55,12 @@ _EDIT_SOURCE_SYSTEM = "system"
 
 @dataclass(slots=True, eq=False)
 class _Blocked:
-    """Decision returned by ``_run_precommit``: the event is blocked and must
-    be persisted BLOCKED (RFC §9.5 / §7.5 rule 2) once the pre-commit timeout
-    no longer covers the caller.
+    """Decision returned by ``_gate_commit``: the event is blocked and must
+    be persisted BLOCKED (RFC §9.5 / §7.5 rule 2), with what its hooks
+    decided (§7.5 rule 3).
 
-    Carries everything ``_blocked_result`` needs; the write itself happens in
-    :meth:`_process_locked`, outside the cancellable unit (§13.6).
+    Carries everything ``_store_blocked`` needs; the inbound path writes it
+    in :meth:`_process_locked`, outside the cancellable unit (§13.6).
     """
 
     event: RoomEvent
@@ -75,7 +75,7 @@ class _Blocked:
 
 @dataclass(slots=True, eq=False)
 class _Ready:
-    """Decision returned by ``_run_precommit``: every gate passed and the
+    """Decision returned by ``_gate_commit``: every gate passed and the
     event is ready to commit (RFC §10.1 step 12).
 
     The commit is deliberately NOT performed by ``_run_precommit`` — it runs
@@ -335,17 +335,8 @@ class InboundLockedMixin(HelpersMixin):
         if isinstance(decision, InboundResult):
             return decision
         if isinstance(decision, _Blocked):
-            return await self._blocked_result(
-                room_id,
-                decision.event,
-                decision.context,
-                cascade,
-                reason=decision.reason,
-                blocked_by=decision.blocked_by,
-                injected_events=decision.injected_events,
-                tasks=decision.tasks,
-                observations=decision.observations,
-            )
+            blocked_event = await self._store_blocked(room_id, decision, cascade)
+            return InboundResult(event=blocked_event, blocked=True, reason=decision.reason)
         outcome = await self._run_commit(decision, room_id, cascade)
         # Injected events from allow/modify hooks: committed and laned after
         # the trigger (the trigger is committed and must never be contradicted
@@ -514,9 +505,15 @@ class InboundLockedMixin(HelpersMixin):
         """RFC §10.1 steps 9 to 11 for an event about to commit: its
         BEFORE_BROADCAST hooks, then its source's right to write.
 
-        Decides only: a :class:`_Blocked` carries what the hooks decided, so
-        the caller stores the BLOCKED record with its side effects (§7.5 rule
-        3); a :class:`_Ready` carries the event as the hooks left it.
+        The one gate of every commit path, an inbound event and a response
+        alike, buffered, streamed or regenerated (RFC §7.5 rule 2): a hook
+        that blocks names the block, and a source that cannot write is
+        refused only once its hooks have run, so what they decided is kept.
+
+        Decides only: a :class:`_Blocked` carries what the hooks decided, for
+        :meth:`_store_blocked`; a :class:`_Ready` carries the event as the
+        hooks left it. The source's binding is read from *context*, built
+        under the room lock (RFC §10.1 steps 6 and 12).
         """
         # Run sync hooks (before_broadcast). After an off-lock check (RFC
         # §9.5.1) its outcome comes first and only the locked hooks run here.
@@ -551,8 +548,8 @@ class InboundLockedMixin(HelpersMixin):
         # not inject a DELIVERED event into the timeline. Persist it BLOCKED for
         # audit, still collecting hook side effects (RFC §7.5 rule 3 — side
         # effects are ALWAYS collected), and stop before broadcast. The source
-        # binding is fetched once here and reused for broadcast below.
-        source_binding = await self._store.get_binding(room_id, event.source.channel_id)
+        # binding read here is the one the broadcast plans with.
+        source_binding = context.get_binding(event.source.channel_id)
         reason = _source_block_reason(source_binding)
         if reason is not None:
             return _Blocked(
@@ -730,35 +727,29 @@ class InboundLockedMixin(HelpersMixin):
         await self._lane_injected_events(injected_events, room_id, context, cascade)
         return blocked_event
 
-    async def _blocked_result(
-        self,
-        room_id: str,
-        event: RoomEvent,
-        context: RoomContext,
-        cascade: DeliveryCascade,
-        *,
-        reason: str | None,
-        blocked_by: str | None,
-        injected_events: list[InjectedEvent],
-        tasks: list[Task],
-        observations: list[Observation],
-    ) -> InboundResult:
-        """Persist a BLOCKED event, persist its hook side effects (RFC §7.5
-        rule 3 — side effects are always collected), and return the blocked
-        :class:`InboundResult`. Shared by the hook-block and source
-        write-permission paths so they cannot drift.
+    async def _store_blocked(
+        self, room_id: str, blocked: _Blocked, cascade: DeliveryCascade
+    ) -> RoomEvent:
+        """Store what :meth:`_gate_commit` refused as its BLOCKED record, with
+        its hook side effects (RFC §7.5 rule 3 — side effects are always
+        collected).
+
+        Shared by every commit path, the hook block and the source
+        write-permission block alike, so they cannot drift.
         """
         blocked_event = await self._handle_block(
             room_id=room_id,
-            event=event,
-            reason=reason,
-            blocked_by=blocked_by,
-            injected_events=injected_events,
-            context=context,
+            event=blocked.event,
+            reason=blocked.reason,
+            blocked_by=blocked.blocked_by,
+            injected_events=blocked.injected_events,
+            context=blocked.context,
             cascade=cascade,
         )
-        await self._persist_side_effects(room_id, tasks, observations, blocked_event, context)
-        return InboundResult(event=blocked_event, blocked=True, reason=reason)
+        await self._persist_side_effects(
+            room_id, blocked.tasks, blocked.observations, blocked_event, blocked.context
+        )
+        return blocked_event
 
     async def _run_deferred_async_hooks(
         self, room_id: str, pending: list[tuple[HookTrigger, RoomEvent, RoomContext]]

@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from roomkit.core.exceptions import RoomClosedError
 from roomkit.core.lanes import DeliveryCascade
 from roomkit.core.mixins.helpers import _REFUSING_STATUSES, HelpersMixin
-from roomkit.core.mixins.lane_execution import scoped
 from roomkit.models.delivery import InboundResult
 from roomkit.models.enums import ChannelCategory, EventStatus
 from roomkit.models.event import EventSource, RoomEvent
@@ -24,9 +23,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("roomkit.framework")
 
-# A regenerated answer is committed as delivered, like any answer.
-_DELIVERED: dict[str, Any] = {"status": EventStatus.DELIVERED}
-
 
 @runtime_checkable
 class RegenerateHost(Protocol):
@@ -40,7 +36,7 @@ class RegenerateHost(Protocol):
 
     Cross-mixin methods (provided by other mixins in the MRO):
         _get_router: From :class:`InboundLockedMixin`.
-        _commit_and_deliver: From :class:`LaneExecutionMixin`.
+        _commit_responses: From :class:`LaneExecutionMixin`.
         _commit_blocked_events: From :class:`LaneExecutionMixin`.
         _finish_cascade: From :class:`LaneExecutionMixin`.
     """
@@ -64,7 +60,7 @@ class RegenerateMixin(HelpersMixin):
 
     # Cross-mixin methods — attribute annotations avoid MRO shadowing
     _get_router: Any  # see RegenerateHost
-    _commit_and_deliver: Any  # see RegenerateHost
+    _commit_responses: Any  # see RegenerateHost
     _commit_blocked_events: Any  # see RegenerateHost
     _finish_cascade: Any  # see RegenerateHost
 
@@ -154,9 +150,12 @@ class RegenerateMixin(HelpersMixin):
         Produces a fresh response to the most recent transport (human) message
         *without* ingesting a new inbound event — the triggering message keeps
         its identity, index, and timestamp. The existing broadcast + streaming
-        pipeline is reused, so the new response is persisted, streamed, and runs
-        its AFTER_BROADCAST hooks exactly like a first-time turn. The trigger
-        message's own hooks are not re-run.
+        pipeline is reused, so the new response re-enters like a first-time
+        turn's (RFC §10.1 step 14): its BEFORE_BROADCAST hooks run, its
+        source's right to write is checked, it counts against the reentry
+        budget, it is persisted, streamed, and runs its AFTER_BROADCAST hooks,
+        and it comes back in ``response_events``. The trigger message's own
+        hooks are not re-run.
 
         Replacement semantics are the caller's concern: any responses already
         present after the last inbound message should be removed *before* calling
@@ -262,13 +261,11 @@ class RegenerateMixin(HelpersMixin):
                     break
 
             # Non-streaming providers return the response as reentry events.
-            # They commit and deliver after the lock (below): the delivery
-            # cursor must not reach a regenerated answer before the room's
-            # lane has actually delivered it (RFC §10.2).
-            regenerated = [
-                scoped(r, trigger.response_visibility).model_copy(update=_DELIVERED)
-                for r in broadcast_result.reentry_events
-            ]
+            # Each takes its own commit pass after the lock (below), as any
+            # response does (RFC §10.1 step 14): the delivery cursor must not
+            # reach a regenerated answer before the room's lane has actually
+            # delivered it (RFC §10.2).
+            regenerated = list(broadcast_result.reentry_events)
 
         return await self._finish_regeneration(
             room_id,
@@ -308,10 +305,7 @@ class RegenerateMixin(HelpersMixin):
         await self._persist_side_effects(
             room_id, broadcast_result.tasks, broadcast_result.observations, trigger, context
         )
-        for reentry in regenerated:
-            await self._commit_and_deliver(
-                room_id, reentry, reentry.source.channel_id, cascade=cascade
-            )
+        await self._commit_responses(room_id, regenerated, trigger.response_visibility, cascade)
         # A non-streaming regeneration failure fires ON_ERROR here (the streaming
         # path fires its own while its stream is read), so the host
         # renders an error card for a failed regenerate on either path.
@@ -338,4 +332,5 @@ class RegenerateMixin(HelpersMixin):
             event=trigger,
             error=stream_error or broadcast_error,
             response_metadata=record,
+            response_events=list(cascade.response_events),
         )

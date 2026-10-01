@@ -13,7 +13,7 @@ from roomkit.core.event_router import unanswered
 from roomkit.core.lanes import DeliveryCascade
 from roomkit.core.mixins._response_reader import ResponseReader
 from roomkit.core.mixins._streaming_segments import LaneSink, SegmentWriter
-from roomkit.core.mixins.helpers import HelpersMixin
+from roomkit.core.mixins.helpers import HelpersMixin, _source_block_reason
 from roomkit.core.mixins.lane_execution import DeliverySource
 from roomkit.core.visibility import visibility_allows
 from roomkit.models.enums import (
@@ -353,7 +353,14 @@ class InboundStreamingMixin(HelpersMixin):
         sr: Any,
         context: RoomContext,
     ) -> list[Any]:
-        """Find transport channels that support streaming delivery."""
+        """Find transport channels that support streaming delivery.
+
+        None for a source that cannot write (RFC §7.5 rule 2): a read-only
+        agent's stream is read to its end, each row stored BLOCKED by the
+        commit gate, and nothing of it is piped live.
+        """
+        if _source_block_reason(context.get_binding(sr.source_channel_id)) is not None:
+            return []
         response_vis = sr.trigger_event.response_visibility
         targets: list[Any] = []
         for binding in context.bindings:

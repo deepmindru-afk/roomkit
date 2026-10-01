@@ -445,9 +445,10 @@ class EventRouter:
                     # Muting silences the voice — including the streaming voice.
                     # A muted channel's brain still ran (memory ingest + context
                     # build happened in on_event), but its streamed reply must
-                    # not be delivered, exactly like the response_events
-                    # suppression below. Close the un-consumed generator so no
-                    # provider round-trip is made — the reply is never generated.
+                    # not be delivered. Close the un-consumed generator so no
+                    # provider round-trip is made — the reply is never generated
+                    # (RFC §7.5 rule 2 permits it). A read-only source's stream
+                    # is read instead, its rows stored BLOCKED as they commit.
                     if binding.muted:
                         await _aclose_stream(output.response_stream)
                         logger.debug(
@@ -528,34 +529,12 @@ class EventRouter:
                 # not the brain"
                 tr.observations.extend(output.observations)
 
-                # Muted channels: suppress response_events (the "voice").
-                # RFC §7.5 rule 2 — suppressed is not the same as forgotten:
-                # the response is stored BLOCKED with ``source_muted`` so the
-                # timeline records what the muted brain wanted to say, and is
-                # never broadcast.
-                if binding.muted:
-                    if output.responded:
-                        logger.debug(
-                            "Channel %s is muted — suppressing %d response events, "
-                            "keeping %d tasks, %d observations",
-                            binding.channel_id,
-                            len(output.response_events),
-                            len(output.tasks),
-                            len(output.observations),
-                        )
-                        tr.blocked_events.extend(
-                            resp.model_copy(
-                                update={
-                                    "status": EventStatus.BLOCKED,
-                                    "blocked_by": "source_muted",
-                                }
-                            )
-                            for resp in output.response_events
-                        )
-                    target_results.append(tr)
-                    return
-
-                # Collect reentry events with chain depth enforcement
+                # Collect reentry events with chain depth enforcement. A muted
+                # channel's response re-enters too: its commit pass runs its
+                # BEFORE_BROADCAST hooks, then stores it BLOCKED with
+                # ``source_muted`` (RFC §7.5 rules 2 and 3), so the timeline
+                # records what the muted brain wanted to say and what its
+                # hooks decided, and nothing is broadcast.
                 if output.responded:
                     for resp in output.response_events:
                         if resp.chain_depth < self._max_chain_depth:
@@ -705,8 +684,8 @@ class EventRouter:
         """Filter bindings to find valid delivery targets.
 
         Muted channels ARE included — they can still receive events via on_event()
-        and produce side effects (tasks, observations). Their response_events are
-        suppressed in broadcast().
+        and produce side effects (tasks, observations). Their response events
+        are stored BLOCKED by their own commit pass (RFC §7.5 rule 2).
         """
         targets: list[ChannelBinding] = []
 
@@ -723,8 +702,8 @@ class EventRouter:
             if binding.direction == ChannelDirection.OUTBOUND:
                 continue
 
-            # NOTE: muted channels are NOT skipped here — they receive events
-            # but their response_events are suppressed in broadcast()
+            # NOTE: muted channels are NOT skipped here — they receive events,
+            # and their response events are stored BLOCKED when they re-enter
 
             # Check visibility
             if not self._check_visibility(event, source_binding, binding):

@@ -114,12 +114,13 @@ async def test_each_reentry_pass_reads_the_room_once_and_no_binding() -> None:
 async def test_each_regenerated_answer_reads_the_room_once_and_no_binding() -> None:
     kit = await _tool_room(turns=2)
     await _say(kit)
-    commits = _count_commits(kit, "_commit_and_deliver")
+    passes = _count_commits(kit, "_run_reentry_pass")
 
     await kit.regenerate_response("r1")
 
-    assert commits, "the regenerated answers are committed one by one"
-    assert all(reads == {"get_room": 1} for reads in commits), commits
+    # A regenerated answer re-enters like a first-time one: a pass per row.
+    assert len(passes) == 10
+    assert all(reads == {"get_room": 1} for reads in passes), passes
     await kit.close()
 
 

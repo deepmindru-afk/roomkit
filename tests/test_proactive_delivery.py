@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
@@ -189,12 +191,22 @@ async def test_agent_detaching_after_solicitation_does_not_change_outcome() -> N
 
 
 async def test_source_detaching_before_commit_reports_unreached_agents() -> None:
+    """A detach landing between the call and the commit's room lock is seen
+    by the commit, which reads the bindings under that lock (RFC §10.1 step
+    6): the addressed agents are reported unreached."""
     kit, _, agents = await _room("a")
+    locked = kit._lock_manager.locked
+    detached: list[str] = []
 
-    @kit.hook(HookTrigger.BEFORE_BROADCAST)
-    async def detach_source(event, context):
-        await kit.store.remove_binding("room-1", event.source.channel_id)
-        return HookResult.allow()
+    @asynccontextmanager
+    async def detaching_first(room_id: str) -> AsyncIterator[None]:
+        if not detached:
+            detached.append(room_id)
+            await kit.detach_channel(room_id, "human")
+        async with locked(room_id):
+            yield
+
+    kit._lock_manager.locked = detaching_first  # type: ignore[method-assign]
 
     async with kit:
         result = await kit.deliver("room-1", "external result", addressed_to=["a"])

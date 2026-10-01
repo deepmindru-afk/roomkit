@@ -11,7 +11,8 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from roomkit.channels._tool_event_result import tool_event_payload
 from roomkit.core.mixins.helpers import _RECENT_EVENTS_LIMIT
-from roomkit.models.enums import EventStatus, EventType, HookTrigger, Visibility
+from roomkit.core.mixins.inbound_locked import _Blocked
+from roomkit.models.enums import EventStatus, EventType, Visibility
 from roomkit.models.event import EventSource, RoomEvent, TextContent, ToolCallContent
 from roomkit.models.streaming import (
     LoopEndMarker,
@@ -442,60 +443,40 @@ class LaneSink:
         return self._refusing
 
     async def _gate(self, event: RoomEvent) -> tuple[RoomEvent, SyncPipelineResult] | None:
-        """Run the BEFORE_BROADCAST sync hooks on a row before it commits.
+        """Pass a row through the commit gate before it commits: its
+        BEFORE_BROADCAST sync hooks, then its source's right to write.
 
-        Mirrors the locked path. The live chunks already piped to streaming
-        channels are outside a hook's reach by construction; this lands any
-        hook modification (e.g. PII de-anonymisation, a display label on a
-        tool call) on the persisted row and on the delivery to the
-        non-streaming channels.
+        The gate every commit path shares (``_gate_commit``, RFC §10.1 steps
+        9 to 11), its hooks run off the room lock here. The live chunks
+        already piped to streaming channels are outside a hook's reach by
+        construction; this lands any hook modification (e.g. PII
+        de-anonymisation, a display label on a tool call) on the persisted
+        row and on the delivery to the non-streaming channels.
 
-        ``None`` when a hook refused the row. A refusal is not a drop: it
-        goes through the same block handler as every other one (RFC §10.1
-        step 10) — committed with status BLOCKED as the audit record,
-        announced as ``event_blocked`` — and what the hook decided still
-        stands, its tasks and observations persisted and its injected events
-        laned.
+        ``None`` when the gate refused the row: a hook blocked it, or its
+        source cannot write (a read-only agent's stream, RFC §7.5 rule 2). A
+        refusal is not a drop: the row is committed with status BLOCKED as
+        the audit record, announced as ``event_blocked``, and what the hooks
+        decided still stands, their tasks and observations persisted and
+        their injected events laned.
         """
         room_id = self._room_id
-        sync_result = await self._kit._hook_engine.run_sync_hooks(
-            room_id, HookTrigger.BEFORE_BROADCAST, event, self._context
-        )
+        decision = await self._kit._gate_commit(room_id, event, self._context)
         # The hooks ran without the room lock: a close meanwhile refuses the
         # row, which is then neither committed nor recorded as blocked.
         if await self._room_refuses_writes():
             logger.debug("Room %s closed during the hooks; %s not committed", room_id, event.type)
             return None
-        if sync_result.hook_errors:
-            logger.warning(
-                "BEFORE_BROADCAST hook error on streamed %s (room %s): %s",
-                event.type.value,
-                room_id,
-                sync_result.hook_errors,
-            )
-        if not sync_result.allowed:
-            blocked = await self._kit._handle_block(
-                room_id=room_id,
-                event=event,
-                reason=sync_result.reason,
-                blocked_by=sync_result.blocked_by,
-                injected_events=sync_result.injected_events,
-                context=self._context,
-                cascade=self._cascade,
-            )
-            await self._kit._persist_side_effects(
-                room_id, sync_result.tasks, sync_result.observations, blocked, self._context
-            )
+        if isinstance(decision, _Blocked):
+            await self._kit._store_blocked(room_id, decision, self._cascade)
             logger.info(
-                "Streamed %s blocked by BEFORE_BROADCAST hook (room %s): %s",
+                "Streamed %s blocked (room %s): %s",
                 event.type.value,
                 room_id,
-                sync_result.reason,
+                decision.reason,
             )
             return None
-        if isinstance(sync_result.event, RoomEvent):
-            event = sync_result.event
-        return event, sync_result
+        return decision.event, decision.sync_result
 
     async def _lane(
         self,

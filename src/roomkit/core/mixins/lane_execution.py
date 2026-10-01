@@ -22,8 +22,8 @@ from roomkit.core.mixins.helpers import (
     _RECENT_EVENTS_LIMIT,
     HelpersMixin,
     _refuses_writes,
-    _source_block_reason,
 )
+from roomkit.core.mixins.inbound_locked import _Blocked, _Ready
 from roomkit.models.delivery import DeliveryError, DeliveryResult
 from roomkit.models.enums import ChannelCategory, EventStatus, EventType, HookTrigger
 from roomkit.models.event import EventSource, RoomEvent
@@ -170,6 +170,8 @@ class LaneExecutionMixin(HelpersMixin):
     # Cross-mixin methods — attribute annotations avoid MRO shadowing
     _get_router: Any  # RoomKit._get_router
     _handle_block: Any  # InboundLockedMixin
+    _gate_commit: Any  # InboundLockedMixin
+    _store_blocked: Any  # InboundLockedMixin
     _process_streaming_responses: Any  # InboundStreamingMixin
 
     # -- The planned commit gate --
@@ -235,7 +237,7 @@ class LaneExecutionMixin(HelpersMixin):
         """Commit an event and hand its delivery to the room's lane.
 
         The one entry point for a caller that owns an event end to end —
-        a greeting, a streamed segment, a regenerated answer — and that
+        a greeting, a streamed segment — and that
         used to commit it and then broadcast it where it stood. Inline
         execution satisfies per-room order only while nothing else can
         deliver for the room (RFC §10.2), and committing publishes the
@@ -824,14 +826,29 @@ class LaneExecutionMixin(HelpersMixin):
         """
         if plan.injected or not result.reentry_events:
             return
+        await self._commit_responses(
+            room_id, result.reentry_events, plan.response_visibility, cascade
+        )
 
-        reentries = [scoped(r, plan.response_visibility) for r in result.reentry_events]
+    async def _commit_responses(
+        self,
+        room_id: str,
+        responses: list[RoomEvent],
+        response_visibility: str | None,
+        cascade: DeliveryCascade,
+    ) -> None:
+        """Give each buffered response its own commit pass, within the
+        cascade's reentry budget (RFC §10.1 step 14, §8.3).
 
-        for reentry in reentries:
+        The one way a buffered response reaches the timeline, whichever pass
+        produced it: a trigger's delivery set or a regeneration.
+        """
+        for response in responses:
+            reentry = scoped(response, response_visibility)
             if not cascade.consume_reentry_budget():
                 await self._store_past_reentry_cap(room_id, reentry)
                 continue
-            await self._run_reentry_pass(room_id, reentry, plan, cascade)
+            await self._run_reentry_pass(room_id, reentry, response_visibility, cascade)
 
     async def _store_past_reentry_cap(self, room_id: str, response: RoomEvent) -> None:
         """Store a response past the cascade's reentry budget as its BLOCKED record.
@@ -865,14 +882,9 @@ class LaneExecutionMixin(HelpersMixin):
         return context
 
     async def _refuse_reentry(
-        self,
-        room_id: str,
-        reentry: RoomEvent,
-        context: RoomContext,
-        binding: ChannelBinding | None,
-        cascade: DeliveryCascade,
+        self, room_id: str, reentry: RoomEvent, context: RoomContext
     ) -> bool:
-        """Whether this reentry pass must not write, the refusal handled.
+        """Whether the room refuses this reentry pass, the refusal announced.
 
         RFC §10.1 step 6 / §5.1: a reentry re-enters the locked section, so it
         meets the same status gate as any other write. The room may have been
@@ -881,37 +893,20 @@ class LaneExecutionMixin(HelpersMixin):
         row; the blocked result :meth:`_refuse_closed_room` returns is for a
         caller with someone to answer, and a pass has none. A room gone
         meanwhile was refused already, when its context could not be read
-        (:meth:`_reentry_context`). RFC §7.5 rule 2: a source that cannot
-        write has its response stored BLOCKED.
+        (:meth:`_reentry_context`).
         """
-        if _refuses_writes(context.room):
-            await self._refuse_closed_room(
-                room_id, status=context.room.status, operation="reentry", event=reentry
-            )
-            return True
-        reason = _source_block_reason(binding)
-        if reason is not None:
-            # RFC §7.5 rule 2 — a source that cannot write MUST NOT inject a
-            # DELIVERED event: a READ_ONLY observer's answer belongs in the
-            # timeline as an audit record, not as a message every channel
-            # reads. Stored BLOCKED, never broadcast.
-            await self._handle_block(
-                room_id=room_id,
-                event=reentry,
-                reason=reason,
-                blocked_by=reason,
-                injected_events=[],
-                context=context,
-                cascade=cascade,
-            )
-            return True
-        return False
+        if not _refuses_writes(context.room):
+            return False
+        await self._refuse_closed_room(
+            room_id, status=context.room.status, operation="reentry", event=reentry
+        )
+        return True
 
     async def _run_reentry_pass(
         self,
         room_id: str,
         reentry: RoomEvent,
-        parent_plan: DeliveryPlan,
+        response_visibility: str | None,
         cascade: DeliveryCascade,
     ) -> None:
         """One response event's own commit pass, under a fresh room lock."""
@@ -923,8 +918,7 @@ class LaneExecutionMixin(HelpersMixin):
             context = await self._reentry_context(room_id, reentry)
             if context is None:
                 return
-            reentry_binding = context.get_binding(reentry.source.channel_id)
-            if await self._refuse_reentry(room_id, reentry, context, reentry_binding, cascade):
+            if await self._refuse_reentry(room_id, reentry, context):
                 return
 
             # Provisional index for the hook, mirroring the main inbound
@@ -939,55 +933,28 @@ class LaneExecutionMixin(HelpersMixin):
                 }
             )
 
-            # BEFORE_BROADCAST sync hooks on reentry events so orchestration
-            # routing can stamp _routed_to metadata and prevent AI-to-AI loops.
-            reentry_sync = await self._hook_engine.run_sync_hooks(
-                room_id, HookTrigger.BEFORE_BROADCAST, reentry, reentry_ctx
-            )
-            if not reentry_sync.allowed:
-                # RFC §9.5: commit BLOCKED, emit event_blocked, deliver
-                # injected side effects; hook side effects are still persisted.
-                blocked_event = await self._handle_block(
-                    room_id=room_id,
-                    event=reentry,
-                    reason=reentry_sync.reason,
-                    blocked_by=reentry_sync.blocked_by,
-                    injected_events=reentry_sync.injected_events,
-                    context=reentry_ctx,
-                    cascade=cascade,
-                )
-                await self._persist_side_effects(
-                    room_id,
-                    reentry_sync.tasks,
-                    reentry_sync.observations,
-                    blocked_event,
-                    reentry_ctx,
-                )
+            # BEFORE_BROADCAST sync hooks, then the source's right to write
+            # (RFC §10.1 steps 9 and 11): orchestration routing stamps
+            # _routed_to here, and a muted or read-only agent's answer is
+            # stored BLOCKED with what its hooks decided kept (§7.5 rule 3).
+            decision = await self._gate_commit(room_id, reentry, reentry_ctx)
+            if isinstance(decision, _Blocked):
+                await self._store_blocked(room_id, decision, cascade)
                 return
-            reentry = reentry_sync.event or reentry
-            await self._commit_reentry(
-                room_id,
-                reentry,
-                reentry_binding,
-                reentry_sync,
-                reentry_ctx,
-                parent_plan.response_visibility,
-                cascade,
-            )
+            await self._commit_reentry(room_id, decision, response_visibility, cascade)
 
     async def _commit_reentry(
         self,
         room_id: str,
-        reentry: RoomEvent,
-        binding: ChannelBinding | None,
-        sync_result: SyncPipelineResult,
-        context: RoomContext,
+        ready: _Ready,
         response_visibility: str | None,
         cascade: DeliveryCascade,
     ) -> None:
         """Commit a response its gates accepted and lane its delivery (RFC
         §10.1 step 12), under the lock its pass holds."""
         router = self._get_router()
+        reentry, binding = ready.event, ready.source_binding
+        sync_result, context = ready.sync_result, ready.context
 
         def factory(
             committed: RoomEvent,
