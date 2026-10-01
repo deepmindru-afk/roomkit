@@ -45,6 +45,7 @@ from roomkit.tools.result import (
     tool_failure,
     unserved_tool_error,
 )
+from roomkit.tools.timeout import ToolTimeouts, answer_within
 from roomkit.tools.validation import fold_hoisted_arguments, validate_tool_arguments
 from roomkit.voice.base import VoiceSessionState
 
@@ -126,6 +127,7 @@ class RealtimeToolsHost(Protocol):
     _session_roles: dict[str, str | None]
     _collisions: CollisionLog
     _registry: ChannelRegistry
+    _tool_timeouts: ToolTimeouts
     _tool_search_support: Any
     _provider: RealtimeVoiceProvider
     _transport: VoiceBackend
@@ -189,6 +191,7 @@ class RealtimeToolsMixin:
     _session_roles: dict[str, str | None]
     _collisions: CollisionLog
     _registry: ChannelRegistry
+    _tool_timeouts: ToolTimeouts
     _tool_search_support: Any
     _provider: RealtimeVoiceProvider
     _transport: VoiceBackend
@@ -651,14 +654,22 @@ class RealtimeToolsMixin:
         token = _current_voice_session.set(session)
         loop_token = _current_loop_ctx.set(loop_ctx)
         try:
-            entry = self._registry.lookup(name, loop_ctx.room_id)
-            if entry is not None and entry.serve is not None:
-                result = entry.serve(arguments)
-                return await result if inspect.isawaitable(result) else result
-            return await self._tool_handler(name, arguments)
+            waits = self._registry.waits(name, loop_ctx.room_id)
+            timeout = self._tool_timeouts.for_call(name, waits=waits)
+            answer = self._answer(name, arguments, loop_ctx.room_id)
+            return await answer_within(timeout, name, answer)
         finally:
             _current_loop_ctx.reset(loop_token)
             _current_voice_session.reset(token)
+
+    async def _answer(self, name: str, arguments: dict[str, Any], room_id: str | None) -> Any:
+        """The answer of what orchestration set up for *room_id*, else of the
+        host's handler."""
+        entry = self._registry.lookup(name, room_id)
+        if entry is not None and entry.serve is not None:
+            result = entry.serve(arguments)
+            return await result if inspect.isawaitable(result) else result
+        return await self._tool_handler(name, arguments)
 
     def _serves_tool(self, name: str, room_id: str | None) -> bool:
         """Whether something serves a call to *name* in *room_id*: what

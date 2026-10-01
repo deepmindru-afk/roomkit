@@ -32,6 +32,7 @@ from roomkit.tools.result import (
     pre_execution_denial,
     tool_failure,
 )
+from roomkit.tools.timeout import answer_within
 from roomkit.tools.validation import fold_hoisted_arguments, validate_tool_arguments
 
 if TYPE_CHECKING:
@@ -138,7 +139,9 @@ class ConferenceToolGate:
             reason = f"no handler is configured for tool {event.name!r}"
             return self._refused(event, _error(reason))
         try:
-            result = await config.tool_handler(str(event.room_id), event.name, arguments)
+            timeout = config.tool_bounds().for_call(event.name)
+            answer = config.tool_handler(str(event.room_id), event.name, arguments)
+            result = await answer_within(timeout, event.name, answer)
         except ToolRefusedError as refusal:
             # A declined call, in the handler's own words.
             return self._refused(event, refusal.message)

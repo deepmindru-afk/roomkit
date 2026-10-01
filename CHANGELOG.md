@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `tool_timeout_seconds` and `tool_timeouts` on `AIChannel`,
+  `RealtimeVoiceChannel` and `ConferenceRealtimeConfig`, and
+  `ToolTimeoutError` (RMK-366, RFC §21.6): how long one tool call may take,
+  by default and per tool name (`None` for no bound). Past it the handler is
+  cancelled and the call fails like one whose handler raised: the model reads
+  `Tool 'x' failed (ToolTimeoutError)`, the observers the detail, and the turn
+  goes on. A handler that never answered held its turn for good: the text
+  loop's deadline is read between rounds, and speech-to-speech and conference
+  calls had none. One bound serves every path (both text loops, a realtime
+  session's provider calls and the calls it recovers from speech, a
+  conference's calls). Tools that wait on another agent or a person keep their
+  own bound: orchestration's and a `HumanInputToolHandler`'s.
 - `MediaRecordingConfig.encryption` and `storage_encrypted_at_rest`, and the
   same two fields on `ConferenceRecordingConfig`, which hands them to every
   track recording it opens (RMK-69, RFC §17.6). `encryption` takes the
@@ -18,6 +30,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING — a tool call is bounded by default** (RMK-366, RFC §21.6): 30 s
+  on `AIChannel`, 10 s on `RealtimeVoiceChannel` and in a conference. A host
+  tool that legitimately takes longer now fails its call with
+  `ToolTimeoutError`, its handler cancelled. Migration: name it in
+  `tool_timeouts` (`{"export_report": 120}`, or `None` for no bound), or pass
+  `tool_timeout_seconds=None` to keep calls unbounded.
 - **BREAKING — `BEFORE_TTS` runs on each sentence of a streamed response**
   (RMK-268, RFC §9.3 and §12.2 step 12s.b), a hook-trigger behaviour change.
   A Voice Channel whose TTS reads text as it streams (`supports_streaming_input`:

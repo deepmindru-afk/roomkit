@@ -70,6 +70,7 @@ from roomkit.tools.result import (
     tool_failure,
     unserved_tool_error,
 )
+from roomkit.tools.timeout import ToolTimeouts, answer_within
 from roomkit.tools.validation import fold_hoisted_arguments, validate_tool_arguments
 
 if TYPE_CHECKING:
@@ -161,6 +162,7 @@ class AIToolsHost(Protocol):
     _human_input_handler: HumanInputToolHandler | None
     _collisions: CollisionLog
     _registry: ChannelRegistry
+    _tool_timeouts: ToolTimeouts
     _realtime: RealtimeBackend | None
     _plan_updated_hook: Any  # ON_PLAN_UPDATED callback — injected by register_channel
     _tool_call_hook: ToolCallCallback | None
@@ -220,6 +222,7 @@ class AIToolsMixin:
     _human_input_handler: HumanInputToolHandler | None
     _collisions: CollisionLog
     _registry: ChannelRegistry
+    _tool_timeouts: ToolTimeouts
     _realtime: RealtimeBackend | None
     _plan_updated_hook: Any  # ON_PLAN_UPDATED callback — injected by register_channel
     _tool_call_hook: ToolCallCallback | None
@@ -1120,13 +1123,22 @@ class AIToolsMixin:
         answer a composition passes a call on for.
         """
         token = _current_tool_call.set(call_ctx)
+        timeout = self._call_timeout(name, call_ctx.room_id or None)
         try:
-            answer = await handler(name, arguments)
+            answer = await answer_within(timeout, name, handler(name, arguments))
         except UnservedToolCallError:
             return None
         finally:
             _current_tool_call.reset(token)
         return None if is_unknown_tool_answer(answer) else as_tool_result(answer)
+
+    def _call_timeout(self, name: str, room_id: str | None) -> float | None:
+        """The bound of one call to *name* (RFC §21.6): the channel's, unless
+        the tool waits on another agent or on a person by design."""
+        waits = self._registry.waits(name, room_id) or (
+            self._human_input_handler is not None and name in self._human_input_handler.tool_names
+        )
+        return self._tool_timeouts.for_call(name, waits=waits)
 
     def _shape_for_model(self, name: str, result: ToolResult, tool_call_id: str) -> ToolResult:
         """A text-only model gets the text of a content-part result, the way it

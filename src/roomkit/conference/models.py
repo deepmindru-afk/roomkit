@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from enum import Flag, StrEnum, auto, unique
 from typing import TYPE_CHECKING, Any
 
+from roomkit.tools.timeout import ToolTimeouts
 from roomkit.voice.interruption import InterruptionStrategy
 
 if TYPE_CHECKING:
@@ -515,7 +516,22 @@ class ConferenceRealtimeConfig:
     tool_policy: ToolPolicy | None = None
     """Allow/deny rules for ``tools`` (RFC §21.1, §12.10.12): a denied tool is
     not declared to the provider and a call to it is refused. The mix names no
-    participant, so the base rules apply and role overrides never do.
+    participant, so the base rules apply and role overrides never do."""
 
-    Last among the fields, so the positional order the earlier ones had is
-    kept."""
+    # Fields from here on are appended after the earlier ones, so the
+    # positional order those had is kept.
+
+    tool_timeout_seconds: float | None = 10.0
+    """How long one tool call may take before its handler is cancelled and the
+    call fails (RFC §21.6), so a handler that never answers cannot leave the
+    room in silence. ``None`` leaves calls unbounded."""
+
+    tool_timeouts: dict[str, float | None] = field(default_factory=dict)
+    """A bound per tool name, above the default (``None``: as long as it needs)."""
+
+    def __post_init__(self) -> None:
+        self.tool_bounds()  # a non-positive bound fails here, not on the first call
+
+    def tool_bounds(self) -> ToolTimeouts:
+        """The bound of each tool call, from the two settings above."""
+        return ToolTimeouts(self.tool_timeout_seconds, self.tool_timeouts)

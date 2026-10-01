@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -91,6 +91,7 @@ from roomkit.providers.ai.json_schema import check_portable_schema
 from roomkit.realtime.base import RealtimeBackend
 from roomkit.tools.compose import compose_tool_handlers, extract_tools
 from roomkit.tools.policy import ToolPolicy
+from roomkit.tools.timeout import ToolTimeouts
 
 if TYPE_CHECKING:
     from roomkit.models.tool_call import DeclaredTool, ToolCallCallback, ToolCallObserver
@@ -364,6 +365,8 @@ class AIChannel(
         turn_budget_tokens: int | None = None,
         turn_budget_usd: float | None = None,
         tool_search_threshold_tokens: int | None = DEFAULT_TOOL_SEARCH_THRESHOLD_TOKENS,
+        tool_timeout_seconds: float | None = 30.0,
+        tool_timeouts: Mapping[str, float | None] | None = None,
     ) -> None:
         super().__init__(channel_id)
         self._store_turn_budget(turn_budget_tokens, turn_budget_usd, provider, fallback_provider)
@@ -384,6 +387,9 @@ class AIChannel(
         self._response_schema = _portable_schema(response_schema)
         self._max_tool_rounds = max_tool_rounds
         self._tool_loop_timeout_seconds = tool_loop_timeout_seconds
+        # Each call's own bound (RFC §21.6): a handler that never answers costs
+        # the call, not the turn, whose deadline is only read between rounds.
+        self._tool_timeouts = ToolTimeouts(tool_timeout_seconds, dict(tool_timeouts or {}))
         self._tool_loop_warn_after = tool_loop_warn_after
         self._max_empty_retries = max_empty_retries
         # Reasoning-stream coalescing window — see _ThinkingCoalescer. Per-token

@@ -10,7 +10,7 @@ import inspect
 import logging
 import threading
 import time
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -67,6 +67,7 @@ from roomkit.models.enums import (
 from roomkit.models.event import EventSource, RoomEvent
 from roomkit.telemetry.base import Attr, SpanKind
 from roomkit.telemetry.noop import NoopTelemetryProvider
+from roomkit.tools.timeout import ToolTimeouts
 from roomkit.voice.backends.base import VoiceBackend
 from roomkit.voice.base import VoiceSession, VoiceSessionState
 
@@ -184,6 +185,8 @@ class RealtimeVoiceChannel(
         tool_handler: ToolHandler | None = None,
         mute_on_tool_call: bool = False,
         tool_result_max_length: int = 16384,
+        tool_timeout_seconds: float | None = 10.0,
+        tool_timeouts: Mapping[str, float | None] | None = None,
         pipeline: AudioPipelineConfig | None = None,
         recording: Any | None = None,
         skills: SkillRegistry | None = None,
@@ -237,6 +240,13 @@ class RealtimeVoiceChannel(
             tool_result_max_length: Maximum character length of tool results
                 before truncation.  Large results (e.g. SVG payloads) can
                 overflow the provider's context window.  Defaults to 16384.
+            tool_timeout_seconds: How long one tool call may take before its
+                handler is cancelled and the call fails (RFC §21.6), so a
+                handler that never answers cannot leave the caller in silence.
+                Defaults to 10 s; ``None`` leaves calls unbounded. A tool that
+                waits on another agent (orchestration's) keeps its own bound.
+            tool_timeouts: A bound per tool name, above the default (``None``
+                for a tool that may take as long as it needs).
             tool_policy: Allow/deny rules for the session's tools, with the
                 meaning they have on an ``AIChannel`` (RFC §21.1). A tool the
                 policy denies is not declared to the session, is never named
@@ -370,6 +380,7 @@ class RealtimeVoiceChannel(
         self._init_host_tools(tools, tool_handler)
         self._mute_on_tool_call = mute_on_tool_call
         self._tool_result_max_length = tool_result_max_length
+        self._tool_timeouts = ToolTimeouts(tool_timeout_seconds, dict(tool_timeouts or {}))
         self._tool_policy = tool_policy
         # session_id -> the participant's role, for the policy's role overrides.
         self._session_roles: dict[str, str | None] = {}

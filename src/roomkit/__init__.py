@@ -79,6 +79,7 @@ from roomkit.core.exceptions import (
     RoomNotAttachedError,
     ToolNameCollisionError,
     ToolRefusedError,
+    ToolTimeoutError,
     UnservedToolCallError,
     VoiceSessionEndedError,
 )
@@ -292,6 +293,7 @@ __all__ = [
     "ConferenceCloseError",
     "RoomNotAttachedError",
     "ToolRefusedError",
+    "ToolTimeoutError",
     "ChannelRefusalError",
     "UnservedToolCallError",
     "ToolNameCollisionError",

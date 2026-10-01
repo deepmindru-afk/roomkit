@@ -207,6 +207,21 @@ class UnservedToolCallError(RoomKitError):
     """
 
 
+class ToolTimeoutError(RoomKitError):
+    """A tool handler that did not answer within its call's bound (RFC §21.6).
+
+    The handler was cancelled, and the call fails like one whose handler
+    raised (RFC §9.3): the model reads the tool's failure and this class, the
+    observers the detail. A ``TimeoutError`` the handler raises itself is that
+    handler's own failure, never this.
+    """
+
+    def __init__(self, name: str, timeout: float) -> None:
+        super().__init__(f"tool {name!r} did not answer within {timeout:g} s")
+        self.name = name
+        self.timeout = timeout
+
+
 class ToolNameCollisionError(RoomKitError, ValueError):
     """A tool given under a name a channel already serves where it would be
     declared (RFC §21.1).

@@ -308,6 +308,12 @@ class ChannelRegistry:
         entry = self.lookup(name, room_id)
         return entry.traits if entry is not None else None
 
+    def waits(self, name: str, room_id: str | None) -> bool:
+        """Whether the tool serving *name* in *room_id* waits on another agent by
+        design: orchestration's, which keeps its own bound (RFC §21.6)."""
+        entry = self.lookup(name, room_id)
+        return entry is not None and entry.source is ToolSource.ORCHESTRATION
+
     def serves_orchestration(self) -> bool:
         """Whether orchestration set up any tool here, for any room."""
         return self._orchestration_count > 0
