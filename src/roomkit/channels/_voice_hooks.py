@@ -95,43 +95,6 @@ class VoiceHooksMixin:
         except Exception:
             logger.exception("Error emitting voice_session_ended")
 
-    async def _emit_recording_started(
-        self, session: VoiceSession, recording_id: str, room_id: str
-    ) -> None:
-        if not self._framework:
-            return
-        try:
-            await self._framework._emit_framework_event(
-                "recording_started",
-                room_id=room_id,
-                data={"session_id": session.id, "id": recording_id},
-            )
-        except Exception:
-            logger.exception("Error emitting recording_started")
-
-    async def _emit_recording_stopped(
-        self,
-        session: VoiceSession,
-        recording_id: str,
-        room_id: str,
-        *,
-        duration_seconds: float = 0.0,
-    ) -> None:
-        if not self._framework:
-            return
-        try:
-            await self._framework._emit_framework_event(
-                "recording_stopped",
-                room_id=room_id,
-                data={
-                    "session_id": session.id,
-                    "id": recording_id,
-                    "duration_seconds": duration_seconds,
-                },
-            )
-        except Exception:
-            logger.exception("Error emitting recording_stopped")
-
     # -------------------------------------------------------------------------
     # Hook firing helpers
     # -------------------------------------------------------------------------
@@ -407,58 +370,3 @@ class VoiceHooksMixin:
                 )
         except Exception:
             logger.exception("Error firing ON_DTMF hook")
-
-    async def _fire_recording_started_hook(
-        self, session: VoiceSession, handle: Any, room_id: str
-    ) -> None:
-        if not self._framework:
-            return
-        try:
-            from roomkit.voice.events import RecordingStartedEvent
-
-            with self._voice_span_ctx(session):
-                context = await self._framework._build_context(room_id)
-                event = RecordingStartedEvent(
-                    session=session,
-                    id=handle.id,
-                    room_id=room_id,
-                )
-                await self._framework.hook_engine.run_async_hooks(
-                    room_id,
-                    HookTrigger.ON_RECORDING_STARTED,
-                    event,
-                    context,
-                    skip_event_filter=True,
-                )
-                await self._emit_recording_started(session, handle.id, room_id)
-        except Exception:
-            logger.exception("Error firing ON_RECORDING_STARTED hook")
-
-    async def _fire_recording_stopped_hook(
-        self, session: VoiceSession, result: Any, room_id: str
-    ) -> None:
-        if not self._framework:
-            return
-        try:
-            from roomkit.voice.events import RecordingStoppedEvent
-
-            with self._voice_span_ctx(session):
-                context = await self._framework._build_context(room_id)
-                event = RecordingStoppedEvent(
-                    session=session,
-                    id=result.id,
-                    urls=tuple(result.urls),
-                    duration_seconds=result.duration_seconds,
-                )
-                await self._framework.hook_engine.run_async_hooks(
-                    room_id,
-                    HookTrigger.ON_RECORDING_STOPPED,
-                    event,
-                    context,
-                    skip_event_filter=True,
-                )
-                await self._emit_recording_stopped(
-                    session, result.id, room_id, duration_seconds=result.duration_seconds
-                )
-        except Exception:
-            logger.exception("Error firing ON_RECORDING_STOPPED hook")

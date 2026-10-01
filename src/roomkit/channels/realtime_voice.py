@@ -5,11 +5,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
+import functools
 import inspect
 import logging
 import threading
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -49,6 +50,7 @@ from roomkit.channels._tool_registry import (
     schema_tool,
 )
 from roomkit.channels._voice_pipeline import VoicePipelineMixin
+from roomkit.channels._voice_recording_hooks import VoiceRecordingHooksMixin
 from roomkit.channels.ai import ToolResult
 from roomkit.channels.base import Channel, FrameworkAwareChannel
 from roomkit.core.task_utils import _finish_cleanup
@@ -129,6 +131,7 @@ class RealtimeVoiceChannel(
     RealtimeSpeechMixin,
     RealtimeAudioMixin,
     RealtimeResponseMixin,
+    VoiceRecordingHooksMixin,
     VoicePipelineMixin,
     FrameworkAwareChannel,
     Channel,
@@ -1337,6 +1340,8 @@ class RealtimeVoiceChannel(
                 pl = self._create_pipeline(self._pipeline_config, self._transport)
                 pl.on_vad_event(self._on_pipeline_vad_event)
                 pl.on_processed_frame(self._on_pipeline_processed_frame)
+                if self._pipeline_config.recorder is not None:
+                    self._wire_recording_hooks(pl)
 
         # Some transports start their microphone inside accept(). Activate
         # per-session pipeline state first so the earliest callback cannot run
@@ -2108,6 +2113,32 @@ class RealtimeVoiceChannel(
                 exc,
                 exc_info=exc,
             )
+
+    def _recording_room(self, session: VoiceSession) -> str | None:
+        """The room a session's recording reports to. The pipeline starts the
+        recording before the session is filed under its room, so the session's
+        own room answers until then."""
+        with self._state_lock:
+            return self._session_rooms.get(session.id, session.room_id)
+
+    def _recording_span(self, session: VoiceSession) -> str | None:
+        with self._state_lock:
+            return self._session_spans.get(session.id)
+
+    def _schedule_recording_hook(self, coro: Coroutine[Any, Any, Any], *, name: str) -> None:
+        """Run a recording hook as a tracked task, from the loop or a foreign thread."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            cached = self._event_loop
+            if cached is not None and cached.is_running():
+                cached.call_soon_threadsafe(
+                    functools.partial(self._track_task, cached, coro, name=name)
+                )
+            else:
+                coro.close()
+            return
+        self._track_task(loop, coro, name=name)
 
     # -- Internal callbacks --
 

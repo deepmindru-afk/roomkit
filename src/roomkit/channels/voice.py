@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._voice_hooks import VoiceHooksMixin
 from roomkit.channels._voice_pipeline import VoicePipelineMixin
+from roomkit.channels._voice_recording_hooks import VoiceRecordingHooksMixin
 from roomkit.channels._voice_speakers import (
     PipelineSpeakerTally,
     SpeakerAttribution,
@@ -223,6 +224,7 @@ class VoiceChannel(
     VoiceSTTMixin,
     VoiceTTSMixin,
     VoiceHooksMixin,
+    VoiceRecordingHooksMixin,
     VoiceTurnMixin,
     VoicePipelineMixin,
     FrameworkAwareChannel,
@@ -518,8 +520,7 @@ class VoiceChannel(
         if config.dtmf is not None:
             pipeline.on_dtmf(self._on_pipeline_dtmf)
         if config.recorder is not None:
-            pipeline.on_recording_started(self._on_pipeline_recording_started)
-            pipeline.on_recording_stopped(self._on_pipeline_recording_stopped)
+            self._wire_recording_hooks(pipeline)
 
         # Audio bridge: forward processed frames to other sessions
         if self._bridge is not None:
@@ -1065,31 +1066,18 @@ class VoiceChannel(
             name=f"dtmf:{session.id}",
         )
 
-    def _on_pipeline_recording_started(self, session: VoiceSession, handle: Any) -> None:
-        """Handle recording started from pipeline — fire hook."""
+    def _recording_room(self, session: VoiceSession) -> str | None:
+        """The room a session's recording reports to, its binding's or, while
+        the session is being unbound, the one it is leaving."""
         with self._state_lock:
             binding_info = self._session_bindings.get(session.id)
-        if not binding_info or not self._framework:
-            return
+        return binding_info[0] if binding_info else self._ending_session_rooms.get(session.id)
 
-        room_id, _ = binding_info
-        self._schedule(
-            self._fire_recording_started_hook(session, handle, room_id),
-            name=f"recording_started:{session.id}",
-        )
+    def _recording_span(self, session: VoiceSession) -> str | None:
+        return self._voice_session_spans.get(session.id)
 
-    def _on_pipeline_recording_stopped(self, session: VoiceSession, result: Any) -> None:
-        """Handle recording stopped from pipeline — fire hook."""
-        with self._state_lock:
-            binding_info = self._session_bindings.get(session.id)
-        room_id = binding_info[0] if binding_info else self._ending_session_rooms.get(session.id)
-        if room_id is None or not self._framework:
-            return
-
-        self._schedule(
-            self._fire_recording_stopped_hook(session, result, room_id),
-            name=f"recording_stopped:{session.id}",
-        )
+    def _schedule_recording_hook(self, coro: Coroutine[Any, Any, Any], *, name: str) -> None:
+        self._schedule(coro, name=name)
 
     # -------------------------------------------------------------------------
     # Helpers

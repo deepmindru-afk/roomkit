@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `RealtimeVoiceChannel` fires `ON_RECORDING_STARTED` and
+  `ON_RECORDING_STOPPED` for the recorder of its audio pipeline (RMK-355, RFC
+  §17.6): it records through the same pipeline as `VoiceChannel` but never
+  subscribed to its recording callbacks, so a speech-to-speech call was
+  recorded with no hook to notify the participants, and its end went
+  unreported. Both channels now announce a recording through one shared
+  implementation.
+
 ### Security
 
 - `ScreenInputTools` no longer turns pyautogui's failsafe off (RMK-356): the
