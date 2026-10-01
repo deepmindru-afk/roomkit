@@ -1667,9 +1667,9 @@ class TestCancelledRealtimeToolCallsAreObserved:
 
         await rt_provider.simulate_tool_call(session, "c1", "check_inventory", {"item": "widget"})
         await asyncio.wait_for(started.wait(), 1)
-        assert ch._pending_tool_calls[session.id] == {
-            "c1": ("check_inventory", {"item": "widget"})
-        }
+        in_flight = ch._tool_calls.get(session.id, "c1")
+        assert in_flight is not None
+        assert (in_flight.name, in_flight.arguments) == ("check_inventory", {"item": "widget"})
 
         await rt_provider.simulate_tool_call_cancellation(session, ["c1"])
         await asyncio.wait_for(interrupted.wait(), 1)
@@ -1688,7 +1688,7 @@ class TestCancelledRealtimeToolCallsAreObserved:
         # Observers only: a hook that could serve the call never saw it.
         assert served == []
         # The books are clean, so the session can go idle again.
-        assert not ch._pending_tool_calls.get(session.id)
+        assert not ch._tool_calls.busy(session.id)
 
     async def test_a_cancellation_for_a_call_not_in_flight_reports_nothing(
         self,
@@ -1744,8 +1744,7 @@ class TestCancelledRealtimeToolCallsAreObserved:
         assert [e.tool_call_id for e in served] == ["c1"]
         # The submission ran to its end; the stale result is the provider's to drop.
         assert len(rt_provider.tool_results) == 1
-        assert not ch._pending_tool_calls.get(session.id)
-        assert not ch._reported_tool_calls.get(session.id)
+        assert not ch._tool_calls.busy(session.id)
 
     async def test_a_cancellation_on_an_ended_session_is_ignored(
         self,
@@ -1766,7 +1765,10 @@ class TestCancelledRealtimeToolCallsAreObserved:
         await rt_provider.simulate_tool_call_cancellation(session, ["c1"])
         await asyncio.sleep(0.05)
 
-        assert not any(e.cancelled for e in observed)
+        # The session's end interrupted c1 and reported it, once (RFC §12.4);
+        # the provider's cancellation that follows adds nothing.
+        assert [(e.tool_call_id, e.cancelled) for e in observed] == [("c1", True)]
+        assert "session ended" in json.loads(observed[0].result)["hint"]
 
 
 class TestAToolCallReadsTheRoomOnlyForAHook:

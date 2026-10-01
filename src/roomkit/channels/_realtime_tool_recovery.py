@@ -23,6 +23,7 @@ import threading
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 from uuid import uuid4
 
+from roomkit.channels._realtime_tool_calls import RealtimeToolCall, ToolCallBook
 from roomkit.channels._realtime_tools import _hook_outcome
 from roomkit.core.exceptions import ToolRefusedError, UnservedToolCallError
 from roomkit.models.enums import ChannelType
@@ -97,9 +98,7 @@ class RealtimeToolRecoveryHost(Protocol):
         tool_event: Any,
         room_id: str,
         handler_result: str | None,
-        name: str,
-        call_id: str,
-        session: VoiceSession,
+        call: RealtimeToolCall,
         carrying: Any = None,
     ) -> tuple[str, bool]: ...
 
@@ -138,6 +137,9 @@ class RealtimeToolRecoveryMixin:
     _track_task: Any  # cross-mixin
     _authorize_realtime_tool: Any  # cross-mixin (RealtimeToolsMixin)
     _fire_tool_hook_outcome: Any  # cross-mixin (RealtimeToolsMixin)
+    _tool_calls: ToolCallBook  # RealtimeVoiceChannel
+    _open_tool_call: Any  # cross-mixin (RealtimeToolsMixin)
+    _close_tool_call: Any  # cross-mixin (RealtimeToolsMixin)
     _fire_tool_refusal: Any  # cross-mixin (RealtimeToolsMixin)
     _fire_gate_refusal: Any  # cross-mixin (RealtimeToolsMixin)
     _report_raised_call: Any  # cross-mixin (RealtimeToolsMixin)
@@ -271,7 +273,19 @@ class RealtimeToolRecoveryMixin:
         """Execute a recovered tool call and inject the result as context."""
         if session.state == VoiceSessionState.ENDED:
             return
-        call_id = f"recovered-{uuid4().hex[:12]}"
+        call = RealtimeToolCall(
+            session, f"recovered-{uuid4().hex[:12]}", tool_name, arguments, abandonable=False
+        )
+        call.task = asyncio.current_task()
+        self._open_tool_call(call)
+        try:
+            await self._serve_recovered_call(call)
+        finally:
+            self._close_tool_call(call)
+
+    async def _serve_recovered_call(self, call: RealtimeToolCall) -> None:
+        """Serve a recovered call behind the gate and inject its outcome."""
+        session, tool_name, call_id = call.session, call.name, call.call_id
 
         with self._state_lock:
             room_id = self._session_rooms.get(session.id)
@@ -293,8 +307,8 @@ class RealtimeToolRecoveryMixin:
             # function calling API (_realtime_tools._handle_tool_call): the
             # arguments here were reconstructed from free text, so they are
             # less trustworthy than a real function call's, not more.
-            arguments, denial, gate_context = await self._authorize_realtime_tool(
-                tool_name, arguments, call_id, room_id, session, channel_serves=False
+            call.arguments, denial, gate_context = await self._authorize_realtime_tool(
+                tool_name, call.arguments, call_id, room_id, session, channel_serves=False
             )
             if session.state == VoiceSessionState.ENDED:
                 telemetry.end_span(span_id, status="cancelled")
@@ -314,9 +328,7 @@ class RealtimeToolRecoveryMixin:
                 )
                 # Observed like a denial on the function-calling path: an audit
                 # hook sees the refusal, and nothing that could serve it does.
-                await self._fire_gate_refusal(
-                    session, call_id, tool_name, arguments, denial, room_id
-                )
+                await self._fire_gate_refusal(call, denial, room_id)
                 return
 
             # Run tool_handler.
@@ -326,7 +338,7 @@ class RealtimeToolRecoveryMixin:
                 raw: Any = _UNSERVED
                 try:
                     raw = await self._call_tool_handler(
-                        session, tool_name, arguments, room_id, gate_context
+                        session, tool_name, call.arguments, room_id, gate_context
                     )
                 except ToolRefusedError as refusal:
                     refused = refusal.message
@@ -346,9 +358,7 @@ class RealtimeToolRecoveryMixin:
                         call_id,
                         session.id,
                     )
-                    await self._fire_tool_refusal(
-                        session, call_id, tool_name, arguments, refused, room_id
-                    )
+                    await self._fire_tool_refusal(call, refused, room_id)
                     return
                 handler_result = None if raw is _UNSERVED else result_text(raw)
 
@@ -358,7 +368,7 @@ class RealtimeToolRecoveryMixin:
                 channel_type=ChannelType.REALTIME_VOICE,
                 tool_call_id=call_id,
                 name=tool_name,
-                arguments=arguments,
+                arguments=call.arguments,
                 result=handler_result,
                 room_id=room_id,
                 session=session,
@@ -371,7 +381,7 @@ class RealtimeToolRecoveryMixin:
             failed = False
             if self._framework and room_id:
                 result_str, failed = await self._fire_tool_hook_outcome(
-                    tool_event, room_id, handler_result, tool_name, call_id, session, gate_context
+                    tool_event, room_id, handler_result, call, gate_context
                 )
             else:
                 result_str, failed = _hook_outcome(None, handler_result, tool_name)
@@ -398,16 +408,10 @@ class RealtimeToolRecoveryMixin:
                 tool_name,
                 session.id,
             )
-            await self._fail_recovered_call(session, tool_name, call_id, arguments, room_id, exc)
+            await self._fail_recovered_call(call, room_id, exc)
 
     async def _fail_recovered_call(
-        self,
-        session: VoiceSession,
-        tool_name: str,
-        call_id: str,
-        arguments: dict[str, Any],
-        room_id: str | None,
-        exc: Exception,
+        self, call: RealtimeToolCall, room_id: str | None, exc: Exception
     ) -> None:
         """Tell the model and the observers that a recovered call failed (RFC §9.3).
 
@@ -417,11 +421,13 @@ class RealtimeToolRecoveryMixin:
         already heard of.
         """
         try:
-            body = tool_failure(tool_name, exc)
-            await self._inject_recovered_result(session, tool_name, call_id, body, verb="failed")
+            body = tool_failure(call.name, exc)
+            await self._inject_recovered_result(
+                call.session, call.name, call.call_id, body, verb="failed"
+            )
         except Exception:
-            logger.exception("Could not tell the model the recovered call %s failed", tool_name)
-        await self._report_raised_call(session, call_id, tool_name, arguments, room_id, exc)
+            logger.exception("Could not tell the model the recovered call %s failed", call.name)
+        await self._report_raised_call(call, room_id, exc)
 
 
 # ------------------------------------------------------------------

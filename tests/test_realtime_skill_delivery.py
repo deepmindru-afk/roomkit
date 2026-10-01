@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from roomkit import RoomKit
+from roomkit.channels._realtime_tool_calls import RealtimeToolCall
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 from roomkit.models.enums import HookExecution, HookTrigger
 from roomkit.models.hook import HookResult
@@ -127,10 +128,7 @@ async def test_unsuccessful_delivery_never_opens_gates(tmp_path, ending):
         provider.submit_tool_result = blocked_send
         task = asyncio.create_task(
             channel._handle_tool_call(
-                session,
-                "activation",
-                "activate_skill",
-                {"name": "test-skill"},
+                RealtimeToolCall(session, "activation", "activate_skill", {"name": "test-skill"})
             )
         )
         await asyncio.wait_for(entered.wait(), 3)
@@ -172,7 +170,9 @@ async def test_simultaneous_native_activations_keep_both_bodies(tmp_path):
         provider.reconfigure.side_effect = update
         await asyncio.gather(
             *[
-                channel._handle_tool_call(session, name, "activate_skill", {"name": name})
+                channel._handle_tool_call(
+                    RealtimeToolCall(session, name, "activate_skill", {"name": name})
+                )
                 for name in ["test-skill", "second"]
             ]
         )
@@ -214,11 +214,13 @@ async def test_activation_and_configuration_preserve_session_rules(
                 second_started.set()
             if activate:
                 await channel._handle_tool_call(
-                    session, "activation", "activate_skill", {"name": "test-skill"}
+                    RealtimeToolCall(
+                        session, "activation", "activate_skill", {"name": "test-skill"}
+                    )
                 )
             elif update == "search":
                 await channel._handle_tool_call(
-                    session, "search", "find_tools", {"query": "calendar"}
+                    RealtimeToolCall(session, "search", "find_tools", {"query": "calendar"})
                 )
             else:
                 await channel.reconfigure_session(session, system_prompt="New role")

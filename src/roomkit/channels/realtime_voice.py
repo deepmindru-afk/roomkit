@@ -28,6 +28,7 @@ from roomkit.channels._realtime_context import (
 from roomkit.channels._realtime_delegation import RealtimeDelegationMixin
 from roomkit.channels._realtime_response import RealtimeResponseMixin
 from roomkit.channels._realtime_speech import RealtimeSpeechMixin
+from roomkit.channels._realtime_tool_calls import ToolCallBook
 from roomkit.channels._realtime_tool_recovery import RealtimeToolRecoveryMixin
 from roomkit.channels._realtime_tools import RealtimeToolsMixin
 from roomkit.channels._realtime_transcription import RealtimeTranscriptionMixin
@@ -475,12 +476,9 @@ class RealtimeVoiceChannel(
         self._idle_events: dict[str, asyncio.Event] = {}
         self._user_speaking: dict[str, bool] = {}
         self._provider_idle: dict[str, bool] = {}
-        # call_id -> (name, arguments) per session: what a cancellation
-        # report needs when the model abandons a call still in flight.
-        self._pending_tool_calls: dict[str, dict[str, tuple[str, dict[str, Any]]]] = {}
-        # call_id per session whose outcome ON_TOOL_CALL's observers already
-        # received: a cancellation that lands afterwards adds no second one.
-        self._reported_tool_calls: dict[str, set[str]] = {}
+        # The tool calls in flight, per session, each with its one delivery
+        # and its one report (RFC §12.4).
+        self._tool_calls = ToolCallBook()
         self._awaiting_tool_response: set[str] = set()
         # Wall-clock of the last user-turn start (VAD SPEECH_START). Consumed by
         # _realtime_transcription when emitting the final user turn as a
@@ -725,7 +723,7 @@ class RealtimeVoiceChannel(
         user_silent = not self._user_speaking.get(session_id, False)
         drained = session_id in self._audio_drained or session_id not in self._response_generation
         tools_done = (
-            not self._pending_tool_calls.get(session_id)
+            not self._tool_calls.busy(session_id)
             and session_id not in self._awaiting_tool_response
         )
         delegations_done = not self._pending_delegations.get(session_id)
@@ -1202,8 +1200,7 @@ class RealtimeVoiceChannel(
                 idle.set()
             self._user_speaking.pop(session.id, None)
             self._provider_idle.pop(session.id, None)
-            self._pending_tool_calls.pop(session.id, None)
-            self._reported_tool_calls.pop(session.id, None)
+            self._tool_calls.take(session.id)
             self._awaiting_tool_response.discard(session.id)
             self._session_tools.pop(session.id, None)
             self._session_roles.pop(session.id, None)
@@ -1511,6 +1508,7 @@ class RealtimeVoiceChannel(
         # A session hangup must also stop its in-flight tools without touching
         # calls owned by other sessions sharing this channel.
         session.state = VoiceSessionState.ENDED
+        interrupted = self._tool_calls.take(session.id)
         current = asyncio.current_task()
         prefixes = (
             f"rt_tool_call:{session.id}:",
@@ -1530,6 +1528,7 @@ class RealtimeVoiceChannel(
                 logger.warning(
                     "Timed out cancelling %d tools for session %s", len(pending), session.id
                 )
+        await self._report_ended_calls(interrupted)
 
         with self._state_lock:
             room_id = self._session_rooms.get(session.id, session.room_id)
@@ -1594,8 +1593,7 @@ class RealtimeVoiceChannel(
             self._user_speaking.pop(session.id, None)
             self._user_turn_start_at.pop(session.id, None)
             self._provider_idle.pop(session.id, None)
-            self._pending_tool_calls.pop(session.id, None)
-            self._reported_tool_calls.pop(session.id, None)
+            self._tool_calls.take(session.id)
             self._awaiting_tool_response.discard(session.id)
             self._transcript_ledger.pop(session.id, None)
             self._delegated_before.discard(session.id)

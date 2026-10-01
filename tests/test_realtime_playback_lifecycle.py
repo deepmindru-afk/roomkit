@@ -327,7 +327,7 @@ async def test_tool_response_waits_for_acknowledgement_before_idle(late_end, new
     finally:
         release.set()
         await channel.close()
-    assert session.id not in channel._pending_tool_calls
+    assert not channel._tool_calls.busy(session.id)
 
 
 @pytest.mark.parametrize("cancel", [False, True])
@@ -364,14 +364,14 @@ async def test_received_tool_is_busy_while_transcription_hook_blocks(cancel) -> 
             task = next(t for t in channel._scheduled_tasks if "rt_tool_call:" in t.get_name())
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
-            assert not channel._pending_tool_calls.get(session.id)
+            assert not channel._tool_calls.busy(session.id)
         release.set()
         if not cancel:
             await asyncio.wait_for(handled.wait(), 1)
     finally:
         release.set()
         await kit.close()
-    assert session.id not in channel._pending_tool_calls
+    assert not channel._tool_calls.busy(session.id)
     assert session.id not in channel._awaiting_tool_response
 
 

@@ -20,6 +20,7 @@ import threading
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 from uuid import uuid4
 
+from roomkit.channels._realtime_tool_calls import RealtimeToolCall
 from roomkit.core.exceptions import ToolRefusedError
 from roomkit.models.enums import HookTrigger
 from roomkit.telemetry.base import Attr, SpanKind
@@ -119,6 +120,8 @@ class RealtimeDelegationMixin:
     _serve_gated_tool_call: Any  # see RealtimeToolsMixin
     _fire_tool_refusal: Any  # see RealtimeToolsMixin
     _fire_gate_refusal: Any  # see RealtimeToolsMixin
+    _open_tool_call: Any  # see RealtimeToolsMixin
+    _close_tool_call: Any  # see RealtimeToolsMixin
 
     # -----------------------------------------------------------------
     # Transcript ledger
@@ -359,10 +362,21 @@ class RealtimeDelegationMixin:
         """
         if session.state == VoiceSessionState.ENDED:
             return json.dumps({"error": "The session has ended."})
+        call = RealtimeToolCall(
+            session, f"{delegation_id}:{uuid4().hex[:8]}", name, arguments, abandonable=False
+        )
+        self._open_tool_call(call)
+        try:
+            return await self._serve_backend_call(call, delegation_id)
+        finally:
+            self._close_tool_call(call)
+
+    async def _serve_backend_call(self, call: RealtimeToolCall, delegation_id: str) -> str:
+        """Serve a backend's call behind the gate; the text its model reads."""
+        session, name, call_id = call.session, call.name, call.call_id
         with self._state_lock:
             room_id = self._session_rooms.get(session.id)
             parent = self._session_spans.get(session.id)
-        call_id = f"{delegation_id}:{uuid4().hex[:8]}"
         telemetry = self._telemetry_provider
         span_id = telemetry.start_span(
             SpanKind.REALTIME_TOOL_CALL,
@@ -378,8 +392,8 @@ class RealtimeDelegationMixin:
             channel_id=self.channel_id,
         )
         try:
-            arguments, denial, gate_context = await self._authorize_realtime_tool(
-                name, arguments, call_id, room_id, session, channel_serves=False
+            call.arguments, denial, gate_context = await self._authorize_realtime_tool(
+                name, call.arguments, call_id, room_id, session, channel_serves=False
             )
             if denial is not None:
                 logger.info(
@@ -389,13 +403,11 @@ class RealtimeDelegationMixin:
                     session.id,
                 )
                 telemetry.end_span(span_id)
-                await self._fire_gate_refusal(session, call_id, name, arguments, denial, room_id)
+                await self._fire_gate_refusal(call, denial, room_id)
                 return denial.body
 
             try:
-                result_str = await self._serve_gated_tool_call(
-                    session, call_id, name, arguments, room_id, gate_context
-                )
+                result_str = await self._serve_gated_tool_call(call, room_id, gate_context)
             except ToolRefusedError as refusal:
                 # Same shape as the pre-execution denial above: the backend
                 # reads why it was refused, and the span does not report the
@@ -407,9 +419,7 @@ class RealtimeDelegationMixin:
                     delegation_id,
                     session.id,
                 )
-                await self._fire_tool_refusal(
-                    session, call_id, name, arguments, refusal.message, room_id
-                )
+                await self._fire_tool_refusal(call, refusal.message, room_id)
                 return refusal.message
             telemetry.end_span(span_id)
             logger.info(
@@ -430,5 +440,5 @@ class RealtimeDelegationMixin:
                 delegation_id,
                 session.id,
             )
-            await self._report_raised_call(session, call_id, name, arguments, room_id, exc)
+            await self._report_raised_call(call, room_id, exc)
             return tool_failure(name, exc)

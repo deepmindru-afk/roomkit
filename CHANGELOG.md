@@ -96,6 +96,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Each realtime tool call is delivered once and reported once (RMK-306, RFC
+  §12.4), on one book per session that every door of a speech-to-speech
+  channel uses (the provider's function call, a call recovered from speech, a
+  reasoning backend's call):
+  - a second call under an id still running is refused and reported once,
+    and sends nothing: the id's one result is the first call's, which runs
+    on. Both handlers ran and two results went out under one id;
+  - with `mute_on_tool_call`, the input stays muted until the last call in
+    flight ends: the first call to end unmuted it while another still ran;
+  - the session's end reports each call it interrupted, as cancelled, a call
+    recovered from speech included: they ended unreported;
+  - a Tool Search or skill call whose reconfiguration fails once its result
+    went out sends no second result, and a cancellation that lands after the
+    result went out is neither reported nor interrupts the reconfiguration.
+
 - A call whose handler declines it is served by nothing on every path
   (RMK-305, RFC §21.4): a conference reported it served and a call a realtime
   session recovered from speech `completed`, both reading the envelope as a
