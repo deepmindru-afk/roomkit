@@ -186,6 +186,20 @@ async def test_deny_all_keeps_the_prompt_from_promising_denied_tools(
     assert SKILLS_NO_SCRIPTS_NOTE.strip() in prompt
 
 
+async def test_the_sandbox_preamble_claims_no_isolation(streaming: bool) -> None:
+    """A sandbox executor may be a local process, so the prompt must not tell
+    the model its commands run isolated from the host."""
+    provider = MockAIProvider(responses=["ok"], streaming=streaming)
+    ch = AIChannel("ai1", provider=provider, sandbox=_Sandbox())
+
+    await _turn(ch)
+
+    prompt = provider.calls[0].system_prompt or ""
+    assert SANDBOX_PREAMBLE in prompt
+    assert "isolated container" not in prompt
+    assert "Do not assume it is isolated" in prompt
+
+
 async def test_read_stored_result_stays_reachable_under_a_whitelist(streaming: bool) -> None:
     """The eviction re-read only reads: a whitelist that does not name it
     still lets the model page back what the channel evicted."""

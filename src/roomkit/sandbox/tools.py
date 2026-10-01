@@ -25,12 +25,16 @@ SANDBOX_TOOL_PREFIX = "sandbox_"
 # System prompt preamble
 # ---------------------------------------------------------------------------
 
+# The executor may be a container or a local process (SandboxExecutor admits
+# both), so the preamble claims no isolation: telling the model its commands
+# cannot reach the host would be false for a local executor.
 SANDBOX_PREAMBLE = (
-    "You have access to a sandboxed development environment with file reading, "
-    "search, and git capabilities. All commands run in an isolated container "
-    "with token-optimized output. Prefer specific tools (sandbox_read, "
-    "sandbox_grep, sandbox_git) over sandbox_bash for common operations — "
-    "they produce more structured, compact output."
+    "You have access to a development environment with file reading, search, "
+    "and git capabilities, run by the host's sandbox executor with "
+    "token-optimized output. Do not assume it is isolated from the host "
+    "machine. Prefer specific tools (sandbox_read, sandbox_grep, sandbox_git) "
+    "over sandbox_bash for common operations — they produce more structured, "
+    "compact output."
 )
 
 # ---------------------------------------------------------------------------

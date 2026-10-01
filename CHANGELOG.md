@@ -17,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tool call answers an error the model reads (nothing was typed or clicked)
   instead of acting. A host that wants it off sets `pyautogui.FAILSAFE`
   itself.
+- `SANDBOX_PREAMBLE` no longer tells the model that its commands run in an
+  isolated container (RMK-357): a `SandboxExecutor` may be a local process,
+  as the example's is, and the prompt promised an isolation the host may not
+  have. It now says the environment is the host's sandbox executor and not to
+  assume it is isolated from the host machine.
 
 ## [0.94.0] — 2026-10-01
 
