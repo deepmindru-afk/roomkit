@@ -23,8 +23,10 @@ from typing import Any
 import pytest
 
 from roomkit.channels import _conference_activity
-from roomkit.conference import _livekit_session as session_module
+from roomkit.conference import _livekit_departure as departure_module
 from roomkit.conference._livekit_bridge import MAX_QUEUED_EVENTS, EventBridge
+from roomkit.conference._livekit_departure import SessionDeparture
+from roomkit.conference._livekit_media import TrackPumps
 from roomkit.conference._livekit_session import ConferenceEmissions, LiveKitBotSession
 from roomkit.conference._livekit_voice import BotVoiceTrack, VoicePublicationError
 from roomkit.conference.livekit import LiveKitConferenceBackend, LiveKitConfig
@@ -731,6 +733,38 @@ class TestLeaveFailureIsNotSwallowed:
         assert room.disconnects == 2
 
 
+def _departure_for(
+    room: Any,
+    *,
+    session: BotSession | None = None,
+    ended: Callable[..., Awaitable[None]] = _ignore,
+    evict: Callable[[], Awaitable[None]] = _ignore,
+) -> SessionDeparture:
+    """A SessionDeparture on a stand-in room, with real voice, pumps and bridge."""
+    bot = session or BotSession(id="lk-1", room_id="room-1", identity="roomkit")
+    return SessionDeparture(
+        room=room,
+        session=bot,
+        voice=BotVoiceTrack(
+            rtc=SimpleNamespace(),
+            room=room,
+            identity=bot.identity,
+            room_id=bot.room_id,
+            queue_ms=200,
+        ),
+        pumps=TrackPumps(
+            rtc=SimpleNamespace(),
+            room_id=bot.room_id,
+            audio_sink=_ignore,
+            video_sink=_ignore,
+            config=SimpleNamespace(),
+        ),
+        bridge=EventBridge(bot.room_id),
+        report_end=ended,
+        evict=evict,
+    )
+
+
 def _bridge_session(**emitted: Callable[..., Awaitable[None]]) -> Any:
     """A LiveKitBotSession with a fake rtc, for exercising the event bridge."""
 
@@ -919,9 +953,9 @@ class TestTheEventBridgeIsBounded:
             session._put(_ignore, "room-1")
 
         assert session._bridge.queued <= MAX_QUEUED_EVENTS
-        assert session._left is True, "the overflow did not end the session"
-        assert session._ender is not None
-        await asyncio.wait_for(session._ender, timeout=5.0)
+        assert session._departure._left is True, "the overflow did not end the session"
+        assert session._departure._ender is not None
+        await asyncio.wait_for(session._departure._ender, timeout=5.0)
         assert len(reported) == 1
         assert "overflow" in reported[0]
 
@@ -945,15 +979,15 @@ class TestASfuSideDisconnectIsReported:
         bot = BotSession(id="lk-1", room_id="room-1", identity="roomkit")
         session = _session_for(SimpleNamespace(Room=_FakeRoom), session=bot, ended=_ended)
 
-        session._on_disconnected("SIGNAL_CLOSE")
-        assert session._ender is not None
-        await asyncio.wait_for(session._ender, timeout=5.0)
+        session._departure.dropped("SIGNAL_CLOSE")
+        assert session._departure._ender is not None
+        await asyncio.wait_for(session._departure._ender, timeout=5.0)
 
         assert reported == [(bot, "SIGNAL_CLOSE")]
         # The end is terminal: a later leave() has nothing to do, and the
         # disconnect callback firing again reports nothing twice.
         await session.leave()
-        session._on_disconnected("SIGNAL_CLOSE")
+        session._departure.dropped("SIGNAL_CLOSE")
         assert len(reported) == 1
 
     async def test_the_backend_forgets_the_session_it_was_told_about(self) -> None:
@@ -1001,38 +1035,38 @@ class TestAnOverflowEndIsConfirmedBeforeReported:
     async def test_a_refused_disconnect_keeps_the_session_unreported(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(session_module, "OVERFLOW_DISCONNECT_DELAYS_S", (0.0,))
+        monkeypatch.setattr(departure_module, "OVERFLOW_DISCONNECT_DELAYS_S", (0.0,))
         session, room, reported = self._session_with_room()
 
         for _ in range(MAX_QUEUED_EVENTS + 1):
             session._put(_ignore, "room-1")
-        assert session._ender is not None
-        await asyncio.wait_for(session._ender, timeout=5.0)
+        assert session._departure._ender is not None
+        await asyncio.wait_for(session._departure._ender, timeout=5.0)
 
         # Every attempt failed: the end is NOT reported, the session is kept,
         # and nothing will seat a replacement beside a live connection.
         assert room.disconnects == 2
         assert reported == []
-        assert session._disconnected is False
+        assert session._departure._disconnected is False
 
         # leave() retries the disconnect — failure was not terminal — and a
         # requested leave reports nothing: its caller owns the books.
         room.refuse = False
         await session.leave()
-        assert session._disconnected is True
+        assert session._departure._disconnected is True
         assert reported == []
 
     async def test_a_confirmed_disconnect_reports_with_the_loss_counted(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(session_module, "OVERFLOW_DISCONNECT_DELAYS_S", (0.0,))
+        monkeypatch.setattr(departure_module, "OVERFLOW_DISCONNECT_DELAYS_S", (0.0,))
         session, room, reported = self._session_with_room()
         room.refuse = False
 
         for _ in range(MAX_QUEUED_EVENTS + 1):
             session._put(_ignore, "room-1")
-        assert session._ender is not None
-        await asyncio.wait_for(session._ender, timeout=5.0)
+        assert session._departure._ender is not None
+        await asyncio.wait_for(session._departure._ender, timeout=5.0)
 
         assert len(reported) == 1
         assert "overflow" in reported[0]
@@ -1048,7 +1082,7 @@ class TestTheDisconnectIsSingleFlight:
         unhealthy end that loses the race reports nothing.
         """
 
-        monkeypatch.setattr(session_module, "OVERFLOW_DISCONNECT_DELAYS_S", (0.0,))
+        monkeypatch.setattr(departure_module, "OVERFLOW_DISCONNECT_DELAYS_S", (0.0,))
         gate = asyncio.Event()
 
         class _FakeRoom:
@@ -1075,7 +1109,7 @@ class TestTheDisconnectIsSingleFlight:
         # Overflow: the unhealthy end starts its disconnect and suspends in it.
         for _ in range(MAX_QUEUED_EVENTS + 1):
             session._put(_ignore, "room-1")
-        assert session._ender is not None
+        assert session._departure._ender is not None
         deadline = asyncio.get_running_loop().time() + 5.0
         while room.disconnects == 0:
             assert asyncio.get_running_loop().time() < deadline
@@ -1090,10 +1124,10 @@ class TestTheDisconnectIsSingleFlight:
 
         gate.set()
         await asyncio.wait_for(leaving, timeout=5.0)
-        await asyncio.wait_for(session._ender, timeout=5.0)
+        await asyncio.wait_for(session._departure._ender, timeout=5.0)
 
         assert room.disconnects == 1
-        assert session._disconnected is True
+        assert session._departure._disconnected is True
         assert reported == [], "the unhealthy end reported over a requested leave"
 
 
@@ -1139,29 +1173,29 @@ class TestTheDepartureIsBounded:
 
     @pytest.fixture(autouse=True)
     def _short_bound(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(session_module, "DISCONNECT_TIMEOUT_S", 0.05)
+        monkeypatch.setattr(departure_module, "DISCONNECT_TIMEOUT_S", 0.05)
 
     async def test_a_disconnect_that_never_returns_is_settled_by_the_server(self) -> None:
         room = _WedgedRoom()
         evictions = _Evictions()
-        session = _session_for(SimpleNamespace(Room=lambda: room), evict=evictions)
+        departure = _departure_for(room, evict=evictions)
 
-        await asyncio.wait_for(session.leave(), timeout=2.0)
+        await asyncio.wait_for(departure.leave(), timeout=2.0)
 
         assert evictions.calls == 1
-        assert session._disconnected is True
+        assert departure._disconnected is True
         await asyncio.sleep(0)
         assert room._task is not None and room._task.cancelled(), "the stuck listener stayed"
         assert room.disconnects == 1
 
     async def test_a_disconnect_that_returns_asks_nothing_of_the_server(self) -> None:
         evictions = _Evictions()
-        session = _session_for(SimpleNamespace(Room=_FakeRoom), evict=evictions)
+        departure = _departure_for(_FakeRoom(), evict=evictions)
 
-        await asyncio.wait_for(session.leave(), timeout=2.0)
+        await asyncio.wait_for(departure.leave(), timeout=2.0)
 
         assert evictions.calls == 0
-        assert session._disconnected is True
+        assert departure._disconnected is True
 
     async def test_a_failed_eviction_is_a_failed_departure_and_the_next_one_retries(
         self,
@@ -1171,16 +1205,16 @@ class TestTheDepartureIsBounded:
         """
         room = _WedgedRoom()
         evictions = _Evictions(failures=1)
-        session = _session_for(SimpleNamespace(Room=lambda: room), evict=evictions)
+        departure = _departure_for(room, evict=evictions)
 
         with pytest.raises(RuntimeError, match="server unreachable"):
-            await asyncio.wait_for(session.leave(), timeout=2.0)
-        assert session._disconnected is False
+            await asyncio.wait_for(departure.leave(), timeout=2.0)
+        assert departure._disconnected is False
 
-        await asyncio.wait_for(session.leave(), timeout=2.0)
+        await asyncio.wait_for(departure.leave(), timeout=2.0)
 
         assert evictions.calls == 2
-        assert session._disconnected is True
+        assert departure._disconnected is True
         assert room.disconnects == 1, "a second disconnect reached the SDK beside the first"
 
     async def test_a_caller_cancelled_during_the_eviction_finds_the_departure_done(
@@ -1197,23 +1231,23 @@ class TestTheDepartureIsBounded:
             await asyncio.sleep(0.2)
             evicted.set()
 
-        session = _session_for(SimpleNamespace(Room=lambda: room), evict=_slow_eviction)
-        session._bridge.start()
+        departure = _departure_for(room, evict=_slow_eviction)
+        departure._bridge.start()
 
         with pytest.raises(TimeoutError):
-            await asyncio.wait_for(session.leave(), timeout=0.1)
+            await asyncio.wait_for(departure.leave(), timeout=0.1)
         await asyncio.wait_for(evicted.wait(), timeout=2.0)
 
-        await asyncio.wait_for(session.leave(), timeout=2.0)
+        await asyncio.wait_for(departure.leave(), timeout=2.0)
 
         assert room.disconnects == 1
-        assert session._disconnected is True
-        assert session._bridge._consumer is None
+        assert departure._disconnected is True
+        assert departure._bridge._consumer is None
 
     async def test_an_eviction_that_outlasts_its_bound_is_a_failed_departure(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(session_module, "EVICTION_TIMEOUT_S", 0.05)
+        monkeypatch.setattr(departure_module, "EVICTION_TIMEOUT_S", 0.05)
         room = _WedgedRoom()
         attempts = 0
 
@@ -1223,16 +1257,16 @@ class TestTheDepartureIsBounded:
             if attempts == 1:
                 await asyncio.Event().wait()
 
-        session = _session_for(SimpleNamespace(Room=lambda: room), evict=_eviction)
+        departure = _departure_for(room, evict=_eviction)
 
         with pytest.raises(TimeoutError):
-            await asyncio.wait_for(session.leave(), timeout=2.0)
-        assert session._disconnected is False
+            await asyncio.wait_for(departure.leave(), timeout=2.0)
+        assert departure._disconnected is False
 
-        await asyncio.wait_for(session.leave(), timeout=2.0)
+        await asyncio.wait_for(departure.leave(), timeout=2.0)
 
         assert attempts == 2
-        assert session._disconnected is True
+        assert departure._disconnected is True
 
     async def test_an_unhealthy_end_on_a_stuck_sdk_is_settled_and_reported(self) -> None:
         """The overflow and refused-voice ends disconnect through the same
@@ -1246,11 +1280,11 @@ class TestTheDepartureIsBounded:
         async def _ended(bot: Any, reason: str) -> None:
             reported.append(reason)
 
-        session = _session_for(SimpleNamespace(Room=lambda: room), ended=_ended, evict=evictions)
+        departure = _departure_for(room, ended=_ended, evict=evictions)
 
-        session._start_unhealthy_end("voice publication failed: refused")
-        assert session._ender is not None
-        await asyncio.wait_for(session._ender, timeout=2.0)
+        departure.end_unhealthy("voice publication failed: refused")
+        assert departure._ender is not None
+        await asyncio.wait_for(departure._ender, timeout=2.0)
 
         assert reported == ["voice publication failed: refused"]
         assert evictions.calls == 1
@@ -1286,11 +1320,11 @@ class TestTheDepartureIsBounded:
         async def _ended(bot: Any, reason: str) -> None:
             reported.append(reason)
 
-        session = _session_for(SimpleNamespace(Room=lambda: room), ended=_ended, evict=evictions)
+        departure = _departure_for(room, ended=_ended, evict=evictions)
 
-        session._on_disconnected("SIGNAL_CLOSE")
-        assert session._ender is not None
-        await asyncio.wait_for(session._ender, timeout=2.0)
+        departure.dropped("SIGNAL_CLOSE")
+        assert departure._ender is not None
+        await asyncio.wait_for(departure._ender, timeout=2.0)
 
         assert reported == ["SIGNAL_CLOSE"]
         assert evictions.calls == 0
@@ -1299,7 +1333,7 @@ class TestTheDepartureIsBounded:
 
 def test_the_departure_bounds_fit_inside_the_channels_detach_budget() -> None:
     """The backend settles a stuck departure before the channel gives up on it."""
-    settled_within = session_module.DISCONNECT_TIMEOUT_S + session_module.EVICTION_TIMEOUT_S
+    settled_within = departure_module.DISCONNECT_TIMEOUT_S + departure_module.EVICTION_TIMEOUT_S
 
     assert settled_within < _conference_activity.DRAIN_TIMEOUT_S
 
@@ -1355,8 +1389,8 @@ class TestARefusedVoiceEndsTheSession:
         with pytest.raises(VoicePublicationError):
             await session.publish(AudioChunk(data=b"\x00\x00" * 160, sample_rate=48_000))
 
-        assert session._ender is not None
-        await asyncio.wait_for(session._ender, timeout=2.0)
+        assert session._departure._ender is not None
+        await asyncio.wait_for(session._departure._ender, timeout=2.0)
         assert len(reported) == 1
         assert reported[0].startswith("voice publication failed")
         assert "insufficient permissions" in reported[0]
