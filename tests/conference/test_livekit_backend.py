@@ -27,6 +27,7 @@ from roomkit.conference import _livekit_departure as departure_module
 from roomkit.conference._livekit_bridge import MAX_QUEUED_EVENTS, EventBridge
 from roomkit.conference._livekit_departure import SessionDeparture
 from roomkit.conference._livekit_media import TrackPumps
+from roomkit.conference._livekit_room_view import RoomView
 from roomkit.conference._livekit_session import ConferenceEmissions, LiveKitBotSession
 from roomkit.conference._livekit_voice import BotVoiceTrack, VoicePublicationError
 from roomkit.conference.livekit import LiveKitConferenceBackend, LiveKitConfig
@@ -955,7 +956,7 @@ class TestTheEventBridgeIsBounded:
             session._put(_ignore, "room-1")
 
         assert session._bridge.queued <= MAX_QUEUED_EVENTS
-        assert session._departure._left is True, "the overflow did not end the session"
+        assert not session._departure.admitting, "the overflow did not end the session"
         assert session._departure._ender is not None
         await asyncio.wait_for(session._departure._ender, timeout=5.0)
         assert len(reported) == 1
@@ -1516,3 +1517,132 @@ class TestTrackPumps:
         pumps.start(record, SimpleNamespace())
 
         assert pumps._pumps == {}
+
+
+class _Publication:
+    """A stand-in LiveKit track publication that records subscription requests."""
+
+    def __init__(self, sid: str) -> None:
+        self.sid = sid
+        self.kind = "KIND_AUDIO"
+        self.source = "SOURCE_MICROPHONE"
+        self.muted = False
+        self.name = ""
+        self.mime_type = ""
+        self.subscribed: list[bool] = []
+
+    def set_subscribed(self, value: bool) -> None:
+        self.subscribed.append(value)
+
+
+class _NeverEndingStream:
+    """An ``rtc.AudioStream`` that delivers nothing until it is cancelled."""
+
+    def __aiter__(self) -> _NeverEndingStream:
+        return self
+
+    async def __anext__(self) -> Any:
+        await asyncio.Event().wait()
+
+    async def aclose(self) -> None:
+        return None
+
+
+_VIEW_RTC = SimpleNamespace(
+    ParticipantKind=SimpleNamespace(Name=lambda value: value),
+    TrackKind=SimpleNamespace(Name=lambda value: value),
+    TrackSource=SimpleNamespace(Name=lambda value: value),
+    AudioStream=SimpleNamespace(from_track=lambda **kwargs: _NeverEndingStream()),
+)
+
+
+def _participant(identity: str, *publications: _Publication) -> Any:
+    return SimpleNamespace(
+        identity=identity,
+        sid=f"PA_{identity}",
+        kind="PARTICIPANT_KIND_STANDARD",
+        name=identity,
+        metadata="",
+        attributes={},
+        joined_at=None,
+        track_publications={publication.sid: publication for publication in publications},
+    )
+
+
+def _view(queued: list[tuple[Any, tuple[Any, ...]]]) -> tuple[RoomView, TrackPumps]:
+    """A RoomView whose queued emissions land in ``queued``, and its pumps."""
+    pumps = TrackPumps(
+        rtc=_VIEW_RTC,
+        room_id="room-1",
+        audio_sink=_ignore,
+        video_sink=_ignore,
+        config=SimpleNamespace(audio_sample_rate=48_000, audio_channels=1),
+    )
+    emissions = _emissions()
+
+    def _enqueue(emit: Any, *args: Any) -> None:
+        queued.append((emit, args))
+
+    def _enqueue_state(key: Any, emit: Any, *args: Any) -> None:
+        queued.append((emit, args))
+
+    view = RoomView(
+        rtc=_VIEW_RTC,
+        room_id="room-1",
+        emissions=emissions,
+        pumps=pumps,
+        enqueue=_enqueue,
+        enqueue_state=_enqueue_state,
+    )
+    return view, pumps
+
+
+class TestRoomView:
+    """The room's books on fakes: what the live suite alone used to cover."""
+
+    def test_an_arrival_the_catch_up_already_saw_is_announced_once(self) -> None:
+        queued: list[tuple[Any, tuple[Any, ...]]] = []
+        view, _ = _view(queued)
+        publication = _Publication("TR_1")
+        alice = _participant("p-alice", publication)
+
+        view.catch_up(SimpleNamespace(remote_participants={"p-alice": alice}))
+        view.on_participant_connected(alice)
+        view.on_track_published(publication, alice)
+
+        announced = [args[1] for _, args in queued]
+        assert [type(item).__name__ for item in announced] == [
+            "ConferenceParticipant",
+            "ConferenceTrack",
+        ]
+
+    def test_a_subscription_nobody_asked_for_is_undone(self) -> None:
+        view, pumps = _view([])
+        publication = _Publication("TR_1")
+        alice = _participant("p-alice", publication)
+        view.on_track_published(publication, alice)
+
+        view.on_track_subscribed(SimpleNamespace(), publication, alice)
+
+        assert publication.subscribed == [False]
+        assert pumps._pumps == {}
+
+    async def test_a_departed_publisher_takes_its_tracks_off_the_books(self) -> None:
+        """Nothing left to answer a moderation call about, and no pump left
+        running for a track that is gone.
+        """
+        view, pumps = _view([])
+        publication = _Publication("TR_1")
+        alice = _participant("p-alice", publication)
+        view.on_track_published(publication, alice)
+        await view.subscribe("TR_1")
+        view.on_track_subscribed(SimpleNamespace(), publication, alice)
+        assert publication.subscribed == [True]
+        assert view.publisher_identity("TR_1") == "p-alice"
+        assert "TR_1" in pumps._pumps
+
+        view.on_participant_disconnected(alice)
+
+        assert view.publisher_identity("TR_1") is None
+        assert pumps._pumps == {}
+        await pumps.close()

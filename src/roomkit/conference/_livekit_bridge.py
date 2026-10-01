@@ -8,9 +8,9 @@ a roster asked to open a lane for a participant it has never seen has no good
 answer.
 
 The bridge is bounded, and says when it is full rather than dropping anything:
-what a full bridge means is the session's to decide. It knows nothing of rooms,
-sessions or departures. The pumps are deliberately *not* on it: see
-``_livekit_media``.
+what a full bridge means is the session's to decide. It knows nothing of
+sessions or departures; the room id it is given names it in its logs. The pumps
+are deliberately *not* on it: see ``_livekit_media``.
 """
 
 from __future__ import annotations
@@ -50,6 +50,11 @@ class EventBridge:
         self._events: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
         self._pending_state: dict[Any, tuple[Emit, tuple[Any, ...]]] = {}
         self._consumer: asyncio.Task[None] | None = None
+
+    @property
+    def capacity(self) -> int:
+        """How many entries the bridge holds before it refuses one."""
+        return MAX_QUEUED_EVENTS
 
     @property
     def queued(self) -> int:

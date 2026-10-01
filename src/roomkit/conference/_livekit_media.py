@@ -1,10 +1,10 @@
 """Frames from a subscribed LiveKit track into the framework's own types.
 
-Split out from the session that starts them because it is the one part of a bot
-connection that touches no session state: a track goes in, framework frames come
-out, and nothing is decided along the way that anything else depends on. Which
-also means the format declaration — the whole point of having a real backend —
-can be read here without a conference to hold it.
+The pumps (``pump_audio``, ``pump_video``) read nothing of the session: a track
+goes in, framework frames come out, and nothing is decided along the way that
+anything else depends on. Which also means the format declaration — the whole
+point of having a real backend — can be read here without a conference to hold
+it.
 
 One task per subscribed track, so a lane doing its work inline delays that
 track's frames and nobody else's. That is the isolation RFC section 12.10.4 makes

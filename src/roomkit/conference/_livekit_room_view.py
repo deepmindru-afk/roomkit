@@ -13,8 +13,9 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Mapping
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
+from roomkit.conference._livekit_emissions import ConferenceEmissions
 from roomkit.conference._livekit_mapping import (
     participant_record,
     quality_label,
@@ -22,9 +23,6 @@ from roomkit.conference._livekit_mapping import (
 )
 from roomkit.conference._livekit_media import TrackPumps
 from roomkit.conference.models import ConferenceParticipant, ConferenceTrack
-
-if TYPE_CHECKING:
-    from roomkit.conference._livekit_session import ConferenceEmissions
 
 logger = logging.getLogger("roomkit.conference.livekit")
 

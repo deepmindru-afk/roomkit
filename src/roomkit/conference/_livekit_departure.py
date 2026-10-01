@@ -130,8 +130,7 @@ class SessionDeparture:
                     self.session.identity,
                     self.room_id,
                 )
-            await self._pumps.close()
-            await self._voice.close()
+            await self._release_media()
         await self._disconnect_once()
         await self._bridge.stop()
 
@@ -176,6 +175,11 @@ class SessionDeparture:
         # seated — until the disconnect has actually happened.
         self._left = True
         self._ender = asyncio.create_task(self._end_unhealthy(reason))
+
+    async def _release_media(self) -> None:
+        """Stop the track pumps for good, then release the voice."""
+        await self._pumps.close()
+        await self._voice.close()
 
     async def _disconnect_once(self) -> None:
         """One disconnect on the wire at a time, shared by every path.
@@ -262,8 +266,7 @@ class SessionDeparture:
         connection is still live and the report has to wait for the
         disconnect.
         """
-        await self._pumps.close()
-        await self._voice.close()
+        await self._release_media()
         with contextlib.suppress(Exception):
             if not await self._sdk_disconnect():
                 self._release_sdk_listener()
@@ -281,8 +284,7 @@ class SessionDeparture:
         out loud. A later ``leave()`` (a detach, the close) retries the
         disconnect: failure is not terminal, exactly as in :meth:`leave`.
         """
-        await self._pumps.close()
-        await self._voice.close()
+        await self._release_media()
         for attempt, delay in enumerate((0.0, *OVERFLOW_DISCONNECT_DELAYS_S)):
             if self._leave_requested or self._disconnected:
                 # A requested leave() owns the books from the moment it asks;

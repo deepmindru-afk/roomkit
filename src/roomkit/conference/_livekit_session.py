@@ -20,43 +20,21 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
 from typing import Any
 
-from roomkit.conference._livekit_bridge import MAX_QUEUED_EVENTS, EventBridge
+from roomkit.conference._livekit_bridge import EventBridge
 from roomkit.conference._livekit_departure import SessionDeparture
-from roomkit.conference._livekit_media import AudioSink, TrackPumps, VideoSink
+from roomkit.conference._livekit_emissions import ConferenceEmissions
+from roomkit.conference._livekit_media import TrackPumps
 from roomkit.conference._livekit_room_view import RoomView
 from roomkit.conference._livekit_voice import BotVoiceTrack, VoicePublicationError
 from roomkit.conference.models import (
     BotSession,
-    ConferenceParticipant,
     ConferenceTrack,
 )
 from roomkit.voice.base import AudioChunk
 
 logger = logging.getLogger("roomkit.conference.livekit")
-
-
-@dataclass(frozen=True)
-class ConferenceEmissions:
-    """The backend's callback fanout, handed to a session as plain functions.
-
-    A session emits without holding the backend, so what it needs from the
-    backend is stated here rather than discovered by reaching into it.
-    """
-
-    participant_joined: Callable[[str, ConferenceParticipant], Awaitable[None]]
-    participant_left: Callable[[str, ConferenceParticipant], Awaitable[None]]
-    track_published: Callable[[str, ConferenceTrack], Awaitable[None]]
-    track_unpublished: Callable[[str, ConferenceTrack], Awaitable[None]]
-    track_muted: Callable[[str, ConferenceTrack], Awaitable[None]]
-    track_unmuted: Callable[[str, ConferenceTrack], Awaitable[None]]
-    track_audio: AudioSink
-    track_video: VideoSink
-    active_speaker_changed: Callable[[str, str], Awaitable[None]]
-    connection_quality: Callable[[str, str, str], Awaitable[None]]
-    bot_session_ended: Callable[[BotSession, str], Awaitable[None]]
 
 
 class LiveKitBotSession:
@@ -267,9 +245,9 @@ class LiveKitBotSession:
             "mean losing lifecycle facts silently. The bot session is being ended and "
             "re-joined for a consistent view",
             self.room_id,
-            MAX_QUEUED_EVENTS,
+            self._bridge.capacity,
         )
         self._departure.end_unhealthy(
-            f"event queue overflow at {MAX_QUEUED_EVENTS} events; the session's view "
+            f"event queue overflow at {self._bridge.capacity} events; the session's view "
             "of the conference can no longer be trusted"
         )
