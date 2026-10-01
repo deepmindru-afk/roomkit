@@ -30,6 +30,7 @@ import os
 import platform
 import re
 import subprocess  # nosec B404
+import sys
 from typing import TYPE_CHECKING, Any
 
 from roomkit.providers.ai.response_schema import ResponseSchemaError
@@ -425,16 +426,39 @@ async def _find_element(
 # pyautogui wrapper
 # ---------------------------------------------------------------------------
 
+_FAILSAFE_ERROR = (
+    "Stopped by the user: the mouse was moved to a screen corner (pyautogui "
+    "failsafe), so nothing was typed or clicked. Do not retry until the user "
+    "asks you to continue."
+)
+
 
 def _get_pyautogui() -> Any:
-    """Lazy-import pyautogui."""
+    """Lazy-import pyautogui.
+
+    Its failsafe is left as the host set it, on by default: a person who
+    moves the mouse to a screen corner makes every following call raise
+    ``FailSafeException``. That is the only emergency stop a person has
+    over a mouse and keyboard driven by a model, so the library never
+    turns it off; a host that wants it off sets ``pyautogui.FAILSAFE``
+    itself.
+    """
     try:
         import pyautogui
 
-        pyautogui.FAILSAFE = False
         return pyautogui
     except ImportError:
         raise ImportError("pyautogui is required — pip install roomkit[screen-input]") from None
+
+
+def _is_failsafe(exc: BaseException) -> bool:
+    """Whether *exc* is pyautogui's failsafe: the mouse sits in a screen corner.
+
+    pyautogui is necessarily imported once it raised, so the class is read
+    from ``sys.modules`` rather than importing the optional dependency here.
+    """
+    pyautogui = sys.modules.get("pyautogui")
+    return pyautogui is not None and isinstance(exc, pyautogui.FailSafeException)
 
 
 def _clipboard_paste(text: str) -> None:
@@ -516,7 +540,23 @@ class ScreenInputTools:
         name: str,
         arguments: dict[str, Any],
     ) -> str:
-        """Unified tool handler."""
+        """Unified tool handler.
+
+        When the person stops the input with pyautogui's failsafe (mouse in
+        a screen corner), the call answers an error the model reads instead
+        of raising: nothing was typed or clicked, and every further call is
+        refused the same way while the mouse stays there.
+        """
+        try:
+            return await self._dispatch(name, arguments)
+        except Exception as exc:
+            if not _is_failsafe(exc):
+                raise
+            logger.warning("%s refused: pyautogui failsafe (mouse in a screen corner)", name)
+            return json.dumps({"error": _FAILSAFE_ERROR})
+
+    async def _dispatch(self, name: str, arguments: dict[str, Any]) -> str:
+        """Run the tool *name* asks for."""
         if name == "type_text":
             return self._type_text(arguments)
         if name == "press_key":

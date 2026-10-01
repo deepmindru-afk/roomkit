@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- `ScreenInputTools` no longer turns pyautogui's failsafe off (RMK-356): the
+  library set `pyautogui.FAILSAFE = False` for the whole process, so a person
+  watching a model drive their mouse and keyboard had no emergency stop, and
+  the model acts on what it reads on the screen. The failsafe now stays as
+  the host set it, on by default: with the mouse in a screen corner, each
+  tool call answers an error the model reads (nothing was typed or clicked)
+  instead of acting. A host that wants it off sets `pyautogui.FAILSAFE`
+  itself.
+
 ## [0.94.0] — 2026-10-01
 
 ### Added
