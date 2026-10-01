@@ -87,6 +87,10 @@ fastrtc = [
     "numpy>=1.26,<2.5",
     "pydub>=0.25",
     "anyio>=4.0",
+    # roomkit.webrtc mounts its signalling routes on a FastAPI app, and the
+    # examples serve it with uvicorn.
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
 ]
 aicoustics = ["aic-sdk>=2.1"]
 webrtc-aec = ["aec-audio-processing>=0.1"]

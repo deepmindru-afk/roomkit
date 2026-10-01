@@ -5711,6 +5711,7 @@ all = [
     { name = "deepgram-sdk" },
     { name = "discord-py" },
     { name = "elevenlabs" },
+    { name = "fastapi" },
     { name = "google-genai" },
     { name = "gradium" },
     { name = "httpx" },
@@ -5739,6 +5740,7 @@ all = [
     { name = "tiktoken" },
     { name = "transformers", version = "5.15.0", source = { registry = "https://pypi.org/simple" } },
     { name = "twilio" },
+    { name = "uvicorn" },
     { name = "websockets" },
 ]
 anam = [
@@ -5824,10 +5826,12 @@ fastrtc = [
     { name = "aiortc" },
     { name = "anyio" },
     { name = "av" },
+    { name = "fastapi" },
     { name = "librosa", version = "0.11.0", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-7-roomkit-neutts' or (extra == 'extra-7-roomkit-all' and extra == 'extra-7-roomkit-qwen-asr') or (extra == 'extra-7-roomkit-all' and extra == 'extra-7-roomkit-qwen-tts') or (extra == 'extra-7-roomkit-qwen-asr' and extra == 'extra-7-roomkit-qwen-tts') or (extra == 'extra-7-roomkit-qwen-asr' and extra == 'extra-7-roomkit-smart-turn') or (extra == 'extra-7-roomkit-qwen-tts' and extra == 'extra-7-roomkit-smart-turn')" },
     { name = "librosa", version = "1.0.0", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-7-roomkit-all' or extra != 'extra-7-roomkit-neutts' or (extra == 'extra-7-roomkit-neutts' and extra == 'extra-7-roomkit-qwen-asr') or (extra == 'extra-7-roomkit-neutts' and extra == 'extra-7-roomkit-qwen-tts') or (extra == 'extra-7-roomkit-neutts' and extra == 'extra-7-roomkit-smart-turn')" },
     { name = "numpy" },
     { name = "pydub" },
+    { name = "uvicorn" },
 ]
 gemini = [
     { name = "google-genai" },
@@ -6069,6 +6073,8 @@ requires-dist = [
     { name = "elevenlabs", marker = "extra == 'all'", specifier = ">=2.40" },
     { name = "elevenlabs", marker = "extra == 'elevenlabs'", specifier = ">=2.40" },
     { name = "elevenlabs", marker = "extra == 'realtime-elevenlabs'", specifier = ">=2.40" },
+    { name = "fastapi", marker = "extra == 'all'", specifier = ">=0.115" },
+    { name = "fastapi", marker = "extra == 'fastrtc'", specifier = ">=0.115" },
     { name = "google-genai", marker = "extra == 'all'", specifier = ">=2.25.0" },
     { name = "google-genai", marker = "extra == 'dev'", specifier = ">=2.25.0" },
     { name = "google-genai", marker = "extra == 'gemini'", specifier = ">=2.25.0" },
@@ -6207,6 +6213,8 @@ requires-dist = [
     { name = "twilio", marker = "extra == 'twilio'", specifier = ">=9.0" },
     { name = "ty", marker = "extra == 'dev'", specifier = ">=0.0.26" },
     { name = "ultralytics", marker = "extra == 'yolo'", specifier = ">=8.3" },
+    { name = "uvicorn", marker = "extra == 'all'", specifier = ">=0.30" },
+    { name = "uvicorn", marker = "extra == 'fastrtc'", specifier = ">=0.30" },
     { name = "vui-tts", marker = "python_full_version < '3.13' and extra == 'vui'", specifier = ">=1.1.4,<1.2" },
     { name = "websockets", marker = "extra == 'all'", specifier = ">=14.2" },
     { name = "websockets", marker = "extra == 'dev'", specifier = ">=14.2" },

@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `roomkit[fastrtc]` installs fastapi and uvicorn: `roomkit.webrtc` mounts
+  its routes on a FastAPI app, so the extra alone failed at import
+  (RMK-353).
 - `ConferenceGrants.publish_screen_share_audio` (RMK-348, RFC §12.10.2):
   the sound of a screen share — a tab or a screen shared with its audio,
   which LiveKit carries as the `screen_share_audio` source — is a publish
