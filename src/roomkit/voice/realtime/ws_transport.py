@@ -20,18 +20,33 @@ from roomkit.voice.backends.base import (
 )
 from roomkit.voice.base import AudioChunk, VoiceSession
 
+try:  # websockets is optional; a send on a socket its peer closed is a normal end
+    from websockets.exceptions import ConnectionClosed
+
+    _CONNECTION_CLOSED: tuple[type[Exception], ...] = (ConnectionClosed,)
+except ImportError:
+    _CONNECTION_CLOSED = ()
+
 logger = logging.getLogger("roomkit.voice.realtime.ws_transport")
 
 
 class WebSocketRealtimeTransport(VoiceBackend):
     """Concrete WebSocket-based audio transport.
 
-    Protocol:
-    - Client sends: ``{"type": "audio", "data": "<base64 PCM>"}`` or raw binary
+    Protocol (audio is PCM16 little-endian mono, at the channel's input rate
+    from the client and its output rate to it, e.g. 16 kHz in and 24 kHz out
+    with Gemini Live):
+    - Client sends: raw binary frames, or ``{"type": "audio", "data": "<base64 PCM>"}``
+    - Server sends (``audio_format="binary"``, the default): raw binary frames
     - Server sends (``audio_format="base64_json"``): ``{"type": "audio", "data": "<base64 PCM>"}``
-    - Server sends (``audio_format="binary"``): raw binary frame
     - Server sends: ``{"type": "transcription", "text": "...", "role": "...", "is_final": true}``
     - Server sends: ``{"type": "speaking", "speaking": true, "who": "user"|"assistant"}``
+    - Server sends: ``{"type": "clear_audio"}`` (barge-in: drop queued playback),
+      ``{"type": "session_started"}`` and ``{"type": "session_ended"}``
+
+    The connection object is a ``websockets`` server connection: it is
+    iterated for incoming messages and ``send()`` takes bytes or text.
+    ``examples/realtime_voice_gemini.py`` serves one.
 
     Each accepted connection starts a background receive loop that
     decodes incoming audio and fires callbacks.
@@ -118,6 +133,8 @@ class WebSocketRealtimeTransport(VoiceBackend):
                     }
                 )
                 await ws.send(message)
+        except _CONNECTION_CLOSED:
+            logger.debug("Not sending audio to session %s: connection is closed", session.id)
         except Exception:
             logger.exception("Error sending audio to session %s", session.id)
 
@@ -131,6 +148,10 @@ class WebSocketRealtimeTransport(VoiceBackend):
             return
         try:
             await ws.send(json.dumps(message))
+        except _CONNECTION_CLOSED:
+            # The channel says session_ended after the client hung up: the
+            # expected end of a session, not an error.
+            logger.debug("Not sending a message to session %s: connection is closed", session.id)
         except Exception:
             logger.exception("Error sending message to session %s", session.id)
 

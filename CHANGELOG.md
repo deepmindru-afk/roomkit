@@ -165,6 +165,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `WebSocketRealtimeTransport` logs a send to a client that already hung up
+  at DEBUG (RMK-353): the channel tells the client `session_ended` after the
+  socket closed, and every normal end of a session printed an ERROR
+  traceback. Other send failures still log one. The transport's docstring
+  states the audio format and every message the client receives.
 - A SIP video call is answered with one m-line per offered stream (RMK-353,
   RFC 3264 §6): aiosipua answers audio with the offer's video line refused
   (port 0), and `SIPVideoBackend` appended the negotiated video after it, so
