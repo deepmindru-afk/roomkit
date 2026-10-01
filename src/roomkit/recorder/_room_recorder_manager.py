@@ -30,28 +30,58 @@ class RoomRecorderManager:
     def register(
         self, room_id: str, bindings: list[RoomRecorderBinding]
     ) -> list[MediaRecordingHandle]:
-        """Start recordings for all bindings in a room.
+        """Start recordings for all bindings in a room, all or nothing, and file them.
 
         Returns the handles started, so the caller can announce them
         (ON_RECORDING_STARTED, RFC §17.6). A room recorder captures nothing
         until a track is added, so the announcement still precedes any audio.
         """
+        return self.adopt(room_id, self.start(room_id, bindings))
+
+    def start(self, room_id: str, bindings: list[RoomRecorderBinding]) -> list[_ActiveBinding]:
+        """Start every enabled binding for *room_id*, all or nothing, without filing them.
+
+        A binding that refuses stops the ones already started, and its error is
+        raised (RFC §12.11): nothing keeps running for a room that will not
+        record. The registry is left alone, so a caller that then fails to
+        create the room gives the recordings up with :meth:`discard`.
+        """
         active: list[_ActiveBinding] = []
-        for binding in bindings:
-            if not binding.enabled:
-                continue
-            handle = binding.recorder.on_recording_start(binding.config)
-            handle.room_id = room_id
-            active.append((binding, handle))
-            logger.info(
-                "Room recording started: %s (recorder=%s, room=%s)",
-                handle.id,
-                binding.recorder.name,
-                room_id,
-            )
+        try:
+            for binding in bindings:
+                if binding.enabled:
+                    active.append((binding, self._start_one(room_id, binding)))
+        except BaseException:
+            self.discard(active)
+            raise
+        return active
+
+    @staticmethod
+    def _start_one(room_id: str, binding: RoomRecorderBinding) -> MediaRecordingHandle:
+        handle = binding.recorder.on_recording_start(binding.config)
+        handle.room_id = room_id
+        logger.info(
+            "Room recording started: %s (recorder=%s, room=%s)",
+            handle.id,
+            binding.recorder.name,
+            room_id,
+        )
+        return handle
+
+    def adopt(self, room_id: str, active: list[_ActiveBinding]) -> list[MediaRecordingHandle]:
+        """File recordings :meth:`start` opened under *room_id*; returns their handles."""
         if active:
             self._registry[room_id] = active
         return [handle for _binding, handle in active]
+
+    @staticmethod
+    def discard(active: list[_ActiveBinding]) -> None:
+        """Stop recordings that were started but never filed under a room."""
+        for binding, handle in active:
+            try:
+                binding.recorder.on_recording_stop(handle)
+            except Exception:
+                logger.exception("Failed to stop discarded room recording %s", handle.id)
 
     def on_track_added(self, room_id: str, track: RecordingTrack) -> None:
         """Notify all recorders in a room about a new track."""

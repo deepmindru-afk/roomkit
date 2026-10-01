@@ -119,17 +119,7 @@ class RoomLifecycleMixin(HelpersMixin):
                 else self._default_agent_response_policy
             ),
         )
-        result = await self._store.create_room(room)
-        # Start room-level media recorders, and announce each one.
-        #
-        # ON_RECORDING_STARTED is the consent point (RFC §17.6), and this path
-        # fired nothing at all — a room could be recorded with no hook ever
-        # telling the integrator to notify anyone. A room recorder captures
-        # nothing until a track is added, so announcing here still precedes any
-        # audio.
-        if recorders:
-            for handle in self._room_recorder_mgr.register(room.id, recorders):
-                await self._fire_recording_started(room.id, handle.id)
+        result = await self._store_recorded_room(room, recorders or [])
 
         # Apply orchestration strategy
         orch = (
@@ -161,6 +151,26 @@ class RoomLifecycleMixin(HelpersMixin):
             "room_created", room_id=room.id, data={"room_id": room.id}
         )
         return result
+
+    async def _store_recorded_room(self, room: Room, recorders: list[RoomRecorderBinding]) -> Room:
+        """Store a new room with its recorders running and announced (RFC §12.11).
+
+        The recorders start first, all or nothing, so one that refuses fails
+        the creation before anything is written; a store write that fails
+        stops them. Once the room exists they are filed under it and each is
+        announced: ON_RECORDING_STARTED is the consent point (RFC §17.6), and a
+        room recorder captures nothing until a track is added, so the
+        announcement still precedes any audio.
+        """
+        started = self._room_recorder_mgr.start(room.id, recorders)
+        try:
+            stored = await self._store.create_room(room)
+        except BaseException:
+            self._room_recorder_mgr.discard(started)
+            raise
+        for handle in self._room_recorder_mgr.adopt(room.id, started):
+            await self._fire_recording_started(room.id, handle.id)
+        return stored
 
     async def _fire_recording_started(self, room_id: str, recording_id: str) -> None:
         """Announce a room-level recording (ON_RECORDING_STARTED, RFC §17.6)."""

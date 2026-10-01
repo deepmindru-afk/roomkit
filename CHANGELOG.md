@@ -50,6 +50,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A room recorder that refuses to start no longer leaves a half-created room
+  (RMK-365, RFC §12.11): `create_room` wrote the room, then started its
+  recorders, so a refusal (an unencrypted `PyAVMediaRecorder` since RMK-69)
+  raised with the room already stored, without its orchestration or
+  `ON_ROOM_CREATED`. Recorders bound at creation now start first, all or
+  nothing, and a refusal raises before anything is written; a room write
+  that fails stops them, leaving an existing room's recordings alone. With
+  several recorders, one that refused used to leave those started before it
+  running and unregistered; they are stopped. `ON_RECORDING_STARTED` still
+  fires once the room exists.
 - `RealtimeVoiceChannel` fires `ON_RECORDING_STARTED` and
   `ON_RECORDING_STOPPED` for the recorder of its audio pipeline (RMK-355, RFC
   §17.6): it records through the same pipeline as `VoiceChannel` but never

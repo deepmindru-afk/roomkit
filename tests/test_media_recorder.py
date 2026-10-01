@@ -4,23 +4,53 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from roomkit import (
+    HookExecution,
+    HookTrigger,
     RoomKit,
     VideoChannel,
     VoiceChannel,
 )
+from roomkit.models.room import Room
 from roomkit.recorder._room_recorder_manager import RoomRecorderManager
 from roomkit.recorder.base import (
     ChannelRecordingConfig,
     MediaRecordingConfig,
+    MediaRecordingHandle,
     RecordingTrack,
     RoomRecorderBinding,
 )
 from roomkit.recorder.mock import MockMediaRecorder
+from roomkit.store.memory import InMemoryStore
 from roomkit.video.backends.mock import MockVideoBackend
 from roomkit.video.video_frame import VideoFrame
 from roomkit.voice.backends.mock import MockVoiceBackend
 from roomkit.voice.pipeline.config import AudioPipelineConfig
+
+
+class _RefusingRecorder(MockMediaRecorder):
+    """A recorder whose configuration is refused, as an unencrypted PyAV one is."""
+
+    def on_recording_start(self, config: MediaRecordingConfig) -> MediaRecordingHandle:
+        raise ValueError("requires encryption or storage_encrypted_at_rest=True")
+
+
+class _FailingStore(InMemoryStore):
+    """A store whose room writes fail once ``failing`` is set."""
+
+    failing = False
+
+    async def create_room(self, room: Room) -> Room:
+        if self.failing:
+            raise RuntimeError("room write failed")
+        return await super().create_room(room)
+
+
+def _binding(recorder: MockMediaRecorder) -> RoomRecorderBinding:
+    return RoomRecorderBinding(recorder=recorder, config=MediaRecordingConfig())
+
 
 # ---------------------------------------------------------------------------
 # Unit tests for MockMediaRecorder
@@ -120,6 +150,82 @@ class TestRoomRecorderManager:
 
         assert len(r1.chunks) == 1
         assert len(r2.chunks) == 1
+
+    def test_register_is_all_or_nothing(self) -> None:
+        mgr = RoomRecorderManager()
+        started = MockMediaRecorder()
+
+        with pytest.raises(ValueError, match="requires encryption"):
+            mgr.register("room-1", [_binding(started), _binding(_RefusingRecorder())])
+
+        assert started.handles[0].state == "stopped"
+        assert not mgr.has_recorders("room-1")
+
+    def test_start_files_nothing_until_adopted(self) -> None:
+        mgr = RoomRecorderManager()
+        active = mgr.start("room-1", [_binding(MockMediaRecorder())])
+        assert not mgr.has_recorders("room-1")
+
+        handles = mgr.adopt("room-1", active)
+
+        assert mgr.has_recorders("room-1")
+        assert handles[0].room_id == "room-1"
+
+
+class TestRoomCreationWithRecorders:
+    """A recorder that refuses fails room creation before anything is written (RFC §12.11)."""
+
+    async def test_a_refusing_recorder_writes_no_room(self) -> None:
+        kit = RoomKit()
+
+        with pytest.raises(ValueError, match="requires encryption"):
+            await kit.create_room(room_id="r1", recorders=[_binding(_RefusingRecorder())])
+
+        assert await kit.store.get_room("r1") is None
+        await kit.close()
+
+    async def test_a_refusal_stops_the_recordings_already_started(self) -> None:
+        kit = RoomKit()
+        started = MockMediaRecorder()
+
+        with pytest.raises(ValueError):
+            await kit.create_room(
+                room_id="r1", recorders=[_binding(started), _binding(_RefusingRecorder())]
+            )
+
+        assert started.handles[0].state == "stopped"
+        assert not kit._room_recorder_mgr.has_recorders("r1")  # noqa: SLF001
+        await kit.close()
+
+    async def test_a_failed_room_write_stops_its_recordings_only(self) -> None:
+        store = _FailingStore()
+        kit = RoomKit(store=store)
+        existing = MockMediaRecorder()
+        await kit.create_room(room_id="r1", recorders=[_binding(existing)])
+        store.failing = True
+        newcomer = MockMediaRecorder()
+
+        with pytest.raises(RuntimeError, match="room write failed"):
+            await kit.create_room(room_id="r1", recorders=[_binding(newcomer)])
+
+        assert newcomer.handles[0].state == "stopped"
+        assert existing.handles[0].state == "recording"
+        assert kit._room_recorder_mgr.has_recorders("r1")  # noqa: SLF001
+        await kit.close()
+
+    async def test_recordings_are_announced_once_the_room_exists(self) -> None:
+        kit = RoomKit()
+        announced: list[str] = []
+
+        @kit.hook(HookTrigger.ON_RECORDING_STARTED, execution=HookExecution.ASYNC)
+        async def on_started(event: object, ctx: object) -> None:
+            announced.append(ctx.room.id)  # type: ignore[attr-defined]
+
+        await kit.create_room(room_id="r1", recorders=[_binding(MockMediaRecorder())])
+        await asyncio.sleep(0.05)
+
+        assert announced == ["r1"]
+        await kit.close()
 
 
 # ---------------------------------------------------------------------------
