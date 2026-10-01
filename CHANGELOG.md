@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ToolCallResult` and `ReasoningRequest.execute_tool_call` (RMK-306, RFC
+  §12.4.1): a reasoning backend's tool call returns its text and whether it
+  failed, so the backend's model reads a refused, failed or unserved call as
+  one. `execute_tool` still returns the text alone; the built-in
+  `AIProviderReasoningBackend` uses the new one and marks such a call
+  `is_error`, where its model read every call as a success.
+
 - `tool_timeout_seconds` and `tool_timeouts` on `AIChannel`,
   `RealtimeVoiceChannel` and `ConferenceRealtimeConfig`, and
   `ToolTimeoutError` (RMK-366, RFC §21.6): how long one tool call may take,
@@ -102,6 +109,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bucket), on `MediaRecordingConfig` or `ConferenceRecordingConfig`.
 
 ### Fixed
+
+- Every door of a speech-to-speech channel serves a tool call through one
+  sequence (RMK-306, RFC §12.4): gate, serving, ON_TOOL_CALL, bound,
+  delivery, report. What each door had of its own is gone with its copy:
+  - the provider's calls, the calls recovered from speech and a reasoning
+    backend's calls run inside the tool call context: `current_tool_call()`
+    was `None`, so a `HumanInputToolHandler` filed its request with an empty
+    room;
+  - the results of Tool Search and of reading a skill's references are
+    bounded by `tool_result_max_length`, as any result is; an activated
+    skill's instructions and the complete schema `list_tools(name=...)`
+    reads are not. The truncation note says how long the result was, not
+    that "the full content has been delivered to the client";
+  - a recovered call whose outcome cannot be injected is reported with the
+    call's own failure.
 
 - A realtime session and a conference emit the `before_tool_use` framework
   event for every tool call, as an `AIChannel` does (RMK-306): they emitted it

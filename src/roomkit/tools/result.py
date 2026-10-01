@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import logging
 from typing import Any
 
 from pydantic import BaseModel, TypeAdapter, ValidationError
@@ -23,6 +24,8 @@ from roomkit.models.tool_call import (
     renderable_copy,
 )
 from roomkit.providers.ai.base import AIImagePart, AITextPart
+
+logger = logging.getLogger("roomkit.tools.result")
 
 ToolResult = str | list[AITextPart | AIImagePart]
 
@@ -138,6 +141,17 @@ def is_unknown_tool_answer(result: Any) -> bool:
         error = parsed.get("error", "")
         return isinstance(error, str) and error.lower().startswith("unknown tool")
     return False
+
+
+def bounded_result(text: str, limit: int, name: str) -> str:
+    """*text* cut to *limit* characters with a note saying so, for a model
+    that reads a tool result whole (RFC §21.5): a speech-to-speech session
+    keeps no store to read the rest back from."""
+    if len(text) <= limit:
+        return text
+    logger.warning("Tool result for %s truncated from %d to %d chars", name, len(text), limit)
+    notice = f"\n... [truncated: the result was {len(text)} characters]"
+    return text[: max(limit - len(notice), 0)] + notice
 
 
 def tool_failure(name: str, exc: BaseException) -> str:

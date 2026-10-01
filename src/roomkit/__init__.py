@@ -216,6 +216,7 @@ from roomkit.voice.realtime.reasoning import (
     ReasoningBackend,
     ReasoningOutput,
     ReasoningRequest,
+    ToolCallResult,
     TranscriptLine,
 )
 from roomkit.voice.stt.language import STTLanguageLock
@@ -332,6 +333,7 @@ __all__ = [
     "ReasoningBackend",
     "ReasoningOutput",
     "ReasoningRequest",
+    "ToolCallResult",
     "TranscriptLine",
     "SMSChannel",
     "StdioACPTransport",

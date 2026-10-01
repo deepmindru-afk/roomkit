@@ -20,16 +20,14 @@ import contextlib
 import logging
 import re
 import threading
-from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, cast, runtime_checkable
 from uuid import uuid4
 
-from roomkit.channels._realtime_tool_calls import RealtimeToolCall, ToolCallBook
-from roomkit.channels._realtime_tools import _hook_outcome
-from roomkit.core.exceptions import ToolRefusedError, UnservedToolCallError
-from roomkit.models.enums import ChannelType
-from roomkit.models.tool_call import ToolCallEvent
-from roomkit.telemetry.base import Attr, SpanKind
-from roomkit.tools.result import result_text, tool_failure
+from roomkit.channels._realtime_tool_calls import RealtimeToolCall
+from roomkit.channels._realtime_tool_executor import ToolCallHost, run_tool_call
+from roomkit.telemetry.base import SpanKind
+from roomkit.tools._outcome import OutcomeKind, ToolOutcome
+from roomkit.tools.result import result_text
 from roomkit.voice.base import VoiceSessionState
 
 if TYPE_CHECKING:
@@ -38,9 +36,6 @@ if TYPE_CHECKING:
     from roomkit.voice.realtime.provider import RealtimeVoiceProvider
 
 logger = logging.getLogger("roomkit.channels.realtime_voice")
-
-# A recovered call no handler served, told apart from a handler that answered None.
-_UNSERVED = object()
 
 # ``call:tool_name{...}`` said as a sentence of its own that ends the utterance:
 # at the start of the text or of a line, or after a sentence's end (a closing
@@ -82,38 +77,11 @@ class RealtimeToolRecoveryHost(Protocol):
 
     def _track_task(self, loop: Any, coro: Any, *, name: str) -> Any: ...
 
-    async def _authorize_realtime_tool(
-        self,
-        name: str,
-        arguments: dict[str, Any],
-        call_id: str,
-        room_id: str | None,
-        session: VoiceSession,
-        *,
-        channel_serves: bool = True,
-    ) -> tuple[dict[str, Any], str | None, Any]: ...
+    def _open_tool_call(self, call: RealtimeToolCall) -> bool: ...
 
-    async def _fire_tool_hook_outcome(
-        self,
-        tool_event: Any,
-        room_id: str,
-        handler_result: str | None,
-        call: RealtimeToolCall,
-        carrying: Any = None,
-    ) -> tuple[str, bool]: ...
+    def _close_tool_call(self, call: RealtimeToolCall) -> None: ...
 
-    async def _call_tool_handler(
-        self,
-        session: VoiceSession,
-        name: str,
-        arguments: dict[str, Any],
-        room_id: str | None,
-        gate_context: Any,
-    ) -> Any: ...
-
-    def _truncate_tool_result(
-        self, result_str: str, name: str, call_id: str, session_id: str
-    ) -> str: ...
+    def _tool_call_span(self, call: RealtimeToolCall, kind: Any, prefix: str) -> Any: ...
 
 
 class RealtimeToolRecoveryMixin:
@@ -135,18 +103,10 @@ class RealtimeToolRecoveryMixin:
     _telemetry_provider: Any
 
     _track_task: Any  # cross-mixin
-    _authorize_realtime_tool: Any  # cross-mixin (RealtimeToolsMixin)
-    _fire_tool_hook_outcome: Any  # cross-mixin (RealtimeToolsMixin)
-    _tool_calls: ToolCallBook  # RealtimeVoiceChannel
     _open_tool_call: Any  # cross-mixin (RealtimeToolsMixin)
     _close_tool_call: Any  # cross-mixin (RealtimeToolsMixin)
-    _fire_tool_refusal: Any  # cross-mixin (RealtimeToolsMixin)
-    _fire_gate_refusal: Any  # cross-mixin (RealtimeToolsMixin)
-    _report_raised_call: Any  # cross-mixin (RealtimeToolsMixin)
-    _call_tool_handler: Any  # cross-mixin (RealtimeToolsMixin)
-    _serves_tool: Any  # cross-mixin (RealtimeToolsMixin)
+    _tool_call_span: Any  # cross-mixin (RealtimeToolsMixin)
     _session_catalogue: Any  # cross-mixin (RealtimeToolsMixin)
-    _truncate_tool_result: Any  # cross-mixin (RealtimeToolsMixin)
 
     # ------------------------------------------------------------------
     # Public entry point (called from _realtime_transcription.py)
@@ -245,20 +205,14 @@ class RealtimeToolRecoveryMixin:
         Never ``submit_tool_result``: the model spoke the call instead of
         issuing it, so it has no pending ``FunctionResponse`` to answer. A
         denial travels the same way as a result — the model reads why it was
-        refused and can correct itself on its next turn.
-
-        Oversized results go through the channel's own truncation, so this path
-        honours the host's ``tool_result_max_length`` and the model is told the
-        result was cut instead of reading a sentence that stops mid-word.
+        refused and can correct itself on its next turn. The result arrives
+        bounded by the channel's ``tool_result_max_length`` (RFC §21.5).
         """
         if session.state == VoiceSessionState.ENDED:
             return
-        summary = result_str
-        if len(summary) > self._tool_result_max_length:
-            summary = self._truncate_tool_result(summary, tool_name, call_id, session.id)
         await self._provider.inject_text(
             session,
-            f"[Tool {tool_name} {verb}: {summary}]",
+            f"[Tool {tool_name} {verb}: {result_str}]",
             role="user",
             silent=True,
         )
@@ -270,7 +224,8 @@ class RealtimeToolRecoveryMixin:
         arguments: dict[str, Any],
         raw_text: str,
     ) -> None:
-        """Execute a recovered tool call and inject the result as context."""
+        """Serve a recovered tool call behind the gate, as any realtime call
+        (RFC §12.4), and inject its outcome as context."""
         if session.state == VoiceSessionState.ENDED:
             return
         call = RealtimeToolCall(
@@ -279,155 +234,45 @@ class RealtimeToolRecoveryMixin:
         call.task = asyncio.current_task()
         self._open_tool_call(call)
         try:
-            await self._serve_recovered_call(call)
+            with self._tool_call_span(
+                call, SpanKind.REALTIME_TOOL_RECOVERY, "recovered_tool"
+            ) as span:
+                # The channel's RealtimeToolsMixin is the host of every door.
+                host = cast("ToolCallHost", self)
+                outcome = await run_tool_call(host, call, _RecoveredDoor(self))
+                span.close(outcome)
         finally:
             self._close_tool_call(call)
-
-    async def _serve_recovered_call(self, call: RealtimeToolCall) -> None:
-        """Serve a recovered call behind the gate and inject its outcome."""
-        session, tool_name, call_id = call.session, call.name, call.call_id
-
-        with self._state_lock:
-            room_id = self._session_rooms.get(session.id)
-
-        telemetry = self._telemetry_provider
-        span_id = telemetry.start_span(
-            SpanKind.REALTIME_TOOL_RECOVERY,
-            f"recovered_tool:{tool_name}",
-            attributes={
-                Attr.REALTIME_TOOL_NAME: tool_name,
-            },
-            room_id=room_id,
-            session_id=session.id,
-            channel_id=self.channel_id,
+        logger.info(
+            "Recovered tool %s(%s) %s for session %s",
+            tool_name,
+            call.call_id,
+            outcome.kind,
+            session.id,
         )
 
-        try:
-            # Same pre-execution gate as a call that arrived through the
-            # function calling API (_realtime_tools._handle_tool_call): the
-            # arguments here were reconstructed from free text, so they are
-            # less trustworthy than a real function call's, not more.
-            call.arguments, denial, gate_context = await self._authorize_realtime_tool(
-                tool_name, call.arguments, call_id, room_id, session, channel_serves=False
-            )
-            if session.state == VoiceSessionState.ENDED:
-                telemetry.end_span(span_id, status="cancelled")
-                return
-            if denial is not None:
-                await self._inject_recovered_result(
-                    session, tool_name, call_id, denial.body, verb="denied"
-                )
-                # The recovery span is the only signal this path emits, so a
-                # refusal has to be legible in a trace, not just in the logs.
-                telemetry.end_span(span_id, attributes={Attr.REALTIME_TOOL_DENIED: True})
-                logger.info(
-                    "Recovered tool %s(%s) denied before execution for session %s",
-                    tool_name,
-                    call_id,
-                    session.id,
-                )
-                # Observed like a denial on the function-calling path: an audit
-                # hook sees the refusal, and nothing that could serve it does.
-                await self._fire_gate_refusal(call, denial, room_id)
-                return
 
-            # Run tool_handler.
-            handler_result: str | None = None
-            if self._serves_tool(tool_name, room_id or session.room_id):
-                refused: str | None = None
-                raw: Any = _UNSERVED
-                try:
-                    raw = await self._call_tool_handler(
-                        session, tool_name, call.arguments, room_id, gate_context
-                    )
-                except ToolRefusedError as refusal:
-                    refused = refusal.message
-                except UnservedToolCallError:
-                    pass  # nothing served it: the hooks may still (RFC §21.4)
-                if refused is not None:
-                    # Ends the call the way the pre-execution denial above
-                    # does, and for the same reason: the model reads why it was
-                    # refused, in the handler's words, and can correct itself.
-                    await self._inject_recovered_result(
-                        session, tool_name, call_id, refused, verb="denied"
-                    )
-                    telemetry.end_span(span_id, attributes={Attr.REALTIME_TOOL_DENIED: True})
-                    logger.info(
-                        "Recovered tool %s(%s) refused by its handler for session %s",
-                        tool_name,
-                        call_id,
-                        session.id,
-                    )
-                    await self._fire_tool_refusal(call, refused, room_id)
-                    return
-                handler_result = None if raw is _UNSERVED else result_text(raw)
+class _RecoveredDoor:
+    """A call recovered from speech: the model issued no call, so its outcome
+    goes back as injected context, never as a tool result (RFC §12.4)."""
 
-            # Fire ON_TOOL_CALL hook (for observability / overrides).
-            tool_event = ToolCallEvent(
-                channel_id=self.channel_id,
-                channel_type=ChannelType.REALTIME_VOICE,
-                tool_call_id=call_id,
-                name=tool_name,
-                arguments=call.arguments,
-                result=handler_result,
-                room_id=room_id,
-                session=session,
-            )
+    channel_serves = False
 
-            # Same ON_TOOL_CALL dispatch as the API path, so a hook that
-            # raises is reported to the model rather than swallowed, and a
-            # recovered call shows up in the framework event feed like any
-            # other tool call.
-            failed = False
-            if self._framework and room_id:
-                result_str, failed = await self._fire_tool_hook_outcome(
-                    tool_event, room_id, handler_result, call, gate_context
-                )
-            else:
-                result_str, failed = _hook_outcome(None, handler_result, tool_name)
+    def __init__(self, channel: RealtimeToolRecoveryMixin) -> None:
+        self._channel = channel
 
-            verb = "failed" if failed else "completed"
-            await self._inject_recovered_result(session, tool_name, call_id, result_str, verb=verb)
+    async def deliver(self, call: RealtimeToolCall, outcome: ToolOutcome) -> bool:
+        verb = _VERBS.get(outcome.kind, "failed")
+        await self._channel._inject_recovered_result(
+            call.session, call.name, call.call_id, result_text(outcome.result), verb=verb
+        )
+        return True
 
-            telemetry.end_span(span_id)
-            logger.info(
-                "Recovered tool %s(%s) executed for session %s (result_len=%d)",
-                tool_name,
-                call_id,
-                session.id,
-                len(result_str),
-            )
 
-        except asyncio.CancelledError:
-            telemetry.end_span(span_id, status="cancelled")
-            raise
-        except Exception as exc:
-            telemetry.end_span(span_id, status="error", error_message=f"recovery:{tool_name}")
-            logger.exception(
-                "Error executing recovered tool call %s for session %s",
-                tool_name,
-                session.id,
-            )
-            await self._fail_recovered_call(call, room_id, exc)
-
-    async def _fail_recovered_call(
-        self, call: RealtimeToolCall, room_id: str | None, exc: Exception
-    ) -> None:
-        """Tell the model and the observers that a recovered call failed (RFC §9.3).
-
-        The model reads the failure without the exception's message; the
-        observers get it, whether or not the model could be told (a dropped
-        socket is likely just when things fail), and never for a call they
-        already heard of.
-        """
-        try:
-            body = tool_failure(call.name, exc)
-            await self._inject_recovered_result(
-                call.session, call.name, call.call_id, body, verb="failed"
-            )
-        except Exception:
-            logger.exception("Could not tell the model the recovered call %s failed", call.name)
-        await self._report_raised_call(call, room_id, exc)
+_VERBS: dict[OutcomeKind, Literal["completed", "denied", "failed"]] = {
+    OutcomeKind.SERVED: "completed",
+    OutcomeKind.REFUSED: "denied",
+}
 
 
 # ------------------------------------------------------------------

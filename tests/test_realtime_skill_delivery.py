@@ -18,6 +18,15 @@ from tests.test_realtime_fixed_tools import FixedProvider, call, tool
 from tests.test_realtime_skills import _make_skill, _registry_with_skill
 
 
+async def raw_call(channel, provider, session, name, args):
+    """The text a call's result went out as, which a bound may have cut."""
+    call_id = f"raw-{len(provider.tool_results)}"
+    await provider.simulate_tool_call(session, call_id, name, args)
+    await asyncio.gather(*list(channel._scheduled_tasks))
+    assert provider.tool_results[-1][:2] == (session.id, call_id)
+    return provider.tool_results[-1][2]
+
+
 @asynccontextmanager
 async def running(registry, *, provider=None, **kwargs):
     provider = provider or FixedProvider()
@@ -66,7 +75,8 @@ async def test_complete_body_references_and_prerequisite_schema_after_eighth_ski
         assert provider.connect.call_args.kwargs["provider_config"]["preserve_context"] is True
         assert "call_tool" in {t["name"] for t in connected["tools"]}
         assert "calendar" not in {t["name"] for t in connected["tools"]}
-        denied = await call(
+        # The refusal is bounded too (RFC §21.5): read as text, not as JSON.
+        denied = await raw_call(
             channel,
             provider,
             session,
@@ -76,7 +86,7 @@ async def test_complete_body_references_and_prerequisite_schema_after_eighth_ski
                 "arguments_json": '{"action":"list"}',
             },
         )
-        assert "error" in denied
+        assert "truncated" in denied  # a refusal of more than 40 characters
         handler.assert_not_awaited()
         for _ in range(2):
             result = await call(
@@ -87,17 +97,16 @@ async def test_complete_body_references_and_prerequisite_schema_after_eighth_ski
             assert result["references"] == ["guide.md"]
         assert result["already_active"] is True
         assert len(channel._skill_support._activated_bodies[session.id]) == 1
-        result = await call(
+        # A reference is data, bounded as any tool result is; the
+        # instructions above are not (RFC §21.5, §24.4).
+        read = await raw_call(
             channel,
             provider,
             session,
             "read_skill_reference",
-            {
-                "skill_name": "test-skill",
-                "filename": "guide.md",
-            },
+            {"skill_name": "test-skill", "filename": "guide.md"},
         )
-        assert result["content"] == reference
+        assert read.endswith("characters]") and "Reference detail" not in read
         result = await call(
             channel,
             provider,

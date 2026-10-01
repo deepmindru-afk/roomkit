@@ -31,9 +31,9 @@ from roomkit.providers.ai.base import (
     AITool,
     AIToolCall,
     AIToolCallPart,
-    AIToolResultPart,
 )
 from roomkit.providers.ai.tool_calls import cut_call_error
+from roomkit.tools._outcome import OutcomeKind, ToolOutcome
 from roomkit.tools.result import tool_failure
 
 if TYPE_CHECKING:
@@ -44,6 +44,24 @@ logger = logging.getLogger("roomkit.voice.realtime.reasoning")
 
 ToolExecutor = Callable[[str, dict[str, Any]], Awaitable[str]]
 """``(name, arguments) -> result`` — runs one tool call through the channel's gate."""
+
+
+@dataclass(frozen=True)
+class ToolCallResult:
+    """One tool call's outcome, as a backend's model reads it (RFC §12.4.1).
+
+    Attributes:
+        text: What the model reads: the result, or why the call failed.
+        is_error: The call was refused, failed, blocked, served by nothing or
+            cancelled, as every tool loop marks such a call (RFC §9.3).
+    """
+
+    text: str
+    is_error: bool = False
+
+
+ToolCallExecutor = Callable[[str, dict[str, Any]], Awaitable[ToolCallResult]]
+"""``(name, arguments) -> ToolCallResult`` — the same call, with its outcome."""
 
 DEFAULT_TRANSCRIPT_INSTRUCTION = "Act on the user's most recent request in the conversation above."
 
@@ -74,6 +92,9 @@ class ReasoningRequest:
             gate (declared catalogue, argument schema, skill gating,
             ``BEFORE_TOOL_USE``, ``ON_TOOL_CALL``) and returns the result
             text. A backend MUST route its tool calls through it.
+        execute_tool_call: The same call, returning a :class:`ToolCallResult`
+            that also says whether it failed, so the backend's model reads a
+            refused or failed call as one. A backend SHOULD prefer it.
     """
 
     session: VoiceSession
@@ -82,6 +103,7 @@ class ReasoningRequest:
     first: bool
     tools: list[dict[str, Any]] = field(default_factory=list)
     execute_tool: ToolExecutor | None = None
+    execute_tool_call: ToolCallExecutor | None = None
 
 
 @dataclass(frozen=True)
@@ -267,23 +289,28 @@ class AIProviderReasoningBackend(ReasoningBackend):
         for tc in calls:
             if tc.partial:
                 # Cut before its arguments were complete: it never runs (RFC §6.4).
-                result = json.dumps(cut_call_error(tc.name))
+                done = ToolCallResult(json.dumps(cut_call_error(tc.name)), is_error=True)
             else:
-                result = await self._execute(request, tc.name, tc.arguments)
-            results.append(AIToolResultPart(tool_call_id=tc.id, name=tc.name, result=result))
+                done = await self._execute(request, tc.name, tc.arguments)
+            kind = OutcomeKind.FAILED if done.is_error else OutcomeKind.SERVED
+            results.append(ToolOutcome(kind, done.text).as_part(tc.id, tc.name))
         history.append(AIMessage(role="tool", content=results))
 
     async def _execute(
         self, request: ReasoningRequest, name: str, arguments: dict[str, Any]
-    ) -> str:
-        if request.execute_tool is None:
-            return json.dumps({"error": f"No tool executor available for {name}"})
+    ) -> ToolCallResult:
+        """One call through the channel's gate, read with its outcome."""
         try:
-            return await request.execute_tool(name, arguments)
+            if request.execute_tool_call is not None:
+                return await request.execute_tool_call(name, arguments)
+            if request.execute_tool is not None:
+                return ToolCallResult(await request.execute_tool(name, arguments))
         except Exception as exc:
             # The class, never the message (RFC §9.3): it goes to the log.
             logger.exception("Reasoning backend tool %s failed", name)
-            return tool_failure(name, exc)
+            return ToolCallResult(tool_failure(name, exc), is_error=True)
+        error = json.dumps({"error": f"No tool executor available for {name}"})
+        return ToolCallResult(error, is_error=True)
 
     async def session_ended(self, session_id: str) -> None:
         self._histories.pop(session_id, None)

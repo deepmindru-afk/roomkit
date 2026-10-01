@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from roomkit.channels._realtime_tool_calls import RealtimeToolCall
 from roomkit.channels.agent import Agent
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel, _current_voice_session
 from roomkit.models.channel import ChannelBinding
@@ -919,7 +920,8 @@ def _mock_kit_with_rtv(rtv_channel_id: str = "rtv"):
 
 async def _serve(rtv: Any, session: Any, name: str, arguments: dict[str, Any]) -> Any:
     """Serve one call the way the channel serves a provider's, in the session's room."""
-    return await rtv._call_tool_handler(session, name, arguments, session.room_id, None)
+    call = RealtimeToolCall(session, "c1", name, arguments, room_id=session.room_id)
+    return await rtv._call_tool_handler(call, None)
 
 
 class TestRealtimeInstall:

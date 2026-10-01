@@ -584,8 +584,7 @@ class TestToolCalls:
         # Total should equal the max length (truncated content + notice)
         assert len(submitted) == max_len
         assert "truncated" in submitted
-        assert "100000 chars" in submitted
-        assert "delivered to the client" in submitted
+        assert "100000 characters" in submitted
 
     async def test_tool_handler_reads_the_turn_context(
         self,
@@ -658,7 +657,8 @@ class TestToolCalls:
         """With a BEFORE_TOOL_USE hook the gate builds the context and the Room
         comes from it; the accessors that belong to the AI channel's turn
         answer None on this path, so a host's ``if record is not None`` guard
-        skips a write nothing would carry."""
+        skips a write nothing would carry. ``current_tool_call()`` names the
+        call, as on every channel (RFC §12.4)."""
         seen: dict[str, Any] = {}
 
         async def handler(name: str, arguments: dict[str, Any]) -> str:
@@ -688,7 +688,9 @@ class TestToolCalls:
         await provider.simulate_tool_call(session, "call-gate", "whoami", {})
         await asyncio.sleep(0.1)
 
-        assert seen == {"tenant": "acme", "record": None, "call": None, "names": None}
+        call = seen.pop("call")
+        assert (call.tool_call_id, call.channel_id) == ("call-gate", "rt-gate")
+        assert seen == {"tenant": "acme", "record": None, "names": None}
 
     async def test_realtime_loop_context_branches(
         self,

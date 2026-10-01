@@ -328,7 +328,7 @@ class TestRecoveredResultsFollowChannelPolicy:
 
         injected = _injected(provider)[-1]
         assert "truncated" in injected
-        assert "5000 chars" in injected
+        assert "5000 characters" in injected
 
     async def test_a_serving_hook_that_raises_is_reported_to_the_model(
         self, provider: MockRealtimeProvider

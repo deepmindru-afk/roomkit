@@ -17,18 +17,24 @@ import asyncio
 import json
 import logging
 import threading
-from typing import TYPE_CHECKING, Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 from uuid import uuid4
 
 from roomkit.channels._realtime_tool_calls import RealtimeToolCall
-from roomkit.core.exceptions import ToolRefusedError
+from roomkit.channels._realtime_tool_executor import ToolCallHost, run_tool_call
 from roomkit.models.enums import HookTrigger
-from roomkit.telemetry.base import Attr, SpanKind
+from roomkit.telemetry.base import SpanKind
 from roomkit.telemetry.context import reset_span
-from roomkit.tools.result import tool_failure
+from roomkit.tools._outcome import ToolOutcome
+from roomkit.tools.result import result_text
 from roomkit.voice.base import VoiceSession, VoiceSessionState
 from roomkit.voice.realtime.events import RealtimeDelegationEvent
-from roomkit.voice.realtime.reasoning import ReasoningBackend, ReasoningRequest, TranscriptLine
+from roomkit.voice.realtime.reasoning import (
+    ReasoningBackend,
+    ReasoningRequest,
+    ToolCallResult,
+    TranscriptLine,
+)
 
 if TYPE_CHECKING:
     from roomkit.core.framework import RoomKit
@@ -63,8 +69,8 @@ class RealtimeDelegationHost(Protocol):
 
     Cross-mixin methods (implemented elsewhere in the MRO):
         _track_task, _rt_span_ctx, _update_idle_event, _telemetry_provider,
-        _authorize_realtime_tool, _serve_gated_tool_call, _fire_tool_refusal,
-        _fire_gate_refusal, _tool_reachable.
+        _tool_reachable, _open_tool_call, _close_tool_call, _tool_call_span,
+        and the executor's host steps.
     """
 
     _state_lock: threading.Lock
@@ -114,14 +120,10 @@ class RealtimeDelegationMixin:
     _expect_provider_output: Any
     _update_idle_event: Any  # see RealtimeDelegationHost — cross-mixin
     _telemetry_provider: Any  # see RealtimeDelegationHost — cross-mixin
-    _authorize_realtime_tool: Any  # see RealtimeToolsMixin
-    _report_raised_call: Any  # see RealtimeToolsMixin
     _tool_reachable: Any  # see RealtimeToolsMixin
-    _serve_gated_tool_call: Any  # see RealtimeToolsMixin
-    _fire_tool_refusal: Any  # see RealtimeToolsMixin
-    _fire_gate_refusal: Any  # see RealtimeToolsMixin
     _open_tool_call: Any  # see RealtimeToolsMixin
     _close_tool_call: Any  # see RealtimeToolsMixin
+    _tool_call_span: Any  # see RealtimeToolsMixin
 
     # -----------------------------------------------------------------
     # Transcript ledger
@@ -264,19 +266,7 @@ class RealtimeDelegationMixin:
         backend = self._reasoning_backend
         if backend is None:
             return
-        with self._state_lock:
-            first = session.id not in self._delegated_before
-            self._delegated_before.add(session.id)
-        request = ReasoningRequest(
-            session=session,
-            delegation_id=delegation_id,
-            transcript=self._take_transcript(session.id),
-            first=first,
-            tools=self._backend_catalogue(session.id),
-            execute_tool=lambda name, arguments: self._execute_backend_tool(
-                session, delegation_id, name, arguments
-            ),
-        )
+        request = self._reasoning_request(session, delegation_id)
         answered = False
 
         async def _relay() -> None:
@@ -318,6 +308,26 @@ class RealtimeDelegationMixin:
             else:
                 logger.info("Delegation %s served (session %s)", delegation_id, session.id)
 
+    def _reasoning_request(self, session: VoiceSession, delegation_id: str) -> ReasoningRequest:
+        """What the backend receives for one delegation: the transcript since
+        the previous one, the session's catalogue, and the door to its tools."""
+        with self._state_lock:
+            first = session.id not in self._delegated_before
+            self._delegated_before.add(session.id)
+        return ReasoningRequest(
+            session=session,
+            delegation_id=delegation_id,
+            transcript=self._take_transcript(session.id),
+            first=first,
+            tools=self._backend_catalogue(session.id),
+            execute_tool=lambda name, arguments: self._execute_backend_tool(
+                session, delegation_id, name, arguments
+            ),
+            execute_tool_call=lambda name, arguments: self._execute_backend_tool_call(
+                session, delegation_id, name, arguments
+            ),
+        )
+
     def _backend_catalogue(self, session_id: str) -> list[dict[str, Any]]:
         """The session's tools a backend may call: none its policy denies or a
         skill gates, so a tool the backend is offered is one it may call."""
@@ -353,92 +363,55 @@ class RealtimeDelegationMixin:
         name: str,
         arguments: dict[str, Any],
     ) -> str:
+        """A backend's tool call, as the text its model reads (``execute_tool``)."""
+        done = await self._execute_backend_tool_call(session, delegation_id, name, arguments)
+        return done.text
+
+    async def _execute_backend_tool_call(
+        self,
+        session: VoiceSession,
+        delegation_id: str,
+        name: str,
+        arguments: dict[str, Any],
+    ) -> ToolCallResult:
         """Run a backend's tool call as the framework runs any realtime tool call.
 
         Same gate (declared catalogue, argument schema, tool policy, skill
-        gating, ``BEFORE_TOOL_USE``), then the same serving path as any realtime tool
-        call; the one difference is where the result goes — back to the
-        backend model, not to the provider (RFC §12.4.1).
+        gating, ``BEFORE_TOOL_USE``), the same serving, ON_TOOL_CALL and
+        bound; the one difference is where the outcome goes — back to the
+        backend model, with whether it failed, not to the provider (RFC §12.4.1).
         """
         if session.state == VoiceSessionState.ENDED:
-            return json.dumps({"error": "The session has ended."})
+            return ToolCallResult(json.dumps({"error": "The session has ended."}), is_error=True)
         call = RealtimeToolCall(
             session, f"{delegation_id}:{uuid4().hex[:8]}", name, arguments, abandonable=False
         )
         self._open_tool_call(call)
         try:
-            return await self._serve_backend_call(call, delegation_id)
+            with self._tool_call_span(
+                call, SpanKind.REALTIME_TOOL_CALL, "realtime_tool", delegation_id=delegation_id
+            ) as span:
+                # The channel's RealtimeToolsMixin is the host of every door.
+                host = cast("ToolCallHost", self)
+                outcome = await run_tool_call(host, call, _BackendDoor())
+                span.close(outcome)
         finally:
             self._close_tool_call(call)
-
-    async def _serve_backend_call(self, call: RealtimeToolCall, delegation_id: str) -> str:
-        """Serve a backend's call behind the gate; the text its model reads."""
-        session, name, call_id = call.session, call.name, call.call_id
-        with self._state_lock:
-            room_id = self._session_rooms.get(session.id)
-            parent = self._session_spans.get(session.id)
-        telemetry = self._telemetry_provider
-        span_id = telemetry.start_span(
-            SpanKind.REALTIME_TOOL_CALL,
-            f"realtime_tool:{name}",
-            parent_id=parent,
-            attributes={
-                Attr.REALTIME_TOOL_NAME: name,
-                "tool_call_id": call_id,
-                "delegation_id": delegation_id,
-            },
-            room_id=room_id,
-            session_id=session.id,
-            channel_id=self.channel_id,
+        logger.info(
+            "Backend tool %s %s (delegation %s, session %s)",
+            name,
+            outcome.kind,
+            delegation_id,
+            session.id,
         )
-        try:
-            call.arguments, denial, gate_context = await self._authorize_realtime_tool(
-                name, call.arguments, call_id, room_id, session, channel_serves=False
-            )
-            if denial is not None:
-                logger.info(
-                    "Backend tool %s denied before execution (delegation %s, session %s)",
-                    name,
-                    delegation_id,
-                    session.id,
-                )
-                telemetry.end_span(span_id)
-                await self._fire_gate_refusal(call, denial, room_id)
-                return denial.body
+        return ToolCallResult(result_text(outcome.result), is_error=outcome.failed)
 
-            try:
-                result_str = await self._serve_gated_tool_call(call, room_id, gate_context)
-            except ToolRefusedError as refusal:
-                # Same shape as the pre-execution denial above: the backend
-                # reads why it was refused, and the span does not report the
-                # call as one that ran.
-                telemetry.end_span(span_id, attributes={Attr.REALTIME_TOOL_DENIED: True})
-                logger.info(
-                    "Backend tool %s refused by its handler (delegation %s, session %s)",
-                    name,
-                    delegation_id,
-                    session.id,
-                )
-                await self._fire_tool_refusal(call, refusal.message, room_id)
-                return refusal.message
-            telemetry.end_span(span_id)
-            logger.info(
-                "Backend tool %s handled (delegation %s, session %s)",
-                name,
-                delegation_id,
-                session.id,
-            )
-            return result_str
-        except asyncio.CancelledError:
-            telemetry.end_span(span_id, status="cancelled")
-            raise
-        except Exception as exc:
-            telemetry.end_span(span_id, status="error", error_message=f"tool {name} failed")
-            logger.exception(
-                "Error handling backend tool %s (delegation %s, session %s)",
-                name,
-                delegation_id,
-                session.id,
-            )
-            await self._report_raised_call(call, room_id, exc)
-            return tool_failure(name, exc)
+
+class _BackendDoor:
+    """A reasoning backend's call: its outcome goes back to the backend's
+    model, which awaits it, never to the provider (RFC §12.4.1)."""
+
+    channel_serves = False
+
+    async def deliver(self, call: RealtimeToolCall, outcome: ToolOutcome) -> bool:
+        return True

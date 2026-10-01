@@ -28,6 +28,7 @@ from roomkit.voice.realtime.reasoning import (
     ReasoningBackend,
     ReasoningOutput,
     ReasoningRequest,
+    ToolCallResult,
     TranscriptLine,
 )
 
@@ -44,6 +45,7 @@ __all__ = [
     "ReasoningBackend",
     "ReasoningOutput",
     "ReasoningRequest",
+    "ToolCallResult",
     "TranscriptLine",
     # Events
     "RealtimeDelegationEvent",

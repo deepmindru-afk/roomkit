@@ -27,6 +27,8 @@ class RealtimeToolCall:
     call_id: str
     name: str
     arguments: dict[str, Any]
+    room_id: str | None = None
+    """The room the session served when the call ran."""
     mutes: bool = False
     """The call holds the session's input muted while it runs."""
     abandonable: bool = True
