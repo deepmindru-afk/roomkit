@@ -564,50 +564,9 @@ class RealtimeToolsMixin:
         served result end their caller's span differently and read differently
         in its log, so the caller is where the distinction is spent.
         """
-        handler_result: str | None = None
-        if self._serves_tool(name, room_id or session.room_id):
-            logger.info(
-                "Executing tool %s(%s) via handler for session %s",
-                name,
-                call_id,
-                session.id,
-            )
-            t_seg = time.perf_counter()
-            # ``ToolRefusedError`` travels out of here on purpose. Flattening
-            # it into the returned string would put the outcome back in the
-            # body, which is what this whole mechanism removes, and both
-            # callers below own a span and a log line that have to know.
-            raw = await self._call_tool_handler(session, name, arguments, room_id, gate_context)
-            logger.debug(
-                "tool %s handler segment: %.0fms wall",
-                name,
-                (time.perf_counter() - t_seg) * 1000,
-            )
-
-            t_seg = time.perf_counter()
-            handler_result = result_text(raw)
-            ser_s = time.perf_counter() - t_seg
-            if ser_s > _LOOP_SEGMENT_BUDGET_S:
-                # Pure sync CPU (wall == loop hold), and it runs on the
-                # FULL result before truncation caps it.
-                logger.warning(
-                    "Tool %s result serialization held the event loop for "
-                    "%.0fms (%d chars, budget ~%.0fms) — concurrent "
-                    "realtime audio may underrun; return a string or a "
-                    "compact reference instead of a large object",
-                    name,
-                    ser_s * 1000,
-                    len(handler_result),
-                    _LOOP_SEGMENT_BUDGET_S * 1000,
-                )
-            if is_unknown_tool_answer(handler_result):
-                # Every handler said the tool is not theirs: nothing served
-                # the call, which the hooks may still serve (RFC §21.4).
-                handler_result = None
-            # Yield so realtime pacing gets a slot between the handler
-            # segment and hook dispatch — sync hooks run inline next and
-            # would otherwise fuse with this segment into one loop step.
-            await asyncio.sleep(0)
+        handler_result = await self._served_text(
+            session, call_id, name, arguments, room_id, gate_context
+        )
 
         # Run ON_TOOL_CALL hook (if framework + room).
         tool_event = self._realtime_tool_event(
@@ -627,6 +586,67 @@ class RealtimeToolsMixin:
         if len(result_str) > self._tool_result_max_length:
             result_str = self._truncate_tool_result(result_str, name, call_id, session.id)
         return result_str
+
+    async def _served_text(
+        self,
+        session: VoiceSession,
+        call_id: str,
+        name: str,
+        arguments: dict[str, Any],
+        room_id: str | None,
+        gate_context: RoomContext | None,
+    ) -> str | None:
+        """The handler's answer to one call, as the text the model reads;
+        ``None`` when nothing serves the call, which the hooks may still serve.
+
+        Raises :class:`~roomkit.core.exceptions.ToolRefusedError` when the
+        handler declines the call: its caller is where a refusal is told apart.
+        """
+        if not self._serves_tool(name, room_id or session.room_id):
+            return None
+        logger.info(
+            "Executing tool %s(%s) via handler for session %s",
+            name,
+            call_id,
+            session.id,
+        )
+        t_seg = time.perf_counter()
+        # ``ToolRefusedError`` travels out of here on purpose. Flattening
+        # it into the returned string would put the outcome back in the
+        # body, which is what this whole mechanism removes, and both
+        # callers below own a span and a log line that have to know.
+        raw = await self._call_tool_handler(session, name, arguments, room_id, gate_context)
+        logger.debug(
+            "tool %s handler segment: %.0fms wall",
+            name,
+            (time.perf_counter() - t_seg) * 1000,
+        )
+
+        t_seg = time.perf_counter()
+        handler_result = result_text(raw)
+        ser_s = time.perf_counter() - t_seg
+        if ser_s > _LOOP_SEGMENT_BUDGET_S:
+            # Pure sync CPU (wall == loop hold), and it runs on the
+            # FULL result before truncation caps it.
+            logger.warning(
+                "Tool %s result serialization held the event loop for "
+                "%.0fms (%d chars, budget ~%.0fms) — concurrent "
+                "realtime audio may underrun; return a string or a "
+                "compact reference instead of a large object",
+                name,
+                ser_s * 1000,
+                len(handler_result),
+                _LOOP_SEGMENT_BUDGET_S * 1000,
+            )
+        if is_unknown_tool_answer(handler_result):
+            # Every handler said the tool is not theirs: nothing served
+            # the call, which the hooks may still serve (RFC §21.4).
+            handler_result = None
+        # Yield so realtime pacing gets a slot between the handler
+        # segment and hook dispatch — sync hooks run inline next and
+        # would otherwise fuse with this segment into one loop step.
+        await asyncio.sleep(0)
+        return handler_result
 
     async def _call_tool_handler(
         self,
