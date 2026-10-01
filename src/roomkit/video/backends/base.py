@@ -103,7 +103,10 @@ class VideoBackend(ABC):
         Args:
             session: The target session.
             video: Raw frame bytes or an async iterator of VideoChunks
-                for streaming.
+                for streaming. One chunk is one encoded frame: for H.264,
+                the whole access unit in Annex B form (an RTP transport sends
+                its NAL units together, the marker bit on the last packet),
+                or a single NAL unit.
         """
         ...
 

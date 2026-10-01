@@ -165,6 +165,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A SIP video call is answered with one m-line per offered stream (RMK-353,
+  RFC 3264 §6): aiosipua answers audio with the offer's video line refused
+  (port 0), and `SIPVideoBackend` appended the negotiated video after it, so
+  a softphone got three m-lines for a two-stream offer and could take its
+  video as refused. The negotiated line now replaces the refused one.
+- `send_video()` on the SIP and RTP video backends sends one `VideoChunk` as
+  one frame (RMK-353): a chunk holding an H.264 access unit in Annex B form
+  goes out as its NAL units together, the RTP marker bit on the frame's last
+  packet only. Each chunk went out as a single NAL unit with the marker set,
+  so a frame sliced by the encoder (7 slices at 640x480) reached a receiver
+  that frames on the marker as 7 partial frames. A chunk holding one raw NAL
+  unit is sent as before.
 - `ON_RECORDING_STOPPED` fires when a voice session ends (RMK-353): the
   channel dropped the session's binding before the pipeline stopped the
   recording, so the stop found no room to report to and every recording a

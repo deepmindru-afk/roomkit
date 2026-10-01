@@ -288,3 +288,23 @@ class TestRTPVideoBackendProperties:
 
         assert len(ready) == 1
         assert ready[0].state == VideoSessionState.ACTIVE
+
+
+class TestRTPVideoBackendSendsWholeFrames:
+    """RMK-353: one VideoChunk holding an Annex B frame is sent as one frame."""
+
+    async def test_an_annex_b_chunk_is_one_frame_of_several_nal_units(self, backend, mock_aiortp):
+        session = await backend.connect("room-1", "user-1", "voice-1")
+        video_session = backend.get_video_session(session.id)
+        video_rtp = mock_aiortp.VideoRTPSession.create.return_value
+
+        async def frames():
+            yield VideoChunk(
+                data=b"\x00\x00\x00\x01\x41\x9a\x00\x00\x00\x01\x41\x9b",
+                keyframe=False,
+                timestamp_ms=33,
+            )
+
+        await backend.send_video(video_session, frames())
+
+        video_rtp.send_frame.assert_called_once_with([b"\x41\x9a", b"\x41\x9b"], 2970, False)

@@ -27,6 +27,7 @@ import logging
 from collections.abc import AsyncIterator, Callable
 from typing import Any
 
+from roomkit.video._annexb import nal_units
 from roomkit.video.backends.base import VideoBackend
 from roomkit.video.base import (
     VideoCapability,
@@ -232,11 +233,11 @@ class RTPVideoBackend(RTPVoiceBackend, VideoBackend):
             return
 
         if isinstance(video, bytes):
-            video_rtp.send_frame([video], 0)
+            video_rtp.send_frame(nal_units(video), 0)
         else:
             async for chunk in video:
                 ts = int((chunk.timestamp_ms or 0) * 90)
-                video_rtp.send_frame([chunk.data], ts, chunk.keyframe)
+                video_rtp.send_frame(nal_units(chunk.data), ts, chunk.keyframe)
 
     def send_video_sync(self, session: VideoSession, frame: VideoFrame) -> None:
         """Synchronously send a video frame via RTP.

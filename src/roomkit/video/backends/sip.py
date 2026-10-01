@@ -26,6 +26,7 @@ import logging
 from collections.abc import AsyncIterator, Callable
 from typing import Any
 
+from roomkit.video._annexb import nal_units
 from roomkit.video.backends.base import VideoBackend
 from roomkit.video.base import (
     VideoChunk,
@@ -42,6 +43,20 @@ from roomkit.voice.backends.sip import SIPVoiceBackend
 from roomkit.voice.base import VoiceSession, VoiceSessionState
 
 logger = logging.getLogger("roomkit.video.sip")
+
+
+def _place_video_media(answer: Any, video_media: Any) -> None:
+    """Put the negotiated video m-line in the answer, in the offer's order.
+
+    aiosipua answers audio with the offer's video line refused (port 0) so
+    the answer mirrors the offer (RFC 3264 §6): the negotiated line replaces
+    that stub. An answer without one (older aiosipua) gets it appended.
+    """
+    for index, media in enumerate(answer.media):
+        if media.media == "video":
+            answer.media[index] = video_media
+            return
+    answer.media.append(video_media)
 
 
 def _import_video_bridge() -> Any:
@@ -217,7 +232,7 @@ class SIPVideoBackend(SIPVoiceBackend, VideoBackend):
         if video_call_session is not None:
             video_media = video_call_session.sdp_answer.video
             if video_media is not None:
-                combined.media.append(video_media)
+                _place_video_media(combined, video_media)
             logger.info(
                 "Video negotiated: pt=%d, remote=%s, local=%s:%d",
                 video_call_session.chosen_payload_type,
@@ -502,12 +517,14 @@ class SIPVideoBackend(SIPVoiceBackend, VideoBackend):
             logger.warning("send_video: no video session for %s", session.id)
             return
 
+        # One chunk is one frame: its NAL units go out together, so only the
+        # frame's last RTP packet carries the marker bit.
         if isinstance(video, bytes):
-            vcs.send_frame([video], 0)
+            vcs.send_frame(nal_units(video), 0)
         else:
             async for chunk in video:
                 ts = int((chunk.timestamp_ms or 0) * 90)
-                vcs.send_frame([chunk.data], ts, chunk.keyframe)
+                vcs.send_frame(nal_units(chunk.data), ts, chunk.keyframe)
 
     def send_video_sync(self, session: VideoSession, frame: VideoFrame) -> None:
         """Schedule a video frame for sending via SIP/RTP.

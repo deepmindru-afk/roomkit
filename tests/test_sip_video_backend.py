@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from roomkit.video.base import VideoSession, VideoSessionState
+from roomkit.video.base import VideoChunk, VideoSession, VideoSessionState
 from roomkit.video.video_frame import VideoFrame
 from roomkit.voice.base import VoiceSession
 
@@ -425,3 +425,62 @@ class TestSIPVideoBackendReinvite:
 
         # Should have accepted with some SDP (combined answer)
         assert hasattr(reinvite_call, "_accepted_sdp")
+
+
+class TestSIPVideoBackendAnswerMirrorsTheOffer:
+    """RMK-353: the answer has one m-line per offered stream (RFC 3264 §6).
+
+    aiosipua answers audio with the offer's video line refused (port 0); the
+    backend appended the negotiated video after it, so a softphone got three
+    m-lines for a two-stream offer and saw its video refused.
+    """
+
+    async def test_the_negotiated_video_replaces_the_refused_stub(
+        self, backend, mock_rtp_bridge, mock_video_bridge, av_offer
+    ):
+        audio_answer = mock_rtp_bridge.CallSession.return_value.sdp_answer
+        stub = MagicMock(media="video", port=0)
+        audio_answer.media = [MagicMock(media="audio"), stub]
+        call = _FakeCall(sdp_offer=av_offer)
+
+        await backend._handle_invite(call)
+
+        negotiated = mock_video_bridge.VideoCallSession.return_value.sdp_answer.video
+        media = call._accepted_sdp.media
+        assert [m.media for m in media] == ["audio", "video"]
+        assert media[1] is negotiated
+
+    async def test_an_answer_without_a_stub_gets_the_video_appended(
+        self, backend, mock_rtp_bridge, mock_video_bridge, av_offer
+    ):
+        call = _FakeCall(sdp_offer=av_offer)
+
+        await backend._handle_invite(call)
+
+        negotiated = mock_video_bridge.VideoCallSession.return_value.sdp_answer.video
+        assert [m.media for m in call._accepted_sdp.media] == ["audio", "video"]
+        assert call._accepted_sdp.media[1] is negotiated
+
+
+class TestSIPVideoBackendSendsWholeFrames:
+    """RMK-353: one VideoChunk holding an Annex B frame is sent as one frame."""
+
+    async def test_an_annex_b_chunk_is_one_frame_of_several_nal_units(
+        self, backend, mock_video_bridge, av_offer
+    ):
+        await backend._handle_invite(_FakeCall(sdp_offer=av_offer))
+        video_session = backend.get_video_session("session-1")
+        video_cs = mock_video_bridge.VideoCallSession.return_value
+
+        async def frames():
+            yield VideoChunk(
+                data=b"\x00\x00\x00\x01\x67\x42\x00\x00\x00\x01\x68\xce\x00\x00\x01\x65\x88",
+                keyframe=True,
+                timestamp_ms=0,
+            )
+
+        await backend.send_video(video_session, frames())
+
+        video_cs.send_frame.assert_called_once_with(
+            [b"\x67\x42", b"\x68\xce", b"\x65\x88"], 0, True
+        )

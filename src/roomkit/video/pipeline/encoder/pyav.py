@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from roomkit.video._annexb import split_annex_b
 from roomkit.video.pipeline.encoder.base import VideoEncoderProvider
 from roomkit.video.video_frame import ENCODED_CODECS, VideoFrame
 
@@ -110,7 +111,7 @@ class PyAVVideoEncoder(VideoEncoderProvider):
 
         nals: list[bytes] = []
         for pkt in self._ctx.encode(av_frame):
-            nals.extend(_split_annex_b(bytes(pkt)))
+            nals.extend(split_annex_b(bytes(pkt)))
         return nals
 
     def flush(self) -> list[bytes]:
@@ -118,31 +119,8 @@ class PyAVVideoEncoder(VideoEncoderProvider):
             return []
         nals: list[bytes] = []
         for pkt in self._ctx.encode(None):
-            nals.extend(_split_annex_b(bytes(pkt)))
+            nals.extend(split_annex_b(bytes(pkt)))
         return nals
 
     def close(self) -> None:
         self._ctx = None
-
-
-def _split_annex_b(data: bytes) -> list[bytes]:
-    """Split Annex B byte stream into individual NAL units."""
-    nals: list[bytes] = []
-    i = 0
-    start = -1
-    while i < len(data):
-        if i + 4 <= len(data) and data[i : i + 4] == b"\x00\x00\x00\x01":
-            if start >= 0:
-                nals.append(data[start:i])
-            start = i + 4
-            i += 4
-        elif i + 3 <= len(data) and data[i : i + 3] == b"\x00\x00\x01":
-            if start >= 0:
-                nals.append(data[start:i])
-            start = i + 3
-            i += 3
-        else:
-            i += 1
-    if start >= 0 and start < len(data):
-        nals.append(data[start:])
-    return nals
