@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shared import require_env, setup_logging, voice_language
 
 from roomkit.voice.tts.gemini import GeminiTTSConfig, GeminiTTSProvider
-from roomkit.voice.voices import DialogueTurn
+from roomkit.voice.voices import DialogueTurn, filter_voices
 
 logger = setup_logging("roomkit.examples.gemini_tts_voices")
 
@@ -44,8 +44,10 @@ async def main() -> None:
     language = voice_language("fr-CA")
     tts = GeminiTTSProvider(GeminiTTSConfig(api_key=env["GEMINI_API_KEY"], language=language))
 
-    women = await tts.list_voices(language=language, gender="female")
-    men = await tts.list_voices(language=language, gender="male")
+    # One catalog read (three pages); the split by gender is local.
+    voices = await tts.list_voices(language=language)
+    women = filter_voices(voices, gender="female")
+    men = filter_voices(voices, gender="male")
     logger.info("%s: %d female and %d male voices", language, len(women), len(men))
     for voice in women[:3] + men[:3]:
         logger.info("  %-18s %-10s %s", voice.id, voice.accent or "", voice.description or "")

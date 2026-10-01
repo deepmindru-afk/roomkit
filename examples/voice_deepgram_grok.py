@@ -6,7 +6,8 @@ and xAI Grok for text-to-speech:
   Mic -> [Pipeline] -> Deepgram STT -> Claude Haiku -> Grok TTS -> Speaker
 
 Requirements:
-    pip install roomkit[local-audio,anthropic] deepgram-sdk websockets aec-audio-processing
+    pip install roomkit[local-audio,anthropic,deepgram,httpx,websocket,webrtc-aec]
+    Optional, for RECORDING_DIR as MP4: pip install roomkit[video]
 
 Environment variables:
     ANTHROPIC_API_KEY   (required) Anthropic API key
@@ -20,6 +21,12 @@ Environment variables:
 
     --- AI (optional) ---
     SYSTEM_PROMPT       Custom system prompt for Claude
+
+    --- Other (optional) ---
+    RECORDING_DIR       Record the room as MP4 into this directory
+                        (default: unset, no recording; needs roomkit[video],
+                        otherwise a mock recorder that writes nothing)
+    CONSOLE             1 shows the RoomKit console dashboard (default: 0)
 
 Run with:
     ANTHROPIC_API_KEY=... DEEPGRAM_API_KEY=... XAI_API_KEY=... \\
@@ -62,6 +69,9 @@ async def main() -> None:
     denoiser = WebRTCNoiseSuppressorProvider(sample_rate=sample_rate)
 
     # --- Backend: local mic + speakers ----------------------------------------
+    # The backend owns the AEC: it feeds the speaker signal as the echo
+    # reference block-aligned with playback, and reports NATIVE_AEC so the
+    # pipeline does not run a second one.
     backend = LocalAudioBackend(
         input_sample_rate=sample_rate,
         output_sample_rate=sample_rate,
@@ -76,22 +86,22 @@ async def main() -> None:
     console_cleanup = setup_console(kit)
 
     # --- Pipeline config ------------------------------------------------------
-    pipeline_config = AudioPipelineConfig(aec=aec, denoiser=denoiser)
+    pipeline_config = AudioPipelineConfig(denoiser=denoiser)
 
     # --- Language (shared by STT + TTS) ----------------------------------------
-    language = voice_language("en")
+    language = voice_language("en") or "en"
 
     # --- Deepgram STT ---------------------------------------------------------
     stt = DeepgramSTTProvider(
         config=DeepgramConfig(
             api_key=env["DEEPGRAM_API_KEY"],
-            model="nova-2",
+            model="nova-3",
             language=language,
             punctuate=True,
             smart_format=True,
         )
     )
-    logger.info("STT: Deepgram (nova-2, lang=%s)", language)
+    logger.info("STT: Deepgram (nova-3, lang=%s)", language)
 
     # --- Grok TTS -------------------------------------------------------------
     grok_voice = os.environ.get("GROK_VOICE", "eve")

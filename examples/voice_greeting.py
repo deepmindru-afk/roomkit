@@ -59,6 +59,15 @@ from roomkit.voice.tts.mock import MockTTSProvider
 logger = setup_logging("voice_greeting")
 
 
+def log_spoken(tts: MockTTSProvider, pattern: str) -> None:
+    """Log what the TTS was actually asked to say, or that nothing reached it."""
+    spoken = [call["text"] for call in tts.calls]
+    if spoken:
+        logger.info("%s: TTS spoke %s", pattern, spoken)
+    else:
+        logger.warning("%s: nothing reached the TTS", pattern)
+
+
 async def pattern_agent_auto_greet() -> None:
     """Pattern 1: Agent auto_greet (recommended).
 
@@ -94,7 +103,7 @@ async def pattern_agent_auto_greet() -> None:
     session = await kit.join(room.id, "voice", participant_id="caller-1")
     await asyncio.sleep(0.2)
 
-    logger.info("Session %s greeted via Agent auto_greet", session.id)
+    log_spoken(tts, f"Session {session.id}, Agent auto_greet")
     if console_cleanup:
         await console_cleanup()
     await kit.close()
@@ -141,7 +150,7 @@ async def pattern_explicit_hook() -> None:
     session = await kit.join(room.id, "voice", participant_id="caller-1")
     await asyncio.sleep(0.2)
 
-    logger.info("Session %s greeted via explicit hook", session.id)
+    log_spoken(tts, f"Session {session.id}, explicit hook")
     if console_cleanup:
         await console_cleanup()
     await kit.close()
@@ -175,7 +184,7 @@ async def pattern_manual_say() -> None:
     session = await kit.join(room.id, "voice", participant_id="caller-1")
     await asyncio.sleep(0.2)
 
-    logger.info("Session %s greeted via manual say()", session.id)
+    log_spoken(tts, f"Session {session.id}, manual say()")
     if console_cleanup:
         await console_cleanup()
     await kit.close()
@@ -230,7 +239,7 @@ async def pattern_llm_greeting() -> None:
     session = await kit.join(room.id, "voice", participant_id="caller-1")
     await asyncio.sleep(0.2)
 
-    logger.info("Session %s greeted via LLM-generated response", session.id)
+    log_spoken(tts, f"Session {session.id}, LLM-generated greeting")
     if console_cleanup:
         await console_cleanup()
     await kit.close()
@@ -241,7 +250,7 @@ async def main() -> None:
     await pattern_explicit_hook()
     await pattern_manual_say()
     await pattern_llm_greeting()
-    logger.info("All greeting patterns demonstrated successfully.")
+    logger.info("All greeting patterns ran.")
 
 
 if __name__ == "__main__":

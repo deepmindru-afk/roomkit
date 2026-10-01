@@ -4,9 +4,13 @@ Records a few seconds of mic audio, processes each frame through the
 AICousticsDenoiserProvider, and prints before/after RMS energy.
 
 Requires:
-    pip install roomkit[aicoustics] sounddevice
+    pip install roomkit[aicoustics,local-audio]
 
     export AIC_SDK_LICENSE="your-license-key"
+
+The model downloads on first use into ``--model-dir`` (default: a
+``roomkit-aicoustics-models`` folder in the system temp directory), before
+the microphone opens.
 
 Usage:
     uv run python examples/aicoustics_denoiser.py
@@ -21,10 +25,13 @@ from __future__ import annotations
 import argparse
 import math
 import struct
+import tempfile
 import time
+from pathlib import Path
 
 import sounddevice as sd
 
+from roomkit.voice.audio_frame import AudioFrame
 from roomkit.voice.pipeline.denoiser.aicoustics import (
     AICousticsDenoiserConfig,
     AICousticsDenoiserProvider,
@@ -34,6 +41,7 @@ SAMPLE_RATE = 16000
 BLOCK_MS = 10
 BLOCK_SAMPLES = SAMPLE_RATE * BLOCK_MS // 1000  # 160
 DURATION_S = 6
+DEFAULT_MODEL_DIR = Path(tempfile.gettempdir()) / "roomkit-aicoustics-models"
 
 
 def rms(samples: tuple[int, ...]) -> float:
@@ -57,8 +65,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--model-dir",
-        default="./models",
-        help="Directory for cached models (default: ./models)",
+        default=str(DEFAULT_MODEL_DIR),
+        help=f"Directory for cached models (default: {DEFAULT_MODEL_DIR})",
     )
     args = parser.parse_args()
 
@@ -70,8 +78,17 @@ def main() -> None:
     dn = AICousticsDenoiserProvider(config)
 
     print(f"Model:            {args.model}")
+    print(f"Model directory:  {args.model_dir}")
     print(f"Enhancement:      {args.level}")
     print()
+
+    # The first frame of a stream downloads the model and builds its
+    # processor. Do it now, on a frame of silence: inside the PortAudio
+    # callback that download would stall the audio thread.
+    silence = bytes(BLOCK_SAMPLES * 2)
+    dn.process(
+        AudioFrame(data=silence, sample_rate=SAMPLE_RATE, channels=1, sample_width=2), "mic"
+    )
 
     frames_in: list[tuple[int, ...]] = []
     frames_out: list[tuple[int, ...]] = []
@@ -82,8 +99,6 @@ def main() -> None:
     print()
 
     def callback(indata: bytes, frames: int, time_info: object, status: object) -> None:
-        from roomkit.voice.audio_frame import AudioFrame
-
         n = len(indata) // 2
         samples = struct.unpack(f"<{n}h", bytes(indata))
         frames_in.append(samples)

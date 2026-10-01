@@ -135,7 +135,7 @@ from roomkit.providers.ollama import OllamaAIProvider, OllamaConfig
 from roomkit.telemetry.redaction import set_content_logging
 from roomkit.tools import MCPToolProvider
 from roomkit.voice.backends.local import LocalAudioBackend
-from roomkit.voice.pipeline import AudioPipelineConfig, PipelineDebugTaps
+from roomkit.voice.pipeline import AECProvider, AudioPipelineConfig, PipelineDebugTaps
 from roomkit.voice.pipeline.turn import SmartTurnConfig, SmartTurnDetector
 from roomkit.voice.pipeline.vad.sherpa_onnx import SherpaOnnxVADConfig, SherpaOnnxVADProvider
 from roomkit.voice.stt.sherpa_onnx import SherpaOnnxSTTConfig, SherpaOnnxSTTProvider
@@ -275,7 +275,7 @@ def build_debug_taps() -> PipelineDebugTaps | None:
     return PipelineDebugTaps(output_dir=out, stages=["raw", "post_aec", "post_vad_speech"])
 
 
-def build_aec() -> object | None:
+def build_aec() -> AECProvider | None:
     mode = os.environ.get("AEC", "webrtc").lower()
     if mode in ("1", "webrtc"):
         from roomkit.voice.pipeline.aec.webrtc import WebRTCAECProvider
@@ -384,9 +384,10 @@ async def run(stack: AsyncExitStack) -> None:
         stt=stt,
         tts=tts,
         backend=backend,
+        # No aec= here: the backend feeds the echo reference itself and
+        # reports NATIVE_AEC, so a pipeline copy would never run.
         pipeline=AudioPipelineConfig(
             vad=vad,
-            aec=aec,
             turn_detector=turn_detector,
             turn_incomplete_wait_ms=float(os.environ.get("TURN_WAIT_MS", "1500")),
             debug_taps=build_debug_taps(),

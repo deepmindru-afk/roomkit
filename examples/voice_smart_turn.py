@@ -20,7 +20,7 @@ How it works:
      Accumulated audio and text are combined when the turn completes.
 
 Requirements:
-    pip install roomkit[local-audio,openai,sherpa-onnx,smart-turn]
+    pip install roomkit[local-audio,vllm,sherpa-onnx,smart-turn]
 
 Download models:
     # smart-turn (required for this example)
@@ -61,8 +61,12 @@ Environment variables:
     --- LLM ---
     LLM_MODEL             (required) Model name (e.g. qwen3:8b for Ollama)
     LLM_BASE_URL          Server endpoint (default: http://localhost:11434/v1)
+    LLM_API_KEY           API key if the server requires auth (default: none)
+    LLM_MAX_TOKENS        Max response tokens (default: 256)
+    SYSTEM_PROMPT         Custom system prompt
 
     --- STT (sherpa-onnx) ---
+    STT_MODE              Recognition mode: transducer | whisper (default: transducer)
     STT_ENCODER           (required) Path to encoder .onnx
     STT_DECODER           (required) Path to decoder .onnx
     STT_JOINER            Path to joiner .onnx (transducer mode)
@@ -72,10 +76,14 @@ Environment variables:
     TTS_MODEL             (required) Path to VITS/Piper .onnx model
     TTS_TOKENS            (required) Path to tokens.txt
     TTS_DATA_DIR          Path to espeak-ng data dir (Piper models)
+    TTS_SAMPLE_RATE       Output sample rate of the voice (default: 22050)
 
     --- VAD (sherpa-onnx) ---
     VAD_MODEL             (required) Path to VAD .onnx model
     VAD_THRESHOLD         Speech probability threshold 0-1 (default: 0.35)
+
+    --- Other ---
+    CONSOLE               1 shows the RoomKit console dashboard (default: 0)
 
 Press Ctrl+C to stop.
 """

@@ -13,8 +13,8 @@ Where the recording comes from in production
 --------------------------------------------
 
 A room that records fires ``ON_RECORDING_STOPPED`` with the path it wrote, and
-that hook is the natural trigger — it is registered below, so a real recorder
-drives the same code this example drives by hand. Note that a conference
+that hook is the natural trigger — it is sketched (commented out) below: a real
+recorder would drive the same function this example calls by hand. Note that a conference
 records one track per participant: transcribe each track separately and you get
 the speakers for free, with no diarization at all. Pass ``diarize=False`` there.
 This example uses a single mixed file, which is the case where the model's
@@ -57,7 +57,7 @@ import tempfile
 
 from shared import pcm_from_wav_url, require_env
 
-from roomkit import ChannelCategory, InboundMessage, RoomEvent, RoomKit, TextContent
+from roomkit import ChannelCategory, InboundMessage, InboundResult, RoomEvent, RoomKit, TextContent
 from roomkit.channels.ai import AIChannel
 from roomkit.channels.websocket import WebSocketChannel
 from roomkit.providers.gemini import GeminiAIProvider, GeminiConfig
@@ -146,7 +146,7 @@ async def main() -> None:
 
     stt = GeminiSTTProvider(GeminiSTTConfig(api_key=api_key, model=STT_MODEL))
 
-    async def transcribe_into_room(path: Path) -> None:
+    async def transcribe_into_room(path: Path) -> InboundResult:
         """Transcribe *path* and let the room's AI channel write the minutes."""
         print("Transcribing (one pass over the whole recording)…", flush=True)
         transcript = await stt.transcribe_recording(path)
@@ -154,7 +154,7 @@ async def main() -> None:
 
         # The transcript enters the room as an ordinary message; the AI channel
         # is attached as INTELLIGENCE, so it answers it.
-        await kit.process_inbound(
+        return await kit.process_inbound(
             InboundMessage(
                 channel_id="ws-user",
                 sender_id="recorder",
@@ -174,14 +174,19 @@ async def main() -> None:
     #           await transcribe_into_room(Path(url))
     #
     # The demo calls the same function directly, with no recorder in the room.
-    await transcribe_into_room(recording)
+    result = await transcribe_into_room(recording)
 
     print("\n=== minutes ===")
     for event in minutes:
-        print(event.content.body)  # type: ignore[union-attr]
+        if isinstance(event.content, TextContent):
+            print(event.content.body)
 
     await stt.close()
     await kit.close()
+    # A failed generation (bad key, quota) reaches no channel: it is here.
+    if result.error is not None:
+        print(f"Minutes failed: {result.error}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

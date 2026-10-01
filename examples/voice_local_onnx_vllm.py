@@ -5,7 +5,8 @@ Everything runs locally — no cloud APIs required:
   - Local LLM via any OpenAI-compatible server (Ollama, vLLM, LM Studio, etc.)
   - sherpa-onnx for text-to-speech (VITS/Piper models)
   - sherpa-onnx neural VAD (TEN-VAD or Silero)
-  - Optional: sherpa-onnx GTCRN denoiser, SpeexAEC echo cancellation
+  - Optional: sherpa-onnx GTCRN denoiser, WebRTC or Speex echo cancellation,
+    smart-turn turn detection, WAV recording
   - All neural models support CUDA acceleration
 
 Audio flows through the full pipeline:
@@ -14,7 +15,9 @@ Audio flows through the full pipeline:
   → sherpa-onnx STT → Local LLM → sherpa-onnx TTS → [Recorder tap] → Speaker
 
 Requirements:
-    pip install roomkit[local-audio,openai,sherpa-onnx]
+    pip install roomkit[local-audio,vllm,sherpa-onnx]
+    Optional: roomkit[webrtc-aec] for AEC=webrtc, roomkit[smart-turn] for
+    SMART_TURN_MODEL
     A local LLM server — pick one:
       Ollama:   ollama pull qwen3:8b && ollama serve
       vLLM:     vllm serve Qwen/Qwen3-8B --port 8000
@@ -25,7 +28,7 @@ Requirements:
       8GB VRAM    →  qwen3:4b   (fast, good quality, leaves room for ONNX CUDA)
       CPU only    →  qwen3:4b   (still usable, ~1-2s latency)
 
-    System (optional): libspeexdsp (apt install libspeexdsp1) for AEC
+    System (optional): libspeexdsp (apt install libspeexdsp1) for AEC=speex
 
 GPU acceleration (CUDA) for sherpa-onnx:
     The default sherpa-onnx pip package is CPU-only. For GPU support:
@@ -36,14 +39,16 @@ GPU acceleration (CUDA) for sherpa-onnx:
        sudo dpkg -i cuda-keyring_1.1-1_all.deb && sudo apt-get update
        sudo apt-get -y install cudnn9-cuda-12
 
-    2. Install the CUDA 12 wheel:
-       uv pip install sherpa-onnx==1.12.23+cuda12.cudnn9 \
+    2. Install the CUDA 12 build of the sherpa-onnx version you have
+       (1.12.26 or later): pick its `+cuda12.cudnn9...` wheel on
+       https://k2-fsa.github.io/sherpa/onnx/cuda.html and install it with
+       uv pip install "sherpa-onnx==<that version>" \\
            -f https://k2-fsa.github.io/sherpa/onnx/cuda.html
 
     3. Set the env var:
        export ONNX_PROVIDER=cuda
 
-    See docs/sherpa-onnx.md for troubleshooting and CUDA 11 instructions.
+    See https://www.roomkit.live/docs/guides/sherpa-onnx/ for troubleshooting.
 
 Models (download once):
     # VAD — TEN-VAD (recommended)
@@ -121,9 +126,16 @@ Environment variables:
     DENOISE_MODEL       Path to GTCRN .onnx model (enables denoiser)
     AEC                 Echo cancellation: webrtc | speex | 1 (=webrtc) | 0 (default: 0)
     MUTE_MIC            Mute mic during playback: 1 | 0 (default: auto, off with AEC)
-    RECORDING_DIR       Directory for WAV recordings (default: ./recordings)
+    RECORDING_DIR       Record the call as WAV files into this directory
+                        (default: unset, no recording)
+    RECORDING_ENCRYPTED_AT_REST
+                        Required with RECORDING_DIR: set it to 1 to state
+                        that RECORDING_DIR is on encrypted storage. RoomKit
+                        refuses plaintext recordings (RFC 17.6) and cannot
+                        check the claim itself.
     RECORDING_MODE      Channel mode: mixed | separate | stereo (default: stereo)
     DEBUG_TAPS_DIR      Directory for pipeline debug taps (disabled if unset)
+    DEBUG_TAPS_STAGES   Comma-separated stages to capture (default: all)
     ONNX_PROVIDER       ONNX execution provider for STT/TTS: cpu | cuda (default: cpu)
                         VAD and denoiser always use CPU (per-frame overhead makes
                         CUDA slower for these tiny models)
@@ -134,6 +146,9 @@ Environment variables:
                           wget https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/main/smart-turn-v3.2-cpu.onnx
                         Requires: pip install roomkit[smart-turn]
     SMART_TURN_THRESHOLD  Completion probability threshold 0-1 (default: 0.5)
+
+    --- Other ---
+    CONSOLE             1 shows the RoomKit console dashboard (default: 0)
 
 Press Ctrl+C to stop.
 """
@@ -146,7 +161,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from shared import require_env, run_until_stopped, setup_console, setup_logging
+from shared import env_bool, require_env, run_until_stopped, setup_console, setup_logging
 
 from roomkit import ChannelCategory, HookExecution, HookResult, HookTrigger, RoomKit, VoiceChannel
 from roomkit.channels.ai import AIChannel
@@ -170,6 +185,33 @@ CHANNEL_MODES = {
     "separate": RecordingChannelMode.SEPARATE,
     "stereo": RecordingChannelMode.STEREO,
 }
+
+
+def build_recording() -> tuple[WavFileRecorder | None, RecordingConfig | None]:
+    """WAV recording of the call, off unless RECORDING_DIR is set.
+
+    RFC 17.6 makes encryption at rest a MUST, so WavFileRecorder refuses to
+    start without a RecordingEncryption or a statement that the storage
+    encrypts at rest. RECORDING_ENCRYPTED_AT_REST=1 is that statement: yours,
+    about RECORDING_DIR, which the example cannot verify.
+    """
+    recording_dir = os.environ.get("RECORDING_DIR", "")
+    if not recording_dir:
+        return None, None
+    if not env_bool("RECORDING_ENCRYPTED_AT_REST", default=False):
+        print(
+            "Error: RECORDING_DIR needs RECORDING_ENCRYPTED_AT_REST=1, stating that "
+            f"{recording_dir} is on encrypted storage (RFC 17.6 refuses plaintext recordings)"
+        )
+        sys.exit(1)
+    mode_name = os.environ.get("RECORDING_MODE", "stereo").lower()
+    config = RecordingConfig(
+        storage=recording_dir,
+        storage_encrypted_at_rest=True,  # stated by RECORDING_ENCRYPTED_AT_REST=1
+        channels=CHANNEL_MODES.get(mode_name, RecordingChannelMode.STEREO),
+    )
+    logger.info("Recording to %s (mode=%s)", recording_dir, mode_name)
+    return WavFileRecorder(), config
 
 
 async def main() -> None:
@@ -222,6 +264,9 @@ async def main() -> None:
         logger.info("AEC enabled (Speex, filter=%d samples)", frame_size * 10)
 
     # --- Backend: local mic + speakers ----------------------------------------
+    # The backend owns the AEC: it feeds the speaker signal as the echo
+    # reference block-aligned with playback, and reports NATIVE_AEC so the
+    # pipeline does not run a second one.
     # When AEC is active it removes speaker echo from the mic signal, so we
     # can keep the mic open during playback and allow barge-in interruption.
     # Without AEC the mic is muted during playback to prevent feedback loops.
@@ -273,18 +318,8 @@ async def main() -> None:
         vad_model,
     )
 
-    # --- WAV recorder (optional debug audio capture) --------------------------
-    recording_dir = os.environ.get("RECORDING_DIR", "./recordings")
-    rec_mode_name = os.environ.get("RECORDING_MODE", "stereo").lower()
-    rec_channel_mode = CHANNEL_MODES.get(rec_mode_name, RecordingChannelMode.STEREO)
-
-    recorder = WavFileRecorder()
-    recording_config = RecordingConfig(
-        storage=recording_dir,
-        storage_encrypted_at_rest=True,  # recording_dir must be on encrypted storage
-        channels=rec_channel_mode,
-    )
-    logger.info("Recording to %s (mode=%s)", recording_dir, rec_mode_name)
+    # --- WAV recorder (opt-in) ------------------------------------------------
+    recorder, recording_config = build_recording()
 
     # --- Debug taps (optional pipeline stage capture) -------------------------
     debug_taps = None
@@ -315,9 +350,9 @@ async def main() -> None:
         )
 
     # --- Pipeline config ------------------------------------------------------
+    # No aec= here: the backend runs it (see above).
     pipeline_config = AudioPipelineConfig(
         vad=vad,
-        aec=aec,
         denoiser=denoiser,
         recorder=recorder,
         recording_config=recording_config,
@@ -440,10 +475,9 @@ async def main() -> None:
     @kit.hook(HookTrigger.ON_RECORDING_STOPPED, execution=HookExecution.ASYNC)
     async def on_rec_stopped(event, ctx):
         logger.info(
-            "Recording stopped: %s (%.1fs, %d bytes, files=%s)",
+            "Recording stopped: %s (%.1fs, files=%s)",
             event.id,
             event.duration_seconds,
-            event.size_bytes,
             event.urls,
         )
 
@@ -464,7 +498,8 @@ async def main() -> None:
     async def cleanup() -> None:
         if console_cleanup:
             await console_cleanup()
-        logger.info("Recordings saved to: %s", recording_dir)
+        if recording_config is not None:
+            logger.info("Recordings saved to: %s", recording_config.storage)
 
     await run_until_stopped(kit, cleanup=cleanup)
 

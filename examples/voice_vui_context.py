@@ -9,8 +9,8 @@ the next reply generated in that thread. This example plays that scene:
    routed through STT as a user turn with its audio);
 3. the assistant answers.
 
-It writes ``vui_conversation.wav`` (what the user heard) and logs how the
-cache follows the dialogue.
+It writes ``vui_conversation.wav`` (what the user heard) into a fresh
+temporary directory, and logs where, and how the cache follows the dialogue.
 
 Run: uv run --extra vui python examples/voice_vui_context.py
 Requires Python 3.12, a CUDA GPU and ``pip install roomkit[vui]``; weights
@@ -25,7 +25,9 @@ import asyncio
 import base64
 import logging
 import os
+import tempfile
 import wave
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -112,12 +114,13 @@ async def main() -> None:
         channel.unbind_session(session)
 
     pause = b"\x00\x00" * (SAMPLE_RATE // 4)
-    with wave.open("vui_conversation.wav", "wb") as out:
+    path = Path(tempfile.mkdtemp(prefix="roomkit_vui_context_")) / "vui_conversation.wav"
+    with wave.open(str(path), "wb") as out:
         out.setnchannels(1)
         out.setsampwidth(2)
         out.setframerate(SAMPLE_RATE)
         out.writeframes(first_audio + pause + question_24k + pause + second_audio)
-    logger.info("Wrote vui_conversation.wav")
+    logger.info("Wrote %s", path)
     await tts.close()
 
 

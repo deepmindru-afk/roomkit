@@ -99,7 +99,7 @@ from roomkit.providers.ai.base import AIProvider
 from roomkit.providers.llamacpp import LlamaCppAIProvider, LlamaCppConfig
 from roomkit.providers.ollama import OllamaAIProvider, OllamaConfig
 from roomkit.voice.backends.local import LocalAudioBackend
-from roomkit.voice.pipeline import AudioPipelineConfig
+from roomkit.voice.pipeline import AECProvider, AudioPipelineConfig
 from roomkit.voice.pipeline.vad.sherpa_onnx import SherpaOnnxVADConfig, SherpaOnnxVADProvider
 from roomkit.voice.stt.sherpa_onnx import SherpaOnnxSTTConfig, SherpaOnnxSTTProvider
 from roomkit.voice.tts.vui import SAMPLE_RATE, VuiTTSConfig, VuiTTSProvider, VuiVoice
@@ -169,7 +169,7 @@ async def start_llm(provider: AIProvider) -> None:
         await provider.start()
 
 
-def build_aec() -> object | None:
+def build_aec() -> AECProvider | None:
     mode = os.environ.get("AEC", "webrtc").lower()
     if mode in ("1", "webrtc"):
         from roomkit.voice.pipeline.aec.webrtc import WebRTCAECProvider
@@ -249,7 +249,9 @@ async def main() -> None:
         stt=stt,
         tts=tts,
         backend=backend,
-        pipeline=AudioPipelineConfig(vad=vad, aec=aec),
+        # No aec= here: the backend feeds the echo reference itself and
+        # reports NATIVE_AEC, so a pipeline copy would never run.
+        pipeline=AudioPipelineConfig(vad=vad),
         # Vui hears the dialogue: your words, and your voice when include_audio.
         tts_context=TTSContextConfig(include_audio=include_audio),
     )

@@ -10,7 +10,16 @@ Three channel modes are shown:
   - SEPARATE: two WAV files (inbound + outbound)
   - STEREO:   single stereo WAV (inbound=left, outbound=right)
 
-All mock providers — runs without external dependencies.
+All mock providers — runs without external dependencies. The WAV files land
+in a fresh temporary directory, printed at the end.
+
+The files are written in the clear, which RFC 17.6 forbids for real
+recordings: ``WavFileRecorder`` refuses to start without a
+``RecordingEncryption`` or ``storage_encrypted_at_rest=True``. This demo sets
+the flag so you can listen to the debug files; that flag is a statement about
+the storage, and a temporary directory does not honour it. Never copy it to a
+deployment whose storage is not encrypted (see voice_sensitive_data.py for the
+encryption hook).
 
 Run with:
     uv run python examples/wav_recorder.py
@@ -24,6 +33,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import asyncio
+import struct
 import tempfile
 
 from shared import setup_console, setup_logging
@@ -50,8 +60,6 @@ logger = setup_logging("wav_recorder")
 
 def make_audio_frame(value: int = 100, num_samples: int = 160) -> AudioFrame:
     """Create a 16-bit PCM audio frame with a constant sample value."""
-    import struct
-
     data = b"".join(struct.pack("<h", value) for _ in range(num_samples))
     return AudioFrame(data=data, sample_rate=16000, channels=1, sample_width=2)
 
@@ -72,7 +80,7 @@ async def demo_mixed(kit: RoomKit, output_dir: Path) -> None:
         recorder=WavFileRecorder(),
         recording_config=RecordingConfig(
             storage=str(output_dir / "mixed"),
-            storage_encrypted_at_rest=True,  # output_dir must be on encrypted storage
+            storage_encrypted_at_rest=True,  # demo only: see the module docstring
             channels=RecordingChannelMode.MIXED,
         ),
     )
@@ -125,7 +133,7 @@ async def demo_separate(kit: RoomKit, output_dir: Path) -> None:
         recorder=WavFileRecorder(),
         recording_config=RecordingConfig(
             storage=str(output_dir / "separate"),
-            storage_encrypted_at_rest=True,  # output_dir must be on encrypted storage
+            storage_encrypted_at_rest=True,  # demo only: see the module docstring
             channels=RecordingChannelMode.SEPARATE,
         ),
     )
@@ -176,7 +184,7 @@ async def demo_stereo(kit: RoomKit, output_dir: Path) -> None:
         recorder=WavFileRecorder(),
         recording_config=RecordingConfig(
             storage=str(output_dir / "stereo"),
-            storage_encrypted_at_rest=True,  # output_dir must be on encrypted storage
+            storage_encrypted_at_rest=True,  # demo only: see the module docstring
             channels=RecordingChannelMode.STEREO,
         ),
     )
@@ -228,10 +236,10 @@ async def main() -> None:
     @kit.hook(HookTrigger.ON_RECORDING_STOPPED, execution=HookExecution.ASYNC, name="log_rec_stop")
     async def on_recording_stopped(event, ctx):
         logger.info(
-            "[hook] Recording stopped: %s (%.2fs, %d bytes)",
+            "[hook] Recording stopped: %s (%.2fs, files=%s)",
             event.id,
             event.duration_seconds,
-            event.size_bytes,
+            event.urls,
         )
 
     await demo_mixed(kit, output_dir)

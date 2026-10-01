@@ -11,7 +11,7 @@ Audio pipeline:
   Mic → [Denoiser] → VAD → Parakeet TDT STT → Local LLM → TTS → Speaker
 
 Prerequisites:
-    pip install roomkit[local-audio,openai,sherpa-onnx]
+    pip install roomkit[local-audio,vllm,sherpa-onnx]
 
 Download models:
     # STT — Parakeet TDT 0.6B v3 (int8 quantized, ~640 MB)
@@ -45,7 +45,10 @@ Environment variables:
     LLM_MODEL       (required) Model name (e.g. qwen3:8b for Ollama)
     LLM_BASE_URL    Server endpoint (default: http://localhost:11434/v1)
     LLM_API_KEY     API key if server requires auth (default: none)
+    LLM_MAX_TOKENS  Max response tokens (default: 256)
     VAD_MODEL       (required) Path to VAD .onnx model
+    VAD_MODEL_TYPE  VAD model type: ten | silero (default: ten)
+    VAD_THRESHOLD   Speech probability threshold 0-1 (default: 0.35)
     STT_ENCODER     (required) Path to Parakeet encoder .onnx
     STT_DECODER     (required) Path to Parakeet decoder .onnx
     STT_JOINER      (required) Path to Parakeet joiner .onnx
@@ -53,8 +56,10 @@ Environment variables:
     TTS_MODEL       (required) Path to TTS VITS/Piper .onnx model
     TTS_TOKENS      (required) Path to TTS tokens.txt
     TTS_DATA_DIR    Path to espeak-ng data dir (Piper models)
+    TTS_SPEAKER_ID  Speaker ID for multi-speaker models (default: 0)
     DENOISE_MODEL   Path to GTCRN denoiser .onnx (optional)
     ONNX_PROVIDER   ONNX provider for STT/TTS: cpu | cuda (default: cpu)
+    CONSOLE         1 shows the RoomKit console dashboard (default: 0)
 
 Press Ctrl+C to stop.
 """

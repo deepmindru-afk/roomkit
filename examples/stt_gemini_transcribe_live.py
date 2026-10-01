@@ -115,6 +115,8 @@ async def main() -> None:
     else:
         logger.info("No file given: synthesizing one sentence with Gemini TTS")
         pcm, sample_rate = await synthesize(api_key)
+    pcm = to_required_rate(pcm, sample_rate)
+    sample_rate = REQUIRED_SAMPLE_RATE
 
     provider = GeminiTranscribeProvider(
         GeminiTranscribeConfig(

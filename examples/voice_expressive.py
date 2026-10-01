@@ -21,7 +21,7 @@ Tags used here (v4 documents many more):
   [excited]   — energetic delivery
 
 Requirements:
-    pip install roomkit[elevenlabs,local-audio,anthropic]
+    pip install roomkit[elevenlabs,local-audio,anthropic,deepgram]
 
 Run with:
     ANTHROPIC_API_KEY=... \\
@@ -34,26 +34,26 @@ Environment variables:
     DEEPGRAM_API_KEY     (required) Deepgram API key
     ELEVENLABS_API_KEY   (required) ElevenLabs API key
     ELEVENLABS_VOICE_ID  Voice ID (default: Rachel)
+    CONSOLE              1 shows the RoomKit console dashboard (default: 0)
 """
 
 from __future__ import annotations
 
 import asyncio
-import faulthandler
 import os
 import sys
 from pathlib import Path
-
-faulthandler.enable()
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shared import require_env, run_until_stopped, setup_console, setup_logging
 
 from roomkit import AIChannel, ChannelCategory, HookExecution, HookTrigger, RoomKit, VoiceChannel
 from roomkit.providers.anthropic import AnthropicAIProvider, AnthropicConfig
+from roomkit.voice.backends.local import LocalAudioBackend
+from roomkit.voice.stt.deepgram import DeepgramConfig, DeepgramSTTProvider
 from roomkit.voice.tts.elevenlabs import ElevenLabsConfig, ElevenLabsTTSProvider
 
-logger = setup_logging("roomkit")
+logger = setup_logging("voice_expressive")
 
 SYSTEM_PROMPT = """\
 You are a warm, expressive conversational assistant. Use the following
@@ -94,28 +94,22 @@ async def main() -> None:
     kit.register_channel(ai)
 
     # --- TTS (ElevenLabs expressive) ------------------------------------------
-    tts = ElevenLabsTTSProvider(
-        ElevenLabsConfig(
-            api_key=env["ELEVENLABS_API_KEY"],
-            voice_id=os.environ.get("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM"),
-            output_format="pcm_24000",
-            expressive=True,  # <-- Eleven v4 Turbo + inline audio tags
-            # Each sentence is spoken as Claude writes it, over the Text to
-            # Dialogue WebSocket. No BEFORE_TTS hook runs on that path.
-            stream_input=True,
-        )
+    tts_config = ElevenLabsConfig(
+        api_key=env["ELEVENLABS_API_KEY"],
+        voice_id=os.environ.get("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM"),
+        output_format="pcm_24000",
+        expressive=True,  # <-- Eleven v4 Turbo + inline audio tags
+        # Each sentence is spoken as Claude writes it, over the Text to
+        # Dialogue WebSocket. No BEFORE_TTS hook runs on that path.
+        stream_input=True,
     )
+    tts = ElevenLabsTTSProvider(tts_config)
 
     # --- STT (Deepgram) -------------------------------------------------------
-    from roomkit.voice.stt.deepgram import DeepgramConfig, DeepgramSTTProvider
-
     stt = DeepgramSTTProvider(DeepgramConfig(api_key=env["DEEPGRAM_API_KEY"], model="nova-3"))
 
     # --- Voice channel --------------------------------------------------------
     # No local VAD needed — Deepgram handles endpointing natively.
-    from roomkit.voice import get_local_audio_backend
-
-    LocalAudioBackend = get_local_audio_backend()
     backend = LocalAudioBackend(input_sample_rate=16000, output_sample_rate=24000)
 
     voice = VoiceChannel(
@@ -140,7 +134,8 @@ async def main() -> None:
     await kit.attach_channel("expressive-demo", "voice")
 
     logger.info("Expressive voice assistant ready — speak into your microphone!")
-    logger.info("ElevenLabs model: %s", tts._config.model_id)
+    # expressive=True resolved the model on the config the provider was given.
+    logger.info("ElevenLabs model: %s", tts_config.model_id)
 
     # Wait for Ctrl+C
     await run_until_stopped(kit, cleanup=console_cleanup)

@@ -109,7 +109,9 @@ async def main() -> None:
         mute_mic_during_playback=aec is None,
     )
     vad = build_vad(sample_rate)
-    pipeline = build_pipeline(aec=aec, vad=vad) or AudioPipelineConfig()
+    # No aec= on the pipeline: the backend feeds the echo reference itself and
+    # reports NATIVE_AEC, so a pipeline copy would never run.
+    pipeline = build_pipeline(vad=vad) or AudioPipelineConfig()
     logger.info(
         "STT mode: %s",
         "VAD, one stream per utterance" if vad else "continuous, one stream per turn",

@@ -1,14 +1,14 @@
 """RoomKit -- Voice assistant with Qwen3-ASR speech recognition.
 
 Uses Qwen3-ASR for high-quality local speech recognition with automatic
-language detection. Combine with any TTS + LLM backend for a complete
-voice assistant with state-of-the-art local ASR.
+language detection, a local LLM for the replies and sherpa-onnx (VITS/Piper)
+to speak them: a complete voice assistant with state-of-the-art local ASR.
 
 Audio flow:
-    Mic -> [Pipeline] -> VAD -> Qwen3-ASR (STT) -> LLM -> TTS -> Speaker
+    Mic -> [Pipeline] -> VAD -> Qwen3-ASR (STT) -> LLM -> sherpa-onnx TTS -> Speaker
 
 Requirements:
-    pip install roomkit[local-audio,openai,sherpa-onnx,qwen-asr]
+    pip install roomkit[local-audio,vllm,sherpa-onnx,qwen-asr]
 
     System dependencies:
     - CUDA GPU with 3-5GB VRAM (for Qwen3-ASR-0.6B model)
@@ -20,10 +20,17 @@ Requirements:
     VAD model:
       wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/ten-vad.onnx
 
+    TTS model (VITS/Piper voice):
+      wget https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-en_US-amy-low.tar.bz2
+      tar xf vits-piper-en_US-amy-low.tar.bz2
+
 Run:
     LLM_MODEL=qwen3:8b \\
     LLM_BASE_URL=http://localhost:11434/v1 \\
     VAD_MODEL=ten-vad.onnx \\
+    TTS_MODEL=vits-piper-en_US-amy-low/en_US-amy-low.onnx \\
+    TTS_TOKENS=vits-piper-en_US-amy-low/tokens.txt \\
+    TTS_DATA_DIR=vits-piper-en_US-amy-low/espeak-ng-data \\
     uv run python examples/voice_qwen3_asr.py
 
 Environment variables:
@@ -42,13 +49,17 @@ Environment variables:
     SYSTEM_PROMPT       Custom system prompt
 
     --- TTS (sherpa-onnx) ---
-    TTS_MODEL           Path to TTS .onnx model
-    TTS_TOKENS          Path to TTS tokens.txt
+    TTS_MODEL           (required) Path to VITS/Piper .onnx model
+    TTS_TOKENS          (required) Path to TTS tokens.txt
     TTS_DATA_DIR        Path to TTS data directory (espeak-ng-data)
+    TTS_SAMPLE_RATE     Output sample rate of the voice (default: 22050)
 
     --- VAD (sherpa-onnx) ---
     VAD_MODEL           (required) Path to VAD .onnx model
     VAD_THRESHOLD       Speech probability threshold 0-1 (default: 0.35)
+
+    --- Other ---
+    CONSOLE             1 shows the RoomKit console dashboard (default: 0)
 
 Press Ctrl+C to stop.
 """
@@ -70,22 +81,24 @@ from roomkit.voice.backends.local import LocalAudioBackend
 from roomkit.voice.pipeline import AudioPipelineConfig
 from roomkit.voice.pipeline.vad.sherpa_onnx import SherpaOnnxVADConfig, SherpaOnnxVADProvider
 from roomkit.voice.stt.qwen3 import Qwen3ASRConfig, Qwen3ASRProvider
+from roomkit.voice.tts.sherpa_onnx import SherpaOnnxTTSConfig, SherpaOnnxTTSProvider
 
 logger = setup_logging("voice_qwen3_asr")
 
 
 async def main() -> None:
-    env = require_env("LLM_MODEL", "VAD_MODEL")
+    env = require_env("LLM_MODEL", "VAD_MODEL", "TTS_MODEL", "TTS_TOKENS")
 
     kit = RoomKit()
     console_cleanup = setup_console(kit)
 
     sample_rate = 16000
+    tts_sample_rate = int(os.environ.get("TTS_SAMPLE_RATE", "22050"))
 
     # --- Backend: local mic + speakers ----------------------------------------
     backend = LocalAudioBackend(
         input_sample_rate=sample_rate,
-        output_sample_rate=sample_rate,
+        output_sample_rate=tts_sample_rate,
         channels=1,
         block_duration_ms=20,
     )
@@ -124,6 +137,17 @@ async def main() -> None:
         stt_config.language or "auto-detect",
     )
 
+    # --- TTS (sherpa-onnx) ----------------------------------------------------
+    tts = SherpaOnnxTTSProvider(
+        SherpaOnnxTTSConfig(
+            model=env["TTS_MODEL"],
+            tokens=env["TTS_TOKENS"],
+            data_dir=os.environ.get("TTS_DATA_DIR", ""),
+            sample_rate=tts_sample_rate,
+        )
+    )
+    logger.info("TTS: sherpa-onnx (model=%s, rate=%d)", env["TTS_MODEL"], tts_sample_rate)
+
     # --- LLM (local via OpenAI-compatible API) --------------------------------
     llm_model = env["LLM_MODEL"]
     llm_base_url = os.environ.get("LLM_BASE_URL", "http://localhost:11434/v1")
@@ -149,6 +173,7 @@ async def main() -> None:
     voice = VoiceChannel(
         "voice",
         stt=stt,
+        tts=tts,
         backend=backend,
         pipeline=pipeline_config,
     )
@@ -181,8 +206,8 @@ async def main() -> None:
         return HookResult.allow()
 
     # --- Warmup: pre-load model -----------------------------------------------
-    logger.info("Loading Qwen3-ASR model (may take a moment on first run)...")
-    await stt.warmup()
+    logger.info("Loading Qwen3-ASR and TTS models (may take a moment on first run)...")
+    await asyncio.gather(stt.warmup(), tts.warmup())
     logger.info("Model loaded — ready!")
 
     # --- Attach voice channel (auto-starts session) ---------------------------

@@ -18,6 +18,8 @@ places the digit reaches *incidentally*.
 The cipher below is a stand-in so the example runs with no dependencies and no
 key management. It is NOT encryption -- see the note in `run()`.
 
+The recording lands in a fresh temporary directory, logged at the end.
+
 Run with:
     uv run python examples/voice_sensitive_data.py
 """
@@ -26,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -74,7 +77,7 @@ class ReversingEncryption(RecordingEncryption):
 
 
 async def run() -> None:
-    output_dir = Path("./recordings/sensitive-data")
+    output_dir = Path(tempfile.mkdtemp(prefix="roomkit_sensitive_data_"))
 
     backend = MockVoiceBackend()
     pipeline = AudioPipelineConfig(
@@ -135,7 +138,7 @@ async def run() -> None:
     await kit.close()
 
     written = sorted(p.name for p in output_dir.glob("*")) if output_dir.exists() else []
-    logger.info("Files on disk           : %s", written or "(none)")
+    logger.info("Files on disk           : %s in %s", written or "(none)", output_dir)
     logger.info(
         "Plaintext .wav left     : %s", [n for n in written if n.endswith(".wav")] or "none"
     )

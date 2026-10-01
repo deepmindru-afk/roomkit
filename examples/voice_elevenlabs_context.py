@@ -7,16 +7,18 @@ Both land in WAV files so the two can be compared by ear; the debug log shows
 the stitching arguments each request carried.
 
 Run: ELEVENLABS_API_KEY=... uv run python examples/voice_elevenlabs_context.py
-Writes elevenlabs_with_context.wav and elevenlabs_without_context.wav in the
-current directory. Requires ``pip install roomkit[elevenlabs]``; no audio
-device needed.
+Writes elevenlabs_with_context.wav and elevenlabs_without_context.wav into a
+fresh temporary directory, logged at the end. Requires
+``pip install roomkit[elevenlabs]``; no audio device needed.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import tempfile
 import wave
+from pathlib import Path
 
 from shared import require_env, setup_logging
 
@@ -54,8 +56,8 @@ async def conversation(api_key: str, *, use_context: bool) -> bytes:
     return pause.join(audio for _, audio in backend.sent_audio)
 
 
-def write_wav(path: str, pcm: bytes) -> None:
-    with wave.open(path, "wb") as wav:
+def write_wav(path: Path, pcm: bytes) -> None:
+    with wave.open(str(path), "wb") as wav:
         wav.setnchannels(1)
         wav.setsampwidth(2)
         wav.setframerate(RATE)
@@ -65,10 +67,13 @@ def write_wav(path: str, pcm: bytes) -> None:
 
 async def main() -> None:
     api_key = require_env("ELEVENLABS_API_KEY")["ELEVENLABS_API_KEY"]
+    out = Path(tempfile.mkdtemp(prefix="roomkit_elevenlabs_context_"))
     logger.info("With the conversation context:")
-    write_wav("elevenlabs_with_context.wav", await conversation(api_key, use_context=True))
+    with_context = await conversation(api_key, use_context=True)
+    write_wav(out / "elevenlabs_with_context.wav", with_context)
     logger.info("Without it:")
-    write_wav("elevenlabs_without_context.wav", await conversation(api_key, use_context=False))
+    without_context = await conversation(api_key, use_context=False)
+    write_wav(out / "elevenlabs_without_context.wav", without_context)
 
 
 if __name__ == "__main__":

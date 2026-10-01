@@ -7,7 +7,7 @@ speech-to-text and text-to-speech:
   - Gradium for text-to-speech (streaming)
   - WebRTC or Speex AEC for echo cancellation
   - RNNoise or sherpa-onnx GTCRN for noise suppression
-  - WavFileRecorder for debug audio capture
+  - WavFileRecorder for debug audio capture (opt-in)
 
 Audio flows through the full pipeline:
 
@@ -19,9 +19,10 @@ No local VAD is needed — Gradium handles speech detection and
 turn-taking server-side via semantic VAD (inactivity_prob).
 
 Requirements:
-    pip install roomkit[local-audio,anthropic,gradium]
+    pip install roomkit[local-audio,anthropic,gradium,webrtc-aec]
     System (optional): libspeexdsp (apt install libspeexdsp1) for Speex AEC
-    System (optional): librnnoise (apt install librnnoise0) -- or use DENOISE_MODEL
+    System (optional): librnnoise (apt install librnnoise0) for the default
+                       RNNoise denoiser -- without it the denoiser is skipped
 
 Run with:
     ANTHROPIC_API_KEY=... \\
@@ -35,8 +36,10 @@ Environment variables:
     GRADIUM_STT_MODEL   STT model name (default: default)
     GRADIUM_TTS_MODEL   TTS model name (default: default)
     GRADIUM_VOICE_ID    Voice ID for TTS (default: default)
-    VOICE_LANGUAGE      Language code for STT (default: en)
+    VOICE_LANGUAGE      Language code for STT (default: en); any other
+                        language also turns on the TTS rewrite rules for it
     SYSTEM_PROMPT       Custom system prompt for Claude
+    CONSOLE             1 shows the RoomKit console dashboard (default: 0)
 
     --- TTS (optional) ---
     TTS_SPEED           Speech speed: -4.0 (fastest) to 4.0 (slowest).
@@ -46,12 +49,20 @@ Environment variables:
     --- Pipeline (optional) ---
     AEC                 Echo cancellation: webrtc | speex | 1 (=webrtc) | 0
                         (default: webrtc)
-    DENOISE             Enable RNNoise noise suppression: 1 | 0 (default: 1)
-    DENOISE_MODEL       Path to GTCRN .onnx model (sherpa-onnx denoiser,
-                        overrides DENOISE)
+    DENOISE             Noise suppression: rnnoise | sherpa | webrtc |
+                        1 (=rnnoise) | 0 (default: rnnoise; skipped with a
+                        warning when its library is missing)
+    DENOISE_MODEL       GTCRN .onnx model for DENOISE=sherpa
+                        (default: gtcrn_simple.onnx)
     MUTE_MIC            Mute mic during playback: 1 | 0 (default: auto,
                         off with AEC)
-    RECORDING_DIR       Directory for WAV recordings (default: ./recordings)
+    RECORDING_DIR       Record the call as WAV files into this directory
+                        (default: unset, no recording)
+    RECORDING_ENCRYPTED_AT_REST
+                        Required with RECORDING_DIR: set it to 1 to state
+                        that RECORDING_DIR is on encrypted storage. RoomKit
+                        refuses plaintext recordings (RFC 17.6) and cannot
+                        check the claim itself.
     RECORDING_MODE      Channel mode: mixed | separate | stereo (default: stereo)
     DEBUG_TAPS_DIR      Directory for pipeline debug taps (disabled if unset)
     DEBUG_TAPS_STAGES   Comma-separated stages to capture (default: all)
@@ -66,9 +77,18 @@ import logging
 import os
 import sys
 from pathlib import Path
+from typing import cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from shared import require_env, run_until_stopped, setup_console, setup_logging, voice_language
+from shared import (
+    build_denoiser,
+    env_bool,
+    require_env,
+    run_until_stopped,
+    setup_console,
+    setup_logging,
+    voice_language,
+)
 
 from roomkit import ChannelCategory, HookExecution, HookResult, HookTrigger, RoomKit, VoiceChannel
 from roomkit.channels.ai import AIChannel
@@ -76,6 +96,7 @@ from roomkit.providers.anthropic import AnthropicAIProvider, AnthropicConfig
 from roomkit.voice.backends.local import LocalAudioBackend
 from roomkit.voice.pipeline import (
     AudioPipelineConfig,
+    DenoiserProvider,
     PipelineDebugTaps,
     RecordingChannelMode,
     RecordingConfig,
@@ -93,6 +114,33 @@ CHANNEL_MODES = {
     "separate": RecordingChannelMode.SEPARATE,
     "stereo": RecordingChannelMode.STEREO,
 }
+
+
+def build_recording() -> tuple[WavFileRecorder | None, RecordingConfig | None]:
+    """WAV recording of the call, off unless RECORDING_DIR is set.
+
+    RFC 17.6 makes encryption at rest a MUST, so WavFileRecorder refuses to
+    start without a RecordingEncryption or a statement that the storage
+    encrypts at rest. RECORDING_ENCRYPTED_AT_REST=1 is that statement: yours,
+    about RECORDING_DIR, which the example cannot verify.
+    """
+    recording_dir = os.environ.get("RECORDING_DIR", "")
+    if not recording_dir:
+        return None, None
+    if not env_bool("RECORDING_ENCRYPTED_AT_REST", default=False):
+        print(
+            "Error: RECORDING_DIR needs RECORDING_ENCRYPTED_AT_REST=1, stating that "
+            f"{recording_dir} is on encrypted storage (RFC 17.6 refuses plaintext recordings)"
+        )
+        sys.exit(1)
+    mode_name = os.environ.get("RECORDING_MODE", "stereo").lower()
+    config = RecordingConfig(
+        storage=recording_dir,
+        storage_encrypted_at_rest=True,  # stated by RECORDING_ENCRYPTED_AT_REST=1
+        channels=CHANNEL_MODES.get(mode_name, RecordingChannelMode.STEREO),
+    )
+    logger.info("Recording to %s (mode=%s)", recording_dir, mode_name)
+    return WavFileRecorder(), config
 
 
 async def main() -> None:
@@ -127,6 +175,9 @@ async def main() -> None:
         logger.info("AEC enabled (Speex, filter=%d samples)", frame_size * 10)
 
     # --- Backend: local mic + speakers ----------------------------------------
+    # The backend owns the AEC: it feeds the speaker signal as the echo
+    # reference block-aligned with playback, and reports NATIVE_AEC so the
+    # pipeline does not run a second one.
     mute_env = os.environ.get("MUTE_MIC")
     mute_mic = mute_env != "0" if mute_env is not None else aec is None
     backend = LocalAudioBackend(
@@ -144,37 +195,12 @@ async def main() -> None:
         mute_mic,
     )
 
-    # --- Denoiser (RNNoise or sherpa-onnx GTCRN) ------------------------------
-    denoiser = None
-    denoise_model = os.environ.get("DENOISE_MODEL", "")
-    if denoise_model:
-        from roomkit.voice.pipeline.denoiser.sherpa_onnx import (
-            SherpaOnnxDenoiserConfig,
-            SherpaOnnxDenoiserProvider,
-        )
+    # --- Denoiser (RNNoise by default, or sherpa-onnx GTCRN / WebRTC NS) ------
+    # The shared builder returns `object` to keep its imports lazy.
+    denoiser = cast("DenoiserProvider | None", build_denoiser(sample_rate, default="rnnoise"))
 
-        denoiser = SherpaOnnxDenoiserProvider(SherpaOnnxDenoiserConfig(model=denoise_model))
-        logger.info("Denoiser: sherpa-onnx GTCRN (model=%s)", denoise_model)
-    elif os.environ.get("DENOISE", "1") == "1":
-        from roomkit.voice.pipeline.denoiser.rnnoise import (
-            RNNoiseDenoiserProvider,
-        )
-
-        denoiser = RNNoiseDenoiserProvider(sample_rate=sample_rate)
-        logger.info("Denoiser: RNNoise")
-
-    # --- WAV recorder (debug audio capture) -----------------------------------
-    recording_dir = os.environ.get("RECORDING_DIR", "./recordings")
-    rec_mode_name = os.environ.get("RECORDING_MODE", "stereo").lower()
-    rec_channel_mode = CHANNEL_MODES.get(rec_mode_name, RecordingChannelMode.STEREO)
-
-    recorder = WavFileRecorder()
-    recording_config = RecordingConfig(
-        storage=recording_dir,
-        storage_encrypted_at_rest=True,  # recording_dir must be on encrypted storage
-        channels=rec_channel_mode,
-    )
-    logger.info("Recording to %s (mode=%s)", recording_dir, rec_mode_name)
+    # --- WAV recorder (opt-in) ------------------------------------------------
+    recorder, recording_config = build_recording()
 
     # --- Debug taps (pipeline stage audio capture) ----------------------------
     debug_taps = None
@@ -189,8 +215,8 @@ async def main() -> None:
         logger.info("Debug taps: %s (stages=%s)", debug_taps_dir, stages)
 
     # --- Pipeline config ------------------------------------------------------
+    # No aec= here: the backend runs it (see above).
     pipeline_config = AudioPipelineConfig(
-        aec=aec,
         denoiser=denoiser,
         recorder=recorder,
         recording_config=recording_config,
@@ -200,11 +226,12 @@ async def main() -> None:
     # --- Gradium STT ----------------------------------------------------------
     region = os.environ.get("GRADIUM_REGION", "us")
     language = voice_language("en")
+    stt_model = os.environ.get("GRADIUM_STT_MODEL", "default")
     stt = GradiumSTTProvider(
         config=GradiumSTTConfig(
             api_key=env["GRADIUM_API_KEY"],
             region=region,
-            model_name=os.environ.get("GRADIUM_STT_MODEL", "default"),
+            model_name=stt_model,
             input_format="pcm",
             language=language,
             connect_buffer_ms=0,
@@ -213,17 +240,18 @@ async def main() -> None:
     logger.info(
         "STT: Gradium (region=%s, model=%s, lang=%s)",
         region,
-        stt._config.model_name,
+        stt_model,
         language,
     )
 
     # --- Gradium TTS ----------------------------------------------------------
     padding_bonus_env = os.environ.get("TTS_SPEED", "")
     padding_bonus = float(padding_bonus_env) if padding_bonus_env else None
+    voice_id = os.environ.get("GRADIUM_VOICE_ID", "default")
     tts = GradiumTTSProvider(
         config=GradiumTTSConfig(
             api_key=env["GRADIUM_API_KEY"],
-            voice_id=os.environ.get("GRADIUM_VOICE_ID", "default"),
+            voice_id=voice_id,
             region=region,
             model_name=os.environ.get("GRADIUM_TTS_MODEL", "default"),
             output_format=f"pcm_{output_rate}",
@@ -233,7 +261,7 @@ async def main() -> None:
     )
     logger.info(
         "TTS: Gradium (voice=%s, format=pcm_%d, speed=%s, rewrite=%s)",
-        tts._config.voice_id,
+        voice_id,
         output_rate,
         padding_bonus,
         language if language != "en" else None,
@@ -263,11 +291,7 @@ async def main() -> None:
         backend=backend,
         pipeline=pipeline_config,
     )
-    logger.info(
-        "Interruption: strategy=%s, barge_in=%s",
-        voice._interruption_handler._config.strategy.value,
-        voice._enable_barge_in,
-    )
+    logger.info("Interruption: channel default (immediate)")
     kit.register_channel(voice)
 
     ai = AIChannel(
@@ -308,10 +332,9 @@ async def main() -> None:
     @kit.hook(HookTrigger.ON_RECORDING_STOPPED, execution=HookExecution.ASYNC)
     async def on_rec_stopped(event, ctx):
         logger.info(
-            "Recording stopped: %s (%.1fs, %d bytes, files=%s)",
+            "Recording stopped: %s (%.1fs, files=%s)",
             event.id,
             event.duration_seconds,
-            event.size_bytes,
             event.urls,
         )
 
@@ -327,7 +350,8 @@ async def main() -> None:
     async def cleanup() -> None:
         if console_cleanup:
             await console_cleanup()
-        logger.info("Recordings saved to: %s", recording_dir)
+        if recording_config is not None:
+            logger.info("Recordings saved to: %s", recording_config.storage)
 
     await run_until_stopped(kit, cleanup=cleanup)
 

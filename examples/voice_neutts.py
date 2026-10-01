@@ -8,7 +8,7 @@ Audio flow:
     Mic -> [Pipeline] -> VAD -> STT -> LLM -> NeuTTS (voice clone) -> Speaker
 
 Requirements:
-    pip install roomkit[local-audio,openai,sherpa-onnx] neutts
+    pip install roomkit[local-audio,vllm,sherpa-onnx,neutts]
 
     System dependencies:
     - espeak-ng (required by neutts for phonemization)
@@ -18,28 +18,33 @@ Requirements:
     A local LLM server:
       Ollama: ollama pull qwen3:8b && ollama serve
 
-    STT models (sherpa-onnx):
-      wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06.tar.bz2
-      tar xf sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06.tar.bz2
-
-    VAD model:
+    STT and VAD models (sherpa-onnx), into examples/models/ — French STT to
+    match the French voice and prompt:
+      mkdir -p examples/models && cd examples/models
+      # STT: Kroko, a French streaming Zipformer transducer
+      # (model license: huggingface.co/Banafo/Kroko-ASR)
+      wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-fr-kroko-2025-08-06.tar.bz2
+      tar xf sherpa-onnx-streaming-zipformer-fr-kroko-2025-08-06.tar.bz2
+      # VAD: TEN-VAD
       wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/ten-vad.onnx
+      cd ../..
 
     Reference audio for voice cloning:
       Record 3-15 seconds of clean speech and provide the transcript.
       Save as a WAV file (mono, 16-44 kHz). Use a same-language reference
       for best results (French for the default model).
 
-Run:
+Run (from the repository root):
+    STT=examples/models/sherpa-onnx-streaming-zipformer-fr-kroko-2025-08-06
     REF_AUDIO=reference_fr.wav \\
     REF_TEXT="Bonjour, je suis un assistant vocal." \\
     LLM_MODEL=qwen3:8b \\
     LLM_BASE_URL=http://localhost:11434/v1 \\
-    VAD_MODEL=ten-vad.onnx \\
-    STT_ENCODER=sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06/encoder.onnx \\
-    STT_DECODER=sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06/decoder.onnx \\
-    STT_JOINER=sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06/joiner.onnx \\
-    STT_TOKENS=sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06/tokens.txt \\
+    VAD_MODEL=examples/models/ten-vad.onnx \\
+    STT_ENCODER=$STT/encoder.onnx \\
+    STT_DECODER=$STT/decoder.onnx \\
+    STT_JOINER=$STT/joiner.onnx \\
+    STT_TOKENS=$STT/tokens.txt \\
     uv run python examples/voice_neutts.py
 
 Environment variables:
@@ -66,6 +71,9 @@ Environment variables:
     --- VAD (sherpa-onnx) ---
     VAD_MODEL           (required) Path to VAD .onnx model
     VAD_THRESHOLD       Speech probability threshold 0-1 (default: 0.35)
+
+    --- Other ---
+    CONSOLE             1 shows the RoomKit console dashboard (default: 0)
 
 Press Ctrl+C to stop.
 """
@@ -148,6 +156,9 @@ async def main() -> None:
             tokens=env["STT_TOKENS"],
             sample_rate=sample_rate,
             provider="cpu",
+            # Kroko French drops the last word below ~1.5 s of tail silence;
+            # the padding costs compute, not waiting time.
+            tail_padding_s=1.5,
         )
     )
     logger.info("STT: sherpa-onnx (encoder=%s)", os.environ["STT_ENCODER"])

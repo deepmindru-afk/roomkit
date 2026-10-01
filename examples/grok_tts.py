@@ -4,7 +4,7 @@ Demonstrates using the xAI Grok TTS provider for voice synthesis with
 both REST and WebSocket streaming modes.
 
 Requires:
-    pip install roomkit httpx websockets
+    pip install roomkit[httpx,websocket]
 
 Environment variables:
     XAI_API_KEY — xAI API key

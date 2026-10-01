@@ -3,7 +3,6 @@
 Demonstrates features beyond the basic pipeline example:
 - Audio recording with ON_RECORDING_STARTED / ON_RECORDING_STOPPED hooks
 - Turn detection with ON_TURN_COMPLETE / ON_TURN_INCOMPLETE hooks
-- Semantic interruption with BackchannelDetector and ON_BACKCHANNEL hook
 - Capability-aware pipeline (NATIVE_AEC skips AEC stage)
 
 All mock providers — runs without external dependencies.
@@ -21,20 +20,25 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shared import setup_logging
 
-from roomkit import ChannelCategory, HookExecution, HookTrigger, RoomKit, TextContent, VoiceChannel
+from roomkit import (
+    ChannelCategory,
+    HookExecution,
+    HookResult,
+    HookTrigger,
+    RoomKit,
+    TextContent,
+    VoiceChannel,
+)
 from roomkit.channels.ai import AIChannel
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.voice.audio_frame import AudioFrame
 from roomkit.voice.backends.mock import MockVoiceBackend
 from roomkit.voice.base import VoiceCapability
-from roomkit.voice.interruption import InterruptionConfig, InterruptionStrategy
 from roomkit.voice.pipeline import (
     AudioPipelineConfig,
-    BackchannelDecision,
     MockAECProvider,
     MockAGCProvider,
     MockAudioRecorder,
-    MockBackchannelDetector,
     MockDenoiserProvider,
     MockTurnDetector,
     MockVADProvider,
@@ -101,14 +105,6 @@ async def main() -> None:
         ]
     )
 
-    # --- Semantic interruption ------------------------------------------------
-    # BackchannelDetector distinguishes "uh-huh" from real interruptions.
-    backchannel_detector = MockBackchannelDetector(
-        decisions=[
-            BackchannelDecision(is_backchannel=True, confidence=0.9),
-        ]
-    )
-
     # --- Pipeline config ------------------------------------------------------
     pipeline_config = AudioPipelineConfig(
         vad=vad,
@@ -118,26 +114,25 @@ async def main() -> None:
         recorder=recorder,
         recording_config=recording_config,
         turn_detector=turn_detector,
-        backchannel_detector=backchannel_detector,
         vad_config=VADConfig(silence_threshold_ms=500),
     )
 
     # --- Backend with NATIVE_AEC capability -----------------------------------
     # This causes the pipeline to skip the AEC stage.
-    backend = MockVoiceBackend()
-    backend._capabilities = VoiceCapability.INTERRUPTION | VoiceCapability.NATIVE_AEC
+    backend = MockVoiceBackend(
+        capabilities=VoiceCapability.INTERRUPTION | VoiceCapability.NATIVE_AEC
+    )
 
     stt = MockSTTProvider(transcripts=["I need to", "reschedule my appointment"])
     tts = MockTTSProvider()
 
-    # --- Voice channel with SEMANTIC interruption -----------------------------
+    # --- Voice channel --------------------------------------------------------
     voice = VoiceChannel(
         "voice",
         stt=stt,
         tts=tts,
         backend=backend,
         pipeline=pipeline_config,
-        interruption=InterruptionConfig(strategy=InterruptionStrategy.SEMANTIC),
     )
     kit.register_channel(voice)
 
@@ -172,14 +167,8 @@ async def main() -> None:
     async def on_turn_incomplete(event, ctx):
         print(f"[hook] Turn incomplete: '{event.text}' (confidence={event.confidence})")
 
-    @kit.hook(HookTrigger.ON_BACKCHANNEL, execution=HookExecution.ASYNC, name="log_backchannel")
-    async def on_backchannel(event, ctx):
-        print(f"[hook] Backchannel detected: '{event.text}'")
-
     @kit.hook(HookTrigger.ON_TRANSCRIPTION, name="log_transcription")
     async def on_transcription(event, ctx):
-        from roomkit import HookResult
-
         print(f"[hook] Transcription: {event.text}")
         return HookResult.allow()
 

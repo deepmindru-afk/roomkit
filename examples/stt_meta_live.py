@@ -1,12 +1,15 @@
 """RoomKit - live speech-to-text on Meta Muse Voice Transcribe.
 
     META_API_KEY=... uv run --extra meta-stt \\
-        python examples/stt_meta_live.py recording.wav [--push-to-talk]
+        python examples/stt_meta_live.py [recording.wav] [--push-to-talk]
 
 Streams a 16-bit mono PCM WAV file to ``muse-voice-transcribe-1.0`` in real
 time, as a microphone would, then sends the same file once over the REST
 endpoint. Any rate works: 16 and 24 kHz go through as they are, anything else
 is resampled to 24 kHz by the provider.
+
+With no file, it synthesizes a short French sentence with Gemini TTS first
+(24 kHz), which needs GEMINI_API_KEY and ``--extra gemini`` as well.
 
 Two stream modes, chosen by how a VoiceChannel is set up:
 
@@ -24,6 +27,7 @@ Record a file with, for instance:
 
 Environment variables:
     META_API_KEY    (required) Meta Model API key
+    GEMINI_API_KEY  (required without a WAV file) Gemini API key for the sample
     LANGUAGE_BIAS   Language name to bias toward, e.g. French (default: none)
 """
 
@@ -40,10 +44,11 @@ import os
 import wave
 from collections.abc import AsyncIterator
 
-from shared import require_env, setup_logging
+from shared import pcm_from_wav_url, require_env, setup_logging
 
 from roomkit.voice.base import AudioChunk
 from roomkit.voice.stt.meta import MetaSTTConfig, MetaSTTProvider
+from roomkit.voice.tts.gemini import GeminiTTSConfig, GeminiTTSProvider
 
 logger = setup_logging("roomkit.examples.stt_meta_live")
 
@@ -51,6 +56,7 @@ CHUNK_MS = 40
 # Trailing silence, so the model sees the end of the last turn before the
 # stream ends — what a live microphone gives it for free.
 TAIL_MS = 1500
+SPOKEN = "Bonjour, je teste la transcription en direct de RoomKit avec le modèle de Meta."
 
 
 def read_wav(path: Path) -> tuple[bytes, int]:
@@ -59,6 +65,16 @@ def read_wav(path: Path) -> tuple[bytes, int]:
         if handle.getnchannels() != 1 or handle.getsampwidth() != 2:
             raise SystemExit(f"{path}: expected 16-bit mono PCM")
         return handle.readframes(handle.getnframes()), handle.getframerate()
+
+
+async def synthesize(api_key: str) -> tuple[bytes, int]:
+    """Speak one sentence so the example needs no recording of its own."""
+    tts = GeminiTTSProvider(GeminiTTSConfig(api_key=api_key))
+    try:
+        audio = await tts.synthesize(SPOKEN)
+        return pcm_from_wav_url(audio.url)
+    finally:
+        await tts.close()
 
 
 async def paced_chunks(pcm: bytes, sample_rate: int) -> AsyncIterator[AudioChunk]:
@@ -72,7 +88,12 @@ async def paced_chunks(pcm: bytes, sample_rate: int) -> AsyncIterator[AudioChunk
 
 async def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("wav", type=Path, help="16-bit mono PCM WAV file")
+    parser.add_argument(
+        "wav",
+        type=Path,
+        nargs="?",
+        help="16-bit mono PCM WAV file (default: a sentence synthesized with Gemini TTS)",
+    )
     parser.add_argument(
         "--push-to-talk",
         action="store_true",
@@ -81,8 +102,15 @@ async def main() -> None:
     args = parser.parse_args()
 
     env = require_env("META_API_KEY")
-    pcm, sample_rate = read_wav(args.wav)
-    logger.info("Streaming %s (%d Hz, %.1f s)", args.wav, sample_rate, len(pcm) / sample_rate / 2)
+    if args.wav is not None:
+        pcm, sample_rate = read_wav(args.wav)
+        source = str(args.wav)
+    else:
+        gemini_key = require_env("GEMINI_API_KEY")["GEMINI_API_KEY"]
+        logger.info("No file given: synthesizing one sentence with Gemini TTS")
+        pcm, sample_rate = await synthesize(gemini_key)
+        source = "the synthesized sentence"
+    logger.info("Streaming %s (%d Hz, %.1f s)", source, sample_rate, len(pcm) / sample_rate / 2)
 
     bias = os.environ.get("LANGUAGE_BIAS")
     provider = MetaSTTProvider(
