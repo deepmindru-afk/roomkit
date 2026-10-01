@@ -36,6 +36,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unreported. Both channels now announce a recording through one shared
   implementation.
 
+- A transport shared into a delegated room (`share_channels`) receives the
+  agent's answers and never the task (RMK-360, RFC §23.3): it was handed the
+  task description and a result tool's re-prompts, the delegating side's
+  instructions, while the agent's answers were only stored in the child
+  room's trace, so "email me the summary" emailed the request and never the
+  summary. The task and the re-prompts now reach the child room's agents
+  only. When a transport is shared, the agent's response is committed as a
+  room's is: each row, buffered or streamed, crosses `BEFORE_BROADCAST`
+  hooks and the agent's right to write and rides the child room's delivery
+  lane, so a redaction hook applies before the email leaves and a binding
+  that may not read receives nothing. The task result is the answer the
+  child room kept, a hook's rewrite included. A child room with no shared
+  transport keeps its trace as before, past no hook.
+
 ### Security
 
 - `ScreenInputTools` no longer turns pyautogui's failsafe off (RMK-356): the

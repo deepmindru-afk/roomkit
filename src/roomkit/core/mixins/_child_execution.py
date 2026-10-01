@@ -14,12 +14,19 @@ import logging
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from uuid import uuid4
 
+from roomkit.core.lanes import DeliveryCascade
 from roomkit.core.mixins._response_reader import ResponseReader
 from roomkit.core.mixins._result_capture import capture_result
 from roomkit.core.mixins._streaming_segments import SegmentWriter
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.context import RoomContext
-from roomkit.models.enums import ChannelType, EventStatus, EventType
+from roomkit.models.enums import (
+    ChannelCategory,
+    ChannelType,
+    EventStatus,
+    EventType,
+    Visibility,
+)
 from roomkit.models.event import (
     EventSource,
     RoomEvent,
@@ -145,12 +152,16 @@ async def _broadcast_and_collect(
     room = await kit.get_room(child_room_id)
     bindings = await kit.store.list_bindings(child_room_id)
 
+    # The task description, and a result tool's re-prompt, are the delegating
+    # side's instruction to the worker: they reach the room's agents and never
+    # a transport shared into it (RFC §23.3 step 4).
     msg_event = RoomEvent(
         room_id=child_room_id,
         type=EventType.MESSAGE,
         source=EventSource(channel_id="system", channel_type=ChannelType.SYSTEM),
         content=TextContent(body=message_body),
         status=EventStatus.DELIVERED,
+        visibility=Visibility.INTELLIGENCE,
     )
     msg_event = await kit._commit_indexed(child_room_id, msg_event)
     context = await _child_context(kit, room, bindings)
@@ -168,7 +179,55 @@ async def _broadcast_and_collect(
     await kit._persist_side_effects(
         child_room_id, result.tasks, result.observations, msg_event, context
     )
+    if _shares_a_transport(bindings):
+        return await _deliver_answer(kit, child_room_id, result)
     return await _collect_answer(kit, child_room_id, result, msg_event.chain_depth + 1)
+
+
+def _shares_a_transport(bindings: list[ChannelBinding]) -> bool:
+    """Whether the delegated room holds a transport, which only sharing puts there."""
+    return any(binding.category == ChannelCategory.TRANSPORT for binding in bindings)
+
+
+async def _deliver_answer(kit: RoomKit, child_room_id: str, result: BroadcastResult) -> str | None:
+    """Commit a delegated turn as a room commits its answers; the answer it kept.
+
+    A transport shared into the child room is told what the agent answers
+    (RFC §23.3 step 5), so the answer takes a room's path rather than the
+    trace's: each buffered response re-enters, and each stream is read by the
+    room's reader, every row crossing ``BEFORE_BROADCAST`` and the agent's
+    right to write and riding the child room's delivery lane. The shared
+    binding's access and the agent binding's visibility decide what the
+    transport receives, as in any room. The answer is the last one the room
+    kept (step 6): a hook's rewrite holds for the task result too, and an
+    answer the gate refused is none. A response that failed fails the turn
+    once every response is read.
+    """
+    cascade = DeliveryCascade(child_room_id, reentry_budget=kit._max_chain_depth * 10)
+    cascade.add_streams(result.streaming_responses)
+    await kit._commit_responses(child_room_id, result.reentry_events, None, cascade)
+    stream_error, _ = await kit._finish_cascade(cascade, child_room_id)
+    failure = next(
+        (out.error for out in result.outputs.values() if out.error is not None), stream_error
+    )
+    if failure is not None:
+        raise failure
+    sources = [cid for cid, out in result.outputs.items() if out.responded]
+    sources += [sr.source_channel_id for sr in result.streaming_responses]
+    answers = (_last_answer(cascade.response_events, cid) for cid in sources)
+    return next((answer for answer in answers if answer is not None), None)
+
+
+def _last_answer(rows: list[RoomEvent], channel_id: str) -> str | None:
+    """*channel_id*'s last answer among *rows*, or ``None`` when it kept none."""
+    return next(
+        (
+            text
+            for row in reversed(rows)
+            if row.source.channel_id == channel_id and (text := answer_text(row)) is not None
+        ),
+        None,
+    )
 
 
 async def _collect_answer(
