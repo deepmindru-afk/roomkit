@@ -67,6 +67,7 @@ from roomkit.tools.result import (
     failure_detail,
     is_unknown_tool_answer,
     pre_execution_denial,
+    read_tool_call_verdict,
     tool_failure,
     unserved_tool_error,
 )
@@ -1134,24 +1135,24 @@ class AIToolsMixin:
         shaped = None if result is None else self._shape_for_model(tc.name, result, tc.id)
         structured = None if result is None else call_ctx.structured_content
         verdict = await self._tool_call_verdict(tc, arguments, shaped, structured, room_id)
-        if verdict is not None and verdict.blocked:
-            reason = verdict.result or json.dumps({"error": "blocked"})
-            return _HookOutcome(result=reason, recorded=reason, failed=True, structured=None)
+        reading = read_tool_call_verdict(tc.name, verdict, shaped)
+        if reading.blocked:
+            return _HookOutcome(
+                result=reading.result, recorded=reading.result, failed=True, structured=None
+            )
         if verdict is not None and verdict.replaces_structured:
             structured = verdict.structured_content
-        if verdict is not None and verdict.result is not None:
-            override = as_tool_result(verdict.result)
-            return _HookOutcome(
-                result=override, recorded=override, failed=False, structured=structured
-            )
-        if shaped is None:
+        if not reading.served:
             body = unserved_tool_error(tc.name)
             detail = verdict.error_detail if verdict is not None else None
             await self._fire_tool_refusal(tc, arguments, body, room_id, detail=detail)
             return _HookOutcome(
                 result=body, recorded=body, failed=True, structured=None, remember=False
             )
-        return _HookOutcome(result=shaped, recorded=result, failed=False, structured=structured)
+        recorded = reading.result if reading.replaced else result
+        return _HookOutcome(
+            result=reading.result, recorded=recorded, failed=False, structured=structured
+        )
 
     async def _tool_call_verdict(
         self,
@@ -1178,7 +1179,7 @@ class AIToolsMixin:
         )
         if verdict is None or isinstance(verdict, ToolCallVerdict):
             return verdict
-        return ToolCallVerdict(result=verdict)  # a bare override
+        return ToolCallVerdict(result=verdict)  # a bare override, read as a verdict
 
     async def _serve_call(
         self,

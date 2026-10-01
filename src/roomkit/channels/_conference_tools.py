@@ -24,12 +24,12 @@ from roomkit.models.tool_call import (
     ToolCallCallback,
     ToolCallEvent,
     ToolCallObserver,
-    ToolCallVerdict,
 )
 from roomkit.tools.result import (
     GateRefusal,
     failure_detail,
     pre_execution_denial,
+    read_tool_call_verdict,
     tool_failure,
 )
 from roomkit.tools.timeout import answer_within
@@ -167,8 +167,9 @@ class ConferenceToolGate:
         body = outcome.body
         if outcome.served and self._served is not None:
             verdict = await self._served(replace(outcome.event, result=body))
-            if isinstance(verdict, ToolCallVerdict) and verdict.result is not None:
-                body = result_text(verdict.result)
+            # Read as on every channel: a block withholds the result, and a
+            # hook's result, a bare one included, replaces it (RFC §9.3).
+            body = result_text(read_tool_call_verdict(outcome.event.name, verdict, body).result)
         return _bounded(body, outcome.event.name)
 
     async def report_refusal(

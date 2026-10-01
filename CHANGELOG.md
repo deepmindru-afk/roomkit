@@ -34,6 +34,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `HookEngine.run_sync_hooks`'s `fold` is called after a `modify` too, as
+  `fold(previous, event, metadata)`, *previous* being what the hook was
+  handed (RMK-305): `ON_TOOL_CALL`, its only user, needs it to tell an
+  emptied result from a call nothing served.
 - **BREAKING — a tool call is bounded by default** (RMK-366, RFC §21.6): 30 s
   on `AIChannel`, 10 s on `RealtimeVoiceChannel` and in a conference. A host
   tool that legitimately takes longer now fails its call with
@@ -77,6 +81,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A SYNC `ON_TOOL_CALL` hook that empties a served call's result leaves the
+  call served (RMK-305, RFC §9.3): the next hook read the emptied call as one
+  nothing served and could serve it in place of the empty result, on every
+  channel, whether the first hook emptied it through `metadata` or with
+  `modify`. The model reads `null`. One reader now applies a verdict for the
+  text loops, a realtime session and a conference, and one runner runs the
+  chain.
+- A realtime tool call whose `ON_TOOL_CALL` hooks cannot get their room
+  context keeps its result, as on an `AIChannel` and in a conference
+  (RMK-305, RFC §9.3): the call failed on the store error.
 - A tool result made of mappings that name a part type among other data
   reaches the model as JSON (RMK-305, RFC §21.4): `[{"type": "text", "text":
   "chunk", "page": 2}]` was read as a text part and lost its `page`. A

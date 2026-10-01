@@ -150,15 +150,21 @@ class ToolCallVerdict:
     observers only (RFC §9.3)."""
 
 
-def fold_tool_call_rewrite(event: Any, metadata: dict[str, Any]) -> Any:
-    """An ON_TOOL_CALL hook's override, written into the event it leaves.
+def fold_tool_call_rewrite(previous: Any, event: Any, metadata: dict[str, Any]) -> Any:
+    """An ON_TOOL_CALL hook's rewrite, written into the event the next hook reads.
 
-    The hook engine's ``fold`` for ON_TOOL_CALL (RFC §9.3): the next SYNC
-    hook and the channel then read the outcome as the chain left it, whether
-    a hook replaced it with ``modify`` or through ``metadata``, and the ASYNC
-    observers read it as the model does. ``metadata["result"]`` replaces the
-    result; ``metadata["structured_content"]`` replaces the structured copy
+    The hook engine's ``fold`` for ON_TOOL_CALL (RFC §9.3), run after every
+    hook that rewrote the call, whether with ``modify`` (*event* is then its
+    payload) or through ``metadata``: the next SYNC hook and the channel read
+    the outcome as the chain left it, and the ASYNC observers read it as the
+    model does. ``metadata["result"]`` replaces the result;
+    ``metadata["structured_content"]`` replaces the structured copy
     (:func:`renderable_copy`).
+
+    A served call (*previous* carried a result) that a hook empties stays
+    served, its result JSON ``null``: ``None`` on the event means nothing
+    served the call, and the next hook would otherwise serve it in place of
+    the empty result the previous one decided.
     """
     if not isinstance(event, ToolCallEvent):
         return event
@@ -167,7 +173,11 @@ def fold_tool_call_rewrite(event: Any, metadata: dict[str, Any]) -> Any:
         changes["result"] = metadata["result"]
     if "structured_content" in metadata:
         changes["structured_content"] = renderable_copy(metadata["structured_content"])
-    return replace(event, **changes) if changes else event
+    folded = replace(event, **changes) if changes else event
+    served = isinstance(previous, ToolCallEvent) and previous.result is not None
+    if served and folded.result is None:
+        return replace(folded, result="null")
+    return folded
 
 
 def renderable_copy(copy: Any) -> dict[str, Any] | None:

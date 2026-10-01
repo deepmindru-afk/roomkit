@@ -24,11 +24,10 @@ from roomkit.channels._tool_registry import ChannelRegistry, ToolSource, tool_di
 from roomkit.channels._tool_search_constants import TOOL_CALL_TOOL
 from roomkit.channels.ai import _current_loop_ctx, _ToolLoopContext
 from roomkit.core.exceptions import ToolRefusedError
-from roomkit.core.hooks import SyncPipelineResult
 from roomkit.models.enums import ChannelType, HookTrigger
 from roomkit.models.tool_call import (
     ToolCallEvent,
-    fold_tool_call_rewrite,
+    ToolCallVerdict,
     observed_call_event,
 )
 from roomkit.providers.ai.base import AITextPart
@@ -41,9 +40,9 @@ from roomkit.tools.result import (
     hook_errors_detail,
     is_unknown_tool_answer,
     pre_execution_denial,
+    read_tool_call_verdict,
     tool_call_verdict,
     tool_failure,
-    unserved_tool_error,
 )
 from roomkit.tools.timeout import ToolTimeouts, answer_within
 from roomkit.tools.validation import fold_hoisted_arguments, validate_tool_arguments
@@ -148,25 +147,17 @@ class RealtimeToolsHost(Protocol):
 
 
 def _hook_outcome(
-    hook_result: Any, tool_event: ToolCallEvent, handler_result: str | None, name: str
+    verdict: ToolCallVerdict | None, handler_result: str | None, name: str
 ) -> tuple[str, bool]:
     """The result a realtime model reads after ON_TOOL_CALL, and whether it failed.
 
-    The chain is read as on every channel (:func:`tool_call_verdict`, RFC
-    §9.3): a MODIFY counts like the override, and a result replaced by an
-    empty value is replaced, never kept.
+    The verdict is read as on every channel (:func:`read_tool_call_verdict`,
+    RFC §9.3): a block withholds the result, a hook's result replaces the
+    handler's or serves a call nothing served, and a call nothing served
+    failed, never ``{"status": "ok"}`` for work nobody did.
     """
-    verdict = tool_call_verdict(hook_result, tool_event)
-    if verdict.result is not None:
-        return result_text(verdict.result), verdict.blocked
-    if handler_result is not None:
-        return handler_result, False
-    # Nothing served this call: no handler, and the hooks that could have
-    # answered it did not, a hook that raised included (its message goes to
-    # the observers, never to the model, RFC §9.3). Reporting ``{"status":
-    # "ok"}`` would be a success for work nobody did, which the model then
-    # acts on and an audit trail records as a completed call.
-    return unserved_tool_error(name), True
+    reading = read_tool_call_verdict(name, verdict, handler_result)
+    return result_text(reading.result), reading.failed
 
 
 class RealtimeToolsMixin:
@@ -630,10 +621,8 @@ class RealtimeToolsMixin:
             # Same reason as the post-handler yield: don't fuse hook
             # dispatch with submission into one loop step.
             await asyncio.sleep(0)
-        elif handler_result is not None:
-            result_str = handler_result
         else:
-            result_str = unserved_tool_error(name)
+            result_str, _ = _hook_outcome(None, handler_result, name)
 
         if len(result_str) > self._tool_result_max_length:
             result_str = self._truncate_tool_result(result_str, name, call_id, session.id)
@@ -1272,19 +1261,15 @@ class RealtimeToolsMixin:
         # stands as served. The observers wait for the outcome: they see the
         # result the model reads, and a call nothing served is the hooks'
         # chance to serve it, not a report (RFC §9.3).
-        context: RoomContext | None = None
-        hook_result = SyncPipelineResult(event=tool_event)
-        if self._framework.hook_engine.has_hooks(HookTrigger.ON_TOOL_CALL):
-            context = await self._framework._build_context(room_id, carrying=carrying)
-            hook_result = await self._framework.hook_engine.run_sync_hooks(
-                room_id,
-                HookTrigger.ON_TOOL_CALL,
-                tool_event,
-                context,
-                skip_event_filter=True,
-                fold=fold_tool_call_rewrite,
-                fire_observers=False,
-            )
+        chain = await self._framework._run_tool_call_chain(tool_event, room_id, carrying=carrying)
+        if chain is None:
+            # The hooks could not run: the call keeps its outcome, as on every
+            # channel, unless a hook there fails closed (RFC §9.3).
+            hook_result, context = None, None
+            verdict = self._framework._unreachable_tool_call_verdict(room_id)
+        else:
+            hook_result, context = chain
+            verdict = tool_call_verdict(hook_result, tool_event)
         if handler_result is not None:
             # The firing carried the handler's result: that was the report. A
             # cancellation landing between here and the wire must not add a
@@ -1296,7 +1281,7 @@ class RealtimeToolsMixin:
             name,
             (time.perf_counter() - t_seg) * 1000,
         )
-        result_str, failed = _hook_outcome(hook_result, tool_event, handler_result, name)
+        result_str, failed = _hook_outcome(verdict, handler_result, name)
         await self._report_hook_outcome(
             tool_event, hook_result, handler_result, result_str, failed, context, session
         )
@@ -1334,12 +1319,12 @@ class RealtimeToolsMixin:
                 tool_event.arguments,
                 result_str,
                 room_id,
-                detail=hook_errors_detail(hook_result),
+                detail=hook_errors_detail(hook_result) if hook_result is not None else None,
             )
             return
-        if handler_result is None and hook_result.allowed:
+        if handler_result is None and (hook_result is None or hook_result.allowed):
             self._mark_tool_call_reported(session.id, call_id)
-        if context is not None:  # None when no ON_TOOL_CALL hook is registered
+        if context is not None and hook_result is not None:  # no hook, or no context
             await engine.run_observers(
                 room_id,
                 HookTrigger.ON_TOOL_CALL,

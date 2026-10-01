@@ -318,12 +318,14 @@ class HookEngine:
         room_id: str,
         original: Any,
         hook_result: HookResult,
-        fold: Callable[[Any, dict[str, Any]], Any] | None,
+        fold: Callable[[Any, Any, dict[str, Any]], Any] | None,
     ) -> bool:
         """Carry *hook_result*'s rewrite into the event the next hook sees.
 
         A MODIFY replaces the payload; with a *fold*, the hook's metadata
-        rewrite is written into it too. A MODIFY whose payload is not of the
+        rewrite is written into it too, and the fold reads the payload the
+        hook was handed (``fold(previous, event, metadata)``), so it can tell
+        what the hook changed. A MODIFY whose payload is not of the
         type the trigger passed in replaces nothing (RFC §9.3): it blocks when
         the hook fails closed, and under a *fold* the chain carries on from
         the previous outcome, the hook's metadata rewrite still applied.
@@ -359,9 +361,10 @@ class HookEngine:
                     f"hook {hook.name} returned an unusable payload",
                 ):
                     return True
-        if fold is not None and hook_result.metadata:
+        rewrote = hook_result.action == "modify" and payload is not None
+        if fold is not None and (hook_result.metadata or rewrote):
             latest = result.event if result.event is not None else original
-            result.event = fold(latest, hook_result.metadata)
+            result.event = fold(current, latest, hook_result.metadata or {})
         return False
 
     def _fails_closed(self, hook: HookRegistration, trigger: HookTrigger) -> bool:
@@ -415,7 +418,7 @@ class HookEngine:
         *,
         skip_event_filter: bool = False,
         needs_lock: bool | None = None,
-        fold: Callable[[Any, dict[str, Any]], Any] | None = None,
+        fold: Callable[[Any, Any, dict[str, Any]], Any] | None = None,
         fire_observers: bool = True,
     ) -> SyncPipelineResult:
         """Run sync hooks sequentially. Stops on block, passes modified events.
@@ -434,8 +437,10 @@ class HookEngine:
                 ``True`` runs only the hooks that need the lock.
             fold: For a trigger whose hooks may also rewrite the payload
                 through ``metadata`` (ON_TOOL_CALL's result override),
-                ``fold(event, metadata)`` returns the event as that rewrite
-                left it, so the next hook, the ASYNC observers and the caller
+                ``fold(previous, event, metadata)`` returns the event as a
+                hook's rewrite left it (a MODIFY's payload or the event, with
+                the metadata written in), *previous* being what that hook was
+                handed, so the next hook, the ASYNC observers and the caller
                 all see the chain's latest state. ``None`` leaves metadata
                 beside the event.
             fire_observers: ``False`` leaves the ASYNC observers to the

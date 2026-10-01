@@ -69,6 +69,46 @@ def tool_call_verdict(hook_result: Any, event: ToolCallEvent) -> ToolCallVerdict
     )
 
 
+@dataclasses.dataclass(frozen=True)
+class VerdictReading:
+    """A call's outcome once ON_TOOL_CALL's verdict applies to what served it."""
+
+    result: ToolResult
+    """What the model reads."""
+    failed: bool
+    """A hook blocked the call, or nothing served it."""
+    served: bool
+    """A handler or a hook served the call."""
+    blocked: bool
+    """A hook withheld the result; the model reads the block's reason."""
+    replaced: bool
+    """A hook's result stands in place of the handler's."""
+
+
+def read_tool_call_verdict(
+    name: str, verdict: ToolCallVerdict | ToolResult | None, served: ToolResult | None
+) -> VerdictReading:
+    """The one reading of an ON_TOOL_CALL verdict, on every channel (RFC §9.3).
+
+    *served* is what the handler answered, ``None`` when nothing served the
+    call. A block withholds the result and fails the call; a hook's result,
+    given as a verdict or bare, replaces the handler's, or serves a call
+    nothing served; a call that neither a handler nor a hook served failed.
+    """
+    if verdict is not None and not isinstance(verdict, ToolCallVerdict):
+        verdict = ToolCallVerdict(result=verdict)  # a bare override
+    if verdict is not None and verdict.blocked:
+        reason = verdict.result or json.dumps({"error": "blocked"})
+        return VerdictReading(reason, failed=True, served=False, blocked=True, replaced=True)
+    if verdict is not None and verdict.result is not None:
+        override = as_tool_result(verdict.result)
+        return VerdictReading(override, failed=False, served=True, blocked=False, replaced=True)
+    if served is None:
+        unserved = unserved_tool_error(name)
+        return VerdictReading(unserved, failed=True, served=False, blocked=False, replaced=False)
+    return VerdictReading(served, failed=False, served=True, blocked=False, replaced=False)
+
+
 def is_unknown_tool_answer(result: Any) -> bool:
     """Whether *result* is the answer by which a handler says a tool is not
     its to serve (``{"error": "Unknown tool: ..."}``), the one

@@ -23,12 +23,12 @@ import threading
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 from uuid import uuid4
 
-from roomkit.channels._realtime_tools import result_text
+from roomkit.channels._realtime_tools import _hook_outcome, result_text
 from roomkit.core.exceptions import ToolRefusedError
 from roomkit.models.enums import ChannelType
 from roomkit.models.tool_call import ToolCallEvent
 from roomkit.telemetry.base import Attr, SpanKind
-from roomkit.tools.result import tool_failure, unserved_tool_error
+from roomkit.tools.result import tool_failure
 from roomkit.voice.base import VoiceSessionState
 
 if TYPE_CHECKING:
@@ -367,11 +367,8 @@ class RealtimeToolRecoveryMixin:
                 result_str, failed = await self._fire_tool_hook_outcome(
                     tool_event, room_id, handler_result, tool_name, call_id, session, gate_context
                 )
-            elif handler_result is not None:
-                result_str = handler_result
             else:
-                # Nothing served it: a failure, never a success (RFC §9.3).
-                result_str, failed = unserved_tool_error(tool_name), True
+                result_str, failed = _hook_outcome(None, handler_result, tool_name)
 
             verb = "failed" if failed else "completed"
             await self._inject_recovered_result(session, tool_name, call_id, result_str, verb=verb)

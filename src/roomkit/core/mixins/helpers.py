@@ -909,16 +909,19 @@ class HelpersMixin:
         return _callback
 
     async def _run_tool_call_chain(
-        self, event: ToolCallEvent, room_id: str
+        self, event: ToolCallEvent, room_id: str, *, carrying: RoomContext | None = None
     ) -> tuple[SyncPipelineResult, RoomContext | None] | None:
         """ON_TOOL_CALL's SYNC chain on a served call, and the context it ran with.
 
-        With no ON_TOOL_CALL hook registered the call stands as served, and no
+        The one runner of the chain, for every channel (RFC §9.3). With no
+        ON_TOOL_CALL hook registered the call stands as served, and no
         context is built. ``None`` when the context would not build.
+        *carrying* is a context the caller already built for this call, which
+        spares the room history a second read.
         """
         if not self._hook_engine.has_hooks(HookTrigger.ON_TOOL_CALL):
             return SyncPipelineResult(event=event), None
-        context = await self._hook_context(room_id, HookTrigger.ON_TOOL_CALL)
+        context = await self._hook_context(room_id, HookTrigger.ON_TOOL_CALL, carrying=carrying)
         if context is None:
             return None
         hook_result = await self._hook_engine.run_sync_hooks(
@@ -972,7 +975,9 @@ class HelpersMixin:
             await self._observe_tool_call(event, context)
         await self._emit_tool_call_event(event, channel_id)
 
-    async def _hook_context(self, room_id: str, trigger: HookTrigger) -> RoomContext | None:
+    async def _hook_context(
+        self, room_id: str, trigger: HookTrigger, *, carrying: RoomContext | None = None
+    ) -> RoomContext | None:
         """The room's context for *trigger*'s hooks, or ``None`` when it will not build.
 
         A context is store reads (the room, its bindings, its participants, its
@@ -980,7 +985,7 @@ class HelpersMixin:
         caller builds one only when ``has_hooks`` says a hook will read it.
         """
         try:
-            return await self._build_context(room_id)
+            return await self._build_context(room_id, carrying=carrying)
         except Exception:
             logger.warning(
                 "Failed to build context for %s hook in room %s",
