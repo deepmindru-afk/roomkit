@@ -899,10 +899,10 @@ class TestTheEventBridgeIsBounded:
         participant = SimpleNamespace(identity="p-flappy")
 
         for _ in range(1000):
-            session._on_connection_quality_changed(
+            session._view.on_connection_quality_changed(
                 participant, SimpleNamespace(name="QUALITY_EXCELLENT")
             )
-            session._on_connection_quality_changed(
+            session._view.on_connection_quality_changed(
                 participant, SimpleNamespace(name="QUALITY_POOR")
             )
 
@@ -916,8 +916,10 @@ class TestTheEventBridgeIsBounded:
 
         session = _bridge_session(connection_quality=_record)
         participant = SimpleNamespace(identity="p-1")
-        session._on_connection_quality_changed(participant, SimpleNamespace(name="QUALITY_POOR"))
-        session._on_connection_quality_changed(
+        session._view.on_connection_quality_changed(
+            participant, SimpleNamespace(name="QUALITY_POOR")
+        )
+        session._view.on_connection_quality_changed(
             participant, SimpleNamespace(name="QUALITY_EXCELLENT")
         )
 
