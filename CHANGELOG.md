@@ -137,6 +137,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A `null` in a binding's metadata now defers to the next level for every
+  per-turn setting (`system_prompt`, `temperature`, `max_tokens`,
+  `thinking_budget`, `enable_thinking`, `reasoning_effort`, `response_schema`,
+  `turn_budget_tokens`, `turn_budget_usd`), as a `None` from the
+  `config_provider` already did (RMK-346, RFC Appendix A.9). It used to clear
+  the channel's value for that room: `{"turn_budget_usd": None}` ran the turn
+  with no cap at all. Lifting a channel default for a room takes an explicit
+  value (`enable_thinking=False`, `thinking_budget=0`).
 - `CompactingMemory` pays for the messages and notes its inner provider
   returns before it keeps history, as `BudgetAwareMemory` and
   `SummarizingMemory` do (found reviewing RMK-334): a turn could exceed the

@@ -249,7 +249,8 @@ class AIContextMixin:
         1. ``binding.metadata`` explicit overrides (system_prompt,
            temperature, max_tokens, thinking_budget, enable_thinking,
            reasoning_effort, response_schema, turn_budget_tokens,
-           turn_budget_usd) — per-room operator intent, always wins.
+           turn_budget_usd) — per-room operator intent, wins whenever it
+           sets a value; a ``null`` defers like an absent key.
         2. The channel's ``config_provider`` result, resolved fresh at the
            start of every turn (see channels/_turn_config.py).
         3. The channel's constructor defaults.
@@ -738,12 +739,17 @@ class AIContextMixin:
     def _turn_value(
         self, key: str, binding: ChannelBinding, turn: AIChannelTurnConfig | None
     ) -> Any:
-        """The turn's *key*: from the binding metadata, else the config
-        provider's result, else the channel default."""
-        if key in binding.metadata:
-            return binding.metadata[key]
-        turn_value = getattr(turn, key) if turn is not None else None
-        return turn_value if turn_value is not None else getattr(self, f"_{key}")
+        """The turn's *key* from the first level that sets it: the binding
+        metadata, the config provider's result, the channel default.
+
+        ``None`` is "not set here" at every level, an explicit ``null`` in the
+        binding metadata included (RFC Appendix A.9): a host that serializes
+        an empty field never clears the channel's prompt or lifts its budget.
+        """
+        value = binding.metadata.get(key)
+        if value is None and turn is not None:
+            value = getattr(turn, key)
+        return value if value is not None else getattr(self, f"_{key}")
 
     def _turn_budget(
         self, binding: ChannelBinding, turn: AIChannelTurnConfig | None

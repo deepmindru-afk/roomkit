@@ -140,6 +140,29 @@ async def test_the_turn_config_and_the_room_outrank_the_channel(streaming: bool)
     assert run.reason == "completed" and ran == [0, 1, 2, 3, 4, 5]
 
 
+@pytest.mark.parametrize("level", ["binding", "turn"])
+@pytest.mark.parametrize("key", ["turn_budget_tokens", "turn_budget_usd"])
+async def test_a_null_never_lifts_the_channel_budget(
+    streaming: bool, key: str, level: str
+) -> None:
+    """An empty field serialized as ``null``, in the room's binding metadata
+    or in the turn config, keeps the channel's cap (RFC Appendix A.9)."""
+
+    async def per_turn(binding: ChannelBinding, context: RoomContext) -> AIChannelTurnConfig:
+        return AIChannelTurnConfig(**{key: None})
+
+    cap = {"turn_budget_tokens": 1200, "turn_budget_usd": _PRICING.cost_for(_USAGE) * 2.5}[key]
+    options: dict[str, Any] = {key: cap}
+    if level == "turn":
+        options["config_provider"] = per_turn
+    ch, ran = _channel(_Priced(ai_responses=_script(), streaming=streaming), **options)
+
+    run = await _turn(ch, {key: None} if level == "binding" else None)
+
+    assert run.reason == "budget_exceeded"
+    assert ran == [0, 1]
+
+
 def test_a_cost_budget_needs_a_priced_model() -> None:
     with pytest.raises(ValueError, match="turn_budget_usd needs a model with a known price"):
         AIChannel("ai1", provider=MockAIProvider(), turn_budget_usd=0.05)

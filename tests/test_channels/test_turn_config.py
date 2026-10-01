@@ -9,6 +9,10 @@ sampling/prompt, while the provider's toolset REPLACES the deprecated
 
 from __future__ import annotations
 
+from typing import Any
+
+import pytest
+
 from roomkit.channels._turn_config import AIChannelTurnConfig
 from roomkit.channels.ai import AIChannel
 from roomkit.models.channel import ChannelBinding
@@ -21,6 +25,27 @@ from tests.conftest import make_event
 
 TOOL_V1 = {"name": "outlook", "description": "mail", "parameters": {}}
 TOOL_V2 = AITool(name="gmail", description="mail", parameters={})
+
+
+def _schema(field: str) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {field: {"type": "string"}},
+        "required": [field],
+        "additionalProperties": False,
+    }
+
+
+# Each per-turn setting the context carries: (key, channel default, turn value).
+_SETTINGS = [
+    ("system_prompt", "channel prompt", "turn prompt"),
+    ("temperature", 0.3, 0.9),
+    ("max_tokens", 321, 654),
+    ("thinking_budget", 2048, 4096),
+    ("enable_thinking", True, False),
+    ("reasoning_effort", "low", "high"),
+    ("response_schema", _schema("channel"), _schema("turn")),
+]
 
 
 def _binding(metadata: dict | None = None) -> ChannelBinding:
@@ -184,3 +209,55 @@ class TestReasoningOverrides:
         ai_ctx = await ch._build_context(make_event(), binding, _ctx(binding))
 
         assert ai_ctx.enable_thinking is False
+
+
+def _resolved(ai_ctx: Any, key: str, expected: Any) -> bool:
+    """Whether the context carries *expected* for *key*; the prompt grows
+    past the resolved one (skills, sandbox, notes), so it is a prefix."""
+    value = getattr(ai_ctx, key)
+    return value.startswith(expected) if key == "system_prompt" else value == expected
+
+
+class TestANullDefers:
+    """``None`` means "not set here" at every level (RFC Appendix A.9, RMK-346).
+
+    A host that serializes an empty form field as ``null`` into the binding
+    metadata must not clear the channel's prompt or settings for that room:
+    a binding ``null`` reads like the config provider's ``None``.
+    """
+
+    @pytest.mark.parametrize(("key", "channel_value", "turn_value"), _SETTINGS)
+    async def test_a_binding_null_keeps_the_channel_default(
+        self, key: str, channel_value: Any, turn_value: Any
+    ) -> None:
+        ch = _channel(**{key: channel_value})
+        binding = _binding(metadata={key: None})
+        ai_ctx = await ch._build_context(make_event(), binding, _ctx(binding))
+
+        assert _resolved(ai_ctx, key, channel_value)
+
+    @pytest.mark.parametrize(("key", "channel_value", "turn_value"), _SETTINGS)
+    async def test_a_binding_null_keeps_the_turn_value(
+        self, key: str, channel_value: Any, turn_value: Any
+    ) -> None:
+        async def provider(binding, context):
+            return AIChannelTurnConfig(**{key: turn_value})
+
+        ch = _channel(config_provider=provider, **{key: channel_value})
+        binding = _binding(metadata={key: None})
+        ai_ctx = await ch._build_context(make_event(), binding, _ctx(binding))
+
+        assert _resolved(ai_ctx, key, turn_value)
+
+    @pytest.mark.parametrize(("key", "channel_value", "turn_value"), _SETTINGS)
+    async def test_a_turn_none_keeps_the_channel_default(
+        self, key: str, channel_value: Any, turn_value: Any
+    ) -> None:
+        async def provider(binding, context):
+            return AIChannelTurnConfig(**{key: None})
+
+        ch = _channel(config_provider=provider, **{key: channel_value})
+        binding = _binding()
+        ai_ctx = await ch._build_context(make_event(), binding, _ctx(binding))
+
+        assert _resolved(ai_ctx, key, channel_value)
