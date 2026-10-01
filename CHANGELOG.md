@@ -40,6 +40,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ToolTimeoutError`, its handler cancelled. Migration: name it in
   `tool_timeouts` (`{"export_report": 120}`, or `None` for no bound), or pass
   `tool_timeout_seconds=None` to keep calls unbounded.
+- `ElevenLabsRealtimeConfig.tool_timeout_s` defaults to `None` instead of
+  30 s (RMK-366): the channel bounds each call now, and the provider's own
+  wait capped it, cutting a tool given a longer bound at 30 s while its
+  handler kept running. Set it only to cap the channel's bound on this
+  provider.
 - **BREAKING — `BEFORE_TTS` runs on each sentence of a streamed response**
   (RMK-268, RFC §9.3 and §12.2 step 12s.b), a hook-trigger behaviour change.
   A Voice Channel whose TTS reads text as it streams (`supports_streaming_input`:

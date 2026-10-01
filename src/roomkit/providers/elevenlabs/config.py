@@ -17,9 +17,13 @@ class ElevenLabsRealtimeConfig(BaseModel):
         base_url: WebSocket base URL.  Override for regional endpoints
             (e.g. ``"wss://api.eu.residency.elevenlabs.io"`` for EU).
         tool_timeout_s: How long a client tool call may stay pending before
-            the provider answers the agent with an error.  The ElevenLabs
-            agent applies its own per-tool timeout server-side; keep this
-            one above it so the agent's own timeout is what the user hears.
+            the provider answers the agent with an error.  ``None`` (the
+            default) leaves the wait to the channel, which bounds each call
+            itself (``tool_timeout_seconds`` / ``tool_timeouts``, RFC §21.6):
+            a bound set here caps the channel's, and a call cut here leaves
+            the channel's handler running.  The ElevenLabs agent applies its
+            own per-tool timeout server-side; keep any bound set here above
+            it so the agent's own timeout is what the user hears.
         response_idle_ms: Quiet period after the last audio chunk of a turn
             before the provider declares the response finished.  ElevenLabs
             sends no end-of-audio marker, so the end of a turn is inferred
@@ -31,7 +35,7 @@ class ElevenLabsRealtimeConfig(BaseModel):
     agent_id: str = Field(min_length=1)
     requires_auth: bool = False
     base_url: str = Field(default="wss://api.elevenlabs.io", min_length=1)
-    tool_timeout_s: float = Field(default=30.0, gt=0)
+    tool_timeout_s: float | None = Field(default=None, gt=0)
     response_idle_ms: int = Field(default=800, gt=0)
 
     @field_validator("base_url")

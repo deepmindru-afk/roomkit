@@ -674,6 +674,20 @@ class TestClientToolBridge:
 
         assert provider._pending_tools[session.id] == {}
 
+    async def test_by_default_a_call_waits_for_the_channel_to_answer(
+        self, session: VoiceSession
+    ) -> None:
+        provider = ElevenLabsRealtimeProvider(ElevenLabsRealtimeConfig(api_key="k", agent_id="a"))
+        provider.on_tool_call(lambda *_: None)
+        call = asyncio.ensure_future(
+            provider._make_tool_handler(session, "slow")({"tool_call_id": "call-1"})
+        )
+
+        await asyncio.sleep(0.05)
+        assert not call.done()  # no bound of its own: the channel's applies (RFC §21.6)
+        await provider.submit_tool_result(session, "call-1", "late but answered")
+        assert await call == "late but answered"
+
     async def test_result_for_an_unknown_call_is_dropped(
         self, provider: ElevenLabsRealtimeProvider, session: VoiceSession
     ) -> None:

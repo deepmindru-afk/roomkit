@@ -553,6 +553,7 @@ class ElevenLabsRealtimeProvider(RealtimeVoiceProvider):
             )
 
             try:
+                # ``None``: the channel bounds the call and answers it either way.
                 return await asyncio.wait_for(future, timeout=self._config.tool_timeout_s)
             except TimeoutError:
                 # Raising is how the SDK is told this is an error result;
