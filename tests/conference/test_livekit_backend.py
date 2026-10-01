@@ -30,7 +30,7 @@ from roomkit.conference._livekit_media import TrackPumps
 from roomkit.conference._livekit_session import ConferenceEmissions, LiveKitBotSession
 from roomkit.conference._livekit_voice import BotVoiceTrack, VoicePublicationError
 from roomkit.conference.livekit import LiveKitConferenceBackend, LiveKitConfig
-from roomkit.conference.models import BotSession, ConferenceGrants, TrackKind
+from roomkit.conference.models import BotSession, ConferenceGrants, ConferenceTrack, TrackKind
 from roomkit.core.exceptions import ConferenceCapabilityError
 from roomkit.video.video_frame import VideoFrame
 from roomkit.voice.base import AudioChunk
@@ -1490,3 +1490,29 @@ class TestTheEventBridge:
 
         assert await bridge.stop() == 2
         assert bridge.queued == 0
+
+
+def _pumps() -> TrackPumps:
+    return TrackPumps(
+        rtc=SimpleNamespace(),
+        room_id="room-1",
+        audio_sink=_ignore,
+        video_sink=_ignore,
+        config=SimpleNamespace(),
+    )
+
+
+class TestTrackPumps:
+    async def test_no_pump_starts_once_the_pumps_are_closed(self) -> None:
+        """A track the SDK reports subscribed while the session is leaving
+        must not start a pump nothing would ever stop.
+        """
+        pumps = _pumps()
+        record = ConferenceTrack(
+            id="TR_1", room_id="room-1", participant_id="p", kind=TrackKind.AUDIO
+        )
+
+        await pumps.close()
+        pumps.start(record, SimpleNamespace())
+
+        assert pumps._pumps == {}

@@ -143,10 +143,16 @@ class TrackPumps:
         # backend configuration's, consulted at the moment it applies.
         self._config = config
         self._pumps: dict[str, asyncio.Task[None]] = {}
+        self._closed = False
 
     def start(self, record: ConferenceTrack, track: Any) -> None:
-        """Start the track's pump, unless one is already running for it."""
-        if record.id in self._pumps:
+        """Start the track's pump, unless one runs already or the pumps are closed.
+
+        Closed is for good: the SDK can still report a track subscribed while
+        the session is leaving, and a pump started then is one nothing would
+        ever stop.
+        """
+        if self._closed or record.id in self._pumps:
             return
         self._pumps[record.id] = asyncio.create_task(self._run(record, track))
 
@@ -159,8 +165,9 @@ class TrackPumps:
         """Cancel the track's pump and wait until it has ended."""
         await cancel_and_wait(self._pumps.pop(track_id, None))
 
-    async def stop_all(self) -> None:
-        """Cancel every pump and wait until each has ended."""
+    async def close(self) -> None:
+        """Cancel every pump, wait until each has ended, and start none after."""
+        self._closed = True
         pumps = list(self._pumps.values())
         self._pumps.clear()
         await cancel_and_wait(*pumps)

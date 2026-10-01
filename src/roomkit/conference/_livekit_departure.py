@@ -130,7 +130,7 @@ class SessionDeparture:
                     self.session.identity,
                     self.room_id,
                 )
-            await self._pumps.stop_all()
+            await self._pumps.close()
             await self._voice.close()
         await self._disconnect_once()
         await self._bridge.stop()
@@ -262,7 +262,7 @@ class SessionDeparture:
         connection is still live and the report has to wait for the
         disconnect.
         """
-        await self._pumps.stop_all()
+        await self._pumps.close()
         await self._voice.close()
         with contextlib.suppress(Exception):
             if not await self._sdk_disconnect():
@@ -281,7 +281,7 @@ class SessionDeparture:
         out loud. A later ``leave()`` (a detach, the close) retries the
         disconnect: failure is not terminal, exactly as in :meth:`leave`.
         """
-        await self._pumps.stop_all()
+        await self._pumps.close()
         await self._voice.close()
         for attempt, delay in enumerate((0.0, *OVERFLOW_DISCONNECT_DELAYS_S)):
             if self._leave_requested or self._disconnected:
