@@ -13,7 +13,6 @@ What genuinely needs a server — joining, subscribing, frames, teardown — is 
 from __future__ import annotations
 
 import asyncio
-import contextlib
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -25,6 +24,7 @@ import pytest
 
 from roomkit.channels import _conference_activity
 from roomkit.conference import _livekit_session as session_module
+from roomkit.conference._livekit_bridge import MAX_QUEUED_EVENTS, EventBridge
 from roomkit.conference._livekit_session import ConferenceEmissions, LiveKitBotSession
 from roomkit.conference._livekit_voice import BotVoiceTrack, VoicePublicationError
 from roomkit.conference.livekit import LiveKitConferenceBackend, LiveKitConfig
@@ -105,31 +105,26 @@ async def _ignore(*args: Any) -> None:
     return None
 
 
+def _emissions(**named: Callable[..., Awaitable[None]]) -> ConferenceEmissions:
+    """A session's emissions, every one ignored unless named."""
+    fields = {name: _ignore for name in ConferenceEmissions.__dataclass_fields__}
+    return ConferenceEmissions(**{**fields, **named})
+
+
 def _session_for(
     rtc: Any,
     *,
     session: BotSession | None = None,
     ended: Callable[..., Awaitable[None]] = _ignore,
     evict: Callable[[], Awaitable[None]] = _ignore,
+    **emitted: Callable[..., Awaitable[None]],
 ) -> LiveKitBotSession:
     """A LiveKitBotSession on a stand-in rtc, every emission ignored unless named."""
     return LiveKitBotSession(
         rtc=rtc,
         session=session or BotSession(id="lk-1", room_id="room-1", identity="roomkit"),
         config=SimpleNamespace(publish_queue_ms=200),
-        emissions=ConferenceEmissions(
-            participant_joined=_ignore,
-            participant_left=_ignore,
-            track_published=_ignore,
-            track_unpublished=_ignore,
-            track_muted=_ignore,
-            track_unmuted=_ignore,
-            track_audio=_ignore,
-            track_video=_ignore,
-            active_speaker_changed=_ignore,
-            connection_quality=_ignore,
-            bot_session_ended=ended,
-        ),
+        emissions=_emissions(bot_session_ended=ended, **emitted),
         evict=evict,
     )
 
@@ -736,7 +731,7 @@ class TestLeaveFailureIsNotSwallowed:
         assert room.disconnects == 2
 
 
-def _bridge_session() -> Any:
+def _bridge_session(**emitted: Callable[..., Awaitable[None]]) -> Any:
     """A LiveKitBotSession with a fake rtc, for exercising the event bridge."""
 
     class _FakeRoom:
@@ -748,7 +743,7 @@ def _bridge_session() -> Any:
         async def disconnect(self) -> None:
             return None
 
-    return _session_for(SimpleNamespace(Room=_FakeRoom))
+    return _session_for(SimpleNamespace(Room=_FakeRoom), **emitted)
 
 
 class _ClearableSource:
@@ -877,26 +872,22 @@ class TestTheEventBridgeIsBounded:
                 participant, SimpleNamespace(name="QUALITY_POOR")
             )
 
-        assert session._events.qsize() == 1
-        assert len(session._pending_state) == 1
+        assert session._bridge.queued == 1
 
     async def test_a_coalesced_state_delivers_its_latest_value_once(self) -> None:
-        session = _bridge_session()
         seen: list[tuple[Any, ...]] = []
 
         async def _record(*args: Any) -> None:
             seen.append(args)
 
-        session._emissions = session._emissions.__class__(
-            **{**session._emissions.__dict__, "connection_quality": _record}
-        )
+        session = _bridge_session(connection_quality=_record)
         participant = SimpleNamespace(identity="p-1")
         session._on_connection_quality_changed(participant, SimpleNamespace(name="QUALITY_POOR"))
         session._on_connection_quality_changed(
             participant, SimpleNamespace(name="QUALITY_EXCELLENT")
         )
 
-        consumer = asyncio.create_task(session._consume())
+        session._bridge.start()
         try:
             deadline = asyncio.get_running_loop().time() + 5.0
             while not seen:
@@ -904,9 +895,7 @@ class TestTheEventBridgeIsBounded:
                 await asyncio.sleep(0)
             await asyncio.sleep(0)
         finally:
-            consumer.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await consumer
+            await session._bridge.stop()
 
         assert seen == [("room-1", "p-1", "excellent")]
 
@@ -919,21 +908,17 @@ class TestTheEventBridgeIsBounded:
         catch-up announces the current truth instead of a holed history.
         """
 
-        session = _bridge_session()
         reported: list[str] = []
-        original = session._emissions
 
         async def _ended(bot: Any, reason: str) -> None:
             reported.append(reason)
 
-        session._emissions = original.__class__(
-            **{**original.__dict__, "bot_session_ended": _ended}
-        )
+        session = _bridge_session(ended=_ended)
 
-        for _ in range(session_module.MAX_QUEUED_EVENTS + 50):
+        for _ in range(MAX_QUEUED_EVENTS + 50):
             session._put(_ignore, "room-1")
 
-        assert session._events.qsize() <= session_module.MAX_QUEUED_EVENTS
+        assert session._bridge.queued <= MAX_QUEUED_EVENTS
         assert session._left is True, "the overflow did not end the session"
         assert session._ender is not None
         await asyncio.wait_for(session._ender, timeout=5.0)
@@ -1019,7 +1004,7 @@ class TestAnOverflowEndIsConfirmedBeforeReported:
         monkeypatch.setattr(session_module, "OVERFLOW_DISCONNECT_DELAYS_S", (0.0,))
         session, room, reported = self._session_with_room()
 
-        for _ in range(session_module.MAX_QUEUED_EVENTS + 1):
+        for _ in range(MAX_QUEUED_EVENTS + 1):
             session._put(_ignore, "room-1")
         assert session._ender is not None
         await asyncio.wait_for(session._ender, timeout=5.0)
@@ -1044,7 +1029,7 @@ class TestAnOverflowEndIsConfirmedBeforeReported:
         session, room, reported = self._session_with_room()
         room.refuse = False
 
-        for _ in range(session_module.MAX_QUEUED_EVENTS + 1):
+        for _ in range(MAX_QUEUED_EVENTS + 1):
             session._put(_ignore, "room-1")
         assert session._ender is not None
         await asyncio.wait_for(session._ender, timeout=5.0)
@@ -1088,7 +1073,7 @@ class TestTheDisconnectIsSingleFlight:
         session = _session_for(SimpleNamespace(Room=lambda: room), ended=_ended)
 
         # Overflow: the unhealthy end starts its disconnect and suspends in it.
-        for _ in range(session_module.MAX_QUEUED_EVENTS + 1):
+        for _ in range(MAX_QUEUED_EVENTS + 1):
             session._put(_ignore, "room-1")
         assert session._ender is not None
         deadline = asyncio.get_running_loop().time() + 5.0
@@ -1213,7 +1198,7 @@ class TestTheDepartureIsBounded:
             evicted.set()
 
         session = _session_for(SimpleNamespace(Room=lambda: room), evict=_slow_eviction)
-        session._consumer = asyncio.create_task(asyncio.Event().wait())
+        session._bridge.start()
 
         with pytest.raises(TimeoutError):
             await asyncio.wait_for(session.leave(), timeout=0.1)
@@ -1223,7 +1208,7 @@ class TestTheDepartureIsBounded:
 
         assert room.disconnects == 1
         assert session._disconnected is True
-        assert session._consumer is None
+        assert session._bridge._consumer is None
 
     async def test_an_eviction_that_outlasts_its_bound_is_a_failed_departure(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1398,3 +1383,45 @@ class TestTheBackendEvictsThroughTheServer:
 
         with pytest.raises(api.ServerError):
             await backend._evict("room-1", "roomkit")
+
+
+class TestTheEventBridge:
+    """The bridge on its own: ordered, bounded, and honest about being full."""
+
+    async def test_events_are_emitted_in_the_order_they_were_queued(self) -> None:
+        bridge = EventBridge("room-1")
+        seen: list[int] = []
+
+        async def _record(value: int) -> None:
+            seen.append(value)
+
+        for value in range(5):
+            assert bridge.put(_record, value)
+        bridge.start()
+        try:
+            deadline = asyncio.get_running_loop().time() + 5.0
+            while len(seen) < 5:
+                assert asyncio.get_running_loop().time() < deadline
+                await asyncio.sleep(0)
+        finally:
+            await bridge.stop()
+
+        assert seen == [0, 1, 2, 3, 4]
+
+    def test_a_full_bridge_refuses_a_fact_rather_than_dropping_one(self) -> None:
+        bridge = EventBridge("room-1")
+        for _ in range(MAX_QUEUED_EVENTS):
+            assert bridge.put(_ignore)
+
+        assert bridge.put(_ignore) is False
+        assert bridge.put_state("speaker", _ignore) is False
+        assert bridge.queued == MAX_QUEUED_EVENTS
+
+    async def test_stopping_counts_what_was_never_delivered(self) -> None:
+        bridge = EventBridge("room-1")
+        bridge.put(_ignore)
+        bridge.put_state("speaker", _ignore, "p-1")
+        bridge.put_state("speaker", _ignore, "p-2")
+
+        assert await bridge.stop() == 2
+        assert bridge.queued == 0
