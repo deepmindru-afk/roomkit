@@ -503,7 +503,7 @@ class TestDeferredCallRecovery:
 
         assert calls == []
         result = _tool_result(provider.calls[1])
-        assert "no tool by that name exists" in result["error"]
+        assert "No tool named" in result["error"]
         assert "find_tools" in result["hint"]
 
     async def test_policy_denied_catalogue_tool_is_not_recovered(self, streaming: bool) -> None:

@@ -12,25 +12,29 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._ai_policy import policy_admits, policy_refusal
 from roomkit.channels._realtime_tools import result_text
 from roomkit.channels._served_tools import CollisionLog, declared_once, dict_tool_name
-from roomkit.core.exceptions import ToolRefusedError
+from roomkit.core.exceptions import ToolRefusedError, UnservedToolCallError
 from roomkit.models.enums import ChannelType, HookTrigger
 from roomkit.models.tool_call import (
     ToolCallCallback,
     ToolCallEvent,
     ToolCallObserver,
+    ToolCallVerdict,
 )
+from roomkit.tools._outcome import OutcomeKind, ToolOutcome, read_outcome
 from roomkit.tools.result import (
     GateRefusal,
+    declined_answer,
     failure_detail,
     pre_execution_denial,
     read_tool_call_verdict,
     tool_failure,
+    unserved_tool_error,
 )
 from roomkit.tools.timeout import answer_within
 from roomkit.tools.validation import fold_hoisted_arguments, validate_tool_arguments
@@ -81,17 +85,6 @@ def warn_unused_role_overrides(config: ConferenceRealtimeConfig, channel_id: str
         )
 
 
-@dataclass(frozen=True)
-class ToolOutcome:
-    """What the gate and the handler made of one call, before ON_TOOL_CALL."""
-
-    event: ToolCallEvent
-    """The call, with the arguments it ran with (or would have)."""
-    body: str
-    """The handler's result, or the refusal the model reads."""
-    served: bool
-
-
 class ConferenceToolGate:
     """Serves one conference channel's tool calls; refusals reach observers only.
 
@@ -129,19 +122,25 @@ class ConferenceToolGate:
             session=session,
         )
 
-    async def execute(self, config: ConferenceRealtimeConfig, event: ToolCallEvent) -> ToolOutcome:
-        """Run *event*'s call through the gate, then the handler."""
+    async def execute(
+        self, config: ConferenceRealtimeConfig, event: ToolCallEvent
+    ) -> tuple[ToolCallEvent, ToolOutcome]:
+        """Run *event*'s call through the gate, then the handler: the call with
+        the arguments it ran with, and its outcome before ON_TOOL_CALL."""
         arguments, denial = await self._authorize(config, event)
         event = replace(event, arguments=arguments)
         if denial is not None:
-            return self._refused(replace(event, error_detail=denial.detail), _error(denial.body))
+            return self._refused(event, _error(denial.body), denial.detail)
         if config.tool_handler is None:
             reason = f"no handler is configured for tool {event.name!r}"
             return self._refused(event, _error(reason))
         try:
             timeout = config.tool_bound(event.name)
             answer = config.tool_handler(str(event.room_id), event.name, arguments)
-            result = await answer_within(timeout, event.name, answer)
+            result = declined_answer(await answer_within(timeout, event.name, answer), event.name)
+        except UnservedToolCallError:
+            # Not the handler's to serve: the hooks may still (RFC §21.4).
+            return event, ToolOutcome(OutcomeKind.UNSERVED, unserved_tool_error(event.name))
         except ToolRefusedError as refusal:
             # A declined call, in the handler's own words.
             return self._refused(event, refusal.message)
@@ -153,33 +152,46 @@ class ConferenceToolGate:
                 event.room_id,
             )
             return self.failure(event, exc)
-        return ToolOutcome(event, result_text(result), served=True)
+        return event, ToolOutcome(OutcomeKind.SERVED, result_text(result))
 
-    def failure(self, event: ToolCallEvent, exc: Exception) -> ToolOutcome:
+    def failure(self, event: ToolCallEvent, exc: Exception) -> tuple[ToolCallEvent, ToolOutcome]:
         """The outcome of a call that raised: the model reads its class, the
-        message rides the event for the observers (RFC §9.3)."""
-        detailed = replace(event, error_detail=failure_detail(exc))
-        return ToolOutcome(detailed, tool_failure(event.name, exc), served=False)
+        message rides the outcome for the observers (RFC §9.3)."""
+        body = tool_failure(event.name, exc)
+        return event, ToolOutcome(OutcomeKind.FAILED, body, detail=failure_detail(exc))
 
-    async def result(self, outcome: ToolOutcome) -> str:
-        """What the model reads: a served result once ON_TOOL_CALL ran on it
-        (the SYNC chain, then its observers), a refusal as it is; bounded."""
-        body = outcome.body
-        if outcome.served and self._served is not None:
-            verdict = await self._served(replace(outcome.event, result=body))
+    async def result(self, event: ToolCallEvent, outcome: ToolOutcome) -> ToolOutcome:
+        """The call's final outcome, bounded for the model: ON_TOOL_CALL's
+        verdict on a served call (the SYNC chain, then its observers), the
+        hooks' chance to serve a call nothing served, a refusal as it is."""
+        if outcome.kind in _JUDGED and self._served is not None:
+            served = outcome.result if outcome.kind is OutcomeKind.SERVED else None
+            verdict = await self._served(replace(event, result=served))
             # Read as on every channel: a block withholds the result, and a
             # hook's result, a bare one included, replaces it (RFC §9.3).
-            body = result_text(read_tool_call_verdict(outcome.event.name, verdict, body).result)
-        return _bounded(body, outcome.event.name)
+            reading = read_tool_call_verdict(event.name, verdict, served)
+            detail = verdict.error_detail if isinstance(verdict, ToolCallVerdict) else None
+            outcome = ToolOutcome(read_outcome(reading), reading.result, detail=detail)
+        return replace(outcome, result=_bounded(result_text(outcome.result), event.name))
 
     async def report_refusal(
-        self, event: ToolCallEvent, body: str, *, cancelled: bool = False
+        self,
+        event: ToolCallEvent,
+        body: str,
+        *,
+        detail: str | None = None,
+        cancelled: bool = False,
     ) -> None:
         """Report a call nothing served to ON_TOOL_CALL's observers."""
         if self._observed is not None:
-            await self._observed(replace(event, result=body, is_error=True, cancelled=cancelled))
+            reported = replace(event, result=body, is_error=True, cancelled=cancelled)
+            if detail is not None:
+                reported = replace(reported, error_detail=detail)
+            await self._observed(reported)
 
-    def _refused(self, event: ToolCallEvent, body: str) -> ToolOutcome:
+    def _refused(
+        self, event: ToolCallEvent, body: str, detail: str | None = None
+    ) -> tuple[ToolCallEvent, ToolOutcome]:
         logger.info(
             "Conference channel %r refused tool %r in room %s: %s",
             self._channel_id,
@@ -187,7 +199,7 @@ class ConferenceToolGate:
             event.room_id,
             body,
         )
-        return ToolOutcome(event, body, served=False)
+        return event, ToolOutcome(OutcomeKind.REFUSED, body, detail=detail)
 
     async def _authorize(
         self, config: ConferenceRealtimeConfig, event: ToolCallEvent
@@ -233,6 +245,14 @@ class ConferenceToolGate:
         if error is not None:
             return arguments, GateRefusal(f"Invalid rewritten arguments for '{name}': {error}")
         return arguments, None
+
+
+# The outcomes ON_TOOL_CALL's SYNC chain reads: a served call, and one nothing
+# served, which a hook may serve.
+_JUDGED = frozenset({OutcomeKind.SERVED, OutcomeKind.UNSERVED})
+
+# The outcomes the gate reports itself; the chain observes the others.
+REPORTED_BY_GATE = frozenset({OutcomeKind.REFUSED, OutcomeKind.FAILED, OutcomeKind.UNSERVED})
 
 
 def _error(reason: str) -> str:

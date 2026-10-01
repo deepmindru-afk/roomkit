@@ -35,6 +35,7 @@ from roomkit.providers.ai.base import (
 from roomkit.providers.ai.response_schema import ResponseSchemaError
 from roomkit.providers.ai.tool_calls import is_malformed_call, is_truncation
 from roomkit.realtime.base import EphemeralEventType
+from roomkit.tools._outcome import OutcomeKind, ToolOutcome
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -322,10 +323,7 @@ class AIToolLoopRulesHost(Protocol):
 def _aborted_results(tool_calls: list[Any]) -> list[AIToolResultPart]:
     """A failed result for each call of a round that was aborted mid-run."""
     body = json.dumps({"error": "Tool call aborted"})
-    return [
-        AIToolResultPart(tool_call_id=tc.id, name=tc.name, result=body, is_error=True)
-        for tc in tool_calls
-    ]
+    return [ToolOutcome(OutcomeKind.CANCELLED, body).as_part(tc.id, tc.name) for tc in tool_calls]
 
 
 class AIToolLoopRulesMixin:

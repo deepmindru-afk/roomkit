@@ -5,6 +5,10 @@ from __future__ import annotations
 import sys
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+from roomkit.core.exceptions import UnservedToolCallError
+
 
 class TestScreenInputTools:
     def test_constructor(self) -> None:
@@ -88,5 +92,5 @@ class TestScreenInputTools:
         from roomkit.video.vision.screen_input import ScreenInputTools
 
         tools = ScreenInputTools()
-        result = await tools.handler("nonexistent", {})
-        assert "Unknown tool" in result
+        with pytest.raises(UnservedToolCallError):
+            await tools.handler("nonexistent", {})

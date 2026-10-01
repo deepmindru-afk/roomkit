@@ -198,12 +198,20 @@ class ChannelRefusalError(ToolRefusedError):
 
 
 class UnservedToolCallError(RoomKitError):
-    """Raised by a channel's tool dispatcher when nothing serves a call.
+    """Raised by a tool handler for a call that is not its to serve (RFC §21.4).
+
+    The typed way to say "this tool is not mine": a composition of handlers
+    (:func:`~roomkit.tools.compose.compose_tool_handlers`) passes the call to
+    the next one, and a channel reads the call as served by nothing, on every
+    path. A channel's dispatcher raises it too when nothing serves a call.
 
     Not a refusal: ON_TOOL_CALL's SYNC hooks may still serve the call (RFC
     §9.3), and it fails, reported once, when none does. Raised rather than
     returned so a handler keeps its contract (it answers with a result). A
     call dispatched outside a tool loop may see it.
+
+    The ``{"error": "Unknown tool: ..."}`` answer an earlier convention
+    returned instead is still read as this signal.
     """
 
 

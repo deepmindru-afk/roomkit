@@ -6,8 +6,9 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
+from roomkit.core.exceptions import UnservedToolCallError
 from roomkit.providers.ai.base import AITool
-from roomkit.tools.result import ToolResult, is_unknown_tool_answer
+from roomkit.tools.result import ToolResult, declined_answer
 
 if TYPE_CHECKING:
     from roomkit.tools.base import Tool
@@ -20,10 +21,12 @@ ToolHandler = Callable[[str, dict[str, Any]], Awaitable[ToolResult]]
 def compose_tool_handlers(*handlers: ToolHandler) -> ToolHandler:
     """Chain multiple ToolHandlers so the first one that handles a tool wins.
 
-    Each handler is tried in order. If a handler returns a JSON object with
-    ``{"error": "Unknown tool: ..."}`` the next handler is tried. The last
-    handler's result is always returned as-is (even if it's an unknown-tool
-    error).
+    Each handler is tried in order. A handler that declines the call, by
+    raising :class:`~roomkit.core.exceptions.UnservedToolCallError` or by
+    answering the earlier ``{"error": "Unknown tool: ..."}`` envelope (RFC
+    §21.4), hands it to the next one. The last handler's answer is the
+    composition's, a decline included: the channel then reads the call as
+    served by nothing.
 
     Args:
         *handlers: Two or more ToolHandler callables.
@@ -39,11 +42,11 @@ def compose_tool_handlers(*handlers: ToolHandler) -> ToolHandler:
 
     async def _composed(name: str, arguments: dict[str, Any]) -> ToolResult:
         for handler in handlers[:-1]:
-            result = await handler(name, arguments)
-            if not is_unknown_tool_answer(result):
-                return result
-            logger.debug("Handler %r did not handle tool %r, trying next", handler, name)
-        # Last handler — return whatever it gives
+            try:
+                return declined_answer(await handler(name, arguments), name)
+            except UnservedToolCallError:
+                logger.debug("Handler %r did not handle tool %r, trying next", handler, name)
+        # The last handler's answer is the composition's, a decline included.
         return await handlers[-1](name, arguments)
 
     return _composed

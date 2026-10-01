@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from roomkit.providers.ai.base import AIMessage, AIToolCallPart, AIToolResultPart
+from roomkit.tools._outcome import OutcomeKind, ToolOutcome
 
 
 def patch_dangling_tool_calls(messages: list[AIMessage]) -> list[AIMessage]:
@@ -78,7 +79,7 @@ def _build_patched_list(messages: list[AIMessage], seen: set[str]) -> list[AIMes
         dangling = [p for p in msg.content if isinstance(p, AIToolCallPart) and p.id not in seen]
         if dangling:
             pending = [
-                AIToolResultPart(tool_call_id=tc.id, name=tc.name, result=_CANCEL_MSG)
+                ToolOutcome(OutcomeKind.CANCELLED, _CANCEL_MSG).as_part(tc.id, tc.name)
                 for tc in dangling
             ]
 

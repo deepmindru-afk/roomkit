@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from roomkit.core.exceptions import ToolRefusedError
+from roomkit.core.exceptions import ToolRefusedError, UnservedToolCallError
 from roomkit.tools.mcp import MCPToolProvider
 
 pytest.importorskip("mcp.server.fastmcp")
@@ -81,7 +81,8 @@ async def test_discovers_and_calls_the_tools_of_a_stdio_server(server_script: st
         assert await handler("add", {"a": 1, "b": 1}) == "2"
         with pytest.raises(ToolRefusedError, match="not allowed today"):
             await handler("refuse", {})
-        assert "Unknown tool" in await handler("nope", {})
+        with pytest.raises(UnservedToolCallError):
+            await handler("nope", {})
 
 
 async def test_tool_filter_applies_to_stdio(server_script: str) -> None:

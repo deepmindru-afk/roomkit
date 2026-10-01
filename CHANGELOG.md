@@ -34,6 +34,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING — roomkit's own tool handlers decline a call by raising
+  `UnservedToolCallError`** (RMK-305, RFC §21.4): `MCPToolProvider.as_tool_handler()`,
+  `HumanInputToolHandler`, `ScreenInputTools`, `DescribeScreenTool`,
+  `DescribeWebcamTool`, `ListWebcamsTool` and a realtime pipeline's agent
+  tools returned `{"error": "Unknown tool: ..."}` for a tool not theirs. A
+  channel and `compose_tool_handlers` read the exception as they read the
+  envelope, which stays accepted from a host's handler, as text or as a
+  mapping. A host calling one of these handlers itself, outside a channel or a
+  composition, catches `UnservedToolCallError`. The channel's own refusal of
+  an undeclared tool no longer reads like the envelope: `Tool 'x' is not
+  declared in this turn.` / `No tool named 'x' exists.`
 - `HookEngine.run_sync_hooks`'s `fold` is called after a `modify` too, as
   `fold(previous, event, metadata)`, *previous* being what the hook was
   handed (RMK-305): `ON_TOOL_CALL`, its only user, needs it to tell an
@@ -81,6 +92,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A call whose handler declines it is served by nothing on every path
+  (RMK-305, RFC §21.4): a conference reported it served and a call a realtime
+  session recovered from speech `completed`, both reading the envelope as a
+  result. A SYNC `ON_TOOL_CALL` hook may now serve such a call in a conference
+  too. `compose_tool_handlers` hands the call on when a handler declines it
+  with the envelope as a mapping, which it read as a result.
+- Every tool result the model reads is built from the call's typed outcome
+  (RMK-305): a call patched as cancelled when a turn resumed and a streamed
+  external call that failed reached the model, or the live view, without
+  `is_error`.
 - A SYNC `ON_TOOL_CALL` hook that empties a served call's result leaves the
   call served (RMK-305, RFC §9.3): the next hook read the emptied call as one
   nothing served and could serve it in place of the empty result, on every

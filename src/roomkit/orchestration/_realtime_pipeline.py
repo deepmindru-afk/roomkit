@@ -16,6 +16,7 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._tool_registry import SessionConfig, orchestration_tool
+from roomkit.core.exceptions import UnservedToolCallError
 from roomkit.orchestration.handoff import (
     HANDOFF_TOOL,
     HANDOFF_TOOL_NAME,
@@ -218,7 +219,7 @@ class RealtimePipeline:
             return await agent_handler(name, arguments)
         if channel_handler is not None:
             return await channel_handler(name, arguments)
-        return json.dumps({"error": f"Unknown tool: {name}"})
+        raise UnservedToolCallError(f"tool {name!r} is not served here")
 
     async def _active_agent(self) -> Agent | None:
         """The agent the call's room is talking to, by its conversation state."""

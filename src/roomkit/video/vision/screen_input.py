@@ -33,6 +33,7 @@ import subprocess  # nosec B404
 import sys
 from typing import TYPE_CHECKING, Any
 
+from roomkit.core.exceptions import UnservedToolCallError
 from roomkit.providers.ai.response_schema import ResponseSchemaError
 from roomkit.telemetry.redaction import redact
 from roomkit.video.vision.screen_tool import capture_screen_frame
@@ -565,7 +566,7 @@ class ScreenInputTools:
             return self._scroll(arguments)
         if name == "click_element":
             return await self._click_element(arguments)
-        return json.dumps({"error": f"Unknown tool: {name}"})
+        raise UnservedToolCallError(f"tool {name!r} is not served here")
 
     @staticmethod
     def _type_text(args: dict[str, Any]) -> str:

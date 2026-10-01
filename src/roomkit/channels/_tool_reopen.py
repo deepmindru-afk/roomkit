@@ -19,7 +19,8 @@ from roomkit.channels._skill_constants import ALREADY_ACTIVE_NOTE, TOOL_ACTIVATE
 from roomkit.channels._skill_handlers import activation_ack
 from roomkit.channels._tool_search import render_find_payload
 from roomkit.channels._tool_search_constants import TOOL_FIND_TOOLS
-from roomkit.providers.ai.base import AIMessage, AITool, AIToolCallPart, AIToolResultPart
+from roomkit.providers.ai.base import AIMessage, AITool, AIToolCallPart
+from roomkit.tools._outcome import OutcomeKind, ToolOutcome
 
 if TYPE_CHECKING:
     from roomkit.skills.registry import SkillRegistry
@@ -93,8 +94,8 @@ def _exchange(
     """A call of *tool* and its *result*, which references *opened*."""
     marker = {REOPENING: True}
     call = AIToolCallPart(id=call_id, name=tool, arguments=arguments)
-    answer = AIToolResultPart(
-        tool_call_id=call_id, name=tool, result=result, references=[t.name for t in opened]
+    answer = ToolOutcome(OutcomeKind.SERVED, result).as_part(
+        call_id, tool, references=[t.name for t in opened]
     )
     return [
         AIMessage(role="assistant", content=[call], metadata=marker),

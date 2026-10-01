@@ -619,7 +619,7 @@ class TestUserToolHandlerDelegation:
         messages = provider.calls[1].messages
         tool_msg = [m for m in messages if m.role == "tool"]
         result_json = json.loads(tool_msg[0].content[0].result)
-        assert "Unknown tool" in result_json["error"]
+        assert "not declared" in result_json["error"]
 
 
 class TestStreamingGuard:

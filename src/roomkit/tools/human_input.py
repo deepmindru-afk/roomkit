@@ -59,7 +59,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 from uuid import uuid4
 
-from roomkit.core.exceptions import ToolRefusedError
+from roomkit.core.exceptions import ToolRefusedError, UnservedToolCallError
 from roomkit.core.task_utils import log_task_exception
 from roomkit.models.enums import ChannelType
 from roomkit.models.pending_input import PendingInput, PendingInputEvent, PendingInputStatus
@@ -483,9 +483,10 @@ class HumanInputToolHandler:
     """ToolHandler wrapper that blocks on human input for specified tools.
 
     Composes with other handlers via
-    :func:`~roomkit.tools.compose.compose_tool_handlers`.  Falls through
-    (returns ``"Unknown tool"`` error) for non-matching tool names so
-    the compose chain continues to the next handler.
+    :func:`~roomkit.tools.compose.compose_tool_handlers`.  Declines a
+    non-matching tool name by raising
+    :class:`~roomkit.core.exceptions.UnservedToolCallError`, so the compose
+    chain continues to the next handler (RFC §21.4).
 
     Pass this to :class:`~roomkit.channels.ai.AIChannel` via the
     ``human_input_handler`` parameter — the channel auto-composes it
@@ -532,7 +533,7 @@ class HumanInputToolHandler:
         call carries the failure marker and the model reads the reason.
         """
         if name not in self.tool_names:
-            return json.dumps({"error": f"Unknown tool: {name}"})
+            raise UnservedToolCallError(f"tool {name!r} is not served here")
 
         ctx = _current_tool_call.get()
         room_id = ctx.room_id if ctx else ""

@@ -8,7 +8,9 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
+import pytest
 
+from roomkit.core.exceptions import UnservedToolCallError
 from roomkit.video.video_frame import VideoFrame
 from roomkit.video.vision.mock import MockVisionProvider
 from roomkit.video.vision.webcam_tool import (
@@ -219,8 +221,8 @@ class TestDescribeWebcamTool:
 
     async def test_handler_returns_unknown(self) -> None:
         tool = DescribeWebcamTool(MockVisionProvider(descriptions=["x"]))
-        result = await tool.handler("other", {})
-        assert "Unknown tool" in result
+        with pytest.raises(UnservedToolCallError):
+            await tool.handler("other", {})
 
     async def test_analyze_saves_frame_when_save_dir_configured(self, tmp_path: Path) -> None:
         vision = MockVisionProvider(descriptions=["saved"])
@@ -423,8 +425,8 @@ class TestListWebcamsTool:
 
     async def test_handler_returns_unknown(self) -> None:
         tool = ListWebcamsTool()
-        result = await tool.handler("other_tool", {})
-        assert "Unknown tool" in result
+        with pytest.raises(UnservedToolCallError):
+            await tool.handler("other_tool", {})
 
 
 # ---------------------------------------------------------------------------

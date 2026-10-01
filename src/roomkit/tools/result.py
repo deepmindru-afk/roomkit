@@ -15,6 +15,7 @@ from typing import Any
 
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
+from roomkit.core.exceptions import UnservedToolCallError
 from roomkit.models.tool_call import (
     ToolCallEvent,
     ToolCallVerdict,
@@ -110,16 +111,15 @@ def read_tool_call_verdict(
 
 
 def is_unknown_tool_answer(result: Any) -> bool:
-    """Whether *result* is the answer by which a handler says a tool is not
-    its to serve (``{"error": "Unknown tool: ..."}``), the one
-    :func:`~roomkit.tools.compose.compose_tool_handlers` passes a call on for.
-    """
-    if not isinstance(result, str):
-        return False  # A multimodal result is always a handled tool
-    try:
-        parsed = json.loads(result)
-    except (json.JSONDecodeError, TypeError):
-        return False
+    """Whether *result* is the earlier convention's way to say a tool is not
+    the handler's to serve (``{"error": "Unknown tool: ..."}``), as text or as
+    a mapping. Read by :func:`declined_answer` alone (RFC §21.4)."""
+    parsed = result
+    if isinstance(result, str):
+        try:
+            parsed = json.loads(result)
+        except (json.JSONDecodeError, TypeError):
+            return False
     if isinstance(parsed, dict):
         error = parsed.get("error", "")
         return isinstance(error, str) and error.lower().startswith("unknown tool")
@@ -141,6 +141,20 @@ def tool_failure(name: str, exc: BaseException) -> str:
 def failure_detail(exc: BaseException) -> str:
     """A failure as logs and observers read it, never the model: class and message."""
     return f"{type(exc).__name__}: {exc}"
+
+
+def declined_answer(answer: Any, name: str) -> Any:
+    """*answer*, unless it is the earlier "not mine" envelope: then the typed
+    signal, :class:`~roomkit.core.exceptions.UnservedToolCallError`.
+
+    The one reader of that envelope (RFC §21.4): every channel and every
+    composition of handlers read a handler's answer through it, so a handler
+    that still returns ``{"error": "Unknown tool: ..."}`` declines the call the
+    way one that raises does.
+    """
+    if is_unknown_tool_answer(answer):
+        raise UnservedToolCallError(f"tool {name!r} is not served here")
+    return answer
 
 
 def hook_errors_detail(hook_result: Any) -> str | None:

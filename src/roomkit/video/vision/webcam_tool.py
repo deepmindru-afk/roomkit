@@ -24,7 +24,6 @@ Example with RealtimeVoiceChannel::
 
 from __future__ import annotations
 
-import json
 import logging
 import uuid
 from dataclasses import dataclass
@@ -32,6 +31,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from roomkit.core.exceptions import UnservedToolCallError
 from roomkit.video.video_frame import VideoFrame
 from roomkit.video.vision.base import VisionProvider
 from roomkit.video.vision.encode import frame_to_jpeg
@@ -271,7 +271,7 @@ class ListWebcamsTool:
     ) -> str:
         """Tool handler for list_webcams."""
         if name != LIST_TOOL_NAME:
-            return json.dumps({"error": f"Unknown tool: {name}"})
+            raise UnservedToolCallError(f"tool {name!r} is not served here")
 
         logger.info("list_webcams()")
         result = self.list()
@@ -367,7 +367,7 @@ class DescribeWebcamTool:
     ) -> str:
         """Tool handler for describe_webcam."""
         if name != TOOL_NAME:
-            return json.dumps({"error": f"Unknown tool: {name}"})
+            raise UnservedToolCallError(f"tool {name!r} is not served here")
 
         query = str(arguments.get("query", "Describe what you see through the webcam."))
         raw_device = arguments.get("device")

@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 
 from roomkit.channels.ai import AIChannel
-from roomkit.core.exceptions import ToolRefusedError
+from roomkit.core.exceptions import ToolRefusedError, UnservedToolCallError
 from roomkit.models.enums import ChannelType
 from roomkit.models.pending_input import PendingInput, PendingInputEvent, PendingInputStatus
 from roomkit.providers.ai.base import AIContext, AITool
@@ -631,10 +631,8 @@ async def test_no_warning_when_the_handler_declares_the_tool(
 
 async def test_tool_handler_falls_through_for_unknown() -> None:
     hit = HumanInputToolHandler(tool_names={"approve"})
-    result = await hit("other_tool", {})
-    parsed = json.loads(result)
-    assert "error" in parsed
-    assert "Unknown tool" in parsed["error"]
+    with pytest.raises(UnservedToolCallError):
+        await hit("other_tool", {})
 
 
 async def test_tool_handler_blocks_and_resolves() -> None:

@@ -6,6 +6,9 @@ import sys
 import types
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
+from roomkit.core.exceptions import UnservedToolCallError
 from roomkit.video.video_frame import VideoFrame
 from roomkit.video.vision.mock import MockVisionProvider
 from roomkit.video.vision.screen_tool import (
@@ -154,8 +157,8 @@ class TestDescribeScreenTool:
 
     async def test_handler_returns_unknown(self) -> None:
         tool = DescribeScreenTool(MockVisionProvider(descriptions=["x"]))
-        result = await tool.handler("other", {})
-        assert "Unknown tool" in result
+        with pytest.raises(UnservedToolCallError):
+            await tool.handler("other", {})
 
     async def test_handler_uses_default_query(self) -> None:
         tool = DescribeScreenTool(MockVisionProvider(descriptions=["x"]))

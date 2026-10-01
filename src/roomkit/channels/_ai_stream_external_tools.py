@@ -11,9 +11,10 @@ from typing import Any, Protocol
 from roomkit.models.enums import ChannelType
 from roomkit.models.streaming import StreamDelta, ToolCallEndMarker, ToolCallStartMarker
 from roomkit.models.tool_call import ToolCallEvent, ToolCallObserver
-from roomkit.providers.ai.base import AIToolResultPart, StreamToolCall
+from roomkit.providers.ai.base import StreamToolCall
 from roomkit.providers.ai.tool_calls import cut_call_error
 from roomkit.realtime.base import EphemeralEventType
+from roomkit.tools._outcome import OutcomeKind, ToolOutcome
 from roomkit.tools.external import BeforeToolCallback, ExternalToolHandler
 from roomkit.tools.result import as_tool_result
 
@@ -93,7 +94,7 @@ class _ExternalStreamTools:
             await self.publish(
                 EphemeralEventType.TOOL_CALL_END,
                 self.room_id,
-                [AIToolResultPart(tool_call_id=call.id, name=call.name, result=result)],
+                [ToolOutcome(_external_kind(is_error), result).as_part(call.id, call.name)],
                 round_idx,
                 duration_ms=duration_ms,
             )
@@ -162,3 +163,8 @@ class _ExternalStreamTools:
                 await self.report(event)
             elif not already_executed and self.before is not None:
                 await self.before(event)
+
+
+def _external_kind(is_error: bool) -> OutcomeKind:
+    """How a call the provider or the external handler ran ended, as it reported."""
+    return OutcomeKind.FAILED if is_error else OutcomeKind.SERVED

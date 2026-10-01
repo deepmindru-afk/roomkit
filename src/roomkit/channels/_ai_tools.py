@@ -61,11 +61,12 @@ from roomkit.providers.ai.tool_calls import cut_call_error
 from roomkit.sandbox.tools import SANDBOX_TOOL_PREFIX, TOOL_SANDBOX_BASH
 from roomkit.telemetry.base import SpanKind
 from roomkit.telemetry.redaction import redact
+from roomkit.tools._outcome import OutcomeKind, ToolOutcome, read_outcome
 from roomkit.tools.context import ToolCallContext, _current_tool_call
 from roomkit.tools.result import (
     as_tool_result,
+    declined_answer,
     failure_detail,
-    is_unknown_tool_answer,
     pre_execution_denial,
     read_tool_call_verdict,
     tool_failure,
@@ -92,17 +93,6 @@ if TYPE_CHECKING:
     ToolHandler = Callable[[str, dict[str, Any]], Awaitable[ToolResult]]
 
 logger = logging.getLogger("roomkit.channels.ai")
-
-
-@dataclass(frozen=True)
-class _HookOutcome:
-    """One call's outcome once its handler answered and ON_TOOL_CALL judged it."""
-
-    result: Any  # what the model reads, before eviction
-    recorded: Any  # what the usage memory keeps
-    failed: bool  # the hook blocked the call, or nothing served it
-    structured: dict[str, Any] | None  # the structured copy the call keeps
-    remember: bool = True  # the room's tool memory keeps it (not an unserved call)
 
 
 @dataclass(frozen=True)
@@ -367,13 +357,13 @@ class AIToolsMixin:
             }
         if loop_ctx.tool_search_active:
             return {
-                "error": f"Unknown tool '{name}': no tool by that name exists.",
+                "error": f"No tool named '{name}' exists.",
                 "hint": (
                     "Check the spelling, or call find_tools(query=<the task>) "
                     "to discover the right tool."
                 ),
             }
-        return {"error": f"Unknown tool '{name}': it is not declared"}
+        return {"error": f"Tool '{name}' is not declared in this turn."}
 
     async def _fire_tool_refusal(
         self,
@@ -504,7 +494,7 @@ class AIToolsMixin:
         guard = self._repeated_call_guard(tc.name, tc.arguments)
         body = guard or json.dumps(stopped.error)
         await self._fire_tool_refusal(tc, tc.arguments, body, scope.room_id, detail=stopped.detail)
-        return AIToolResultPart(tool_call_id=tc.id, name=tc.name, result=body, is_error=True)
+        return ToolOutcome(OutcomeKind.REFUSED, body).as_part(tc.id, tc.name)
 
     async def _gate_call(
         self, tc: Any, scope: _CallRound
@@ -641,23 +631,16 @@ class AIToolsMixin:
             # code. Persistence can then distinguish what the model
             # requested from what actually executed, in both loops.
             scope.executed_arguments[tc.id] = dict(arguments)
-        judged = await self._judged_call(tc, arguments, scope)
-        self._settle_activation(tc.id, served=not judged.failed)
-        outcome = judged.recorded if judged.recorded is not None else judged.result
-        if judged.remember:
-            self._remember_call(scope.room_id, tc.name, call_arguments, outcome)
-        return self._model_part(
-            tc,
-            judged.result,
-            outcome,
-            structured=judged.structured,
-            failed=judged.failed,
-            references=[] if judged.failed else self._reference_shown(self._get_loop_ctx()),
-        )
+        outcome = await self._judged_call(tc, arguments, scope)
+        self._settle_activation(tc.id, served=not outcome.failed)
+        if outcome.remember:
+            self._remember_call(scope.room_id, tc.name, call_arguments, outcome.kept)
+        references = [] if outcome.failed else self._reference_shown(self._get_loop_ctx())
+        return self._model_part(tc, outcome, references=references)
 
     async def _judged_call(
         self, tc: Any, arguments: dict[str, Any], scope: _CallRound
-    ) -> _HookOutcome:
+    ) -> ToolOutcome:
         """The handler's answer to the call once ON_TOOL_CALL judged it, or
         the call's failure; its result bounded for the model."""
         telemetry = scope.telemetry
@@ -693,11 +676,10 @@ class AIToolsMixin:
             telemetry.end_span(tool_span_id, status="error", error_message=refusal.message)
             logger.info("Tool %s refused: %s", tc.name, refusal.message)
             body = await self._failed_call(tc, arguments, scope.room_id, refusal.message)
-            return _HookOutcome(
-                result=body,
+            return ToolOutcome(
+                OutcomeKind.REFUSED,
+                body,
                 recorded=refusal.message,
-                failed=True,
-                structured=None,
                 remember=not isinstance(refusal, ChannelRefusalError),
             )
         except Exception as exc:
@@ -711,17 +693,10 @@ class AIToolsMixin:
             body = await self._failed_call(
                 tc, arguments, scope.room_id, recorded, detail=failure_detail(exc)
             )
-            return _HookOutcome(result=body, recorded=recorded, failed=True, structured=None)
+            return ToolOutcome(OutcomeKind.FAILED, body, recorded=recorded)
 
     def _model_part(
-        self,
-        tc: Any,
-        result: ToolResult,
-        outcome: Any,
-        *,
-        structured: dict[str, Any] | None,
-        failed: bool,
-        references: list[str],
+        self, tc: Any, outcome: ToolOutcome, *, references: list[str]
     ) -> AIToolResultPart:
         """What the model reads of a call: its result, noted when this tool
         already gave that answer this turn, and the held tools it makes
@@ -731,17 +706,11 @@ class AIToolsMixin:
         # the hash stays stable: annotating before hashing would make every
         # repeat look new, and so would an evicted copy, whose placeholder id
         # is unique per call.
-        if isinstance(result, str):
-            hashed = outcome if isinstance(outcome, str) else result
-            result = self._repeated_result_note(tc.name, result, outcome=hashed)
-        return AIToolResultPart(
-            tool_call_id=tc.id,
-            name=tc.name,
-            result=result,
-            structured_content=structured,
-            is_error=failed,
-            references=references,
-        )
+        if isinstance(outcome.result, str):
+            hashed = outcome.kept if isinstance(outcome.kept, str) else outcome.result
+            noted = self._repeated_result_note(tc.name, outcome.result, outcome=hashed)
+            outcome = replace(outcome, result=noted)
+        return outcome.as_part(tc.id, tc.name, references=references)
 
     def _skill_tools(self) -> list[AITool]:
         """Build the list of AITool definitions for skill operations."""
@@ -1113,7 +1082,7 @@ class AIToolsMixin:
         result: ToolResult | None,
         call_ctx: ToolCallContext,
         room_id: str | None,
-    ) -> _HookOutcome:
+    ) -> ToolOutcome:
         """Run ON_TOOL_CALL on the outcome the model will read, whole.
 
         After a text-only model's flattening, so the hook sees the shape the
@@ -1136,23 +1105,19 @@ class AIToolsMixin:
         structured = None if result is None else call_ctx.structured_content
         verdict = await self._tool_call_verdict(tc, arguments, shaped, structured, room_id)
         reading = read_tool_call_verdict(tc.name, verdict, shaped)
-        if reading.blocked:
-            return _HookOutcome(
-                result=reading.result, recorded=reading.result, failed=True, structured=None
-            )
+        kind = read_outcome(reading)
+        if kind is OutcomeKind.BLOCKED:
+            return ToolOutcome(kind, reading.result)
         if verdict is not None and verdict.replaces_structured:
             structured = verdict.structured_content
-        if not reading.served:
+        if kind is OutcomeKind.UNSERVED:
             body = unserved_tool_error(tc.name)
             detail = verdict.error_detail if verdict is not None else None
             await self._fire_tool_refusal(tc, arguments, body, room_id, detail=detail)
-            return _HookOutcome(
-                result=body, recorded=body, failed=True, structured=None, remember=False
-            )
+            return ToolOutcome(kind, body, remember=False)
+        # The memory keeps the answer itself, before eviction swaps a placeholder in.
         recorded = reading.result if reading.replaced else result
-        return _HookOutcome(
-            result=reading.result, recorded=recorded, failed=False, structured=structured
-        )
+        return ToolOutcome(kind, reading.result, recorded=recorded, structured=structured)
 
     async def _tool_call_verdict(
         self,
@@ -1198,11 +1163,12 @@ class AIToolsMixin:
         timeout = self._call_timeout(name, call_ctx.room_id or None)
         try:
             answer = await answer_within(timeout, name, handler(name, arguments))
+            answer = declined_answer(answer, name)
         except UnservedToolCallError:
             return None
         finally:
             _current_tool_call.reset(token)
-        return None if is_unknown_tool_answer(answer) else as_tool_result(answer)
+        return as_tool_result(answer)
 
     def _call_timeout(self, name: str, room_id: str | None) -> float | None:
         """The bound of one call to *name* (RFC §21.6): the channel's, unless

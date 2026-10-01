@@ -23,7 +23,7 @@ from roomkit.channels._skill_constants import TOOL_ACTIVATE_SKILL
 from roomkit.channels._tool_registry import ChannelRegistry, ToolSource, tool_dict
 from roomkit.channels._tool_search_constants import TOOL_CALL_TOOL
 from roomkit.channels.ai import _current_loop_ctx, _ToolLoopContext
-from roomkit.core.exceptions import ToolRefusedError
+from roomkit.core.exceptions import ToolRefusedError, UnservedToolCallError
 from roomkit.models.enums import ChannelType, HookTrigger
 from roomkit.models.tool_call import (
     ToolCallEvent,
@@ -36,9 +36,9 @@ from roomkit.tools.result import (
     GateRefusal,
     as_tool_result,
     before_tool_use_detail,
+    declined_answer,
     failure_detail,
     hook_errors_detail,
-    is_unknown_tool_answer,
     pre_execution_denial,
     read_tool_call_verdict,
     tool_call_verdict,
@@ -615,7 +615,12 @@ class RealtimeToolsMixin:
         # it into the returned string would put the outcome back in the
         # body, which is what this whole mechanism removes, and both
         # callers below own a span and a log line that have to know.
-        raw = await self._call_tool_handler(session, name, arguments, room_id, gate_context)
+        try:
+            raw = await self._call_tool_handler(session, name, arguments, room_id, gate_context)
+        except UnservedToolCallError:
+            # Every handler said the tool is not theirs: nothing served the
+            # call, which the hooks may still serve (RFC §21.4).
+            return None
         logger.debug(
             "tool %s handler segment: %.0fms wall",
             name,
@@ -638,10 +643,6 @@ class RealtimeToolsMixin:
                 len(handler_result),
                 _LOOP_SEGMENT_BUDGET_S * 1000,
             )
-        if is_unknown_tool_answer(handler_result):
-            # Every handler said the tool is not theirs: nothing served
-            # the call, which the hooks may still serve (RFC §21.4).
-            handler_result = None
         # Yield so realtime pacing gets a slot between the handler
         # segment and hook dispatch — sync hooks run inline next and
         # would otherwise fuse with this segment into one loop step.
@@ -677,12 +678,15 @@ class RealtimeToolsMixin:
 
     async def _answer(self, name: str, arguments: dict[str, Any], room_id: str | None) -> Any:
         """The answer of what orchestration set up for *room_id*, else of the
-        host's handler."""
+        host's handler; a handler that declines the call raises
+        :class:`~roomkit.core.exceptions.UnservedToolCallError` (RFC §21.4)."""
         entry = self._registry.lookup(name, room_id)
         if entry is not None and entry.serve is not None:
             result = entry.serve(arguments)
-            return await result if inspect.isawaitable(result) else result
-        return await self._tool_handler(name, arguments)
+            answer = await result if inspect.isawaitable(result) else result
+        else:
+            answer = await self._tool_handler(name, arguments)
+        return declined_answer(answer, name)
 
     def _serves_tool(self, name: str, room_id: str | None) -> bool:
         """Whether something serves a call to *name* in *room_id*: what

@@ -10,7 +10,7 @@ from contextlib import AsyncExitStack
 from types import TracebackType
 from typing import Any
 
-from roomkit.core.exceptions import ToolRefusedError
+from roomkit.core.exceptions import ToolRefusedError, UnservedToolCallError
 from roomkit.providers.ai.base import AITool
 from roomkit.tools._mcp_result import error_text, handler_result, text_body
 from roomkit.tools.compose import ToolHandler, ToolResult
@@ -346,9 +346,10 @@ class MCPToolProvider:
     def as_tool_handler(self, *, gate_discovery: bool = True) -> ToolHandler:
         """Return a ToolHandler suitable for ``AIChannel(tool_handler=...)``.
 
-        Unknown tools (not from this MCP server) return
-        ``{"error": "Unknown tool: <name>"}``, which allows composition
-        via ``compose_tool_handlers``.
+        A tool that is not from this MCP server raises
+        :class:`~roomkit.core.exceptions.UnservedToolCallError`, which hands
+        the call to the next handler of a ``compose_tool_handlers`` chain and
+        reads as served by nothing on a channel (RFC §21.4).
 
         ``gate_discovery=False`` forwards every name to the server instead. A
         gateway that routes by name prefix and authenticates the caller per
@@ -380,7 +381,7 @@ class MCPToolProvider:
             if lookup.startswith("mcp__") and "__" in lookup[5:]:
                 lookup = lookup.split("__", 2)[-1]
             if gate_discovery and lookup not in self._tool_set:
-                return json.dumps({"error": f"Unknown tool: {name}"})
+                raise UnservedToolCallError(f"tool {name!r} is not served here")
             result = await self._invoke(lookup, arguments, timeout=_DEFAULT_CALL_TIMEOUT)
             if result.isError:
                 # The server declined; say so instead of returning a body the

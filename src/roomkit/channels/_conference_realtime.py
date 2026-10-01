@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING, Any
 from roomkit.channels._conference_mixer import ConferenceMixer
 from roomkit.channels._conference_operations import ConferenceResource
 from roomkit.channels._conference_tools import (
+    REPORTED_BY_GATE,
     ConferenceToolGate,
     declared_tools,
     warn_unused_role_overrides,
@@ -562,7 +563,7 @@ class ConferenceRealtime:
         if config is None:
             return
         try:
-            outcome = await self._tools.execute(config, event)
+            ran, outcome = await self._tools.execute(config, event)
         except Exception as exc:
             logger.exception(
                 "Conference channel %r: the tool gate failed on %r in room %s",
@@ -570,14 +571,14 @@ class ConferenceRealtime:
                 event.name,
                 session.room_id,
             )
-            outcome = self._tools.failure(event, exc)
+            ran, outcome = self._tools.failure(event, exc)
         call = room.tool_calls.get(event.tool_call_id)
         if call is not None:
             call.reported = True
-        result = await self._tools.result(outcome)
-        await self._submit_tool_result(config, session, event, result)
-        if not outcome.served:
-            await self._tools.report_refusal(outcome.event, outcome.body)
+        final = await self._tools.result(ran, outcome)
+        await self._submit_tool_result(config, session, event, str(final.result))
+        if final.kind in REPORTED_BY_GATE:
+            await self._tools.report_refusal(ran, str(final.result), detail=final.detail)
 
     async def _submit_tool_result(
         self,

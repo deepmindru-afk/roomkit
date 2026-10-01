@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from roomkit.core.exceptions import ToolRefusedError
+from roomkit.core.exceptions import ToolRefusedError, UnservedToolCallError
 from roomkit.providers.ai.base import AIImagePart, AITextPart, AITool
 from roomkit.tools.mcp import MCPToolProvider
 
@@ -325,9 +325,8 @@ async def test_as_tool_handler() -> None:
 async def test_as_tool_handler_unknown_tool() -> None:
     provider = _make_provider_connected([SEARCH_TOOL])
     handler = provider.as_tool_handler()
-    result = await handler("nonexistent", {})
-    parsed = json.loads(result)
-    assert parsed == {"error": "Unknown tool: nonexistent"}
+    with pytest.raises(UnservedToolCallError):
+        await handler("nonexistent", {})
 
 
 async def test_as_tool_handler_ungated_forwards_an_undiscovered_name() -> None:

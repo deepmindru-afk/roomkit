@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 from uuid import uuid4
 
 from roomkit.channels._realtime_tools import _hook_outcome, result_text
-from roomkit.core.exceptions import ToolRefusedError
+from roomkit.core.exceptions import ToolRefusedError, UnservedToolCallError
 from roomkit.models.enums import ChannelType
 from roomkit.models.tool_call import ToolCallEvent
 from roomkit.telemetry.base import Attr, SpanKind
@@ -37,6 +37,9 @@ if TYPE_CHECKING:
     from roomkit.voice.realtime.provider import RealtimeVoiceProvider
 
 logger = logging.getLogger("roomkit.channels.realtime_voice")
+
+# A recovered call no handler served, told apart from a handler that answered None.
+_UNSERVED = object()
 
 # ``call:tool_name{...}`` said as a sentence of its own that ends the utterance:
 # at the start of the text or of a line, or after a sentence's end (a closing
@@ -320,12 +323,15 @@ class RealtimeToolRecoveryMixin:
             handler_result: str | None = None
             if self._serves_tool(tool_name, room_id or session.room_id):
                 refused: str | None = None
+                raw: Any = _UNSERVED
                 try:
                     raw = await self._call_tool_handler(
                         session, tool_name, arguments, room_id, gate_context
                     )
                 except ToolRefusedError as refusal:
                     refused = refusal.message
+                except UnservedToolCallError:
+                    pass  # nothing served it: the hooks may still (RFC §21.4)
                 if refused is not None:
                     # Ends the call the way the pre-execution denial above
                     # does, and for the same reason: the model reads why it was
@@ -344,7 +350,7 @@ class RealtimeToolRecoveryMixin:
                         session, call_id, tool_name, arguments, refused, room_id
                     )
                     return
-                handler_result = result_text(raw)
+                handler_result = None if raw is _UNSERVED else result_text(raw)
 
             # Fire ON_TOOL_CALL hook (for observability / overrides).
             tool_event = ToolCallEvent(
