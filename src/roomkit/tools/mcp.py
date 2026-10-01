@@ -356,9 +356,9 @@ class MCPToolProvider:
         call serves tools this connection never listed — a server whose
         ``tools/list`` answers only behind the caller's own credential, say —
         and a host with its own allow-list in front has already decided what
-        the model may call. Such a handler produces no ``Unknown tool``
-        envelope, so it sits last in a ``compose_tool_handlers`` chain:
-        nothing after it would be reached.
+        the model may call. Such a handler never raises
+        ``UnservedToolCallError``, so it sits last in a
+        ``compose_tool_handlers`` chain: nothing after it would be reached.
 
         A tool the server *refused* raises
         :class:`~roomkit.core.exceptions.ToolRefusedError` either way: the tool
@@ -384,7 +384,7 @@ class MCPToolProvider:
                 raise UnservedToolCallError(f"tool {name!r} is not served here")
             result = await self._invoke(lookup, arguments, timeout=_DEFAULT_CALL_TIMEOUT)
             if result.isError:
-                # The server declined; say so instead of returning a body the
+                # The server refused; say so instead of returning a body the
                 # loop would have to recognise, and keep the server's words —
                 # they are what the model is meant to read.
                 raise ToolRefusedError(error_text(result))

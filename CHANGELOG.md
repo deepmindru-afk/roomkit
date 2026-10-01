@@ -45,14 +45,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tools returned `{"error": "Unknown tool: ..."}` for a tool not theirs. A
   channel and `compose_tool_handlers` read the exception as they read the
   envelope, which stays accepted from a host's handler, as text or as a
-  mapping. A host calling one of these handlers itself, outside a channel or a
-  composition, catches `UnservedToolCallError`. The channel's own refusal of
+  mapping. A host that calls one of these handlers itself, or a composition
+  that ends with one, catches `UnservedToolCallError`. The channel's own refusal of
   an undeclared tool no longer reads like the envelope: `Tool 'x' is not
   declared in this turn.` / `No tool named 'x' exists.`
-- `HookEngine.run_sync_hooks`'s `fold` is called after a `modify` too, as
-  `fold(previous, event, metadata)`, *previous* being what the hook was
-  handed (RMK-305): `ON_TOOL_CALL`, its only user, needs it to tell an
-  emptied result from a call nothing served.
+- `HookEngine.run_sync_hooks`'s `fold` also runs after a hook's `modify`,
+  with that hook's metadata, empty when it set none (RMK-305): `ON_TOOL_CALL`,
+  its only user in roomkit, needs it to tell an emptied result from a call
+  nothing served. Its signature is unchanged.
 - **BREAKING — a tool call is bounded by default** (RMK-366, RFC §21.6): 30 s
   on `AIChannel`, 10 s on `RealtimeVoiceChannel` and in a conference. A host
   tool that legitimately takes longer now fails its call with
@@ -102,10 +102,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   result. A SYNC `ON_TOOL_CALL` hook may now serve such a call in a conference
   too. `compose_tool_handlers` hands the call on when a handler declines it
   with the envelope as a mapping, which it read as a result.
-- Every tool result the model reads is built from the call's typed outcome
-  (RMK-305): a call patched as cancelled when a turn resumed and a streamed
-  external call that failed reached the model, or the live view, without
-  `is_error`.
+- Every tool result the model reads in a channel's tool loop is built from
+  the call's typed outcome (RMK-305): a call patched as cancelled when a turn
+  resumed and a streamed external call that failed reached the model, or the
+  live view, without `is_error`. A realtime reasoning backend's own calls are
+  not covered yet.
 - A SYNC `ON_TOOL_CALL` hook that empties a served call's result leaves the
   call served (RMK-305, RFC §9.3): the next hook read the emptied call as one
   nothing served and could serve it in place of the empty result, on every
@@ -115,11 +116,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   chain.
 - A realtime tool call whose `ON_TOOL_CALL` hooks cannot get their room
   context keeps its result, as on an `AIChannel` and in a conference
-  (RMK-305, RFC §9.3): the call failed on the store error.
+  (RMK-305, RFC §9.3): the call failed on the store error. On an `AIChannel`
+  and in a conference such a served call is now reported by the `tool_call`
+  framework event, as on a realtime session; nothing reported it.
 - A tool result made of mappings that name a part type among other data
   reaches the model as JSON (RMK-305, RFC §21.4): `[{"type": "text", "text":
   "chunk", "page": 2}]` was read as a text part and lost its `page`. A
-  mapping is a content part only in a part's exact shape.
+  mapping is a content part only in a part's exact shape, and one whose
+  `type` is not text (a list, say) no longer fails the call.
+- A channel's own tool whose result reads like the `{"error": "Unknown tool:
+  ..."}` envelope is served (RMK-305, RFC §21.4): a sandbox command that
+  failed with that error, or an orchestration tool, read as a call nothing
+  served. Only the host's handler may decline a call that way.
 - `extract_tools` and a tool schema given as a dict keep their `tags`
   (RMK-305): Tool Search scored such a tool without them.
 - `read_stored_result` on an id that is not stored is a refusal (RMK-305): the
@@ -129,7 +137,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (RMK-305, RFC §15.8.1): it returned `str()` of it, so a content-part list
   or a mapping reached the model as Python's printing of it. A cancelled call
   is recorded `cancelled`, where it was recorded `ok`, and a refusal or a
-  declined call `failed`, where it was `error`.
+  declined call `failed`, where it was `error`. A call the channel's per-call
+  bound cuts short reaches the wrapped handler as a cancellation, so it is
+  recorded `cancelled` too; the channel reads it as failed.
 - A room recorder that refuses to start no longer leaves a half-created room
   (RMK-365, RFC §12.11): `create_room` wrote the room, then started its
   recorders, so a refusal (an unencrypted `PyAVMediaRecorder` since RMK-69)

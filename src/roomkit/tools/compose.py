@@ -23,8 +23,8 @@ def compose_tool_handlers(*handlers: ToolHandler) -> ToolHandler:
 
     Each handler is tried in order. A handler that declines the call, by
     raising :class:`~roomkit.core.exceptions.UnservedToolCallError` or by
-    answering the earlier ``{"error": "Unknown tool: ..."}`` envelope (RFC
-    §21.4), hands it to the next one. The last handler's answer is the
+    answering the ``{"error": "Unknown tool: ..."}`` envelope (RFC §21.4),
+    hands it to the next one. The last handler's answer is the
     composition's, a decline included: the channel then reads the call as
     served by nothing.
 

@@ -337,8 +337,9 @@ async def test_a_tool_object_chain_that_answers_unknown_served_nothing(
 
 @pytest.mark.parametrize("first_screen", [True, False], ids=["screen-first", "webcams-first"])
 async def test_composed_vision_tools_reach_each_their_own_call(first_screen: bool) -> None:
-    """``compose_tool_handlers`` passes a call on over the JSON unknown-tool
-    envelope: ``list_webcams`` is served whichever tool comes first."""
+    """``compose_tool_handlers`` passes a call on when a tool declines it
+    (``UnservedToolCallError``): ``list_webcams`` is served whichever tool
+    comes first."""
     screen, webcams = DescribeScreenTool(MockVisionProvider()), ListWebcamsTool()
     _, handler = extract_tools([screen, webcams] if first_screen else [webcams, screen])
 

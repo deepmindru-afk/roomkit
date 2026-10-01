@@ -10,13 +10,14 @@ from typing import Any
 
 import pytest
 
-from roomkit.core.exceptions import ToolRefusedError, UnservedToolCallError
+from roomkit.core.exceptions import ToolRefusedError, ToolTimeoutError, UnservedToolCallError
 from roomkit.orchestration.tool_audit import (
     JSONLToolAuditor,
     ToolAuditEntry,
     audit_tool_handler,
 )
 from roomkit.providers.ai.base import AIImagePart, AITextPart
+from roomkit.tools.timeout import answer_within
 
 # ---------------------------------------------------------------------------
 # ToolAuditEntry model
@@ -212,4 +213,20 @@ async def test_audit_records_a_cancelled_call(tmp_path: Path) -> None:
 
     with pytest.raises(asyncio.CancelledError):
         await task
+    assert auditor.entries[0].status == "cancelled"
+
+
+async def test_audit_records_a_call_the_channel_bound_cut_as_cancelled(tmp_path: Path) -> None:
+    """The bound cancels the handler from outside: the audit sees a
+    cancellation, the channel reads the timeout (RFC §15.8.1, §21.6)."""
+    auditor = JSONLToolAuditor(tmp_path / "audit.jsonl")
+
+    async def handler(name: str, args: dict[str, Any]) -> str:
+        await asyncio.Event().wait()
+        return "never"
+
+    audited = audit_tool_handler(handler, auditor, "a")
+
+    with pytest.raises(ToolTimeoutError):
+        await answer_within(0.01, "tool", audited("tool", {}))
     assert auditor.entries[0].status == "cancelled"

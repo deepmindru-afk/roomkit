@@ -16,7 +16,6 @@ import pytest
 
 from roomkit import (
     ConferenceRealtimeConfig,
-    HookExecution,
     HookResult,
     HookTrigger,
     RoomKit,
@@ -25,6 +24,7 @@ from roomkit import (
 from roomkit.channels.ai import AIChannel
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 from roomkit.models.context import RoomContext
+from roomkit.models.enums import ChannelType
 from roomkit.models.room import Room
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
@@ -136,6 +136,59 @@ async def test_an_emptied_conference_result_is_not_served_again(by_modify: bool)
     await kit.close()
 
 
+async def test_a_hook_engine_fold_keeps_its_two_argument_signature() -> None:
+    """``run_sync_hooks``' public ``fold`` is ``fold(event, metadata)``, run
+    after a ``modify`` too, its metadata then empty."""
+    kit = RoomKit()
+    await kit.create_room(room_id="r1")
+
+    @kit.hook(HookTrigger.ON_TOOL_CALL, name="rewrites")
+    async def rewrites(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
+        return HookResult.modify(replace(event, result="rewritten"))
+
+    seen: list[tuple[Any, dict[str, Any]]] = []
+
+    def fold(event: Any, metadata: dict[str, Any]) -> Any:
+        seen.append((event.result, metadata))
+        return event
+
+    call = ToolCallEvent(
+        channel_id="ai1",
+        channel_type=ChannelType.AI,
+        tool_call_id="c1",
+        name="lookup",
+        arguments={},
+        result="original",
+        room_id="r1",
+    )
+    context = await kit._build_context("r1")  # noqa: SLF001
+    await kit.hook_engine.run_sync_hooks(
+        "r1", HookTrigger.ON_TOOL_CALL, call, context, skip_event_filter=True, fold=fold
+    )
+
+    assert seen == [("rewritten", {})]
+    await kit.close()
+
+
+async def test_a_blocked_call_is_remembered_with_its_reason_not_its_eviction() -> None:
+    provider = MockAIProvider(ai_responses=_calls(("lookup", {})))
+    kit = RoomKit()
+    channel = AIChannel("ai1", provider=provider, tool_handler=_answer, evict_threshold_tokens=20)
+    kit.register_channel(channel)
+    await kit.create_room(room_id="r1")
+
+    @kit.hook(HookTrigger.ON_TOOL_CALL, name="block")
+    async def block(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
+        return HookResult.block("withheld: " + "policy says no. " * 20)
+
+    await _turn(channel, [LOOKUP])
+
+    digest = channel._tool_usage.render_digest("r1")  # noqa: SLF001
+    assert "policy says no" in digest
+    assert "too large" not in digest
+    await kit.close()
+
+
 # -- A conference reads a verdict as every channel does -----------------------
 
 
@@ -159,23 +212,66 @@ async def test_a_conference_withholds_a_blocked_result() -> None:
 # -- Hooks that cannot run leave the outcome as it was ------------------------
 
 
-async def test_a_realtime_call_keeps_its_result_when_the_hook_context_fails(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    kit, provider, session = await _realtime_kit()
-    observed: list[ToolCallEvent] = []
+async def _context_fails(kit: RoomKit, monkeypatch: pytest.MonkeyPatch) -> list[Any]:
+    """Break the hooks' context; return the ``tool_call`` framework events."""
+    reported: list[Any] = []
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="observe")
-    async def observe(event: ToolCallEvent, ctx: RoomContext) -> None:
-        observed.append(event)
+    @kit.on("tool_call")
+    async def on_report(event: Any) -> None:
+        reported.append(event.data)
+
+    @kit.hook(HookTrigger.ON_TOOL_CALL, name="allows")
+    async def allows(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
+        return HookResult.allow()
 
     async def broken(*args: Any, **kwargs: Any) -> Room:
         raise RuntimeError("store unavailable")
 
     monkeypatch.setattr(kit, "_build_context", broken)
+    return reported
+
+
+async def test_a_text_call_keeps_its_result_when_the_hook_context_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = MockAIProvider(ai_responses=_calls(("lookup", {})))
+    kit = RoomKit()
+    channel = AIChannel("ai1", provider=provider, tool_handler=_answer)
+    kit.register_channel(channel)
+    await kit.create_room(room_id="r1")
+    reported = await _context_fails(kit, monkeypatch)
+
+    await _turn(channel, [LOOKUP])
+
+    assert _tool_payload(provider.calls[1], "lookup") == {"found": "secret"}
+    assert [r["tool_name"] for r in reported] == ["lookup"]
+    await kit.close()
+
+
+async def test_a_realtime_call_keeps_its_result_when_the_hook_context_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    kit, provider, session = await _realtime_kit()
+    reported = await _context_fails(kit, monkeypatch)
 
     await provider.simulate_tool_call(session, "c1", "lookup", {})
-    await until(lambda: bool(provider.tool_results))
+    await until(lambda: bool(provider.tool_results) and bool(reported))
 
     assert json.loads(provider.tool_results[0][2]) == {"found": "secret"}
+    assert [r["tool_name"] for r in reported] == ["lookup"]
+    await kit.close()
+
+
+async def test_a_conference_call_keeps_its_result_when_the_hook_context_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = MockRealtimeProvider()
+    kit, session = await _conference(provider)
+    reported = await _context_fails(kit, monkeypatch)
+
+    await provider.simulate_tool_call(session, "c1", "lookup", {})
+    await until(lambda: bool(provider.tool_results) and bool(reported))
+
+    assert json.loads(provider.tool_results[0][2]) == {"found": "secret"}
+    assert [r["tool_name"] for r in reported] == ["lookup"]
     await kit.close()

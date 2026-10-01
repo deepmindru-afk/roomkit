@@ -142,7 +142,7 @@ class ConferenceToolGate:
             # Not the handler's to serve: the hooks may still (RFC §21.4).
             return event, ToolOutcome(OutcomeKind.UNSERVED, unserved_tool_error(event.name))
         except ToolRefusedError as refusal:
-            # A declined call, in the handler's own words.
+            # A refused call, in the handler's own words.
             return self._refused(event, refusal.message)
         except Exception as exc:
             logger.exception(

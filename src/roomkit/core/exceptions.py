@@ -210,8 +210,8 @@ class UnservedToolCallError(RoomKitError):
     returned so a handler keeps its contract (it answers with a result). A
     call dispatched outside a tool loop may see it.
 
-    The ``{"error": "Unknown tool: ..."}`` answer an earlier convention
-    returned instead is still read as this signal.
+    A handler that answers ``{"error": "Unknown tool: ..."}`` instead, as
+    text or as a mapping, gives the same signal.
     """
 
 

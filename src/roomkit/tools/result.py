@@ -92,10 +92,8 @@ class VerdictReading:
 
     result: ToolResult
     """What the model reads."""
-    failed: bool
-    """A hook blocked the call, or nothing served it."""
     served: bool
-    """A handler or a hook served the call."""
+    """A handler or a hook served the call; otherwise it failed (blocked, or served by nothing)."""
     blocked: bool
     """A hook withheld the result; the model reads the block's reason."""
     replaced: bool
@@ -116,20 +114,20 @@ def read_tool_call_verdict(
         verdict = ToolCallVerdict(result=verdict)  # a bare override
     if verdict is not None and verdict.blocked:
         reason = verdict.result or json.dumps({"error": "blocked"})
-        return VerdictReading(reason, failed=True, served=False, blocked=True, replaced=True)
+        return VerdictReading(reason, served=False, blocked=True, replaced=True)
     if verdict is not None and verdict.result is not None:
         override = as_tool_result(verdict.result)
-        return VerdictReading(override, failed=False, served=True, blocked=False, replaced=True)
+        return VerdictReading(override, served=True, blocked=False, replaced=True)
     if served is None:
         unserved = unserved_tool_error(name)
-        return VerdictReading(unserved, failed=True, served=False, blocked=False, replaced=False)
-    return VerdictReading(served, failed=False, served=True, blocked=False, replaced=False)
+        return VerdictReading(unserved, served=False, blocked=False, replaced=False)
+    return VerdictReading(served, served=True, blocked=False, replaced=False)
 
 
 def is_unknown_tool_answer(result: Any) -> bool:
-    """Whether *result* is the earlier convention's way to say a tool is not
-    the handler's to serve (``{"error": "Unknown tool: ..."}``), as text or as
-    a mapping. Read by :func:`declined_answer` alone (RFC §21.4)."""
+    """Whether *result* is the envelope that says a tool is not the
+    handler's to serve (``{"error": "Unknown tool: ..."}``), as text or as a
+    mapping. Read by :func:`declined_answer` alone (RFC §21.4)."""
     parsed = result
     if isinstance(result, str):
         try:
@@ -160,13 +158,13 @@ def failure_detail(exc: BaseException) -> str:
 
 
 def declined_answer(answer: Any, name: str) -> Any:
-    """*answer*, unless it is the earlier "not mine" envelope: then the typed
-    signal, :class:`~roomkit.core.exceptions.UnservedToolCallError`.
+    """*answer*, unless it is the "not mine" envelope: then the typed signal,
+    :class:`~roomkit.core.exceptions.UnservedToolCallError`.
 
     The one reader of that envelope (RFC §21.4): every channel and every
     composition of handlers read a handler's answer through it, so a handler
-    that still returns ``{"error": "Unknown tool: ..."}`` declines the call the
-    way one that raises does.
+    that returns ``{"error": "Unknown tool: ..."}`` declines the call the way
+    one that raises does.
     """
     if is_unknown_tool_answer(answer):
         raise UnservedToolCallError(f"tool {name!r} is not served here")
@@ -228,9 +226,9 @@ def _content_parts(value: Any) -> list[AITextPart | AIImagePart] | None:
 
 def _part_shaped(item: Any) -> bool:
     """Whether *item* is a mapping with a part's type and only that part's fields."""
-    if not isinstance(item, dict):
+    if not isinstance(item, dict) or not isinstance(item.get("type"), str):
         return False
-    fields = _PART_FIELDS.get(item.get("type"))
+    fields = _PART_FIELDS.get(item["type"])
     return fields is not None and set(item) <= fields
 
 

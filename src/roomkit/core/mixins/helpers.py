@@ -54,8 +54,8 @@ from roomkit.models.thinking_event import ThinkingEvent
 from roomkit.models.tool_call import (
     ToolCallEvent,
     ToolCallVerdict,
-    fold_tool_call_rewrite,
     observed_call_event,
+    tool_call_chain_fold,
 )
 from roomkit.tools.external import BeforeToolDecision
 from roomkit.tools.result import before_tool_use_detail, hook_errors_detail, tool_call_verdict
@@ -873,7 +873,7 @@ class HelpersMixin:
         """Build the ON_TOOL_CALL callback for a call a channel served.
 
         The returned callback runs ON_TOOL_CALL's SYNC hooks as a chain on the
-        call's outcome (RFC §9.3, ``fold_tool_call_rewrite``) and returns their
+        call's outcome (RFC §9.3, ``tool_call_chain_fold``) and returns their
         :class:`ToolCallVerdict` (see :func:`tool_call_verdict`). The ASYNC
         observers see the final outcome as the model reads it, or, after a
         BLOCK, the failure. Emits a ``tool_call`` framework event.
@@ -890,7 +890,7 @@ class HelpersMixin:
                 return None
             chain = await kit_ref._run_tool_call_chain(event, event.room_id)
             if chain is None:
-                return kit_ref._unreachable_tool_call_verdict(event.room_id)
+                return await kit_ref._report_unreachable_tool_call(event, channel_id)
             hook_result, context = chain
             verdict = tool_call_verdict(hook_result, event)
             read = verdict.result if verdict.result is not None else event.result
@@ -930,7 +930,7 @@ class HelpersMixin:
             event,
             context,
             skip_event_filter=True,
-            fold=fold_tool_call_rewrite,
+            fold=tool_call_chain_fold(event),
             fire_observers=False,
         )
         return hook_result, context
@@ -1016,6 +1016,21 @@ class HelpersMixin:
                 "channel_type": str(event.channel_type),
             },
         )
+
+    async def _report_unreachable_tool_call(
+        self, event: ToolCallEvent, channel_id: str
+    ) -> ToolCallVerdict | None:
+        """The verdict on a call whose ON_TOOL_CALL hooks could not run, reported.
+
+        The observers need the context that failed; the ``tool_call``
+        framework event reports a served call once, as on every channel
+        (RFC §9.3). A call nothing served is the channel's to report, as the
+        failure it is.
+        """
+        verdict = self._unreachable_tool_call_verdict(str(event.room_id))
+        if event.result is not None:
+            await self._emit_tool_call_event(event, channel_id)
+        return verdict
 
     def _unreachable_tool_call_verdict(self, room_id: str) -> ToolCallVerdict | None:
         """The verdict on a call whose ON_TOOL_CALL hooks could not run.

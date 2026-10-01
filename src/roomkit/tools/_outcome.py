@@ -23,7 +23,7 @@ class OutcomeKind(StrEnum):
     SERVED = "served"
     """A handler or an ON_TOOL_CALL hook answered it."""
     REFUSED = "refused"
-    """A gate or the handler declined it, in words the model reads."""
+    """A gate or the handler refused it, in words the model reads."""
     FAILED = "failed"
     """The handler, or what it handed the work to, raised."""
     BLOCKED = "blocked"

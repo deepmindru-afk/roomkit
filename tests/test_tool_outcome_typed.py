@@ -12,6 +12,7 @@ failed call carries ``is_error`` on every path.
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
 from dataclasses import replace
 from typing import Any
 
@@ -26,15 +27,21 @@ from roomkit import (
     ToolCallEvent,
 )
 from roomkit.channels._dangling_recovery import _build_patched_list
+from roomkit.channels.ai import AIChannel
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 from roomkit.core.exceptions import UnservedToolCallError
 from roomkit.models.context import RoomContext
 from roomkit.providers.ai.base import AIMessage, AIToolCallPart
+from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.sandbox.executor import SandboxExecutor
+from roomkit.sandbox.models import SandboxResult
 from roomkit.tools._outcome import OutcomeKind, ToolOutcome
 from roomkit.tools.compose import compose_tool_handlers
 from roomkit.tools.result import declined_answer
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
+from roomkit.voice.realtime.reasoning import ReasoningBackend, ReasoningOutput, ReasoningRequest
 from tests.conference.test_conference_realtime import ROOM, realtime_kit, until
+from tests.test_tool_policy_exemptions import _calls, _tool_payload, _turn
 
 LOOKUP = {
     "name": "lookup",
@@ -161,6 +168,95 @@ async def test_a_call_recovered_from_speech_that_its_handler_declined_failed(
     injected = provider.injected_texts[0][1]
     assert "failed" in injected
     assert "No handler for tool lookup" in injected
+    await kit.close()
+
+
+async def _realtime(handler: Any, **kwargs: Any) -> tuple[RoomKit, MockRealtimeProvider, Any]:
+    provider = MockRealtimeProvider(full_duplex="reasoning_backend" in kwargs)
+    channel = RealtimeVoiceChannel(
+        "rt",
+        provider=provider,
+        transport=MockRealtimeTransport(),
+        tools=[LOOKUP],
+        tool_handler=handler,
+        **kwargs,
+    )
+    kit = RoomKit()
+    kit.register_channel(channel)
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "rt")
+    return kit, provider, await channel.start_session("r1", "u1", "ws")
+
+
+async def test_a_realtime_call_its_handler_declined_failed() -> None:
+    kit, provider, session = await _realtime(_declines)
+    observed: list[ToolCallEvent] = []
+
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    async def audit(event: ToolCallEvent, ctx: RoomContext) -> None:
+        observed.append(event)
+
+    await provider.simulate_tool_call(session, "c1", "lookup", {})
+    await until(lambda: bool(provider.tool_results) and bool(observed))
+
+    assert "No handler for tool lookup" in json.loads(provider.tool_results[0][2])["error"]
+    assert [(e.name, e.is_error) for e in observed] == [("lookup", True)]
+    await kit.close()
+
+
+class _Backend(ReasoningBackend):
+    """Calls ``lookup`` once, then answers."""
+
+    def __init__(self) -> None:
+        self.results: list[str] = []
+
+    async def run(self, request: ReasoningRequest) -> AsyncIterator[ReasoningOutput]:
+        assert request.execute_tool is not None
+        self.results.append(await request.execute_tool("lookup", {}))
+        yield ReasoningOutput("done", is_final=True)
+
+
+async def test_a_reasoning_backend_call_its_handler_declined_failed() -> None:
+    backend = _Backend()
+    kit, provider, session = await _realtime(_declines, reasoning_backend=backend)
+
+    await provider.simulate_delegation(session, "d1", "integrator")
+    await until(lambda: bool(backend.results))
+
+    assert "No handler for tool lookup" in json.loads(backend.results[0])["error"]
+    await kit.close()
+
+
+class _FailingCommand(SandboxExecutor):
+    """A command whose error reads like the "not mine" envelope."""
+
+    async def execute(
+        self, command: str, arguments: dict[str, Any] | None = None
+    ) -> SandboxResult:
+        return SandboxResult(exit_code=1, error="Unknown tool: frobnicate")
+
+    def tool_definitions(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "name": "sandbox_bash",
+                "description": "Run a shell command in the sandbox.",
+                "parameters": {"type": "object", "properties": {"command": {"type": "string"}}},
+            }
+        ]
+
+
+async def test_a_channel_tool_that_reads_like_the_envelope_is_served() -> None:
+    """Only the host's answer may decline a call: a command's own error is its
+    result (RFC §21.4)."""
+    provider = MockAIProvider(ai_responses=_calls(("sandbox_bash", {"command": "frobnicate"})))
+    channel = AIChannel("ai1", provider=provider, sandbox=_FailingCommand())
+    kit = RoomKit()
+    kit.register_channel(channel)
+    await kit.create_room(room_id="r1")
+
+    await _turn(channel)
+
+    assert _tool_payload(provider.calls[1], "sandbox_bash")["error"] == "Unknown tool: frobnicate"
     await kit.close()
 
 

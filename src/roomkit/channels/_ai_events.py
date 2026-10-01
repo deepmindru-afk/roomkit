@@ -18,6 +18,9 @@ logger = logging.getLogger("roomkit.channels.ai")
 # coalescer) split it into multiple events of at most this size.
 THINKING_PREVIEW_LIMIT = 1000
 
+# Characters of a tool result a TOOL_CALL_END event previews.
+_RESULT_PREVIEW = 500
+
 
 class AIEventsMixin:
     """Publishes tool-call and thinking ephemeral events over the realtime backend."""
@@ -46,45 +49,16 @@ class AIEventsMixin:
         if self._realtime is None or not room_id:
             return
         # Payload build is inside the try to honour the best-effort contract in
-        # this method's docstring. ``as_text()`` flattens a multimodal result
-        # (a list of parts — e.g. a screenshot) to a plain string, so the UI
-        # preview never carries raw base64 image data and the slice can't fail.
+        # this method's docstring.
         try:
-            result_preview = 500
             if event_type == EphemeralEventType.TOOL_CALL_START:
                 tc_data = [
                     {"id": tc.id, "name": tc.name, "arguments": tc.arguments} for tc in tool_calls
                 ]
             elif event_type == EphemeralEventType.TOOL_CALL_DELTA:
-                # Name and running size only, projected field by field like the
-                # other two branches rather than copied wholesale: the argument
-                # text can be megabytes or personal data, and a guarantee the
-                # publish boundary does not enforce is a guarantee one careless
-                # caller away from being false. START delivers the arguments,
-                # once, when the call is complete. An empty list is the
-                # terminal frame: nothing is being composed any more.
-                tc_data = [
-                    {
-                        "id": tc["id"],
-                        "name": tc["name"],
-                        "arguments_chars": tc["arguments_chars"],
-                    }
-                    for tc in tool_calls
-                ]
+                tc_data = _composing_calls(tool_calls)
             else:  # TOOL_CALL_END — tool_calls are AIToolResultPart
-                # ``status`` as the stored row and the ACP channel's END carry
-                # it: a live surface tells a failed call from a served one
-                # without reading the preview.
-                tc_data = [
-                    {
-                        "id": tc.tool_call_id,
-                        "name": tc.name,
-                        "result": tc.as_text()[:result_preview],
-                        "status": "failed" if tc.is_error else "completed",
-                    }
-                    for tc in tool_calls
-                    if isinstance(tc, AIToolResultPart)
-                ]
+                tc_data = _ended_calls(tool_calls)
             data: dict[str, Any] = {
                 "tool_calls": tc_data,
                 "round": round_idx,
@@ -147,3 +121,38 @@ class AIEventsMixin:
             )
         except Exception:
             logger.debug("Failed to publish thinking event", exc_info=True)
+
+
+def _composing_calls(calls: list[Any]) -> list[dict[str, Any]]:
+    """A TOOL_CALL_DELTA's calls: each one's name and running argument size.
+
+    Projected field by field rather than copied wholesale: the argument text
+    can be megabytes or personal data, and a guarantee the publish boundary
+    does not enforce is a guarantee one careless caller away from being
+    false. START delivers the arguments, once, when the call is complete. An
+    empty list is the terminal frame: nothing is being composed any more.
+    """
+    return [
+        {"id": tc["id"], "name": tc["name"], "arguments_chars": tc["arguments_chars"]}
+        for tc in calls
+    ]
+
+
+def _ended_calls(parts: list[Any]) -> list[dict[str, Any]]:
+    """A TOOL_CALL_END's calls: each one's result preview and status.
+
+    ``status`` as the stored row and the ACP channel's END carry it, so a
+    live surface tells a failed call from a served one without reading the
+    preview. ``as_text()`` flattens a multimodal result, so the preview never
+    carries raw base64 image data.
+    """
+    return [
+        {
+            "id": part.tool_call_id,
+            "name": part.name,
+            "result": part.as_text()[:_RESULT_PREVIEW],
+            "status": "failed" if part.is_error else "completed",
+        }
+        for part in parts
+        if isinstance(part, AIToolResultPart)
+    ]

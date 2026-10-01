@@ -32,6 +32,11 @@ class TestDataIsNotAPart:
 
         assert json.loads(as_tool_result(record)) == record
 
+    def test_a_mapping_whose_type_is_not_text_is_json(self) -> None:
+        record = [{"type": ["a", "b"], "x": 1}]
+
+        assert json.loads(as_tool_result(record)) == record
+
     def test_a_part_in_its_exact_shape_is_still_a_part(self) -> None:
         parts = as_tool_result([{"type": "image", "url": "data:,", "mime_type": "image/png"}])
 

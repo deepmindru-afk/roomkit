@@ -64,6 +64,7 @@ from roomkit.telemetry.redaction import redact
 from roomkit.tools._outcome import OutcomeKind, ToolOutcome, read_outcome
 from roomkit.tools.context import ToolCallContext, _current_tool_call
 from roomkit.tools.result import (
+    GateRefusal,
     as_tool_result,
     declined_answer,
     failure_detail,
@@ -107,12 +108,10 @@ class _CallRound:
     executed_arguments: dict[str, dict[str, Any]] | None
 
 
-@dataclass(frozen=True)
-class _Stopped:
-    """A gate that stopped a call: what the model reads, and the observers' detail."""
-
-    error: dict[str, Any]
-    detail: str | None = None
+def _refused_with(error: dict[str, Any], detail: str | None = None) -> GateRefusal:
+    """A gate's refusal of a call: *error* as the model reads it, *detail* for
+    the observers."""
+    return GateRefusal(json.dumps(error), detail)
 
 
 def _log_answer(name: str, result: Any, started: float) -> None:
@@ -485,14 +484,14 @@ class AIToolsMixin:
         return await self._serve_gated_call(tc, call_arguments, arguments, scope)
 
     async def _reject_call(
-        self, tc: Any, scope: _CallRound, stopped: _Stopped
+        self, tc: Any, scope: _CallRound, stopped: GateRefusal
     ) -> AIToolResultPart:
         """The part of a call a gate stopped, its observers told."""
         # Refusals never reach the handler's guard. Count their raw
         # attempts here; successful calls are counted only by the
         # handler, using the effective payload after folds and hooks.
         guard = self._repeated_call_guard(tc.name, tc.arguments)
-        body = guard or json.dumps(stopped.error)
+        body = guard or stopped.body
         await self._fire_tool_refusal(tc, tc.arguments, body, scope.room_id, detail=stopped.detail)
         return ToolOutcome(OutcomeKind.REFUSED, body).as_part(tc.id, tc.name)
 
@@ -509,34 +508,36 @@ class AIToolsMixin:
             # Execution guard: policy and skill gating, the listing filter's
             # rule (RFC §21.1), re-checked on the call itself.
             refusal = self._gate_refusal(tc.name)
-            stopped = _Stopped(refusal) if refusal is not None else None
+            stopped = _refused_with(refusal) if refusal is not None else None
         if stopped is None:
             ran = await self._before_tool_use(tc, call_arguments, params, scope.room_id)
-            if not isinstance(ran, _Stopped):
+            if not isinstance(ran, GateRefusal):
                 return call_arguments, ran
             stopped = ran
         return await self._reject_call(tc, scope, stopped)
 
     def _declared_schema_gate(
         self, tc: Any, declared_tools: list[AITool] | None
-    ) -> tuple[dict[str, Any] | None, _Stopped | None]:
+    ) -> tuple[dict[str, Any] | None, GateRefusal | None]:
         """The schema the call is checked against, or why the call cannot run
         at all: cut short, withdrawn for the turn, or not declared."""
         if getattr(tc, "partial", False):
-            return None, _Stopped(_cut_call_error(tc))
+            return None, _refused_with(_cut_call_error(tc))
         # A tool BEFORE_AI_GENERATION withdrew is gone for the turn, the
         # channel's own included: no exemption below may bring it back.
         if tc.name in self._get_loop_ctx().withdrawn_tools:
             logger.warning("Provider called %s, withdrawn for this turn", tc.name)
-            return None, _Stopped({"error": f"Tool '{tc.name}' is not available in this turn."})
+            return None, _refused_with(
+                {"error": f"Tool '{tc.name}' is not available in this turn."}
+            )
         # Execution guard: argument validation against the declared schema
         # (fail-closed) — reject malformed calls before any other gate.
         params, undeclared = self._declared_schema(tc.name, declared_tools)
-        return params, (_Stopped(undeclared) if undeclared is not None else None)
+        return params, (_refused_with(undeclared) if undeclared is not None else None)
 
     def _model_arguments(
         self, tc: Any, params: dict[str, Any] | None
-    ) -> tuple[dict[str, Any], _Stopped | None]:
+    ) -> tuple[dict[str, Any], GateRefusal | None]:
         """The model's arguments, repaired into the schema's shape, or why
         they do not fit it."""
         call_arguments = tc.arguments
@@ -548,7 +549,7 @@ class AIToolsMixin:
         folded, fold_error = fold_hoisted_arguments(params, call_arguments)
         if fold_error is not None:
             logger.warning("Tool %s arguments ambiguous: %s", tc.name, fold_error)
-            return call_arguments, _Stopped(
+            return call_arguments, _refused_with(
                 {"error": f"Invalid arguments for '{tc.name}': {fold_error}"}
             )
         if folded is not None:
@@ -562,7 +563,7 @@ class AIToolsMixin:
         arg_error = validate_tool_arguments(params, call_arguments)
         if arg_error is not None:
             logger.warning("Tool %s arguments rejected: %s", tc.name, arg_error)
-            return call_arguments, _Stopped(
+            return call_arguments, _refused_with(
                 {"error": f"Invalid arguments for '{tc.name}': {arg_error}"}
             )
         return call_arguments, None
@@ -573,7 +574,7 @@ class AIToolsMixin:
         call_arguments: dict[str, Any],
         params: dict[str, Any] | None,
         room_id: str | None,
-    ) -> dict[str, Any] | _Stopped:
+    ) -> dict[str, Any] | GateRefusal:
         """The arguments the call runs with once BEFORE_TOOL_USE ran, or its denial."""
         # Pre-execution gate: BEFORE_TOOL_USE hook can deny the tool call,
         # or hand back rewritten arguments (a redaction hook putting real
@@ -595,7 +596,7 @@ class AIToolsMixin:
             decision = await self._before_tool_call_hook(pre_event)
             if not decision:
                 logger.info("Tool %s denied by BEFORE_TOOL_USE hook", tc.name)
-                return _Stopped({"error": pre_execution_denial(tc.name)}, decision.detail)
+                return _refused_with({"error": pre_execution_denial(tc.name)}, decision.detail)
             if decision.arguments is not None:
                 arguments = decision.arguments
                 arguments_rewritten = True
@@ -613,7 +614,7 @@ class AIToolsMixin:
             if arg_error is not None:
                 qualifier = "rewritten " if arguments_rewritten else ""
                 logger.warning("Tool %s %sarguments rejected: %s", tc.name, qualifier, arg_error)
-                return _Stopped(
+                return _refused_with(
                     {"error": (f"Invalid {qualifier}arguments for '{tc.name}': {arg_error}")}
                 )
         return arguments
@@ -668,32 +669,36 @@ class AIToolsMixin:
         except asyncio.CancelledError:
             telemetry.end_span(tool_span_id, status="cancelled")
             raise
-        except ToolRefusedError as refusal:
-            # The branch below with the message kept. A handler that
-            # declines a call has words for the model — a host tunes them
+        except Exception as exc:
+            telemetry.end_span(tool_span_id, status="error", error_message=str(exc))
+            return await self._raised_outcome(tc, arguments, scope.room_id, exc)
+
+    async def _raised_outcome(
+        self, tc: Any, arguments: dict[str, Any], room_id: str | None, exc: Exception
+    ) -> ToolOutcome:
+        """The outcome of a call whose serving or judging raised *exc*, reported."""
+        if isinstance(exc, ToolRefusedError):
+            # The failure below with the message kept. A handler that
+            # refuses a call has words for the model — a host tunes them
             # for a small one — and the generic wrapper would replace them
             # with its own sentence, which is how the reason gets lost.
-            telemetry.end_span(tool_span_id, status="error", error_message=refusal.message)
-            logger.info("Tool %s refused: %s", tc.name, refusal.message)
-            body = await self._failed_call(tc, arguments, scope.room_id, refusal.message)
+            logger.info("Tool %s refused: %s", tc.name, exc.message)
+            body = await self._failed_call(tc, arguments, room_id, exc.message)
             return ToolOutcome(
                 OutcomeKind.REFUSED,
                 body,
-                recorded=refusal.message,
-                remember=not isinstance(refusal, ChannelRefusalError),
+                recorded=exc.message,
+                remember=not isinstance(exc, ChannelRefusalError),
             )
-        except Exception as exc:
-            telemetry.end_span(tool_span_id, status="error", error_message=str(exc))
-            logger.warning("Tool %s raised %s: %s", tc.name, type(exc).__name__, exc)
-            # The class, never the message (RFC §9.3): it goes to the log
-            # above and to the observers, not to the model. The memory
-            # records what the model saw, not a success the handler
-            # returned before a hook raised.
-            recorded = tool_failure(tc.name, exc)
-            body = await self._failed_call(
-                tc, arguments, scope.room_id, recorded, detail=failure_detail(exc)
-            )
-            return ToolOutcome(OutcomeKind.FAILED, body, recorded=recorded)
+        logger.warning("Tool %s raised %s: %s", tc.name, type(exc).__name__, exc)
+        # The class, never the message (RFC §9.3): it goes to the log above
+        # and to the observers, not to the model. The memory records what the
+        # model saw, not a success the handler returned before a hook raised.
+        recorded = tool_failure(tc.name, exc)
+        body = await self._failed_call(
+            tc, arguments, room_id, recorded, detail=failure_detail(exc)
+        )
+        return ToolOutcome(OutcomeKind.FAILED, body, recorded=recorded)
 
     def _model_part(
         self, tc: Any, outcome: ToolOutcome, *, references: list[str]
@@ -918,7 +923,11 @@ class AIToolsMixin:
             )
         if self._user_tool_handler is None:
             raise UnservedToolCallError(name)
-        return as_tool_result(await self._user_tool_handler(name, arguments))
+        # The host's answer alone may be the "not mine" envelope (RFC §21.4):
+        # the channel's own tools answer what they ran, a failing command's
+        # error included.
+        answer = await self._user_tool_handler(name, arguments)
+        return as_tool_result(declined_answer(answer, name))
 
     async def _handle_activate_skill(self, arguments: dict[str, Any]) -> str:
         """Load and return full skill instructions, tracking activation for gating."""
@@ -1107,7 +1116,8 @@ class AIToolsMixin:
         reading = read_tool_call_verdict(tc.name, verdict, shaped)
         kind = read_outcome(reading)
         if kind is OutcomeKind.BLOCKED:
-            return ToolOutcome(kind, reading.result)
+            # The memory keeps the hook's reason, before eviction swaps a placeholder in.
+            return ToolOutcome(kind, reading.result, recorded=reading.result)
         if verdict is not None and verdict.replaces_structured:
             structured = verdict.structured_content
         if kind is OutcomeKind.UNSERVED:
@@ -1163,7 +1173,6 @@ class AIToolsMixin:
         timeout = self._call_timeout(name, call_ctx.room_id or None)
         try:
             answer = await answer_within(timeout, name, handler(name, arguments))
-            answer = declined_answer(answer, name)
         except UnservedToolCallError:
             return None
         finally:

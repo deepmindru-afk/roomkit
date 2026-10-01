@@ -129,6 +129,28 @@ class RealtimeToolsHost(Protocol):
     def _expect_provider_output(self, session_id: str) -> None: ...
 
 
+def _timed_result_text(name: str, raw: Any) -> str:
+    """*raw* as the text a voice provider reads, warning when flattening it
+    held the event loop past the realtime segment budget."""
+    started = time.perf_counter()
+    text = result_text(raw)
+    held = time.perf_counter() - started
+    if held > _LOOP_SEGMENT_BUDGET_S:
+        # Pure sync CPU (wall == loop hold), and it runs on the FULL result
+        # before truncation caps it.
+        logger.warning(
+            "Tool %s result serialization held the event loop for "
+            "%.0fms (%d chars, budget ~%.0fms) — concurrent "
+            "realtime audio may underrun; return a string or a "
+            "compact reference instead of a large object",
+            name,
+            held * 1000,
+            len(text),
+            _LOOP_SEGMENT_BUDGET_S * 1000,
+        )
+    return text
+
+
 def _hook_outcome(
     verdict: ToolCallVerdict | None, handler_result: str | None, name: str
 ) -> tuple[str, bool]:
@@ -140,7 +162,7 @@ def _hook_outcome(
     failed, never ``{"status": "ok"}`` for work nobody did.
     """
     reading = read_tool_call_verdict(name, verdict, handler_result)
-    return result_text(reading.result), reading.failed
+    return result_text(reading.result), not reading.served
 
 
 class RealtimeToolsMixin:
@@ -543,7 +565,7 @@ class RealtimeToolsMixin:
         result then goes.
 
         Raises :class:`~roomkit.core.exceptions.ToolRefusedError` when the
-        handler declines the call. It is not caught here: a refusal and a
+        handler refuses the call. It is not caught here: a refusal and a
         served result end their caller's span differently and read differently
         in its log, so the caller is where the distinction is spent.
         """
@@ -583,7 +605,7 @@ class RealtimeToolsMixin:
         ``None`` when nothing serves the call, which the hooks may still serve.
 
         Raises :class:`~roomkit.core.exceptions.ToolRefusedError` when the
-        handler declines the call: its caller is where a refusal is told apart.
+        handler refuses the call: its caller is where a refusal is told apart.
         """
         if not self._serves_tool(name, room_id or session.room_id):
             return None
@@ -610,22 +632,7 @@ class RealtimeToolsMixin:
             (time.perf_counter() - t_seg) * 1000,
         )
 
-        t_seg = time.perf_counter()
-        handler_result = result_text(raw)
-        ser_s = time.perf_counter() - t_seg
-        if ser_s > _LOOP_SEGMENT_BUDGET_S:
-            # Pure sync CPU (wall == loop hold), and it runs on the
-            # FULL result before truncation caps it.
-            logger.warning(
-                "Tool %s result serialization held the event loop for "
-                "%.0fms (%d chars, budget ~%.0fms) — concurrent "
-                "realtime audio may underrun; return a string or a "
-                "compact reference instead of a large object",
-                name,
-                ser_s * 1000,
-                len(handler_result),
-                _LOOP_SEGMENT_BUDGET_S * 1000,
-            )
+        handler_result = _timed_result_text(name, raw)
         # Yield so realtime pacing gets a slot between the handler
         # segment and hook dispatch — sync hooks run inline next and
         # would otherwise fuse with this segment into one loop step.
@@ -662,14 +669,16 @@ class RealtimeToolsMixin:
     async def _answer(self, name: str, arguments: dict[str, Any], room_id: str | None) -> Any:
         """The answer of what orchestration set up for *room_id*, else of the
         host's handler; a handler that declines the call raises
-        :class:`~roomkit.core.exceptions.UnservedToolCallError` (RFC §21.4)."""
+        :class:`~roomkit.core.exceptions.UnservedToolCallError` (RFC §21.4).
+
+        Only the host's answer may be the "not mine" envelope: orchestration's
+        tools answer what they ran.
+        """
         entry = self._registry.lookup(name, room_id)
         if entry is not None and entry.serve is not None:
             result = entry.serve(arguments)
-            answer = await result if inspect.isawaitable(result) else result
-        else:
-            answer = await self._tool_handler(name, arguments)
-        return declined_answer(answer, name)
+            return await result if inspect.isawaitable(result) else result
+        return declined_answer(await self._tool_handler(name, arguments), name)
 
     def _serves_tool(self, name: str, room_id: str | None) -> bool:
         """Whether something serves a call to *name* in *room_id*: what
@@ -1339,16 +1348,7 @@ class RealtimeToolsMixin:
                 context,
                 skip_event_filter=True,
             )
-        await self._framework._emit_framework_event(
-            "tool_call",
-            room_id=room_id,
-            channel_id=self.channel_id,
-            data={
-                "tool_name": name,
-                "tool_call_id": call_id,
-                "channel_type": str(ChannelType.REALTIME_VOICE),
-            },
-        )
+        await self._framework._emit_tool_call_event(tool_event, self.channel_id)
 
     async def _dispatch_tool_search_call(
         self,

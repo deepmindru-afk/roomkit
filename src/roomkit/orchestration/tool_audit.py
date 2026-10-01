@@ -207,7 +207,10 @@ def audit_tool_handler(
     channel reads the call as it would without the audit. The record reads
     the answer as text. A refusal (``ToolRefusedError``) or a decline
     (``UnservedToolCallError``) records ``failed``, an exception ``error``,
-    a cancellation ``cancelled`` (RFC §15.8.1).
+    a cancellation ``cancelled`` (RFC §15.8.1). A call the channel's per-call
+    bound cut short (RFC §21.6) reaches the handler as a cancellation, so it
+    records ``cancelled`` too, its duration the bound; the channel itself
+    reads it as failed.
 
     Args:
         handler: The original async tool handler ``(name, args) -> result``.
