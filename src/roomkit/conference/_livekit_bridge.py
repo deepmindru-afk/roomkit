@@ -79,14 +79,15 @@ class EventBridge:
         the current value matters, and a consumer that fell behind should say
         the newest one, not replay the history. One marker per key sits in
         the queue; further updates replace the stored value in place, so a
-        participant flapping quality cannot grow the queue at all.
+        participant flapping quality cannot grow the queue at all. A value the
+        bridge refuses is not kept, so it never stands in for a later one.
         """
-        already_queued = key in self._pending_state
-        self._pending_state[key] = (emit, args)
-        if already_queued:
+        if key in self._pending_state:
+            self._pending_state[key] = (emit, args)
             return True
         if self._events.qsize() >= MAX_QUEUED_EVENTS:
             return False
+        self._pending_state[key] = (emit, args)
         self._events.put_nowait(("state", key))
         return True
 

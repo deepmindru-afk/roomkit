@@ -1453,6 +1453,35 @@ class TestTheEventBridge:
         assert bridge.put_state("speaker", _ignore) is False
         assert bridge.queued == MAX_QUEUED_EVENTS
 
+    async def test_a_refused_state_leaves_its_key_free_for_the_next_one(self) -> None:
+        """A state the full bridge refused is not kept: the next value for the
+        same key, once there is room, is queued and delivered.
+        """
+        bridge = EventBridge("room-1")
+        seen: list[str] = []
+
+        async def _record(value: str) -> None:
+            seen.append(value)
+
+        for _ in range(MAX_QUEUED_EVENTS):
+            bridge.put(_ignore)
+        assert bridge.put_state("speaker", _record, "p-1") is False
+
+        bridge.start()
+        try:
+            deadline = asyncio.get_running_loop().time() + 5.0
+            while bridge.queued:
+                assert asyncio.get_running_loop().time() < deadline
+                await asyncio.sleep(0)
+            assert bridge.put_state("speaker", _record, "p-2") is True
+            while not seen:
+                assert asyncio.get_running_loop().time() < deadline
+                await asyncio.sleep(0)
+        finally:
+            await bridge.stop()
+
+        assert seen == ["p-2"]
+
     async def test_stopping_counts_what_was_never_delivered(self) -> None:
         bridge = EventBridge("room-1")
         bridge.put(_ignore)
