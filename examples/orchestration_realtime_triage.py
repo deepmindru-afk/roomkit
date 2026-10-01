@@ -40,6 +40,7 @@ Environment variables:
     RTP_PORT_END        RTP port range end (default: 20000)
     VOICE_TRIAGE        Gemini voice for triage (default: Zephyr, female)
     VOICE_ADVISOR       Gemini voice for advisor (default: Fenrir, male)
+    CONSOLE             Set to 1 for the live console dashboard
 """
 
 from __future__ import annotations
@@ -57,7 +58,7 @@ from shared import require_env, run_until_stopped, setup_console, setup_logging
 logger = setup_logging("realtime_triage")
 
 # Suppress chain-depth warnings (expected in multi-agent setups)
-logging.getLogger("roomkit.core.event_router").setLevel(logging.ERROR)
+logging.getLogger("roomkit.event_router").setLevel(logging.ERROR)
 
 from roomkit import Agent, RealtimeVoiceChannel, RoomKit
 from roomkit.models.context import RoomContext
@@ -102,7 +103,7 @@ pipeline = ConversationPipeline(
 
 
 async def main() -> None:
-    require_env("GEMINI_API_KEY")
+    env = require_env("GEMINI_API_KEY")
 
     kit = RoomKit()
 
@@ -120,7 +121,7 @@ async def main() -> None:
 
     # --- Gemini Live provider -----------------------------------------------
     provider = GeminiLiveProvider(
-        api_key=os.environ["GEMINI_API_KEY"],
+        api_key=env["GEMINI_API_KEY"],
         model=GEMINI_MODEL,
     )
 
@@ -244,7 +245,7 @@ async def main() -> None:
             state.phase,
             state.handoff_count,
         )
-        await kit.leave(session)
+        # The SIP transport ends the realtime session itself on a BYE.
 
     # --- Start ---------------------------------------------------------------
 

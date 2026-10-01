@@ -2,15 +2,20 @@
 """SIP voice backend example.
 
 Demonstrates how to use the SIPVoiceBackend to accept incoming SIP calls
-from a PBX/SIP trunk, route them to rooms using X-headers, and wire up
-the full voice AI pipeline (STT -> AI -> TTS).
+from a PBX/SIP trunk and gate them with the same hooks as text messages.
+There is no STT, AI or TTS here: the call is answered and joined to a
+room, nothing is said to the caller (see voice_sip_local_agent.py or
+realtime_voice_sip_gemini.py for a talking agent).
 
-Shows that voice sessions flow through the exact same hooks as text
-messages — BEFORE_BROADCAST can block a call just like it blocks a
-text message.
+Each answered call goes through ``kit.process_inbound(parse_voice_session(...))``,
+so its ``session_started`` event runs BEFORE_BROADCAST — which can block
+the call exactly like it blocks a text message — and AFTER_BROADCAST. A
+blocked call is hung up with a Q.850 "call rejected" cause.
 
-The PBX/proxy (Kamailio, OpenSIPS, Asterisk) sets X-Room-ID and
-X-Session-ID headers before forwarding INVITEs to this server.
+Every call lands in the ``support`` room. The backend copies a PBX's
+``X-Room-ID`` header (or the Call-ID when absent) into ``session.room_id``;
+route on it only behind a PBX that sets the header, since a caller who
+reaches the port directly chooses its value.
 
 Requirements:
     pip install roomkit[sip]
@@ -18,14 +23,19 @@ Requirements:
 Usage:
     python examples/voice_sip.py
 
-    # From a SIP client or PBX, send an INVITE to port 5060 with:
-    #   X-Room-ID: my-room
-    #   X-Session-ID: caller-123
+    # From a SIP client or PBX, send an INVITE to the SIP port.
+
+Environment variables (all optional):
+    SIP_LOCAL_PORT      SIP listen port (default: 5060)
+    SIP_RTP_PORT_START  First RTP port (default: 10000)
+    SIP_RTP_PORT_END    Last RTP port (default: 20000)
+    CONSOLE             Set to 1 for the live console dashboard
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -41,17 +51,18 @@ from roomkit.models.enums import HookTrigger
 from roomkit.models.event import RoomEvent, SystemContent
 from roomkit.models.hook import HookResult
 from roomkit.models.trace import ProtocolTrace
+from roomkit.voice import parse_voice_session
 from roomkit.voice.backends.sip import SIPVoiceBackend
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 
-SIP_HOST = "0.0.0.0"
-SIP_PORT = 5060
-RTP_IP = "0.0.0.0"  # Use your actual IP for real deployments
-RTP_PORT_START = 10000
-RTP_PORT_END = 20000
+SIP_HOST = "0.0.0.0"  # nosec B104
+SIP_PORT = int(os.environ.get("SIP_LOCAL_PORT", "5060"))
+RTP_IP = "0.0.0.0"  # nosec B104  — use your actual IP for real deployments
+RTP_PORT_START = int(os.environ.get("SIP_RTP_PORT_START", "10000"))
+RTP_PORT_END = int(os.environ.get("SIP_RTP_PORT_END", "20000"))
 
 # Simple in-memory call log (demonstrates AFTER_BROADCAST observability)
 call_log: list[dict] = []
@@ -106,12 +117,6 @@ async def main() -> None:
 
         return HookResult.allow()
 
-    @kit.hook(HookTrigger.ON_TRANSCRIPTION)
-    async def on_transcription(event, ctx: RoomContext) -> HookResult:
-        """Log what the caller says. Can also modify or block the text."""
-        logger.info("ON_TRANSCRIPTION: %s", event.text)
-        return HookResult.allow()
-
     @kit.hook(HookTrigger.ON_PROTOCOL_TRACE)
     async def on_trace(trace: ProtocolTrace, ctx: RoomContext) -> None:
         """Room-level protocol trace — only traces for channels in the room."""
@@ -148,7 +153,7 @@ async def main() -> None:
     await kit.attach_channel("support", "voice")
 
     # -----------------------------------------------------------------------
-    # Incoming call → join session to room
+    # Incoming call → through the inbound pipeline (hooks) into the room
     # -----------------------------------------------------------------------
 
     @backend.on_call
@@ -156,7 +161,13 @@ async def main() -> None:
         """Called when a SIP INVITE is accepted and RTP is active."""
         caller = session.metadata.get("caller")
         logger.info("Incoming call — session=%s caller=%s", session.id, caller)
-        await kit.join("support", "voice", session=session)
+        result = await kit.process_inbound(
+            parse_voice_session(session, channel_id="voice"), room_id="support"
+        )
+        if result.blocked:
+            # The INVITE was already answered: hang up what the hook refused.
+            logger.warning("Call refused (%s) — hanging up", result.reason)
+            await backend.disconnect(session, cause=21, text="Call rejected")
 
     # -----------------------------------------------------------------------
     # Disconnect handler
@@ -164,9 +175,12 @@ async def main() -> None:
 
     @backend.on_call_disconnected
     async def handle_disconnect(session):
-        """Called when the remote party hangs up (BYE)."""
+        """Called when the remote party hangs up (BYE).
+
+        The voice channel unbinds the session by itself on a BYE; this
+        handler only logs it.
+        """
         logger.info("Call ended — session=%s", session.id)
-        await kit.leave(session)
 
     # -----------------------------------------------------------------------
     # Start

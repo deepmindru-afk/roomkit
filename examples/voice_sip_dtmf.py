@@ -10,6 +10,11 @@ decides to press a key (e.g. "press 1 for English"), it calls the tool,
 which delegates to ``VoiceChannel.send_dtmf()`` →
 ``SIPVoiceBackend.send_dtmf()`` → RFC 4733 RTP telephone-event.
 
+Everything but SIP is mocked: once the call is up and audio arrives, the
+mock VAD/STT "hear" an IVR menu, the mock AI answers with a ``send_dtmf``
+tool call for digit 1, then confirms in text. Swap in real STT/AI/TTS
+providers to navigate a real IVR.
+
 Requirements:
     pip install roomkit[sip]
 
@@ -21,7 +26,10 @@ Environment variables (all optional):
     SIP_PROXY_PORT  — SIP proxy port      (default: 5060)
     SIP_FROM_URI    — caller SIP URI      (default: sip:bot@example.com)
     SIP_TO_URI      — callee SIP URI      (default: sip:ivr@example.com)
-    OPENAI_API_KEY  — OpenAI key for AI   (uses mock if unset)
+    SIP_LOCAL_PORT  — local SIP port      (default: 5070)
+    SIP_RTP_PORT_START — first RTP port   (default: 10000)
+    SIP_RTP_PORT_END   — last RTP port    (default: 20000)
+    CONSOLE         — 1 for the live console dashboard
 """
 
 from __future__ import annotations
@@ -46,6 +54,7 @@ from roomkit import (
     VoiceChannel,
 )
 from roomkit.channels.ai import AIChannel
+from roomkit.providers.ai.base import AIResponse, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.voice.backends.sip import PT_PCMU, SIPVoiceBackend
 from roomkit.voice.base import VoiceSession
@@ -67,6 +76,9 @@ SIP_PROXY_HOST = os.environ.get("SIP_PROXY_HOST", "127.0.0.1")
 SIP_PROXY_PORT = int(os.environ.get("SIP_PROXY_PORT", "5060"))
 FROM_URI = os.environ.get("SIP_FROM_URI", "sip:bot@example.com")
 TO_URI = os.environ.get("SIP_TO_URI", "sip:ivr@example.com")
+LOCAL_PORT = int(os.environ.get("SIP_LOCAL_PORT", "5070"))
+RTP_PORT_START = int(os.environ.get("SIP_RTP_PORT_START", "10000"))
+RTP_PORT_END = int(os.environ.get("SIP_RTP_PORT_END", "20000"))
 
 SYSTEM_PROMPT = (
     "You are an AI agent navigating a phone IVR system. "
@@ -121,8 +133,10 @@ async def main() -> None:
 
     # --- SIP backend ----------------------------------------------------------
     backend = SIPVoiceBackend(
-        local_sip_addr=("0.0.0.0", 5070),  # nosec B104
+        local_sip_addr=("0.0.0.0", LOCAL_PORT),  # nosec B104
         local_rtp_ip="0.0.0.0",  # nosec B104
+        rtp_port_start=RTP_PORT_START,
+        rtp_port_end=RTP_PORT_END,
     )
 
     # --- Pipeline: VAD + DTMF (mock for demo) ---------------------------------
@@ -170,6 +184,7 @@ async def main() -> None:
                 return json.dumps({"error": "No active voice session"})
             # send_dtmf is synchronous (RFC 4733 packets are queued)
             voice.send_dtmf(session, digit, duration_ms)
+            logger.info("DTMF sent: digit=%s duration=%sms", digit, duration_ms)
             return json.dumps(
                 {
                     "status": "sent",
@@ -180,8 +195,19 @@ async def main() -> None:
         return json.dumps({"error": f"Unknown tool: {name}"})
 
     # --- AI channel -----------------------------------------------------------
+    # Scripted like a real model: first a send_dtmf tool call, then, once the
+    # tool result is back, the text reply that goes to TTS.
     ai_provider = MockAIProvider(
-        responses=["I'll press 1 for sales now."],
+        ai_responses=[
+            AIResponse(
+                content="",
+                finish_reason="tool_calls",
+                tool_calls=[
+                    AIToolCall(id="dtmf-1", name="send_dtmf", arguments={"digit": "1"}),
+                ],
+            ),
+            AIResponse(content="I pressed 1 for sales.", finish_reason="stop"),
+        ],
     )
     ai = AIChannel(
         "ai",

@@ -14,6 +14,20 @@ Architecture::
       → on_audio_received callback
       → send_audio_sync (echo back)
 
+Datagram format, both directions: a 2-byte little-endian uint16 holding
+the sample rate divided by 100 (16000 Hz → 160), then 16-bit little-endian
+mono PCM.  From the browser::
+
+    const writer = transport.datagrams.writable.getWriter();
+    const pcm = new Uint8Array(int16Samples.buffer);  // Int16Array, mono
+    const datagram = new Uint8Array(2 + pcm.length);
+    new DataView(datagram.buffer).setUint16(0, 16000 / 100, true);  // LE
+    datagram.set(pcm, 2);
+    await writer.write(datagram);
+
+Keep each datagram under the path MTU (~1200 bytes: 20 ms of 16 kHz
+audio is 640 bytes of PCM).
+
 Prerequisites:
 
     1.  Generate a self-signed TLS certificate (WebTransport requires TLS)::
@@ -43,7 +57,9 @@ Requirements:
     pip install 'roomkit[webtransport]'
 
 Environment variables:
-    WT_HOST          -- Bind address (default: 0.0.0.0)
+    WT_HOST          -- Bind address (default: 127.0.0.1 — anonymous echo,
+                        localhost only; add an ``authenticate`` callback
+                        before exposing it on another address)
     WT_PORT          -- QUIC port (default: 4433)
     WT_CERT          -- TLS certificate path (default: cert.pem)
     WT_KEY           -- TLS private key path (default: key.pem)
@@ -64,12 +80,13 @@ logger = setup_logging("voice_webtransport")
 
 from roomkit import RoomKit, VoiceChannel
 from roomkit.voice.backends.webtransport import WebTransportBackend
+from roomkit.voice.base import AudioChunk
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 
-HOST = os.environ.get("WT_HOST", "0.0.0.0")
+HOST = os.environ.get("WT_HOST", "127.0.0.1")
 PORT = int(os.environ.get("WT_PORT", "4433"))
 CERT = os.environ.get("WT_CERT", "cert.pem")
 KEY = os.environ.get("WT_KEY", "key.pem")
@@ -91,7 +108,7 @@ backend = WebTransportBackend(
     private_key=KEY,
     input_sample_rate=SAMPLE_RATE,
     output_sample_rate=SAMPLE_RATE,
-    # This echo demo listens on localhost only, so it opts out of auth
+    # This echo demo listens on localhost by default, so it opts out of auth
     # explicitly. Anywhere reachable, pass an `authenticate` callback instead:
     # it receives the CONNECT handshake and returns a metadata dict to accept
     # or None to reject with 403. Every accepted session spends STT/TTS on
@@ -129,8 +146,6 @@ backend.set_session_factory(session_factory)
 
 def on_audio(session, frame):
     """Echo received audio back to the sender."""
-    from roomkit.voice.base import AudioChunk
-
     backend.send_audio_sync(
         session,
         AudioChunk(data=frame.data, sample_rate=frame.sample_rate),

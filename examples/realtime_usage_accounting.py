@@ -23,7 +23,7 @@ instead of assuming a shape.
 Runs on the mock provider, so it needs no key and no microphone. A real
 session swaps two lines::
 
-    from roomkit.providers.gemini import GeminiLiveProvider
+    from roomkit.providers.gemini.realtime import GeminiLiveProvider
 
     provider = GeminiLiveProvider(api_key=...)
     provider.on_usage(ledger.record)

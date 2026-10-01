@@ -4,6 +4,10 @@
 
 Text input and captured audio exercise skill delivery, not microphone recognition.
 The example uses the bundled code-review skill without changing its instructions.
+The calls and captured speech are written to a temporary directory, logged at the end.
+
+Environment variables:
+    GEMINI_API_KEY  (required) Gemini API key
 """
 
 from __future__ import annotations
@@ -11,13 +15,15 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 from realtime_tool_search import write_evidence
-from shared import IncomingScenarioBackend
+from shared import IncomingScenarioBackend, require_env
 
 from roomkit import HookTrigger, RealtimeVoiceChannel, RoomKit, VoiceTrace
 from roomkit.providers.gemini.realtime import GeminiLiveProvider
@@ -27,9 +33,7 @@ logger = logging.getLogger("roomkit.examples.realtime_skills")
 
 
 async def main() -> None:
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        raise SystemExit("Set GEMINI_API_KEY to run the live example")
+    api_key = require_env("GEMINI_API_KEY")["GEMINI_API_KEY"]
     registry = SkillRegistry()
     await asyncio.to_thread(registry.discover, Path(__file__).parent / "skills")
     output = Path(await asyncio.to_thread(tempfile.mkdtemp, prefix="realtime-skills-"))

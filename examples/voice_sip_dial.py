@@ -24,6 +24,15 @@ Usage:
     #   SIP_CODEC       — audio codec: pcmu, pcma, g722 (default: pcmu)
     #   SIP_AUTH_USER   — digest auth username (optional)
     #   SIP_AUTH_PASS   — digest auth password (optional)
+    #   SIP_LOCAL_PORT  — local SIP port        (default: 5070)
+    #   SIP_RTP_PORT_START / SIP_RTP_PORT_END — RTP port range (default: 10000-10010)
+    #   SIP_PACER_PREBUFFER_MS — outbound pacer prebuffer (default: 80)
+    #   SIP_PACER_HEADROOM_MS  — outbound pacer jitter headroom (default: 60)
+    #   SIP_PLAYOUT     — 1 to enable the inbound playout buffer (default: 0)
+    #   SIP_PLAYOUT_MAX_DELAY_MS — playout buffer max delay (default: 200)
+    #   SIP_DEBUG       — 1 for verbose SIP/RTP/SDP logs
+    #   PACER_DEBUG     — 1 for outbound pacer burst/pacing logs
+    #   CONSOLE         — 1 for the live console dashboard
 """
 
 from __future__ import annotations
@@ -170,7 +179,8 @@ async def main() -> None:
     kit.register_channel(realtime)
 
     # -------------------------------------------------------------------
-    # Debug: SIP/SDP protocol trace + first-RTP-packet tap + remote addr
+    # Debug: SIP/SDP protocol trace (the 200 OK trace carries the codec
+    # rate, RTP clock rate and local RTP port) + first-RTP-packet tap
     # -------------------------------------------------------------------
 
     def _trace(event: ProtocolTrace) -> None:
@@ -191,16 +201,10 @@ async def main() -> None:
 
     @backend.on_session_ready
     def _on_ready(session):  # type: ignore[no-untyped-def]
-        state = backend._session_states.get(session.id)  # noqa: SLF001
-        cs = state.call_session if state is not None else None
-        remote = cs.remote_addr if cs is not None else None
         logger.info(
-            "[SIP READY] session=%s codec_rate=%s clock_rate=%s local_rtp_port=%s remote_rtp=%s",
+            "[SIP READY] session=%s codec_rate=%s",
             session.id[:8],
-            getattr(state, "codec_rate", None),
-            getattr(state, "clock_rate", None),
-            getattr(state, "rtp_port", None),
-            remote,
+            backend.get_codec_rate(session.id),
         )
 
     def _first_packet_tap(session, frame):  # type: ignore[no-untyped-def]
@@ -214,14 +218,8 @@ async def main() -> None:
                 frame.sample_rate,
             )
 
-    _prev_audio_cb = backend._audio_received_callback  # noqa: SLF001
-
-    def _audio_chain(session, frame):  # type: ignore[no-untyped-def]
-        _first_packet_tap(session, frame)
-        if _prev_audio_cb is not None:
-            _prev_audio_cb(session, frame)
-
-    backend._audio_received_callback = _audio_chain  # noqa: SLF001
+    # Listens alongside the channel's own audio handler, without replacing it.
+    backend.subscribe_audio_received(_first_packet_tap)
 
     # -------------------------------------------------------------------
     # Room setup — create once at startup
@@ -271,8 +269,8 @@ async def main() -> None:
 
     @backend.on_call_disconnected
     async def handle_disconnect(session):
+        # The SIP transport ends the realtime session itself on a BYE.
         logger.info("Call ended — session=%s", session.id)
-        await kit.leave(session)
 
     # -------------------------------------------------------------------
     # Start backend and dial

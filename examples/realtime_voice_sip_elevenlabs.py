@@ -5,8 +5,11 @@ Incoming SIP calls from a PBX/trunk are answered automatically and bridged
 to an ElevenLabs agent.  The caller talks to the AI in real time over the
 phone — ElevenLabs handles STT, LLM, TTS, and turn detection server-side.
 
-The PBX/proxy should set ``X-Room-ID`` and ``X-Session-ID`` SIP headers
-before forwarding INVITEs to this server.
+Each call joins the room named by its ``X-Room-ID`` header (a room per
+call when absent) through ``kit.process_inbound(parse_voice_session(...))``,
+so its ``session_started`` event runs the BEFORE_BROADCAST hook below; a
+call a hook refuses is hung up. Route on ``X-Room-ID`` only behind a PBX
+that sets it — a caller reaching the port directly chooses its value.
 
 Requirements:
     pip install roomkit[sip,realtime-elevenlabs]
@@ -20,6 +23,10 @@ Environment variables:
     ELEVENLABS_AGENT_ID     (required) Agent ID from the dashboard
     ELEVENLABS_VOICE_ID     Override the agent's default voice
     SYSTEM_PROMPT           Override the agent's default system prompt
+    SIP_LOCAL_PORT          SIP listen port (default: 5060)
+    SIP_RTP_PORT_START      First RTP port (default: 10000)
+    SIP_RTP_PORT_END        Last RTP port (default: 20000)
+    CONSOLE                 Set to 1 for the live console dashboard
 """
 
 from __future__ import annotations
@@ -43,6 +50,7 @@ from roomkit.models.hook import HookResult
 from roomkit.models.trace import ProtocolTrace
 from roomkit.providers.elevenlabs.config import ElevenLabsRealtimeConfig
 from roomkit.providers.elevenlabs.realtime import ElevenLabsRealtimeProvider
+from roomkit.voice import parse_voice_session
 from roomkit.voice.backends.sip import SIPVoiceBackend
 from roomkit.voice.realtime.events import RealtimeTranscriptionEvent
 from roomkit.voice.realtime.sip_transport import SIPRealtimeTransport
@@ -52,10 +60,10 @@ from roomkit.voice.realtime.sip_transport import SIPRealtimeTransport
 # ---------------------------------------------------------------------------
 
 SIP_HOST = "0.0.0.0"  # nosec B104
-SIP_PORT = 5060
+SIP_PORT = int(os.environ.get("SIP_LOCAL_PORT", "5060"))
 RTP_IP = "0.0.0.0"  # nosec B104  — auto-detects per call; set your IP for production
-RTP_PORT_START = 10000
-RTP_PORT_END = 20000
+RTP_PORT_START = int(os.environ.get("SIP_RTP_PORT_START", "10000"))
+RTP_PORT_END = int(os.environ.get("SIP_RTP_PORT_END", "20000"))
 
 
 async def main() -> None:
@@ -150,25 +158,26 @@ async def main() -> None:
 
     @sip.on_call
     async def handle_call(session):
+        # process_inbound creates the room and attaches the channel when
+        # needed, runs the hooks, then starts the realtime session.
         room_id = session.metadata.get("room_id", session.id)
-        await kit.create_room(room_id=room_id)
-        await kit.attach_channel(room_id, "realtime-voice")
-        await kit.join(
-            room_id,
-            "realtime-voice",
-            participant_id=session.participant_id or session.id,
-            connection=session,
+        result = await kit.process_inbound(
+            parse_voice_session(session, channel_id="realtime-voice"), room_id=room_id
         )
+        if result.blocked:
+            # The INVITE was already answered: hang up what a hook refused.
+            logger.warning("Call refused (%s) — hanging up", result.reason)
+            await sip.disconnect(session, cause=21, text="Call rejected")
+            return
         logger.info("SIP call connected — session=%s room=%s", session.id, room_id)
 
     # -------------------------------------------------------------------
-    # Remote hangup → end realtime session + close room
+    # Remote hangup — the SIP transport ends the realtime session itself
     # -------------------------------------------------------------------
 
     @sip.on_call_disconnected
     async def handle_disconnect(session):
         logger.info("SIP call ended — session=%s", session.id)
-        await kit.leave(session)
 
     # -------------------------------------------------------------------
     # Start

@@ -21,6 +21,13 @@ Run with:
     ELEVENLABS_API_KEY=... ELEVENLABS_AGENT_ID=... \
         uv run python examples/realtime_elevenlabs_tools.py
 
+Environment variables:
+    ELEVENLABS_API_KEY   (required) ElevenLabs API key
+    ELEVENLABS_AGENT_ID  (required) Agent id, with the get_weather client tool
+    ELEVENLABS_VOICE_ID  Override the agent's default voice
+    SYSTEM_PROMPT        Override the agent's default system prompt
+    CONSOLE              Set to 1 for the live console dashboard
+
 Press Ctrl+C to stop.
 """
 
@@ -34,8 +41,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from shared import run_until_stopped, setup_console, setup_logging
-from shared.env import require_env
+from shared import require_env, run_until_stopped, setup_console, setup_logging
 
 from roomkit import RealtimeVoiceChannel, RoomKit
 from roomkit.providers.elevenlabs.config import ElevenLabsRealtimeConfig

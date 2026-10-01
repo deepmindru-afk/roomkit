@@ -13,7 +13,7 @@ voice behind Deepgram's turn-taking (BYO key: the endpoint carries your
 ElevenLabs key, and the voice id rides in the endpoint URL).
 
 Requirements:
-    pip install roomkit websockets sounddevice numpy aec-audio-processing
+    pip install roomkit[realtime-deepgram,local-audio,webrtc-aec]
 
     `aec-audio-processing` is not optional on open speakers: without it the mic is
     muted while the agent talks, so you cannot interrupt it. With it, barge-in works.

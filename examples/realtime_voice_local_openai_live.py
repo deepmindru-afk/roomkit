@@ -13,7 +13,7 @@ you speak (RFC §12.4.1). The microphone stays open during playback, so keep an
 AEC (or headphones) so the model does not hear itself.
 
 Requirements:
-    pip install roomkit[realtime-openai,local-audio] aec-audio-processing
+    pip install roomkit[realtime-openai,local-audio,webrtc-aec]
 
 Run with:
     OPENAI_API_KEY=... uv run python examples/realtime_voice_local_openai_live.py

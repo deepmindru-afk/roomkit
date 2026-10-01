@@ -90,9 +90,9 @@ async def main() -> None:
 
     @backend.on_call_disconnected
     async def handle_disconnect(session):
-        # Final stats (incl. concealed=N) are logged by the backend at INFO
+        # Final stats (incl. concealed=N) are logged by the backend at INFO.
+        # The voice channel unbinds the session by itself on a BYE.
         logger.info("Call ended — session=%s", session.id)
-        await kit.leave(session)
 
     await backend.start()
     logger.info(

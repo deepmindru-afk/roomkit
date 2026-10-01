@@ -31,6 +31,9 @@ Environment variables:
                            extended-thinking model, which will not choose one.
     GEMINI_VOICE           default: Aoede
     TOOL_SECONDS           how long the fake lookup takes (default: 6)
+    AEC                    webrtc (default, needs roomkit[webrtc-aec]) | speex | 0;
+                           without AEC the mic is muted while the model speaks
+    AEC_DELAY_MS           measured speaker-to-mic delay for WebRTC AEC (default: auto)
 
 Press Ctrl+C to stop.
 """

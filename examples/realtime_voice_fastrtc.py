@@ -9,11 +9,20 @@ the conversation.
 Demonstrates pluggable auth and per-connection TURN credential resolution.
 Set TURN_CREDENTIALS_URL to an HTTP endpoint returning {"iceServers": [...]}.
 
+The page at http://localhost:8000/ is ``voice_agent_ui.html`` in its
+default WebRTC mode (endpoint /rtc-realtime). This module is an ASGI app,
+not a script: start it with uvicorn.
+
 Requirements:
-    pip install roomkit[realtime-gemini,fastrtc] fastapi uvicorn httpx
+    pip install roomkit[realtime-gemini,fastrtc,httpx]
 
 Run with:
     GEMINI_API_KEY=... uv run uvicorn examples.realtime_voice_fastrtc:app
+
+Environment variables:
+    GEMINI_API_KEY        (required) Google AI API key
+    TURN_CREDENTIALS_URL  Endpoint returning {"iceServers": [...]} per peer
+    CONSOLE               Set to 1 for the live console dashboard
 """
 
 from __future__ import annotations
@@ -31,7 +40,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
-from shared import setup_console, setup_logging
+from shared import require_env, setup_console, setup_logging
 
 from roomkit import RealtimeVoiceChannel, RoomKit
 from roomkit.providers.gemini.realtime import GeminiLiveProvider
@@ -41,6 +50,7 @@ from roomkit.voice.realtime.fastrtc_transport import (
 )
 
 logger = setup_logging("realtime_voice_fastrtc")
+env = require_env("GEMINI_API_KEY")
 
 kit = RoomKit()
 
@@ -49,7 +59,7 @@ _console_cleanup = setup_console(kit)
 
 # --- Gemini Live provider ---
 provider = GeminiLiveProvider(
-    api_key=os.environ.get("GEMINI_API_KEY", ""),
+    api_key=env["GEMINI_API_KEY"],
     model="gemini-3.8-live",
 )
 

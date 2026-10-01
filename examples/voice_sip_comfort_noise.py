@@ -13,6 +13,9 @@ Comfort noise is fully transparent to the pipeline: no stage needs
 configuration, and talkspurt resumption is marked on the RTP stream so
 the remote jitter buffer resynchronises cleanly.
 
+There is no STT/TTS here: on each call the agent plays a one-second tone
+(standing in for a spoken response), then goes quiet.
+
 Requirements:
     pip install roomkit[sip]
 
@@ -24,16 +27,19 @@ Usage:
     #   SIP_RTP_PORT_START  — first RTP port (default: 10000)
     #   SIP_CN              — set to 0 to disable comfort noise (A/B testing)
 
-To hear the difference, call the agent and stay quiet after its first
-response: with SIP_CN=1 the line carries a soft hiss, with SIP_CN=0 it
-goes fully dead between responses.
+To hear the difference, call the agent and listen after the tone: with
+SIP_CN=1 the line carries a soft hiss, with SIP_CN=0 it goes fully dead.
 """
 
 from __future__ import annotations
 
 import asyncio
+import io
+import math
 import os
+import struct
 import sys
+import wave
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -47,6 +53,20 @@ from roomkit.voice.backends.sip import SIPVoiceBackend
 LOCAL_PORT = int(os.environ.get("SIP_LOCAL_PORT", "5060"))
 RTP_PORT_START = int(os.environ.get("SIP_RTP_PORT_START", "10000"))
 CN_ENABLED = os.environ.get("SIP_CN", "1") != "0"
+
+
+def tone_wav(sample_rate: int, *, seconds: float = 1.0, freq: float = 440.0) -> bytes:
+    """A 16-bit mono sine tone as WAV bytes, at the call's codec rate."""
+    frames = bytearray()
+    for i in range(int(sample_rate * seconds)):
+        frames += struct.pack("<h", int(8000 * math.sin(2 * math.pi * freq * i / sample_rate)))
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        wf.writeframes(bytes(frames))
+    return buf.getvalue()
 
 
 async def main() -> None:
@@ -75,11 +95,16 @@ async def main() -> None:
             "enabled" if CN_ENABLED else "disabled",
         )
         await kit.join("support", "voice", session=session)
+        # No pipeline contract resamples here, so the tone is generated at
+        # the negotiated codec rate (8 kHz G.711, 16 kHz G.722).
+        rate = session.metadata.get("codec_sample_rate", 8000)
+        await voice.play(session, tone_wav(rate), text="[tone]")
+        logger.info("Tone played — now silent: listen for comfort noise")
 
     @backend.on_call_disconnected
     async def handle_disconnect(session):
+        # The voice channel unbinds the session by itself on a BYE.
         logger.info("Call ended — session=%s", session.id)
-        await kit.leave(session)
 
     await backend.start()
     logger.info(
@@ -93,7 +118,7 @@ async def main() -> None:
             await console_cleanup()
         await backend.close()
 
-    await run_until_stopped(cleanup)
+    await run_until_stopped(kit, cleanup=cleanup)
 
 
 if __name__ == "__main__":

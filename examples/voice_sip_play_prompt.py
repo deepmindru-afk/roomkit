@@ -361,8 +361,8 @@ async def run_sip(wav: Path) -> None:
 
     @backend.on_call_disconnected
     async def handle_disconnect(session: VoiceSession) -> None:
+        # The voice channel unbinds the session by itself on a BYE.
         logger.info("Call ended -- session=%s", session.id)
-        await kit.leave(session)
 
     await backend.start()
     logger.info(

@@ -2,10 +2,11 @@
 
 Talk to Grok using your system microphone — AI audio plays through your
 speakers.  xAI handles turn detection server-side.  WebRTC AEC strips
-speaker echo so the mic stays open during playback.
+speaker echo so the mic stays open during playback; with AEC=0 the mic is
+muted while the AI speaks, or its own voice would come back as input.
 
 Requirements:
-    pip install roomkit websockets sounddevice numpy aec-audio-processing
+    pip install roomkit[websocket,local-audio,webrtc-aec]
 
 Run with:
     XAI_API_KEY=xai-... uv run python examples/realtime_voice_local_xai.py
@@ -15,7 +16,11 @@ Environment variables:
     XAI_MODEL           Model name (default: grok-2-audio)
     XAI_VOICE           Voice preset: eve | ara | rex | sal | leo (default: eve)
     SYSTEM_PROMPT       Custom system prompt
+    AEC                 webrtc (default) | speex | 0 to disable
+    MUTE_MIC            1 to mute the mic during playback (default: only when
+                        AEC is disabled)
     DENOISE             webrtc (default) | rnnoise | sherpa | 0 to disable
+    CONSOLE             Set to 1 for the live console dashboard
 
 Press Ctrl+C to stop.
 """
@@ -33,6 +38,7 @@ from shared import (
     build_aec,
     build_denoiser,
     build_pipeline,
+    env_bool,
     require_env,
     run_until_stopped,
     setup_console,
@@ -71,11 +77,16 @@ async def main() -> None:
     denoiser = build_denoiser(sample_rate, default="webrtc")
     pipeline = build_pipeline(aec=aec, denoiser=denoiser)
 
+    # Without AEC the speakers feed straight back into the mic: mute it while
+    # the AI speaks unless MUTE_MIC says otherwise (same as the other local
+    # realtime examples).
+    mute_mic = env_bool("MUTE_MIC", default=aec is None)
+
     transport = LocalAudioBackend(
         input_sample_rate=sample_rate,
         output_sample_rate=sample_rate,
         block_duration_ms=block_ms,
-        mute_mic_during_playback=False,
+        mute_mic_during_playback=mute_mic,
         aec=aec,
     )
 

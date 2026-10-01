@@ -4,15 +4,16 @@
 Incoming SIP calls from a PBX/trunk are answered automatically and processed
 through a fully local pipeline:
 
-  Phone → SIP/RTP → [Resampler] → [AEC] → [Denoiser] → VAD
+  Phone → SIP/RTP → [Resampler] → [Denoiser] → VAD
   → sherpa-onnx STT → Local LLM → sherpa-onnx TTS → SIP/RTP → Phone
+
+No echo canceller here: the caller's handset cancels its own acoustic echo.
 
 Everything runs on your server — no cloud APIs, no data leaves the box.
 Ideal for privacy-sensitive deployments, air-gapped environments, or
 on-premise telephony AI.
 
-The PBX/proxy should set ``X-Room-ID`` and ``X-Session-ID`` SIP headers
-before forwarding INVITEs to this server.
+Every call joins the ``support`` room.
 
 Requirements:
     pip install roomkit[sip,openai,sherpa-onnx]
@@ -85,8 +86,13 @@ Environment variables:
 
     --- Pipeline (optional) ---
     DENOISE_MODEL       Path to GTCRN .onnx model (enables denoiser)
-    RECORDING_DIR       Directory for WAV recordings (default: ./recordings)
+    RECORDING_DIR       Record calls as WAV files there (default: no recording)
+    RECORDING_ENCRYPTED_AT_REST
+                        Set to 1 to declare RECORDING_DIR is on encrypted
+                        storage — required with RECORDING_DIR, the WAV
+                        recorder refuses plaintext storage (RFC §17.6)
     RECORDING_MODE      Channel mode: mixed | separate | stereo (default: stereo)
+    CONSOLE             Set to 1 for the live console dashboard
     ONNX_PROVIDER       ONNX execution provider: cpu | cuda (default: cpu)
 """
 
@@ -98,14 +104,14 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from shared import require_env, run_until_stopped, setup_console, setup_logging
+from shared import env_bool, require_env, run_until_stopped, setup_console, setup_logging
 
 logger = setup_logging("sip_local_agent")
 
 from roomkit import ChannelCategory, HookResult, HookTrigger, RoomKit, VoiceChannel
 from roomkit.channels.ai import AIChannel
 from roomkit.models.context import RoomContext
-from roomkit.models.event import RoomEvent, SystemContent
+from roomkit.models.event import RoomEvent
 from roomkit.models.trace import ProtocolTrace
 from roomkit.providers.vllm import VLLMConfig, create_vllm_provider
 from roomkit.voice.backends.sip import SIPVoiceBackend
@@ -204,17 +210,27 @@ async def main() -> None:
     )
     logger.info("VAD: %s (threshold=%.2f)", vad_model_type, vad_threshold)
 
-    # --- WAV recorder (optional) -----------------------------------------
-    recording_dir = os.environ.get("RECORDING_DIR", "./recordings")
-    rec_mode_name = os.environ.get("RECORDING_MODE", "stereo").lower()
-    rec_channel_mode = CHANNEL_MODES.get(rec_mode_name, RecordingChannelMode.STEREO)
-    recorder = WavFileRecorder()
-    recording_config = RecordingConfig(
-        storage=recording_dir,
-        storage_encrypted_at_rest=True,  # recording_dir must be on encrypted storage
-        channels=rec_channel_mode,
-    )
-    logger.info("Recording to %s (mode=%s)", recording_dir, rec_mode_name)
+    # --- WAV recorder (opt-in: RECORDING_DIR) ----------------------------
+    # Recording a call is opt-in. RoomKit ships no default cipher, so the
+    # operator declares the directory sits on encrypted storage.
+    recorder = None
+    recording_config = None
+    recording_dir = os.environ.get("RECORDING_DIR", "")
+    if recording_dir:
+        if not env_bool("RECORDING_ENCRYPTED_AT_REST", default=False):
+            print(
+                "Error: RECORDING_DIR must be on encrypted storage; "
+                "set RECORDING_ENCRYPTED_AT_REST=1 to declare it"
+            )
+            sys.exit(1)
+        rec_mode_name = os.environ.get("RECORDING_MODE", "stereo").lower()
+        recorder = WavFileRecorder()
+        recording_config = RecordingConfig(
+            storage=recording_dir,
+            storage_encrypted_at_rest=True,  # declared by RECORDING_ENCRYPTED_AT_REST
+            channels=CHANNEL_MODES.get(rec_mode_name, RecordingChannelMode.STEREO),
+        )
+        logger.info("Recording to %s (mode=%s)", recording_dir, rec_mode_name)
 
     # --- Pipeline contract -----------------------------------------------
     # SIP negotiates G.722 (16 kHz) or G.711 (8 kHz). TTS may output at a
@@ -311,18 +327,6 @@ async def main() -> None:
     # Hooks — same hooks work for text AND voice
     # -------------------------------------------------------------------
 
-    @kit.hook(HookTrigger.BEFORE_BROADCAST)
-    async def gate_incoming(event: RoomEvent, ctx: RoomContext) -> HookResult:
-        """Log incoming voice sessions. Could block spam callers here."""
-        if isinstance(event.content, SystemContent) and event.content.code == "session_started":
-            caller = event.content.data.get("caller", "unknown")
-            logger.info(
-                "BEFORE_BROADCAST — call from %s in room %s",
-                caller,
-                ctx.room.id,
-            )
-        return HookResult.allow()
-
     @kit.hook(HookTrigger.ON_TRANSCRIPTION)
     async def on_transcription(event, ctx: RoomContext) -> HookResult:
         """Log what the caller says."""
@@ -363,17 +367,22 @@ async def main() -> None:
 
     @sip.on_call
     async def handle_call(session):
+        # kit.join() emits no session_started event, so a BEFORE_BROADCAST
+        # hook never sees the call: screen callers here, before joining.
         await kit.join("support", "voice", session=session)
-        logger.info("Call connected — session=%s room=support", session.id)
+        logger.info(
+            "Call connected — session=%s caller=%s room=support",
+            session.id,
+            session.metadata.get("caller", "unknown"),
+        )
 
     # -------------------------------------------------------------------
-    # Remote hangup → cleanup
+    # Remote hangup — the voice channel unbinds the session by itself
     # -------------------------------------------------------------------
 
     @sip.on_call_disconnected
     async def handle_disconnect(session):
         logger.info("Call ended — session=%s", session.id)
-        await kit.leave(session)
 
     # -------------------------------------------------------------------
     # Warmup models + start

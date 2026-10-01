@@ -19,8 +19,12 @@ Architecture::
                                                               │
                      (last caller hangs up) ──────► Claude (summary)
 
+The summarizer is registered once and attached to the room only for the
+summary, then detached: attached during the call, it would answer every
+transcribed sentence.
+
 Requirements:
-    pip install roomkit[sip]
+    pip install roomkit[sip,deepgram,anthropic]
 
 Run with:
     DEEPGRAM_API_KEY=... ANTHROPIC_API_KEY=... \
@@ -34,6 +38,7 @@ Environment variables:
     SIP_LISTEN_ADDR    — SIP listen IP   (default: 0.0.0.0)
     SIP_LISTEN_PORT    — SIP listen port (default: 5060)
     RTP_IP             — RTP bind IP     (default: 0.0.0.0)
+    CONSOLE            — 1 for the live console dashboard
 """
 
 from __future__ import annotations
@@ -49,6 +54,7 @@ from shared import require_env, run_until_stopped, setup_console, setup_logging
 logger = setup_logging("voice_sip_bridge_summary")
 
 from roomkit import (
+    ChannelCategory,
     HookExecution,
     HookResult,
     HookTrigger,
@@ -124,6 +130,31 @@ async def main() -> None:
     )
     kit.register_channel(voice)
 
+    # --- AI summarizer: registered once, attached only to summarize ----------
+    ai = AIChannel(
+        "ai-summarizer",
+        provider=AnthropicAIProvider(
+            AnthropicConfig(
+                api_key=env["ANTHROPIC_API_KEY"],
+                model=CLAUDE_MODEL,
+                max_tokens=1024,
+            )
+        ),
+        system_prompt=(
+            "You are a meeting assistant. Given a conversation "
+            "transcript, produce a concise summary with:\n"
+            "- Key topics discussed\n"
+            "- Decisions made\n"
+            "- Action items (if any)\n"
+            "Keep it brief and actionable.\n\n"
+            "IMPORTANT: Write the summary in the same language "
+            "as the transcript. If the conversation is in French, "
+            "summarize in French. If in Spanish, summarize in "
+            "Spanish. Always match the language of the speakers."
+        ),
+    )
+    kit.register_channel(ai)
+
     # --- Room -----------------------------------------------------------------
     await kit.create_room(room_id=ROOM_ID)
     await kit.attach_channel(ROOM_ID, "voice")
@@ -157,8 +188,9 @@ async def main() -> None:
     # --- Handle hangups: summarize when last caller leaves --------------------
     @backend.on_call_disconnected
     async def handle_disconnect(session):
+        # The voice channel has already unbound the session (and left the
+        # bridge) by the time this runs: its own disconnect callback is sync.
         name = _caller_name(session)
-        await kit.leave(session)
         count = voice._bridge.get_participant_count(ROOM_ID)
         logger.info("%s hung up (remaining: %d)", name, count)
 
@@ -171,45 +203,24 @@ async def main() -> None:
         transcript_text = "\n".join(f"{speaker}: {text}" for speaker, text in transcript)
         logger.info("Full transcript:\n%s", transcript_text)
 
-        # Attach the AI channel and request a summary
-        ai = AIChannel(
-            "ai-summarizer",
-            provider=AnthropicAIProvider(
-                AnthropicConfig(
-                    api_key=env["ANTHROPIC_API_KEY"],
-                    model=CLAUDE_MODEL,
-                    max_tokens=1024,
-                )
-            ),
-            system_prompt=(
-                "You are a meeting assistant. Given a conversation "
-                "transcript, produce a concise summary with:\n"
-                "- Key topics discussed\n"
-                "- Decisions made\n"
-                "- Action items (if any)\n"
-                "Keep it brief and actionable.\n\n"
-                "IMPORTANT: Write the summary in the same language "
-                "as the transcript. If the conversation is in French, "
-                "summarize in French. If in Spanish, summarize in "
-                "Spanish. Always match the language of the speakers."
-            ),
-        )
-        kit.register_channel(ai)
-        await kit.attach_channel(
-            ROOM_ID,
-            "ai-summarizer",
-        )
-
-        await kit.process_inbound(
-            InboundMessage(
-                channel_id="voice",
-                sender_id="system",
-                content=TextContent(
-                    body=("Summarize this meeting transcript:\n\n" + transcript_text)
+        # Attach the summarizer for this one request, then detach it so it
+        # stays out of the next conference's transcript.
+        await kit.attach_channel(ROOM_ID, "ai-summarizer", category=ChannelCategory.INTELLIGENCE)
+        try:
+            result = await kit.process_inbound(
+                InboundMessage(
+                    channel_id="voice",
+                    sender_id="system",
+                    content=TextContent(
+                        body=("Summarize this meeting transcript:\n\n" + transcript_text)
+                    ),
                 ),
                 room_id=ROOM_ID,
             )
-        )
+        finally:
+            await kit.detach_channel(ROOM_ID, "ai-summarizer")
+        if result.error:
+            logger.error("Summary failed: %s", result.error)
 
         # Retrieve the AI summary from the room events
         events = await kit.store.list_events(ROOM_ID)

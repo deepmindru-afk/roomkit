@@ -23,6 +23,7 @@ Environment variables:
                         off with AEC)
     DEBUG_AUDIO         Save pipeline stage WAVs to ./debug_audio/: 1 | 0
                         (default: 0)
+    CONSOLE             Set to 1 for the live console dashboard
 
 Press Ctrl+C to stop.
 """
@@ -40,6 +41,7 @@ from shared import (
     build_aec,
     build_denoiser,
     build_pipeline,
+    require_env,
     run_until_stopped,
     setup_console,
     setup_logging,
@@ -56,11 +58,7 @@ SKILLS_DIR = Path(__file__).parent / "skills"
 
 
 async def main() -> None:
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        print("Set GEMINI_API_KEY to run this example.")
-        print("  GEMINI_API_KEY=... uv run python examples/realtime_voice_local_gemini.py")
-        return
+    env = require_env("GEMINI_API_KEY")
 
     kit = RoomKit()
 
@@ -75,7 +73,7 @@ async def main() -> None:
 
     # --- Gemini Live provider (speech-to-speech) ---
     provider = GeminiLiveProvider(
-        api_key=api_key,
+        api_key=env["GEMINI_API_KEY"],
         model=os.environ.get("GEMINI_MODEL", "gemini-3.8-live"),
     )
 

@@ -11,13 +11,14 @@ the last one's answer. What the backend says between calls is relayed as
 spoken progress (``SPOKEN_PROGRESS=1``, the default) or kept as silent context
 (``SPOKEN_PROGRESS=0``); its final answer is always spoken, in the live model's
 own words. Every tool call passes the channel's pre-execution gate, so a
-``BEFORE_TOOL_USE`` hook denies a backend call the same way it denies any other.
+``BEFORE_TOOL_USE`` hook would deny a backend call the same way it denies any
+other (this example registers none: every call runs).
 
 Say something like: "My flight UA482 this morning — can you check it, and get
 me on something else if it's not running?"
 
 Requirements:
-    pip install roomkit[realtime-openai,anthropic,local-audio] aec-audio-processing
+    pip install roomkit[realtime-openai,anthropic,local-audio,webrtc-aec]
 
 Run with:
     OPENAI_API_KEY=... ANTHROPIC_API_KEY=... \\
@@ -37,6 +38,7 @@ Environment variables:
     DENOISE             webrtc (default) | rnnoise | sherpa | 0 to disable
     MUTE_MIC            1 to mute the mic during playback (default: only when
                         AEC is unavailable)
+    CONSOLE             Set to 1 for the live console dashboard
 
 Press Ctrl+C to stop.
 """

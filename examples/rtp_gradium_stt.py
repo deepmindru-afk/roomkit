@@ -36,9 +36,13 @@ Environment variables:
 
     --- Debug ---
     DEBUG               Set to 1 for verbose pipeline/STT logging
-    RECORD_DIR          Directory to save audio WAVs:
+    RECORD_DIR          Directory to save audio WAVs (default: no recording):
                         - transport_8khz.wav  (raw 8kHz audio from RTP, pre-pipeline)
                         - {session}_{ts}_inbound.wav (16kHz post-pipeline via recorder)
+    RECORDING_ENCRYPTED_AT_REST
+                        Set to 1 to declare RECORD_DIR is on encrypted storage —
+                        required with RECORD_DIR, the WAV recorder refuses
+                        plaintext storage (RFC §17.6)
 
 Press Ctrl+C to stop.
 """
@@ -46,7 +50,6 @@ Press Ctrl+C to stop.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import os
 import sys
@@ -54,7 +57,14 @@ import wave
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from shared import require_env, run_until_stopped, setup_console, setup_logging, voice_language
+from shared import (
+    env_bool,
+    require_env,
+    run_until_stopped,
+    setup_console,
+    setup_logging,
+    voice_language,
+)
 
 from roomkit import (
     HookExecution,
@@ -81,8 +91,6 @@ if os.environ.get("DEBUG") == "1":
     logging.getLogger("roomkit.voice").setLevel(logging.DEBUG)
     logging.getLogger("roomkit.voice.stt.gradium").setLevel(logging.DEBUG)
     logging.getLogger("roomkit.voice.pipeline").setLevel(logging.DEBUG)
-    with contextlib.suppress(ImportError):
-        import examples.trace_audio  # noqa: F401
 
 
 async def main() -> None:
@@ -113,12 +121,20 @@ async def main() -> None:
     recorder = None
     recording_config = None
     if record_dir:
+        # RoomKit ships no default cipher: the operator declares the
+        # directory sits on encrypted storage.
+        if not env_bool("RECORDING_ENCRYPTED_AT_REST", default=False):
+            print(
+                "Error: RECORD_DIR must be on encrypted storage; "
+                "set RECORDING_ENCRYPTED_AT_REST=1 to declare it"
+            )
+            sys.exit(1)
         recorder = WavFileRecorder()
         recording_config = RecordingConfig(
             mode=RecordingMode.INBOUND_ONLY,
             channels=RecordingChannelMode.SEPARATE,
             storage=record_dir,
-            storage_encrypted_at_rest=True,  # RECORD_DIR must be on encrypted storage
+            storage_encrypted_at_rest=True,  # declared by RECORDING_ENCRYPTED_AT_REST
         )
         logger.info("Recording inbound audio to %s", record_dir)
 
@@ -192,9 +208,9 @@ async def main() -> None:
         logger.info("Transport recording: %s", transport_wav_path)
 
         # Wrap the backend's audio callback to capture raw transport audio
-        # before pipeline processing.  We patch _audio_received_callback
-        # (the attribute the RTP backend actually uses) rather than the
-        # VoiceChannel method, which is stored as a bound method reference.
+        # before pipeline processing.  RTPVoiceBackend has no public way to
+        # add a listener next to the channel's (SIPVoiceBackend has
+        # subscribe_audio_received), so this patches its private callback.
         orig_cb = backend._audio_received_callback
 
         def _record_transport(sess, frame):
@@ -218,8 +234,7 @@ async def main() -> None:
         if transport_wav is not None:
             transport_wav.close()
             logger.info("Transport recording saved.")
-        await kit.leave(session)
-        await backend.disconnect(session)
+        await kit.leave(session)  # also disconnects the backend session
 
     await run_until_stopped(kit, cleanup=cleanup)
 

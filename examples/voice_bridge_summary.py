@@ -221,16 +221,18 @@ async def main() -> None:
     kit.register_channel(ai)
     await kit.attach_channel(ROOM_ID, "ai-summarizer", category=ChannelCategory.INTELLIGENCE)
 
-    await kit.process_inbound(
+    result = await kit.process_inbound(
         InboundMessage(
             channel_id="voice",
             sender_id="system",
             content=TextContent(
                 body=("Please summarize this meeting transcript:\n\n" + transcript_text)
             ),
-            room_id=ROOM_ID,
-        )
+        ),
+        room_id=ROOM_ID,
     )
+    if result.error:
+        print(f"Summary failed: {result.error}")
 
     # Let AI respond
     await asyncio.sleep(0.1)

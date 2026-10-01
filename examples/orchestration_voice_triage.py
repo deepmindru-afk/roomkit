@@ -22,12 +22,15 @@ Run with:
     GEMINI_API_KEY=... DEEPGRAM_API_KEY=... ELEVENLABS_API_KEY=... \\
     VAD_MODEL=ten-vad.onnx python examples/orchestration_voice_triage.py
 
+The agents speak French, so the STT listens in French by default.
+
 Environment variables:
     SIP_HOST, SIP_PORT, RTP_IP, RTP_PORT_START, RTP_PORT_END
     GEMINI_API_KEY, GEMINI_MODEL
-    DEEPGRAM_API_KEY, STT_LANGUAGE
+    DEEPGRAM_API_KEY, STT_LANGUAGE (default: fr, the agents' language)
     ELEVENLABS_API_KEY, VOICE_TRIAGE, VOICE_ADVISOR
     VAD_MODEL, VAD_THRESHOLD
+    CONSOLE (1 for the live console dashboard)
 """
 
 from __future__ import annotations
@@ -74,7 +77,7 @@ from roomkit.voice.tts.elevenlabs import ElevenLabsConfig, ElevenLabsTTSProvider
 from roomkit.voice.tts.filters import StripInternalTags
 
 logger = setup_logging("voice_triage")
-logging.getLogger("roomkit.core.event_router").setLevel(logging.ERROR)
+logging.getLogger("roomkit.event_router").setLevel(logging.ERROR)
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -131,7 +134,7 @@ async def main() -> None:
     stt = DeepgramSTTProvider(
         DeepgramConfig(
             api_key=env["DEEPGRAM_API_KEY"],
-            language=os.environ.get("STT_LANGUAGE", "en"),
+            language=os.environ.get("STT_LANGUAGE", "fr"),  # agents speak French
         )
     )
 
@@ -305,8 +308,8 @@ async def main() -> None:
         room_id = session.metadata.get("room_id", session.id)
         room = await kit.get_room(room_id)
         state = get_conversation_state(room)
+        # The voice channel unbinds the session by itself on a BYE.
         logger.info("Call ended — phase=%s handoffs=%d", state.phase, state.handoff_count)
-        await kit.leave(session)
 
     # --- Start ---------------------------------------------------------------
 

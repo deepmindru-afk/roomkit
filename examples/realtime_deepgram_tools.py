@@ -14,7 +14,7 @@ for a lookup the agent should make without a round-trip through your process —
 see the commented block below.
 
 Requirements:
-    pip install roomkit[realtime-deepgram,local-audio] aec-audio-processing
+    pip install roomkit[realtime-deepgram,local-audio,webrtc-aec]
 
 Run with:
     DEEPGRAM_API_KEY=... uv run python examples/realtime_deepgram_tools.py
@@ -30,6 +30,7 @@ Environment variables:
     AUDIO_PREBUFFER_MS    Speaker jitter buffer (default: 240)
     MUTE_MIC              0 to keep the mic open during playback, 1 to force muting
                           (default: muted only when AEC is unavailable)
+    CONSOLE               Set to 1 for the live console dashboard
 
 Press Ctrl+C to stop.
 """

@@ -5,7 +5,7 @@ so the model sees it in the same context as the audio.  That is a different
 thing from the `video/vision` providers, which make a separate model call and
 hand back text.
 
-The example is deliberately headless: the transport is `MockVoiceBackend`, so
+The example is deliberately headless: the transport is `MockRealtimeTransport`, so
 no microphone and no speakers are involved.  The model still answers with
 audio, and its own transcription is printed here — which is the readable proof
 that it looked at the image.
@@ -33,12 +33,16 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from shared import require_env
 
 from roomkit import RealtimeVoiceChannel, RoomKit
 from roomkit.providers.openai.realtime import OpenAIRealtimeProvider
-from roomkit.voice.backends.mock import MockVoiceBackend
 from roomkit.voice.base import VoiceSession
+from roomkit.voice.realtime.mock import MockRealtimeTransport
 
 _MIME_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}
 
@@ -46,9 +50,11 @@ _MIME_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}
 _ANSWER_TIMEOUT_S = 30.0
 
 
-def _load_image() -> tuple[bytes, str]:
+def _load_image(image: str) -> tuple[bytes, str]:
     """Read the image and map its extension to a MIME type the API reads."""
-    path = Path(os.environ["IMAGE"]).expanduser()
+    path = Path(image).expanduser()
+    if not path.is_file():
+        raise SystemExit(f"{path}: no such file")
     mime_type = _MIME_TYPES.get(path.suffix.lower())
     if mime_type is None:
         raise SystemExit(f"{path.name}: only PNG and JPEG are accepted, got {path.suffix!r}")
@@ -56,19 +62,12 @@ def _load_image() -> tuple[bytes, str]:
 
 
 async def main() -> None:
-    if not os.environ.get("OPENAI_API_KEY") or not os.environ.get("IMAGE"):
-        print("Set OPENAI_API_KEY and IMAGE to run this example.")
-        print(
-            "  OPENAI_API_KEY=... IMAGE=picture.png "
-            "uv run python examples/realtime_voice_openai_image.py"
-        )
-        return
-
-    image_data, mime_type = _load_image()
+    env = require_env("OPENAI_API_KEY", "IMAGE")
+    image_data, mime_type = _load_image(env["IMAGE"])
 
     model = os.environ.get("OPENAI_MODEL")
     provider = OpenAIRealtimeProvider(
-        api_key=os.environ["OPENAI_API_KEY"],
+        api_key=env["OPENAI_API_KEY"],
         **({"model": model} if model else {}),
     )
 
@@ -86,8 +85,11 @@ async def main() -> None:
     channel = RealtimeVoiceChannel(
         "voice",
         provider=provider,
-        transport=MockVoiceBackend(),
+        transport=MockRealtimeTransport(),
         system_prompt="You look at images and describe them out loud, briefly.",
+        # The Realtime API takes 24 kHz PCM (or 8 kHz G.711) only.
+        input_sample_rate=24000,
+        output_sample_rate=24000,
     )
     kit.register_channel(channel)
 
@@ -118,6 +120,7 @@ async def main() -> None:
         print(f"No answer within {_ANSWER_TIMEOUT_S:.0f}s — check the model accepts image input.")
     finally:
         await channel.end_session(session)
+        await kit.close()
 
 
 if __name__ == "__main__":

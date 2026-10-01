@@ -24,9 +24,11 @@ Architecture:
                                   voice-dev       ws-dashboard  ws-dashboard   voice-dev
                                   ✓ RECEIVES      ✓ RECEIVES   ✓ RECEIVES    ✗ FILTERED
 
-In production, "voice-dev" would be a VoiceChannel with STT/TTS (or a
-RealtimeVoiceChannel with Gemini Live / OpenAI Realtime). The visibility
-pattern works identically regardless of transport type.
+No audio runs here: "voice-dev" is simulated by a second WebSocketChannel
+and the agents are mocks, so the example runs offline. In production it
+would be a VoiceChannel with STT/TTS (or a RealtimeVoiceChannel with
+Gemini Live / OpenAI Realtime). The visibility pattern works identically
+regardless of transport type.
 
 Run with:
     uv run python examples/orchestration_voice_mediator.py
@@ -42,6 +44,7 @@ logging.getLogger("roomkit").setLevel(logging.ERROR)
 
 from roomkit import Agent, ChannelCategory, InboundMessage, RoomKit, TextContent, WebSocketChannel
 from roomkit.memory.sliding_window import SlidingWindowMemory
+from roomkit.models.enums import EventType
 from roomkit.models.event import RoomEvent
 from roomkit.orchestration.handoff import HandoffMemoryProvider
 from roomkit.orchestration.pipeline import ConversationPipeline, PipelineStage
@@ -98,6 +101,10 @@ async def main() -> None:
     voice_events: list[RoomEvent] = []
 
     async def on_voice(_conn: str, event: RoomEvent) -> None:
+        # A VoiceChannel never speaks SYSTEM events (the "[Handoff: ...]"
+        # markers orchestration posts); the simulated earpiece drops them too.
+        if event.type == EventType.SYSTEM:
+            return
         voice_events.append(event)
 
     ws_voice.register_connection("dev-earpiece", on_voice, room_id="code-review")

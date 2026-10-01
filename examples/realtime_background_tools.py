@@ -17,6 +17,11 @@ one request and the response ends once, on IDLE, not on each of them.
 
 Uses the voice testing backend, so it needs no microphone. Input is injected
 text, so this exercises the Live tool protocol, not speech recognition.
+
+Environment variables:
+    GEMINI_API_KEY         (required) Gemini API key
+    GEMINI_MODEL           default: gemini-3.8-live-extended-thinking
+    GEMINI_THINKING_LEVEL  low | medium | high (default: low)
 """
 
 from __future__ import annotations

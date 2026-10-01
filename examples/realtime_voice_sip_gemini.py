@@ -6,20 +6,32 @@ to Google Gemini Live.  The caller talks to the AI in real time over the
 phone — audio is resampled transparently between 8 kHz (telephony) and
 16/24 kHz (Gemini).
 
-The PBX/proxy should set ``X-Room-ID`` and ``X-Session-ID`` SIP headers
-before forwarding INVITEs to this server.
+Each call joins the room named by its ``X-Room-ID`` header (a room per
+call when absent) through ``kit.process_inbound(parse_voice_session(...))``,
+so its ``session_started`` event runs BEFORE_BROADCAST: the hook below
+refuses known spam numbers and the refused call is hung up. Route on
+``X-Room-ID`` only behind a PBX that sets it — a caller reaching the port
+directly chooses its value.
 
 Requirements:
     pip install roomkit[sip,realtime-gemini]
 
 Usage:
     GEMINI_API_KEY=... python examples/realtime_voice_sip_gemini.py
+
+Environment variables:
+    GEMINI_API_KEY      (required) Google AI API key
+    SIP_LOCAL_PORT      SIP listen port (default: 5060)
+    SIP_RTP_PORT_START  First RTP port (default: 10000)
+    SIP_RTP_PORT_END    Last RTP port (default: 20000)
+    CONSOLE             Set to 1 for the live console dashboard
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -37,6 +49,7 @@ from roomkit.models.event import RoomEvent, SystemContent
 from roomkit.models.hook import HookResult
 from roomkit.models.trace import ProtocolTrace
 from roomkit.providers.gemini.realtime import GeminiLiveProvider
+from roomkit.voice import parse_voice_session
 from roomkit.voice.backends.sip import SIPVoiceBackend
 from roomkit.voice.realtime.events import RealtimeTranscriptionEvent
 from roomkit.voice.realtime.sip_transport import SIPRealtimeTransport
@@ -46,10 +59,10 @@ from roomkit.voice.realtime.sip_transport import SIPRealtimeTransport
 # ---------------------------------------------------------------------------
 
 SIP_HOST = "0.0.0.0"  # nosec B104
-SIP_PORT = 5060
+SIP_PORT = int(os.environ.get("SIP_LOCAL_PORT", "5060"))
 RTP_IP = "0.0.0.0"  # nosec B104  — auto-detects per call; set your IP for production
-RTP_PORT_START = 10000
-RTP_PORT_END = 20000
+RTP_PORT_START = int(os.environ.get("SIP_RTP_PORT_START", "10000"))
+RTP_PORT_END = int(os.environ.get("SIP_RTP_PORT_END", "20000"))
 
 GEMINI_MODEL = "gemini-3.8-live"
 SYSTEM_PROMPT = (
@@ -192,25 +205,25 @@ async def main() -> None:
 
     @sip.on_call
     async def handle_call(session):
+        # process_inbound creates the room and attaches the channel when
+        # needed, runs the hooks, then starts the realtime session.
         room_id = session.metadata.get("room_id", session.id)
-        await kit.create_room(room_id=room_id)
-        await kit.attach_channel(room_id, "realtime-voice")
-        await kit.join(
-            room_id,
-            "realtime-voice",
-            participant_id=session.participant_id or session.id,
-            connection=session,
+        result = await kit.process_inbound(
+            parse_voice_session(session, channel_id="realtime-voice"), room_id=room_id
         )
+        if result.blocked:
+            # The INVITE was already answered: hang up what the hook refused.
+            await sip.disconnect(session, cause=21, text="Call rejected")
+            return
         logger.info("SIP call connected — session=%s room=%s", session.id, room_id)
 
     # -------------------------------------------------------------------
-    # Remote hangup → end realtime session + close room
+    # Remote hangup — the SIP transport ends the realtime session itself
     # -------------------------------------------------------------------
 
     @sip.on_call_disconnected
     async def handle_disconnect(session):
         logger.info("SIP call ended — session=%s", session.id)
-        await kit.leave(session)
 
     # -------------------------------------------------------------------
     # Start
