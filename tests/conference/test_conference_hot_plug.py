@@ -16,6 +16,7 @@ again the same way — without the channel being rebuilt around either.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 
 import pytest
 
@@ -230,6 +231,29 @@ class TestGrantsFollowTheConfiguration:
 
         assert not _calls(backend, "update_bot_grants")
         assert len(_calls(backend, "join_as_bot")) == 1
+
+    @pytest.mark.parametrize(
+        "right",
+        [
+            "publish_audio",
+            "subscribe",
+            "publish_video",
+            "publish_screen_share",
+            "publish_screen_share_audio",
+        ],
+    )
+    def test_every_media_right_gained_is_a_widening(self, right: str) -> None:
+        """What forces a re-join on a backend that cannot re-permission: a
+        right the held session lacks, whichever one it is — the sound of a
+        screen share included — and never a right given up.
+        """
+        held = ConferenceGrants(
+            publish_audio=False, publish_video=False, publish_screen_share=False, subscribe=False
+        )
+        wider = replace(held, **{right: True})
+
+        assert ConferenceChannel._widens(held, wider) is True
+        assert ConferenceChannel._widens(wider, held) is False
 
 
 class TestSetBotGrants:

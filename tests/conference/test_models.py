@@ -46,6 +46,30 @@ class TestGrants:
         assert grants.moderate is False
         assert grants.hidden is False
 
+    def test_the_sound_of_a_screen_share_is_off_by_default(self) -> None:
+        """The one publish right that is not permissive, for compatibility: no
+        credential carried it before the field existed, so a true default would
+        widen every token minted after an upgrade (§12.10.2).
+        """
+        assert ConferenceGrants().publish_screen_share_audio is False
+
+    def test_the_sound_of_a_screen_share_is_granted_on_its_own(self) -> None:
+        """Independent of the share itself: neither field implies the other."""
+        sound_only = ConferenceGrants(publish_screen_share=False, publish_screen_share_audio=True)
+
+        assert sound_only.publish_screen_share is False
+        assert sound_only.publish_screen_share_audio is True
+
+    def test_the_earlier_fields_keep_their_positions(self) -> None:
+        """The field is appended, so a caller passing the others positionally
+        is not silently re-pointed.
+        """
+        grants = ConferenceGrants(False, False, False, False, True, True)
+
+        assert grants.moderate is True
+        assert grants.hidden is True
+        assert grants.publish_screen_share_audio is False
+
     def test_observer_is_subscribe_only_and_hidden(self) -> None:
         """The Observer participation pattern (§12.10.6)."""
         grants = ConferenceGrants.observer()
@@ -55,6 +79,7 @@ class TestGrants:
         assert not grants.publish_audio
         assert not grants.publish_video
         assert not grants.publish_screen_share
+        assert not grants.publish_screen_share_audio
 
     def test_a_bot_asks_for_nothing_it_was_not_configured_to_do(self) -> None:
         """The counterpart of the permissive defaults above: those exist because
@@ -67,6 +92,7 @@ class TestGrants:
         assert grants.publish_audio is False
         assert grants.publish_video is False
         assert grants.publish_screen_share is False
+        assert grants.publish_screen_share_audio is False
 
     def test_a_speaking_bot_may_publish_audio_and_nothing_more(self) -> None:
         grants = ConferenceGrants.for_bot(speaks=True)
@@ -74,6 +100,7 @@ class TestGrants:
         assert grants.publish_audio is True
         assert grants.publish_video is False
         assert grants.publish_screen_share is False
+        assert grants.publish_screen_share_audio is False
 
     def test_a_bot_that_consumes_nothing_does_not_ask_to_subscribe(self) -> None:
         """Subscribing is the one privilege that was granted unconditionally,

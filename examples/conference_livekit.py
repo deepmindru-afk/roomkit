@@ -59,6 +59,13 @@ open, Ctrl-C here — the bot leaves, YOU stay — then:
 
     ROOMKIT_RESUME=1 uv run python examples/conference_livekit.py
 
+Screen sharing: both links may share a screen, but only alice's may share it
+WITH ITS SOUND. The sound of a share is a publish right of its own
+(``ConferenceGrants.publish_screen_share_audio``, off by default), so alice is
+minted as a presenter and bob with the defaults. Share a tab with its audio
+from each: alice's sound publishes (and, as audio like any other, is
+transcribed as hers); bob's picture publishes and the SFU refuses his sound.
+
 In resume mode the script mints nothing and creates no participant: the only
 possible join trigger is the attach's occupancy probe (RFC §12.10.4 step 1),
 and the roster can only refill through the join's catch-up. The bot must come
@@ -79,7 +86,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 from urllib.parse import quote
 
-from roomkit import RoomKit
+from roomkit import ConferenceGrants, RoomKit
 from roomkit.channels.base import Channel
 from roomkit.channels.conference import ConferenceChannel
 from roomkit.conference.livekit import LiveKitConferenceBackend, LiveKitConfig
@@ -96,6 +103,8 @@ URL = os.getenv("ROOMKIT_LIVEKIT_URL", "ws://127.0.0.1:7880")
 API_KEY = os.getenv("ROOMKIT_LIVEKIT_API_KEY", "devkey")
 API_SECRET = os.getenv("ROOMKIT_LIVEKIT_API_SECRET", "secret")
 ROOM_ID = os.getenv("ROOMKIT_ROOM", "demo-meeting")
+PRESENTER = "alice"
+"""The one human whose screen share may carry its sound."""
 RESUME = os.getenv("ROOMKIT_RESUME") == "1"
 
 SAMPLE_RATE = 48_000
@@ -359,6 +368,23 @@ def build_vad(notes: list[str]) -> Any:
     return EnergyVADProvider(silence_threshold_ms=700)
 
 
+async def admit(kit: RoomKit, conference: ConferenceChannel, room_id: str, human: str) -> str:
+    """Mint one human's access, and say where to open it.
+
+    Access is minted for a ROOM participant (RFC §12.10.2): that is what gives
+    transcriptions and hooks someone to attribute speech to. The mint is also
+    the lazy join's trigger — by the time you open the tab, "roomkit" is
+    already on the participant list. The defaults let everyone share a screen;
+    only the presenter may share its sound too, which is a grant of its own.
+    """
+    await kit.ensure_participant(room_id, "conf", human, display_name=human.capitalize())
+    presenter = human == PRESENTER
+    grants = ConferenceGrants(publish_screen_share_audio=True) if presenter else None
+    access = await conference.mint_access(room_id, human, grants=grants)
+    role = " (presenter: may share a screen with its sound)" if presenter else ""
+    return f"  - {human}{role}:\n    {meet_url(access)}\n"
+
+
 def meet_url(access: Any) -> str:
     """The LiveKit web client's URL, pre-filled with the minted credential."""
     return (
@@ -604,13 +630,7 @@ clicked; speak, and [HEARD * ...] must still attribute you correctly.
     else:
         print("\nOpen BOTH links, each in its own tab (or one on your phone):\n")
         for human in HUMANS:
-            # Access is minted for a ROOM participant (RFC §12.10.2): that is
-            # what gives transcriptions and hooks someone to attribute speech
-            # to. The mint is also the lazy join's trigger — by the time you
-            # open the tab, "roomkit" is already on the participant list.
-            await kit.ensure_participant(room.id, "conf", human, display_name=human.capitalize())
-            access = await conference.mint_access(room.id, human)
-            print(f"  - {human}:\n    {meet_url(access)}\n")
+            print(await admit(kit, conference, room.id, human))
         print("=" * 74)
         if realtime is not None:
             print("""

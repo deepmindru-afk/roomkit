@@ -60,6 +60,10 @@ class _FakeRoomService:
         self.calls.append(("mute_published_track", request))
         return api.MuteRoomTrackResponse()
 
+    async def update_participant(self, request: Any) -> Any:
+        self.calls.append(("update_participant", request))
+        return api.ParticipantInfo(identity=request.identity)
+
 
 @dataclass
 class _FakeAPI:
@@ -151,6 +155,23 @@ class TestMintedAccess:
         assert video["roomJoin"] is True
         assert video["roomAdmin"] is True
         assert video["canPublishSources"] == ["microphone"]
+
+    def test_the_sound_of_a_screen_share_reaches_the_token_when_granted(self) -> None:
+        access = _backend()._access(
+            "room-1",
+            "p-alice",
+            ConferenceGrants(publish_video=False, publish_screen_share_audio=True),
+            publish_data=True,
+        )
+
+        video = _claims(access.token)["video"]
+        assert video["canPublishSources"] == ["microphone", "screen_share", "screen_share_audio"]
+
+    async def test_a_default_mint_does_not_carry_the_sound_of_a_screen_share(self) -> None:
+        access = await _backend().mint_access("room-1", "p-alice", ConferenceGrants())
+
+        video = _claims(access.token)["video"]
+        assert video["canPublishSources"] == ["microphone", "camera", "screen_share"]
 
     def test_a_listening_bot_asks_the_server_for_no_publish_right(self) -> None:
         access = _backend()._access(
@@ -531,6 +552,34 @@ class TestBotSurface:
         await backend.stop_playback(BotSession(id="lk-1", room_id="room-1", identity="roomkit"))
 
         assert session.stops == 1
+
+    async def test_a_grant_update_sends_the_sources_as_server_enum_values(self) -> None:
+        """The update's carrier: TrackSource values on ``UpdateParticipant``,
+        converted from the same list the token carries (RFC 12.10.3).
+        """
+        backend = _backend()
+        room = _served(backend)
+        bot = BotSession(id="lk-1", room_id="room-1", identity="roomkit")
+        backend._sessions[bot.id] = object()  # type: ignore[assignment]
+
+        await backend.update_bot_grants(
+            bot,
+            ConferenceGrants(
+                publish_audio=True,
+                publish_video=False,
+                publish_screen_share=False,
+                publish_screen_share_audio=True,
+            ),
+        )
+
+        [(name, request)] = room.calls
+        assert name == "update_participant"
+        assert request.identity == "roomkit"
+        assert request.permission.can_publish is True
+        assert list(request.permission.can_publish_sources) == [
+            api.TrackSource.MICROPHONE,
+            api.TrackSource.SCREEN_SHARE_AUDIO,
+        ]
 
     async def test_joining_a_closed_backend_is_refused(self) -> None:
         backend = _backend()

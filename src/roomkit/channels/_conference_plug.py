@@ -764,6 +764,7 @@ class ConferencePlugMixin:
             or (wanted.subscribe and not held.subscribe)
             or (wanted.publish_video and not held.publish_video)
             or (wanted.publish_screen_share and not held.publish_screen_share)
+            or (wanted.publish_screen_share_audio and not held.publish_screen_share_audio)
         )
 
     async def _rejoin_for_grants(self, room_id: str) -> None:

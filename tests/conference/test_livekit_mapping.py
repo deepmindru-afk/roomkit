@@ -21,12 +21,12 @@ from roomkit.conference._livekit_mapping import (
     CAMERA,
     MICROPHONE,
     SCREEN_SHARE,
+    SCREEN_SHARE_AUDIO,
     asserted_attributes,
     capabilities_for,
     codec_for_buffer_type,
     participant_permission_kwargs,
     participant_record,
-    publish_source_names,
     quality_label,
     require_publishable_pcm,
     rtc_participant_kind_name,
@@ -277,11 +277,88 @@ class TestPermissionTranslation:
 
         assert "can_update_own_metadata" not in kwargs
 
-    def test_screen_share_audio_is_never_granted(self) -> None:
-        """RoomKit's grant covers a screen share, and sharing a tab's sound is a
-        separate publish right no RoomKit grant asks for.
+
+def _granted_sources(carrier: str, grants: ConferenceGrants) -> list[str] | None:
+    """The sources a carrier sends for ``grants``, in the token's lowercase
+    dialect, or ``None`` when it sends no list at all.
+    """
+    if carrier == "token":
+        kwargs = video_grant_kwargs("room-1", grants, publish_data=True)
+    else:
+        kwargs = participant_permission_kwargs(grants, publish_data=True)
+    sources = kwargs.get("can_publish_sources")
+    assert kwargs["can_publish"] is (sources is not None)
+    return None if sources is None else [source.lower() for source in sources]
+
+
+@pytest.mark.parametrize("carrier", ["token", "update"])
+class TestScreenShareAudioGrant:
+    """The sound of a screen share is granted on its own field, and both
+    carriers — the token a client joins with and the in-place update of a
+    connected session — send the same list for the same grants (§12.10.2).
+    """
+
+    def test_the_default_human_grant_does_not_carry_it(self, carrier: str) -> None:
+        """No credential carried it before the field existed; the default keeps
+        it that way, so an upgrade widens nobody.
         """
-        assert "screen_share_audio" not in publish_source_names(ConferenceGrants())
+        sources = _granted_sources(carrier, ConferenceGrants())
+
+        assert sources == [MICROPHONE, CAMERA, SCREEN_SHARE]
+
+    def test_a_bot_never_carries_it(self, carrier: str) -> None:
+        for grants in (
+            ConferenceGrants.for_bot(),
+            ConferenceGrants.for_bot(speaks=True),
+            ConferenceGrants.observer(),
+        ):
+            assert SCREEN_SHARE_AUDIO not in (_granted_sources(carrier, grants) or [])
+
+    @pytest.mark.parametrize(
+        ("microphone", "share", "share_audio", "expected"),
+        [
+            pytest.param(
+                True, True, True, [MICROPHONE, SCREEN_SHARE, SCREEN_SHARE_AUDIO], id="all"
+            ),
+            pytest.param(True, True, False, [MICROPHONE, SCREEN_SHARE], id="sound-refused"),
+            pytest.param(False, True, True, [SCREEN_SHARE, SCREEN_SHARE_AUDIO], id="muted-mic"),
+            pytest.param(False, True, False, [SCREEN_SHARE], id="share-without-sound"),
+            pytest.param(True, False, True, [MICROPHONE, SCREEN_SHARE_AUDIO], id="sound-only"),
+            pytest.param(False, False, True, [SCREEN_SHARE_AUDIO], id="nothing-but-sound"),
+            pytest.param(True, False, False, [MICROPHONE], id="microphone-only"),
+        ],
+    )
+    def test_each_field_grants_its_own_source_and_no_other(
+        self,
+        carrier: str,
+        microphone: bool,
+        share: bool,
+        share_audio: bool,
+        expected: list[str],
+    ) -> None:
+        """Neither screen-share field implies the other, and the microphone
+        grant does not cover the sound of a share.
+        """
+        grants = ConferenceGrants(
+            publish_audio=microphone,
+            publish_video=False,
+            publish_screen_share=share,
+            publish_screen_share_audio=share_audio,
+        )
+
+        assert _granted_sources(carrier, grants) == expected
+
+    def test_the_source_name_is_livekits(self, carrier: str) -> None:
+        """``screen_share_audio`` on the token, ``SCREEN_SHARE_AUDIO`` on the
+        update: the same TrackSource up to case, like the other three.
+        """
+        grants = ConferenceGrants(publish_screen_share_audio=True)
+        if carrier == "token":
+            kwargs = video_grant_kwargs("room-1", grants, publish_data=True)
+            assert kwargs["can_publish_sources"][-1] == "screen_share_audio"
+        else:
+            kwargs = participant_permission_kwargs(grants, publish_data=True)
+            assert kwargs["can_publish_sources"][-1] == "SCREEN_SHARE_AUDIO"
 
 
 class TestTrackKind:

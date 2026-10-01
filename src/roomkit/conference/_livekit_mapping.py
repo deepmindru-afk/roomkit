@@ -28,6 +28,7 @@ from roomkit.voice.base import AudioChunk
 MICROPHONE = "microphone"
 CAMERA = "camera"
 SCREEN_SHARE = "screen_share"
+SCREEN_SHARE_AUDIO = "screen_share_audio"
 
 SIP_ATTRIBUTE_PREFIX = "sip."
 """Prefix LiveKit's SIP service uses for the attributes it sets itself."""
@@ -80,9 +81,12 @@ def capabilities_for(*, remote_unmute: bool, sip_gateway: bool) -> ConferenceCap
 def publish_source_names(grants: ConferenceGrants) -> list[str]:
     """Which LiveKit track sources ``grants`` allows publishing.
 
-    Screen-share audio is not listed: RoomKit's grant covers a screen share,
-    and a participant sharing a tab with sound would need it separately. Adding
-    it here would hand out a publish right no RoomKit grant asked for.
+    One grant per source. Screen-share audio in particular is listed only on
+    ``publish_screen_share_audio``, never as part of ``publish_screen_share``
+    or ``publish_audio``: a tab shared with its sound is a source of its own on
+    LiveKit's side, and folding it into another grant would hand out a publish
+    right no RoomKit grant asked for (RFC 12.10.2). Both the token and the
+    in-place update read this list, so the two carriers cannot disagree.
     """
     sources = []
     if grants.publish_audio:
@@ -91,6 +95,8 @@ def publish_source_names(grants: ConferenceGrants) -> list[str]:
         sources.append(CAMERA)
     if grants.publish_screen_share:
         sources.append(SCREEN_SHARE)
+    if grants.publish_screen_share_audio:
+        sources.append(SCREEN_SHARE_AUDIO)
     return sources
 
 

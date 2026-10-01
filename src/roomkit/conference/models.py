@@ -206,7 +206,8 @@ class ConferenceGrants:
     unconfigured. Narrowing them is the integrator's call and is recommended
     wherever a role does not need to publish. This is a SHOULD, not a MUST: do
     not flip these defaults to deny-by-default without changing the
-    specification first.
+    specification first. ``publish_screen_share_audio`` is the one exception,
+    and its docstring says why.
     """
 
     publish_audio: bool = True
@@ -227,6 +228,20 @@ class ConferenceGrants:
     hidden: bool = False
     """Invisible to other participants (bots, monitors)."""
 
+    publish_screen_share_audio: bool = False
+    """May publish the sound of a screen share — a tab or a screen shared with
+    its audio, which SFUs carry as a track source of its own.
+
+    Off by default, unlike the other publish rights, for compatibility: no
+    credential carried it before the field existed, so a permissive default
+    would widen every token minted after an upgrade without anyone asking
+    (RFC 12.10.2). Independent of ``publish_screen_share``: a share without
+    sound needs only that one, and neither implies the other.
+
+    Last among the fields, so the positional order the earlier ones had is
+    kept.
+    """
+
     @classmethod
     def for_bot(cls, *, speaks: bool = False, listens: bool = True) -> ConferenceGrants:
         """Least privilege for the framework's own bot.
@@ -242,10 +257,10 @@ class ConferenceGrants:
         one there is nothing to publish. ``subscribe`` only when something
         consumes the tracks it would receive; a channel that only speaks
         subscribes to none, and the grant would be permission to receive every
-        participant's media for nobody to read. ``publish_screen_share`` never:
-        the bot has no screen. ``publish_video`` stays off until the bot is
-        given something to show; an avatar would be what turns it on, and none
-        is configurable yet.
+        participant's media for nobody to read. ``publish_screen_share`` and
+        ``publish_screen_share_audio`` never: the bot has no screen.
+        ``publish_video`` stays off until the bot is given something to show;
+        an avatar would be what turns it on, and none is configurable yet.
 
         ``listens`` defaults to true because that is what a conference bot is
         usually for, and because it is what makes :meth:`observer` mean what it
@@ -259,6 +274,7 @@ class ConferenceGrants:
             publish_video=False,
             publish_screen_share=False,
             subscribe=listens,
+            publish_screen_share_audio=False,
         )
 
     @classmethod

@@ -31,6 +31,7 @@ import math
 import os
 from array import array
 from collections.abc import AsyncIterator, Callable
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -100,6 +101,28 @@ async def joined_participants(
     raise AssertionError(f"nobody listed in room {room_id} after {timeout}s")
 
 
+async def listed_tracks(
+    backend: LiveKitConferenceBackend,
+    room_id: str,
+    wanted: set[str],
+    *,
+    timeout: float = TIMEOUT_S,
+) -> dict[str, ConferenceTrack]:
+    """Poll the server until it lists every track in ``wanted``.
+
+    A confirmed publication is not listed at once: the server reports the
+    track only after it negotiated the media, a moment later.
+    """
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
+        participants = await backend.list_participants(room_id)
+        tracks = {track.id: track for p in participants for track in p.tracks}
+        if wanted <= tracks.keys():
+            return tracks
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"tracks {sorted(wanted)} not listed in room {room_id} after {timeout}s")
+
+
 def tone_frame(step: int) -> Any:
     """One 10 ms stereo frame of a 440 Hz tone, loud enough for a VAD to notice."""
     samples = array("h")
@@ -137,9 +160,10 @@ class Participant:
         room_id: str,
         *,
         attributes: dict[str, str] | None = None,
+        grants: ConferenceGrants | None = None,
     ) -> None:
         access = await backend.mint_access(
-            room_id, self.identity, ConferenceGrants(), attributes=attributes
+            room_id, self.identity, grants or ConferenceGrants(), attributes=attributes
         )
         self.room.on("track_subscribed", self._on_track_subscribed)
         await self.room.connect(access.url, access.token, rtc.RoomOptions(auto_subscribe=True))
@@ -153,6 +177,24 @@ class Participant:
         )
         self._tone = asyncio.create_task(self._speak())
         return publication.sid
+
+    async def publish_screen_share(self, *, with_sound: bool) -> list[str]:
+        """Publish what a browser's screen share publishes: the picture, and
+        the sound on a track of its own when the shared tab has some.
+
+        Nothing is captured into either source — the SFU decides on the
+        publication, not on the media — so a refusal surfaces here, as the
+        ``PublishTrackError`` the SDK raises once the server never confirms.
+        """
+        published = await publish_track(
+            self.room,
+            rtc.LocalVideoTrack.create_video_track("screen", rtc.VideoSource(64, 64)),
+            rtc.TrackSource.SOURCE_SCREENSHARE,
+        )
+        sids = [published]
+        if with_sound:
+            sids.append(await publish_screen_share_audio(self.room))
+        return sids
 
     async def _speak(self) -> None:
         step = 0
@@ -183,8 +225,25 @@ class Participant:
         if source is not None:
             with contextlib.suppress(Exception):
                 await source.aclose()
+        # Bounded: after a publication the server refused, the SDK's
+        # disconnect can wait on a renegotiation that never completes.
         with contextlib.suppress(Exception):
-            await self.room.disconnect()
+            await asyncio.wait_for(self.room.disconnect(), TIMEOUT_S)
+
+
+async def publish_track(room: Any, track: Any, source: Any) -> str:
+    publication = await room.local_participant.publish_track(
+        track, rtc.TrackPublishOptions(source=source)
+    )
+    return publication.sid
+
+
+async def publish_screen_share_audio(room: Any) -> str:
+    """Publish a silent track as the sound of a screen share."""
+    track = rtc.LocalAudioTrack.create_audio_track(
+        "screen-audio", rtc.AudioSource(PUBLISH_RATE, PUBLISH_CHANNELS)
+    )
+    return await publish_track(room, track, rtc.TrackSource.SOURCE_SCREENSHARE_AUDIO)
 
 
 class Observed:
@@ -749,6 +808,64 @@ class TestPublishing:
 
         with pytest.raises(RuntimeError, match="has left"):
             await session.publish(AudioChunk(data=_pcm_mono(0), sample_rate=PUBLISH_RATE))
+
+
+class TestScreenShareAudio:
+    """The sound of a screen share is a publish right of its own (RFC
+    12.10.2), and the SFU is what enforces it: the grant either reaches the
+    server on the carrier in question or the publication is refused.
+    """
+
+    async def test_a_participant_granted_it_shares_a_screen_with_its_sound(
+        self, backend: LiveKitConferenceBackend, room_id: str, alice: Participant
+    ) -> None:
+        await alice.join(
+            backend, room_id, grants=ConferenceGrants(publish_screen_share_audio=True)
+        )
+
+        picture, sound = await alice.publish_screen_share(with_sound=True)
+
+        tracks = await listed_tracks(backend, room_id, {picture, sound})
+        assert tracks[picture].kind is TrackKind.SCREEN_SHARE
+        # Audio like any other once published — RoomKit's track model has no
+        # screen-share audio kind; the source says where it came from.
+        assert tracks[sound].kind is TrackKind.AUDIO
+        assert tracks[sound].metadata["source"] == "SOURCE_SCREENSHARE_AUDIO"
+
+    async def test_a_participant_minted_with_the_defaults_is_refused_it(
+        self, backend: LiveKitConferenceBackend, room_id: str, alice: Participant
+    ) -> None:
+        """The compatibility default: a credential minted as before carries
+        no such right, so the SFU never confirms the publication.
+        """
+        await alice.join(backend, room_id)
+
+        with pytest.raises(rtc.participant.PublishTrackError):
+            await publish_screen_share_audio(alice.room)
+
+    async def test_a_share_without_sound_needs_no_new_grant(
+        self, backend: LiveKitConferenceBackend, room_id: str, alice: Participant
+    ) -> None:
+        await alice.join(backend, room_id)
+
+        [picture] = await alice.publish_screen_share(with_sound=False)
+
+        assert picture
+
+    async def test_an_in_place_update_carries_it_to_a_connected_session(
+        self, backend: LiveKitConferenceBackend, room_id: str
+    ) -> None:
+        """The other carrier: ``UpdateParticipant`` on a session already
+        connected. The bot is the session this backend can re-permission, so
+        it stands in — the grant, not who holds it, is under test.
+        """
+        held = ConferenceGrants.for_bot(speaks=True)
+        bot = await backend.join_as_bot(room_id, "roomkit", held)
+
+        await backend.update_bot_grants(bot, replace(held, publish_screen_share_audio=True))
+
+        session_room = backend._sessions[bot.id]._room
+        assert await publish_screen_share_audio(session_room)
 
 
 class TestModeration:

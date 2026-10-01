@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ConferenceGrants.publish_screen_share_audio` (RMK-348, RFC §12.10.2):
+  the sound of a screen share — a tab or a screen shared with its audio,
+  which LiveKit carries as the `screen_share_audio` source — is a publish
+  right of its own. Off by default, unlike the other publish rights, so a
+  credential minted as before carries none and an upgrade widens nobody;
+  `ConferenceGrants(publish_screen_share_audio=True)` grants it.
+  Independent of `publish_screen_share`: a share without sound needs only
+  that one. The bot never gets it (`for_bot()`, `observer()`). The token
+  and `update_bot_grants()` map it the same way, and a participant minted
+  without it still has the sound's publication refused by the SFU while
+  the picture publishes.
 - `MemoryResult` is exported from `roomkit`, beside `MemoryProvider`, whose
   `retrieve` returns it (found reviewing RMK-334).
 - `MemoryResult.notes` (RMK-334, RFC §20.2): what a memory provider
