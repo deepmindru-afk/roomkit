@@ -18,6 +18,13 @@ Run with:
 The MP4 goes to ``<temp dir>/roomkit-recordings`` unless ``--output`` names
 another directory; the banner prints the directory in use.
 
+The file is written in the clear, which RFC 17.6 forbids for real recordings:
+``PyAVMediaRecorder`` refuses to start without a ``RecordingEncryption`` or
+``storage_encrypted_at_rest=True``. This demo sets the flag so you can play
+the file back; that flag is a statement about the storage, and a temporary
+directory does not honour it. Never copy it to a deployment whose storage is
+not encrypted (see voice_sensitive_data.py for the encryption hook).
+
 Press Ctrl+C to stop early.
 """
 
@@ -76,6 +83,7 @@ async def main() -> None:
         storage=args.output,
         video_fps=args.fps,
         audio_sample_rate=16000,
+        storage_encrypted_at_rest=True,  # demo only: see the module docstring
     )
 
     # --- Backends: local mic + webcam ------------------------------------

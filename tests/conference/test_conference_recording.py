@@ -33,8 +33,10 @@ from roomkit.channels.conference import ConferenceChannel
 from roomkit.conference.models import ConferenceTrack
 from roomkit.models.enums import Access, ChannelType, HookExecution, HookTrigger
 from roomkit.models.event import TextContent
+from roomkit.recorder.base import MediaRecordingConfig, MediaRecordingHandle
 from roomkit.recorder.mock import MockMediaRecorder
 from roomkit.voice.audio_frame import AudioFrame
+from roomkit.voice.pipeline.recorder.base import RecordingEncryption
 from roomkit.voice.stt.mock import MockSTTProvider
 from roomkit.voice.tts.mock import MockTTSProvider
 from tests.conference.lane_audio import drain, drain_recordings, say, speech_frame
@@ -70,6 +72,27 @@ async def _recording_conference(
 
 def _tracks_of(recorder: MockMediaRecorder, participant_id: str) -> list[str]:
     return [t.id for t in recorder.tracks if t.participant_id == participant_id]
+
+
+class _NamedEncryption(RecordingEncryption):
+    @property
+    def name(self) -> str:
+        return "named"
+
+    def encrypt_file(self, path: str) -> str:
+        return path
+
+
+class _ConfigCapturingRecorder(MockMediaRecorder):
+    """Keeps the configuration each recording was opened with."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.configs: list[MediaRecordingConfig] = []
+
+    def on_recording_start(self, config: MediaRecordingConfig) -> MediaRecordingHandle:
+        self.configs.append(config)
+        return super().on_recording_start(config)
 
 
 class TestPerTrackRecordings:
@@ -919,24 +942,13 @@ class TestNothingIsCapturedBeforeTheStartAnnouncement:
         assert recorder.chunks == [], "a refused recording still captured audio"
 
 
-class TestRecordingMetadataReachesTheRecorder:
+class TestRecordingConfigurationReachesTheRecorder:
     async def test_the_configured_metadata_is_carried_verbatim(self) -> None:
         """`ConferenceRecordingConfig.metadata` is the caller's to define and
         the recorder's to interpret; a field the framework silently dropped
         read as if it worked.
         """
-        from roomkit.recorder.base import MediaRecordingConfig, MediaRecordingHandle
-
-        class _ConfigKeeper(MockMediaRecorder):
-            def __init__(self) -> None:
-                super().__init__()
-                self.configs: list[MediaRecordingConfig] = []
-
-            def on_recording_start(self, config: MediaRecordingConfig) -> MediaRecordingHandle:
-                self.configs.append(config)
-                return super().on_recording_start(config)
-
-        recorder = _ConfigKeeper()
+        recorder = _ConfigCapturingRecorder()
         _, channel, backend, _ = await _recording_conference(
             recorder=recorder,
             recording=ConferenceRecordingConfig(metadata={"matter": "M-2026-071"}),
@@ -947,3 +959,20 @@ class TestRecordingMetadataReachesTheRecorder:
         await _until(lambda: recorder.configs != [])
 
         assert recorder.configs[0].metadata == {"matter": "M-2026-071"}
+
+    async def test_the_encryption_at_rest_is_carried_verbatim(self) -> None:
+        """RFC §17.6: the conference's encryption settings reach every track's
+        recording, where a file recorder enforces them."""
+        cipher = _NamedEncryption()
+        recorder = _ConfigCapturingRecorder()
+        _, channel, backend, _ = await _recording_conference(
+            recorder=recorder,
+            recording=ConferenceRecordingConfig(encryption=cipher, storage_encrypted_at_rest=True),
+        )
+        await backend.simulate_participant_joined(ROOM, "p-alice")
+        alice = await backend.simulate_track_published(ROOM, "p-alice")
+        await backend.simulate_audio(alice, speech_frame())
+        await _until(lambda: recorder.configs != [])
+
+        assert recorder.configs[0].encryption is cipher
+        assert recorder.configs[0].storage_encrypted_at_rest is True

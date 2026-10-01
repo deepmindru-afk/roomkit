@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 from fractions import Fraction
+from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -11,6 +13,7 @@ from roomkit.recorder.base import (
     MediaRecordingConfig,
     RecordingTrack,
 )
+from roomkit.voice.pipeline.recorder.base import RecordingEncryption
 
 av = pytest.importorskip("av")
 np = pytest.importorskip("numpy")
@@ -22,6 +25,102 @@ def _get_recorder():
     return PyAVMediaRecorder()
 
 
+def _declared_config(**kwargs: Any) -> MediaRecordingConfig:
+    """A config whose storage — a test's temp dir — is declared encrypted (RFC §17.6)."""
+    return MediaRecordingConfig(storage_encrypted_at_rest=True, **kwargs)
+
+
+class _ReversingEncryption(RecordingEncryption):
+    """Stand-in cipher: the framework owns the *when*, the integrator the *how*."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    @property
+    def name(self) -> str:
+        return "reversing"
+
+    def encrypt_file(self, path: str) -> str:
+        self.calls.append(path)
+        src = Path(path)
+        dst = src.with_suffix(src.suffix + ".enc")
+        dst.write_bytes(src.read_bytes()[::-1])
+        src.unlink()
+        return str(dst)
+
+
+class _FailingEncryption(RecordingEncryption):
+    @property
+    def name(self) -> str:
+        return "failing"
+
+    def encrypt_file(self, path: str) -> str:
+        raise RuntimeError("no key available")
+
+
+def _record_one_second(config: MediaRecordingConfig):
+    """Record one second of 16 kHz mono audio as lossless WAV, and stop."""
+    recorder = _get_recorder()
+    handle = recorder.on_recording_start(config)
+    track = RecordingTrack(
+        id="a1", kind="audio", channel_id="voice", codec="pcm_s16le", sample_rate=16000
+    )
+    recorder.on_track_added(handle, track)
+    for i in range(50):
+        recorder.on_data(handle, track, b"\x01\x02" * 320, float(i * 20))
+    return recorder.on_recording_stop(handle)
+
+
+class TestEncryptionAtRest:
+    """RFC §17.6 — "Audio recordings MUST be encrypted at rest"."""
+
+    @staticmethod
+    def _wav_config(tmp_path: Path, **kwargs: Any) -> MediaRecordingConfig:
+        return MediaRecordingConfig(
+            storage=str(tmp_path / "rec"), format="wav", audio_codec="pcm_s16le", **kwargs
+        )
+
+    def test_without_encryption_or_encrypted_storage_is_refused(self, tmp_path: Path) -> None:
+        recorder = _get_recorder()
+
+        with pytest.raises(ValueError, match=r"requires MediaRecordingConfig\.encryption"):
+            recorder.on_recording_start(self._wav_config(tmp_path))
+
+        assert not (tmp_path / "rec").exists(), "a refused recording must create nothing"
+
+    def test_encrypted_storage_can_be_declared_explicitly(self, tmp_path: Path) -> None:
+        result = _record_one_second(self._wav_config(tmp_path, storage_encrypted_at_rest=True))
+
+        assert result.url.endswith(".wav")
+        assert result.size_bytes == os.path.getsize(result.url)
+
+    def test_finished_recording_is_encrypted_and_plaintext_removed(self, tmp_path: Path) -> None:
+        cipher = _ReversingEncryption()
+
+        result = _record_one_second(self._wav_config(tmp_path, encryption=cipher))
+
+        assert cipher.calls, "the recorder never asked the cipher to encrypt"
+        assert result.url.endswith(".wav.enc")
+        assert result.size_bytes == os.path.getsize(result.url)
+        assert list((tmp_path / "rec").glob("*.wav")) == []
+        # The integrator's decryption gives back the recording as it was written.
+        plain = tmp_path / "decrypted.wav"
+        plain.write_bytes(Path(result.url).read_bytes()[::-1])
+        with av.open(str(plain)) as container:
+            stream = container.streams.audio[0]
+            samples = sum(frame.samples for frame in container.decode(stream))
+        assert samples == 16000
+
+    def test_unencryptable_recording_is_discarded_not_left_in_the_clear(
+        self, tmp_path: Path
+    ) -> None:
+        result = _record_one_second(self._wav_config(tmp_path, encryption=_FailingEncryption()))
+
+        assert result.url == ""
+        assert result.size_bytes == 0
+        assert list((tmp_path / "rec").iterdir()) == []
+
+
 class TestPyAVMediaRecorder:
     def test_name(self) -> None:
         recorder = _get_recorder()
@@ -29,7 +128,7 @@ class TestPyAVMediaRecorder:
 
     def test_audio_only_recording(self, tmp_path: object) -> None:
         recorder = _get_recorder()
-        config = MediaRecordingConfig(
+        config = _declared_config(
             storage=str(tmp_path),
             audio_codec="aac",
             audio_sample_rate=16000,
@@ -61,7 +160,7 @@ class TestPyAVMediaRecorder:
 
     def test_video_only_recording(self, tmp_path: object) -> None:
         recorder = _get_recorder()
-        config = MediaRecordingConfig(
+        config = _declared_config(
             storage=str(tmp_path),
             video_codec="libx264",
         )
@@ -87,7 +186,7 @@ class TestPyAVMediaRecorder:
 
     def test_mixed_audio_video(self, tmp_path: object) -> None:
         recorder = _get_recorder()
-        config = MediaRecordingConfig(
+        config = _declared_config(
             storage=str(tmp_path),
             video_codec="libx264",
             audio_codec="aac",
@@ -124,7 +223,7 @@ class TestPyAVMediaRecorder:
 
     def test_track_removal_flushes(self, tmp_path: object) -> None:
         recorder = _get_recorder()
-        config = MediaRecordingConfig(
+        config = _declared_config(
             storage=str(tmp_path),
             audio_codec="aac",
         )
@@ -148,7 +247,7 @@ class TestPyAVMediaRecorder:
 
     def test_close_cleans_up(self, tmp_path: object) -> None:
         recorder = _get_recorder()
-        config = MediaRecordingConfig(storage=str(tmp_path))
+        config = _declared_config(storage=str(tmp_path))
         handle = recorder.on_recording_start(config)
 
         track = RecordingTrack(
@@ -168,7 +267,7 @@ class TestPyAVMediaRecorder:
     def test_encoded_video_h264(self, tmp_path: object) -> None:
         """Encoded H.264 NAL data is decoded and re-encoded to output."""
         recorder = _get_recorder()
-        config = MediaRecordingConfig(
+        config = _declared_config(
             storage=str(tmp_path),
             video_codec="libx264",
             video_fps=30,
@@ -216,7 +315,7 @@ class TestPyAVMediaRecorder:
     def test_encoded_video_codec_populated(self, tmp_path: object) -> None:
         """Track codec is set correctly for encoded video."""
         recorder = _get_recorder()
-        config = MediaRecordingConfig(storage=str(tmp_path), video_codec="libx264")
+        config = _declared_config(storage=str(tmp_path), video_codec="libx264")
         handle = recorder.on_recording_start(config)
 
         track = RecordingTrack(
@@ -231,7 +330,7 @@ class TestPyAVMediaRecorder:
     def test_stop_without_data(self, tmp_path: object) -> None:
         """Stop a recording that never received any data."""
         recorder = _get_recorder()
-        config = MediaRecordingConfig(storage=str(tmp_path))
+        config = _declared_config(storage=str(tmp_path))
         handle = recorder.on_recording_start(config)
         result = recorder.on_recording_stop(handle)
         assert result.id == handle.id
@@ -246,7 +345,7 @@ class TestPyAVMediaRecorder:
         delay packet (DTS=-1024) must be handled correctly.
         """
         recorder = _get_recorder()
-        config = MediaRecordingConfig(
+        config = _declared_config(
             storage=str(tmp_path),
             video_fps=5,
             audio_codec="aac",
@@ -293,7 +392,7 @@ class TestPyAVMediaRecorder:
     def test_odd_video_dimensions_rounded(self, tmp_path: object) -> None:
         """Odd video dimensions are rounded to even for libx264 compat."""
         recorder = _get_recorder()
-        config = MediaRecordingConfig(
+        config = _declared_config(
             storage=str(tmp_path),
             video_codec="libx264",
         )
@@ -326,7 +425,7 @@ class TestPyAVMediaRecorder:
         monotonic PTS for the AAC encoder's af_queue.
         """
         recorder = _get_recorder()
-        config = MediaRecordingConfig(
+        config = _declared_config(
             storage=str(tmp_path),
             video_fps=5,
             audio_codec="aac",
@@ -382,7 +481,7 @@ class TestDeclaredAudioFormat:
     def _lossless_recording(tmp_path: object, track: RecordingTrack):
         recorder = _get_recorder()
         handle = recorder.on_recording_start(
-            MediaRecordingConfig(
+            _declared_config(
                 storage=str(tmp_path),
                 format="wav",
                 audio_codec="pcm_s16le",

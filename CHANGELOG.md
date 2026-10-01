@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `MediaRecordingConfig.encryption` and `storage_encrypted_at_rest`, and the
+  same two fields on `ConferenceRecordingConfig`, which hands them to every
+  track recording it opens (RMK-69, RFC §17.6). `encryption` takes the
+  `RecordingEncryption` the voice recorder already takes: the recorder hands
+  it each finished file and deletes the plaintext, and a file the cipher
+  cannot encrypt is deleted rather than left in the clear.
+
 ### Changed
 
 - **BREAKING — `BEFORE_TTS` runs on each sentence of a streamed response**
@@ -25,6 +34,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   changes. A SYNC `BEFORE_TTS` hook that returns no `HookResult` now silences
   the sentences of a streamed response, as it already silenced a non-streamed
   one: return `HookResult.allow()`, or register it as ASYNC.
+
+- **BREAKING — `PyAVMediaRecorder` refuses to start a recording that would be
+  stored unencrypted** (RMK-69, RFC §17.6), as `WavFileRecorder` already does:
+  `on_recording_start` raises `ValueError("PyAVMediaRecorder requires
+  MediaRecordingConfig.encryption or storage_encrypted_at_rest=True")`. Room
+  and conference recordings were written in the clear, against the RFC's MUST
+  on encryption at rest. `create_room` with such a recorder now raises that
+  error; a conference track's recording is refused and logged, the track
+  still transcribed. With `encryption`, `MediaRecordingResult.url` names the
+  encrypted artifact and `size_bytes` its size. Migration: pass
+  `encryption=<your RecordingEncryption>`, or `storage_encrypted_at_rest=True`
+  when the storage already encrypts every byte (an encrypted volume or
+  bucket), on `MediaRecordingConfig` or `ConferenceRecordingConfig`.
 
 ### Fixed
 

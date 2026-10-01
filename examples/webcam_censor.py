@@ -22,6 +22,13 @@ Output:  <temp dir>/roomkit-webcam-censor/room_*.mp4 (censored sections
 are black).  Set RECORDING_DIR to choose another directory; the path is
 printed at start.
 
+The MP4 is written in the clear, which RFC 17.6 forbids for real recordings:
+``PyAVMediaRecorder`` refuses to start without a ``RecordingEncryption`` or
+``storage_encrypted_at_rest=True``. This demo sets the flag so you can watch
+the result; that flag is a statement about the storage, and a temporary
+directory does not honour it. Never copy it to a deployment whose storage is
+not encrypted (see voice_sensitive_data.py for the encryption hook).
+
 Prerequisites:
     pip install roomkit[local-video,video]
 
@@ -234,7 +241,10 @@ async def main() -> None:
         recorders=[
             RoomRecorderBinding(
                 recorder=recorder,
-                config=MediaRecordingConfig(storage=str(recording_dir)),
+                config=MediaRecordingConfig(
+                    storage=str(recording_dir),
+                    storage_encrypted_at_rest=True,  # demo only: see the module docstring
+                ),
             ),
         ],
     )

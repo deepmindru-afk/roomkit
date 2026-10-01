@@ -58,8 +58,9 @@ async def main() -> None:
             "conf",
             backend=backend,
             recorder=MockMediaRecorder(),
-            # MockMediaRecorder writes nothing; PyAVMediaRecorder(storage=...)
-            # would write real files under STORAGE.
+            # MockMediaRecorder writes nothing; PyAVMediaRecorder would write
+            # real files under STORAGE, and refuses to unless the config also
+            # sets encryption= or storage_encrypted_at_rest=True (RFC 17.6).
             recording=ConferenceRecordingConfig(storage=str(STORAGE), format="wav"),
         )
     )

@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import contextlib
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum, unique
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from roomkit.voice.audio_frame import AudioFrame
     from roomkit.voice.base import VoiceSession
+
+logger = logging.getLogger(__name__)
 
 
 @unique
@@ -98,6 +103,26 @@ class RecordingEncryption(ABC):
             The path of the encrypted artifact (may differ from *path*).
         """
         ...
+
+
+def encrypt_finished_recording(encryption: RecordingEncryption, path: str) -> str | None:
+    """Encrypt one finished recording at rest, or delete it (RFC §17.6).
+
+    The one place every file recorder hands a finished file to the cipher.
+    Returns the encrypted artifact's path, or ``None`` when the cipher failed:
+    the plaintext is then deleted rather than left in the clear, because a
+    caller that asked for encryption at rest must not be handed a plaintext
+    recording on account of a missing key.
+    """
+    try:
+        return encryption.encrypt_file(path)
+    except Exception:
+        logger.exception(
+            "Recording encryption failed for %s — discarding the plaintext file", path
+        )
+        with contextlib.suppress(OSError):
+            Path(path).unlink()
+        return None
 
 
 @dataclass

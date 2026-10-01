@@ -32,6 +32,10 @@ Environment variables:
     SYSTEM_PROMPT        System prompt override
     RECORDING_DIR        Record each call (MP4) into this directory;
                          unset = no recording
+    RECORDING_ENCRYPTED_AT_REST
+                         Required with RECORDING_DIR: set it to 1 to state
+                         that RECORDING_DIR is on encrypted storage (RFC 17.6:
+                         the recorder refuses plaintext recordings)
     DEBUG                Set to 1 for verbose logging
 
 Run with:
@@ -55,7 +59,7 @@ import logging
 import os
 
 from PIL import Image
-from shared import require_env, run_until_stopped, setup_logging, voice_language
+from shared import env_bool, require_env, run_until_stopped, setup_logging, voice_language
 
 from roomkit import (
     AudioVideoChannel,
@@ -237,6 +241,11 @@ async def main() -> None:
 
     # --- Recording (opt-in) ----------------------------------------------------
     recording_dir = os.environ.get("RECORDING_DIR", "")
+    if recording_dir and not env_bool("RECORDING_ENCRYPTED_AT_REST", default=False):
+        sys.exit(
+            "Error: RECORDING_DIR needs RECORDING_ENCRYPTED_AT_REST=1, stating that "
+            f"{recording_dir} is on encrypted storage (RFC 17.6 refuses plaintext recordings)"
+        )
 
     def recorders() -> list[RoomRecorderBinding]:
         if not recording_dir:
@@ -244,7 +253,10 @@ async def main() -> None:
         return [
             RoomRecorderBinding(
                 recorder=PyAVMediaRecorder(),
-                config=MediaRecordingConfig(storage=recording_dir),
+                config=MediaRecordingConfig(
+                    storage=recording_dir,
+                    storage_encrypted_at_rest=True,  # stated by RECORDING_ENCRYPTED_AT_REST=1
+                ),
             )
         ]
 

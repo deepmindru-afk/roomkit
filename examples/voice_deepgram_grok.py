@@ -26,6 +26,10 @@ Environment variables:
     RECORDING_DIR       Record the room as MP4 into this directory
                         (default: unset, no recording; needs roomkit[video],
                         otherwise a mock recorder that writes nothing)
+    RECORDING_ENCRYPTED_AT_REST
+                        Required with RECORDING_DIR: set it to 1 to state
+                        that RECORDING_DIR is on encrypted storage (RFC 17.6:
+                        the recorder refuses plaintext recordings)
     CONSOLE             1 shows the RoomKit console dashboard (default: 0)
 
 Run with:
@@ -43,7 +47,14 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from shared import require_env, run_until_stopped, setup_console, setup_logging, voice_language
+from shared import (
+    env_bool,
+    require_env,
+    run_until_stopped,
+    setup_console,
+    setup_logging,
+    voice_language,
+)
 
 from roomkit import ChannelCategory, HookExecution, HookResult, HookTrigger, RoomKit, VoiceChannel
 from roomkit.channels.ai import AIChannel
@@ -145,6 +156,11 @@ async def main() -> None:
     # --- Media recorder (optional) --------------------------------------------
     recording_dir = os.environ.get("RECORDING_DIR", "")
     recorders = None
+    if recording_dir and not env_bool("RECORDING_ENCRYPTED_AT_REST", default=False):
+        sys.exit(
+            "Error: RECORDING_DIR needs RECORDING_ENCRYPTED_AT_REST=1, stating that "
+            f"{recording_dir} is on encrypted storage (RFC 17.6 refuses plaintext recordings)"
+        )
     if recording_dir:
         from roomkit.recorder.base import MediaRecordingConfig, RoomRecorderBinding
 
@@ -164,6 +180,7 @@ async def main() -> None:
                 config=MediaRecordingConfig(
                     storage=recording_dir,
                     audio_sample_rate=sample_rate,
+                    storage_encrypted_at_rest=True,  # stated by RECORDING_ENCRYPTED_AT_REST=1
                 ),
                 name="main",
             ),

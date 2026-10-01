@@ -7,7 +7,10 @@ import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from roomkit.voice.pipeline.recorder.base import RecordingEncryption
 
 PCM_CODECS = {1: "pcm_s8", 2: "pcm_s16le", 4: "pcm_s32le"}
 """Codec name for a PCM sample width in bytes, as :class:`RecordingTrack` names it.
@@ -110,6 +113,22 @@ class MediaRecordingConfig:
     class — and the recorder's to interpret; the framework never reads it.
     """
 
+    encryption: RecordingEncryption | None = None
+    """Encryption applied to the finished recording (RFC §17.6).
+
+    The same :class:`~roomkit.voice.pipeline.recorder.base.RecordingEncryption`
+    the voice recorder takes. File recorders require this unless
+    ``storage_encrypted_at_rest`` declares that the storage already encrypts.
+    """
+
+    storage_encrypted_at_rest: bool = False
+    """Whether the configured storage encrypts every byte at rest.
+
+    An explicit deployment assertion, not encryption performed by RoomKit. File
+    recorders fail closed when both this and ``encryption`` are absent, so an
+    omitted security decision cannot silently create plaintext recordings.
+    """
+
 
 @dataclass
 class MediaRecordingHandle:
@@ -149,6 +168,11 @@ class MediaRecorder(ABC):
 
     A MediaRecorder receives audio and video data from one or more
     channels in a room and muxes them into a single output file.
+
+    A recorder that stores files owns encryption at rest (RFC §17.6): it
+    refuses :meth:`on_recording_start` when the config carries neither
+    ``encryption`` nor ``storage_encrypted_at_rest``, and hands each finished
+    file to the configured encryption, as ``PyAVMediaRecorder`` does.
     """
 
     @property

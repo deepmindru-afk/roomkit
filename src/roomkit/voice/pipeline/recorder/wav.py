@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import logging
 import re
 import tempfile
@@ -25,6 +24,7 @@ from roomkit.voice.pipeline.recorder.base import (
     RecordingMode,
     RecordingResult,
     RecordingTrigger,
+    encrypt_finished_recording,
 )
 
 if TYPE_CHECKING:
@@ -143,24 +143,19 @@ class WavFileRecorder(AudioRecorder):
         """Encrypt the finished files at rest (RFC §17.6), if configured.
 
         A file that cannot be encrypted is deleted rather than left in the
-        clear: a caller that asked for encryption at rest must not be handed a
-        plaintext recording because the cipher failed.
+        clear (``encrypt_finished_recording``), so it is missing from the
+        returned URLs.
         """
         if not result.urls:
             return result
         if config.encryption is None:
             result.metadata = {**result.metadata, "encryption": "storage"}
             return result
-        encrypted: list[str] = []
-        for url in result.urls:
-            try:
-                encrypted.append(config.encryption.encrypt_file(url))
-            except Exception:
-                logger.exception(
-                    "Recording encryption failed for %s — discarding the plaintext file", url
-                )
-                with contextlib.suppress(OSError):
-                    Path(url).unlink()
+        encrypted = [
+            path
+            for url in result.urls
+            if (path := encrypt_finished_recording(config.encryption, url)) is not None
+        ]
         result.urls = encrypted
         result.metadata = {**result.metadata, "encryption": config.encryption.name}
         return result

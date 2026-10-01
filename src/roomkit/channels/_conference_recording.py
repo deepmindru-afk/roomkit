@@ -338,6 +338,8 @@ class ConferenceRecording:
                     # annotate what they were handed, and two tracks must not
                     # share one mutable dict on that account.
                     metadata=dict(self._config.metadata),
+                    encryption=self._config.encryption,
+                    storage_encrypted_at_rest=self._config.storage_encrypted_at_rest,
                 ),
                 track=media_track,
                 room_id=track.room_id,

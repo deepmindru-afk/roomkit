@@ -30,6 +30,7 @@ from roomkit.recorder.base import (
     RecordingTrack,
     validate_storage_path,
 )
+from roomkit.voice.pipeline.recorder.base import encrypt_finished_recording
 
 logger = logging.getLogger("roomkit.recorder.pyav")
 
@@ -99,6 +100,11 @@ class PyAVMediaRecorder(MediaRecorder):
     # -- lifecycle -----------------------------------------------------------
 
     def on_recording_start(self, config: MediaRecordingConfig) -> MediaRecordingHandle:
+        if config.encryption is None and not config.storage_encrypted_at_rest:
+            raise ValueError(
+                "PyAVMediaRecorder requires MediaRecordingConfig.encryption or "
+                "storage_encrypted_at_rest=True"
+            )
         handle_id = uuid4().hex[:12]
         ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
         storage = config.storage or os.path.join(os.getcwd(), "recordings")
@@ -151,17 +157,32 @@ class PyAVMediaRecorder(MediaRecorder):
 
         handle.state = "stopped"
         duration = (datetime.now(UTC) - state.started_at).total_seconds()
-        size_bytes = 0
-        if os.path.exists(state.path):
-            size_bytes = os.path.getsize(state.path)
+        url, size_bytes = self._store_at_rest(state)
         return MediaRecordingResult(
             id=handle.id,
-            url=state.path,
+            url=url,
             duration_seconds=duration,
             tracks=result_tracks,
             format=state.config.format,
             size_bytes=size_bytes,
         )
+
+    @staticmethod
+    def _store_at_rest(state: _RecordingState) -> tuple[str, int]:
+        """Hand the finished file to the configured encryption (RFC §17.6).
+
+        Returns the stored file's path and size. Without ``encryption`` the
+        storage was declared encrypted and the file stays as written. A file
+        the cipher could not encrypt is deleted, and no path is returned.
+        """
+        if not os.path.exists(state.path):
+            return state.path, 0
+        path: str | None = state.path
+        if state.config.encryption is not None:
+            path = encrypt_finished_recording(state.config.encryption, state.path)
+        if path is None:
+            return "", 0
+        return path, os.path.getsize(path) if os.path.exists(path) else 0
 
     # -- track management ----------------------------------------------------
 

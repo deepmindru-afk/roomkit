@@ -18,6 +18,7 @@ from roomkit.voice.interruption import InterruptionStrategy
 
 if TYPE_CHECKING:
     from roomkit.tools.policy import ToolPolicy
+    from roomkit.voice.pipeline.recorder.base import RecordingEncryption
     from roomkit.voice.realtime.provider import RealtimeVoiceProvider
 
 
@@ -436,6 +437,16 @@ class ConferenceRecordingConfig:
 
     metadata: dict[str, Any] = field(default_factory=dict)
     """Recording metadata (room_id, participant_id, ...)."""
+
+    encryption: RecordingEncryption | None = None
+    """Encryption applied to each finished track recording (RFC §17.6).
+
+    Handed to every recording the channel opens. A file recorder refuses to
+    open one when neither this nor ``storage_encrypted_at_rest`` is set.
+    """
+
+    storage_encrypted_at_rest: bool = False
+    """Whether the storage encrypts every byte at rest: a deployment assertion."""
 
 
 # What answers a speech-to-speech provider's tool call: (room_id, tool name,
