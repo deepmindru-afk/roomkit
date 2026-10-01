@@ -130,7 +130,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     the depth 0, so a delegation started from a conference was not bounded);
     a second call under an id in flight sends nothing; a call the detach
     interrupts, or that the provider cancels while ON_TOOL_CALL judges it, is
-    reported once, as cancelled (neither was reported).
+    reported once, as cancelled (neither was reported);
+  - the participant's role a tool policy reads before each call is read
+    under the framework's lease, like every store read a channel makes.
 
 - A realtime session and a conference emit the `before_tool_use` framework
   event for every tool call, as an `AIChannel` does (RMK-306): they emitted it

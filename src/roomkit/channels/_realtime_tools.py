@@ -849,7 +849,10 @@ class RealtimeToolsMixin:
         policy = self._tool_policy
         if policy is None or not policy.role_overrides or not (self._framework and room_id):
             return None
-        participant = await self._framework.store.get_participant(room_id, participant_id)
+        # Under the framework's lease, like every store read a channel makes:
+        # a call landing while the kit closes must not read a closing store.
+        with self._framework._resource_lease():
+            participant = await self._framework.store.get_participant(room_id, participant_id)
         return participant.role if participant is not None else None
 
     async def _authorize_realtime_tool(
