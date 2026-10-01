@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import AsyncIterator
 
 from roomkit import RoomEvent, WebSocketChannel
 from roomkit.channels.websocket import StreamChunk, StreamEnd, StreamMessage, StreamStart
@@ -34,7 +35,9 @@ async def main() -> None:
         elif isinstance(msg, StreamChunk):
             print(f"[{conn_id}] chunk: {msg.delta!r}  (accumulated: {msg.text!r})")
         elif isinstance(msg, StreamEnd):
-            print(f"[{conn_id}] stream ended    final={msg.event.content.body!r}")  # type: ignore[union-attr]
+            content = msg.event.content
+            final = content.body if isinstance(content, TextContent) else "?"
+            print(f"[{conn_id}] stream ended    final={final!r}")
 
     async def on_event_streaming(conn_id: str, event: RoomEvent) -> None:
         # Streaming connections won't receive events via this path during
@@ -61,7 +64,7 @@ async def main() -> None:
 
     print(f"supports_streaming_delivery = {ws.supports_streaming_delivery}\n")
 
-    async def ai_token_stream() -> ...:  # type: ignore[type-arg]
+    async def ai_token_stream() -> AsyncIterator[str]:
         tokens = ["Hello", ",", " how", " can", " I", " help", " you", " today", "?"]
         for token in tokens:
             await asyncio.sleep(0.05)  # simulate LLM latency

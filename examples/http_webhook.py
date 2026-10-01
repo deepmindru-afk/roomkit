@@ -1,31 +1,31 @@
-"""HTTP webhook example — send and receive messages via generic HTTP.
+"""HTTP webhook example — receive and send messages via generic HTTP.
+
+Offline demo: a sample inbound HTTP payload is parsed into the room, then an
+agent's reply is delivered back to the sender through the HTTP channel.
+``MockHTTPProvider`` records that send instead of POSTing it, so no URL is
+needed and nothing leaves the machine. For a real endpoint, swap the
+provider::
+
+    from roomkit.providers.http import HTTPProviderConfig, WebhookHTTPProvider
+
+    provider = WebhookHTTPProvider(HTTPProviderConfig(webhook_url="https://example.com/hook"))
 
 Run with:
-    WEBHOOK_URL=https://example.com/hook uv run python examples/http_webhook.py
+    uv run python examples/http_webhook.py
 """
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
 import asyncio
 
-from shared import require_env
-
-from roomkit import RoomKit, WebSocketChannel
+from roomkit import InboundMessage, RoomKit, TextContent, WebSocketChannel
 from roomkit.channels import HTTPChannel
-from roomkit.providers.http import HTTPProviderConfig, WebhookHTTPProvider, parse_http_webhook
+from roomkit.providers.http import MockHTTPProvider, parse_http_webhook
 
 
 async def main() -> None:
-    # --- Configuration -------------------------------------------------------
-    env = require_env("WEBHOOK_URL")
-
-    config = HTTPProviderConfig(webhook_url=env["WEBHOOK_URL"])
-    provider = WebhookHTTPProvider(config)
+    # --- Provider ------------------------------------------------------------
+    provider = MockHTTPProvider()
 
     # --- RoomKit setup -------------------------------------------------------
     kit = RoomKit()
@@ -35,6 +35,7 @@ async def main() -> None:
     kit.register_channel(ws)
 
     await kit.create_room(room_id="demo-room")
+    # The recipient of what the room sends over HTTP.
     await kit.attach_channel(
         "demo-room",
         "http-main",
@@ -51,8 +52,22 @@ async def main() -> None:
 
     inbound = parse_http_webhook(raw_payload, channel_id="http-main")
     print(f"Parsed inbound from {inbound.sender_id}: {inbound.content.body}")  # type: ignore[union-attr]
-    result = await kit.process_inbound(inbound)
+    result = await kit.process_inbound(inbound, room_id="demo-room")
     print(f"  Processed: blocked={result.blocked}")
+
+    # --- Agent replies: the room delivers it over HTTP -----------------------
+    reply = await kit.process_inbound(
+        InboundMessage(
+            channel_id="ws-agent",
+            sender_id="agent",
+            content=TextContent(body="Thanks, we received your message."),
+        ),
+        room_id="demo-room",
+    )
+    outcome = reply.delivery_results.get("http-main")
+    print(f"\nReply delivered on http-main: {outcome.status if outcome else 'not delivered'}")
+    for sent in provider.sent:
+        print(f"  HTTP send to={sent['to']}: {sent['event'].content.body}")
 
     # --- Show conversation history -------------------------------------------
     events = await kit.store.list_events("demo-room")
@@ -60,7 +75,7 @@ async def main() -> None:
     for ev in events:
         print(f"  [{ev.source.channel_id}] {ev.content.body}")  # type: ignore[union-attr]
 
-    await provider.close()
+    await kit.close()
     print("\nDone.")
 
 

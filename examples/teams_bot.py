@@ -14,6 +14,14 @@ Certificate auth:
 
     Optionally set TEAMS_CERT_PUBLIC for the x5c JWT header (cert rotation).
 
+Environment variables:
+    TEAMS_APP_ID            Azure Bot app (client) id (required)
+    TEAMS_APP_PASSWORD      client secret (password auth)
+    TEAMS_CERT_THUMBPRINT   certificate thumbprint (certificate auth)
+    TEAMS_CERT_PRIVATE_KEY  PEM private key (certificate auth)
+    TEAMS_CERT_PUBLIC       PEM public certificate, optional (certificate auth)
+    TEAMS_TENANT_ID         Entra tenant id for a single-tenant bot (default: common)
+
 Then expose the server via ngrok or similar and register the endpoint
 (e.g. https://<host>/api/messages) in the Azure Bot configuration.
 You can also test locally with the Bot Framework Emulator.
@@ -21,6 +29,7 @@ You can also test locally with the Bot Framework Emulator.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 from pathlib import Path
@@ -32,7 +41,8 @@ from shared import require_env, run_until_stopped
 
 from roomkit import HookExecution, RoomKit
 from roomkit.channels import TeamsChannel
-from roomkit.models.enums import HookTrigger
+from roomkit.models.enums import ChannelType, HookTrigger
+from roomkit.models.event import ChannelData, EventSource, RoomEvent, TextContent
 from roomkit.providers.teams import BotFrameworkTeamsProvider, TeamsConfig
 from roomkit.providers.teams.webhook import (
     is_bot_added,
@@ -68,8 +78,8 @@ async def main() -> None:
         config = TeamsConfig(app_id=app_id, app_password=app_password, tenant_id=tenant_id)
         print("Using password-based authentication.")
     else:
-        print("Set TEAMS_APP_PASSWORD or TEAMS_CERT_THUMBPRINT + TEAMS_CERT_PRIVATE_KEY.")
-        return
+        print("Error: set TEAMS_APP_PASSWORD or TEAMS_CERT_THUMBPRINT + TEAMS_CERT_PRIVATE_KEY")
+        sys.exit(1)
     provider = BotFrameworkTeamsProvider(config)
 
     # --- RoomKit setup -------------------------------------------------------
@@ -88,9 +98,6 @@ async def main() -> None:
 
         # Echo back only when the bot is mentioned
         if mentioned and body:
-            from roomkit.models.enums import ChannelType
-            from roomkit.models.event import ChannelData, EventSource, RoomEvent, TextContent
-
             conv_id = (event.metadata or {}).get("conversation_id", "")
             if conv_id:
                 # Reply in-thread when the inbound message has a thread/reply ID
@@ -176,8 +183,10 @@ async def main() -> None:
         if activity_type == "message":
             messages = parse_teams_webhook(payload, channel_id="teams-main")
             for inbound in messages:
-                await ensure_room(conv_id)
-                result = await kit.process_inbound(inbound)
+                room_id = await ensure_room(conv_id)
+                # One room per conversation, all on the same channel: name the
+                # room, or the router refuses to guess once two rooms exist.
+                result = await kit.process_inbound(inbound, room_id=room_id)
                 print(f"  Processed: blocked={result.blocked}")
 
     async def handle_messages(request: web.Request) -> web.Response:
@@ -215,10 +224,8 @@ async def main() -> None:
     await site.start()
 
     # Keep running until SIGINT/SIGTERM
-    await run_until_stopped(kit)
+    await run_until_stopped(kit, cleanup=runner.cleanup)
 
 
 if __name__ == "__main__":
-    import asyncio
-
     asyncio.run(main())

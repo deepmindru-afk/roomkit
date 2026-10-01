@@ -11,9 +11,11 @@ everything on exit (desktop apps, edge boxes, small bots). Shows:
 Run with:
     uv run python examples/sqlite_store.py
 
-Set ROOMKIT_DB to choose the file (default: roomkit-example.db in the
-current directory). The file is removed at startup so each run tells the
-same story, and left behind at the end for inspection.
+Set ROOMKIT_DB to choose the file. By default the example uses
+roomkit-examples/sqlite-example.db under the system temp directory; that
+default file is removed at startup so each run tells the same story, and
+left behind at the end for inspection. A file named by ROOMKIT_DB is never
+deleted: the example reuses its room and appends to the history.
 
 RoomKit logs a warning about pairing SQLiteStore with the default
 InMemoryLockManager. That is expected here: the pairing is safe in a single
@@ -25,12 +27,14 @@ from __future__ import annotations
 
 import asyncio
 import os
+import tempfile
 from pathlib import Path
 
 from roomkit import (
     InboundMessage,
     RoomEvent,
     RoomKit,
+    RoomNotFoundError,
     SQLiteStore,
     TextContent,
     WebSocketChannel,
@@ -62,8 +66,12 @@ async def first_run(db_path: str) -> None:
 
     ws.register_connection("user-conn", on_recv, room_id=ROOM_ID)
 
-    room = await kit.create_room(room_id=ROOM_ID, metadata={"topic": "Billing"})
-    print(f"Room created: {room.id} (status={room.status})")
+    try:
+        room = await kit.get_room(ROOM_ID)
+        print(f"Room found in the existing file: {room.id} (event_count={room.event_count})")
+    except RoomNotFoundError:
+        room = await kit.create_room(room_id=ROOM_ID, metadata={"topic": "Billing"})
+        print(f"Room created: {room.id} (status={room.status})")
 
     await kit.attach_channel(ROOM_ID, "ws-user")
 
@@ -120,12 +128,16 @@ async def after_restart(db_path: str) -> None:
 
 
 async def main() -> None:
-    db_path = os.environ.get("ROOMKIT_DB", "roomkit-example.db")
-
-    # Start from a clean file so the example is reproducible. SQLite keeps
-    # its WAL and shared-memory files alongside the database.
-    for suffix in ("", "-wal", "-shm"):
-        Path(db_path + suffix).unlink(missing_ok=True)
+    db_path = os.environ.get("ROOMKIT_DB", "")
+    if not db_path:
+        default = Path(tempfile.gettempdir()) / "roomkit-examples" / "sqlite-example.db"
+        default.parent.mkdir(parents=True, exist_ok=True)
+        db_path = str(default)
+        # Start the example's own file clean so each run is reproducible.
+        # SQLite keeps its WAL and shared-memory files alongside the database.
+        for suffix in ("", "-wal", "-shm"):
+            Path(db_path + suffix).unlink(missing_ok=True)
+    print(f"Database file: {db_path}")
 
     print("=== First run ===")
     await first_run(db_path)
@@ -133,7 +145,7 @@ async def main() -> None:
     print("\n=== After restart (new store, new process state) ===")
     await after_restart(db_path)
 
-    print(f"\nThe database is still at {db_path} — run this again to see it recreated.")
+    print(f"\nThe database is still at {db_path} for inspection.")
 
 
 if __name__ == "__main__":

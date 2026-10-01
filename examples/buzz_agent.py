@@ -34,6 +34,14 @@ Run with:
 The auth tag is the owner's attestation over the agent's pubkey
 (``buzzkit.compute_auth_tag(owner_nsec, agent_pubkey_hex)``); without it (or
 an explicit ``owner_pubkey=``), owner commands stay inert — fail-closed.
+
+Environment variables:
+    BUZZ_RELAY_URL              (required) Buzz relay WebSocket URL
+    BUZZ_PRIVATE_KEY            (required) agent secret key (hex or nsec…)
+    BUZZ_CHANNEL_ID             (required) relay channel UUID to serve
+    BUZZ_AUTH_TAG               NIP-OA owner attestation tag JSON (optional)
+    BUZZ_EXIT_AFTER_INACTIVITY  seconds without traffic before the agent
+                                stops itself (optional, 0 = never)
 """
 
 from __future__ import annotations
@@ -47,7 +55,7 @@ import asyncio
 import os
 import time
 
-from shared import setup_logging
+from shared import require_env, setup_logging
 
 from roomkit import (
     BuzzChannel,
@@ -68,8 +76,9 @@ logger = setup_logging("buzz_agent")
 
 
 async def main() -> int:
+    env = require_env("BUZZ_RELAY_URL", "BUZZ_PRIVATE_KEY", "BUZZ_CHANNEL_ID")
     channel_id = "buzz-main"
-    relay_channel_id = os.environ["BUZZ_CHANNEL_ID"]
+    relay_channel_id = env["BUZZ_CHANNEL_ID"]
 
     # Identity from the reserved triplet (BUZZ_PRIVATE_KEY / BUZZ_RELAY_URL /
     # BUZZ_AUTH_TAG) — fail-closed: no key, no agent.

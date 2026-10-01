@@ -10,6 +10,14 @@ Requires:
 Run with:
     uv run python examples/whatsapp_personal.py
 
+Environment variables:
+    WA_SESSION_DB  path of the neonize session database (optional). It holds
+                   the linked-device credentials: treat it as a secret. The
+                   default is roomkit-examples/whatsapp/wa-session.db under the
+                   system temp directory (owner-only), which a reboot may
+                   clear, so you scan the QR code again; set WA_SESSION_DB to
+                   keep the session elsewhere.
+
 Warning:
     This uses the unofficial WhatsApp Web protocol via neonize.
     Personal use and experimentation only.
@@ -25,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import asyncio
 import logging
 import os
+import tempfile
 
 from shared import run_until_stopped
 
@@ -49,7 +58,13 @@ from roomkit.sources import WhatsAppPersonalSourceProvider
 
 async def main() -> None:
     # --- Configuration -------------------------------------------------------
-    db_path = os.environ.get("WA_SESSION_DB", "wa-session.db")
+    db_path = os.environ.get("WA_SESSION_DB", "")
+    if not db_path:
+        session_dir = Path(tempfile.gettempdir()) / "roomkit-examples" / "whatsapp"
+        session_dir.mkdir(parents=True, exist_ok=True)
+        session_dir.chmod(0o700)  # the session file is a credential
+        db_path = str(session_dir / "wa-session.db")
+    print(f"WhatsApp session database: {db_path}")
     channel_id = "wa-personal"
 
     # --- Lifecycle event handler ---------------------------------------------

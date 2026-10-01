@@ -1,6 +1,10 @@
-"""Telegram Bot example — send and receive messages via a Telegram bot.
+"""Telegram Bot example — parse Telegram updates and read the Bot API.
 
-This example simulates an inbound webhook with hardcoded JSON. In production,
+This example sends no message. It simulates inbound webhooks with hardcoded
+JSON and routes them into a room, then calls the read-only Bot API (getMe,
+and getFile when TELEGRAM_FILE_ID is set). To send, attach the Telegram
+channel with ``metadata={"telegram_chat_id": ...}``: whatever the room then
+broadcasts to that channel goes out through ``provider.send``. In production,
 you would run a web server (FastAPI, Starlette, etc.) that receives real
 webhooks from Telegram and feeds them into RoomKit.
 
@@ -151,7 +155,7 @@ async def main() -> None:
                     f"duration={inbound.metadata.get('duration')}s "
                     f"size={inbound.metadata.get('file_size')}B"
                 )
-            result = await kit.process_inbound(inbound)
+            result = await kit.process_inbound(inbound, room_id="demo-room")
             print(f"  Processed: blocked={result.blocked}")
 
     # --- Parsing without attribution -----------------------------------------
@@ -259,7 +263,7 @@ async def main() -> None:
     for ev in events:
         print(f"  [{ev.source.channel_id}] {ev.content.body}")  # type: ignore[union-attr]
 
-    await provider.close()
+    await kit.close()  # also closes the provider's HTTP client
     print("\nDone.")
 
 

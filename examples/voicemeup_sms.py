@@ -1,4 +1,11 @@
-"""VoiceMeUp SMS example — send an SMS and parse an inbound webhook.
+"""VoiceMeUp SMS example — parse an inbound VoiceMeUp webhook into a room.
+
+Offline demo: the provider is built with placeholder sandbox credentials and
+only its webhook parser is used, so nothing is sent and no network call is
+made. To send SMS for real, use your VoiceMeUp credentials and attach the SMS
+channel with the recipient's number (``metadata={"phone_number": "+1..."}``):
+whatever the room then broadcasts to that channel goes out through
+``provider.send``.
 
 Run with:
     uv run python examples/voicemeup_sms.py
@@ -53,7 +60,7 @@ async def main() -> None:
     print(f"  External ID: {inbound.external_id}")
     print(f"  Metadata: {inbound.metadata}")
 
-    result = await kit.process_inbound(inbound)
+    result = await kit.process_inbound(inbound, room_id="demo-room")
     print(f"  Processed: blocked={result.blocked}")
 
     # --- Show conversation history -------------------------------------------
@@ -62,7 +69,7 @@ async def main() -> None:
     for ev in events:
         print(f"  [{ev.source.channel_id}] {ev.content.body}")  # type: ignore[union-attr]
 
-    await provider.close()
+    await kit.close()  # also closes the provider's HTTP client
     print("\nDone.")
 
 

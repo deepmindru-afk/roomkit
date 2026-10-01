@@ -1,35 +1,30 @@
-"""Facebook Messenger example — send and receive messages via Messenger.
+"""Facebook Messenger example — receive and send messages via Messenger.
+
+Offline demo: a sample Messenger webhook is parsed into the room, then an
+agent's reply is delivered back to the user through the Messenger channel.
+``MockMessengerProvider`` records that send instead of calling the Graph API,
+so no token is needed and nothing is sent. For a real page, swap the provider::
+
+    from roomkit.providers.messenger import FacebookMessengerProvider, MessengerConfig
+
+    provider = FacebookMessengerProvider(MessengerConfig(page_access_token=...))
 
 Run with:
-    FB_PAGE_ACCESS_TOKEN=... uv run python examples/facebook_messenger.py
+    uv run python examples/facebook_messenger.py
 """
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
 import asyncio
 
-from shared import require_env
-
-from roomkit import RoomKit, WebSocketChannel
+from roomkit import InboundMessage, RoomKit, TextContent, WebSocketChannel
 from roomkit.channels import MessengerChannel
-from roomkit.providers.messenger import (
-    FacebookMessengerProvider,
-    MessengerConfig,
-    parse_messenger_webhook,
-)
+from roomkit.providers.messenger import MockMessengerProvider, parse_messenger_webhook
 
 
 async def main() -> None:
-    # --- Configuration -------------------------------------------------------
-    env = require_env("FB_PAGE_ACCESS_TOKEN")
-
-    config = MessengerConfig(page_access_token=env["FB_PAGE_ACCESS_TOKEN"])
-    provider = FacebookMessengerProvider(config)
+    # --- Provider ------------------------------------------------------------
+    provider = MockMessengerProvider()
 
     # --- RoomKit setup -------------------------------------------------------
     kit = RoomKit()
@@ -39,10 +34,11 @@ async def main() -> None:
     kit.register_channel(ws)
 
     await kit.create_room(room_id="demo-room")
+    # The recipient of what the room sends on Messenger: the user's PSID.
     await kit.attach_channel(
         "demo-room",
         "msg-main",
-        metadata={"facebook_user_id": "RECIPIENT_PSID"},
+        metadata={"facebook_user_id": "USER_PSID"},
     )
     await kit.attach_channel("demo-room", "ws-agent")
 
@@ -71,8 +67,22 @@ async def main() -> None:
     inbound_messages = parse_messenger_webhook(raw_webhook, channel_id="msg-main")
     for inbound in inbound_messages:
         print(f"Parsed inbound from {inbound.sender_id}: {inbound.content.body}")  # type: ignore[union-attr]
-        result = await kit.process_inbound(inbound)
+        result = await kit.process_inbound(inbound, room_id="demo-room")
         print(f"  Processed: blocked={result.blocked}")
+
+    # --- Agent replies: the room delivers it to Messenger --------------------
+    reply = await kit.process_inbound(
+        InboundMessage(
+            channel_id="ws-agent",
+            sender_id="agent",
+            content=TextContent(body="Hi! How can I help?"),
+        ),
+        room_id="demo-room",
+    )
+    outcome = reply.delivery_results.get("msg-main")
+    print(f"\nReply delivered on msg-main: {outcome.status if outcome else 'not delivered'}")
+    for sent in provider.sent:
+        print(f"  Messenger send to={sent['to']}: {sent['event'].content.body}")
 
     # --- Show conversation history -------------------------------------------
     events = await kit.store.list_events("demo-room")
@@ -80,7 +90,7 @@ async def main() -> None:
     for ev in events:
         print(f"  [{ev.source.channel_id}] {ev.content.body}")  # type: ignore[union-attr]
 
-    await provider.close()
+    await kit.close()
     print("\nDone.")
 
 

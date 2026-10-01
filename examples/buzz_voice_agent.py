@@ -14,13 +14,13 @@ Requirements:
     pip install roomkit[buzz,realtime-gemini]
 
 Run with:
-    GEMINI_API_KEY=... BUZZ_RELAY_URL=wss://... BUZZ_NSEC=nsec1... \
+    GEMINI_API_KEY=... BUZZ_RELAY_URL=wss://... BUZZ_PRIVATE_KEY=nsec1... \
         BUZZ_CHANNEL_ID=<uuid> uv run python examples/buzz_voice_agent.py
 
 Environment variables:
     GEMINI_API_KEY     (required) Gemini API key
     BUZZ_RELAY_URL     (required) Buzz relay WebSocket URL
-    BUZZ_NSEC          (required) agent secret key (hex or nsec…)
+    BUZZ_PRIVATE_KEY   (required) agent secret key (hex or nsec…)
     BUZZ_CHANNEL_ID    (required) parent channel UUID to watch for huddles
     BUZZ_HUDDLE_ID     join this huddle immediately instead of watching
     BUZZ_AUTH_TAG      NIP-OA owner attestation tag JSON (optional)
@@ -57,7 +57,7 @@ DEFAULT_PROMPT = (
 
 
 async def main() -> None:
-    env = require_env("GEMINI_API_KEY", "BUZZ_RELAY_URL", "BUZZ_NSEC", "BUZZ_CHANNEL_ID")
+    env = require_env("GEMINI_API_KEY", "BUZZ_RELAY_URL", "BUZZ_PRIVATE_KEY", "BUZZ_CHANNEL_ID")
 
     kit = RoomKit()
     voice = RealtimeVoiceChannel(
@@ -81,7 +81,7 @@ async def main() -> None:
         voice_channel=voice,
         config=BuzzConfig(
             relay_url=env["BUZZ_RELAY_URL"],
-            private_key=env["BUZZ_NSEC"],
+            private_key=env["BUZZ_PRIVATE_KEY"],
             auth_tag=os.environ.get("BUZZ_AUTH_TAG"),
         ),
         parent_channel_id=env["BUZZ_CHANNEL_ID"],

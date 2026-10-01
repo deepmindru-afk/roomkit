@@ -2,10 +2,12 @@
 
 This example demonstrates the full Teams webhook parsing and RoomKit pipeline
 without requiring Azure credentials or botbuilder-core. It simulates inbound
-Activities as they would arrive from the Bot Framework.
+Activities as they would arrive from the Bot Framework, routes each Teams
+conversation to its own room, and echoes every message back through the
+provider (the mock records the send instead of calling Teams).
 
 Run with:
-    python examples/teams_echo.py
+    uv run python examples/teams_echo.py
 """
 
 from __future__ import annotations
@@ -14,7 +16,8 @@ import asyncio
 
 from roomkit import HookExecution, RoomKit
 from roomkit.channels import TeamsChannel
-from roomkit.models.enums import HookTrigger
+from roomkit.models.enums import ChannelType, HookTrigger
+from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.providers.teams import MockTeamsProvider
 from roomkit.providers.teams.webhook import parse_teams_webhook
 
@@ -25,12 +28,19 @@ async def main() -> None:
     kit = RoomKit()
     kit.register_channel(TeamsChannel("teams-main", provider=provider))
 
-    # Echo hook — send back whatever the user said
+    # Echo hook — send back whatever the user said, through the provider
     @kit.hook(HookTrigger.AFTER_BROADCAST, execution=HookExecution.ASYNC)
     async def echo(event, context):  # noqa: ARG001
         body = getattr(event.content, "body", "")
-        if body:
-            print(f"  Echo would reply: '{body}'")
+        conv_id = (event.metadata or {}).get("conversation_id", "")
+        if body and conv_id:
+            reply = RoomEvent(
+                room_id=event.room_id,
+                source=EventSource(channel_id="teams-main", channel_type=ChannelType.TEAMS),
+                content=TextContent(body=f"Echo: {body}"),
+            )
+            result = await provider.send(reply, to=conv_id)
+            print(f"  Echo sent to {conv_id}: success={result.success}")
 
     # --- Simulate inbound Activities -----------------------------------------
 
@@ -41,7 +51,7 @@ async def main() -> None:
         "text": "Hello from Teams!",
         "from": {"id": "user-aad-id-123", "name": "Alice"},
         "conversation": {
-            "id": "a]conv-personal-001",
+            "id": "a:conv-personal-001",
             "conversationType": "personal",
         },
         "recipient": {"id": "bot-aad-id", "name": "MyBot"},
@@ -69,7 +79,7 @@ async def main() -> None:
         "type": "conversationUpdate",
         "id": "activity-003",
         "membersAdded": [{"id": "bot-aad-id"}],
-        "conversation": {"id": "conv-personal-001"},
+        "conversation": {"id": "a:conv-personal-001"},
     }
 
     for label, payload in [
@@ -102,7 +112,9 @@ async def main() -> None:
                     metadata={"teams_conversation_id": conv_id},
                 )
 
-            result = await kit.process_inbound(inbound)
+            # One room per conversation, all on the same channel: name the
+            # room, or the router refuses to guess once two rooms exist.
+            result = await kit.process_inbound(inbound, room_id=room_id)
             print(f"  Blocked: {result.blocked}")
 
     # --- Show what the mock provider captured --------------------------------
@@ -117,6 +129,7 @@ async def main() -> None:
         for ev in events:
             print(f"  [{ev.source.channel_id}] {ev.content.body}")  # type: ignore[union-attr]
 
+    await kit.close()
     print("\nDone.")
 
 

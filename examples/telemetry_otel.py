@@ -4,7 +4,7 @@ Demonstrates how to use RoomKit telemetry with OpenTelemetry's
 TracerProvider and ConsoleSpanExporter.
 
 Run with:
-    pip install opentelemetry-api opentelemetry-sdk
+    pip install roomkit[opentelemetry]
     uv run python examples/telemetry_otel.py
 """
 
@@ -74,7 +74,7 @@ async def main() -> None:
         )
     )
 
-    telemetry.close()
+    await kit.close()  # also ends open spans and flushes the telemetry provider
     provider.shutdown()
     print("\n--- Done ---")
 

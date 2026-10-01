@@ -63,7 +63,7 @@ async def main() -> None:
         )
     )
 
-    telemetry.close()
+    await kit.close()  # also ends open spans and flushes the telemetry provider
     print("\n--- Done ---")
 
 

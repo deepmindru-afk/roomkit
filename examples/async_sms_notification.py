@@ -11,6 +11,13 @@ Key mechanism:
        via the store.
     3. On the next voice turn the AI naturally surfaces the SMS.
 
+The SMS channel is attached WRITE_ONLY: it brings Mom's message in, but the
+room's voice traffic is not texted back to her. Sending the user's reply
+would be a tool the AI calls; the mock AI only offers to send it.
+
+Everything is mocked (voice backend, VAD, STT, TTS, AI, SMS): no key, no
+audio device, no SMS sent.
+
 Run with:
     uv run python examples/async_sms_notification.py
 """
@@ -27,8 +34,10 @@ import asyncio
 from shared import setup_console, setup_logging
 
 from roomkit import (
+    Access,
     ChannelCategory,
     EventFilter,
+    HookExecution,
     HookResult,
     HookTrigger,
     InboundMessage,
@@ -58,10 +67,14 @@ setup_logging("async_sms_notification")
 # Pending SMS messages queued for the AI to mention
 pending_sms: list[dict[str, str]] = []
 
+# Without an AEC, the voice channel discards speech for 2 s after its
+# playback ends (echo decay window): a turn sent sooner is dropped.
+ECHO_DRAIN_S = 2.2
+
 
 async def main() -> None:
     kit = RoomKit()
-    setup_console(kit)
+    console_cleanup = setup_console(kit)
 
     # -- Providers ---------------------------------------------------------
 
@@ -121,7 +134,7 @@ async def main() -> None:
             "Perfect day to be outside!",
             "By the way, you just received an SMS from Mom. Would you like me to read it for you?",
             'She says: "Don\'t forget dinner tonight at 7!" Would you like to send a reply?',
-            "Done! I've sent your reply to Mom.",
+            "Got it: \"I won't forget, I'll be there for sure.\" Shall I send it to Mom?",
         ]
     )
 
@@ -152,7 +165,8 @@ async def main() -> None:
 
     await kit.create_room(room_id="call-room")
     await kit.attach_channel("call-room", "voice-call")
-    await kit.attach_channel("call-room", "sms-mobile")
+    # WRITE_ONLY: the SMS comes in, nothing from the call goes out by SMS.
+    await kit.attach_channel("call-room", "sms-mobile", access=Access.WRITE_ONLY)
     await kit.attach_channel("call-room", "ai-assistant", category=ChannelCategory.INTELLIGENCE)
 
     # -- Hook: intercept SMS, queue for AI ---------------------------------
@@ -197,6 +211,15 @@ async def main() -> None:
 
         return HookResult.block(reason="SMS queued for AI notification")
 
+    # -- Hook: know when the AI's reply has been spoken --------------------
+
+    spoken = asyncio.Event()
+
+    @kit.hook(HookTrigger.AFTER_TTS, execution=HookExecution.ASYNC, name="reply_spoken")
+    async def on_spoken(text: str, ctx: RoomContext) -> None:
+        print(f'[voice] AI said: "{text}"')
+        spoken.set()
+
     # -- Voice session -----------------------------------------------------
 
     session = await backend.connect("call-room", "user-1", "voice-call")
@@ -206,11 +229,16 @@ async def main() -> None:
     audio_data = b"\x00" * 640
 
     async def voice_turn() -> None:
-        """Simulate one voice turn (3 audio frames → VAD → STT → AI)."""
+        """Simulate one voice turn (3 audio frames → VAD → STT → AI → TTS)."""
+        spoken.clear()
         for _ in range(3):
             frame = AudioFrame(data=audio_data, sample_rate=16000)
             await backend.simulate_audio_received(session, frame)
-        await asyncio.sleep(0.1)
+        # Wait until the reply is spoken, then until the echo window closes,
+        # so the next simulated turn is heard.
+        await asyncio.wait_for(spoken.wait(), timeout=10.0)
+        await voice.wait_playback_done("call-room")
+        await asyncio.sleep(ECHO_DRAIN_S)
 
     # -- Phase 1: Normal voice conversation --------------------------------
 
@@ -233,6 +261,8 @@ async def main() -> None:
 
     print("\n--- Phase 3: User speaks, AI mentions the SMS ---")
     await voice_turn()
+    # The system prompt the AI received for this turn, updated by the hook.
+    print(f"[ai] System prompt of this turn:\n{ai_provider.calls[-1].system_prompt}")
 
     # -- Phase 4: AI reads the SMS -----------------------------------------
 
@@ -241,7 +271,7 @@ async def main() -> None:
 
     # -- Phase 5: User replies, AI sends it --------------------------------
 
-    print("\n--- Phase 5: User dictates reply, AI sends SMS ---")
+    print("\n--- Phase 5: User dictates a reply, AI offers to send it ---")
     await voice_turn()
 
     # -- Conversation timeline ---------------------------------------------
@@ -259,6 +289,10 @@ async def main() -> None:
             suffix = f"  [BLOCKED: {ev.blocked_by}]" if ev.blocked_by else ""
             print(f"  [{tag:>5}] {ev.content.body}{suffix}")
 
+    print(f"\nSMS sent by the mock provider: {len(sms_provider.sent)}")
+
+    if console_cleanup is not None:
+        await console_cleanup()
     await kit.close()
     print("\nDone!")
 

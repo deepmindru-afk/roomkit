@@ -1,11 +1,17 @@
 """Persistent delivery with InMemoryDeliveryBackend.
 
-Demonstrates the delivery backend pattern — enqueue/dequeue lifecycle
-with a background worker. Items are enqueued by ``kit.deliver()`` and
-executed asynchronously by the worker loop.
+Demonstrates the delivery backend pattern: ``kit.deliver()`` enqueues an
+item and returns ``queued`` at once; a background worker, started when the
+kit is entered (``async with kit``), dequeues it, publishes the content into
+the room and fires ``AFTER_DELIVER`` with the outcome. The script prints the
+queue depth before and after, and waits for every ``AFTER_DELIVER``.
 
-This example uses the in-memory backend (no external deps). For
-production, swap with ``RedisDeliveryBackend``.
+Without a delivery backend, ``kit.deliver()`` runs in-process and returns
+the final outcome instead of ``queued``.
+
+This example uses the in-memory backend and a mock AI (no external deps, no
+key). For production, swap with ``RedisDeliveryBackend`` (see
+``delivery_redis.py``).
 
 Run with:
     uv run python examples/delivery_backend.py
@@ -23,77 +29,97 @@ from shared import setup_logging
 
 from roomkit import (
     Agent,
-    CLIChannel,
+    ChannelCategory,
     HookExecution,
     HookTrigger,
     InMemoryDeliveryBackend,
     RoomKit,
-    Supervisor,
     WaitForIdle,
+    WebSocketChannel,
 )
 from roomkit.models.context import RoomContext
-from roomkit.models.event import RoomEvent
+from roomkit.models.event import RoomEvent, TextContent
 from roomkit.providers.ai.mock import MockAIProvider
 
 logger = setup_logging("delivery_backend")
 logging.getLogger("roomkit.delivery").setLevel(logging.DEBUG)
 
+NOTIFICATIONS = [
+    "Background job 17 finished: the nightly report is ready.",
+    "Background job 18 failed: the export server timed out.",
+]
+
 
 async def main() -> None:
-    supervisor = Agent(
-        "agent-supervisor",
-        provider=MockAIProvider(responses=["Let me check.", "Here are the results."]),
-        role="Supervisor",
-        system_prompt="You coordinate work.",
-    )
-
-    worker = Agent(
-        "agent-worker",
-        provider=MockAIProvider(responses=["Analysis complete: all systems green."]),
-        role="Analyst",
+    assistant = Agent(
+        "agent-assistant",
+        provider=MockAIProvider(
+            responses=[
+                "Good news: your nightly report is ready.",
+                "Heads up: the export failed, I will retry it.",
+            ]
+        ),
+        role="Assistant",
+        system_prompt="Tell the user about background job results.",
     )
 
     # InMemoryDeliveryBackend: items are enqueued and processed by a
-    # background worker task.  Replace with RedisDeliveryBackend for
+    # background worker task. Replace with RedisDeliveryBackend for
     # production persistence.
     backend = InMemoryDeliveryBackend()
 
-    kit = RoomKit(
-        delivery_strategy=WaitForIdle(buffer=1.0),
-        delivery_backend=backend,
-        orchestration=Supervisor(
-            supervisor=supervisor,
-            workers=[worker],
-            strategy="sequential",
-            auto_delegate=True,
-        ),
-    )
+    kit = RoomKit(delivery_strategy=WaitForIdle(buffer=1.0), delivery_backend=backend)
+
+    delivered = asyncio.Event()
+    outcomes: list[str] = []
 
     @kit.hook(HookTrigger.AFTER_DELIVER, execution=HookExecution.ASYNC)
     async def on_delivered(event: RoomEvent, ctx: RoomContext) -> None:
+        outcome = event.metadata.get("delivery_outcome", {})
         error = event.metadata.get("error")
-        status = "FAILED" if error else "OK"
-        logger.info("Delivery %s: %s", status, error or "success")
-
-    cli = CLIChannel("cli")
-    kit.register_channel(cli)
-
-    async with kit:
-        await kit.create_room(room_id="demo")
-        await kit.attach_channel("demo", "cli")
-
-        depth = await backend.get_queue_depth()
-        logger.info("Queue depth at start: %d", depth)
-
-        await cli.run(
-            kit,
-            room_id="demo",
-            welcome="=== Delivery Backend Demo ===\nType a message.\n",
+        status = outcome.get("status", "unknown")
+        logger.info(
+            "AFTER_DELIVER item=%s status=%s%s",
+            event.metadata.get("delivery_item_id"),
+            status,
+            f" error={error}" if error else "",
         )
+        outcomes.append(status)
+        if len(outcomes) == len(NOTIFICATIONS):
+            delivered.set()
+
+    ws = WebSocketChannel("ws-user")
+    kit.register_channel(ws)
+    kit.register_channel(assistant)
+
+    async def on_user_receives(_conn: str, event: RoomEvent) -> None:
+        if isinstance(event.content, TextContent):
+            logger.info("User sees [%s]: %s", event.source.channel_id, event.content.body)
+
+    ws.register_connection("user-conn", on_user_receives, room_id="demo")
+
+    async with kit:  # starts the delivery worker
+        await kit.create_room(room_id="demo")
+        await kit.attach_channel("demo", "ws-user")
+        await kit.attach_channel("demo", "agent-assistant", category=ChannelCategory.INTELLIGENCE)
+
+        logger.info("Queue depth before: %d", await backend.get_queue_depth())
+
+        for text in NOTIFICATIONS:
+            outcome = await kit.deliver("demo", text, channel_id="ws-user")
+            logger.info("kit.deliver() -> %s (item %s)", outcome.status, outcome.delivery_item_id)
+
+        logger.info("Queue depth after enqueue: %d", await backend.get_queue_depth())
+
+        await asyncio.wait_for(delivered.wait(), timeout=15.0)
+
+        logger.info("Queue depth after the worker ran: %d", await backend.get_queue_depth())
+        dead = await backend.get_dead_letter_items()
+        logger.info("Dead-lettered items: %d", len(dead))
+
+    if any(status != "sent" for status in outcomes):
+        sys.exit(1)
 
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        pass
+    asyncio.run(main())
