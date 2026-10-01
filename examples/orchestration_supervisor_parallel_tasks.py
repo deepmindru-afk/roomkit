@@ -9,7 +9,7 @@ delegates work; the framework controls the execution flow.
 Requires ``ANTHROPIC_API_KEY`` environment variable.
 
 Run with:
-    ANTHROPIC_API_KEY=sk-... uv run python examples/orchestration_parallel_tasks.py
+    ANTHROPIC_API_KEY=sk-... uv run python examples/orchestration_supervisor_parallel_tasks.py
 """
 
 from __future__ import annotations

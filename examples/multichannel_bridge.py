@@ -40,14 +40,17 @@ async def main() -> None:
     # WebSocket: real-time web client
     ws = WebSocketChannel("ws-webapp")
 
-    # SMS: mobile user via text message (mock provider)
-    sms = SMSChannel("sms-mobile", provider=MockSMSProvider())
+    # SMS: mobile user via text message (mock provider records what it sends)
+    sms_provider = MockSMSProvider()
+    sms = SMSChannel("sms-mobile", provider=sms_provider)
 
     # Email: email participant (mock provider)
-    email = EmailChannel("email-user", provider=MockEmailProvider())
+    email_provider = MockEmailProvider()
+    email = EmailChannel("email-user", provider=email_provider)
 
     # HTTP: external system integration (mock provider)
-    http = HTTPChannel("http-crm", provider=MockHTTPProvider())
+    http_provider = MockHTTPProvider()
+    http = HTTPChannel("http-crm", provider=http_provider)
 
     # AI: intelligent assistant
     ai = AIChannel(
@@ -67,7 +70,6 @@ async def main() -> None:
 
     # --- Track messages per channel ---
     ws_inbox: list[RoomEvent] = []
-    sms_inbox: list[RoomEvent] = []  # noqa: F841
 
     async def ws_recv(_conn: str, event: RoomEvent) -> None:
         ws_inbox.append(event)
@@ -75,6 +77,8 @@ async def main() -> None:
     ws.register_connection("webapp-conn", ws_recv, room_id="bridge-room")
 
     # --- Create room and attach all channels ---
+    # Each transport reads its recipient from its binding's metadata:
+    # phone_number (SMS), email_address (email), recipient_id (HTTP webhook URL).
     await kit.create_room(
         room_id="bridge-room",
         metadata={"topic": "Customer Support", "priority": "high"},
@@ -84,17 +88,17 @@ async def main() -> None:
     await kit.attach_channel(
         "bridge-room",
         "sms-mobile",
-        metadata={"recipient_phone": "+15551234567"},
+        metadata={"phone_number": "+15551234567"},
     )
     await kit.attach_channel(
         "bridge-room",
         "email-user",
-        metadata={"recipient_email": "user@example.com"},
+        metadata={"email_address": "user@example.com"},
     )
     await kit.attach_channel(
         "bridge-room",
         "http-crm",
-        metadata={"webhook_url": "https://crm.example.com/api/messages"},
+        metadata={"recipient_id": "https://crm.example.com/api/messages"},
     )
     await kit.attach_channel(
         "bridge-room",
@@ -139,6 +143,18 @@ async def main() -> None:
     for ev in ws_inbox:
         if isinstance(ev.content, TextContent):
             print(f"  [{ev.source.channel_id}] {ev.content.body}")
+
+    # The mock providers record what each transport sent, and to whom.
+    for label, provider in (
+        ("SMS", sms_provider),
+        ("Email", email_provider),
+        ("HTTP", http_provider),
+    ):
+        print(f"\n--- {label} sent ({len(provider.sent)} messages) ---")
+        for sent in provider.sent:
+            ev = sent["event"]
+            if isinstance(ev, RoomEvent) and isinstance(ev.content, TextContent):
+                print(f"  to {sent['to']}: [{ev.source.channel_id}] {ev.content.body}")
 
     # --- Show full conversation timeline ---
     events = await kit.store.list_events("bridge-room")

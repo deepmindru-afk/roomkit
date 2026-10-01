@@ -3,10 +3,10 @@
 Demonstrates how to implement a custom IdentityResolver to identify
 inbound message senders. Shows:
 - Subclassing IdentityResolver with a custom resolve() method
-- MockIdentityResolver for quick testing
 - IdentityResult statuses: IDENTIFIED, AMBIGUOUS, UNKNOWN
 - Identity hooks: ON_IDENTITY_UNKNOWN, ON_IDENTITY_AMBIGUOUS
-- IdentityHookResult for handling unknown senders
+- IdentityHookResult.resolved() to pick a candidate for an ambiguous sender,
+  IdentityHookResult.pending() to admit an unknown one as a pending participant
 
 Run with:
     uv run python examples/custom_identity_resolver.py

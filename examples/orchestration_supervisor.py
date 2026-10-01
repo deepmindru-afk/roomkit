@@ -5,8 +5,8 @@ per-worker ``delegate_to_<id>`` tools are injected and the AI
 decides when to call them.
 
 Compare with:
-- ``orchestration_content_workflow.py`` — ``strategy="sequential"``
-- ``orchestration_parallel_tasks.py`` — ``strategy="parallel"``
+- ``orchestration_supervisor_sequential_content_workflow.py`` — ``strategy="sequential"``
+- ``orchestration_supervisor_parallel_tasks.py`` — ``strategy="parallel"``
 
 Run with:
     uv run python examples/orchestration_supervisor.py
@@ -16,9 +16,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
-
-logging.getLogger("roomkit").setLevel(logging.ERROR)
 
 from roomkit import Agent, InboundMessage, RoomKit, Supervisor, TextContent, WebSocketChannel
 from roomkit.memory.sliding_window import SlidingWindowMemory

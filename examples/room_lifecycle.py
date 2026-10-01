@@ -127,16 +127,18 @@ async def main() -> None:
 
     # --- Room 3: check_all_timers for batch processing ---
     print("\n=== Room 3: Batch timer check ===")
-    # Create already-idle room directly via the timers= param
-    await kit.create_room(
-        room_id="room-batch",
-        timers=RoomTimers(
-            inactive_after_seconds=2,
-            last_activity_at=datetime.now(UTC) - timedelta(seconds=3),  # already idle
-        ),
-    )
+    await kit.create_room(room_id="room-batch", timers=RoomTimers(inactive_after_seconds=2))
     await kit.attach_channel("room-batch", "ws-user")
     ws.subscribe("conn", "room-batch")
+    # Attaching a channel counts as activity: backdate once it is attached,
+    # so the room has been idle for 3s (> 2s threshold).
+    await kit.set_room_timers(
+        "room-batch",
+        RoomTimers(
+            inactive_after_seconds=2,
+            last_activity_at=datetime.now(UTC) - timedelta(seconds=3),
+        ),
+    )
 
     transitioned = await kit.check_all_timers()
     print(f"  Batch check: {len(transitioned)} room(s) transitioned")

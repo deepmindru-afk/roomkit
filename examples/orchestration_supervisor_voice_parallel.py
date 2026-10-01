@@ -12,7 +12,7 @@ The framework handles everything:
     Human (voice) → Grok → [Technical | Business] → Grok → Human (voice)
 
 Requirements:
-    pip install roomkit[local-audio] websockets aec-audio-processing
+    pip install "roomkit[local-audio,webrtc-aec,websocket,anthropic]"
 
 Run with:
     XAI_API_KEY=xai-... ANTHROPIC_API_KEY=sk-... \\
@@ -23,6 +23,7 @@ Environment variables:
     ANTHROPIC_API_KEY   (required) Anthropic API key for workers
     XAI_MODEL           Grok model (default: grok-2-audio)
     XAI_VOICE           Voice preset: eve | ara | rex | sal | leo (default: eve)
+    CONSOLE             Set to 1 for the voice console dashboard (needs roomkit[console])
 """
 
 from __future__ import annotations
@@ -157,7 +158,7 @@ async def main() -> None:
         "voice",
         provider=xai_provider,
         transport=transport,
-        system_prompt=supervisor._system_prompt or "",
+        system_prompt=supervisor.system_prompt or "",
         voice=xai_config.voice,
         input_sample_rate=sample_rate,
         output_sample_rate=sample_rate,

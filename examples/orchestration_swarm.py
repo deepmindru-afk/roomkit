@@ -14,12 +14,8 @@ Run with:
 from __future__ import annotations
 
 import asyncio
-import logging
 
-# Suppress chain-depth warnings from AI-to-AI reentry (expected in multi-agent setups)
-logging.getLogger("roomkit").setLevel(logging.ERROR)
-
-from roomkit import Agent, InboundMessage, RoomKit, Swarm, TextContent, WebSocketChannel
+from roomkit import Agent, EventType, InboundMessage, RoomKit, Swarm, TextContent, WebSocketChannel
 from roomkit.memory.sliding_window import SlidingWindowMemory
 from roomkit.models.event import RoomEvent
 from roomkit.orchestration.handoff import HandoffMemoryProvider
@@ -31,9 +27,13 @@ from roomkit.providers.ai.mock import MockAIProvider
 
 
 def find_reply(events: list[RoomEvent], agent_id: str, start: int = 0) -> RoomEvent | None:
-    """Find the first event from a specific agent after `start` index."""
+    """Find the first message from a specific agent after `start` index.
+
+    Only MESSAGE events: an agent's channel also carries system notices
+    (a handoff announcement, for one) that are not what it said.
+    """
     for event in events[start:]:
-        if event.source.channel_id == agent_id:
+        if event.source.channel_id == agent_id and event.type == EventType.MESSAGE:
             return event
     return None
 

@@ -2,15 +2,17 @@
 
 Demonstrates the first-class delegation API:
 
-1. User talks to a voice agent on a call
-2. User asks "Review the last PR and email me the summary"
-3. Voice agent calls ``kit.delegate()`` → child room created automatically
-4. The child room shares the parent's EmailChannel
+1. User talks to a voice agent on a call (mock backend, VAD, STT and TTS)
+2. User asks for a review of the latest PR
+3. The script calls ``kit.delegate()`` → child room created automatically
+4. The child room shares the parent's EmailChannel: what is broadcast there
+   reaches it — the task brief; the reviewer's answer is collected for the
+   hand-back and stored, not broadcast
 5. PR reviewer works in the background — its own event history
-6. Voice conversation continues uninterrupted
+6. Voice conversation continues uninterrupted (turn 2 while the task runs)
 7. When the child room completes, the result is handed back to the voice agent
    as an instruction through ``kit.deliver()`` (strategy and delivery hooks apply)
-8. Voice agent tells the user the result
+8. Voice agent tells the user the result, the user thanks it (turn 3)
 
 Key concept:
     A background task IS a child room.  ``kit.delegate()`` handles the
@@ -24,7 +26,6 @@ Run with:
 from __future__ import annotations
 
 import asyncio
-import logging
 import sys
 from pathlib import Path
 
@@ -43,8 +44,10 @@ from roomkit.channels import EmailChannel
 from roomkit.channels.agent import Agent
 from roomkit.channels.ai import AIChannel
 from roomkit.models.event import SystemContent
+from roomkit.providers.ai import AIContext, AIResponse
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.providers.email.mock import MockEmailProvider
+from roomkit.voice import VoiceCapability
 from roomkit.voice.audio_frame import AudioFrame
 from roomkit.voice.backends.mock import MockVoiceBackend
 from roomkit.voice.pipeline import (
@@ -57,8 +60,22 @@ from roomkit.voice.stt.mock import MockSTTProvider
 from roomkit.voice.tts.mock import MockTTSProvider
 
 logger = setup_logging("example.background_task")
-# Suppress noisy voice pipeline errors from mock VAD audio frames
-logging.getLogger("roomkit.voice").setLevel(logging.CRITICAL)
+
+# What the mock VAD hands the STT at each end of speech: 100 ms of 16 kHz
+# 16-bit mono PCM silence (an even byte count, as PCM requires).
+_SPEECH = b"\x00\x00" * 1600
+
+# How long the mock PR reviewer takes: long enough for the user's second
+# turn to happen while it works.
+_REVIEW_SECONDS = 1.0
+
+
+class _SlowReviewerAI(MockAIProvider):
+    """A scripted reviewer that takes a while, like a real review would."""
+
+    async def generate(self, context: AIContext) -> AIResponse:
+        await asyncio.sleep(_REVIEW_SECONDS)
+        return await super().generate(context)
 
 
 async def _show_hand_back(kit: RoomKit, voice_ai: MockAIProvider) -> None:
@@ -79,28 +96,31 @@ async def main() -> None:
 
     # ── Providers ─────────────────────────────────────────────────────
 
-    backend = MockVoiceBackend()
+    # The caller's device cancels its own echo, as a browser or a phone does:
+    # the user may answer as soon as the agent stops.  Without it, the channel
+    # treats speech heard in the 2 s after each reply as echo and drops it.
+    backend = MockVoiceBackend(capabilities=VoiceCapability.NATIVE_AEC)
 
     vad = MockVADProvider(
         events=[
             # Turn 1 — user asks for PR review
             VADEvent(type=VADEventType.SPEECH_START, confidence=0.95),
             None,
-            VADEvent(type=VADEventType.SPEECH_END, audio_bytes=b"audio-1", duration_ms=2000.0),
+            VADEvent(type=VADEventType.SPEECH_END, audio_bytes=_SPEECH, duration_ms=2000.0),
             # Turn 2 — user chats while task runs
             VADEvent(type=VADEventType.SPEECH_START, confidence=0.93),
             None,
-            VADEvent(type=VADEventType.SPEECH_END, audio_bytes=b"audio-2", duration_ms=1500.0),
-            # Turn 3 — agent delivers the result
+            VADEvent(type=VADEventType.SPEECH_END, audio_bytes=_SPEECH, duration_ms=1500.0),
+            # Turn 3 — user thanks the agent once it has relayed the result
             VADEvent(type=VADEventType.SPEECH_START, confidence=0.94),
             None,
-            VADEvent(type=VADEventType.SPEECH_END, audio_bytes=b"audio-3", duration_ms=1000.0),
+            VADEvent(type=VADEventType.SPEECH_END, audio_bytes=_SPEECH, duration_ms=1000.0),
         ]
     )
 
     stt = MockSTTProvider(
         transcripts=[
-            "Can you review the latest PR on roomkit and email me the summary?",
+            "Can you review the latest PR on roomkit for me?",
             "Sure, while we wait, what's on my calendar today?",
             "Great, thanks for the update!",
         ]
@@ -116,18 +136,19 @@ async def main() -> None:
                 "summary shortly. What else can I help with?"
             ),
             ("You have a team standup at 10am and a 1-on-1 with Sarah at 2pm. Anything else?"),
+            # Answer to the hand-back instruction, not to a user turn
             (
                 "Great news — the PR review just came back! "
                 "PR #42 adds a TaskExecutor ABC with InMemory implementation: "
                 "340 additions, 45 deletions across 8 files, 12 unit tests. "
-                "Assessment: clean implementation, ready to merge. "
-                "I've emailed you the full summary."
+                "Assessment: clean implementation, ready to merge."
             ),
+            "You're welcome! Talk to you later.",
         ]
     )
 
     # PR reviewer — background agent, works in a child room
-    pr_reviewer_ai = MockAIProvider(
+    pr_reviewer_ai = _SlowReviewerAI(
         responses=[
             (
                 "## PR #42: Add background task executor\n\n"
@@ -194,12 +215,15 @@ async def main() -> None:
 
     # ── Parent room ───────────────────────────────────────────────────
 
+    # The call stays between the caller and the voice agent (visibility), so
+    # the email channel only carries what is broadcast in the child room.
     await kit.create_room(room_id="call-room")
-    await kit.attach_channel("call-room", "voice-call")
+    await kit.attach_channel("call-room", "voice-call", visibility="voice-assistant")
     await kit.attach_channel(
         "call-room",
         "voice-assistant",
         category=ChannelCategory.INTELLIGENCE,
+        visibility="voice-call",
         metadata={
             "system_prompt": (
                 "You are a helpful voice assistant. "
@@ -224,10 +248,12 @@ async def main() -> None:
     audio_data = b"\x00" * 640  # 20ms of 16kHz 16-bit mono PCM
 
     async def voice_turn() -> None:
+        """One user utterance (three frames: start, speech, end) and its reply."""
         for _ in range(3):
             frame = AudioFrame(data=audio_data, sample_rate=16000)
             await backend.simulate_audio_received(session, frame)
         await asyncio.sleep(0.1)
+        await voice.wait_playback_done("call-room")
 
     # ══════════════════════════════════════════════════════════════════
     #  SCENARIO
@@ -275,15 +301,20 @@ async def main() -> None:
     await voice_turn()
 
     # Wait for the background agent to finish
+    print(f"  Task status after turn 2: {task.status}")
     result = await task.wait(timeout=5.0)
     print(f"\n[result] Status: {result.status}")
     print(f"[result] Duration: {result.duration_ms:.0f}ms")
     if result.output:
         print(f"[result] Preview: {result.output[:80]}...")
 
-    # ── Turn 3: Voice agent delivers the result ───────────────────────
+    # The hand-back makes the voice agent speak the result unprompted.
+    await asyncio.sleep(0.1)
+    await voice.wait_playback_done("call-room")
 
-    print("\n--- Turn 3: Agent delivers the background result ---")
+    # ── Turn 3: User thanks the agent ─────────────────────────────────
+
+    print("\n--- Turn 3: User thanks the agent ---")
     await voice_turn()
 
     # ══════════════════════════════════════════════════════════════════
@@ -298,7 +329,7 @@ async def main() -> None:
     for ev in events:
         if isinstance(ev.content, TextContent):
             src = ev.source.channel_type or "?"
-            print(f"  [{src:>12}] {ev.content.body[:85]}")
+            print(f"  [{src:>12}] {ev.content.body[:85].replace(chr(10), ' ')}")
         elif isinstance(ev.content, SystemContent):
             print(f"  [      system] {ev.content.body[:85]}")
 
@@ -312,7 +343,7 @@ async def main() -> None:
     for ev in child_events:
         if isinstance(ev.content, TextContent):
             src = ev.source.channel_type or "?"
-            print(f"  [{src:>12}] {ev.content.body[:85]}")
+            print(f"  [{src:>12}] {ev.content.body[:85].replace(chr(10), ' ')}")
         elif isinstance(ev.content, SystemContent):
             print(f"  [      system] {ev.content.body[:85]}")
 
@@ -326,6 +357,14 @@ async def main() -> None:
     print(f"  Child room agent:   {child_room.metadata.get('task_agent_id')}")
 
     await _show_hand_back(kit, voice_ai)
+
+    print(f"\n  STT transcriptions: {len(stt.calls)} of 3 user turns")
+    print(f"  Lines the voice agent spoke (TTS): {len(tts.calls)}")
+    # The shared email channel received the child room's broadcast: the brief.
+    print(f"  Emails sent through the shared channel: {len(email_provider.sent)}")
+    for sent in email_provider.sent:
+        body = sent["event"].content.body.replace("\n", " ")
+        print(f"    to {sent['to']}: {body[:60]}...")
 
     await kit.close()
     print("\nDone!")

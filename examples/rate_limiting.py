@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import time
 
-from roomkit import InboundMessage, RoomKit, TextContent, WebSocketChannel
+from roomkit import InboundMessage, RoomEvent, RoomKit, TextContent, WebSocketChannel
 from roomkit.core.rate_limiter import TokenBucketRateLimiter
 from roomkit.models.channel import RateLimit
 
@@ -77,8 +77,16 @@ async def main() -> None:
     kit.register_channel(ws_user)
     kit.register_channel(ws_sms)
 
+    # When each message reaches the rate-limited channel, from the first send.
+    sms_received: list[tuple[str, float]] = []
+    send_start = 0.0
+
+    async def sms_recv(_conn: str, event: RoomEvent) -> None:
+        body = event.content.body if isinstance(event.content, TextContent) else "?"
+        sms_received.append((body, time.monotonic() - send_start))
+
     ws_user.register_connection("user-conn", lambda _c, _e: asyncio.sleep(0), room_id="rate-room")
-    ws_sms.register_connection("sms-conn", lambda _c, _e: asyncio.sleep(0), room_id="rate-room")
+    ws_sms.register_connection("sms-conn", sms_recv, room_id="rate-room")
 
     await kit.create_room(room_id="rate-room")
     await kit.attach_channel("rate-room", "ws-user")
@@ -96,8 +104,11 @@ async def main() -> None:
     print(f"  max_per_second: {binding.rate_limit.max_per_second}")  # type: ignore[union-attr]
     print(f"  max_per_minute: {binding.rate_limit.max_per_minute}")  # type: ignore[union-attr]
 
-    # Send a few messages
-    print("\nSending messages through rate-limited channel:")
+    # Send a burst: none is dropped, delivery to the SMS channel is paced
+    # (the bucket holds 2, then refills at 2/sec) and process_inbound waits
+    # for it.
+    print("\nSending 5 messages at once through the rate-limited channel:")
+    send_start = time.monotonic()
     for i in range(5):
         result = await kit.process_inbound(
             InboundMessage(
@@ -106,7 +117,11 @@ async def main() -> None:
                 content=TextContent(body=f"Message {i + 1}"),
             )
         )
-        print(f"  Message {i + 1}: blocked={result.blocked}")
+        sent_at = time.monotonic() - send_start
+        print(f"  Message {i + 1}: returned at {sent_at:.2f}s, blocked={result.blocked}")
+    print("\nDelivered to the SMS channel (2/sec):")
+    for body, at in sms_received:
+        print(f"  {body}: delivered at {at:.2f}s")
 
     # =====================================================
     # Part 4: Different rate configurations

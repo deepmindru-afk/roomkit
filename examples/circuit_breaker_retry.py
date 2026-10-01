@@ -101,8 +101,14 @@ async def main() -> None:
     # =====================================================
     print("\n\n=== Combined: Circuit Breaker + Retry ===\n")
 
-    cb2 = CircuitBreaker(failure_threshold=3, recovery_timeout=1.0)
-    retry_policy = RetryPolicy(max_retries=2, base_delay_seconds=0.05)
+    # The breaker counts one failure per message, once retry has given up on it.
+    # on_state_change is the breaker's public report of its transitions.
+    cb2 = CircuitBreaker(
+        failure_threshold=3,
+        recovery_timeout=1.0,
+        on_state_change=lambda state: attempt_log.append(f"[breaker] -> {state}"),
+    )
+    retry_policy = RetryPolicy(max_retries=2, base_delay_seconds=0.05)  # 3 attempts
     attempt_log: list[str] = []
 
     async def send_with_resilience(message: str) -> str:
@@ -117,8 +123,8 @@ async def main() -> None:
             attempt_log.append(f"OK: {message}")
             return result
         except ConnectionError:
+            attempt_log.append(f"FAILED after {retry_policy.max_retries + 1} attempts: {message}")
             cb2.record_failure()
-            attempt_log.append(f"FAILED (breaker failures={cb2._failure_count}): {message}")
             return "FAILED"
 
     send_count = 0
@@ -126,16 +132,25 @@ async def main() -> None:
     async def _simulate_send() -> str:
         nonlocal send_count
         send_count += 1
-        # Fail for the first 8 sends to trip the breaker
-        if send_count <= 8:
+        # The provider is down for the first 9 sends: 3 messages x 3 attempts,
+        # enough failed messages to trip the breaker (threshold 3).
+        if send_count <= 9:
             raise ConnectionError("Provider down")
         return "delivered"
 
-    # Send messages — first few will fail and trip the breaker
-    for i in range(6):
+    # Messages 1-3 fail (retries exhausted) and trip the breaker; 4-5 are
+    # rejected at once, without touching the provider.
+    for i in range(5):
         result = await send_with_resilience(f"Message {i + 1}")
         print(f"  Message {i + 1}: {result}")
 
+    # After the recovery timeout, one probe goes through; the provider is back.
+    print("\nWaiting 1s for the breaker's recovery timeout...")
+    await asyncio.sleep(1.1)
+    result = await send_with_resilience("Message 6")
+    print(f"  Message 6: {result} (half-open probe)")
+
+    print(f"\nProvider calls made: {send_count}")
     print("\nAttempt log:")
     for entry in attempt_log:
         print(f"  {entry}")

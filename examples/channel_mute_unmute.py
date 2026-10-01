@@ -3,9 +3,12 @@
 Demonstrates how to dynamically mute and unmute channels during a
 conversation. A common pattern is muting the AI channel while a human
 agent handles the conversation, then unmuting it. Shows:
-- mute() / unmute() to control message delivery per channel
+- mute() / unmute() to control what a channel may say in the room
 - ON_CHANNEL_MUTED / ON_CHANNEL_UNMUTED hooks
-- Muted channels don't receive broadcast messages
+- Muting silences the voice, not the brain (RFC §4): a muted AI still
+  receives every message and still answers, but its answers are stored
+  BLOCKED (``blocked_by="source_muted"``) and never delivered. It can still
+  raise tasks and observations.
 
 Run with:
     uv run python examples/channel_mute_unmute.py
@@ -18,6 +21,7 @@ import asyncio
 from roomkit import (
     ChannelCategory,
     EventFilter,
+    EventStatus,
     HookExecution,
     HookTrigger,
     InboundMessage,
@@ -42,10 +46,12 @@ async def main() -> None:
     ai = AIChannel(
         "ai-bot",
         provider=MockAIProvider(
+            # One answer per message the AI reads, muted or not.
             responses=[
                 "I'm the AI assistant. How can I help?",
-                "Let me check that for you.",
-                "I'm back! How can I help?",
+                "Let me check that for you.",  # muted: blocked
+                "Order #12345 shipped yesterday.",  # muted: blocked
+                "I'm back! What's your question?",
             ]
         ),
     )
@@ -107,7 +113,9 @@ async def main() -> None:
             content=TextContent(body="Can you check order #12345?"),
         )
     )
-    print(f"  Customer inbox: {len(customer_inbox)} messages (AI is muted, no AI reply)")
+    print(
+        f"  Customer inbox: {len(customer_inbox)} messages (AI muted: its answer is not delivered)"
+    )
 
     # Agent replies manually
     await kit.process_inbound(
@@ -150,7 +158,8 @@ async def main() -> None:
     print(f"\nConversation ({len(msg_events)} messages):")
     for ev in msg_events:
         if isinstance(ev.content, TextContent):
-            print(f"  [{ev.source.channel_id}] {ev.content.body}")
+            blocked = f" (BLOCKED: {ev.blocked_by})" if ev.status == EventStatus.BLOCKED else ""
+            print(f"  [{ev.source.channel_id}]{blocked} {ev.content.body}")
 
     await kit.close()
 

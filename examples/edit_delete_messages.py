@@ -5,7 +5,9 @@ EditContent and DeleteContent. Shows:
 - Editing a message with EditContent (references target_event_id)
 - Deleting a message with DeleteContent
 - Delete types: SENDER, SYSTEM, ADMIN
-- How edits/deletes are stored in conversation history
+- How edits/deletes are stored in conversation history: the edited message
+  holds its new content and ``metadata["edited"]``, the deleted one is kept
+  with ``metadata["deleted"]`` set
 
 Run with:
     uv run python examples/edit_delete_messages.py
@@ -125,7 +127,11 @@ async def main() -> None:
             content_desc = f"Delete target={ev.content.target_event_id[:8]}..."
         else:
             content_desc = str(ev.content.type)  # type: ignore[union-attr]
-        print(f"  [{ev.type.value:>18}] {content_desc}")
+        flags = [flag for flag in ("edited", "deleted") if ev.metadata.get(flag)]
+        marker = f"  ({', '.join(flags)})" if flags else ""
+        print(f"  [{ev.type.value:>18}] {content_desc}{marker}")
+
+    await kit.close()
 
 
 if __name__ == "__main__":

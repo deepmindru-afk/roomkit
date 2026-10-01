@@ -15,23 +15,32 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
+from pathlib import Path
 
-logging.getLogger("roomkit").setLevel(logging.ERROR)
-logging.getLogger("roomkit.orchestration.strategies.loop").setLevel(logging.INFO)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from shared import setup_logging
 
-from roomkit import Agent, InboundMessage, Loop, RoomKit, TextContent, WebSocketChannel
+from roomkit import Agent, EventType, InboundMessage, Loop, RoomKit, TextContent, WebSocketChannel
 from roomkit.memory.sliding_window import SlidingWindowMemory
 from roomkit.models.event import RoomEvent
-from roomkit.orchestration.state import get_conversation_state
 from roomkit.providers.ai.mock import MockAIProvider
+
+# Warnings from everything, plus the loop strategy's per-iteration progress.
+setup_logging("example.approval_loop", level=logging.WARNING)
+logging.getLogger("roomkit.orchestration.strategies.loop").setLevel(logging.INFO)
 
 # --- Helpers -----------------------------------------------------------------
 
 
 def find_reply(events: list[RoomEvent], agent_id: str, start: int = 0) -> RoomEvent | None:
-    """Find the first event from a specific agent after `start` index."""
+    """Find the first message from a specific agent after `start` index.
+
+    Only MESSAGE events: an agent's channel also carries system notices
+    (a handoff announcement, for one) that are not what it said.
+    """
     for event in events[start:]:
-        if event.source.channel_id == agent_id:
+        if event.source.channel_id == agent_id and event.type == EventType.MESSAGE:
             return event
     return None
 
@@ -105,14 +114,13 @@ async def main() -> None:
     )
 
     reply = find_reply(inbox, "agent-writer", mark)
-    if reply:
-        print(f"Final output: {reply.content.body}")  # type: ignore[union-attr]
-
-    # Show final state
-    room = await kit.get_room("loop-room")
-    state = get_conversation_state(room)
-    print(f"\nApproved: {state.context.get('_loop_approved')}")
-    print(f"Iterations: {state.context.get('_loop_iteration')}")
+    if reply is None:
+        print("No output from the writer.")
+    else:
+        print(f"\nFinal output: {reply.content.body}")  # type: ignore[union-attr]
+        # The loop's verdict rides on the delivered output.
+        print(f"\nApproved: {reply.metadata.get('approved')}")
+        print(f"Iterations: {reply.metadata.get('iteration')}")
 
     await kit.close()
     print("\nDone!")

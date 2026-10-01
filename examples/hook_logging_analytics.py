@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 
 from roomkit import (
+    ChannelCategory,
     ChannelType,
     HookExecution,
     HookTrigger,
@@ -44,14 +45,18 @@ async def main() -> None:
     kit.register_channel(ai)
 
     inbox: list[RoomEvent] = []
-    ws.register_connection("conn", lambda _c, ev: inbox.append(ev), room_id="analytics-room")  # type: ignore[arg-type,return-value]
+
+    async def on_send(_conn: str, event: RoomEvent) -> None:
+        inbox.append(event)
+
+    ws.register_connection("conn", on_send, room_id="analytics-room")
 
     await kit.create_room(room_id="analytics-room")
     await kit.attach_channel("analytics-room", "ws-user")
     await kit.attach_channel(
         "analytics-room",
         "ai-bot",
-        category="intelligence",  # type: ignore[arg-type]
+        category=ChannelCategory.INTELLIGENCE,
     )
 
     # --- Hook 1: Log all events (no filter) ---
@@ -112,6 +117,13 @@ async def main() -> None:
     print(f"\nAudit log ({len(audit_log)} entries):")
     for entry in audit_log:
         print(f"  {entry}")
+
+    print(f"\nDelivered to the WebSocket client ({len(inbox)} messages):")
+    for ev in inbox:
+        body = ev.content.body if isinstance(ev.content, TextContent) else ev.content.type
+        print(f"  <- [{ev.source.channel_id}] {body}")
+
+    await kit.close()
 
 
 if __name__ == "__main__":

@@ -1,9 +1,14 @@
-"""Pipeline with coder/reviewer loop.
+"""Pipeline with a coder/reviewer return trip (``can_return_to``).
 
-Demonstrates a development pipeline where a reviewer can send work
-back to the coder for fixes using ``can_return_to``. The conversation
-loops between coding and review phases until approved, then proceeds
-to the report stage.
+Demonstrates ``ConversationPipeline`` with ``PipelineStage.can_return_to``:
+a development pipeline (analysis -> coding -> review -> report) where the
+review stage may send work back to the coding stage. The conversation goes
+round coding and review until approved, then proceeds to the report stage.
+
+This is not the ``Loop`` orchestration strategy (see
+``orchestration_approval_loop.py``). The handoffs are driven by the script,
+which calls ``handoff_handler.handle(...)`` where a real agent's model would
+call the ``handoff_conversation`` tool; the mock agents only reply.
 
 Run with:
     uv run python examples/orchestration_loop.py
@@ -12,12 +17,16 @@ Run with:
 from __future__ import annotations
 
 import asyncio
-import logging
 
-# Suppress chain-depth warnings from AI-to-AI reentry (expected in multi-agent setups)
-logging.getLogger("roomkit").setLevel(logging.ERROR)
-
-from roomkit import Agent, ChannelCategory, InboundMessage, RoomKit, TextContent, WebSocketChannel
+from roomkit import (
+    Agent,
+    ChannelCategory,
+    EventType,
+    InboundMessage,
+    RoomKit,
+    TextContent,
+    WebSocketChannel,
+)
 from roomkit.memory.sliding_window import SlidingWindowMemory
 from roomkit.models.event import RoomEvent
 from roomkit.orchestration.handoff import HandoffMemoryProvider
@@ -51,9 +60,13 @@ pipeline = ConversationPipeline(
 
 
 def find_reply(events: list[RoomEvent], agent_id: str, start: int = 0) -> RoomEvent | None:
-    """Find the first event from a specific agent after `start` index."""
+    """Find the first message from a specific agent after `start` index.
+
+    Only MESSAGE events: an agent's channel also carries system notices
+    (a handoff announcement, for one) that are not what it said.
+    """
     for event in events[start:]:
-        if event.source.channel_id == agent_id:
+        if event.source.channel_id == agent_id and event.type == EventType.MESSAGE:
             return event
     return None
 

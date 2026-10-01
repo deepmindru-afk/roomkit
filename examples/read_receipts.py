@@ -3,7 +3,8 @@
 Demonstrates how to implement read receipts using RoomKit's ephemeral
 event system and the mark_read/mark_all_read store methods. Shows:
 - publish_read_receipt() for ephemeral "seen" notifications
-- mark_read() / mark_all_read() for persistent read state
+- mark_read() / mark_all_read() for persistent read state, read back with
+  the store's get_unread_count()
 - Subscribing to read receipt events
 
 Run with:
@@ -72,20 +73,26 @@ async def main() -> None:
             print(f'  Sent: "{text}" (id={result.event.id[:8]}...)')
 
     # --- Bob reads messages one by one ---
-    print("\nBob reads messages...")
+    # The unread count covers every event of the room past Bob's read marker,
+    # the two "channel attached" notices included.
+    unread = await kit.store.get_unread_count("receipt-room", "ws-bob")
+    print(f"\nBob's unread count: {unread}")
+    print("Bob reads messages...")
 
     # Bob reads the first message
     await kit.publish_read_receipt("receipt-room", "bob", msg_ids[0])
     await kit.mark_read("receipt-room", "ws-bob", msg_ids[0])
-    print(f"  Bob read message 1: {msg_ids[0][:8]}...")
+    unread = await kit.store.get_unread_count("receipt-room", "ws-bob")
+    print(f"  Bob read message 1: {msg_ids[0][:8]}... (unread now: {unread})")
 
     await asyncio.sleep(0.05)
 
     # Bob marks all as read
-    print("  Bob marks all as read")
     await kit.mark_all_read("receipt-room", "ws-bob")
     for mid in msg_ids[1:]:
         await kit.publish_read_receipt("receipt-room", "bob", mid)
+    unread = await kit.store.get_unread_count("receipt-room", "ws-bob")
+    print(f"  Bob marks all as read (unread now: {unread})")
 
     await asyncio.sleep(0.1)
 
