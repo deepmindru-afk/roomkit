@@ -60,6 +60,8 @@ logger = logging.getLogger("roomkit.channels.ai")
 
 # The settings a turn resolves binding metadata > config provider > channel
 # default, each read from ``_<name>`` on the channel. ``tools`` resolves apart.
+# The levels, most specific first.
+_BINDING_LEVEL, _TURN_LEVEL, _CHANNEL_LEVEL = 0, 1, 2
 _TURN_SETTINGS = (
     "system_prompt",
     "temperature",
@@ -385,7 +387,8 @@ class AIContextMixin:
         if turn is not None and turn.tools is not None:
             tools = list(turn.tools)
         else:
-            raw_tools = binding.metadata.get("tools", [])
+            # A null declares no toolset, like an absent key (RFC Appendix A.9).
+            raw_tools = binding.metadata.get("tools") or []
             # Convert raw tool dicts to AITool instances
             tools = [
                 AITool(
@@ -734,22 +737,49 @@ class AIContextMixin:
     ) -> dict[str, Any]:
         """Each per-turn setting from the binding metadata, else the config
         provider's result, else the channel default."""
-        return {key: self._turn_value(key, binding, turn) for key in _TURN_SETTINGS}
+        settings = {key: self._turn_value(key, binding, turn) for key in _TURN_SETTINGS}
+        if self._thinking_turned_off(binding, turn):
+            settings["thinking_budget"] = None
+        return settings
+
+    def _thinking_turned_off(
+        self, binding: ChannelBinding, turn: AIChannelTurnConfig | None
+    ) -> bool:
+        """Whether an ``enable_thinking: false`` sits above the level that set
+        the thinking budget (RFC §6.7, Appendix A.9).
+
+        The budget states the switch before ``enable_thinking``, so a room
+        that says off on a channel built with a budget would think anyway: a
+        level's off turns off a budget a less specific level set, and a
+        budget set at the same level or a more specific one still decides.
+        """
+        off_level, enabled = self._turn_source("enable_thinking", binding, turn)
+        budget_level, budget = self._turn_source("thinking_budget", binding, turn)
+        return enabled is False and budget is not None and off_level < budget_level
 
     def _turn_value(
         self, key: str, binding: ChannelBinding, turn: AIChannelTurnConfig | None
     ) -> Any:
-        """The turn's *key* from the first level that sets it: the binding
-        metadata, the config provider's result, the channel default.
+        """The turn's *key* from the first level that sets it."""
+        return self._turn_source(key, binding, turn)[1]
+
+    def _turn_source(
+        self, key: str, binding: ChannelBinding, turn: AIChannelTurnConfig | None
+    ) -> tuple[int, Any]:
+        """The first level that sets the turn's *key*, and its value: the
+        binding metadata, the config provider's result, the channel default.
 
         ``None`` is "not set here" at every level, an explicit ``null`` in the
         binding metadata included (RFC Appendix A.9): a host that serializes
         an empty field never clears the channel's prompt or lifts its budget.
         """
         value = binding.metadata.get(key)
-        if value is None and turn is not None:
-            value = getattr(turn, key)
-        return value if value is not None else getattr(self, f"_{key}")
+        if value is not None:
+            return _BINDING_LEVEL, value
+        value = getattr(turn, key) if turn is not None else None
+        if value is not None:
+            return _TURN_LEVEL, value
+        return _CHANNEL_LEVEL, getattr(self, f"_{key}")
 
     def _turn_budget(
         self, binding: ChannelBinding, turn: AIChannelTurnConfig | None

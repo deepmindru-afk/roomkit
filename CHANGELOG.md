@@ -165,7 +165,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `config_provider` already did (RMK-346, RFC Appendix A.9). It used to clear
   the channel's value for that room: `{"turn_budget_usd": None}` ran the turn
   with no cap at all. Lifting a channel default for a room takes an explicit
-  value (`enable_thinking=False`, `thinking_budget=0`).
+  value that states off (`thinking_budget=0`, `enable_thinking=False`,
+  `reasoning_effort="none"`, `system_prompt=""`); `temperature`, `max_tokens`,
+  `response_schema` and the turn budgets have none, so a room that relied on
+  `null` to fall back to the provider's default now inherits the channel's
+  value and must set its own. A `null` `tools` declares no toolset instead of
+  failing the turn.
+- An `enable_thinking: False` set at a level (binding metadata or
+  `config_provider`) now turns off a `thinking_budget` a less specific level
+  set (RMK-346, RFC §6.7): the budget states the switch first, so a room that
+  said off on a channel built with a budget thought anyway.
 - `CompactingMemory` pays for the messages and notes its inner provider
   returns before it keeps history, as `BudgetAwareMemory` and
   `SummarizingMemory` do (found reviewing RMK-334): a turn could exceed the

@@ -9,12 +9,13 @@ fresh at the start of every generation instead.
 This example demonstrates the resolution chain, from the most specific source
 that has an opinion:
 
-    1. binding.metadata        — per-room operator intent, always wins
+    1. binding.metadata        — per-room operator intent, wins when it sets a value
     2. config_provider result  — resolved by your callback, every turn
     3. AIChannel constructor   — the channel default
 
-``None`` at a tier means "not set here" and defers outward, so an unset knob
-never overrides with a default.
+``None`` at a tier means "not set here" and defers outward, an explicit
+``null`` in the binding metadata included, so an unset knob never overrides
+with a default.
 
 The knobs shown here are the reasoning pair. A thinking model costs two to
 three times the tokens and the latency of a direct answer, and that trade is
@@ -171,7 +172,7 @@ async def main() -> None:
         metadata={
             # The room is in agent mode, so the callback would switch thinking
             # off — but an operator asked for a reasoning trace on this room,
-            # and per-room operator intent always wins.
+            # and per-room operator intent wins wherever it sets a value.
             "enable_thinking": True,
             "reasoning_effort": "high",
         },

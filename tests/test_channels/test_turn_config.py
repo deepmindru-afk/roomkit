@@ -261,3 +261,61 @@ class TestANullDefers:
         ai_ctx = await ch._build_context(make_event(), binding, _ctx(binding))
 
         assert _resolved(ai_ctx, key, channel_value)
+
+    async def test_a_zero_budget_in_the_binding_lifts_the_channel_budget(self) -> None:
+        ch = _channel(thinking_budget=2048)
+        binding = _binding(metadata={"thinking_budget": 0})
+        ai_ctx = await ch._build_context(make_event(), binding, _ctx(binding))
+
+        assert ai_ctx.thinking_budget == 0
+
+    async def test_a_null_tools_declares_no_toolset(self) -> None:
+        ch = _channel()
+        binding = _binding(metadata={"tools": None})
+        ai_ctx = await ch._build_context(make_event(), binding, _ctx(binding))
+
+        assert ai_ctx.tools == []
+
+
+async def _off_turn(binding, context):
+    return AIChannelTurnConfig(enable_thinking=False)
+
+
+async def _budget_turn(binding, context):
+    return AIChannelTurnConfig(thinking_budget=4096)
+
+
+class TestThinkingOffAcrossLevels:
+    """An ``enable_thinking: false`` turns off a budget a less specific level
+    set (RFC §6.7, Appendix A.9, RMK-346): the budget states the switch first,
+    so without this a room that says off on a channel built with a budget,
+    the form a host sends with an empty budget field, would think anyway."""
+
+    @pytest.mark.parametrize(
+        ("metadata", "config_provider", "budget"),
+        [
+            ({"enable_thinking": False}, None, None),
+            ({"enable_thinking": False, "thinking_budget": None}, None, None),
+            ({}, _off_turn, None),
+            ({"enable_thinking": False}, _budget_turn, None),
+            ({"enable_thinking": False, "thinking_budget": 1024}, None, 1024),
+            ({"thinking_budget": 1024}, _off_turn, 1024),
+        ],
+        ids=[
+            "room-off-over-channel-budget",
+            "room-off-with-null-budget",
+            "turn-off-over-channel-budget",
+            "room-off-over-turn-budget",
+            "same-level-budget-decides",
+            "more-specific-budget-decides",
+        ],
+    )
+    async def test_off_turns_off_a_less_specific_budget(
+        self, metadata: dict[str, Any], config_provider: Any, budget: int | None
+    ) -> None:
+        ch = _channel(thinking_budget=2048, config_provider=config_provider)
+        binding = _binding(metadata=metadata)
+        ai_ctx = await ch._build_context(make_event(), binding, _ctx(binding))
+
+        assert ai_ctx.thinking_budget == budget
+        assert ai_ctx.enable_thinking is False
