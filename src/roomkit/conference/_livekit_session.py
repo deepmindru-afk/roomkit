@@ -30,13 +30,12 @@ from roomkit.conference._livekit_mapping import (
     quality_label,
     track_record,
 )
-from roomkit.conference._livekit_media import AudioSink, VideoSink, pump_audio, pump_video
+from roomkit.conference._livekit_media import AudioSink, TrackPumps, VideoSink
 from roomkit.conference._livekit_voice import BotVoiceTrack, VoicePublicationError
 from roomkit.conference.models import (
     BotSession,
     ConferenceParticipant,
     ConferenceTrack,
-    TrackKind,
 )
 from roomkit.core.task_utils import cancel_and_wait
 from roomkit.voice.base import AudioChunk
@@ -132,7 +131,13 @@ class LiveKitBotSession:
         self._tracks: dict[str, ConferenceTrack] = {}
         self._publications: dict[str, Any] = {}
         self._wanted: set[str] = set()
-        self._pumps: dict[str, asyncio.Task[None]] = {}
+        self._pumps = TrackPumps(
+            rtc=rtc,
+            room_id=session.room_id,
+            audio_sink=emissions.track_audio,
+            video_sink=emissions.track_video,
+            config=config,
+        )
         self._voice = BotVoiceTrack(
             rtc=rtc,
             room=self._room,
@@ -229,7 +234,7 @@ class LiveKitBotSession:
                     self.session.identity,
                     self.room_id,
                 )
-            await self._stop_pumps()
+            await self._pumps.stop_all()
             await self._voice.close()
         await self._disconnect_once()
         await cancel_and_wait(self._consumer)
@@ -328,11 +333,6 @@ class LiveKitBotSession:
         self._pending_state.clear()
         return undelivered
 
-    async def _stop_pumps(self) -> None:
-        pumps = list(self._pumps.values())
-        self._pumps.clear()
-        await cancel_and_wait(*pumps)
-
     # -------------------------------------------------------------------------
     # Subscription — the framework's set is the authoritative one
     # -------------------------------------------------------------------------
@@ -361,11 +361,7 @@ class LiveKitBotSession:
         self._wanted.discard(track_id)
         if (publication := self._publications.get(track_id)) is not None:
             publication.set_subscribed(False)
-        await self._stop_pump(track_id)
-
-    async def _stop_pump(self, track_id: str) -> None:
-        pump = self._pumps.pop(track_id, None)
-        await cancel_and_wait(pump)
+        await self._pumps.stop(track_id)
 
     def publisher_identity(self, track_id: str) -> str | None:
         """Who publishes a track, for the moderation calls that need it.
@@ -582,8 +578,7 @@ class LiveKitBotSession:
             self._tracks.pop(track_id, None)
             self._publications.pop(track_id, None)
             self._wanted.discard(track_id)
-            if (pump := self._pumps.pop(track_id, None)) is not None:
-                pump.cancel()
+            self._pumps.cancel(track_id)
 
     def _participant(self, participant: Any) -> ConferenceParticipant:
         return participant_record(
@@ -660,14 +655,10 @@ class LiveKitBotSession:
         record = self._tracks.get(track_id) or self._record_track(publication, participant)
         if record is None:
             return
-        if track_id in self._pumps:
-            return
-        self._pumps[track_id] = asyncio.create_task(self._pump(record, track))
+        self._pumps.start(record, track)
 
     def _on_track_unsubscribed(self, track: Any, publication: Any, participant: Any) -> None:
-        pump = self._pumps.pop(publication.sid, None)
-        if pump is not None:
-            pump.cancel()
+        self._pumps.cancel(publication.sid)
 
     def _on_track_muted(self, participant: Any, publication: Any) -> None:
         self._set_muted(publication.sid, True)
@@ -758,7 +749,7 @@ class LiveKitBotSession:
         connection is still live and the report has to wait for the
         disconnect.
         """
-        await self._stop_pumps()
+        await self._pumps.stop_all()
         await self._voice.close()
         with contextlib.suppress(Exception):
             if not await self._sdk_disconnect():
@@ -777,7 +768,7 @@ class LiveKitBotSession:
         out loud. A later ``leave()`` (a detach, the close) retries the
         disconnect: failure is not terminal, exactly as in :meth:`leave`.
         """
-        await self._stop_pumps()
+        await self._pumps.stop_all()
         await self._voice.close()
         for attempt, delay in enumerate((0.0, *OVERFLOW_DISCONNECT_DELAYS_S)):
             if self._leave_requested or self._disconnected:
@@ -826,38 +817,3 @@ class LiveKitBotSession:
                 "what happened while the consumer was stalled is not recoverable"
             )
         await self._emissions.bot_session_ended(self.session, reason)
-
-    # -------------------------------------------------------------------------
-    # Media — one pump task per subscribed track, delivered by _livekit_media
-    # -------------------------------------------------------------------------
-
-    async def _pump(self, record: ConferenceTrack, track: Any) -> None:
-        """Run a track's pump, and survive its ending either way.
-
-        A pump that raises is one track's stream failing, and it must not take
-        the session's other tracks or its event bridge with it — so it is
-        reported here and the task ends.
-        """
-        try:
-            if record.kind is TrackKind.AUDIO:
-                await pump_audio(
-                    rtc=self._rtc,
-                    track=track,
-                    record=record,
-                    sink=self._emissions.track_audio,
-                    sample_rate=self._config.audio_sample_rate,
-                    channels=self._config.audio_channels,
-                )
-            else:
-                await pump_video(
-                    rtc=self._rtc,
-                    track=track,
-                    record=record,
-                    sink=self._emissions.track_video,
-                )
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception(
-                "The pump for conference track %s in room %s stopped", record.id, self.room_id
-            )
