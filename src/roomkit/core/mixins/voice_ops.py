@@ -329,9 +329,11 @@ class VoiceOpsMixin(HelpersMixin):
             )
             self._room_recorder_mgr.on_track_removed(session.room_id, video_track)
 
+        # The session's own transport (one added with add_backend() serves
+        # its sessions), resolved before unbinding forgets it.
+        backend = channel._resolve_session_backend(session)
         channel.unbind_session(session)
 
-        backend = channel._backend
         if backend:
             if hasattr(backend, "stop_listening"):
                 await backend.stop_listening(session)  # ty: ignore[call-non-callable]

@@ -59,8 +59,7 @@ CONSOLE=1 uv run python examples/<example>.py
 | `voice_webtransport.py` | WebTransport | Voice echo via QUIC datagrams (WebTransport) |
 | `voice_bridge_with_ai.py` | Multi-party | Multi-party bridge with AI moderator that can interject |
 | `voice_bridge_summary.py` | Multi-party | Bridge multi-party call and summarize with AI |
-| `voice_bridge_live_analyst.py` | Multi-party | Live AI analyst on bridged call with sentiment analysis |
-| `voice_multibackend_bridge.py` | Multi-transport | SIP + WebRTC + WebSocket all bridged together |
+| `voice_multibackend_bridge.py` | Multi-transport | SIP phones and browsers in one bridged room (`add_backend`), live AI analysis, summary at the end |
 | `rtp_gradium_stt.py` | RTP + STT | RTP receiver with Gradium STT transcription |
 | `rtp_video_call.py` | RTP + video | RTP audio + video direct transport |
 

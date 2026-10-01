@@ -336,6 +336,10 @@ class VoiceChannel(
         # Room of a session being unbound, for the recording-stopped report
         # the pipeline makes while the binding is already gone
         self._ending_session_rooms: dict[str, str] = {}
+        # Transports registered with add_backend(), and the sessions they
+        # serve (a session absent here is the primary backend's)
+        self._extra_backends: list[VoiceBackend] = []
+        self._session_backends: dict[str, VoiceBackend] = {}
         # Track TTS playback for barge-in detection
         self._playing_sessions: dict[str, TTSPlaybackState] = {}
         # Signalled when send_audio() returns for a session (before drain delay)
@@ -936,14 +940,57 @@ class VoiceChannel(
     def _resolve_session_backend(self, session: VoiceSession) -> VoiceBackend | None:
         """Return the backend for a session (bridge-aware).
 
-        In bridge mode, each session may have its own backend (e.g. SIP vs
-        FastRTC).  Falls back to the channel's default ``_backend``.
+        A session bound from a transport registered with :meth:`add_backend`
+        (or bridged with an explicit backend) is served by that transport.
+        Falls back to the channel's default ``_backend``.
         """
         if self._bridge is not None:
             bridge_backend = self._bridge.get_session_backend(session.id)
             if bridge_backend is not None:
                 return bridge_backend
-        return self._backend
+        return self._session_backends.get(session.id, self._backend)
+
+    def add_backend(self, backend: VoiceBackend) -> None:
+        """Serve sessions from another transport on this channel (RFC §12.7.3).
+
+        A bridged room often mixes transports — phone callers on SIP beside
+        browser participants on WebRTC. The added backend's inbound audio
+        enters this channel's pipeline, and its session-ready and
+        client-disconnected signals drive the channel's session lifecycle,
+        as for the backend given at construction. Everything addressed to one
+        of its sessions — bridged audio, TTS, assistant transcriptions, the
+        playback cancel of an interruption — goes out through it.
+
+        The pipeline is built once, for the primary backend's capabilities,
+        so the channel must have been constructed with a backend. A session
+        is matched to its transport by ``kit.join(..., backend=)``, or else
+        by asking each added backend whether it holds the session.
+        Adding a backend already served does nothing. Closing the channel
+        closes the added backends too.
+
+        Raises:
+            RuntimeError: The channel has no primary backend or pipeline.
+        """
+        if self._backend is None or self._pipeline is None:
+            raise RuntimeError(
+                "add_backend() needs a channel constructed with a backend: "
+                "the pipeline every transport's audio goes through is built for it"
+            )
+        if backend is self._backend or backend in self._extra_backends:
+            return
+        self._extra_backends.append(backend)
+        self._pipeline_unsubscribers.append(
+            backend.on_audio_received(self._pipeline_on_audio_received)
+        )
+        backend.on_session_ready(self._on_session_ready)
+        backend.on_client_disconnected(self._on_backend_disconnected)
+
+    def _added_backend_holding(self, session: VoiceSession) -> VoiceBackend | None:
+        """The added transport that holds *session*, if one says it does."""
+        for backend in self._extra_backends:
+            if backend.get_session(session.id) is not None:
+                return backend
+        return None
 
     async def _broadcast_bridge_transcription(
         self, source_session: VoiceSession, text: str, room_id: str
@@ -1194,7 +1241,9 @@ class VoiceChannel(
         # Notify pipeline of session activation
         self._pipeline_session_active(session)
         # Register session with audio bridge
-        bridge_backend = backend or self._backend
+        bridge_backend = backend or self._added_backend_holding(session) or self._backend
+        if bridge_backend is not None and bridge_backend is not self._backend:
+            self._session_backends[session.id] = bridge_backend
         if self._bridge is not None and bridge_backend is not None:
             self._bridge.add_session(session, room_id, bridge_backend)
         # Initialize batch buffer for this session
@@ -1272,6 +1321,7 @@ class VoiceChannel(
             self._burst_words.pop(session.id, None)
             self._burst_backchannel.pop(session.id, None)
             binding_info = self._session_bindings.pop(session.id, None)
+            self._session_backends.pop(session.id, None)
         if binding_info is None:
             return  # Already unbound — prevent double pipeline/telemetry calls
         # Unregister from audio bridge
@@ -1853,7 +1903,7 @@ class VoiceChannel(
             and self._backend
             and VoiceCapability.INTERRUPTION in self._backend.capabilities
         ):
-            await self._backend.cancel_audio(session)
+            await self._session_output_backend(session).cancel_audio(session)
 
         # Bypass AEC after TTS stops so user audio passes unchanged.  Keep the
         # converged hardware echo path for the next playback turn.
@@ -2072,9 +2122,13 @@ class VoiceChannel(
                 await self._stt.close()
             if self._tts:
                 await self._tts.close()
-        # 5. Close backend last (transport layer)
+        # 5. Close backends last (transport layer)
         if self._backend:
             await self._backend.close()
+        for added in self._extra_backends:
+            await added.close()
+        self._extra_backends.clear()
+        self._session_backends.clear()
         self._session_bindings.clear()
         self._playing_sessions.clear()
         self._batch_audio_buffers.clear()

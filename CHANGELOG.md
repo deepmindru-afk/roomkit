@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `VoiceChannel.add_backend(backend)` (RMK-353, RFC §12.7.3): one voice
+  channel serves sessions from several transports, phone callers on SIP
+  beside browser participants on WebRTC in one bridged room. The added
+  backend's audio enters the channel's pipeline and its session-ready and
+  disconnect signals drive the session lifecycle, as for the backend given
+  at construction. Everything addressed to one of its sessions (bridged
+  audio, TTS, assistant transcriptions, an interruption's playback cancel,
+  the disconnect of `kit.leave()`) goes out on it: before, `say()` to a SIP
+  session of a channel built on FastRTC was sent to FastRTC, and so was the
+  hang-up of `kit.leave()`. A session finds its transport through
+  `kit.join(..., backend=)`, or by the added backend reporting it holds the
+  session. It replaces wiring `voice._on_audio_received` by hand, which the
+  pipeline unification removed and `examples/voice_multibackend_bridge.py`
+  still did.
 - `roomkit[fastrtc]` installs fastapi and uvicorn: `roomkit.webrtc` mounts
   its routes on a FastAPI app, so the extra alone failed at import
   (RMK-353).

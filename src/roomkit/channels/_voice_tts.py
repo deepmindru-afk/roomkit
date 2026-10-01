@@ -102,6 +102,7 @@ class TTSHost(Protocol):
     _unheard_turns: UnheardTurns
     _state_lock: threading.Lock
     _schedule: Any  # VoiceChannel._schedule
+    _resolve_session_backend: Any  # VoiceChannel._resolve_session_backend
     _fire_audio_level_hook: Any  # VoiceHooksMixin._fire_audio_level_hook
     interrupt: Any  # VoiceChannel.interrupt
 
@@ -134,9 +135,19 @@ class VoiceTTSMixin:
 
     # -- cross-mixin methods (annotated as Any to avoid MRO shadowing) --
     _schedule: Any  # see TTSHost — VoiceChannel._schedule
+    _resolve_session_backend: Any  # see TTSHost — VoiceChannel._resolve_session_backend
     _fire_audio_level_hook: Any  # see TTSHost — VoiceHooksMixin._fire_audio_level_hook
     interrupt: Any  # see TTSHost — VoiceChannel.interrupt
     _flush_queued_speech: Any  # see TTSHost — VoiceChannel._flush_queued_speech
+
+    def _session_output_backend(self, session: VoiceSession) -> VoiceBackend:
+        """The transport serving *session*: one added with ``add_backend``, or the primary.
+
+        Callers have already checked that the channel has a backend.
+        """
+        backend = self._resolve_session_backend(session)
+        assert backend is not None
+        return backend
 
     def _fire_output_level(self, session: VoiceSession, data: bytes) -> None:
         """Fire ON_OUTPUT_AUDIO_LEVEL hook from the outbound pipeline, throttled."""
@@ -509,7 +520,9 @@ class VoiceTTSMixin:
         # response the user never heard would contradict the audio.
         if full_text:
             for session in delivered:
-                await self._backend.send_transcription(session, full_text, "assistant")
+                await self._session_output_backend(session).send_transcription(
+                    session, full_text, "assistant"
+                )
 
         # Fire AFTER_TTS hooks (BEFORE_TTS skipped — can't block mid-stream)
         if self._framework and full_text:
@@ -728,7 +741,7 @@ class VoiceTTSMixin:
             )
             await self.interrupt(session, reason="new_tts")
 
-        await self._backend.send_transcription(session, text, "assistant")
+        await self._session_output_backend(session).send_transcription(session, text, "assistant")
 
         playback = TTSPlaybackState(session_id=session.id, text=text)
         with self._state_lock:
@@ -782,7 +795,7 @@ class VoiceTTSMixin:
             audio_stream = _observe_audio(playback, recorder, tts_stream, gate=gate)
             if self._pipeline is not None or getattr(self, "_outbound_audio_taps", []):
                 audio_stream = self._wrap_outbound(session, audio_stream)
-            await self._backend.send_audio(session, audio_stream)
+            await self._session_output_backend(session).send_audio(session, audio_stream)
         except NotImplementedError as exc:
             logger.error(
                 "TTS provider %s does not support streaming synthesis; "
@@ -1061,7 +1074,9 @@ class VoiceTTSMixin:
             pcm_data = wf.readframes(wf.getnframes())
 
         if text is not None:
-            await self._backend.send_transcription(session, text, "assistant")
+            await self._session_output_backend(session).send_transcription(
+                session, text, "assistant"
+            )
 
         with self._state_lock:
             self._playing_sessions[session.id] = TTSPlaybackState(
@@ -1085,7 +1100,7 @@ class VoiceTTSMixin:
             audio_stream: AsyncIterator[OutChunk] = _pcm_stream()
             if self._pipeline is not None or getattr(self, "_outbound_audio_taps", []):
                 audio_stream = self._wrap_outbound(session, audio_stream)
-            await self._backend.send_audio(session, audio_stream)
+            await self._session_output_backend(session).send_audio(session, audio_stream)
         finally:
             self._playback_sent(session.id)
 
