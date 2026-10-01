@@ -31,7 +31,7 @@ from roomkit.conference._livekit_mapping import (
     track_record,
 )
 from roomkit.conference._livekit_media import AudioSink, VideoSink, pump_audio, pump_video
-from roomkit.conference._livekit_voice import BotVoiceTrack
+from roomkit.conference._livekit_voice import BotVoiceTrack, VoicePublicationError
 from roomkit.conference.models import (
     BotSession,
     ConferenceParticipant,
@@ -68,6 +68,13 @@ MAX_QUEUED_EVENTS = 512
 # first attempt is immediate; these pace the retries.
 OVERFLOW_DISCONNECT_DELAYS_S: tuple[float, ...] = (1.0, 2.0, 4.0)
 
+# How long the SDK's disconnect may take before the server is asked to confirm
+# the bot is out. A disconnect normally returns in milliseconds; one that does
+# not is waiting on the SDK's room listener, which a failed publish or unpublish
+# leaves stuck for good (livekit-rtc 1.1.20). Kept under the channel's detach
+# budget, so the backend settles the departure before the channel gives up on it.
+DISCONNECT_TIMEOUT_S = 2.0
+
 
 @dataclass(frozen=True)
 class ConferenceEmissions:
@@ -100,11 +107,13 @@ class LiveKitBotSession:
         session: BotSession,
         config: Any,
         emissions: ConferenceEmissions,
+        evict: Callable[[], Awaitable[None]],
     ) -> None:
         self._rtc = rtc
         self.session = session
         self._config = config
         self._emissions = emissions
+        self._evict = evict  # removes this bot through the server API
         self._room: Any = rtc.Room()
         # The event bridge is bounded. The consumer awaits the framework's
         # fanout — identity resolution, hooks — so a participant generating
@@ -135,6 +144,7 @@ class LiveKitBotSession:
         # an unhealthy end that loses that race reports nothing, because the
         # caller that requested the departure owns the books.
         self._disconnecting: asyncio.Task[None] | None = None
+        self._sdk_disconnecting: asyncio.Task[None] | None = None
         self._leave_requested = False
         # The teardown task an SFU-side disconnect runs on; the callback that
         # learns of the loss is synchronous. Kept referenced until it ends.
@@ -237,10 +247,62 @@ class LiveKitBotSession:
         if self._disconnected:
             return
         if self._disconnecting is None or self._disconnecting.done():
-            self._disconnecting = asyncio.create_task(self._room.disconnect())
+            self._disconnecting = asyncio.create_task(self._leave_the_sfu())
             self._disconnecting.add_done_callback(_consume_exception)
         await asyncio.shield(self._disconnecting)
         self._disconnected = True
+
+    async def _leave_the_sfu(self) -> None:
+        """Take the bot out: through the SDK, or through the server if the SDK hangs.
+
+        A disconnect that does not return within :data:`DISCONNECT_TIMEOUT_S` is
+        not a departure anyone can book, and waiting on it is a channel that
+        never finishes leaving. The server is the authority on who is in the
+        room, so it is asked to remove the bot; a bot it no longer knows is out.
+        Only then is the stuck listener released. An eviction that fails
+        propagates, exactly as a refused disconnect does, and the next attempt
+        waits on the same SDK call again before asking the server once more.
+        """
+        if await self._sdk_disconnect():
+            return
+        logger.warning(
+            "The LiveKit SDK did not finish disconnecting the conference bot in room %s "
+            "within %.1fs; asking the server to confirm the bot is out",
+            self.room_id,
+            DISCONNECT_TIMEOUT_S,
+        )
+        await self._evict()
+        self._release_sdk_listener()
+
+    async def _sdk_disconnect(self) -> bool:
+        """Whether the SDK's disconnect returned within :data:`DISCONNECT_TIMEOUT_S`.
+
+        One SDK call for the session, however many attempts wait on it: a second
+        ``disconnect()`` beside a pending one would be two calls into the SDK
+        for one room. A call that failed is replaced by a fresh one, and its
+        error propagates, so a refused disconnect stays a failed departure.
+        """
+        call = self._sdk_disconnecting
+        if call is None or call.done():
+            call = self._sdk_disconnecting = asyncio.create_task(self._room.disconnect())
+            call.add_done_callback(_consume_exception)
+        done, _ = await asyncio.wait({call}, timeout=DISCONNECT_TIMEOUT_S)
+        if not done:
+            return False
+        call.result()
+        return True
+
+    def _release_sdk_listener(self) -> None:
+        """Cancel the SDK's room listener a failed publish or unpublish left stuck.
+
+        It is what the SDK's disconnect waits on, and it keeps the room's FFI
+        subscription, which would otherwise queue every event of the process for
+        a room nobody reads. Private to the SDK, hence the guard: an SDK without
+        it has nothing to release.
+        """
+        listener = getattr(self._room, "_task", None)
+        if isinstance(listener, asyncio.Task) and not listener.done():
+            listener.cancel()
 
     def _drain_events(self) -> int:
         """Drop whatever the consumer will never get to, and say how much.
@@ -326,7 +388,31 @@ class LiveKitBotSession:
             raise RuntimeError(
                 f"the bot has left room {self.room_id!r}, so there is no track to publish on"
             )
-        await self._voice.publish(chunk)
+        try:
+            await self._voice.publish(chunk)
+        except VoicePublicationError as exc:
+            self._voice_refused(exc)
+            raise
+
+    def _voice_refused(self, failure: VoicePublicationError) -> None:
+        """End the session whose voice LiveKit did not publish.
+
+        The SDK leaves its room listener waiting on the refused publication, so
+        the session stops receiving arrivals and publications: a view that can
+        no longer be trusted, which RFC 12.10.3 ends rather than keeps silently.
+        The re-join that follows brings a session with a working listener. A
+        session already leaving has nothing left to end.
+        """
+        if self._left:
+            return
+        logger.error(
+            "%s. The bot session is being ended and re-joined, because the SDK stops "
+            "delivering the room's events after a refused publication. If the SFU refused "
+            "the source, check that the bot's grants include publish_audio: explicit "
+            "bot_grants are taken as given",
+            failure,
+        )
+        self._start_unhealthy_end(f"voice publication failed: {failure}")
 
     def stop_playback(self) -> None:
         """Drop the queued, unplayed audio of the bot's track.
@@ -412,17 +498,21 @@ class LiveKitBotSession:
             self.room_id,
             MAX_QUEUED_EVENTS,
         )
+        self._start_unhealthy_end(
+            f"event queue overflow at {MAX_QUEUED_EVENTS} events; the session's view "
+            "of the conference can no longer be trusted"
+        )
+
+    def _start_unhealthy_end(self, reason: str) -> None:
+        """Close admission and end the live session on a task of its own."""
+        if self._left:
+            return
         # Admission closes, but the session is NOT marked disconnected: unlike
         # the SFU-drop path, this connection is still live, and the end must
         # not be reported — nor the registry emptied, nor a replacement
         # seated — until the disconnect has actually happened.
         self._left = True
-        self._ender = asyncio.create_task(
-            self._end_unhealthy(
-                f"event queue overflow at {MAX_QUEUED_EVENTS} events; the session's view "
-                "of the conference can no longer be trusted"
-            )
-        )
+        self._ender = asyncio.create_task(self._end_unhealthy(reason))
 
     async def _consume(self) -> None:
         """Await the queued emissions, in order, until cancelled.
@@ -663,7 +753,8 @@ class LiveKitBotSession:
         await self._stop_pumps()
         await self._voice.close()
         with contextlib.suppress(Exception):
-            await self._room.disconnect()
+            if not await self._sdk_disconnect():
+                self._release_sdk_listener()
         await self._finish_end(reason)
 
     async def _end_unhealthy(self, reason: str) -> None:
@@ -691,7 +782,7 @@ class LiveKitBotSession:
                 await self._disconnect_once()
             except Exception:
                 logger.warning(
-                    "Disconnecting the overflowed conference bot in room %s failed "
+                    "Disconnecting the unhealthy conference bot in room %s failed "
                     "(attempt %d); the session is not reported ended while the bot may "
                     "still be connected",
                     self.room_id,
@@ -707,7 +798,7 @@ class LiveKitBotSession:
             await self._finish_end(reason)
             return
         logger.error(
-            "The overflowed conference bot in room %s could not be disconnected after "
+            "The unhealthy conference bot in room %s could not be disconnected after "
             "%d attempt(s). The session is being kept — on the backend's registry and "
             "the channel's books, holding the room's conference slot — rather than "
             "reported ended beside a live connection. A detach or the channel close "

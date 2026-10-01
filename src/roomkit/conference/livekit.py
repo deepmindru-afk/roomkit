@@ -63,6 +63,7 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from typing import Any
 from uuid import uuid4
 
@@ -448,6 +449,19 @@ class LiveKitConferenceBackend(ConferenceBackend):
             self._api_module.RoomParticipantIdentity(room=room_id, identity=participant_id)
         )
 
+    async def _evict(self, room_id: str, identity: str) -> None:
+        """Remove a participant through the server API; one already gone counts as removed.
+
+        How a bot departure is confirmed when the SDK's own disconnect does not
+        return: the server is the authority on who is in the room, and
+        ``not_found`` is its answer that the participant is out.
+        """
+        try:
+            await self.remove_participant(room_id, identity)
+        except self._api_module.TwirpError as exc:
+            if exc.code != self._api_module.TwirpErrorCode.NOT_FOUND:
+                raise
+
     async def mute_track(self, room_id: str, track_id: str) -> None:
         await self._set_muted(room_id, track_id, muted=True)
 
@@ -512,6 +526,7 @@ class LiveKitConferenceBackend(ConferenceBackend):
             session=session,
             config=self._config,
             emissions=self._emissions(),
+            evict=partial(self._evict, room_id, identity),
         )
         access = self._access(room_id, identity, grants, publish_data=False)
         try:

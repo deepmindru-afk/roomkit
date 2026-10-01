@@ -38,6 +38,7 @@ from uuid import uuid4
 
 import pytest
 
+from roomkit.conference._livekit_voice import VoicePublicationError
 from roomkit.conference.livekit import LiveKitConferenceBackend, LiveKitConfig
 from roomkit.conference.models import (
     ConferenceGrants,
@@ -888,6 +889,49 @@ class TestScreenShareAudio:
 
         session_room = backend._sessions[bot.id]._room
         assert await publish_screen_share_audio(session_room)
+
+
+class TestAStuckSdkDoesNotHoldTheBot:
+    """After a failed publication the SDK's room listener is stuck and its
+    disconnect never returns (livekit-rtc 1.1.20). The bot must still get out,
+    and a session that stopped hearing the room must end (RMK-350).
+    """
+
+    async def test_a_bot_whose_publication_was_refused_still_leaves(
+        self, backend: LiveKitConferenceBackend, room_id: str
+    ) -> None:
+        bot = await backend.join_as_bot(room_id, "roomkit", ConferenceGrants.for_bot(speaks=True))
+        with pytest.raises(rtc.participant.PublishTrackError):
+            await publish_screen_share_audio(backend._sessions[bot.id]._room)
+
+        await asyncio.wait_for(backend.leave(bot), timeout=TIMEOUT_S)
+
+        assert bot.id not in backend._sessions
+        assert await backend.list_participants(room_id) == []
+
+    async def test_a_refused_voice_ends_the_session_and_says_why(
+        self, backend: LiveKitConferenceBackend, room_id: str
+    ) -> None:
+        """A bot granted no microphone whose voice is published anyway: the
+        explicit-grants case the channel accepts as given.
+        """
+        ended: list[str] = []
+
+        async def _ended(session: Any, reason: str) -> None:
+            ended.append(reason)
+
+        backend.on_bot_session_ended(_ended)
+        bot = await backend.join_as_bot(room_id, "roomkit", ConferenceGrants.for_bot())
+
+        with pytest.raises(VoicePublicationError):
+            await backend.publish_audio(
+                bot, AudioChunk(data=_pcm_mono(0), sample_rate=PUBLISH_RATE, channels=1)
+            )
+
+        await wait_for(lambda: bool(ended))
+        assert ended[0].startswith("voice publication failed")
+        assert bot.id not in backend._sessions
+        assert await backend.list_participants(room_id) == []
 
 
 class TestModeration:

@@ -23,6 +23,15 @@ from roomkit.voice.base import AudioChunk
 logger = logging.getLogger("roomkit.conference.livekit")
 
 
+class VoicePublicationError(RuntimeError):
+    """LiveKit did not publish the bot's voice track.
+
+    Its own type because the failure outlives the call: the SDK leaves its room
+    listener waiting on the publication's answer, so the session that raised it
+    no longer receives the conference's events and has to end.
+    """
+
+
 class BotVoiceTrack:
     """The bot's outbound audio track, published on first need."""
 
@@ -96,13 +105,17 @@ class BotVoiceTrack:
         return True
 
     async def close(self) -> None:
-        """Unpublish the track and release the source. Idempotent."""
+        """Release the source of a voice whose session is ending. Idempotent.
+
+        The track is not unpublished: the disconnect that ends the session takes
+        every track down with it, and an unpublish is one more SDK call that can
+        fail. One that fails leaves the SDK's room listener waiting on an answer
+        nobody acknowledges, and the disconnect that follows waits on that
+        listener.
+        """
         source, self._source = self._source, None
-        track, self._track = self._track, None
+        self._track = None
         self._format = None
-        if track is not None:
-            with contextlib.suppress(Exception):
-                await self._room.local_participant.unpublish_track(track.sid)
         if source is not None:
             with contextlib.suppress(Exception):
                 await source.aclose()
@@ -143,8 +156,7 @@ class BotVoiceTrack:
                 chunk.sample_rate, chunk.channels, queue_size_ms=self._queue_ms
             )
             track = self._rtc.LocalAudioTrack.create_audio_track(f"{self._identity}-voice", source)
-            options = self._rtc.TrackPublishOptions(source=self._rtc.TrackSource.SOURCE_MICROPHONE)
-            await self._room.local_participant.publish_track(track, options)
+            await self._publish(track, source)
             self._source, self._track, self._format = source, track, wanted
             logger.debug(
                 "Conference bot %s published its voice track in room %s at %d Hz / %d ch",
@@ -154,6 +166,18 @@ class BotVoiceTrack:
                 chunk.channels,
             )
             return source
+
+    async def _publish(self, track: Any, source: Any) -> None:
+        """Publish the voice track, or raise :class:`VoicePublicationError`."""
+        options = self._rtc.TrackPublishOptions(source=self._rtc.TrackSource.SOURCE_MICROPHONE)
+        try:
+            await self._room.local_participant.publish_track(track, options)
+        except Exception as exc:
+            with contextlib.suppress(Exception):
+                await source.aclose()
+            raise VoicePublicationError(
+                f"LiveKit did not publish the bot's voice in room {self._room_id!r}: {exc}"
+            ) from exc
 
     def _require_same_format(self, wanted: tuple[int, int]) -> None:
         if self._format == wanted:

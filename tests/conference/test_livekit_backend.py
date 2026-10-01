@@ -14,12 +14,17 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from roomkit.conference import _livekit_session as session_module
+from roomkit.conference._livekit_session import ConferenceEmissions, LiveKitBotSession
+from roomkit.conference._livekit_voice import BotVoiceTrack, VoicePublicationError
 from roomkit.conference.livekit import LiveKitConferenceBackend, LiveKitConfig
 from roomkit.conference.models import BotSession, ConferenceGrants, TrackKind
 from roomkit.core.exceptions import ConferenceCapabilityError
@@ -39,6 +44,7 @@ class _FakeRoomService:
 
     calls: list[tuple[str, Any]] = field(default_factory=list)
     participants: list[Any] = field(default_factory=list)
+    remove_error: Exception | None = None
 
     async def create_room(self, request: Any) -> Any:
         self.calls.append(("create_room", request))
@@ -54,6 +60,8 @@ class _FakeRoomService:
 
     async def remove_participant(self, request: Any) -> Any:
         self.calls.append(("remove_participant", request))
+        if self.remove_error is not None:
+            raise self.remove_error
         return api.RemoveParticipantResponse()
 
     async def mute_published_track(self, request: Any) -> Any:
@@ -89,6 +97,39 @@ def _served(backend: LiveKitConferenceBackend) -> _FakeRoomService:
 
 def _claims(token: str) -> dict[str, Any]:
     return jwt.decode(token, API_SECRET, algorithms=["HS256"])
+
+
+async def _ignore(*args: Any) -> None:
+    return None
+
+
+def _session_for(
+    rtc: Any,
+    *,
+    session: BotSession | None = None,
+    ended: Callable[..., Awaitable[None]] = _ignore,
+    evict: Callable[[], Awaitable[None]] = _ignore,
+) -> LiveKitBotSession:
+    """A LiveKitBotSession on a stand-in rtc, every emission ignored unless named."""
+    return LiveKitBotSession(
+        rtc=rtc,
+        session=session or BotSession(id="lk-1", room_id="room-1", identity="roomkit"),
+        config=SimpleNamespace(publish_queue_ms=200),
+        emissions=ConferenceEmissions(
+            participant_joined=_ignore,
+            participant_left=_ignore,
+            track_published=_ignore,
+            track_unpublished=_ignore,
+            track_muted=_ignore,
+            track_unmuted=_ignore,
+            track_audio=_ignore,
+            track_video=_ignore,
+            active_speaker_changed=_ignore,
+            connection_quality=_ignore,
+            bot_session_ended=ended,
+        ),
+        evict=evict,
+    )
 
 
 class TestConfiguration:
@@ -663,10 +704,6 @@ class TestLeaveFailureIsNotSwallowed:
         assert bot.id in backend._sessions, "close forgot a bot it could not remove"
 
     async def test_the_session_itself_retries_the_disconnect(self) -> None:
-        from types import SimpleNamespace
-
-        from roomkit.conference._livekit_session import ConferenceEmissions, LiveKitBotSession
-
         class _FakeRoom:
             def __init__(self) -> None:
                 self.disconnects = 0
@@ -684,27 +721,7 @@ class TestLeaveFailureIsNotSwallowed:
         room = _FakeRoom()
         rtc = SimpleNamespace(Room=lambda: room)
 
-        async def _sink(*args: Any) -> None:
-            return None
-
-        session = LiveKitBotSession(
-            rtc=rtc,
-            session=BotSession(id="lk-1", room_id="room-1", identity="roomkit"),
-            config=SimpleNamespace(publish_queue_ms=200),
-            emissions=ConferenceEmissions(
-                participant_joined=_sink,
-                participant_left=_sink,
-                track_published=_sink,
-                track_unpublished=_sink,
-                track_muted=_sink,
-                track_unmuted=_sink,
-                track_audio=_sink,
-                track_video=_sink,
-                active_speaker_changed=_sink,
-                connection_quality=_sink,
-                bot_session_ended=_sink,
-            ),
-        )
+        session = _session_for(rtc)
 
         with pytest.raises(RuntimeError):
             await session.leave()
@@ -719,9 +736,6 @@ class TestLeaveFailureIsNotSwallowed:
 
 def _bridge_session() -> Any:
     """A LiveKitBotSession with a fake rtc, for exercising the event bridge."""
-    from types import SimpleNamespace
-
-    from roomkit.conference._livekit_session import ConferenceEmissions, LiveKitBotSession
 
     class _FakeRoom:
         local_participant = None
@@ -732,27 +746,7 @@ def _bridge_session() -> Any:
         async def disconnect(self) -> None:
             return None
 
-    async def _sink(*args: Any) -> None:
-        return None
-
-    return LiveKitBotSession(
-        rtc=SimpleNamespace(Room=_FakeRoom),
-        session=BotSession(id="lk-1", room_id="room-1", identity="roomkit"),
-        config=SimpleNamespace(publish_queue_ms=200),
-        emissions=ConferenceEmissions(
-            participant_joined=_sink,
-            participant_left=_sink,
-            track_published=_sink,
-            track_unpublished=_sink,
-            track_muted=_sink,
-            track_unmuted=_sink,
-            track_audio=_sink,
-            track_video=_sink,
-            active_speaker_changed=_sink,
-            connection_quality=_sink,
-            bot_session_ended=_sink,
-        ),
-    )
+    return _session_for(SimpleNamespace(Room=_FakeRoom))
 
 
 class _ClearableSource:
@@ -761,6 +755,7 @@ class _ClearableSource:
     def __init__(self, sample_rate: int, num_channels: int, queue_size_ms: int = 0) -> None:
         self.captured: list[Any] = []
         self.cleared = 0
+        self.closed = False
 
     async def capture_frame(self, frame: Any) -> None:
         self.captured.append(frame)
@@ -769,15 +764,17 @@ class _ClearableSource:
         self.cleared += 1
 
     async def aclose(self) -> None:
-        return None
+        self.closed = True
 
 
-def _voice_track() -> tuple[Any, list[_ClearableSource]]:
-    """A BotVoiceTrack on a fake rtc, and every source it creates."""
-    from types import SimpleNamespace
+def _voice_track(
+    publish_error: Exception | None = None,
+) -> tuple[Any, list[_ClearableSource]]:
+    """A BotVoiceTrack on a fake rtc, and every source it creates.
 
-    from roomkit.conference._livekit_voice import BotVoiceTrack
-
+    ``publish_error`` is what the SDK raises when asked to publish the track;
+    the fake participant keeps the sids it was asked to unpublish.
+    """
     sources: list[_ClearableSource] = []
 
     def _source(sample_rate: int, num_channels: int, queue_size_ms: int) -> _ClearableSource:
@@ -786,11 +783,15 @@ def _voice_track() -> tuple[Any, list[_ClearableSource]]:
         return source
 
     class _LocalParticipant:
+        def __init__(self) -> None:
+            self.unpublished: list[Any] = []
+
         async def publish_track(self, track: Any, options: Any) -> None:
-            return None
+            if publish_error is not None:
+                raise publish_error
 
         async def unpublish_track(self, sid: Any) -> None:
-            return None
+            self.unpublished.append(sid)
 
     rtc = SimpleNamespace(
         AudioSource=_source,
@@ -863,8 +864,6 @@ class TestTheEventBridgeIsBounded:
     """
 
     async def test_state_events_coalesce_to_one_entry_per_key(self) -> None:
-        from types import SimpleNamespace
-
         session = _bridge_session()
         participant = SimpleNamespace(identity="p-flappy")
 
@@ -880,8 +879,6 @@ class TestTheEventBridgeIsBounded:
         assert len(session._pending_state) == 1
 
     async def test_a_coalesced_state_delivers_its_latest_value_once(self) -> None:
-        from types import SimpleNamespace
-
         session = _bridge_session()
         seen: list[tuple[Any, ...]] = []
 
@@ -919,7 +916,6 @@ class TestTheEventBridgeIsBounded:
         bot_session_ended contract — the channel re-joins, and the fresh
         catch-up announces the current truth instead of a holed history.
         """
-        from roomkit.conference import _livekit_session as session_module
 
         session = _bridge_session()
         reported: list[str] = []
@@ -932,11 +928,8 @@ class TestTheEventBridgeIsBounded:
             **{**original.__dict__, "bot_session_ended": _ended}
         )
 
-        async def _sink(*args: Any) -> None:
-            return None
-
         for _ in range(session_module.MAX_QUEUED_EVENTS + 50):
-            session._put(_sink, "room-1")
+            session._put(_ignore, "room-1")
 
         assert session._events.qsize() <= session_module.MAX_QUEUED_EVENTS
         assert session._left is True, "the overflow did not end the session"
@@ -948,10 +941,6 @@ class TestTheEventBridgeIsBounded:
 
 class TestASfuSideDisconnectIsReported:
     async def test_the_session_reports_its_own_loss_and_ends(self) -> None:
-        from types import SimpleNamespace
-
-        from roomkit.conference._livekit_session import ConferenceEmissions, LiveKitBotSession
-
         class _FakeRoom:
             local_participant = None
 
@@ -966,28 +955,8 @@ class TestASfuSideDisconnectIsReported:
         async def _ended(bot: Any, reason: str) -> None:
             reported.append((bot, reason))
 
-        async def _sink(*args: Any) -> None:
-            return None
-
         bot = BotSession(id="lk-1", room_id="room-1", identity="roomkit")
-        session = LiveKitBotSession(
-            rtc=SimpleNamespace(Room=_FakeRoom),
-            session=bot,
-            config=SimpleNamespace(publish_queue_ms=200),
-            emissions=ConferenceEmissions(
-                participant_joined=_sink,
-                participant_left=_sink,
-                track_published=_sink,
-                track_unpublished=_sink,
-                track_muted=_sink,
-                track_unmuted=_sink,
-                track_audio=_sink,
-                track_video=_sink,
-                active_speaker_changed=_sink,
-                connection_quality=_sink,
-                bot_session_ended=_ended,
-            ),
-        )
+        session = _session_for(SimpleNamespace(Room=_FakeRoom), session=bot, ended=_ended)
 
         session._on_disconnected("SIGNAL_CLOSE")
         assert session._ender is not None
@@ -1018,10 +987,6 @@ class TestAnOverflowEndIsConfirmedBeforeReported:
     """
 
     def _session_with_room(self) -> tuple[Any, Any, list[str]]:
-        from types import SimpleNamespace
-
-        from roomkit.conference._livekit_session import ConferenceEmissions, LiveKitBotSession
-
         class _FakeRoom:
             local_participant = None
 
@@ -1043,42 +1008,17 @@ class TestAnOverflowEndIsConfirmedBeforeReported:
         async def _ended(bot: Any, reason: str) -> None:
             reported.append(reason)
 
-        async def _sink(*args: Any) -> None:
-            return None
-
-        session = LiveKitBotSession(
-            rtc=SimpleNamespace(Room=lambda: room),
-            session=BotSession(id="lk-1", room_id="room-1", identity="roomkit"),
-            config=SimpleNamespace(publish_queue_ms=200),
-            emissions=ConferenceEmissions(
-                participant_joined=_sink,
-                participant_left=_sink,
-                track_published=_sink,
-                track_unpublished=_sink,
-                track_muted=_sink,
-                track_unmuted=_sink,
-                track_audio=_sink,
-                track_video=_sink,
-                active_speaker_changed=_sink,
-                connection_quality=_sink,
-                bot_session_ended=_ended,
-            ),
-        )
+        session = _session_for(SimpleNamespace(Room=lambda: room), ended=_ended)
         return session, room, reported
 
     async def test_a_refused_disconnect_keeps_the_session_unreported(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from roomkit.conference import _livekit_session as session_module
-
         monkeypatch.setattr(session_module, "OVERFLOW_DISCONNECT_DELAYS_S", (0.0,))
         session, room, reported = self._session_with_room()
 
-        async def _sink(*args: Any) -> None:
-            return None
-
         for _ in range(session_module.MAX_QUEUED_EVENTS + 1):
-            session._put(_sink, "room-1")
+            session._put(_ignore, "room-1")
         assert session._ender is not None
         await asyncio.wait_for(session._ender, timeout=5.0)
 
@@ -1098,17 +1038,12 @@ class TestAnOverflowEndIsConfirmedBeforeReported:
     async def test_a_confirmed_disconnect_reports_with_the_loss_counted(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from roomkit.conference import _livekit_session as session_module
-
         monkeypatch.setattr(session_module, "OVERFLOW_DISCONNECT_DELAYS_S", (0.0,))
         session, room, reported = self._session_with_room()
         room.refuse = False
 
-        async def _sink(*args: Any) -> None:
-            return None
-
         for _ in range(session_module.MAX_QUEUED_EVENTS + 1):
-            session._put(_sink, "room-1")
+            session._put(_ignore, "room-1")
         assert session._ender is not None
         await asyncio.wait_for(session._ender, timeout=5.0)
 
@@ -1125,10 +1060,6 @@ class TestTheDisconnectIsSingleFlight:
         """One call on the wire, and the requested leave owns the books: the
         unhealthy end that loses the race reports nothing.
         """
-        from types import SimpleNamespace
-
-        from roomkit.conference import _livekit_session as session_module
-        from roomkit.conference._livekit_session import ConferenceEmissions, LiveKitBotSession
 
         monkeypatch.setattr(session_module, "OVERFLOW_DISCONNECT_DELAYS_S", (0.0,))
         gate = asyncio.Event()
@@ -1152,31 +1083,11 @@ class TestTheDisconnectIsSingleFlight:
         async def _ended(bot: Any, reason: str) -> None:
             reported.append(reason)
 
-        async def _sink(*args: Any) -> None:
-            return None
-
-        session = LiveKitBotSession(
-            rtc=SimpleNamespace(Room=lambda: room),
-            session=BotSession(id="lk-1", room_id="room-1", identity="roomkit"),
-            config=SimpleNamespace(publish_queue_ms=200),
-            emissions=ConferenceEmissions(
-                participant_joined=_sink,
-                participant_left=_sink,
-                track_published=_sink,
-                track_unpublished=_sink,
-                track_muted=_sink,
-                track_unmuted=_sink,
-                track_audio=_sink,
-                track_video=_sink,
-                active_speaker_changed=_sink,
-                connection_quality=_sink,
-                bot_session_ended=_ended,
-            ),
-        )
+        session = _session_for(SimpleNamespace(Room=lambda: room), ended=_ended)
 
         # Overflow: the unhealthy end starts its disconnect and suspends in it.
         for _ in range(session_module.MAX_QUEUED_EVENTS + 1):
-            session._put(_sink, "room-1")
+            session._put(_ignore, "room-1")
         assert session._ender is not None
         deadline = asyncio.get_running_loop().time() + 5.0
         while room.disconnects == 0:
@@ -1197,3 +1108,194 @@ class TestTheDisconnectIsSingleFlight:
         assert room.disconnects == 1
         assert session._disconnected is True
         assert reported == [], "the unhealthy end reported over a requested leave"
+
+
+class _WedgedRoom:
+    """A room whose disconnect waits on a listener nothing will release.
+
+    What livekit-rtc does after a failed publish or unpublish: ``disconnect()``
+    awaits the room's listener task, which waits forever on an event nobody
+    acknowledges.
+    """
+
+    local_participant = None
+
+    def __init__(self) -> None:
+        self.disconnects = 0
+        self._task: asyncio.Task[None] | None = None
+
+    def on(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+    async def disconnect(self) -> None:
+        self.disconnects += 1
+        if self._task is None:
+            self._task = asyncio.create_task(asyncio.Event().wait())
+        await self._task
+
+
+class _Evictions:
+    """A stand-in for the backend's eviction: counts calls, fails the first ``failures``."""
+
+    def __init__(self, failures: int = 0) -> None:
+        self.calls = 0
+        self._failures = failures
+
+    async def __call__(self) -> None:
+        self.calls += 1
+        if self.calls <= self._failures:
+            raise RuntimeError("server unreachable")
+
+
+class TestTheDepartureIsBounded:
+    """A departure the SDK cannot finish is settled by the server (RMK-350)."""
+
+    @pytest.fixture(autouse=True)
+    def _short_bound(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(session_module, "DISCONNECT_TIMEOUT_S", 0.05)
+
+    async def test_a_disconnect_that_never_returns_is_settled_by_the_server(self) -> None:
+        room = _WedgedRoom()
+        evictions = _Evictions()
+        session = _session_for(SimpleNamespace(Room=lambda: room), evict=evictions)
+
+        await asyncio.wait_for(session.leave(), timeout=2.0)
+
+        assert evictions.calls == 1
+        assert session._disconnected is True
+        await asyncio.sleep(0)
+        assert room._task is not None and room._task.cancelled(), "the stuck listener stayed"
+        assert room.disconnects == 1
+
+    async def test_a_disconnect_that_returns_asks_nothing_of_the_server(self) -> None:
+        evictions = _Evictions()
+        session = _session_for(SimpleNamespace(Room=_FakeRoom), evict=evictions)
+
+        await asyncio.wait_for(session.leave(), timeout=2.0)
+
+        assert evictions.calls == 0
+        assert session._disconnected is True
+
+    async def test_a_failed_eviction_is_a_failed_departure_and_the_next_one_retries(
+        self,
+    ) -> None:
+        """Not terminal, like a refused disconnect: the session stays on the books
+        and a later leave() asks the server again, over the same SDK call.
+        """
+        room = _WedgedRoom()
+        evictions = _Evictions(failures=1)
+        session = _session_for(SimpleNamespace(Room=lambda: room), evict=evictions)
+
+        with pytest.raises(RuntimeError, match="server unreachable"):
+            await asyncio.wait_for(session.leave(), timeout=2.0)
+        assert session._disconnected is False
+
+        await asyncio.wait_for(session.leave(), timeout=2.0)
+
+        assert evictions.calls == 2
+        assert session._disconnected is True
+        assert room.disconnects == 1, "a second disconnect reached the SDK beside the first"
+
+    async def test_an_sfu_side_end_is_reported_though_the_disconnect_never_returns(
+        self,
+    ) -> None:
+        """The SFU already dropped the bot, so nothing is evicted; what must not
+        happen is the end going unreported behind a disconnect that never returns.
+        """
+        room = _WedgedRoom()
+        evictions = _Evictions()
+        reported: list[str] = []
+
+        async def _ended(bot: Any, reason: str) -> None:
+            reported.append(reason)
+
+        session = _session_for(SimpleNamespace(Room=lambda: room), ended=_ended, evict=evictions)
+
+        session._on_disconnected("SIGNAL_CLOSE")
+        assert session._ender is not None
+        await asyncio.wait_for(session._ender, timeout=2.0)
+
+        assert reported == ["SIGNAL_CLOSE"]
+        assert evictions.calls == 0
+        assert room._task is not None and room._task.cancelled()
+
+
+class _FakeRoom:
+    """A room whose disconnect returns at once."""
+
+    local_participant = None
+
+    def on(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+    async def disconnect(self) -> None:
+        return None
+
+
+class TestTheVoiceTrackAtTheEnd:
+    async def test_closing_releases_the_source_without_unpublishing(self) -> None:
+        """The disconnect takes the track down; an unpublish is one more SDK call
+        that can fail and leave the room's listener stuck.
+        """
+        track, sources = _voice_track()
+        await track.publish(AudioChunk(data=b"\x00\x00" * 160, sample_rate=48_000))
+
+        await track.close()
+
+        assert track._room.local_participant.unpublished == []
+        assert [source.closed for source in sources] == [True]
+
+    async def test_a_refused_publication_is_named_and_releases_its_source(self) -> None:
+        track, sources = _voice_track(publish_error=RuntimeError("insufficient permissions"))
+
+        with pytest.raises(VoicePublicationError, match="insufficient permissions"):
+            await track.publish(AudioChunk(data=b"\x00\x00" * 160, sample_rate=48_000))
+
+        assert [source.closed for source in sources] == [True]
+
+
+class TestARefusedVoiceEndsTheSession:
+    async def test_the_session_ends_as_unhealthy_and_says_why(self) -> None:
+        """The SDK stops delivering the room's events after a refused
+        publication, so the session ends and the channel re-joins (RFC 12.10.3).
+        """
+        reported: list[str] = []
+
+        async def _ended(bot: Any, reason: str) -> None:
+            reported.append(reason)
+
+        session = _session_for(SimpleNamespace(Room=_FakeRoom), ended=_ended)
+        voice, _ = _voice_track(publish_error=RuntimeError("insufficient permissions"))
+        session._voice = voice
+
+        with pytest.raises(VoicePublicationError):
+            await session.publish(AudioChunk(data=b"\x00\x00" * 160, sample_rate=48_000))
+
+        assert session._ender is not None
+        await asyncio.wait_for(session._ender, timeout=2.0)
+        assert len(reported) == 1
+        assert reported[0].startswith("voice publication failed")
+        assert "insufficient permissions" in reported[0]
+        with pytest.raises(RuntimeError, match="has left"):
+            await session.publish(AudioChunk(data=b"\x00\x00" * 160, sample_rate=48_000))
+
+
+class TestTheBackendEvictsThroughTheServer:
+    async def test_a_participant_already_gone_counts_as_removed(self) -> None:
+        backend = _backend()
+        room = _served(backend)
+        room.remove_error = api.TwirpError("not_found", "participant does not exist", status=404)
+
+        await backend._evict("room-1", "roomkit")
+
+        [(name, request)] = room.calls
+        assert name == "remove_participant"
+        assert request.identity == "roomkit"
+
+    async def test_any_other_server_error_is_a_failed_eviction(self) -> None:
+        backend = _backend()
+        room = _served(backend)
+        room.remove_error = api.TwirpError("unavailable", "down", status=503)
+
+        with pytest.raises(api.TwirpError):
+            await backend._evict("room-1", "roomkit")

@@ -148,6 +148,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A LiveKit bot that has spoken leaves its conference instead of hanging
+  (RMK-350). In livekit-rtc 1.1.20 a `publish_track` or `unpublish_track`
+  that fails leaves the room's event listener stuck: the room stops
+  delivering events and `Room.disconnect()` never returns. The bot's voice
+  is no longer unpublished at the end of a session (the disconnect takes it
+  down; the unpublish failed intermittently with "internal webrtc failure"
+  and hung about two runs in three of the live suite). A departure whose
+  SDK disconnect has not returned after 2 s is settled by the server: the
+  bot is removed through `RemoveParticipant`, a bot the server no longer
+  knows counts as out, and the stuck listener is released; a removal that
+  fails is a failed departure, retried like a refused disconnect. An end
+  reported by the SFU is reported even when the SDK hangs. A voice the SFU
+  refuses (explicit `bot_grants` without `publish_audio`, for example) ends
+  the session as unhealthy, so the channel re-joins rather than keeping a
+  session that no longer hears the room, and the error names
+  `publish_audio`.
 - An agent's response meets its `BEFORE_BROADCAST` hooks before its source's
   right to write on every path that commits it (RMK-344, RFC §10.1, §7.5):
   - a read-only or muted agent's answer was stored `BLOCKED` before any hook
