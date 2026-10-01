@@ -915,7 +915,6 @@ class LaneExecutionMixin(HelpersMixin):
         cascade: DeliveryCascade,
     ) -> None:
         """One response event's own commit pass, under a fresh room lock."""
-        router = self._get_router()
         async with self._lock_manager.locked(room_id):
             # One read of what the lock protects (RFC §10.1 steps 6 and 12):
             # the status gate, the source's right to write and the delivery
@@ -966,46 +965,69 @@ class LaneExecutionMixin(HelpersMixin):
                 )
                 return
             reentry = reentry_sync.event or reentry
+            await self._commit_reentry(
+                room_id,
+                reentry,
+                reentry_binding,
+                reentry_sync,
+                reentry_ctx,
+                parent_plan.response_visibility,
+                cascade,
+            )
 
-            def factory(
-                committed: RoomEvent,
-                _binding: Any = reentry_binding,
-                _ctx: Any = reentry_ctx,
-                _sync: Any = reentry_sync,
-            ) -> DeliveryPlan:
-                child = router.plan(committed, _binding, _ctx)
-                child.response_visibility = parent_plan.response_visibility
-                child.hook_tasks = list(_sync.tasks)
-                child.hook_observations = list(_sync.observations)
-                return child
+    async def _commit_reentry(
+        self,
+        room_id: str,
+        reentry: RoomEvent,
+        binding: ChannelBinding | None,
+        sync_result: SyncPipelineResult,
+        context: RoomContext,
+        response_visibility: str | None,
+        cascade: DeliveryCascade,
+    ) -> None:
+        """Commit a response its gates accepted and lane its delivery (RFC
+        §10.1 step 12), under the lock its pass holds."""
+        router = self._get_router()
 
-            # Commit the response BEFORE delivering any events its hook
-            # injected: the response causes the injection, so it takes the
-            # lower index (mirrors the main path).
-            if reentry_binding is None:
-                # A detached source has no delivery plan. Keep its timeline
-                # response, but only after the same filtering and side effects
-                # as a response whose source is still attached.
-                stored = await self._persist_committed(
-                    room_id, reentry.model_copy(update={"status": EventStatus.DELIVERED})
-                )
-                await self._persist_side_effects(
-                    room_id,
-                    reentry_sync.tasks,
-                    reentry_sync.observations,
-                    stored or reentry,
-                    reentry_ctx,
-                )
-            else:
-                stored = await self._commit_to_lane(
-                    room_id,
-                    reentry.model_copy(update={"status": EventStatus.DELIVERED}),
-                    cascade,
-                    factory,
-                )
-            if stored is not None:
-                cascade.response_events.append(stored)
-            if reentry_sync.injected_events:
-                await self._lane_injected_events(
-                    reentry_sync.injected_events, room_id, reentry_ctx, cascade
-                )
+        def factory(
+            committed: RoomEvent,
+            _binding: Any = binding,
+            _ctx: Any = context,
+            _sync: Any = sync_result,
+        ) -> DeliveryPlan:
+            child = router.plan(committed, _binding, _ctx)
+            child.response_visibility = response_visibility
+            child.hook_tasks = list(_sync.tasks)
+            child.hook_observations = list(_sync.observations)
+            return child
+
+        # Commit the response BEFORE delivering any events its hook
+        # injected: the response causes the injection, so it takes the
+        # lower index (mirrors the main path).
+        if binding is None:
+            # A detached source has no delivery plan. Keep its timeline
+            # response, but only after the same filtering and side effects
+            # as a response whose source is still attached.
+            stored = await self._persist_committed(
+                room_id, reentry.model_copy(update={"status": EventStatus.DELIVERED})
+            )
+            await self._persist_side_effects(
+                room_id,
+                sync_result.tasks,
+                sync_result.observations,
+                stored or reentry,
+                context,
+            )
+        else:
+            stored = await self._commit_to_lane(
+                room_id,
+                reentry.model_copy(update={"status": EventStatus.DELIVERED}),
+                cascade,
+                factory,
+            )
+        if stored is not None:
+            cascade.response_events.append(stored)
+        if sync_result.injected_events:
+            await self._lane_injected_events(
+                sync_result.injected_events, room_id, context, cascade
+            )
