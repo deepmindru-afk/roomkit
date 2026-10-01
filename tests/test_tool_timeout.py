@@ -1,30 +1,45 @@
 """A tool handler that never answers costs its call, never the turn (RFC §21.6, RMK-366).
 
 Every wait on a handler goes through one bound, on every path a call takes:
-both text loops, a speech-to-speech channel's provider calls and the calls it
-recovers from speech, and a conference's provider calls. Past the bound the
-handler is cancelled and the call fails as a raise (RFC §9.3). A tool that
-waits on another agent or a person keeps its own bound.
+both text loops, a speech-to-speech channel's provider calls, the calls it
+recovers from speech, its reasoning backend's calls, its skill scripts and a
+pipeline agent's own tools, and a conference's provider calls. Past the bound
+the handler is cancelled and the call fails as a raise (RFC §9.3). A tool that
+waits on another agent or a person, or carries a timeout of its own, keeps its
+own bound.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import time
+from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 from roomkit import ConferenceRealtimeConfig, ToolTimeoutError
-from roomkit.channels._tool_registry import ToolEntry, ToolSource, schema_tool
+from roomkit.channels._tool_registry import orchestration_tool, schema_tool
+from roomkit.channels.agent import Agent
 from roomkit.channels.ai import AIChannel
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 from roomkit.core.framework import RoomKit
+from roomkit.orchestration.pipeline import ConversationPipeline, PipelineStage
+from roomkit.orchestration.state import ConversationState, set_conversation_state
+from roomkit.providers.ai.base import AITool
 from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.sandbox.executor import SandboxExecutor
+from roomkit.sandbox.models import SandboxResult
+from roomkit.skills.executor import ScriptExecutor
+from roomkit.skills.models import ScriptResult
+from roomkit.skills.registry import SkillRegistry
 from roomkit.tools.human_input import HumanInputToolHandler
 from roomkit.tools.timeout import ToolTimeouts, answer_within
 from roomkit.voice.base import VoiceSession
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
+from roomkit.voice.realtime.reasoning import ReasoningBackend, ReasoningOutput, ReasoningRequest
 from tests.conference.test_conference_realtime import ROOM, realtime_kit, until
 from tests.test_tool_policy_exemptions import _calls, _tool_payload, _turn
 
@@ -34,6 +49,7 @@ SLOW = {
     "parameters": {"type": "object", "properties": {}},
 }
 BOUND = 0.05
+LONGER = 0.2  # past BOUND: a call that is not cut answers after this
 
 
 class _Hung:
@@ -43,16 +59,23 @@ class _Hung:
         self.delay = delay
         self.cancelled = False
 
-    async def handler(self, name: str, arguments: dict[str, Any]) -> str:
+    async def wait(self) -> None:
         try:
             await asyncio.sleep(self.delay)
         except asyncio.CancelledError:
             self.cancelled = True
             raise
+
+    async def handler(self, name: str, arguments: dict[str, Any]) -> str:
+        await self.wait()
         return '{"ok": true}'
 
     async def conference(self, room_id: str, name: str, arguments: dict[str, Any]) -> str:
         return await self.handler(name, arguments)
+
+
+def _timed_out(body: str) -> bool:
+    return "ToolTimeoutError" in json.loads(body)["error"]
 
 
 # -- The bound itself -------------------------------------------------------
@@ -111,9 +134,12 @@ def _text_channel(provider: MockAIProvider, hung: _Hung, **kwargs: Any) -> AICha
     )
 
 
+def _calling(name: str, streaming: bool, **arguments: Any) -> MockAIProvider:
+    return MockAIProvider(ai_responses=_calls((name, arguments)), streaming=streaming)
+
+
 async def test_a_hung_text_tool_fails_its_call_and_the_turn_goes_on(streaming: bool) -> None:
-    provider = MockAIProvider(ai_responses=_calls(("slow", {})), streaming=streaming)
-    hung = _Hung()
+    provider, hung = _calling("slow", streaming), _Hung()
 
     await _turn(_text_channel(provider, hung), [SLOW])
 
@@ -123,8 +149,7 @@ async def test_a_hung_text_tool_fails_its_call_and_the_turn_goes_on(streaming: b
 
 
 async def test_a_text_tool_bound_lets_a_slow_tool_finish(streaming: bool) -> None:
-    provider = MockAIProvider(ai_responses=_calls(("slow", {})), streaming=streaming)
-    hung = _Hung(delay=0.2)
+    provider, hung = _calling("slow", streaming), _Hung(delay=LONGER)
 
     await _turn(_text_channel(provider, hung, tool_timeouts={"slow": None}), [SLOW])
 
@@ -132,35 +157,74 @@ async def test_a_text_tool_bound_lets_a_slow_tool_finish(streaming: bool) -> Non
     assert _tool_payload(provider.calls[1], "slow") == {"ok": True}
 
 
-def test_a_human_input_tool_keeps_its_own_bound() -> None:
-    human = HumanInputToolHandler({"ask_user"}, timeout=300)
-    channel = _text_channel(MockAIProvider(responses=["ok"]), _Hung(), human_input_handler=human)
+async def test_a_human_input_tool_keeps_its_own_bound(streaming: bool) -> None:
+    ask = AITool(name="ask_user", description="Ask the user", parameters={"type": "object"})
+    human = HumanInputToolHandler({"ask_user"}, timeout=LONGER, tool_definitions=[ask])
+    provider = _calling("ask_user", streaming)
+    channel = _text_channel(provider, _Hung(), human_input_handler=human)
 
-    assert channel._call_timeout("ask_user", None) is None  # noqa: SLF001
-    assert channel._call_timeout("slow", None) == BOUND  # noqa: SLF001
+    started = time.monotonic()
+    await _turn(channel)
+
+    assert time.monotonic() - started >= LONGER  # its own timeout, not the channel's
+    assert "ToolTimeoutError" not in _tool_payload(provider.calls[1], "ask_user")["error"]
 
 
-def test_an_orchestration_tool_keeps_its_own_bound() -> None:
-    channel = _text_channel(MockAIProvider(responses=["ok"]), _Hung())
+async def test_a_waiting_orchestration_tool_keeps_its_own_bound(streaming: bool) -> None:
+    provider = _calling("delegate_task", streaming)
+    channel = _text_channel(provider, _Hung())
+    worker = _Hung(delay=LONGER)
+
+    async def delegate(arguments: dict[str, Any]) -> str:
+        await worker.wait()
+        return '{"delegated": true}'
+
+    tool = schema_tool({"name": "delegate_task", "parameters": {"type": "object"}})
     channel._registry.register(  # noqa: SLF001
-        ToolEntry(
-            schema_tool({"name": "delegate_task"}),
-            serve=None,
-            source=ToolSource.ORCHESTRATION,
-        ),
-        room_id="r1",
-        owner=object(),
+        orchestration_tool(tool, delegate, waits=True), room_id="r1", owner=object()
     )
 
-    assert channel._call_timeout("delegate_task", "r1") is None  # noqa: SLF001
-    assert channel._call_timeout("delegate_task", "r2") == BOUND  # noqa: SLF001
+    await _turn(channel)
+
+    assert not worker.cancelled
+    assert _tool_payload(provider.calls[1], "delegate_task") == {"delegated": True}
 
 
-# -- Speech-to-speech: provider calls and calls recovered from speech --------
+class _SlowSandbox(SandboxExecutor):
+    """A sandbox whose commands take LONGER, under their own ``timeout``."""
+
+    async def execute(
+        self, command: str, arguments: dict[str, Any] | None = None
+    ) -> SandboxResult:
+        await asyncio.sleep(LONGER)
+        return SandboxResult(exit_code=0, output="built")
+
+    def tool_definitions(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "name": "sandbox_bash",
+                "description": "Run a shell command in the sandbox.",
+                "parameters": {"type": "object", "properties": {"command": {"type": "string"}}},
+            }
+        ]
 
 
-async def _realtime(hung: _Hung) -> tuple[RoomKit, MockRealtimeProvider, VoiceSession]:
-    provider = MockRealtimeProvider()
+async def test_a_sandbox_command_keeps_its_own_timeout(streaming: bool) -> None:
+    provider = _calling("sandbox_bash", streaming, command="make")
+    channel = _text_channel(provider, _Hung(), sandbox=_SlowSandbox())
+
+    await _turn(channel)
+
+    assert "built" in json.dumps(_tool_payload(provider.calls[1], "sandbox_bash"))
+
+
+# -- Speech-to-speech: every entry of a session ------------------------------
+
+
+async def _realtime(
+    hung: _Hung, **kwargs: Any
+) -> tuple[RoomKit, MockRealtimeProvider, VoiceSession]:
+    provider = MockRealtimeProvider(full_duplex="reasoning_backend" in kwargs)
     channel = RealtimeVoiceChannel(
         "rt",
         provider=provider,
@@ -168,6 +232,7 @@ async def _realtime(hung: _Hung) -> tuple[RoomKit, MockRealtimeProvider, VoiceSe
         tools=[SLOW],
         tool_handler=hung.handler,
         tool_timeout_seconds=BOUND,
+        **kwargs,
     )
     kit = RoomKit()
     kit.register_channel(channel)
@@ -184,7 +249,19 @@ async def test_a_hung_realtime_tool_fails_its_call() -> None:
     await until(lambda: bool(provider.tool_results))
 
     assert hung.cancelled
-    assert "ToolTimeoutError" in json.loads(provider.tool_results[0][2])["error"]
+    assert _timed_out(provider.tool_results[0][2])
+    await kit.close()
+
+
+async def test_a_realtime_tool_bound_lets_a_slow_tool_finish() -> None:
+    hung = _Hung(delay=LONGER)
+    kit, provider, session = await _realtime(hung, tool_timeouts={"slow": None})
+
+    await provider.simulate_tool_call(session, "c1", "slow", {})
+    await until(lambda: bool(provider.tool_results))
+
+    assert not hung.cancelled
+    assert json.loads(provider.tool_results[0][2]) == {"ok": True}
     await kit.close()
 
 
@@ -199,29 +276,132 @@ async def test_a_hung_tool_recovered_from_speech_fails_its_call() -> None:
     await kit.close()
 
 
-# -- Conference ----------------------------------------------------------------
+class _Backend(ReasoningBackend):
+    """Calls the slow tool once, then answers."""
+
+    def __init__(self) -> None:
+        self.results: list[str] = []
+
+    async def run(self, request: ReasoningRequest) -> AsyncIterator[ReasoningOutput]:
+        assert request.execute_tool is not None
+        self.results.append(await request.execute_tool("slow", {}))
+        yield ReasoningOutput("done", is_final=True)
 
 
-async def test_a_hung_conference_tool_fails_its_call() -> None:
-    hung = _Hung()
-    provider = MockRealtimeProvider()
-    kit, channel, _, _ = await realtime_kit(
-        provider=provider,
-        config=ConferenceRealtimeConfig(
-            provider=provider,
-            tools=[SLOW],
-            tool_handler=hung.conference,
-            tool_timeout_seconds=BOUND,
-        ),
+async def test_a_hung_tool_a_reasoning_backend_calls_fails_its_call() -> None:
+    hung, backend = _Hung(), _Backend()
+    kit, provider, session = await _realtime(hung, reasoning_backend=backend)
+
+    await provider.simulate_delegation(session, "d1", "integrator")
+    await until(lambda: bool(backend.results))
+
+    assert hung.cancelled
+    assert _timed_out(backend.results[0])
+    await kit.close()
+
+
+class _HungScripts(ScriptExecutor):
+    def __init__(self) -> None:
+        self.hung = _Hung()
+
+    async def execute(
+        self, skill: Any, script_name: str, arguments: dict[str, str] | None = None
+    ) -> ScriptResult:
+        await self.hung.wait()
+        return ScriptResult(exit_code=0, stdout="ran")
+
+
+def _skills(root: Path) -> SkillRegistry:
+    skill = root / "tools"
+    (skill / "scripts").mkdir(parents=True)
+    (skill / "SKILL.md").write_text("---\nname: tools\ndescription: Tools\n---\nUse it.")
+    (skill / "scripts" / "run.sh").write_text("echo hi\n")
+    registry = SkillRegistry()
+    registry.discover(root)
+    return registry
+
+
+async def test_a_hung_realtime_skill_script_fails_its_call(tmp_path: Path) -> None:
+    scripts = _HungScripts()
+    kit, provider, session = await _realtime(
+        _Hung(), skills=_skills(tmp_path), script_executor=scripts
     )
-    session = await channel._realtime.ensure_session(ROOM)  # noqa: SLF001
-    assert session is not None
+
+    await provider.simulate_tool_call(
+        session, "c1", "run_skill_script", {"skill_name": "tools", "script_name": "run.sh"}
+    )
+    await until(lambda: bool(provider.tool_results))
+
+    assert scripts.hung.cancelled
+    assert _timed_out(provider.tool_results[0][2])
+    await kit.close()
+
+
+async def test_a_pipeline_agents_own_tool_is_bounded() -> None:
+    hung, provider = _Hung(), MockRealtimeProvider()
+    channel = RealtimeVoiceChannel(
+        "rtv", provider=provider, transport=MockRealtimeTransport(), tool_timeout_seconds=BOUND
+    )
+    kit = RoomKit()
+    kit.register_channel(channel)
+    agent = Agent(
+        "agent-a", role="A", voice="v", system_prompt="x", tools=[SLOW], tool_handler=hung.handler
+    )
+    pipeline = ConversationPipeline(stages=[PipelineStage(phase="a", agent_id="agent-a")])
+    pipeline.install(kit, [agent], voice_channel_id="rtv")
+    room = await kit.create_room()
+    state = ConversationState(active_agent_id="agent-a", phase="a")
+    await kit.store.update_room(set_conversation_state(room, state))
+    await kit.attach_channel(room.id, "rtv")
+    session = await channel.start_session(room.id, "u1", "ws")
 
     await provider.simulate_tool_call(session, "c1", "slow", {})
     await until(lambda: bool(provider.tool_results))
 
     assert hung.cancelled
-    assert "ToolTimeoutError" in json.loads(provider.tool_results[0][2])["error"]
+    assert _timed_out(provider.tool_results[0][2])
+    await kit.close()
+
+
+# -- Conference ----------------------------------------------------------------
+
+
+async def _conference(hung: _Hung, **bounds: Any) -> tuple[RoomKit, MockRealtimeProvider, Any]:
+    provider = MockRealtimeProvider()
+    kit, channel, _, _ = await realtime_kit(
+        provider=provider,
+        config=ConferenceRealtimeConfig(
+            provider=provider, tools=[SLOW], tool_handler=hung.conference, **bounds
+        ),
+    )
+    session = await channel._realtime.ensure_session(ROOM)  # noqa: SLF001
+    assert session is not None
+    return kit, provider, session
+
+
+async def test_a_hung_conference_tool_fails_its_call() -> None:
+    hung = _Hung()
+    kit, provider, session = await _conference(hung, tool_timeout_seconds=BOUND)
+
+    await provider.simulate_tool_call(session, "c1", "slow", {})
+    await until(lambda: bool(provider.tool_results))
+
+    assert hung.cancelled
+    assert _timed_out(provider.tool_results[0][2])
+    await kit.close()
+
+
+async def test_a_conference_tool_bound_lets_a_slow_tool_finish() -> None:
+    hung = _Hung(delay=LONGER)
+    kit, provider, session = await _conference(
+        hung, tool_timeout_seconds=BOUND, tool_timeouts={"slow": 1.0}
+    )
+
+    await provider.simulate_tool_call(session, "c1", "slow", {})
+    await until(lambda: bool(provider.tool_results))
+
+    assert not hung.cancelled
+    assert json.loads(provider.tool_results[0][2]) == {"ok": True}
     await kit.close()
 
 

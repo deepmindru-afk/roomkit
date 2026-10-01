@@ -17,10 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Tool 'x' failed (ToolTimeoutError)`, the observers the detail, and the turn
   goes on. A handler that never answered held its turn for good: the text
   loop's deadline is read between rounds, and speech-to-speech and conference
-  calls had none. One bound serves every path (both text loops, a realtime
-  session's provider calls and the calls it recovers from speech, a
-  conference's calls). Tools that wait on another agent or a person keep their
-  own bound: orchestration's and a `HumanInputToolHandler`'s.
+  calls had none. One bound serves every path: both text loops; a realtime
+  session's provider calls, the calls it recovers from speech, its reasoning
+  backend's calls, its skill scripts and a pipeline agent's own tools; a
+  conference's calls. A tool that keeps a bound of its own is not subject to
+  the default: an orchestration tool that waits on another agent (a
+  delegation, a supervisor's or a loop's strategy tool, marked by the new
+  `ToolTraits.waits`), a `HumanInputToolHandler`'s tools, and `sandbox_bash`,
+  whose `timeout` argument the sandbox enforces.
 - `MediaRecordingConfig.encryption` and `storage_encrypted_at_rest`, and the
   same two fields on `ConferenceRecordingConfig`, which hands them to every
   track recording it opens (RMK-69, RFC §17.6). `encryption` takes the

@@ -280,7 +280,9 @@ def setup_delegation(
         )
         return json.dumps(result)
 
-    entry = orchestration_tool(tool or DELEGATE_TOOL, in_call_room(DELEGATE_TOOL_NAME, delegate))
+    entry = orchestration_tool(
+        tool or DELEGATE_TOOL, in_call_room(DELEGATE_TOOL_NAME, delegate), waits=True
+    )
     channel._registry.register(entry, owner=handler)
 
 
@@ -316,5 +318,7 @@ def setup_realtime_delegation(
         )
         return json.dumps(result)
 
-    entry = orchestration_tool(tool or DELEGATE_TOOL, in_call_room(DELEGATE_TOOL_NAME, delegate))
+    entry = orchestration_tool(
+        tool or DELEGATE_TOOL, in_call_room(DELEGATE_TOOL_NAME, delegate), waits=True
+    )
     channel._registry.register(entry, owner=handler)

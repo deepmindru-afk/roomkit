@@ -58,7 +58,7 @@ from roomkit.providers.ai.base import (
     AIToolResultPart,
 )
 from roomkit.providers.ai.tool_calls import cut_call_error
-from roomkit.sandbox.tools import SANDBOX_TOOL_PREFIX
+from roomkit.sandbox.tools import SANDBOX_TOOL_PREFIX, TOOL_SANDBOX_BASH
 from roomkit.telemetry.base import SpanKind
 from roomkit.telemetry.redaction import redact
 from roomkit.tools.context import ToolCallContext, _current_tool_call
@@ -1134,11 +1134,19 @@ class AIToolsMixin:
 
     def _call_timeout(self, name: str, room_id: str | None) -> float | None:
         """The bound of one call to *name* (RFC §21.6): the channel's, unless
-        the tool waits on another agent or on a person by design."""
-        waits = self._registry.waits(name, room_id) or (
-            self._human_input_handler is not None and name in self._human_input_handler.tool_names
+        the tool keeps a bound of its own."""
+        return self._registry.bound(
+            name, room_id, self._tool_timeouts, own=name in self._own_bound_tools()
         )
-        return self._tool_timeouts.for_call(name, waits=waits)
+
+    def _own_bound_tools(self) -> set[str]:
+        """The tools outside the registry that carry a bound of their own: a
+        person's answer under its handler's timeout, a sandbox command under its
+        ``timeout`` argument."""
+        names = set(self._human_input_handler.tool_names) if self._human_input_handler else set()
+        if self._sandbox is not None:
+            names.add(TOOL_SANDBOX_BASH)
+        return names
 
     def _shape_for_model(self, name: str, result: ToolResult, tool_call_id: str) -> ToolResult:
         """A text-only model gets the text of a content-part result, the way it

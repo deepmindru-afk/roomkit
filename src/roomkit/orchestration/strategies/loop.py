@@ -186,7 +186,7 @@ class Loop(Orchestration):
         server = _VoiceLoopServer(
             kit, self._agent, self._reviewers, self._strategy, self._max_iterations
         )
-        entry = orchestration_tool(tool, in_call_room(tool.name, server.serve))
+        entry = orchestration_tool(tool, in_call_room(tool.name, server.serve), waits=True)
         set_up_for_voice_room(kit, room_id, self, lambda _channel: entry)
 
 

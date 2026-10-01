@@ -654,13 +654,17 @@ class RealtimeToolsMixin:
         token = _current_voice_session.set(session)
         loop_token = _current_loop_ctx.set(loop_ctx)
         try:
-            waits = self._registry.waits(name, loop_ctx.room_id)
-            timeout = self._tool_timeouts.for_call(name, waits=waits)
+            timeout = self._call_timeout(name, loop_ctx.room_id)
             answer = self._answer(name, arguments, loop_ctx.room_id)
             return await answer_within(timeout, name, answer)
         finally:
             _current_loop_ctx.reset(loop_token)
             _current_voice_session.reset(token)
+
+    def _call_timeout(self, name: str, room_id: str | None) -> float | None:
+        """The bound of one call to *name* (RFC §21.6): the channel's, unless
+        the tool keeps a bound of its own."""
+        return self._registry.bound(name, room_id, self._tool_timeouts)
 
     async def _answer(self, name: str, arguments: dict[str, Any], room_id: str | None) -> Any:
         """The answer of what orchestration set up for *room_id*, else of the
@@ -725,7 +729,8 @@ class RealtimeToolsMixin:
         """
         support = self._skill_support
         if name != TOOL_ACTIVATE_SKILL:
-            result = await support.handle_tool_call(name, arguments, session.id)
+            answer = support.handle_tool_call(name, arguments, session.id)
+            result = await answer_within(self._call_timeout(name, room_id), name, answer)
             result, _ = await self._screen_skill_result(
                 session, call_id, name, arguments, result, room_id, carrying
             )

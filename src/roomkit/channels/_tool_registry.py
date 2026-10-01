@@ -47,6 +47,7 @@ if TYPE_CHECKING:
     from roomkit.models.channel import ChannelBinding, ChannelOutput
     from roomkit.models.context import RoomContext
     from roomkit.models.event import RoomEvent
+    from roomkit.tools.timeout import ToolTimeouts
 
 ToolServe = Callable[[dict[str, Any]], Any]
 """Serves one call from its arguments; may return an awaitable. The room is the
@@ -98,6 +99,10 @@ class ToolTraits:
 
     pure: bool = False
     """Reads what cannot change within a turn: an identical repeat says nothing new."""
+
+    waits: bool = False
+    """Waits on another agent or a person by design, under a bound of its own:
+    the channel's default call bound does not apply to it (RFC §21.6)."""
 
 
 CHANNEL_TOOL_TRAITS: dict[str, ToolTraits] = {
@@ -308,11 +313,13 @@ class ChannelRegistry:
         entry = self.lookup(name, room_id)
         return entry.traits if entry is not None else None
 
-    def waits(self, name: str, room_id: str | None) -> bool:
-        """Whether the tool serving *name* in *room_id* waits on another agent by
-        design: orchestration's, which keeps its own bound (RFC §21.6)."""
-        entry = self.lookup(name, room_id)
-        return entry is not None and entry.source is ToolSource.ORCHESTRATION
+    def bound(
+        self, name: str, room_id: str | None, timeouts: ToolTimeouts, *, own: bool = False
+    ) -> float | None:
+        """The bound of a call to *name* in *room_id* (RFC §21.6): *timeouts*',
+        unless the tool keeps a bound of its own, as its traits or *own* say."""
+        traits = self.traits(name, room_id)
+        return timeouts.for_call(name, waits=own or (traits is not None and traits.waits))
 
     def serves_orchestration(self) -> bool:
         """Whether orchestration set up any tool here, for any room."""
