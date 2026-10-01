@@ -153,6 +153,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   recording, so the stop found no room to report to and every recording a
   `VoiceChannel` opened ended without its hook, while `ON_RECORDING_STARTED`
   had announced it.
+- `mount_websocket_video()` accepts connections (RMK-353): its endpoint's
+  `WebSocket` annotation named a class imported inside the function of a
+  module that postpones annotations, so FastAPI could not resolve it, read
+  `websocket` as a query parameter and refused every client with a 403.
+  The route is now a plain websocket route that receives the socket
+  positionally.
 - `PyroscopeProfiler.start()` works with pyroscope-io 1.x, whose
   `configure()` no longer takes `detect_subprocesses` and raised a
   `TypeError` (RMK-353). The option is passed only to a release that takes

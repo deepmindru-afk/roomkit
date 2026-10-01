@@ -417,7 +417,11 @@ def mount_websocket_video(
 
     from fastapi import WebSocket, WebSocketDisconnect
 
-    @app.websocket(path)
+    # A plain Starlette websocket route: the socket comes in positionally.
+    # ``@app.websocket`` would inject it by its annotation, which this module
+    # postpones and which names a class imported here, not at module level,
+    # so FastAPI could not resolve it, read ``websocket`` as a query parameter
+    # and refused every connection with a 403.
     async def video_ws(websocket: WebSocket) -> None:
         await websocket.accept()
         connection_id = uuid4().hex
@@ -447,4 +451,5 @@ def mount_websocket_video(
         finally:
             await backend._on_client_disconnect(connection_id)
 
+    app.router.add_websocket_route(path, video_ws)
     logger.info("WebSocket video endpoint mounted at %s", path)
