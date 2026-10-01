@@ -15,7 +15,6 @@ CONSOLE=1 uv run python examples/<example>.py
 
 | Example | Feature | Description |
 |---------|---------|-------------|
-| `voice_local_audio.py` | Local audio | Mock STT/TTS with local mic and speakers — no external deps |
 | `shared_mic_capture.py` | Shared capture | Mic owned outside the session, so speech before it opens is replayed in |
 | `voice_cloud.py` | Cloud pipeline | Deepgram STT + Claude + ElevenLabs TTS with full audio pipeline |
 | `voice_gradium.py` | Cloud pipeline | Gradium STT/TTS + Claude with local mic |
@@ -33,7 +32,6 @@ CONSOLE=1 uv run python examples/<example>.py
 | `voice_smart_turn.py` | Turn detection | Audio-native turn detection with smart-turn ONNX model |
 | `voice_greeting.py` | Voice UX | Patterns for greeting callers on session start |
 | `voice_say_play.py` | Voice UX | Proactive voice output via `say()` and `play()` methods |
-| `voice_console_demo.py` | Console | RoomKitConsole dashboard demo with audio meters and colored logs |
 | `audio_level_vu_meter.py` | Audio levels | VU meter / audio level monitoring with LocalAudioBackend |
 | `wav_recorder.py` | Recording | Debug audio recording with WavFileRecorder pipeline stage |
 | `voice_sensitive_data.py` | Security | DTMF redaction and recording encryption at rest (RFC 17.6) |
@@ -92,7 +90,6 @@ CONSOLE=1 uv run python examples/<example>.py
 | `webcam_censor.py` | Vision filter | Webcam content censoring with recording |
 | `screen_describe.py` | Screen capture | Screen description with AI analysis |
 | `screen_assistant_ai.py` | Screen + voice | AI screen assistant with speech-to-speech voice |
-| `screen_agent_orchestrated.py` | Screen + agents | Orchestrated screen agent with OmniView vision |
 | `video_live_subtitles.py` | Subtitles | Real-time translated subtitles on webcam video |
 | `avatar_call.py` | Avatar + SIP | SIP call with lip-synced avatar video |
 | `sip_anam_avatar.py` | Avatar + SIP | SIP-to-Anam AI Avatar bridge |
@@ -216,7 +213,6 @@ CONSOLE=1 uv run python examples/<example>.py
 | `telemetry_pyroscope.py` | Profiling | Continuous CPU profiling with Pyroscope |
 | `aicoustics_denoiser.py` | Denoising | AICoustics Quail denoising with RMS stats |
 | `test_rnnoise_live.py` | Denoising | RNNoise noise reduction live testing |
-| `trace_audio.py` | Debugging | Audio path tracer for RoomKit debugging |
 
 ## Shared Helpers
 
