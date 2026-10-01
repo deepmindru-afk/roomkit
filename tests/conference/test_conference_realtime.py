@@ -559,7 +559,7 @@ class TestToolCallGate:
 
         result = await _call(channel, provider, observed, "lookup", {"email": "a@b.example"})
 
-        assert "denied" in result["error"]
+        assert result["error"] == "not here"  # the BLOCK's reason (RFC §9.3)
         await kit.close()
 
     async def test_arguments_before_tool_use_edited_in_place_are_validated_again(self) -> None:

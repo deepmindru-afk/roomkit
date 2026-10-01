@@ -179,10 +179,11 @@ def hook_errors_detail(hook_result: Any) -> str | None:
     return "; ".join(f"{e['hook']}: {e['error']}" for e in errors)
 
 
-def pre_execution_denial(name: str) -> str:
-    """What the model reads of a call BEFORE_TOOL_USE refused, a failed hook's
-    included: never the hook's error (RFC §9.3)."""
-    return f"Tool '{name}' denied by pre-execution hook."
+def pre_execution_denial(name: str, reason: str | None = None) -> str:
+    """What the model reads of a call BEFORE_TOOL_USE refused: a BLOCK's
+    *reason*, the hook's words for it, else the plain denial, which a hook
+    that failed closed always gives, never its error (RFC §9.3)."""
+    return reason or f"Tool '{name}' denied by pre-execution hook."
 
 
 def before_tool_use_detail(hook_result: Any) -> str | None:

@@ -1,9 +1,11 @@
-"""BEFORE_TOOL_USE fails closed on every path (RFC §9.3, RMK-313).
+"""BEFORE_TOOL_USE fails closed on every path (RFC §9.3, RMK-313, RMK-306).
 
 It is the gate of a tool call, where an approval hook sits: a hook that
 raises or times out refuses the call before it runs. The model reads the
-same refusal on every channel, never the hook's error; the hook's name and
-error reach ON_TOOL_CALL's observers on ``error_detail``.
+same plain refusal on every channel, never the hook's error; the hook's name
+and error reach ON_TOOL_CALL's observers on ``error_detail``. A deliberate
+BLOCK's reason is the hook's words for the model, read on every door alike,
+and every door emits the ``before_tool_use`` event, hooks or none.
 """
 
 from __future__ import annotations
@@ -208,4 +210,127 @@ async def test_a_deliberate_block_keeps_its_reason_beside_a_failed_hook() -> Non
 
     assert json.loads(provider.tool_results[0][2]) == {"error": "needs a supervisor's approval"}
     assert [e.error_detail for e in calls.observed] == [None]
+    await kit.close()
+
+
+# -- A deliberate BLOCK's reason reaches the model on every door (RMK-306) ----
+
+REASON = "needs a supervisor's approval"
+
+
+def _block(kit: RoomKit) -> None:
+    @kit.hook(HookTrigger.BEFORE_TOOL_USE, name="approval")
+    async def approval(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
+        return HookResult.block(REASON)
+
+
+async def test_the_ai_loop_reads_a_blocks_reason(streaming: bool) -> None:
+    async def handler(name: str, arguments: dict[str, Any]) -> str:
+        return "{}"
+
+    kit, ch, room_id, _, _ = await _ai_room(streaming=streaming, tool_handler=handler)
+    _block(kit)
+
+    run = await _call_one_tool(kit, ch, room_id, "get_weather")
+
+    assert json.loads(run.calls[0].result) == {"error": REASON}
+    await kit.close()
+
+
+async def test_a_recovered_spoken_call_reads_a_blocks_reason() -> None:
+    calls = _Calls()
+    kit, _, provider, session = await _channel(calls, policy=ToolPolicy())
+    _block(kit)
+
+    await provider.simulate_transcription(session, "call:delete_account{id:42}", "assistant")
+    await until(lambda: bool(provider.injected_texts))
+
+    assert REASON in provider.injected_texts[0][1]
+    await kit.close()
+
+
+async def test_a_reasoning_backend_reads_a_blocks_reason() -> None:
+    calls, backend = _Calls(), _Backend()
+    kit, _, provider, session = await _channel(calls, policy=ToolPolicy(), backend=backend)
+    _block(kit)
+
+    await provider.simulate_delegation(session, "d1", "integrator")
+    await until(lambda: bool(backend.results))
+
+    assert json.loads(backend.results[0]) == {"error": REASON}
+    await kit.close()
+
+
+async def test_a_conference_reads_a_blocks_reason() -> None:
+    calls = _Calls()
+    provider = MockRealtimeProvider()
+    kit, channel, _, _ = await realtime_kit(
+        provider=provider,
+        config=ConferenceRealtimeConfig(
+            provider=provider, tools=TOOLS, tool_handler=calls.conference
+        ),
+    )
+    _block(kit)
+    session = await channel._realtime.ensure_session(ROOM)
+    assert session is not None
+
+    await provider.simulate_tool_call(session, "c1", "delete_account", {"id": "42"})
+    await until(lambda: bool(provider.tool_results))
+
+    assert json.loads(provider.tool_results[0][2]) == {"error": REASON}
+    await kit.close()
+
+
+async def test_an_external_handler_reads_a_blocks_reason() -> None:
+    kit = RoomKit()
+    await kit.create_room(room_id="r1")
+    handler = PolicyExternalToolHandler()
+    kit._wire_external_tool_handler("agent", handler)
+    _block(kit)
+
+    decision = await handler.process_tool_call("delete_account", {"id": "42"}, room_id="r1")
+
+    assert decision.reason == REASON
+    await kit.close()
+
+
+async def _before_events(kit: RoomKit) -> list[Any]:
+    seen: list[Any] = []
+
+    @kit.on("before_tool_use")
+    async def on_event(event: Any) -> None:
+        seen.append(event.data)
+
+    return seen
+
+
+async def test_a_realtime_call_emits_before_tool_use_with_no_hook() -> None:
+    calls = _Calls()
+    kit, _, provider, session = await _channel(calls, policy=ToolPolicy())
+    seen = await _before_events(kit)
+
+    await provider.simulate_tool_call(session, "c1", "delete_account", {"id": "42"})
+    await until(lambda: bool(provider.tool_results))
+
+    assert [(e["tool_name"], e["allowed"]) for e in seen] == [("delete_account", True)]
+    await kit.close()
+
+
+async def test_a_conference_call_emits_before_tool_use_with_no_hook() -> None:
+    calls = _Calls()
+    provider = MockRealtimeProvider()
+    kit, channel, _, _ = await realtime_kit(
+        provider=provider,
+        config=ConferenceRealtimeConfig(
+            provider=provider, tools=TOOLS, tool_handler=calls.conference
+        ),
+    )
+    seen = await _before_events(kit)
+    session = await channel._realtime.ensure_session(ROOM)
+    assert session is not None
+
+    await provider.simulate_tool_call(session, "c1", "delete_account", {"id": "42"})
+    await until(lambda: bool(provider.tool_results))
+
+    assert [(e["tool_name"], e["allowed"]) for e in seen] == [("delete_account", True)]
     await kit.close()

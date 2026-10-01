@@ -35,7 +35,6 @@ from roomkit.telemetry.base import Attr, SpanKind
 from roomkit.telemetry.context import reset_span, set_current_span
 from roomkit.tools.result import (
     GateRefusal,
-    before_tool_use_detail,
     declined_answer,
     failure_detail,
     hook_errors_detail,
@@ -1057,16 +1056,11 @@ class RealtimeToolsMixin:
         room_id: str | None,
         session: VoiceSession,
     ) -> tuple[dict[str, Any], GateRefusal | None, RoomContext | None]:
-        """BEFORE_TOOL_USE, which needs a framework and a room to run room
-        hooks; the arguments it leaves are validated again."""
+        """BEFORE_TOOL_USE as every channel runs it, which needs a framework and
+        a room to run room hooks; the arguments it leaves are validated again."""
         framework = self._framework
         if framework is None or not room_id:
             return arguments, None, None
-        # Building a context costs two store reads; skip it when nothing listens.
-        # Schema validation above stays unconditional — it needs no context.
-        if not framework.hook_engine.has_hooks(HookTrigger.BEFORE_TOOL_USE):
-            return arguments, None, None
-        context = await framework._build_context(room_id)
         pre_event = ToolCallEvent(
             channel_id=self.channel_id,
             channel_type=ChannelType.REALTIME_VOICE,
@@ -1077,24 +1071,12 @@ class RealtimeToolsMixin:
             room_id=room_id,
             session=session,
         )
-        hook_result = await framework.hook_engine.run_sync_hooks(
-            room_id, HookTrigger.BEFORE_TOOL_USE, pre_event, context, skip_event_filter=True
-        )
-        await framework._emit_framework_event(
-            "before_tool_use",
-            room_id=room_id,
-            channel_id=self.channel_id,
-            data={
-                "tool_name": name,
-                "tool_call_id": call_id,
-                "allowed": hook_result.allowed,
-                "reason": hook_result.reason,
-            },
-        )
-        if not hook_result.allowed:
+        decision, context = await framework._decide_before_tool_use(pre_event, self.channel_id)
+        if not decision:
             logger.info("Realtime tool %s denied by BEFORE_TOOL_USE hook", name)
-            return arguments, _hook_refusal(name, hook_result), context
-        arguments, invalid = _rewritten_arguments(name, arguments, params, hook_result.metadata)
+            denial = json.dumps({"error": pre_execution_denial(name, decision.reason)})
+            return arguments, GateRefusal(denial, decision.detail), context
+        arguments, invalid = _rewritten_arguments(name, arguments, params, decision.arguments)
         return arguments, GateRefusal(invalid) if invalid is not None else None, context
 
     async def _report_raised_call(
@@ -1370,36 +1352,15 @@ class RealtimeToolsMixin:
         return result_str[: self._tool_result_max_length - len(notice)] + notice
 
 
-def _hook_refusal(name: str, hook_result: Any) -> GateRefusal:
-    """What the model reads of a call BEFORE_TOOL_USE refused, and the observers' detail.
-
-    A BLOCK's reason is the hook's own words for the model. A hook that failed
-    closed gives it the plain denial, and its error goes to the observers only
-    (RFC §9.3).
-    """
-    detail = before_tool_use_detail(hook_result)
-    reason = hook_result.reason if not hook_result.failed_closed else None
-    return GateRefusal(json.dumps({"error": reason or pre_execution_denial(name)}), detail)
-
-
 def _rewritten_arguments(
     name: str,
     arguments: dict[str, Any],
     params: dict[str, Any] | None,
-    metadata: dict[str, Any],
+    rewritten: dict[str, Any] | None,
 ) -> tuple[dict[str, Any], str | None]:
     """The arguments BEFORE_TOOL_USE left, returned or edited in place, checked
     against the schema again."""
-    rewritten = metadata.get("arguments")
-    if "arguments" in metadata and not isinstance(rewritten, dict):
-        logger.error(
-            "BEFORE_TOOL_USE hook returned non-object arguments for realtime tool %s "
-            "— denying tool call",
-            name,
-        )
-        error = f"Invalid rewritten arguments for '{name}': expected an object"
-        return arguments, json.dumps({"error": error})
-    effective = rewritten if isinstance(rewritten, dict) else arguments
+    effective = rewritten if rewritten is not None else arguments
     # No fold here, deliberately: a hook's rewritten arguments are user code,
     # and repairing them would hide the hook's bug. The model's own call was
     # already folded above.

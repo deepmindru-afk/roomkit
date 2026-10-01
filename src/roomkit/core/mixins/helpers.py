@@ -126,10 +126,12 @@ def _before_tool_decision(name: str, hook_result: Any) -> BeforeToolDecision:
             name,
         )
         return BeforeToolDecision(allowed=False)
+    blocked = not hook_result.allowed and not hook_result.failed_closed
     return BeforeToolDecision(
         allowed=hook_result.allowed,
         arguments=rewritten if isinstance(rewritten, dict) else None,
         detail=before_tool_use_detail(hook_result),
+        reason=hook_result.reason if blocked else None,
     )
 
 
@@ -886,27 +888,36 @@ class HelpersMixin:
         kit_ref = self
 
         async def _callback(event: ToolCallEvent) -> ToolCallVerdict | None:
-            if not event.room_id:
-                return None
-            chain = await kit_ref._run_tool_call_chain(event, event.room_id)
-            if chain is None:
-                return await kit_ref._report_unreachable_tool_call(event, channel_id)
-            hook_result, context = chain
-            verdict = tool_call_verdict(hook_result, event)
-            read = verdict.result if verdict.result is not None else event.result
-            if read is None:
-                # Served by nothing: the channel reports the failure, once,
-                # with its own framework event, and what any hook that
-                # failed said for the observers.
-                return replace(verdict, error_detail=hook_errors_detail(hook_result))
-            if context is not None:
-                await kit_ref._observe_tool_call(
-                    observed_call_event(hook_result, event, read), context
-                )
-            await kit_ref._emit_tool_call_event(event, channel_id)
-            return verdict
+            return await kit_ref._judge_tool_call(event, channel_id)
 
         return _callback
+
+    async def _judge_tool_call(
+        self, event: ToolCallEvent, channel_id: str, *, carrying: RoomContext | None = None
+    ) -> ToolCallVerdict | None:
+        """ON_TOOL_CALL's verdict on a call a channel served, its observers told.
+
+        What :meth:`_build_tool_call_hook`'s callback runs, for every channel;
+        *carrying* is a context the caller already built for this call, which
+        spares the room history a second read.
+        """
+        if not event.room_id:
+            return None
+        chain = await self._run_tool_call_chain(event, event.room_id, carrying=carrying)
+        if chain is None:
+            return await self._report_unreachable_tool_call(event, channel_id)
+        hook_result, context = chain
+        verdict = tool_call_verdict(hook_result, event)
+        read = verdict.result if verdict.result is not None else event.result
+        if read is None:
+            # Served by nothing: the channel reports the failure, once,
+            # with its own framework event, and what any hook that
+            # failed said for the observers.
+            return replace(verdict, error_detail=hook_errors_detail(hook_result))
+        if context is not None:
+            await self._observe_tool_call(observed_call_event(hook_result, event, read), context)
+        await self._emit_tool_call_event(event, channel_id)
+        return verdict
 
     async def _run_tool_call_chain(
         self, event: ToolCallEvent, room_id: str, *, carrying: RoomContext | None = None
@@ -1056,33 +1067,42 @@ class HelpersMixin:
         kit_ref = self
 
         async def _callback(event: ToolCallEvent) -> None:
-            if not event.room_id:
-                return
-            if kit_ref._hook_engine.has_hooks(HookTrigger.ON_TOOL_CALL):
-                context = await kit_ref._hook_context(event.room_id, HookTrigger.ON_TOOL_CALL)
-                if context is None:
-                    return
-                await kit_ref._hook_engine.run_observers(
-                    event.room_id,
-                    HookTrigger.ON_TOOL_CALL,
-                    event,
-                    context,
-                    skip_event_filter=True,
-                )
-
-            data: dict[str, Any] = {
-                "tool_name": event.name,
-                "tool_call_id": event.tool_call_id,
-                "channel_type": str(event.channel_type),
-                "is_error": True,
-            }
-            if event.cancelled:
-                data["cancelled"] = True
-            await kit_ref._emit_framework_event(
-                "tool_call", room_id=event.room_id, channel_id=channel_id, data=data
-            )
+            await kit_ref._observe_failed_tool_call(event, channel_id)
 
         return _callback
+
+    async def _observe_failed_tool_call(self, event: ToolCallEvent, channel_id: str) -> None:
+        """Tell ON_TOOL_CALL's ASYNC observers a call failed, was refused or was
+        cancelled, and emit its ``tool_call`` framework event (RFC §9.3).
+
+        The one report of such a call, for every channel: nothing that could
+        serve the call reads it.
+        """
+        if not event.room_id:
+            return
+        if self._hook_engine.has_hooks(HookTrigger.ON_TOOL_CALL):
+            context = await self._hook_context(event.room_id, HookTrigger.ON_TOOL_CALL)
+            if context is None:
+                return
+            await self._hook_engine.run_observers(
+                event.room_id,
+                HookTrigger.ON_TOOL_CALL,
+                event,
+                context,
+                skip_event_filter=True,
+            )
+
+        data: dict[str, Any] = {
+            "tool_name": event.name,
+            "tool_call_id": event.tool_call_id,
+            "channel_type": str(event.channel_type),
+            "is_error": True,
+        }
+        if event.cancelled:
+            data["cancelled"] = True
+        await self._emit_framework_event(
+            "tool_call", room_id=event.room_id, channel_id=channel_id, data=data
+        )
 
     def _build_thinking_hook(self, channel_id: str) -> Any:
         """Build an ON_AI_THINKING callback closure for an AIChannel.
@@ -1148,51 +1168,62 @@ class HelpersMixin:
         kit_ref = self
 
         async def _callback(event: ToolCallEvent) -> BeforeToolDecision:
-            if not event.room_id:
-                return BeforeToolDecision(allowed=True)  # Allow if no room context
-            hook_result = await kit_ref._run_before_tool_use(event, event.room_id)
-            if hook_result is None:
-                # Fail-closed: an authorization failure MUST NOT silently permit
-                # the tool call. Denying is the safe default.
-                logger.warning("BEFORE_TOOL_USE could not run: tool %s denied", event.name)
-                return BeforeToolDecision(allowed=False)
-
-            await kit_ref._emit_framework_event(
-                "before_tool_use",
-                room_id=event.room_id,
-                channel_id=channel_id,
-                data={
-                    "tool_name": event.name,
-                    "tool_call_id": event.tool_call_id,
-                    "allowed": hook_result.allowed,
-                    "reason": hook_result.reason,
-                },
-            )
-
-            return _before_tool_decision(event.name, hook_result)
+            decision, _ = await kit_ref._decide_before_tool_use(event, channel_id)
+            return decision
 
         return _callback
 
+    async def _decide_before_tool_use(
+        self, event: ToolCallEvent, channel_id: str, *, carrying: RoomContext | None = None
+    ) -> tuple[BeforeToolDecision, RoomContext | None]:
+        """What BEFORE_TOOL_USE decides about *event*, for every channel, and
+        the context its hooks ran with, ``None`` when none was built.
+
+        *carrying* is a context the caller already built for this call. A
+        context that will not build denies the call: an authorization failure
+        MUST NOT silently permit it (RFC §9.3).
+        """
+        if not event.room_id:
+            return BeforeToolDecision(allowed=True), None  # Allow if no room context
+        ran = await self._run_before_tool_use(event, event.room_id, carrying=carrying)
+        if ran is None:
+            logger.warning("BEFORE_TOOL_USE could not run: tool %s denied", event.name)
+            return BeforeToolDecision(allowed=False), None
+        hook_result, context = ran
+        await self._emit_framework_event(
+            "before_tool_use",
+            room_id=event.room_id,
+            channel_id=channel_id,
+            data={
+                "tool_name": event.name,
+                "tool_call_id": event.tool_call_id,
+                "allowed": hook_result.allowed,
+                "reason": hook_result.reason,
+            },
+        )
+        return _before_tool_decision(event.name, hook_result), context
+
     async def _run_before_tool_use(
-        self, event: ToolCallEvent, room_id: str
-    ) -> SyncPipelineResult | None:
-        """What the BEFORE_TOOL_USE hooks decide about *event*, or ``None``
-        when the room's context could not be built for them.
+        self, event: ToolCallEvent, room_id: str, *, carrying: RoomContext | None = None
+    ) -> tuple[SyncPipelineResult, RoomContext | None] | None:
+        """What the BEFORE_TOOL_USE hooks decide about *event*, and the context
+        they ran with; ``None`` when the room's context could not be built.
 
         With no hook registered there is nothing to run and no context is built.
         """
         if not self._hook_engine.has_hooks(HookTrigger.BEFORE_TOOL_USE):
-            return SyncPipelineResult(event=event)
-        context = await self._hook_context(room_id, HookTrigger.BEFORE_TOOL_USE)
+            return SyncPipelineResult(event=event), None
+        context = await self._hook_context(room_id, HookTrigger.BEFORE_TOOL_USE, carrying=carrying)
         if context is None:
             return None
-        return await self._hook_engine.run_sync_hooks(
+        hook_result = await self._hook_engine.run_sync_hooks(
             room_id,
             HookTrigger.BEFORE_TOOL_USE,
             event,
             context,
             skip_event_filter=True,
         )
+        return hook_result, context
 
     def _build_on_user_input_required_hook(self, channel_id: str) -> Any:
         """Build an ON_USER_INPUT_REQUIRED callback closure.

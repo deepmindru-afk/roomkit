@@ -596,7 +596,8 @@ class AIToolsMixin:
             decision = await self._before_tool_call_hook(pre_event)
             if not decision:
                 logger.info("Tool %s denied by BEFORE_TOOL_USE hook", tc.name)
-                return _refused_with({"error": pre_execution_denial(tc.name)}, decision.detail)
+                denial = pre_execution_denial(tc.name, decision.reason)
+                return _refused_with({"error": denial}, decision.detail)
             if decision.arguments is not None:
                 arguments = decision.arguments
                 arguments_rewritten = True

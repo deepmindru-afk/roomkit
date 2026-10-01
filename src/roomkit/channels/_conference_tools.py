@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any
 from roomkit.channels._ai_policy import policy_admits, policy_refusal
 from roomkit.channels._served_tools import CollisionLog, declared_once, dict_tool_name
 from roomkit.core.exceptions import ToolRefusedError, UnservedToolCallError
-from roomkit.models.enums import ChannelType, HookTrigger
+from roomkit.models.enums import ChannelType
 from roomkit.models.tool_call import (
     ToolCallCallback,
     ToolCallEvent,
@@ -42,7 +42,6 @@ from roomkit.tools.validation import fold_hoisted_arguments, validate_tool_argum
 if TYPE_CHECKING:
     from roomkit.conference.models import ConferenceRealtimeConfig
     from roomkit.core.framework import RoomKit
-    from roomkit.core.hooks import HookEngine
     from roomkit.tools.external import BeforeToolCallback
     from roomkit.voice.base import VoiceSession
 
@@ -97,13 +96,11 @@ class ConferenceToolGate:
 
     def __init__(self, channel_id: str) -> None:
         self._channel_id = channel_id
-        self._hooks: HookEngine | None = None
         self._before: BeforeToolCallback | None = None
         self._served: ToolCallCallback | None = None
         self._observed: ToolCallObserver | None = None
 
     def set_framework(self, framework: RoomKit) -> None:
-        self._hooks = framework.hook_engine
         self._before = framework._build_before_tool_call_hook(self._channel_id)
         self._served = framework._build_tool_call_hook(self._channel_id)
         self._observed = framework._build_tool_observer_hook(self._channel_id)
@@ -231,14 +228,13 @@ class ConferenceToolGate:
         A hook may return new arguments or edit the event's own in place:
         either way the handler must not run on arguments the schema rejects.
         """
-        if self._before is None or self._hooks is None:
-            return arguments, None
-        if not self._hooks.has_hooks(HookTrigger.BEFORE_TOOL_USE):
+        if self._before is None:
             return arguments, None
         name = event.name
         decision = await self._before(replace(event, arguments=arguments))
         if not decision:
-            return arguments, GateRefusal(pre_execution_denial(name), decision.detail)
+            denial = pre_execution_denial(name, decision.reason)
+            return arguments, GateRefusal(denial, decision.detail)
         if decision.arguments is not None:
             arguments = decision.arguments
         error = validate_tool_arguments(schema, arguments) if schema is not None else None

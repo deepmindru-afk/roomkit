@@ -91,6 +91,10 @@ class BeforeToolDecision:
     """The error of a hook that failed closed and so refused the call, for the
     observers only (``ToolCallEvent.error_detail``), never for the model."""
 
+    reason: str | None = None
+    """A BLOCK's reason, the hook's own words for the model (RFC §9.3);
+    ``None`` when the hook gave none or failed closed."""
+
     def __bool__(self) -> bool:
         return self.allowed
 
@@ -318,7 +322,9 @@ class PolicyExternalToolHandler(ExternalToolHandler):
             if decision.detail is not None:
                 # A hook that failed closed: its error for the log, never the agent.
                 logger.warning("BEFORE_TOOL_USE refused %s: %s", tool_name, decision.detail)
-            return ToolDecision(approved=False, reason=pre_execution_denial(tool_name))
+            return ToolDecision(
+                approved=False, reason=pre_execution_denial(tool_name, decision.reason)
+            )
 
         # Apply policy
         if self._policy and not self._policy.is_allowed(tool_name):

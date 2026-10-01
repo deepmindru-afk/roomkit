@@ -38,6 +38,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A BLOCK from a BEFORE_TOOL_USE hook reaches the model in the hook's words on
+  every channel (RMK-306, RFC §9.3), a hook-trigger behaviour change: an
+  `AIChannel`, a conference and `PolicyExternalToolHandler` gave the plain
+  `Tool 'x' denied by pre-execution hook.` while a realtime session gave the
+  reason. A hook that fails closed, or blocks with no reason, still gives the
+  plain refusal, never its error. `BeforeToolDecision.reason` carries it.
+
 - **BREAKING — roomkit's own tool handlers decline a call by raising
   `UnservedToolCallError`** (RMK-305, RFC §21.4): `MCPToolProvider.as_tool_handler()`,
   `HumanInputToolHandler`, `ScreenInputTools`, `DescribeScreenTool`,
@@ -95,6 +102,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bucket), on `MediaRecordingConfig` or `ConferenceRecordingConfig`.
 
 ### Fixed
+
+- A realtime session and a conference emit the `before_tool_use` framework
+  event for every tool call, as an `AIChannel` does (RMK-306): they emitted it
+  only when a BEFORE_TOOL_USE hook was registered. A realtime call whose
+  BEFORE_TOOL_USE hooks cannot get their room context is refused before it
+  runs, as on every channel: it failed on the store error.
 
 - Each realtime tool call is delivered once and reported once (RMK-306, RFC
   §12.4), on one book per session that every door of a speech-to-speech
