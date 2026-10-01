@@ -1,8 +1,19 @@
-"""RoomKit -- SIP send video test: encode and send a test pattern.
+"""RoomKit -- SIP send video: answer a SIP call and stream a test pattern to the caller.
 
-Accepts SIP calls and sends a simple color test pattern as H.264
-video to the caller.  Tests the full outbound video path:
-  raw RGB → H.264 encode (PyAV) → RTP packetize → UDP send
+Answers incoming SIP calls and sends the caller a moving H.264 test pattern
+(a background colour that changes every two seconds and a white bar sweeping
+across the picture), so you can see the outbound video path work live:
+
+    numpy RGB frame -> PyAVVideoEncoder (H.264 NAL units)
+        -> SIPVideoBackend.send_video() -> RTP -> caller
+
+Each call gets its own encoder: an H.264 stream is stateful, so callers
+cannot share one. The caller's audio and video are ignored and no audio
+is sent back: the caller hears silence. A call that offers no H.264 video
+(no ``m=video`` line) is answered but receives nothing.
+
+The SIP backend is used on its own: there is no room, channel or AI here.
+See sip_video_call.py for routing a SIP video call into a RoomKit room.
 
 Prerequisites:
     pip install roomkit[sip,video]
@@ -10,8 +21,20 @@ Prerequisites:
 Run with:
     uv run python examples/sip_send_video.py
 
-Then call the SIP endpoint — you should see colored video.
-Press Ctrl+C to stop.
+Then call ``sip:video@<this-host>:5060`` over UDP from a softphone with
+H.264 video enabled (e.g. Linphone with the H.264 codec on) and start
+the call with video.
+
+Environment variables:
+    SIP_PORT         SIP listener port, UDP (default: 5060)
+    RTP_IP           IP to bind RTP on (default: 0.0.0.0; the SDP then
+                     advertises the resolved local IP)
+    RTP_PORT_START   Start of the UDP port range for RTP (default: 10000)
+    RTP_PORT_END     End of that range, exclusive (default: 20000); each call
+                     takes an even port for audio and one for video, plus the
+                     odd port above each for RTCP
+
+Press Ctrl+C to stop: active calls are hung up.
 """
 
 from __future__ import annotations
@@ -21,204 +44,115 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import asyncio
+import os
+import signal
+from collections.abc import AsyncIterator
 
-import av
 import numpy as np
-from shared import run_until_stopped, setup_logging
+from shared import setup_logging
 
-from roomkit import RoomKit
 from roomkit.video.backends.sip import SIPVideoBackend
+from roomkit.video.base import VideoChunk, VideoSession, VideoSessionState
+from roomkit.video.pipeline.encoder import PyAVVideoEncoder
+from roomkit.video.video_frame import VideoFrame
 from roomkit.voice.base import VoiceSession
 
 logger = setup_logging("sip_send_video")
 
+WIDTH, HEIGHT, FPS = 640, 480, 15
+COLORS = [(200, 30, 30), (30, 160, 30), (30, 60, 200), (200, 170, 20)]
+H264_IDR = 5
 
-class SimpleH264Encoder:
-    """Encode raw RGB frames to H.264 NAL units using PyAV.
 
-    Outputs individual NAL units (split from Annex B stream) suitable
-    for RTP packetization.  Uses Constrained Baseline profile for
-    WebRTC compatibility.
+def draw_test_pattern(index: int) -> bytes:
+    """Return frame *index* of the test pattern as RGB24 bytes."""
+    frame = np.empty((HEIGHT, WIDTH, 3), dtype=np.uint8)
+    frame[:] = COLORS[(index // (2 * FPS)) % len(COLORS)]
+    bar_x = (index * 8) % WIDTH
+    frame[:, bar_x : bar_x + 16] = 255
+    return frame.tobytes()
+
+
+async def test_pattern_chunks(session: VideoSession) -> AsyncIterator[VideoChunk]:
+    """Encode the test pattern in real time, one H.264 NAL unit per chunk.
+
+    Runs until the call ends. The encoder belongs to this call only.
     """
-
-    def __init__(self, width: int = 320, height: int = 240, fps: int = 30) -> None:
-        self._width = width
-        self._height = height
-        self._codec_ctx = av.CodecContext.create("libx264", "w")
-        self._codec_ctx.width = width
-        self._codec_ctx.height = height
-        self._codec_ctx.pix_fmt = "yuv420p"
-        from fractions import Fraction
-
-        self._codec_ctx.time_base = Fraction(1, fps)
-        self._codec_ctx.options = {
-            "tune": "zerolatency",
-            "preset": "ultrafast",
-            "profile": "baseline",
-            "level": "3.1",
-        }
-        self._codec_ctx.open()
-        self._pts = 0
-
-    def encode(self, rgb_data: bytes) -> list[bytes]:
-        """Encode one RGB frame, return individual H.264 NAL units."""
-        arr = np.frombuffer(rgb_data, dtype=np.uint8).reshape(
-            self._height,
-            self._width,
-            3,
-        )
-        frame = av.VideoFrame.from_ndarray(arr, format="rgb24")
-        frame.pts = self._pts
-        self._pts += 1
-
-        packets = self._codec_ctx.encode(frame)
-        nals: list[bytes] = []
-        for pkt in packets:
-            nals.extend(self._split_annex_b(bytes(pkt)))
-        return nals
-
-    def flush(self) -> list[bytes]:
-        packets = self._codec_ctx.encode(None)
-        nals: list[bytes] = []
-        for pkt in packets:
-            nals.extend(self._split_annex_b(bytes(pkt)))
-        return nals
-
-    @staticmethod
-    def _split_annex_b(data: bytes) -> list[bytes]:
-        """Split Annex B byte stream into individual NAL units."""
-        nals: list[bytes] = []
-        i = 0
-        start = -1
-        while i < len(data):
-            # Look for 3-byte or 4-byte start codes
-            if i + 3 <= len(data) and data[i : i + 3] == b"\x00\x00\x01":
-                if start >= 0:
-                    nals.append(data[start:i])
-                start = i + 3
-                i += 3
-            elif i + 4 <= len(data) and data[i : i + 4] == b"\x00\x00\x00\x01":
-                if start >= 0:
-                    nals.append(data[start:i])
-                start = i + 4
-                i += 4
-            else:
-                i += 1
-        if start >= 0 and start < len(data):
-            nals.append(data[start:])
-        return nals
-
-
-def make_test_frame(
-    width: int,
-    height: int,
-    frame_num: int,
-) -> bytes:
-    """Generate a colored test pattern frame (RGB24)."""
-    arr = np.zeros((height, width, 3), dtype=np.uint8)
-
-    # Cycle through colors every 30 frames
-    colors = [
-        (255, 0, 0),  # red
-        (0, 255, 0),  # green
-        (0, 0, 255),  # blue
-        (255, 255, 0),  # yellow
-        (0, 255, 255),  # cyan
-        (255, 0, 255),  # magenta
-    ]
-    color = colors[(frame_num // 30) % len(colors)]
-    arr[:, :] = color
-
-    # Add a moving white bar
-    bar_y = (frame_num * 3) % height
-    bar_h = min(10, height - bar_y)
-    arr[bar_y : bar_y + bar_h, :] = (255, 255, 255)
-
-    return arr.tobytes()
+    encoder = PyAVVideoEncoder(width=WIDTH, height=HEIGHT, fps=FPS)
+    loop = asyncio.get_running_loop()
+    next_frame_at = loop.time()
+    index = 0
+    try:
+        while session.state is VideoSessionState.ACTIVE:
+            raw = VideoFrame(
+                data=draw_test_pattern(index), codec="raw_rgb24", width=WIDTH, height=HEIGHT
+            )
+            # One chunk per frame: its NAL units as an Annex B access unit,
+            # which the backend sends together (marker bit on the last packet).
+            nals = encoder.encode(raw)
+            if nals:
+                yield VideoChunk(
+                    data=b"".join(b"\x00\x00\x00\x01" + nal for nal in nals),
+                    width=WIDTH,
+                    height=HEIGHT,
+                    timestamp_ms=index * 1000 / FPS,
+                    keyframe=any((nal[0] & 0x1F) == H264_IDR for nal in nals),
+                )
+            index += 1
+            next_frame_at += 1 / FPS
+            await asyncio.sleep(max(0.0, next_frame_at - loop.time()))
+    finally:
+        encoder.close()
+        logger.info("Call %s: sent %d frames", session.id[:8], index)
 
 
 async def main() -> None:
-    kit = RoomKit()
+    sip_port = int(os.environ.get("SIP_PORT", "5060"))
+    rtp_ip = os.environ.get("RTP_IP", "0.0.0.0")  # nosec B104
+    rtp_port_start = int(os.environ.get("RTP_PORT_START", "10000"))
+    rtp_port_end = int(os.environ.get("RTP_PORT_END", "20000"))
 
     backend = SIPVideoBackend(
-        local_sip_addr=("0.0.0.0", 5060),  # nosec B104
-        local_rtp_ip="0.0.0.0",  # nosec B104
-        rtp_port_start=10000,
-        supported_video_codecs=["H264"],  # must match our encoder
+        local_sip_addr=("0.0.0.0", sip_port),  # nosec B104
+        local_rtp_ip=rtp_ip,
+        rtp_port_start=rtp_port_start,
+        rtp_port_end=rtp_port_end,
+        supported_video_codecs=["H264"],  # the only codec the encoder produces
     )
+    senders: set[asyncio.Task[None]] = set()
 
-    encoder = SimpleH264Encoder(width=320, height=240, fps=15)
-    active_tasks: dict[str, asyncio.Task[None]] = {}
-
-    async def send_video_loop(session: VoiceSession) -> None:
-        """Send test pattern video frames to the caller."""
-
-        # Wait a bit for video RTP session to start
-        await asyncio.sleep(1.0)
-
+    def on_call(session: VoiceSession) -> None:
+        caller = session.metadata.get("caller", "unknown")
         video_session = backend.get_video_session(session.id)
         if video_session is None:
-            logger.warning("No video session for %s", session.id[:8])
+            logger.info("Call from %s offers no H.264 video: nothing to send", caller)
             return
-
-        logger.info("Starting video send loop for %s", session.id[:8])
-        frame_num = 0
-        try:
-            while True:
-                rgb = make_test_frame(320, 240, frame_num)
-                nals = encoder.encode(rgb)
-                if nals:
-                    vcs = backend._video_call_sessions.get(session.id)
-                    if vcs is None:
-                        return
-                    # Send all NAL units for this frame at once
-                    # (send_frame sets marker=1 on last RTP packet)
-                    ts = frame_num * (90000 // 15)  # 90kHz clock, 15fps
-                    is_key = any((nal[0] & 0x1F) == 5 for nal in nals if nal)
-                    vcs.send_frame(nals, ts, is_key)
-
-                frame_num += 1
-                if frame_num % 30 == 0:
-                    logger.info("Sent %d video frames to %s", frame_num, session.id[:8])
-                await asyncio.sleep(1.0 / 15)  # 15 fps
-        except asyncio.CancelledError:
-            pass
-        except Exception:
-            logger.exception("Video send error")
-
-    async def on_call(session: VoiceSession) -> None:
-        has_video = session.metadata.get("has_video", False)
-        caller = session.metadata.get("caller", "unknown")
-        logger.info("Call from %s (video=%s)", caller, has_video)
-
-        if has_video:
-            task = asyncio.create_task(send_video_loop(session))
-            active_tasks[session.id] = task
-
-    def on_disconnect(session: object) -> None:
-        sid = getattr(session, "id", "")
-        task = active_tasks.pop(sid, None)
-        if task:
-            task.cancel()
-        logger.info("Call ended: %s", sid[:8])
+        logger.info("Call %s from %s: sending the test pattern", session.id[:8], caller)
+        task = asyncio.create_task(
+            backend.send_video(video_session, test_pattern_chunks(video_session))
+        )
+        senders.add(task)
+        task.add_done_callback(senders.discard)
 
     backend.on_call(on_call)
-    backend.on_client_disconnected(on_disconnect)
-
     await backend.start()
 
-    logger.info("SIP Send Video Test")
-    logger.info("SIP     : 0.0.0.0:5060")
-    logger.info("Video   : H.264 test pattern (320x240 @ 15fps)")
-    logger.info("Colors cycle: red -> green -> blue -> yellow -> cyan -> magenta")
+    logger.info("Listening for SIP calls on UDP port %d", sip_port)
+    logger.info("Video: H.264 test pattern %dx%d @ %d fps", WIDTH, HEIGHT, FPS)
     logger.info("Press Ctrl+C to stop.")
 
-    async def cleanup() -> None:
-        for task in active_tasks.values():
-            task.cancel()
-        await backend.close()
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, stop.set)
+    await stop.wait()
 
-    await run_until_stopped(kit, cleanup=cleanup)
+    logger.info("Stopping...")
+    await backend.close()  # hangs up active calls
+    for task in senders:
+        task.cancel()
+    await asyncio.gather(*senders, return_exceptions=True)
+    logger.info("Done.")
 
 
 if __name__ == "__main__":

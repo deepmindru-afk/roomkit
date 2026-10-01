@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gemini Live over WebSocket</title>
+<style>
+  :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+  body { max-width: 40rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.4; }
+  button { font: inherit; padding: 0.4rem 1.2rem; }
+  #status { margin-left: 0.75rem; opacity: 0.7; }
+  #log p { margin: 0.4rem 0; }
+  #log b { display: inline-block; min-width: 5.5rem; }
+</style>
+</head>
+<body>
+<h1>Gemini Live over WebSocket</h1>
+<p>Served by <code>examples/realtime_voice_gemini.py</code>. Use headphones: this page
+cancels no echo, so the model would hear its own voice.</p>
+<p><button id="toggle">Start</button><span id="status">idle</span></p>
+<div id="log"></div>
+<script>
+// Wire protocol, as documented in realtime_voice_gemini.py:
+//   page -> server  binary frames, 16 kHz 16-bit mono PCM
+//   server -> page  binary frames, 24 kHz 16-bit mono PCM, and JSON text frames
+const SEND_RATE = 16000;
+const RECEIVE_RATE = 24000;
+
+// Collects 20 ms blocks of microphone samples at the context's own rate.
+const CAPTURE = `registerProcessor("capture", class extends AudioWorkletProcessor {
+  constructor() { super(); this.block = new Float32Array(Math.round(sampleRate / 50)); this.n = 0; }
+  process([input]) {
+    for (const s of input[0] || []) {
+      this.block[this.n++] = s;
+      if (this.n === this.block.length) { this.port.postMessage(this.block.slice()); this.n = 0; }
+    }
+    return true;
+  }
+});`;
+
+const toggle = document.getElementById("toggle");
+const status = document.getElementById("status");
+const log = document.getElementById("log");
+let ws, ctx, mic, playAt = 0;
+const queued = new Set();
+
+// Averages each output sample's span of input: a crude low-pass, then 16-bit PCM.
+function toPcm16(block, fromRate) {
+  const ratio = fromRate / SEND_RATE;
+  const out = new Int16Array(Math.floor(block.length / ratio));
+  for (let i = 0; i < out.length; i++) {
+    const a = Math.floor(i * ratio), b = Math.max(a + 1, Math.floor((i + 1) * ratio));
+    let sum = 0;
+    for (let j = a; j < b; j++) sum += block[j];
+    out[i] = Math.max(-1, Math.min(1, sum / (b - a))) * 0x7fff;
+  }
+  return out.buffer;
+}
+
+function play(data) {
+  const pcm = new Int16Array(data);
+  const buffer = ctx.createBuffer(1, pcm.length, RECEIVE_RATE);
+  const samples = buffer.getChannelData(0);
+  for (let i = 0; i < pcm.length; i++) samples[i] = pcm[i] / 0x8000;
+  const source = ctx.createBufferSource();
+  source.buffer = buffer;
+  source.connect(ctx.destination);
+  playAt = Math.max(playAt, ctx.currentTime);
+  source.start(playAt);
+  playAt += buffer.duration;
+  queued.add(source);
+  source.onended = () => queued.delete(source);
+}
+
+function clearPlayback() {
+  for (const source of queued) source.stop();
+  queued.clear();
+  playAt = 0;
+}
+
+function onMessage(msg) {
+  if (msg.type === "session_started") status.textContent = "listening";
+  if (msg.type === "clear_audio") clearPlayback();
+  if (msg.type === "speaking") status.textContent = msg.speaking ? `${msg.who} speaking` : "listening";
+  if (msg.type === "transcription" && msg.is_final && msg.text.trim()) {
+    const line = document.createElement("p");
+    line.innerHTML = "<b></b>";
+    line.firstChild.textContent = msg.role;
+    line.append(msg.text);
+    log.append(line);
+  }
+}
+
+async function start() {
+  toggle.textContent = "Stop";
+  status.textContent = "connecting";
+  ctx = new AudioContext();
+  mic = await navigator.mediaDevices.getUserMedia({
+    audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+  });
+  const url = URL.createObjectURL(new Blob([CAPTURE], { type: "text/javascript" }));
+  await ctx.audioWorklet.addModule(url);
+  const capture = new AudioWorkletNode(ctx, "capture", { numberOfOutputs: 0 });
+  ctx.createMediaStreamSource(mic).connect(capture);
+
+  ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
+  ws.binaryType = "arraybuffer";
+  ws.onopen = () => { status.textContent = "starting Gemini"; };
+  ws.onmessage = (e) => (typeof e.data === "string" ? onMessage(JSON.parse(e.data)) : play(e.data));
+  ws.onclose = () => stop("disconnected");
+  capture.port.onmessage = (e) => {
+    if (ws?.readyState === WebSocket.OPEN) ws.send(toPcm16(e.data, ctx.sampleRate));
+  };
+}
+
+function stop(reason = "idle") {
+  if (ws) {
+    ws.onclose = null;
+    ws.close();
+  }
+  mic?.getTracks().forEach((track) => track.stop());
+  ctx?.close();
+  ws = mic = ctx = undefined;
+  queued.clear();
+  playAt = 0;
+  toggle.textContent = "Start";
+  status.textContent = reason;
+}
+
+toggle.onclick = () => {
+  if (ws || ctx) return stop();
+  start().catch((err) => stop(`error: ${err.message}`));
+};
+</script>
+</body>
+</html>

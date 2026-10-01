@@ -159,6 +159,7 @@ CONSOLE=1 uv run python examples/<example>.py
 | `streaming_tools.py` | Streaming | Streaming text delivery with interleaved tool calls |
 | `tool_call_events.py` | Tool events | Tool call ephemeral event tracking |
 | `tool_call_context.py` | Tool context | Which room and whose turn a handler runs under, and resolving the actor before trusting it |
+| `external_tool_handler.py` | Tool policy | Tools an external agent runs still go through RoomKit's policy and hooks: allow, deny, ask, rewritten arguments (offline) |
 | `image_generation.py` | Image gen | An agent that draws: `generate_image` tool → `ImageProvider` → image in the room, PNG on disk |
 | `guardrails.py` | Safety | Multi-layer safety: PII redaction, jailbreak detection, output guards |
 

@@ -9,14 +9,16 @@ Prerequisites:
 
 Run with:
     export ANAM_API_KEY="your-api-key"
-    export ANAM_AVATAR_ID="your-avatar-id"     # or ANAM_PERSONA_ID
+    export ANAM_AVATAR_ID="your-avatar-id"     # or only ANAM_PERSONA_ID
+    export ANAM_VOICE_ID="your-voice-id"
+    export ANAM_LLM_ID="your-llm-id"           # e.g. ANAM_GPT_4O_MINI_V1
     uv run python examples/sip_anam_avatar.py
 
 Environment variables:
     ANAM_API_KEY          Anam API key (required)
     ANAM_AVATAR_ID        Avatar ID from lab.anam.ai (required unless ANAM_PERSONA_ID)
-    ANAM_VOICE_ID         Voice ID from lab.anam.ai (optional, Anam's default otherwise)
-    ANAM_LLM_ID           LLM ID from lab.anam.ai (optional, Anam's default otherwise)
+    ANAM_VOICE_ID         Voice ID from lab.anam.ai (required unless ANAM_PERSONA_ID)
+    ANAM_LLM_ID           LLM ID from lab.anam.ai (required unless ANAM_PERSONA_ID)
     ANAM_PERSONA_ID       Pre-defined persona from Anam Lab (alternative to the three above)
     ANAM_LANGUAGE         Language code, e.g. "fr" (default: "en")
     ANAM_SYSTEM_PROMPT    System prompt for the LLM
@@ -60,15 +62,16 @@ async def main() -> None:
     env = require_env("ANAM_API_KEY")
     api_key = env["ANAM_API_KEY"]
 
+    # A persona brings its own avatar, voice and LLM. Without one, Anam's
+    # WebRTC session needs all three: it refuses an avatar-only config
+    # ("only supported with a LiveKit, Agora or ElevenLabs Agent integration").
     persona_id = os.environ.get("ANAM_PERSONA_ID")
-    avatar_id = os.environ.get("ANAM_AVATAR_ID")
-    voice_id = os.environ.get("ANAM_VOICE_ID")
-    llm_id = os.environ.get("ANAM_LLM_ID")
-
-    # Anam falls back to its default voice and LLM when ANAM_VOICE_ID / ANAM_LLM_ID
-    # are unset; only the face (avatar or persona) is mandatory.
-    if not persona_id and not avatar_id:
-        sys.exit("Error: set ANAM_PERSONA_ID or ANAM_AVATAR_ID")
+    avatar_id = voice_id = llm_id = None
+    if not persona_id:
+        ids = require_env("ANAM_AVATAR_ID", "ANAM_VOICE_ID", "ANAM_LLM_ID")
+        avatar_id = ids["ANAM_AVATAR_ID"]
+        voice_id = ids["ANAM_VOICE_ID"]
+        llm_id = ids["ANAM_LLM_ID"]
 
     # --- SIP backend ----------------------------------------------------------
     sip = SIPVideoBackend(
