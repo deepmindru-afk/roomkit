@@ -14,13 +14,13 @@ Requires:
 
 Environment:
     OPENROUTER_API_KEY  — your OpenRouter API key (https://openrouter.ai/keys)
-    OPENROUTER_MODEL    — model slug (default: anthropic/claude-sonnet-4.5)
+    OPENROUTER_MODEL    — model slug (default: anthropic/claude-sonnet-5)
     OPENROUTER_SITE_URL — optional; sent as HTTP-Referer for app attribution
     OPENROUTER_APP_NAME — optional; sent as X-Title for app attribution
 
 Run with:
     OPENROUTER_API_KEY=sk-or-... uv run python examples/openrouter_ai.py
-    OPENROUTER_API_KEY=sk-or-... uv run python examples/openrouter_ai.py --model openai/gpt-5.5
+    OPENROUTER_API_KEY=sk-or-... uv run python examples/openrouter_ai.py --model openai/gpt-5.6-sol
     OPENROUTER_API_KEY=sk-or-... uv run python examples/openrouter_ai.py --no-think
 
 Type a message at the prompt. Type ``quit`` (or Ctrl+D) to exit.
@@ -90,13 +90,13 @@ def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Interactive OpenRouter CLI (300+ models, one key).")
     p.add_argument(
         "--model",
-        default=os.environ.get("OPENROUTER_MODEL", "anthropic/claude-sonnet-4.5"),
-        help="OpenRouter model slug (e.g. openai/gpt-5.5). Env: OPENROUTER_MODEL.",
+        default=os.environ.get("OPENROUTER_MODEL", "anthropic/claude-sonnet-5"),
+        help="OpenRouter model slug (e.g. openai/gpt-5.6-sol). Env: OPENROUTER_MODEL.",
     )
     p.add_argument(
         "--no-think",
         action="store_true",
-        help="Hide the thinking trace for models that stream reasoning.",
+        help="Turn reasoning off and hide the thinking trace.",
     )
     return p.parse_args()
 

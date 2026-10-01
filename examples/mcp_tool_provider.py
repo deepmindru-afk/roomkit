@@ -1,10 +1,13 @@
-"""MCP tool provider with compose_tool_handlers.
+"""compose_tool_handlers — local tools and an MCP server's tools behind one handler.
 
 Demonstrates how to combine MCP-discovered tools with custom local tools
 using compose_tool_handlers, and wire them into an AIChannel.
 
-Since this example doesn't require a real MCP server, it uses a mock
-MCPToolProvider setup to show the composition pattern.
+No MCP server is needed: the MCP side is a plain handler with the same
+contract as ``MCPToolProvider.as_tool_handler()``, and its tool definition
+stands in for ``MCPToolProvider.get_tools()``. ``examples/mcp_stdio_tools.py``
+plugs a real MCP server. The AI is a MockAIProvider scripted to call one tool
+of each kind, so both go through the composed handler.
 
 Run with:
     uv run python examples/mcp_tool_provider.py
@@ -32,7 +35,7 @@ from roomkit import (
     TextContent,
     WebSocketChannel,
 )
-from roomkit.providers.ai.base import AITool
+from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.tools.compose import compose_tool_handlers
 
@@ -92,13 +95,28 @@ async def main() -> None:
     ws = WebSocketChannel("ws-user")
     ai = AIChannel(
         "ai-assistant",
+        # Scripted model turns: a local tool call, an MCP tool call, then the answer.
         provider=MockAIProvider(
-            responses=[
-                "The current time is 12:00 UTC.",
-                "Here are the search results for 'RoomKit'.",
+            ai_responses=[
+                AIResponse(
+                    content="",
+                    finish_reason="tool_calls",
+                    tool_calls=[
+                        AIToolCall(id="call-1", name="get_time", arguments={"timezone": "UTC"})
+                    ],
+                ),
+                AIResponse(
+                    content="",
+                    finish_reason="tool_calls",
+                    tool_calls=[
+                        AIToolCall(id="call-2", name="web_search", arguments={"query": "RoomKit"})
+                    ],
+                ),
+                AIResponse(content="It is 12:00 UTC, and the search found a result for RoomKit."),
             ]
         ),
         system_prompt="You are a helpful assistant with access to local and MCP tools.",
+        tools=[CLOCK_TOOL, MCP_SEARCH_TOOL],
         tool_handler=combined,
     )
     kit.register_channel(ws)
@@ -141,13 +159,14 @@ async def main() -> None:
         InboundMessage(
             channel_id="ws-user",
             sender_id="user",
-            content=TextContent(body="What time is it?"),
+            content=TextContent(body="What time is it, and what is RoomKit?"),
         )
     )
 
     for ev in inbox:
-        if ev.source.channel_id == "ai-assistant":
-            print(f"  AI: {ev.content.body}")  # type: ignore[union-attr]
+        # The tool calls reach the room too, as ToolCallContent.
+        if ev.source.channel_id == "ai-assistant" and isinstance(ev.content, TextContent):
+            print(f"  AI: {ev.content.body}")
 
     await kit.close()
     print("\nDone.")

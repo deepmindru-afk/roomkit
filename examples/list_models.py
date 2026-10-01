@@ -20,6 +20,10 @@ answers directly. Keeping the rates beside the ids is what stops the two
 drifting — a rate sheet maintained elsewhere silently bills a newly added
 model at zero.
 
+Azure, LiteLLM and vLLM have no offline catalog: their model names are your
+deployment's or your server's, so only ``list_models()`` against your own
+endpoint can answer for them.
+
 Run with:
     uv run python examples/list_models.py
 
@@ -35,12 +39,16 @@ import os
 from roomkit.providers.ai.base import ModelInfo, ModelPricing
 from roomkit.providers.anthropic.ai import AnthropicAIProvider
 from roomkit.providers.cerebras import CerebrasAIProvider
+from roomkit.providers.deepseek.ai import DeepSeekAIProvider
 from roomkit.providers.gemini.ai import GeminiAIProvider
+from roomkit.providers.meta.ai import MetaAIProvider
 from roomkit.providers.mistral.ai import MistralAIProvider
 from roomkit.providers.ollama.ai import OllamaAIProvider
 from roomkit.providers.openai.ai import OpenAIAIProvider
 from roomkit.providers.openrouter.ai import OpenRouterAIProvider
 from roomkit.providers.polargrid.ai import PolarGridAIProvider
+from roomkit.providers.qwen.ai import QwenAIProvider
+from roomkit.providers.xai.ai import XAIAIProvider
 
 CURATED_PROVIDERS = {
     "Cerebras": CerebrasAIProvider,
@@ -49,6 +57,10 @@ CURATED_PROVIDERS = {
     "OpenRouter": OpenRouterAIProvider,
     "Gemini": GeminiAIProvider,
     "Mistral": MistralAIProvider,
+    "xAI": XAIAIProvider,
+    "DeepSeek": DeepSeekAIProvider,
+    "Qwen": QwenAIProvider,
+    "Meta": MetaAIProvider,
     "Ollama": OllamaAIProvider,
     "PolarGrid": PolarGridAIProvider,
 }
@@ -142,7 +154,7 @@ async def show_live_openrouter() -> None:
 
     from roomkit.providers.openrouter.config import OpenRouterConfig
 
-    provider = OpenRouterAIProvider(OpenRouterConfig(api_key=api_key, model="openai/gpt-5.5"))
+    provider = OpenRouterAIProvider(OpenRouterConfig(api_key=api_key, model="openai/gpt-5.6-sol"))
     try:
         live = await provider.list_models()
         print(f"\nOpenRouter live — {len(live)} models reported by the API")

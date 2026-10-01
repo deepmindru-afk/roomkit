@@ -19,7 +19,7 @@ Environment:
 
 Run with:
     MISTRAL_API_KEY=... uv run python examples/mistral_ai.py
-    MISTRAL_API_KEY=... uv run python examples/mistral_ai.py --model magistral-medium-latest
+    MISTRAL_API_KEY=... uv run python examples/mistral_ai.py --model mistral-small-latest
     MISTRAL_API_KEY=... uv run python examples/mistral_ai.py --no-think
 
 Type a message at the prompt. Type ``quit`` (or Ctrl+D) to exit.

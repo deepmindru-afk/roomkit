@@ -19,7 +19,8 @@ Examples:
     uv run python examples/ollama_cli.py --model qwen3:8b \\
         --mcp http://localhost:8080/mcp
 
-Type a message at the prompt. ``/help`` lists commands. ``/quit`` exits.
+Type a message at the prompt. ``/help`` lists commands. ``/quit`` (or ``quit``,
+``exit``, Ctrl+D) exits.
 
 Run with:
     uv run python examples/ollama_cli.py [flags]
@@ -205,7 +206,7 @@ async def _exec_tool(
     args: dict[str, Any],
     mcp: Any | None,
 ) -> str:
-    if mcp is not None and name in mcp.tool_names():
+    if mcp is not None and name in mcp.tool_names:
         return await mcp.call_tool(name, args)
     # Built-in fallback so the CLI works without MCP for quick sanity checks.
     if name == "get_time":
@@ -345,7 +346,7 @@ Commands:
   /reset           Clear the conversation history.
   /system <text>   Replace the system prompt for upcoming turns.
   /tools           List currently available tools.
-  /quit            Exit.
+  /quit            Exit (also: quit, exit, Ctrl+D).
 
 Anything else is sent to the model as a user message.
 """.strip()
@@ -408,7 +409,7 @@ async def _repl(args: argparse.Namespace) -> None:
             if not line:
                 continue
 
-            if line == "/quit":
+            if line.lower() in ("/quit", "quit", "exit", "q"):
                 break
             if line == "/help":
                 print(_HELP)

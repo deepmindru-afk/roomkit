@@ -39,20 +39,21 @@ async def main() -> None:
 
     # MockAIProvider with thinking content simulates a reasoning model.
     # In production, use AnthropicAIProvider or create_vllm_provider().
+    mock = MockAIProvider(
+        ai_responses=[
+            AIResponse(
+                content="The answer is 42.",
+                thinking="Let me reason step by step. First, I consider "
+                "the question from multiple angles. The phrase 'meaning "
+                "of life' is often associated with Douglas Adams...",
+                finish_reason="stop",
+                usage={"prompt_tokens": 20, "completion_tokens": 15},
+            ),
+        ]
+    )
     ai = AIChannel(
         "ai-thinker",
-        provider=MockAIProvider(
-            ai_responses=[
-                AIResponse(
-                    content="The answer is 42.",
-                    thinking="Let me reason step by step. First, I consider "
-                    "the question from multiple angles. The phrase 'meaning "
-                    "of life' is often associated with Douglas Adams...",
-                    finish_reason="stop",
-                    usage={"prompt_tokens": 20, "completion_tokens": 15},
-                ),
-            ]
-        ),
+        provider=mock,
         system_prompt="You are a thoughtful assistant. Think carefully before answering.",
         thinking_budget=8192,
     )
@@ -96,7 +97,6 @@ async def main() -> None:
         )
     )
 
-    mock: MockAIProvider = ai._provider  # type: ignore[assignment]
     if mock.calls:
         ctx = mock.calls[-1]
         print(f"  Thinking budget: {ctx.thinking_budget}")

@@ -5,24 +5,26 @@ sandboxed command execution inside a NetBSD microVM. Provides true
 VM isolation (~10ms boot) for local AI assistants.
 
 Prerequisites:
-  - SmolBSD cloned: git clone https://github.com/NetBSDfr/smolBSD.git ~/dev/smolBSD
-  - Builder image: cd ~/dev/smolBSD && bmake fetchimg
+  - SmolBSD cloned: git clone https://github.com/NetBSDfr/smolBSD.git
+  - Builder image: cd smolBSD && bmake fetchimg
   - SSH key in service/sshd/etc/: cp ~/.ssh/id_ed25519.pub service/sshd/etc/
   - sshd image built: bmake SERVICE=sshd build
   - QEMU with KVM support
   - pip install roomkit-sandbox
 
+Environment variables:
+    ANTHROPIC_API_KEY — Anthropic API key
+    SMOLBSD_DIR       — path to the smolBSD clone
+
 Try asking:
-  - "List the files in /workspace"
+  - "List the files in the working directory"
   - "Clone a git repo and explore it"
   - "Write a script and run it"
   - "Show system information"
 
 Run with:
-    ANTHROPIC_API_KEY=sk-... uv run python examples/sandbox_smolbsd.py
-
-Or with a local model (Ollama):
-    OLLAMA_HOST=http://localhost:11434 uv run python examples/sandbox_smolbsd.py --ollama
+    ANTHROPIC_API_KEY=sk-... SMOLBSD_DIR=/path/to/smolBSD \\
+        uv run python examples/sandbox_smolbsd.py
 """
 
 from __future__ import annotations
@@ -41,18 +43,15 @@ from roomkit.providers.anthropic import AnthropicAIProvider, AnthropicConfig
 
 
 async def main() -> None:
-    env = require_env("ANTHROPIC_API_KEY")
+    env = require_env("ANTHROPIC_API_KEY", "SMOLBSD_DIR")
 
     # Create a SmolBSD-based sandbox executor
     from roomkit_sandbox import ContainerSandboxExecutor
     from roomkit_sandbox.commands import NativeCommandBuilder
     from roomkit_sandbox.smolbsd_backend import SmolBSDSandboxBackend
 
-    # Point to where smolBSD is cloned
-    smolbsd_dir = str(Path.home() / "dev" / "smolBSD")
-
     backend = SmolBSDSandboxBackend(
-        smolbsd_dir=smolbsd_dir,
+        smolbsd_dir=env["SMOLBSD_DIR"],  # where smolBSD is cloned
         service="sshd",  # Use the sshd image (built with: bmake SERVICE=sshd build)
         workdir="/home/ssh",
     )

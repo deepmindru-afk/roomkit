@@ -4,11 +4,12 @@ Demonstrates how to compose RoomKit's guardrail primitives into a layered
 safety pipeline. Shows:
 - BEFORE_BROADCAST hooks for input filtering (block + modify)
 - PII redaction with HookResult.modify()
-- ToolPolicy with allow/deny patterns
-- Chain depth limit to prevent AI-to-AI loops
-- Rate limiting per channel
+- ToolPolicy with allow/deny patterns (checked directly: no AI calls tools here)
 - AFTER_BROADCAST async hooks for audit logging
 - Hook priority ordering
+
+A chain depth limit (against AI-to-AI loops) and a per-channel rate limit are
+configured too, but this demo does not exercise either.
 
 Run with:
     uv run python examples/guardrails.py
@@ -38,7 +39,7 @@ from roomkit import (
 from roomkit.models.channel import RateLimit
 from roomkit.tools.policy import ToolPolicy
 
-logger = setup_logging(__name__)
+logger = setup_logging("guardrails")
 
 # --- PII patterns ---
 PII_PATTERNS = {
@@ -57,7 +58,7 @@ JAILBREAK_PHRASES = [
 
 
 async def main() -> None:
-    kit = RoomKit(max_chain_depth=3)
+    kit = RoomKit(max_chain_depth=3)  # caps AI-to-AI reply chains (no AI in this demo)
 
     ws_user = WebSocketChannel("ws-user")
     ws_monitor = WebSocketChannel("ws-monitor")
@@ -77,7 +78,7 @@ async def main() -> None:
     await kit.attach_channel(
         "guarded-room",
         "ws-monitor",
-        rate_limit=RateLimit(max_per_second=10.0),
+        rate_limit=RateLimit(max_per_second=10.0),  # caps delivery to ws-monitor
     )
 
     # =========================================================

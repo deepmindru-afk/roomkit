@@ -178,16 +178,22 @@ class TerminalPermissionHandler(ExternalToolHandler):
         tenant_id: str | None = None,
         room_id: str | None = None,
     ) -> ToolDecision:
-        hook_allowed = await self._fire_before_hook(
+        hook = await self._fire_before_hook(
             tool_name,
             tool_input,
             tool_call_id=tool_call_id,
             room_id=room_id,
         )
-        if not hook_allowed:
+        if not hook:
             return ToolDecision(approved=False, reason="Denied by a BEFORE_TOOL_USE hook")
 
-        arguments = json.dumps(tool_input, indent=2, ensure_ascii=False, default=str)
+        # A hook may have rewritten the arguments: show and send those.
+        arguments = json.dumps(
+            hook.arguments if hook.arguments is not None else tool_input,
+            indent=2,
+            ensure_ascii=False,
+            default=str,
+        )
         # The channel id is what you type to address it — say it the same way.
         who = f"@{self.channel_id}" if self.channel_id else "The agent"
         prompt = f"\n{who} requests permission: {tool_name}\n{arguments}\nAllow once? [y/N] "
@@ -198,7 +204,9 @@ class TerminalPermissionHandler(ExternalToolHandler):
 
         approved = answer.strip().casefold() in {"y", "yes", "o", "oui"}
         return ToolDecision(
-            approved=approved, reason="" if approved else "Rejected in the terminal"
+            approved=approved,
+            modified_input=hook.arguments,
+            reason="" if approved else "Rejected in the terminal",
         )
 
     async def on_tool_result(
@@ -216,6 +224,7 @@ class TerminalPermissionHandler(ExternalToolHandler):
             tool_name,
             tool_input,
             result,
+            is_error=is_error,
             tool_call_id=tool_call_id,
             room_id=room_id,
         )
@@ -254,6 +263,11 @@ async def main(args: argparse.Namespace) -> None:
             if api_key := os.environ.get("ANTHROPIC_API_KEY"):
                 env["ANTHROPIC_API_KEY"] = api_key
             env["MAX_THINKING_TOKENS"] = str(args.thinking_tokens)
+        elif spec.channel_id == "codex":
+            # codex-acp reads either; CODEX_API_KEY wins when both are set.
+            for name in ("CODEX_API_KEY", "OPENAI_API_KEY"):
+                if api_key := os.environ.get(name):
+                    env[name] = api_key
         channel = ACPChannel(
             spec.channel_id,
             command=["npx", "-y", spec.package],

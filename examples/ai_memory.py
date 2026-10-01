@@ -7,7 +7,8 @@ the context budget:
 - **Tier 2** — summarizes old messages with a lightweight model (Haiku)
 
 Thresholds are set low in this demo so you can see compression after
-just a few exchanges.
+just a few exchanges. Ask about a few cities, then which one came first:
+the printed summary is what still knows.
 
 Run with:
     ANTHROPIC_API_KEY=sk-... uv run python examples/ai_memory.py
@@ -71,8 +72,13 @@ class VerboseSummarizingMemory(SummarizingMemory):
             print(
                 f"\n{_CYAN}  [memory] tier 2 — summarized: "
                 f"{before_tokens} → {after_tokens} tokens "
-                f"({pct_before}% → {pct_after}% of {budget}){_RESET}\n"
+                f"({pct_before}% → {pct_after}% of {budget}){_RESET}"
             )
+            # The summary rides result.messages, ahead of the events kept verbatim.
+            for message in result.messages:
+                if isinstance(message.content, str) and "[Conversation summary" in message.content:
+                    print(f"{_CYAN}  {message.content}{_RESET}")
+            print()
         elif before_tokens > tier1_threshold and after_tokens < before_tokens:
             print(
                 f"\n{_CYAN}  [memory] tier 1 — truncated: "
@@ -97,14 +103,19 @@ async def main() -> None:
         AnthropicConfig(api_key=api_key, model="claude-haiku-4-5-20251001")
     )
 
-    # Tight budget so compression is visible after a few exchanges
+    # Tight budget so compression is visible after a few exchanges.
+    # Tier 2 keeps recent events within (500 - summary_max_tokens) tokens but
+    # never fewer than min_events. With 100 tokens and min_events=2, exactly
+    # the last question and answer stay verbatim, so the summarized part ends
+    # on an answer: one ending on a question gets it answered, not summarized.
+    # summary_max_tokens also leaves room for every city asked about so far.
     memory = VerboseSummarizingMemory(
         inner=SlidingWindowMemory(max_events=100),
         provider=summary_provider,
         max_context_tokens=1000,
         tier1_ratio=0.3,
         tier2_ratio=0.5,
-        summary_max_tokens=100,
+        summary_max_tokens=400,
         min_events=2,
     )
 
@@ -130,9 +141,9 @@ async def main() -> None:
         room_id="memory-room",
         welcome=(
             "\nMemory demo — SummarizingMemory compresses old messages.\n"
-            "Budget is 4k tokens with short responses, so compression\n"
-            "triggers after a few exchanges.\n"
-            "Context usage is shown after each turn.\n"
+            "Budget is 1,000 tokens: past half of it, older exchanges are\n"
+            "summarized by Haiku, so compression triggers after a few exchanges.\n"
+            "Context usage (and each summary) is shown after each turn.\n"
         ),
     )
 

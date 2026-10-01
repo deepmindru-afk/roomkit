@@ -110,6 +110,8 @@ async def main() -> None:
         )
     )
     print(f"Sent message -> blocked={result.blocked}")
+    if result.error is not None:
+        sys.exit(f"The AI call failed: {result.error}")
 
     for ev in inbox:
         print(f"  AI replied: {ev.content.body}")  # type: ignore[union-attr]

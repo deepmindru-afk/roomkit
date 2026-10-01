@@ -5,7 +5,10 @@ function calling, and how to set per-room AI configuration via
 binding metadata. Shows:
 - AITool definitions with JSON schema parameters
 - Per-room system_prompt, temperature, and tools via binding metadata
-- MockAIProvider for testing without API keys
+- A tool_handler running the calls the model makes, its result going back
+  to the model for the final answer
+- MockAIProvider for testing without API keys (it scripts the tool calls a
+  real model would decide on)
 
 Run with:
     uv run python examples/ai_tools_function_calling.py
@@ -14,6 +17,8 @@ Run with:
 from __future__ import annotations
 
 import asyncio
+import json
+from typing import Any
 
 from roomkit import (
     ChannelCategory,
@@ -24,23 +29,53 @@ from roomkit import (
     WebSocketChannel,
 )
 from roomkit.channels.ai import AIChannel
+from roomkit.providers.ai.base import AIResponse, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
+
+
+async def run_tool(name: str, arguments: dict[str, Any]) -> str:
+    """Run the tool the model called; its JSON result goes back to the model."""
+    print(f"  Tool call: {name}({arguments})")
+    if name == "get_weather":
+        return json.dumps({"city": arguments["city"], "temp_c": -5, "conditions": "snow"})
+    if name == "search_restaurants":
+        return json.dumps({"results": [{"id": "r1", "name": "Le Bouillon", "rating": 4.7}]})
+    return json.dumps({"error": f"Unknown tool: {name}"})
+
+
+def tool_call(call_id: str, name: str, arguments: dict[str, Any]) -> AIResponse:
+    """A model turn that asks for one tool call instead of answering."""
+    return AIResponse(
+        content="",
+        finish_reason="tool_calls",
+        tool_calls=[AIToolCall(id=call_id, name=name, arguments=arguments)],
+    )
 
 
 async def main() -> None:
     kit = RoomKit()
 
+    # Scripted model turns: each question gets a tool call, then an answer
+    # written from the tool's result.
+    provider = MockAIProvider(
+        ai_responses=[
+            tool_call("call-1", "get_weather", {"city": "Montreal"}),
+            AIResponse(content="It's -5°C and snowing in Montreal."),
+            tool_call(
+                "call-2",
+                "search_restaurants",
+                {"location": "downtown Montreal", "cuisine": "Italian"},
+            ),
+            AIResponse(content="The top pick nearby is Le Bouillon, rated 4.7."),
+        ]
+    )
     ws = WebSocketChannel("ws-user")
     ai = AIChannel(
         "ai-assistant",
-        provider=MockAIProvider(
-            responses=[
-                "The weather in Montreal is -5C and snowy.",
-                "I found 3 nearby restaurants. The top pick is Le Bouillon.",
-            ]
-        ),
+        provider=provider,
         system_prompt="You are a helpful assistant.",
         temperature=0.7,
+        tool_handler=run_tool,
     )
     kit.register_channel(ws)
     kit.register_channel(ai)
@@ -100,16 +135,16 @@ async def main() -> None:
 
     print("  User asked about weather")
     for ev in inbox:
-        if ev.source.channel_id == "ai-assistant":
-            print(f"  AI replied: {ev.content.body}")  # type: ignore[union-attr]
+        # The tool call itself reaches the room too, as ToolCallContent.
+        if ev.source.channel_id == "ai-assistant" and isinstance(ev.content, TextContent):
+            print(f"  AI replied: {ev.content.body}")
 
     # --- Verify per-room config was applied ---
     # Check that the AI context was built with per-room settings
-    mock_provider: MockAIProvider = ai._provider  # type: ignore[assignment]
-    if mock_provider.calls:
-        last_call = mock_provider.calls[-1]
+    if provider.calls:
+        last_call = provider.calls[-1]
         print("\n  AI Context:")
-        print(f"    System prompt: {last_call.system_prompt[:60]}...")
+        print(f"    System prompt: {(last_call.system_prompt or '')[:60]}...")
         print(f"    Temperature: {last_call.temperature}")
         print(f"    Tools: {[t.name for t in last_call.tools]}")
 
@@ -173,13 +208,14 @@ async def main() -> None:
 
     print("  User asked about restaurants")
     for ev in inbox:
-        if ev.source.channel_id == "ai-assistant":
-            print(f"  AI replied: {ev.content.body}")  # type: ignore[union-attr]
+        # The tool call itself reaches the room too, as ToolCallContent.
+        if ev.source.channel_id == "ai-assistant" and isinstance(ev.content, TextContent):
+            print(f"  AI replied: {ev.content.body}")
 
-    if len(mock_provider.calls) > 1:
-        last_call = mock_provider.calls[-1]
+    if len(provider.calls) > 2:
+        last_call = provider.calls[-1]
         print("\n  AI Context:")
-        print(f"    System prompt: {last_call.system_prompt[:60]}...")
+        print(f"    System prompt: {(last_call.system_prompt or '')[:60]}...")
         print(f"    Temperature: {last_call.temperature}")
         print(f"    Tools: {[t.name for t in last_call.tools]}")
 

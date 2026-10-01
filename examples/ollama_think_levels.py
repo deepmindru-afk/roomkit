@@ -15,10 +15,17 @@ Read the output table:
 * ``thinking_chars`` is roughly flat across low/medium/high
   (and equal to ``default`` row) → model downgraded strings to bool;
   the effort knob has no effect.
+* low/medium/high fail with "not supported for this model" → the model
+  has no effort levels and Ollama refuses them outright (Ollama 0.17 does
+  this for ``qwen3:8b``).
 
 The first call cold-starts the model, so the ``off`` row is usually
 slower than its small token count would suggest. Compare across the
 *other* rows for meaningful numbers.
+
+Five generations of up to 4,096 tokens each: about a minute or two on a
+GPU, several minutes on a CPU. The script exits non-zero when no run
+succeeds (e.g. no Ollama server at ``OLLAMA_HOST``, or an unknown model).
 
 Run with:
     OLLAMA_HOST=http://localhost:11434 OLLAMA_MODEL=qwen3:8b \\
@@ -104,15 +111,20 @@ async def main() -> None:
     model = os.environ.get("OLLAMA_MODEL", "qwen3:8b")
 
     print(f"\nThink-level benchmark — model={model} host={host}")
-    print(f"Prompt: {_PROMPT}\n")
+    print(f"Prompt: {_PROMPT}")
+    print(
+        "Five generations of up to 4,096 tokens each: a minute or two on a GPU, more on a CPU.\n"
+    )
 
     rows: list[dict[str, Any]] = []
+    failed: list[str] = []
     for label, think in _LEVELS:
         print(f"  • {label:<8}", end=" ", flush=True)
         try:
             row = await _run_one(host, model, label, think)
         except Exception as exc:
             print(f"FAILED: {exc}")
+            failed.append(label)
             continue
         rows.append(row)
         print(
@@ -128,6 +140,10 @@ async def main() -> None:
             "model honors effort levels. If it's flat, the model silently\n"
             "treats string effort as plain True — try gpt-oss or deepseek-r1.\n"
         )
+    if failed:
+        print(f"{len(failed)} of {len(_LEVELS)} runs failed: {', '.join(failed)}")
+    if not rows:
+        sys.exit("No run succeeded: is Ollama running at OLLAMA_HOST with OLLAMA_MODEL pulled?")
 
 
 if __name__ == "__main__":

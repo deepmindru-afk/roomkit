@@ -16,6 +16,7 @@ Run with:
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any
 
 from roomkit import (
@@ -31,6 +32,19 @@ from roomkit.knowledge import KnowledgeResult, KnowledgeSource
 from roomkit.memory import RetrievalMemory, SlidingWindowMemory
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.scoring import ConversationScorer, Score, ScoringHook
+
+_STOP_WORDS = {"a", "an", "the", "i", "you", "my", "your", "do", "how", "what", "to", "of"}
+
+
+def keywords(text: str) -> set[str]:
+    """Lower-cased words without punctuation, stop words or a plural "s".
+
+    Splitting on whitespace alone keeps "refund?" apart from "refunds", so the
+    right answer would share no keyword with its question.
+    """
+    words = re.findall(r"[a-z0-9]+", text.lower())
+    return {w[:-1] if len(w) > 3 and w.endswith("s") else w for w in words} - _STOP_WORDS
+
 
 # ---------------------------------------------------------------------------
 # 1. Custom knowledge source (simulates a FAQ database)
@@ -69,11 +83,10 @@ class FAQKnowledgeSource(KnowledgeSource):
         self, query: str, *, room_id: str | None = None, limit: int = 5
     ) -> list[KnowledgeResult]:
         # Simple keyword matching — replace with embeddings in production
-        query_lower = query.lower()
+        words = keywords(query)
         results = []
         for question, answer in self._faqs:
-            words = set(query_lower.split())
-            match_words = set(question.lower().split()) & words
+            match_words = keywords(question) & words
             if match_words:
                 score = len(match_words) / len(words) if words else 0
                 results.append(
@@ -120,9 +133,8 @@ class LengthAndRelevanceScorer(ConversationScorer):
             scores.append(Score(value=0.9, dimension="length", reason="Good length"))
 
         # Relevance score: keyword overlap between query and response
-        query_words = set(query.lower().split())
-        response_words = set(response_content.lower().split())
-        overlap = query_words & response_words
+        query_words = keywords(query)
+        overlap = query_words & keywords(response_content)
         relevance = len(overlap) / len(query_words) if query_words else 0
         scores.append(
             Score(
@@ -223,7 +235,7 @@ async def main() -> None:
     )
 
     # Show stored observations (scores + feedback)
-    obs = await kit._store.list_observations("support-room")
+    obs = await kit.store.list_observations("support-room")
     print(f"\n--- Stored Observations ({len(obs)}) ---")
     for o in obs:
         print(f"  [{o.category}] confidence={o.confidence:.2f}: {o.content}")

@@ -125,38 +125,39 @@ async def main() -> None:
 
     ws = WebSocketChannel("ws-user")
     # Scripted model: search → call the revealed tool → answer.
+    provider = MockAIProvider(
+        ai_responses=[
+            # Round 0: the model can't see send_sms yet — it searches.
+            AIResponse(
+                content="",
+                finish_reason="tool_calls",
+                tool_calls=[
+                    AIToolCall(
+                        id="c1",
+                        name="find_tools",
+                        arguments={"query": "send a text message to a contact"},
+                    )
+                ],
+            ),
+            # Round 1: send_sms is now revealed → call it directly.
+            AIResponse(
+                content="",
+                finish_reason="tool_calls",
+                tool_calls=[
+                    AIToolCall(
+                        id="c2",
+                        name="send_sms",
+                        arguments={"to": "+15145550123", "body": "On my way!"},
+                    )
+                ],
+            ),
+            # Round 2: final answer.
+            AIResponse(content="Done — I sent your text. ✅", finish_reason="stop"),
+        ]
+    )
     ai = AIChannel(
         "ai-assistant",
-        provider=MockAIProvider(
-            ai_responses=[
-                # Round 0: the model can't see send_sms yet — it searches.
-                AIResponse(
-                    content="",
-                    finish_reason="tool_calls",
-                    tool_calls=[
-                        AIToolCall(
-                            id="c1",
-                            name="find_tools",
-                            arguments={"query": "send a text message to a contact"},
-                        )
-                    ],
-                ),
-                # Round 1: send_sms is now revealed → call it directly.
-                AIResponse(
-                    content="",
-                    finish_reason="tool_calls",
-                    tool_calls=[
-                        AIToolCall(
-                            id="c2",
-                            name="send_sms",
-                            arguments={"to": "+15145550123", "body": "On my way!"},
-                        )
-                    ],
-                ),
-                # Round 2: final answer.
-                AIResponse(content="Done — I sent your text. ✅", finish_reason="stop"),
-            ]
-        ),
+        provider=provider,
         system_prompt="You are a helpful assistant.",
         tool_handler=tool_handler,
         # Forced on for a deterministic demo. In production leave tool_search
@@ -203,8 +204,6 @@ async def main() -> None:
             content=TextContent(body="Text Alex that I'm on my way"),
         )
     )
-
-    provider: MockAIProvider = ai._provider  # type: ignore[assignment]
 
     # Round 0 — the model sees only the discovery tools + pinned.
     print("Round 0 — visible to the model:")

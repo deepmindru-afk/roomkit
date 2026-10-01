@@ -78,6 +78,18 @@ async def run_tool(name: str, arguments: dict[str, Any]) -> str:
     return json.dumps({"error": f"unknown tool {name}"})
 
 
+async def turn_reply(replies: asyncio.Queue[str]) -> str:
+    """Every message the AI sent in one turn, joined.
+
+    A turn that calls a tool may deliver a message before the call and another
+    after it; reading one per turn would print each answer a turn late.
+    """
+    parts = [await asyncio.wait_for(replies.get(), timeout=120)]
+    while not replies.empty():
+        parts.append(replies.get_nowait())
+    return " ".join(part.strip() for part in parts)
+
+
 async def main() -> None:
     gpu_layers = os.environ.get("LLAMACPP_GPU_LAYERS")
     provider = LlamaCppAIProvider(
@@ -116,12 +128,14 @@ async def main() -> None:
 
         for question in ("What time is it?", "Roll three six-sided dice for me.", "Hi there!"):
             logger.info("You: %s", question)
-            await kit.process_inbound(
+            result = await kit.process_inbound(
                 InboundMessage(
                     channel_id="user", sender_id="me", content=TextContent(body=question)
                 )
             )
-            logger.info("AI:  %s", await asyncio.wait_for(replies.get(), timeout=120))
+            if result.error is not None:
+                sys.exit(f"The model failed: {result.error}")
+            logger.info("AI:  %s", await turn_reply(replies))
 
         await kit.close()
     finally:

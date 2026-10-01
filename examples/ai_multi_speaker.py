@@ -4,8 +4,9 @@ Every event that is not the AI's own becomes a ``user`` turn in the model's
 history. In a room where several people speak, that erases who said what —
 the model guesses the addressee and guesses wrong. When the history window
 holds two or more distinct speakers, AIChannel prefixes each attributable
-user turn with its speaker ("Alice: ...") and appends a one-line note to the
-system prompt. A single-speaker room is left byte-identical.
+user turn with its speaker ("Alice: ...") and adds a one-line note to the
+turn's notes, which ride the latest user message; the system prompt is left
+as it is. A single-speaker room is left byte-identical.
 
 Nothing to configure. The speaker is read from ``metadata["sender_name"]``
 (stamped at ingress by the Teams and WhatsApp Personal ingress, or by the
@@ -39,8 +40,8 @@ def show(title: str, context: AIContext) -> None:
     print(f"\n== {title}")
     for message in context.messages:
         print(f"  {message.role:<9} {message.content!r}")
-    has_note = "Several people take part" in (context.system_prompt or "")
-    print(f"  attribution note in system prompt: {has_note}")
+    has_note = "Several people take part" in str(context.messages[-1].content)
+    print(f"  attribution note in this turn's notes: {has_note}")
 
 
 async def say(kit: RoomKit, sender_id: str, body: str, *, name: str | None = None) -> None:

@@ -1,11 +1,10 @@
 """Memory provider example — custom AI context construction.
 
 Demonstrates how to use a MemoryProvider to control what conversation
-history is included in AI context.  Shows three approaches:
+history is included in AI context.  Shows two approaches:
 
 1. Default SlidingWindowMemory (last N events)
 2. Custom provider that injects a conversation summary
-3. Custom provider that filters events by channel
 
 Run with:
     uv run python examples/memory_provider.py
@@ -55,11 +54,15 @@ class SummaryMemory(MemoryProvider):
         *,
         channel_id: str | None = None,
     ) -> MemoryResult:
-        # Pre-built summary message (e.g. from a prior summarization pass)
-        summary_msg = AIMessage(role="system", content=self._summary)
+        # Pre-built summary message (e.g. from a prior summarization pass).
+        # A "user" message, like the built-in memories inject: Anthropic and
+        # others reject a "system" message inside the conversation.
+        summary_msg = AIMessage(role="user", content=f"[Conversation summary]\n{self._summary}")
 
-        # Plus the most recent events for immediate context
-        recent = context.recent_events[-self._recent_count :]
+        # Plus the most recent events for immediate context. The current
+        # message is left out: the channel adds it itself, as the last turn.
+        history = [e for e in context.recent_events if e.id != current_event.id]
+        recent = history[-self._recent_count :]
 
         return MemoryResult(messages=[summary_msg], events=recent)
 
@@ -145,9 +148,10 @@ async def main() -> None:
 
     ctx = provider2.calls[0]
     print(f"  AI replied: {inbox2[-1].content.body}")  # type: ignore[union-attr]
-    print(f"  Context had {len(ctx.messages)} message(s)")
-    print(f"  First message (summary): {ctx.messages[0].content}")
-    print(f"  Last message (current):  {ctx.messages[-1].content}")
+    # Consecutive user turns are merged, so the summary leads the current message.
+    print(f"  Context had {len(ctx.messages)} message(s):")
+    for message in ctx.messages:
+        print(f"    {message.role}: {message.content!r}")
 
     # --- Cleanup -------------------------------------------------------------
     await ai.close()

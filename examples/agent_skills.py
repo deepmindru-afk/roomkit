@@ -58,7 +58,11 @@ async def main() -> None:
     ai = AIChannel(
         "ai-assistant",
         provider=AnthropicAIProvider(
-            AnthropicConfig(api_key=env["ANTHROPIC_API_KEY"], model="claude-opus-5")
+            AnthropicConfig(
+                api_key=env["ANTHROPIC_API_KEY"],
+                model="claude-opus-5",
+                max_tokens=4096,  # the default 1024 cuts long answers off mid-sentence
+            )
         ),
         system_prompt=(
             "You are a senior Python developer assistant.\n"

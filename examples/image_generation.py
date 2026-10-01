@@ -40,6 +40,8 @@ Environment variables (first configured provider wins):
     IMAGE_MODEL    — override the model id for whichever provider is selected
     ANTHROPIC_API_KEY — optional: hold the conversation with Claude instead of
                         the mock AI, to see the decoupling for real
+    IMAGE_OUTPUT_DIR — where the PNGs go (default: roomkit-images in the
+                       system temp directory); the paths are printed at the end
 
 Run with:
     uv run python examples/image_generation.py
@@ -52,6 +54,7 @@ import json
 import logging
 import os
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -63,6 +66,7 @@ from roomkit import (
     AIChannel,
     ChannelCategory,
     ImageProvider,
+    InboundMessage,
     MockImageProvider,
     RoomEvent,
     RoomKit,
@@ -74,7 +78,9 @@ from roomkit.providers.ai.base import AIResponse, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 
 ROOM_ID = "atelier"
-OUTPUT_DIR = Path(__file__).parent / "recordings"
+OUTPUT_DIR = Path(
+    os.environ.get("IMAGE_OUTPUT_DIR") or Path(tempfile.gettempdir()) / "roomkit-images"
+)
 
 TOOL_DEFINITION: dict[str, Any] = {
     "name": "generate_image",
@@ -213,7 +219,7 @@ def build_ai_provider() -> Any:
     if api_key := os.environ.get("ANTHROPIC_API_KEY"):
         from roomkit.providers.anthropic import AnthropicAIProvider, AnthropicConfig
 
-        return AnthropicAIProvider(AnthropicConfig(api_key=api_key))
+        return AnthropicAIProvider(AnthropicConfig(api_key=api_key, model="claude-haiku-4-5"))
     return MockAIProvider(
         ai_responses=[
             AIResponse(
@@ -265,12 +271,18 @@ async def main() -> None:
     await kit.attach_channel(ROOM_ID, "artiste", category=ChannelCategory.INTELLIGENCE)
 
     print(f"Drawing with {images.name} ({images.model_name})\n")
-    await kit.send_event(
+    # Returns once the agent's turn is over, tool call and drawing included,
+    # so the timeline below is complete whichever provider holds the turn.
+    result = await kit.process_inbound(
+        InboundMessage(
+            channel_id="atelier-bot",
+            sender_id="viewer",
+            content=TextContent(body="Dessine-moi un renard en origami, carré."),
+        ),
         room_id=ROOM_ID,
-        channel_id="atelier-bot",
-        content=TextContent(body="Dessine-moi un renard en origami, carré."),
     )
-    await asyncio.sleep(0.5)
+    if result.error is not None:
+        sys.exit(f"The agent failed: {result.error}")
 
     print("--- room timeline ---")
     for event in await kit.get_timeline(ROOM_ID):

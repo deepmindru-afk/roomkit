@@ -12,6 +12,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from shared import require_env
 
 from roomkit import (
     AIChannel,
@@ -28,9 +34,10 @@ logger = logging.getLogger("roomkit.examples.cerebras")
 
 
 async def main() -> None:
+    env = require_env("CEREBRAS_API_KEY")
     provider = CerebrasAIProvider(
         CerebrasConfig(
-            api_key=os.environ["CEREBRAS_API_KEY"],
+            api_key=env["CEREBRAS_API_KEY"],
             model=os.environ.get("CEREBRAS_MODEL", "gpt-oss-120b"),
             reasoning_effort=os.environ.get("CEREBRAS_REASONING_EFFORT", "low"),
         )
@@ -50,7 +57,7 @@ async def main() -> None:
                 logger.info("Assistant: %s", event.content.body)
 
         ws.register_connection("browser", receive, room_id="demo")
-        await kit.process_inbound(
+        result = await kit.process_inbound(
             InboundMessage(
                 channel_id="user",
                 sender_id="alice",
@@ -59,6 +66,8 @@ async def main() -> None:
                 ),
             )
         )
+        if result.error is not None:
+            sys.exit(f"The AI call failed: {result.error}")
 
 
 if __name__ == "__main__":

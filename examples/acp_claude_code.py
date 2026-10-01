@@ -108,19 +108,25 @@ class TerminalPermissionHandler(ExternalToolHandler):
         tenant_id: str | None = None,
         room_id: str | None = None,
     ) -> ToolDecision:
-        hook_allowed = await self._fire_before_hook(
+        hook = await self._fire_before_hook(
             tool_name,
             tool_input,
             tool_call_id=tool_call_id,
             room_id=room_id,
         )
-        if not hook_allowed:
+        if not hook:
             return ToolDecision(
                 approved=False,
                 reason="Denied by a RoomKit BEFORE_TOOL_USE hook",
             )
 
-        arguments = json.dumps(tool_input, indent=2, ensure_ascii=False, default=str)
+        # A hook may have rewritten the arguments: show and send those.
+        arguments = json.dumps(
+            hook.arguments if hook.arguments is not None else tool_input,
+            indent=2,
+            ensure_ascii=False,
+            default=str,
+        )
         prompt = f"\nClaude Code requests permission: {tool_name}\n{arguments}\nAllow once? [y/N] "
         try:
             # Suspends the pinned input bar (CONSOLE=1) for the read.
@@ -131,6 +137,7 @@ class TerminalPermissionHandler(ExternalToolHandler):
         approved = answer.strip().casefold() in {"y", "yes", "o", "oui"}
         return ToolDecision(
             approved=approved,
+            modified_input=hook.arguments,
             reason="" if approved else "Rejected in the terminal",
         )
 
@@ -149,6 +156,7 @@ class TerminalPermissionHandler(ExternalToolHandler):
             tool_name,
             tool_input,
             result,
+            is_error=is_error,
             tool_call_id=tool_call_id,
             room_id=room_id,
         )

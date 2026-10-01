@@ -93,7 +93,7 @@ def _parse_args() -> argparse.Namespace:
         "--effort",
         default="high",
         choices=("low", "medium", "high"),
-        help="Reasoning effort. Grok 4.5 defaults to high and cannot disable reasoning.",
+        help="Reasoning effort. Grok always reasons; this sets how long, not whether.",
     )
     return p.parse_args()
 

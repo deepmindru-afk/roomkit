@@ -1,8 +1,15 @@
 """Typed image options and observable outcomes; mock by default, no key required.
 
+The mock draws without progress events, so only the paid providers log each
+attempt as it lands (``on_progress``).
+
 Run: uv run python examples/image_generation_options.py
 Paid: uv run --extra openai python examples/image_generation_options.py --provider openai
 Paid: uv run --extra gemini python examples/image_generation_options.py --provider gemini
+
+Environment variables:
+    OPENAI_API_KEY — for --provider openai
+    GEMINI_API_KEY — for --provider gemini
 """
 
 from __future__ import annotations
@@ -10,7 +17,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from shared import require_env
 
 from roomkit import ImageAttempt, ImageGenerationError, ImageOptions, MockImageProvider
 from roomkit.providers.gemini import GeminiImageConfig, GeminiImageProvider
@@ -31,13 +43,13 @@ async def main() -> None:
         "mock": MockImageProvider,
         "openai": lambda: OpenAIImageProvider(
             OpenAIImageConfig(
-                api_key=os.environ["OPENAI_API_KEY"],
+                api_key=require_env("OPENAI_API_KEY")["OPENAI_API_KEY"],
                 model="gpt-image-2.5-flare",
             )
         ),
         "gemini": lambda: GeminiImageProvider(
             GeminiImageConfig(
-                api_key=os.environ["GEMINI_API_KEY"],
+                api_key=require_env("GEMINI_API_KEY")["GEMINI_API_KEY"],
                 model="gemini-3.1-flash-image",
             )
         ),
@@ -53,6 +65,7 @@ async def main() -> None:
             results = await provider.generate_with_options(
                 "An origami fox on a white background",
                 options=options[args.provider],
+                # MockImageProvider rejects a progress callback: it has no events.
                 on_progress=report if args.provider != "mock" else None,
             )
         except ImageGenerationError as error:

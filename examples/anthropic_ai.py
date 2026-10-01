@@ -68,6 +68,8 @@ async def main() -> None:
         )
     )
     print(f"Sent message -> blocked={result.blocked}")
+    if result.error is not None:
+        sys.exit(f"The AI call failed: {result.error}")
 
     # Show the AI response delivered back to the user.
     for ev in inbox:
