@@ -518,8 +518,8 @@ class ConferenceRealtimeConfig:
     not declared to the provider and a call to it is refused. The mix names no
     participant, so the base rules apply and role overrides never do."""
 
-    # Fields from here on are appended after the earlier ones, so the
-    # positional order those had is kept.
+    # New fields go after the existing ones: a caller passing them by position
+    # keeps their meaning.
 
     tool_timeout_seconds: float | None = 10.0
     """How long one tool call may take before its handler is cancelled and the
@@ -530,8 +530,8 @@ class ConferenceRealtimeConfig:
     """A bound per tool name, above the default (``None``: as long as it needs)."""
 
     def __post_init__(self) -> None:
-        self.tool_bounds()  # a non-positive bound fails here, not on the first call
+        self.tool_bound("")  # a bound that is not positive fails here, not on a call
 
-    def tool_bounds(self) -> ToolTimeouts:
-        """The bound of each tool call, from the two settings above."""
-        return ToolTimeouts(self.tool_timeout_seconds, self.tool_timeouts)
+    def tool_bound(self, name: str) -> float | None:
+        """The bound of one call to the tool *name*, in seconds (RFC §21.6)."""
+        return ToolTimeouts(self.tool_timeout_seconds, self.tool_timeouts).for_call(name)

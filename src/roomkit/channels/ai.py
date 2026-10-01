@@ -386,10 +386,7 @@ class AIChannel(
         # or the config provider says otherwise (RFC §6.7).
         self._response_schema = _portable_schema(response_schema)
         self._max_tool_rounds = max_tool_rounds
-        self._tool_loop_timeout_seconds = tool_loop_timeout_seconds
-        # Each call's own bound (RFC §21.6): a handler that never answers costs
-        # the call, not the turn, whose deadline is only read between rounds.
-        self._tool_timeouts = ToolTimeouts(tool_timeout_seconds, dict(tool_timeouts or {}))
+        self._store_tool_bounds(tool_loop_timeout_seconds, tool_timeout_seconds, tool_timeouts)
         self._tool_loop_warn_after = tool_loop_warn_after
         self._max_empty_retries = max_empty_retries
         # Reasoning-stream coalescing window — see _ThinkingCoalescer. Per-token
@@ -465,6 +462,21 @@ class AIChannel(
         turn_budget(tokens, usd, provider, fallback)
         self._turn_budget_tokens = tokens
         self._turn_budget_usd = usd
+
+    def _store_tool_bounds(
+        self,
+        loop_seconds: float | None,
+        call_seconds: float | None,
+        per_tool: Mapping[str, float | None] | None,
+    ) -> None:
+        """Keep the turn's tool-loop deadline and each call's own bound (RFC §21.6).
+
+        The deadline is read between rounds, so it cannot stop a handler that
+        never answers: the call bound does, costing the call rather than the
+        turn. A bound that is not positive fails here.
+        """
+        self._tool_loop_timeout_seconds = loop_seconds
+        self._tool_timeouts = ToolTimeouts(call_seconds, dict(per_tool or {}))
 
     def _init_tool_surface(
         self,

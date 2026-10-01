@@ -119,6 +119,8 @@ async def run(api_key: str, output: Path) -> dict[str, Any]:
         transport=backend,
         tools=[inventory_tool()],
         tool_handler=handler,
+        # A call is cut after 10 s by default; this tool may take longer.
+        tool_timeouts={"check_inventory": 30},
         input_sample_rate=16000,
         output_sample_rate=24000,
         system_prompt=(
