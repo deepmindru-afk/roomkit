@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.94.0] — 2026-10-01
+
 ### Added
 
 - `VoiceChannel.add_backend(backend)` (RMK-353, RFC §12.7.3): one voice
@@ -75,13 +77,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `RetrievalMemory` returns the passages it retrieves as the turn's note,
-  each in a `<knowledge>` block set apart as data, instead of a user message
-  at the head of the history (RMK-334). The passages change with every
-  question, and at the head they shifted the whole history, which a provider
-  caching a prefix billed again at every turn. Six questions on
+- **BREAKING — `max_tool_rounds` defaults to 50 instead of 200**, and
+  `tool_loop_warn_after` to 25 instead of 50 (RMK-320). On 819 real
+  `AIChannel` turns with tools, the median ran 2 rounds, the 99th percentile
+  16 and the longest 62; a turn still calling tools at round 50 now ends
+  with `loop_end_reason` `max_rounds`. Migration: a host whose agents
+  legitimately run longer passes `max_tool_rounds` explicitly.
+- **BREAKING — a `null` in a binding's metadata defers to the next level for
+  every per-turn setting** (`system_prompt`, `temperature`, `max_tokens`,
+  `thinking_budget`, `enable_thinking`, `reasoning_effort`, `response_schema`,
+  `turn_budget_tokens`, `turn_budget_usd`), as a `None` from the
+  `config_provider` already did (RMK-346, RFC Appendix A.9). It used to clear
+  the channel's value for that room: `{"turn_budget_usd": None}` ran the turn
+  with no cap at all. A `null` `tools` declares no toolset instead of failing
+  the turn. Migration: lifting a channel default for a room takes an
+  explicit value that states off (`thinking_budget=0`,
+  `enable_thinking=False`, `reasoning_effort="none"`, `system_prompt=""`);
+  `temperature`, `max_tokens`, `response_schema` and the turn budgets have
+  none, so a room that relied on `null` to fall back to the provider's
+  default now inherits the channel's value and must set its own.
+- **BREAKING — `RetrievalMemory` returns the passages it retrieves as the
+  turn's note**, each in a `<knowledge>` block set apart as data, instead of
+  a user message at the head of the history (RMK-334). The passages change
+  with every question, and at the head they shifted the whole history, which
+  a provider caching a prefix billed again at every turn. Six questions on
   `claude-sonnet-5`: $0.064 before, $0.045 after (30 % less), the history
-  read from cache instead of rewritten.
+  read from cache instead of rewritten. Migration: a memory provider of your
+  own that wraps a `RetrievalMemory` and rebuilds its result as
+  `MemoryResult(messages=..., events=...)` now drops the passages; build it
+  with `dataclasses.replace(inner_result, ...)` so `notes` rides along.
 - Tool Search also switches on for cost (RMK-321): in `auto` mode, past
   `tool_search_threshold_tokens` schema tokens of the tools it can hide
   (8,000 by default, whatever the model's window; `None` removes the cap),
@@ -93,11 +117,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `gpt-4.1-mini`; hiding a catalogue pays from about 15 tools. A channel
   with a larger catalogue now starts its turns with `find_tools`;
   `tool_search=False` keeps it whole.
-- `max_tool_rounds` defaults to 50 instead of 200, and
-  `tool_loop_warn_after` to 25 instead of 50 (RMK-320). On 819 real
-  `AIChannel` turns with tools, the median ran 2 rounds, the 99th percentile
-  16 and the longest 62. A host whose agents legitimately run longer passes
-  `max_tool_rounds` explicitly.
 - A reentry pass, the commit of each response event of a non-streamed turn,
   no longer reads the room and its source's binding from the store on top of
   the fresh context it builds under the lock (RMK-331, RFC §10.1): its status
@@ -219,6 +238,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `roomkit.conference.livekit`) and ends the session as unhealthy, so the
   channel re-joins rather than keeping a session that no longer hears the
   room, and the error names `publish_audio`.
+- A LiveKit bot that is leaving starts no track pump (found reviewing
+  RMK-354): its departure stopped every pump, then awaited the SDK's
+  disconnect, and a `track_subscribed` delivered in that window started a
+  pump nothing would stop, delivering frames for a session already gone.
+  Once a session's pumps are closed, none starts.
 - An agent's response meets its `BEFORE_BROADCAST` hooks before its source's
   right to write on every path that commits it (RMK-344, RFC §10.1, §7.5):
   - a read-only or muted agent's answer was stored `BLOCKED` before any hook
@@ -248,19 +272,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   event, so a hook that mutes the source of the message it reads still
   blocks that message; an inbound event in a room with no such hook no
   longer reads the binding from the store a second time.
-- A `null` in a binding's metadata now defers to the next level for every
-  per-turn setting (`system_prompt`, `temperature`, `max_tokens`,
-  `thinking_budget`, `enable_thinking`, `reasoning_effort`, `response_schema`,
-  `turn_budget_tokens`, `turn_budget_usd`), as a `None` from the
-  `config_provider` already did (RMK-346, RFC Appendix A.9). It used to clear
-  the channel's value for that room: `{"turn_budget_usd": None}` ran the turn
-  with no cap at all. Lifting a channel default for a room takes an explicit
-  value that states off (`thinking_budget=0`, `enable_thinking=False`,
-  `reasoning_effort="none"`, `system_prompt=""`); `temperature`, `max_tokens`,
-  `response_schema` and the turn budgets have none, so a room that relied on
-  `null` to fall back to the provider's default now inherits the channel's
-  value and must set its own. A `null` `tools` declares no toolset instead of
-  failing the turn.
 - An `enable_thinking: False` set at a level (binding metadata or
   `config_provider`) now turns off a `thinking_budget` a less specific level
   set (RMK-346, RFC §6.7): the budget states the switch first, so a room that
@@ -283,7 +294,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A greeting or an answer `regenerate_response` commits no longer lands in a
   room closed just before it takes the room lock (RMK-331, RFC §5.1): its
   status gate read the room before the lock, and now reads it under the lock.
-
 - A page `read_stored_result` returns writes non-ASCII text as it is instead
   of `\uXXXX` escapes (RMK-321): escaped, a page of Chinese text weighed
   about 14,000 tokens against a 5,000-token threshold, and came back stored
@@ -10432,7 +10442,8 @@ See entries `0.7.0a1` through `0.7.0a18` below.
 - `STTProvider.transcribe()` returns `TranscriptionResult` (Phase 3.1)
 - Framework event names enriched with payloads (Phase 4)
 
-[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.93.0...HEAD
+[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.94.0...HEAD
+[0.94.0]: https://github.com/roomkit-live/roomkit/compare/v0.93.0...v0.94.0
 [0.93.0]: https://github.com/roomkit-live/roomkit/compare/v0.92.0...v0.93.0
 [0.92.0]: https://github.com/roomkit-live/roomkit/compare/v0.91.1...v0.92.0
 [0.91.1]: https://github.com/roomkit-live/roomkit/compare/v0.91.0...v0.91.1
