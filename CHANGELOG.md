@@ -58,8 +58,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nothing, and a refusal raises before anything is written; a room write
   that fails stops them, leaving an existing room's recordings alone. With
   several recorders, one that refused used to leave those started before it
-  running and unregistered; they are stopped. `ON_RECORDING_STARTED` still
-  fires once the room exists.
+  running and unregistered; they are stopped. A room created again under its
+  id on a store that rewrites it (`InMemoryStore`, `SQLiteStore`) adds its
+  recordings beside the ones already running instead of orphaning them, so
+  `close_room` stops them all. A recorder that fails to stop is logged and
+  no longer holds the others: `close_room` used to raise at the first one,
+  leaving the room active and the rest of its recordings running past
+  `RoomKit.close()`. `ON_RECORDING_STARTED` still fires once the room exists.
 - `RealtimeVoiceChannel` fires `ON_RECORDING_STARTED` and
   `ON_RECORDING_STOPPED` for the recorder of its audio pipeline (RMK-355, RFC
   §17.6): it records through the same pipeline as `VoiceChannel` but never

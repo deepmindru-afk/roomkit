@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import pytest
 
@@ -13,17 +14,21 @@ from roomkit import (
     VideoChannel,
     VoiceChannel,
 )
+from roomkit.models.enums import RoomStatus
 from roomkit.models.room import Room
 from roomkit.recorder._room_recorder_manager import RoomRecorderManager
 from roomkit.recorder.base import (
     ChannelRecordingConfig,
     MediaRecordingConfig,
     MediaRecordingHandle,
+    MediaRecordingResult,
     RecordingTrack,
     RoomRecorderBinding,
 )
 from roomkit.recorder.mock import MockMediaRecorder
+from roomkit.store.base import ConversationStore
 from roomkit.store.memory import InMemoryStore
+from roomkit.store.sqlite import SQLiteStore
 from roomkit.video.backends.mock import MockVideoBackend
 from roomkit.video.video_frame import VideoFrame
 from roomkit.voice.backends.mock import MockVoiceBackend
@@ -35,6 +40,16 @@ class _RefusingRecorder(MockMediaRecorder):
 
     def on_recording_start(self, config: MediaRecordingConfig) -> MediaRecordingHandle:
         raise ValueError("requires encryption or storage_encrypted_at_rest=True")
+
+
+class _StopFailingRecorder(MockMediaRecorder):
+    """A recorder that raises when asked to stop or close."""
+
+    def on_recording_stop(self, handle: MediaRecordingHandle) -> MediaRecordingResult:
+        raise OSError("disk gone")
+
+    def close(self) -> None:
+        raise OSError("disk gone")
 
 
 class _FailingStore(InMemoryStore):
@@ -171,6 +186,28 @@ class TestRoomRecorderManager:
         assert mgr.has_recorders("room-1")
         assert handles[0].room_id == "room-1"
 
+    def test_a_recorder_that_fails_to_stop_does_not_hold_the_others(self) -> None:
+        mgr = RoomRecorderManager()
+        healthy = MockMediaRecorder()
+        mgr.register("room-1", [_binding(_StopFailingRecorder()), _binding(healthy)])
+
+        results = mgr.stop_room("room-1")
+
+        assert [r.id for r in results] == [healthy.handles[0].id]
+        assert healthy.handles[0].state == "stopped"
+        assert not mgr.has_recorders("room-1")
+
+    def test_close_reaches_every_recorder_past_a_failing_one(self) -> None:
+        mgr = RoomRecorderManager()
+        healthy = MockMediaRecorder()
+        mgr.register("room-1", [_binding(_StopFailingRecorder())])
+        mgr.register("room-2", [_binding(healthy)])
+
+        mgr.close()
+
+        assert healthy.handles[0].state == "stopped"
+        assert healthy.closed
+
 
 class TestRoomCreationWithRecorders:
     """A recorder that refuses fails room creation before anything is written (RFC §12.11)."""
@@ -213,6 +250,25 @@ class TestRoomCreationWithRecorders:
         assert kit._room_recorder_mgr.has_recorders("r1")  # noqa: SLF001
         await kit.close()
 
+    @pytest.mark.parametrize("store_kind", ["memory", "sqlite"])
+    async def test_a_room_created_again_keeps_its_recordings(
+        self, store_kind: str, tmp_path: Path
+    ) -> None:
+        """Stores that rewrite a room under an existing id must not orphan its recording."""
+        store: ConversationStore = (
+            InMemoryStore() if store_kind == "memory" else SQLiteStore(tmp_path / "rooms.db")
+        )
+        kit = RoomKit(store=store)
+        first, second = MockMediaRecorder(), MockMediaRecorder()
+        await kit.create_room(room_id="r1", recorders=[_binding(first)])
+        await kit.create_room(room_id="r1", recorders=[_binding(second)])
+
+        await kit.close_room("r1")
+
+        assert first.handles[0].state == "stopped"
+        assert second.handles[0].state == "stopped"
+        await kit.close()
+
     async def test_recordings_are_announced_once_the_room_exists(self) -> None:
         kit = RoomKit()
         announced: list[str] = []
@@ -225,6 +281,19 @@ class TestRoomCreationWithRecorders:
         await asyncio.sleep(0.05)
 
         assert announced == ["r1"]
+        await kit.close()
+
+    async def test_a_recorder_failing_to_stop_still_lets_the_room_close(self) -> None:
+        kit = RoomKit()
+        healthy = MockMediaRecorder()
+        await kit.create_room(
+            room_id="r1", recorders=[_binding(_StopFailingRecorder()), _binding(healthy)]
+        )
+
+        await kit.close_room("r1")
+
+        assert healthy.handles[0].state == "stopped"
+        assert (await kit.get_room("r1")).status == RoomStatus.CLOSED
         await kit.close()
 
 

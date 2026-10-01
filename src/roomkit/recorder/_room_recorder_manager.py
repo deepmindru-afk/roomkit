@@ -69,19 +69,23 @@ class RoomRecorderManager:
         return handle
 
     def adopt(self, room_id: str, active: list[_ActiveBinding]) -> list[MediaRecordingHandle]:
-        """File recordings :meth:`start` opened under *room_id*; returns their handles."""
+        """File recordings :meth:`start` opened under *room_id*; returns their handles.
+
+        They join the room's recordings rather than replace them: a store that
+        rewrites a room created again under its id (in-memory, SQLite) must not
+        orphan the recordings that room already runs, which only a registry
+        entry lets anything stop.
+        """
         if active:
-            self._registry[room_id] = active
+            self._registry.setdefault(room_id, []).extend(active)
         return [handle for _binding, handle in active]
 
     @staticmethod
     def discard(active: list[_ActiveBinding]) -> None:
         """Stop recordings that were started but never filed under a room."""
         for binding, handle in active:
-            try:
-                binding.recorder.on_recording_stop(handle)
-            except Exception:
-                logger.exception("Failed to stop discarded room recording %s", handle.id)
+            if _stop_quietly(binding, handle) is not None:
+                logger.info("Room recording discarded: %s (room=%s)", handle.id, handle.room_id)
 
     def on_track_added(self, room_id: str, track: RecordingTrack) -> None:
         """Notify all recorders in a room about a new track."""
@@ -105,10 +109,16 @@ class RoomRecorderManager:
             binding.recorder.on_data(handle, track, data, timestamp_ms)
 
     def stop_room(self, room_id: str) -> list[MediaRecordingResult]:
-        """Stop all recordings in a room and return results."""
+        """Stop all recordings in a room and return the results of those that stopped.
+
+        A recorder that fails to stop is logged and its result left out: the
+        room's other recordings still stop, and the room still closes.
+        """
         results: list[MediaRecordingResult] = []
         for binding, handle in self._registry.pop(room_id, []):
-            result = binding.recorder.on_recording_stop(handle)
+            result = _stop_quietly(binding, handle)
+            if result is None:
+                continue
             results.append(result)
             logger.info(
                 "Room recording stopped: %s (%.1fs, %d bytes)",
@@ -123,12 +133,37 @@ class RoomRecorderManager:
         return room_id in self._registry
 
     def close(self) -> None:
-        """Stop all rooms and close all recorders."""
+        """Stop all rooms and close all recorders, each failure logged on its own."""
         seen_recorders: set[int] = set()
         for room_id in list(self._registry):
             for binding, handle in self._registry.pop(room_id, []):
-                binding.recorder.on_recording_stop(handle)
+                _stop_quietly(binding, handle)
                 recorder_id = id(binding.recorder)
                 if recorder_id not in seen_recorders:
                     seen_recorders.add(recorder_id)
-                    binding.recorder.close()
+                    _close_quietly(binding)
+
+
+def _stop_quietly(
+    binding: RoomRecorderBinding, handle: MediaRecordingHandle
+) -> MediaRecordingResult | None:
+    """Stop one recording; a recorder that fails is logged and ``None`` returned.
+
+    Every path that stops room recordings goes through here, so one recorder
+    that raises never leaves the others of its room running.
+    """
+    try:
+        return binding.recorder.on_recording_stop(handle)
+    except Exception:
+        logger.exception(
+            "Failed to stop room recording %s (recorder=%s)", handle.id, binding.recorder.name
+        )
+        return None
+
+
+def _close_quietly(binding: RoomRecorderBinding) -> None:
+    """Close one recorder; a recorder that fails is logged."""
+    try:
+        binding.recorder.close()
+    except Exception:
+        logger.exception("Failed to close room recorder %s", binding.recorder.name)
