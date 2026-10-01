@@ -72,25 +72,12 @@ def extract_tools(
 
     for tool in tools:
         if isinstance(tool, Tool):
-            defn = tool.definition
-            definitions.append(
-                AITool(
-                    name=defn["name"],
-                    description=defn.get("description", ""),
-                    parameters=defn.get("parameters", {}),
-                ),
-            )
+            definitions.append(_definition(tool.definition))
             handlers.append(tool.handler)
         elif isinstance(tool, AITool):
             definitions.append(tool)
         elif isinstance(tool, dict):
-            definitions.append(
-                AITool(
-                    name=tool["name"],
-                    description=tool.get("description", ""),
-                    parameters=tool.get("parameters", {}),
-                ),
-            )
+            definitions.append(_definition(tool))
         else:
             msg = f"Expected Tool, AITool, or dict, got {type(tool).__name__}"
             raise TypeError(msg)
@@ -102,3 +89,13 @@ def extract_tools(
         handler = compose_tool_handlers(*handlers)
 
     return definitions, handler
+
+
+def _definition(schema: dict[str, Any]) -> AITool:
+    """The definition a tool schema describes, its search tags included."""
+    return AITool(
+        name=schema["name"],
+        description=schema.get("description", ""),
+        parameters=schema.get("parameters", {}),
+        tags=list(schema.get("tags") or []),
+    )

@@ -17,6 +17,7 @@ from contextlib import contextmanager
 from roomkit.channels._tool_eviction import ToolEviction
 from roomkit.channels._tool_usage import ToolUsageMemory
 from roomkit.channels.ai import _current_loop_ctx, _ToolLoopContext
+from roomkit.core.exceptions import ChannelRefusalError
 
 _BIG = "line\n" * 20_000  # far past the default 5000-token threshold
 
@@ -37,7 +38,7 @@ class TestRoomScope:
 
         token = _in_room("room-b")
         try:
-            out = json.loads(ev.handle_read({"result_id": "evicted_tc1"}))
+            out = _answer(ev, {"result_id": "evicted_tc1"})
         finally:
             _current_loop_ctx.reset(token)
 
@@ -76,6 +77,14 @@ class TestRoomScope:
         assert "content" in out
 
 
+def _answer(ev: ToolEviction, arguments: dict) -> dict:
+    """What the model reads of a read: the page, or the refusal of a missing id."""
+    try:
+        return json.loads(ev.handle_read(arguments))
+    except ChannelRefusalError as refused:
+        return json.loads(refused.message)
+
+
 _SMALL = "line\n" * 200
 
 
@@ -96,7 +105,7 @@ def _evict(ev: ToolEviction, room: str, text: str = _SMALL, call_id: str = "c") 
 
 def _read(ev: ToolEviction, room: str, result_id: str) -> dict:
     with _room(room):
-        return json.loads(ev.handle_read({"result_id": result_id}))
+        return _answer(ev, {"result_id": result_id})
 
 
 class TestCapacity:

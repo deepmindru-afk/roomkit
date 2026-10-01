@@ -145,6 +145,7 @@ def schema_tool(schema: dict[str, Any]) -> AITool:
         name=schema["name"],
         description=schema.get("description", ""),
         parameters=schema.get("parameters", {}),
+        tags=list(schema.get("tags") or []),
     )
 
 

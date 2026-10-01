@@ -10,6 +10,7 @@ from typing import Any
 
 from roomkit.channels._skill_constants import TOOL_ACTIVATE_SKILL
 from roomkit.channels._stored_read import REREAD_DESCRIPTION, REREAD_PARAMETERS, page, search
+from roomkit.core.exceptions import ChannelRefusalError
 from roomkit.memory.token_estimator import estimate_tokens
 from roomkit.providers.ai.base import AIImagePart, AITextPart, AITool
 
@@ -311,8 +312,12 @@ class ToolEviction:
         room = self._room_scope()
         full_result = self._store.get((room, result_id))
         if full_result is None:
+            # A refusal, not a result: the call failed, and the room's tool
+            # memory must not keep it as the answer to this read.
             available = [rid for scope, rid in self._store if scope == room]
-            return json.dumps({"error": f"Result '{result_id}' not found", "available": available})
+            raise ChannelRefusalError(
+                json.dumps({"error": f"Result '{result_id}' not found", "available": available})
+            )
         # Read back, it is in use: the room's least recently read go first.
         self._store.move_to_end((room, result_id))
         # A blank query, an optional field a model filled in, reads a page.

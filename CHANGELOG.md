@@ -77,6 +77,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A tool result made of mappings that name a part type among other data
+  reaches the model as JSON (RMK-305, RFC §21.4): `[{"type": "text", "text":
+  "chunk", "page": 2}]` was read as a text part and lost its `page`. A
+  mapping is a content part only in a part's exact shape.
+- `extract_tools` and a tool schema given as a dict keep their `tags`
+  (RMK-305): Tool Search scored such a tool without them.
+- `read_stored_result` on an id that is not stored is a refusal (RMK-305): the
+  call read as a success, and the room's tool memory kept the miss as the
+  answer to that read.
 - A room recorder that refuses to start no longer leaves a half-created room
   (RMK-365, RFC §12.11): `create_room` wrote the room, then started its
   recorders, so a refusal (an unencrypted `PyAVMediaRecorder` since RMK-69)

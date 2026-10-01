@@ -26,7 +26,12 @@ from roomkit.providers.ai.base import AIImagePart, AITextPart
 ToolResult = str | list[AITextPart | AIImagePart]
 
 _PARTS: TypeAdapter[list[AITextPart | AIImagePart]] = TypeAdapter(list[AITextPart | AIImagePart])
-_PART_TYPES = frozenset({"text", "image"})
+# The fields each part type may carry: a mapping with any other key is data
+# that happens to name a type, never a part (RFC §21.4).
+_PART_FIELDS = {
+    "text": frozenset(AITextPart.model_fields),
+    "image": frozenset(AIImagePart.model_fields),
+}
 
 
 def as_tool_result(value: Any) -> ToolResult:
@@ -137,22 +142,26 @@ def unserved_tool_error(name: str) -> str:
 
 
 def _content_parts(value: Any) -> list[AITextPart | AIImagePart] | None:
-    """*value* as content parts, when every item is one or a mapping naming
-    its part type; ``None`` otherwise."""
+    """*value* as content parts, when every item is one or a mapping in a
+    part's exact shape; ``None`` otherwise."""
     if not isinstance(value, list) or not value:
         return None
     if all(isinstance(item, AITextPart | AIImagePart) for item in value):
         return value
-    if not all(
-        isinstance(item, AITextPart | AIImagePart)
-        or (isinstance(item, dict) and item.get("type") in _PART_TYPES)
-        for item in value
-    ):
+    if not all(isinstance(item, AITextPart | AIImagePart) or _part_shaped(item) for item in value):
         return None
     try:
         return _PARTS.validate_python(value)
     except ValidationError:
         return None
+
+
+def _part_shaped(item: Any) -> bool:
+    """Whether *item* is a mapping with a part's type and only that part's fields."""
+    if not isinstance(item, dict):
+        return False
+    fields = _PART_FIELDS.get(item.get("type"))
+    return fields is not None and set(item) <= fields
 
 
 def _json_default(value: Any) -> Any:
