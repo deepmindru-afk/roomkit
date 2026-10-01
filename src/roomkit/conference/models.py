@@ -26,7 +26,11 @@ class TrackKind(StrEnum):
     """Kind of media carried by a conference track."""
 
     AUDIO = "audio"
-    """Microphone audio."""
+    """Audio: a microphone, or the sound of a screen share.
+
+    The sound of a share is a separate publish right
+    (``ConferenceGrants.publish_screen_share_audio``) but not a separate kind:
+    it is sound to transcribe and record like any other."""
 
     VIDEO = "video"
     """Camera video."""
@@ -229,17 +233,18 @@ class ConferenceGrants:
     """Invisible to other participants (bots, monitors)."""
 
     publish_screen_share_audio: bool = False
-    """May publish the sound of a screen share — a tab or a screen shared with
-    its audio, which SFUs carry as a track source of its own.
+    """May publish the sound of a screen share — a tab or a whole screen
+    shared with its audio, which SFUs carry as a track source of its own.
 
-    Off by default, unlike the other publish rights, for compatibility: no
-    credential carried it before the field existed, so a permissive default
-    would widen every token minted after an upgrade without anyone asking
-    (RFC 12.10.2). Independent of ``publish_screen_share``: a share without
-    sound needs only that one, and neither implies the other.
+    Off by default, unlike the other publish rights: a caller that never names
+    it mints no credential carrying it, so grants written without this field
+    in mind stay exactly as narrow as they read (RFC 12.10.2). Independent of
+    ``publish_screen_share``: a share without sound needs only that one, and
+    neither implies the other. A browser client that asks for the sound
+    without this right loses the whole share, picture included, once the SFU
+    refuses the sound.
 
-    Last among the fields, so the positional order the earlier ones had is
-    kept.
+    Last among the fields, so positional construction is unaffected.
     """
 
     @classmethod

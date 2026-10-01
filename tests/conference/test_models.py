@@ -47,9 +47,8 @@ class TestGrants:
         assert grants.hidden is False
 
     def test_the_sound_of_a_screen_share_is_off_by_default(self) -> None:
-        """The one publish right that is not permissive, for compatibility: no
-        credential carried it before the field existed, so a true default would
-        widen every token minted after an upgrade (§12.10.2).
+        """The one publish right that is not permissive: a caller that never
+        names it mints no credential carrying it (§12.10.2).
         """
         assert ConferenceGrants().publish_screen_share_audio is False
 

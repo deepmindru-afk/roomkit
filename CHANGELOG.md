@@ -17,9 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ConferenceGrants(publish_screen_share_audio=True)` grants it.
   Independent of `publish_screen_share`: a share without sound needs only
   that one. The bot never gets it (`for_bot()`, `observer()`). The token
-  and `update_bot_grants()` map it the same way, and a participant minted
-  without it still has the sound's publication refused by the SFU while
-  the picture publishes.
+  and `update_bot_grants()` map it the same way. A participant minted
+  without it has the sound's publication refused by the SFU, and a browser
+  client then stops the whole share, picture included, about ten seconds in.
 - `MemoryResult` is exported from `roomkit`, beside `MemoryProvider`, whose
   `retrieve` returns it (found reviewing RMK-334).
 - `MemoryResult.notes` (RMK-334, RFC §20.2): what a memory provider

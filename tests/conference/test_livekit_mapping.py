@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import inspect
 from datetime import UTC, datetime
+from typing import Any
 
 import pytest
 
@@ -278,14 +279,20 @@ class TestPermissionTranslation:
         assert "can_update_own_metadata" not in kwargs
 
 
+def _carrier_kwargs(carrier: str, grants: ConferenceGrants) -> dict[str, Any]:
+    """What a carrier sends for ``grants``: the token's VideoGrants, or the
+    in-place update's ParticipantPermission.
+    """
+    if carrier == "token":
+        return video_grant_kwargs("room-1", grants, publish_data=True)
+    return participant_permission_kwargs(grants, publish_data=True)
+
+
 def _granted_sources(carrier: str, grants: ConferenceGrants) -> list[str] | None:
     """The sources a carrier sends for ``grants``, in the token's lowercase
     dialect, or ``None`` when it sends no list at all.
     """
-    if carrier == "token":
-        kwargs = video_grant_kwargs("room-1", grants, publish_data=True)
-    else:
-        kwargs = participant_permission_kwargs(grants, publish_data=True)
+    kwargs = _carrier_kwargs(carrier, grants)
     sources = kwargs.get("can_publish_sources")
     assert kwargs["can_publish"] is (sources is not None)
     return None if sources is None else [source.lower() for source in sources]
@@ -299,9 +306,7 @@ class TestScreenShareAudioGrant:
     """
 
     def test_the_default_human_grant_does_not_carry_it(self, carrier: str) -> None:
-        """No credential carried it before the field existed; the default keeps
-        it that way, so an upgrade widens nobody.
-        """
+        """A grant that does not name the right sends no such source."""
         sources = _granted_sources(carrier, ConferenceGrants())
 
         assert sources == [MICROPHONE, CAMERA, SCREEN_SHARE]
@@ -352,13 +357,11 @@ class TestScreenShareAudioGrant:
         """``screen_share_audio`` on the token, ``SCREEN_SHARE_AUDIO`` on the
         update: the same TrackSource up to case, like the other three.
         """
-        grants = ConferenceGrants(publish_screen_share_audio=True)
-        if carrier == "token":
-            kwargs = video_grant_kwargs("room-1", grants, publish_data=True)
-            assert kwargs["can_publish_sources"][-1] == "screen_share_audio"
-        else:
-            kwargs = participant_permission_kwargs(grants, publish_data=True)
-            assert kwargs["can_publish_sources"][-1] == "SCREEN_SHARE_AUDIO"
+        expected = {"token": "screen_share_audio", "update": "SCREEN_SHARE_AUDIO"}[carrier]
+
+        kwargs = _carrier_kwargs(carrier, ConferenceGrants(publish_screen_share_audio=True))
+
+        assert kwargs["can_publish_sources"][-1] == expected
 
 
 class TestTrackKind:

@@ -30,7 +30,7 @@ import contextlib
 import math
 import os
 from array import array
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
@@ -84,6 +84,25 @@ async def wait_for(predicate: Callable[[], bool], *, timeout: float = TIMEOUT_S)
     raise AssertionError(f"condition still false after {timeout}s")
 
 
+async def poll[T](
+    read: Callable[[], Awaitable[T]],
+    done: Callable[[T], bool],
+    missing: str,
+    *,
+    timeout: float = TIMEOUT_S,
+) -> T:
+    """Re-read what the server reports until ``done`` holds, or fail saying
+    what is still ``missing``.
+    """
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
+        value = await read()
+        if done(value):
+            return value
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"{missing} after {timeout}s")
+
+
 async def joined_participants(
     backend: LiveKitConferenceBackend, room_id: str, *, timeout: float = TIMEOUT_S
 ) -> list[ConferenceParticipant]:
@@ -93,34 +112,32 @@ async def joined_participants(
     what the server knows about a participant without a bot in the room to hear
     it announced.
     """
-    deadline = asyncio.get_running_loop().time() + timeout
-    while asyncio.get_running_loop().time() < deadline:
-        if listed := await backend.list_participants(room_id):
-            return listed
-        await asyncio.sleep(0.05)
-    raise AssertionError(f"nobody listed in room {room_id} after {timeout}s")
+    return await poll(
+        lambda: backend.list_participants(room_id),
+        bool,
+        f"nobody listed in room {room_id}",
+        timeout=timeout,
+    )
 
 
 async def listed_tracks(
-    backend: LiveKitConferenceBackend,
-    room_id: str,
-    wanted: set[str],
-    *,
-    timeout: float = TIMEOUT_S,
+    backend: LiveKitConferenceBackend, room_id: str, wanted: set[str]
 ) -> dict[str, ConferenceTrack]:
     """Poll the server until it lists every track in ``wanted``.
 
     A confirmed publication is not listed at once: the server reports the
     track only after it negotiated the media, a moment later.
     """
-    deadline = asyncio.get_running_loop().time() + timeout
-    while asyncio.get_running_loop().time() < deadline:
+
+    async def tracks() -> dict[str, ConferenceTrack]:
         participants = await backend.list_participants(room_id)
-        tracks = {track.id: track for p in participants for track in p.tracks}
-        if wanted <= tracks.keys():
-            return tracks
-        await asyncio.sleep(0.05)
-    raise AssertionError(f"tracks {sorted(wanted)} not listed in room {room_id} after {timeout}s")
+        return {track.id: track for p in participants for track in p.tracks}
+
+    return await poll(
+        tracks,
+        lambda listed: wanted <= listed.keys(),
+        f"tracks {sorted(wanted)} not listed in room {room_id}",
+    )
 
 
 def tone_frame(step: int) -> Any:
@@ -835,8 +852,9 @@ class TestScreenShareAudio:
     async def test_a_participant_minted_with_the_defaults_is_refused_it(
         self, backend: LiveKitConferenceBackend, room_id: str, alice: Participant
     ) -> None:
-        """The compatibility default: a credential minted as before carries
-        no such right, so the SFU never confirms the publication.
+        """A mint that does not name the right carries none, so the SFU never
+        confirms the publication: it logs the refusal and the client gives up
+        waiting.
         """
         await alice.join(backend, room_id)
 
@@ -858,6 +876,10 @@ class TestScreenShareAudio:
         """The other carrier: ``UpdateParticipant`` on a session already
         connected. The bot is the session this backend can re-permission, so
         it stands in — the grant, not who holds it, is under test.
+
+        No refused control here: a bot refused a publication cannot leave
+        (the SDK's disconnect never returns), which would hang the fixture's
+        teardown. Without the update, the same publication is refused.
         """
         held = ConferenceGrants.for_bot(speaks=True)
         bot = await backend.join_as_bot(room_id, "roomkit", held)

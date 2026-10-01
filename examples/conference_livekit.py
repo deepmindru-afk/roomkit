@@ -64,7 +64,9 @@ WITH ITS SOUND. The sound of a share is a publish right of its own
 (``ConferenceGrants.publish_screen_share_audio``, off by default), so alice is
 minted as a presenter and bob with the defaults. Share a tab with its audio
 from each: alice's sound publishes (and, as audio like any other, is
-transcribed as hers); bob's picture publishes and the SFU refuses his sound.
+transcribed as hers). Bob's share without sound works; with its sound, the SFU
+refuses the sound and the browser client stops his whole share after about
+ten seconds — the reason to grant the right to whoever shares tabs.
 
 In resume mode the script mints nothing and creates no participant: the only
 possible join trigger is the attach's occupancy probe (RFC §12.10.4 step 1),
