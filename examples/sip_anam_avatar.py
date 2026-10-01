@@ -4,25 +4,26 @@ Accept incoming SIP video calls and connect them to an Anam AI avatar.
 Caller audio → Anam STT → LLM → TTS → avatar audio+video → SIP/RTP → caller.
 
 Prerequisites:
-    pip install roomkit[anam,sip,video]
+    pip install roomkit[anam,sip,video,local-video]
+    (local-video brings OpenCV for the watermark and the "connecting" frame)
 
 Run with:
     export ANAM_API_KEY="your-api-key"
-    export ANAM_AVATAR_ID="your-avatar-id"
-    export ANAM_VOICE_ID="your-voice-id"
-    export ANAM_LLM_ID="your-llm-id"
+    export ANAM_AVATAR_ID="your-avatar-id"     # or ANAM_PERSONA_ID
     uv run python examples/sip_anam_avatar.py
 
 Environment variables:
-    ANAM_API_KEY         Anam API key (required)
-    ANAM_AVATAR_ID       Avatar ID from lab.anam.ai (required)
-    ANAM_VOICE_ID        Voice ID from lab.anam.ai (required)
-    ANAM_LLM_ID          LLM ID from lab.anam.ai (required)
-    ANAM_PERSONA_ID      Pre-defined persona (alternative to above three)
+    ANAM_API_KEY          Anam API key (required)
+    ANAM_AVATAR_ID        Avatar ID from lab.anam.ai (required unless ANAM_PERSONA_ID)
+    ANAM_VOICE_ID         Voice ID from lab.anam.ai (optional, Anam's default otherwise)
+    ANAM_LLM_ID           LLM ID from lab.anam.ai (optional, Anam's default otherwise)
+    ANAM_PERSONA_ID       Pre-defined persona from Anam Lab (alternative to the three above)
     ANAM_LANGUAGE         Language code, e.g. "fr" (default: "en")
     ANAM_SYSTEM_PROMPT    System prompt for the LLM
     SIP_PORT              SIP listener port (default: 5060)
-    RTP_IP                IP to advertise in SDP (default: 0.0.0.0)
+    RTP_IP                IP to bind RTP on (default: 0.0.0.0; the SDP then
+                          advertises the resolved local IP)
+    RTP_PORT_START        First RTP port to allocate, below 20000 (default: 10000)
     DEBUG                 Set to 1 for verbose logging
 
 Press Ctrl+C to stop.
@@ -41,11 +42,6 @@ import signal
 
 from shared import require_env, setup_logging
 
-logger = setup_logging("sip_anam_avatar")
-
-if os.environ.get("DEBUG") == "1":
-    logging.getLogger("roomkit").setLevel(logging.DEBUG)
-
 from roomkit.providers.anam import AnamConfig, AnamRealtimeProvider
 from roomkit.video.backends.sip import SIPVideoBackend
 from roomkit.video.pipeline import VideoPipelineConfig
@@ -53,6 +49,11 @@ from roomkit.video.pipeline.encoder.pyav import PyAVVideoEncoder
 from roomkit.video.pipeline.filter.watermark import WatermarkFilter
 from roomkit.video.utils import make_text_frame
 from roomkit.voice.realtime.bridge import RealtimeAVBridge
+
+logger = setup_logging("sip_anam_avatar")
+
+if os.environ.get("DEBUG") == "1":
+    logging.getLogger("roomkit").setLevel(logging.DEBUG)
 
 
 async def main() -> None:
@@ -64,9 +65,10 @@ async def main() -> None:
     voice_id = os.environ.get("ANAM_VOICE_ID")
     llm_id = os.environ.get("ANAM_LLM_ID")
 
-    if not persona_id and not (avatar_id and voice_id and llm_id):
-        logger.error("Set either ANAM_PERSONA_ID or ANAM_AVATAR_ID + ANAM_VOICE_ID + ANAM_LLM_ID")
-        return
+    # Anam falls back to its default voice and LLM when ANAM_VOICE_ID / ANAM_LLM_ID
+    # are unset; only the face (avatar or persona) is mandatory.
+    if not persona_id and not avatar_id:
+        sys.exit("Error: set ANAM_PERSONA_ID or ANAM_AVATAR_ID")
 
     # --- SIP backend ----------------------------------------------------------
     sip = SIPVideoBackend(

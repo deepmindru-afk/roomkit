@@ -4,6 +4,13 @@ Captures webcam frames via LocalVideoBackend, analyzes them with
 a VisionProvider, and feeds the descriptions into an AIChannel so
 the AI can "see" and respond to what's on camera.
 
+The framework injects each vision result into the system prompt of the
+AI channels attached to the room.  Every ``--ask-every`` seconds a text
+"viewer" channel asks the AI what it sees; the reply is printed with the
+camera view the AI was given.  The AI here is a ``MockAIProvider`` with
+canned replies, so the printed view shows the wiring — swap in a real
+AI provider for answers grounded in it.
+
 Supports three vision modes:
 
 - **Mock mode** (default): cycles through preset descriptions.
@@ -23,9 +30,10 @@ Prerequisites:
 
 Run with:
     uv run python examples/webcam_vision.py                  # mock mode
-    uv run python examples/webcam_vision.py --gemini         # gemini 2.5 flash
+    uv run python examples/webcam_vision.py --gemini         # gemini-3.8-flash
     uv run python examples/webcam_vision.py --ollama         # ollama (qwen3.5)
     uv run python examples/webcam_vision.py --gemini --lang fr
+    uv run python examples/webcam_vision.py --ask-every 0    # never ask the AI
 
 Press Ctrl+C to stop.
 """
@@ -38,11 +46,23 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import argparse
 import asyncio
+import contextlib
 import logging
 
-from shared import run_until_stopped, setup_logging
+from shared import require_env, run_until_stopped, setup_logging
 
-from roomkit import ChannelCategory, HookExecution, HookTrigger, RoomKit, VideoChannel
+from roomkit import (
+    ChannelCategory,
+    FrameworkEvent,
+    HookExecution,
+    HookTrigger,
+    InboundMessage,
+    RoomEvent,
+    RoomKit,
+    TextContent,
+    VideoChannel,
+    WebSocketChannel,
+)
 from roomkit.channels.ai import AIChannel
 from roomkit.models.session_event import SessionStartedEvent
 from roomkit.providers.ai.mock import MockAIProvider
@@ -56,6 +76,8 @@ from roomkit.video.vision.openai import OpenAIVisionConfig, OpenAIVisionProvider
 setup_logging("webcam_vision", level=logging.WARNING)
 
 VISION_INTERVAL_MS = 3000
+ASK_EVERY_S = 10.0
+QUESTION = "What do you see on the camera right now?"
 
 LANG_NAMES = {
     "fr": "French",
@@ -88,13 +110,7 @@ def _build_vision_provider(args: argparse.Namespace) -> VisionProvider:
     """Build the vision provider based on CLI args."""
     prompt = _build_prompt(args.lang)
     if args.gemini:
-        api_key = args.gemini_key
-        if not api_key:
-            import os
-
-            api_key = os.environ.get("GEMINI_API_KEY", "")
-        if not api_key:
-            raise SystemExit("Gemini API key required. Set GEMINI_API_KEY or use --gemini-key.")
+        api_key = args.gemini_key or require_env("GEMINI_API_KEY")["GEMINI_API_KEY"]
         return GeminiVisionProvider(
             GeminiVisionConfig(
                 api_key=api_key,
@@ -150,6 +166,12 @@ async def main() -> None:
     parser.add_argument(
         "--interval", type=int, default=VISION_INTERVAL_MS, help="Vision interval ms"
     )
+    parser.add_argument(
+        "--ask-every",
+        type=float,
+        default=ASK_EVERY_S,
+        help="Seconds between questions to the AI (0 = never ask)",
+    )
     args = parser.parse_args()
 
     kit = RoomKit()
@@ -173,25 +195,37 @@ async def main() -> None:
     kit.register_channel(video)
 
     # --- AI channel (mock — responds based on what it "sees") ----------------
+    ai_provider = MockAIProvider(
+        responses=[
+            "I can see you at your desk!",
+            "The room looks nice with that pink light.",
+            "Looks like you're waving at me!",
+            "Is that a coffee mug? Nice choice.",
+            "I see you're typing away.",
+            "Nice bookshelf behind you!",
+        ]
+    )
     ai = AIChannel(
         "ai",
-        provider=MockAIProvider(
-            responses=[
-                "I can see you at your desk!",
-                "The room looks nice with that pink light.",
-                "Looks like you're waving at me!",
-                "Is that a coffee mug? Nice choice.",
-                "I see you're typing away.",
-                "Nice bookshelf behind you!",
-            ]
-        ),
+        provider=ai_provider,
         system_prompt="You are a helpful assistant that can see a live camera feed.",
     )
     kit.register_channel(ai)
 
+    # --- Viewer: a text channel that asks the AI about the camera ------------
+    viewer = WebSocketChannel("viewer")
+    kit.register_channel(viewer)
+
+    async def on_ai_reply(_conn: str, event: RoomEvent) -> None:
+        if isinstance(event.content, TextContent):
+            print(f"  AI: {event.content.body}")
+
+    viewer.register_connection("viewer-conn", on_ai_reply, room_id="webcam-demo")
+
     # --- Room setup ----------------------------------------------------------
     await kit.create_room(room_id="webcam-demo")
     await kit.attach_channel("webcam-demo", "video-main")
+    await kit.attach_channel("webcam-demo", "viewer")
     await kit.attach_channel("webcam-demo", "ai", category=ChannelCategory.INTELLIGENCE)
 
     # Vision results are auto-injected into AI channels in the same room.
@@ -200,7 +234,8 @@ async def main() -> None:
 
     @kit.hook(HookTrigger.ON_VIDEO_SESSION_STARTED, execution=HookExecution.ASYNC)
     async def on_session_started(event: SessionStartedEvent, ctx: object) -> None:
-        print(f"  Video session started: {event.session.id[:8]}...")  # type: ignore[union-attr]
+        if event.session is not None:
+            print(f"  Video session started: {event.session.id[:8]}...")
 
     @kit.hook(HookTrigger.ON_VIDEO_SESSION_ENDED, execution=HookExecution.ASYNC)
     async def on_session_ended(event: object, ctx: object) -> None:
@@ -210,10 +245,10 @@ async def main() -> None:
     frame_count = 0
 
     @kit.on("video_vision_result")
-    async def on_vision(event: object) -> None:
+    async def on_vision(event: FrameworkEvent) -> None:
         nonlocal frame_count
         frame_count += 1
-        data = event.data  # type: ignore[attr-defined]
+        data = event.data
         elapsed = data.get("elapsed_ms", 0)
         desc = data["description"]
         if len(desc) > 500:
@@ -225,6 +260,26 @@ async def main() -> None:
         if data.get("text"):
             parts.append(f"       OCR: {data['text']}")
         print("\n".join(parts))
+
+    # --- Periodic question: the AI answers with the view in its prompt -------
+    async def ask_ai_periodically() -> None:
+        while True:
+            await asyncio.sleep(args.ask_every)
+            print(f"\n  Viewer: {QUESTION}")
+            result = await kit.process_inbound(
+                InboundMessage(
+                    channel_id="viewer",
+                    sender_id="viewer",
+                    content=TextContent(body=QUESTION),
+                ),
+                room_id="webcam-demo",
+            )
+            if result.error is not None:
+                print(f"  AI error: {result.error!r}")
+            elif ai_provider.calls:
+                prompt = ai_provider.calls[-1].system_prompt or ""
+                view = [line for line in prompt.splitlines() if "Current view:" in line]
+                print(f"  (AI was given: {view[-1].strip() if view else 'no camera view yet'})")
 
     # --- Connect and start capture -------------------------------------------
     session = await kit.join("webcam-demo", "video-main", participant_id="local-user")
@@ -240,16 +295,23 @@ async def main() -> None:
     print(f"Mode: {mode}")
     print(f"Camera: device {args.device} at 640x480 @ {args.fps}fps")
     print(f"Vision analysis every {args.interval}ms")
-    print("AI channel receives vision context via setup_video_vision()")
+    print("Vision results are auto-injected into the AI channel's system prompt")
+    if args.ask_every > 0:
+        print(f"Viewer asks the (mock) AI every {args.ask_every:g}s")
     if args.lang:
         print(f"Language: {args.lang}")
     print("Press Ctrl+C to stop.\n")
 
     await backend.start_capture(session)
+    ask_task = asyncio.create_task(ask_ai_periodically()) if args.ask_every > 0 else None
 
     # --- Keep running until Ctrl+C -------------------------------------------
     async def cleanup() -> None:
         print("\nStopping...")
+        if ask_task is not None:
+            ask_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await ask_task
         await backend.stop_capture(session)
         await kit.leave(session)
 

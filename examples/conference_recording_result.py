@@ -23,7 +23,9 @@ Run with:
 from __future__ import annotations
 
 import asyncio
+import tempfile
 from collections import defaultdict
+from pathlib import Path
 
 from roomkit import (
     ConferenceRecordingConfig,
@@ -40,6 +42,7 @@ from roomkit.recorder.mock import MockMediaRecorder
 from roomkit.voice.audio_frame import AudioFrame
 
 ROOM = "board-meeting"
+STORAGE = Path(tempfile.gettempdir()) / "roomkit-conference-recordings"
 
 
 def speech() -> AudioFrame:
@@ -55,8 +58,9 @@ async def main() -> None:
             "conf",
             backend=backend,
             recorder=MockMediaRecorder(),
-            # PyAVMediaRecorder(storage="./recordings") writes real files here.
-            recording=ConferenceRecordingConfig(storage="./recordings", format="wav"),
+            # MockMediaRecorder writes nothing; PyAVMediaRecorder(storage=...)
+            # would write real files under STORAGE.
+            recording=ConferenceRecordingConfig(storage=str(STORAGE), format="wav"),
         )
     )
     await kit.create_room(ROOM)
@@ -64,10 +68,15 @@ async def main() -> None:
 
     # What a compliance archive would keep: one entry per file, by meeting.
     archive: dict[str, list[ConferenceRecordingStopped]] = defaultdict(list)
+    # The hooks run asynchronously, after the frame or the unpublish that caused
+    # them; the example waits on these so each report prints under its step.
+    opened: defaultdict[str, asyncio.Event] = defaultdict(asyncio.Event)
+    closed: defaultdict[str, asyncio.Event] = defaultdict(asyncio.Event)
 
     @kit.hook(HookTrigger.ON_RECORDING_STARTED, execution=HookExecution.ASYNC)
     async def on_started(event: ConferenceRecordingStarted, ctx: RoomContext) -> None:
         print(f"  ▶ recording {event.id} opened for {event.participant_id} ({event.kind})")
+        opened[event.participant_id].set()
 
     @kit.hook(HookTrigger.ON_RECORDING_STOPPED, execution=HookExecution.ASYNC)
     async def on_stopped(event: ConferenceRecordingStopped, ctx: RoomContext) -> None:
@@ -76,6 +85,11 @@ async def main() -> None:
             f"  ■ recording {event.id} closed for {event.participant_id} → "
             f"{event.url} ({event.duration_seconds:.1f}s, {event.size_bytes} bytes)"
         )
+        closed[event.participant_id].set()
+
+    async def heard(events: defaultdict[str, asyncio.Event], *participants: str) -> None:
+        waits = (events[participant].wait() for participant in participants)
+        await asyncio.wait_for(asyncio.gather(*waits), timeout=5)
 
     print("Alice and Bob join and speak:")
     await backend.simulate_participant_joined(ROOM, "p-alice")
@@ -85,6 +99,7 @@ async def main() -> None:
     for _ in range(5):
         await backend.simulate_audio(alice, speech())
         await backend.simulate_audio(bob, speech())
+    await heard(opened, "p-alice", "p-bob")
 
     print("\nA participant who publishes but never speaks leaves no file:")
     await backend.simulate_participant_joined(ROOM, "p-carol")
@@ -94,9 +109,11 @@ async def main() -> None:
 
     print("\nAlice leaves early — her recording closes while the meeting runs on:")
     await backend.simulate_track_unpublished(alice.id)
+    await heard(closed, "p-alice")
 
     print("\nThe meeting ends:")
     await kit.detach_channel(ROOM, "conf")
+    await heard(closed, "p-bob")
 
     print(f"\nArchived for {ROOM}:")
     for entry in archive[ROOM]:

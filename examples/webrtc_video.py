@@ -2,7 +2,7 @@
 
 Browser-to-AI assistant with combined audio and video over WebRTC.
 Audio goes through the full voice pipeline (STT/TTS), while video
-frames are analysed by a vision provider (OpenAI Vision).
+frames are analysed by a vision provider (OpenAI Vision, every 3 s).
 
 Audio flow:
     Browser mic → FastRTC WebRTC → Pipeline → STT → Claude AI → TTS → Browser
@@ -11,7 +11,7 @@ Video flow:
     Browser camera → FastRTC WebRTC → on_video_received → Vision AI → context
 
 Requirements:
-    pip install roomkit[fastrtc,anthropic] fastapi uvicorn
+    pip install roomkit[fastrtc,anthropic,deepgram,elevenlabs,openai]
 
 Run with:
     ANTHROPIC_API_KEY=... \\
@@ -25,6 +25,7 @@ Environment variables:
     DEEPGRAM_API_KEY    (required) Deepgram API key
     ELEVENLABS_API_KEY  (required) ElevenLabs API key
     OPENAI_API_KEY      (required) OpenAI API key for vision
+    ELEVENLABS_VOICE_ID ElevenLabs voice (default: Rachel)
 """
 
 from __future__ import annotations
@@ -39,7 +40,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
-from shared import setup_logging
+from shared import require_env, setup_logging
 
 from roomkit import (
     AIChannel,
@@ -66,6 +67,8 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("openai").setLevel(logging.WARNING)
 
+env = require_env("ANTHROPIC_API_KEY", "DEEPGRAM_API_KEY", "ELEVENLABS_API_KEY", "OPENAI_API_KEY")
+
 kit = RoomKit()
 
 # --- Audio settings ---
@@ -91,7 +94,7 @@ pipeline = AudioPipelineConfig(vad=vad)
 # --- STT ---
 stt = DeepgramSTTProvider(
     config=DeepgramConfig(
-        api_key=os.environ.get("DEEPGRAM_API_KEY", ""),
+        api_key=env["DEEPGRAM_API_KEY"],
         model="nova-3",
         language="en",
         punctuate=True,
@@ -103,7 +106,7 @@ stt = DeepgramSTTProvider(
 # --- TTS ---
 tts = ElevenLabsTTSProvider(
     config=ElevenLabsConfig(
-        api_key=os.environ.get("ELEVENLABS_API_KEY", ""),
+        api_key=env["ELEVENLABS_API_KEY"],
         voice_id=os.environ.get("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM"),
         model_id="eleven_multilingual_v2",
         output_format=f"pcm_{OUTPUT_SAMPLE_RATE}",
@@ -114,9 +117,9 @@ tts = ElevenLabsTTSProvider(
 # --- Vision ---
 vision = OpenAIVisionProvider(
     config=OpenAIVisionConfig(
-        api_key=os.environ.get("OPENAI_API_KEY", ""),
+        api_key=env["OPENAI_API_KEY"],
         base_url="https://api.openai.com/v1",
-        model="gpt-4o-mini",
+        model="gpt-4.1-mini",
         max_tokens=150,
     )
 )
@@ -124,7 +127,7 @@ vision = OpenAIVisionProvider(
 # --- AI ---
 ai_provider = AnthropicAIProvider(
     AnthropicConfig(
-        api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
+        api_key=env["ANTHROPIC_API_KEY"],
         model="claude-opus-5",
         max_tokens=256,
     )

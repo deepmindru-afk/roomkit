@@ -1,25 +1,33 @@
-"""RoomKit — WebSocket video streaming with vision analysis.
+"""RoomKit — WebSocket video streaming from a browser.
 
-Receive video frames from a browser over WebSocket, run vision
-analysis, and display results. Useful for browser-based video
-applications that send frames separately from audio.
+Receive video frames from a browser over WebSocket and log them.
+Useful as the transport half of a browser-based video application
+that sends frames separately from audio.  No vision analysis runs
+here: add a ``VideoChannel`` with a ``VideoPipelineConfig(vision=...)``
+on this backend for that (see ``webcam_vision.py``).
 
 Video flow:
-    Browser canvas → WebSocket binary frames → VideoBackend
-      → on_video_received → Vision AI → log results
+    Browser canvas → WebSocket binary frames → WebSocketVideoBackend
+      → on_video_received → log every 30th frame
 
 Wire protocol (binary messages):
     [1 byte flags][4 bytes sequence_be][payload]
-    flags: bit 0 = keyframe, bits 1-3 = codec (0=h264, 1=vp8, 2=mjpeg, 3=raw)
+    flags: bit 0 = keyframe, bits 1-3 = codec
+           (0=h264, 1=vp8, 2=raw_rgb24, 3=reserved, read as raw_rgb24)
+    Width and height come from a JSON control message sent first:
+    {"type": "config", "codec": "raw_rgb24", "width": 640, "height": 480}
+
+The bundled browser page captures the webcam at ~10 fps and sends
+raw_rgb24 frames.
 
 Requirements:
     pip install roomkit fastapi uvicorn
 
-Run with:
-    OPENAI_API_KEY=... uv run uvicorn examples.websocket_video:app
+Run with (from the repository root):
+    uv run uvicorn examples.websocket_video:app
 
-Environment variables:
-    OPENAI_API_KEY  (optional) OpenAI API key for vision analysis
+Then open http://localhost:8000 and click Start.  GET /health returns
+the number of frames received.  No environment variable is needed.
 """
 
 from __future__ import annotations

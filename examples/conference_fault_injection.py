@@ -10,9 +10,14 @@ Four levers, one per thing a real conference does that a happy-path mock does
 not:
 
 1. ``fail(method, error, times=)``  — the SFU refuses, or times out
-2. ``delay(operation, seconds)``    — the SFU, or a subscriber, is slow
+2. ``backend.deliveries``           — how long each frame took to reach the
+                                      subscribers, measured on one track while
+                                      another track's recognizer is slow
 3. ``MockTrackFormat``              — participants negotiate their own formats
 4. ``backend.utterances``           — what the bot published, per utterance
+
+(``delay(operation, seconds)`` slows a backend call or a callback emission the
+same way ``fail()`` makes one raise; the scenarios below do not need it.)
 
 The fifth scenario needs no lever at all: the storage is what is slow there, and
 a recorder that blocks is a recorder written the only way the interface allows.
@@ -30,6 +35,11 @@ import time
 from roomkit import (
     ConferenceGrants,
     ConferenceRecordingConfig,
+    ConferenceRecordingStarted,
+    ConferenceTranscription,
+    HookExecution,
+    HookResult,
+    HookTrigger,
     MockConferenceBackend,
     MockTrackFormat,
     RoomKit,
@@ -41,9 +51,11 @@ from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelType
-from roomkit.models.event import EventSource, RoomEvent, TextContent
+from roomkit.models.event import AudioContent, EventSource, RoomEvent, TextContent
 from roomkit.recorder.base import MediaRecordingHandle, RecordingTrack
 from roomkit.recorder.mock import MockMediaRecorder
+from roomkit.voice.audio_frame import AudioFrame
+from roomkit.voice.base import AudioChunk, TranscriptionResult
 from roomkit.voice.stt.mock import MockSTTProvider
 from roomkit.voice.tts.mock import MockTTSProvider
 
@@ -74,6 +86,34 @@ class AISource(Channel):
         self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
     ) -> ChannelOutput:
         return ChannelOutput.empty()
+
+
+class SlowRecognizer(MockSTTProvider):
+    """A recognizer that takes ``seconds`` over the first utterance it hears.
+
+    Recognition is the realistic slow stage of a lane — a round trip to a
+    remote STT. Only the first call is slow, so the track that speaks first is
+    stuck in it while every other track carries on.
+    """
+
+    def __init__(self, *, seconds: float) -> None:
+        super().__init__(transcripts=["(alice's words)", "(bob's words)"])
+        self.seconds = seconds
+        self.stuck = asyncio.Event()
+        """Set once the slow recognition has begun."""
+
+    async def transcribe(
+        self,
+        audio: AudioContent | AudioChunk | AudioFrame,
+        *,
+        language: str | None = None,
+    ) -> TranscriptionResult:
+        first = not self.calls
+        result = await super().transcribe(audio, language=language)
+        if first:
+            self.stuck.set()
+            await asyncio.sleep(self.seconds)
+        return result
 
 
 class SlowRecorder(MockMediaRecorder):
@@ -114,10 +154,10 @@ async def failures() -> None:
     print("1. A backend that refuses\n")
     backend = MockConferenceBackend()
     kit = RoomKit()
-    kit.register_channel(ConferenceChannel("conf", backend=backend))
+    channel = ConferenceChannel("conf", backend=backend)
+    kit.register_channel(channel)
     await kit.create_room(ROOM)
     await kit.attach_channel(ROOM, "conf")
-    channel = kit.get_channel("conf")
     await kit.ensure_participant(ROOM, "conf", "p-alice", display_name="Alice")
 
     # Minting admission is the one call whose failure reaches the integrator:
@@ -140,11 +180,28 @@ async def failures() -> None:
 
 
 async def latency() -> None:
-    """2. Something is slow, and lane isolation is measured rather than assumed."""
-    print("2. A slow track must not slow the others (RFC §12.10.4)\n")
+    """2. Recognition is slow on one track, and the other track does not wait.
+
+    RFC §12.10.4 makes lane isolation checkable from outside: delay recognition
+    on one track and measure frame delivery — and transcription — on another.
+    """
+    print("2. A slow recognizer on one track must not slow the others (RFC §12.10.4)\n")
     backend = MockConferenceBackend()
+    stt = SlowRecognizer(seconds=1.0)
     kit = RoomKit()
-    kit.register_channel(ConferenceChannel("conf", backend=backend, stt=MockSTTProvider()))
+    channel = ConferenceChannel("conf", backend=backend, stt=stt)
+    kit.register_channel(channel)
+    loop = asyncio.get_running_loop()
+    heard: dict[str, float] = {}
+    both_heard = asyncio.Event()
+
+    @kit.hook(HookTrigger.ON_TRANSCRIPTION)
+    async def on_transcription(payload: ConferenceTranscription, ctx: object) -> HookResult:
+        heard[payload.participant_id] = loop.time()
+        if len(heard) == 2:
+            both_heard.set()
+        return HookResult.allow()
+
     await kit.create_room(ROOM)
     await kit.attach_channel(ROOM, "conf")
 
@@ -153,21 +210,22 @@ async def latency() -> None:
     alice = await backend.simulate_track_published(ROOM, "p-alice")
     bob = await backend.simulate_track_published(ROOM, "p-bob")
 
-    # A subscriber that does its work inside the delivery callback — which is
-    # what a lane must not do — makes its own latency everyone's latency.
-    async def slow_bystander(track, frame) -> None:
-        if track.id == alice.id:
-            await asyncio.sleep(0.01)
-
-    backend.on_track_audio(slow_bystander)
-
+    started = loop.time()
     await say(backend, alice)
+    # Alice's lane is now inside its slow recognition. Bob speaks meanwhile.
+    await asyncio.wait_for(stt.stuck.wait(), timeout=5)
     await say(backend, bob)
+    await asyncio.wait_for(both_heard.wait(), timeout=5)
 
-    for participant, track in (("p-alice", alice), ("p-bob", bob)):
-        held = [d.elapsed for d in backend.deliveries if d.track_id == track.id]
-        print(f"   {participant}: slowest frame delivery {max(held) * 1000:.1f} ms")
-    print("   (the channel's own lane is on the fast side — it accepts and returns)\n")
+    bob_frames = [d.elapsed for d in backend.deliveries if d.track_id == bob.id]
+    print(f"   p-alice speaks first; her recognition takes {stt.seconds * 1000:.0f} ms")
+    print(
+        f"   p-bob's {len(bob_frames)} frames, delivered meanwhile: "
+        f"slowest {max(bob_frames) * 1000:.1f} ms"
+    )
+    for participant in sorted(heard, key=heard.__getitem__):
+        print(f"   {participant} transcribed at {(heard[participant] - started) * 1000:.0f} ms")
+    print("   (each track has a lane of its own: Bob's text did not queue behind Alice's)\n")
 
     await kit.detach_channel(ROOM, "conf")
 
@@ -201,7 +259,7 @@ async def formats() -> None:
     spoke = {
         event.source.participant_id
         for event in await kit.store.list_events(ROOM)
-        if getattr(event.content, "body", None) == "bonjour"
+        if getattr(event.content, "body", None) == "bonjour" and event.source.participant_id
     }
     print(f"\n   transcribed: {', '.join(sorted(spoke)) or 'nobody'}")
     print("   (format normalisation runs first in the lane, so the stages see one format)\n")
@@ -253,6 +311,15 @@ async def slow_disk() -> None:
     await kit.create_room(ROOM)
     await kit.attach_channel(ROOM, "conf")
 
+    # A recording opens on its track's first frame and nothing is written until
+    # ON_RECORDING_STARTED has been heard: it is the consent point (RFC 17.6),
+    # where a detach refuses the recording and drops what was buffered.
+    started_recording = asyncio.Event()
+
+    @kit.hook(HookTrigger.ON_RECORDING_STARTED, execution=HookExecution.ASYNC)
+    async def on_recording_started(event: ConferenceRecordingStarted, ctx: object) -> None:
+        started_recording.set()
+
     await backend.simulate_participant_joined(ROOM, "p-alice")
     alice = await backend.simulate_track_published(ROOM, "p-alice")
 
@@ -261,6 +328,12 @@ async def slow_disk() -> None:
     for _ in range(20):
         await backend.simulate_audio(alice, backend.frame_for(alice))
     delivered_in = (loop.time() - started) * 1000
+
+    # Detaching now would land inside that announcement and refuse the
+    # recording. Wait until it has been heard and the first write has begun.
+    await asyncio.wait_for(started_recording.wait(), timeout=5)
+    while not recorder.threads:
+        await asyncio.sleep(0.005)
 
     dropped = channel.info()["rooms"][ROOM]["recording_dropped_frames"]
     print(f"   20 frames delivered in {delivered_in:.1f} ms")

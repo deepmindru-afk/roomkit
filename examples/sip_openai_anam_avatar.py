@@ -17,26 +17,30 @@ Architecture:
                                           pipeline → H.264 → SIP video
 
 Prerequisites:
-    pip install roomkit[anam,sip,video,realtime-openai]
+    pip install roomkit[anam,sip,video,local-video,realtime-openai]
+    (local-video brings OpenCV for the watermark and the "connecting" frame)
 
 Run with:
     export OPENAI_API_KEY="sk-..."
     export ANAM_API_KEY="your-api-key"
     export ANAM_AVATAR_ID="your-avatar-id"
-    export ANAM_VOICE_ID="your-voice-id"
-    export ANAM_LLM_ID="your-llm-id"
     uv run python examples/sip_openai_anam_avatar.py
 
 Environment variables:
     OPENAI_API_KEY       OpenAI API key (required)
-    OPENAI_MODEL         Realtime model (default: gpt-4o-mini-realtime-preview)
+    OPENAI_MODEL         Realtime model (default: gpt-realtime-2.1-mini)
     OPENAI_VOICE         Voice preset (default: alloy)
+    SYSTEM_PROMPT        System prompt override
     ANAM_API_KEY         Anam API key (required)
     ANAM_AVATAR_ID       Avatar from lab.anam.ai (required)
-    ANAM_VOICE_ID        Voice from lab.anam.ai (required)
-    ANAM_LLM_ID          LLM from lab.anam.ai (required)
+    ANAM_VOICE_ID        Voice from lab.anam.ai (optional; unused in passthrough,
+                         where OpenAI speaks)
+    ANAM_LLM_ID          LLM from lab.anam.ai (optional; unused in passthrough,
+                         where OpenAI answers)
     SIP_PORT             SIP listener port (default: 5060)
-    RTP_IP               IP for SDP (default: 0.0.0.0)
+    RTP_IP               IP to bind RTP on (default: 0.0.0.0; the SDP then
+                         advertises the resolved local IP)
+    RTP_PORT_START       First RTP port to allocate, below 20000 (default: 10000)
     DEBUG                Set to 1 for verbose logging
 
 Press Ctrl+C to stop.
@@ -55,11 +59,6 @@ import signal
 
 from shared import require_env, setup_logging
 
-logger = setup_logging("sip_openai_anam")
-
-if os.environ.get("DEBUG") == "1":
-    logging.getLogger("roomkit").setLevel(logging.DEBUG)
-
 from roomkit.providers.anam import AnamConfig
 from roomkit.providers.anam.avatar import AnamAvatarProvider
 from roomkit.providers.openai.realtime import OpenAIRealtimeProvider
@@ -70,22 +69,22 @@ from roomkit.video.pipeline.filter.watermark import WatermarkFilter
 from roomkit.video.utils import make_text_frame
 from roomkit.voice.realtime.bridge import RealtimeAVBridge
 
+logger = setup_logging("sip_openai_anam")
+
+if os.environ.get("DEBUG") == "1":
+    logging.getLogger("roomkit").setLevel(logging.DEBUG)
+
 
 async def main() -> None:
     # --- Validate environment -------------------------------------------------
-    env = require_env(
-        "OPENAI_API_KEY",
-        "ANAM_API_KEY",
-        "ANAM_AVATAR_ID",
-        "ANAM_VOICE_ID",
-        "ANAM_LLM_ID",
-    )
+    env = require_env("OPENAI_API_KEY", "ANAM_API_KEY", "ANAM_AVATAR_ID")
     openai_key = env["OPENAI_API_KEY"]
     anam_key = env["ANAM_API_KEY"]
 
     avatar_id = env["ANAM_AVATAR_ID"]
-    voice_id = env["ANAM_VOICE_ID"]
-    llm_id = env["ANAM_LLM_ID"]
+    # Optional: in passthrough mode OpenAI speaks and answers, Anam only animates.
+    voice_id = os.environ.get("ANAM_VOICE_ID") or None
+    llm_id = os.environ.get("ANAM_LLM_ID") or None
 
     # --- SIP backend ----------------------------------------------------------
     sip = SIPVideoBackend(
@@ -98,7 +97,7 @@ async def main() -> None:
     # --- OpenAI Realtime (speech-to-speech, audio only) -----------------------
     openai_provider = OpenAIRealtimeProvider(
         api_key=openai_key,
-        model=os.environ.get("OPENAI_MODEL", "gpt-4o-mini-realtime-preview"),
+        model=os.environ.get("OPENAI_MODEL", "gpt-realtime-2.1-mini"),
     )
 
     # --- Anam avatar (passthrough — lip-sync only, no STT/LLM) ---------------

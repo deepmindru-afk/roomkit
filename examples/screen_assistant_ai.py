@@ -17,6 +17,12 @@ observation automatically:
 Supports **OpenAI Realtime** or **Gemini Live** for voice, and
 **OpenAI** or **Gemini** for vision.
 
+Platform: built and tested on macOS. ``open_app`` and the focus step
+before a modifier-key shortcut use ``open -a`` and ``osascript``, so they
+work on macOS only; elsewhere ``open_app`` returns a failure to the model.
+Screen capture and the keyboard/mouse tools need a desktop session (and on
+macOS the Screen Recording and Accessibility permissions).
+
 Requirements:
     pip install roomkit[screen-capture,local-audio,gemini,sherpa-onnx]
     pip install roomkit[realtime-openai]   # for OpenAI voice
@@ -46,13 +52,17 @@ Environment variables:
     AEC                  Echo cancellation: webrtc | 0 (default: webrtc)
     DENOISE              Noise suppression: 1 | 0 (default: 1)
     MUTE_MIC             Mute mic during AI playback: 1 | 0 (default: 0)
-    LANG_VOICE           Language (default: en)
+    LANG_VOICE           Language code (default: first two letters of LANG, else en)
     MONITOR              Monitor index: 1=primary (default: 1)
     VISION_INTERVAL      Vision interval in ms (default: 5000)
     DIFF_THRESHOLD       Screen diff threshold 0.0-1.0 (default: 0.15)
     AUTO_VERIFY          Auto-verify after actions: 1 | 0 (default: 1)
     BROWSER_MODE         Browser control: vision | playwright (default: vision)
     OMNIVIEW_URL         (optional) OmniView GPU service URL for precise element detection
+    SESSION_AUDIT_DIR    (optional) Directory for a JSONL log of the session
+                         (transcriptions, vision results, tool calls). Unset:
+                         nothing is written.
+    CONSOLE              Live dashboard: 1 | 0 (default: 0)
 
 Press Ctrl+C to stop.
 
@@ -72,6 +82,7 @@ Requires: npx @playwright/mcp (installed globally or via npx).
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import sys
 import time
@@ -105,6 +116,7 @@ from shared import (
     build_aec,
     build_denoiser,
     build_pipeline,
+    require_env,
     run_until_stopped,
     setup_console,
     setup_logging,
@@ -128,7 +140,6 @@ logger = setup_logging("screen_assistant_ai")
 # Drop the AEC stats/reference logs (emitted every ~1s) but keep
 # one-shot init/activated/reset lines, and the one AEC turn line per
 # reply, so the user can still see the AEC started and how well it did.
-import logging  # noqa: E402
 
 
 class _DropAECStats(logging.Filter):
@@ -147,20 +158,12 @@ BLOCK_MS = 20
 
 async def main() -> None:
     # --- Env + provider selection -------------------------------------------
-    gemini_api_key = os.environ.get("GEMINI_API_KEY", "")
-    if not gemini_api_key:
-        print("GEMINI_API_KEY is required.")
-        print("  GEMINI_API_KEY=... uv run python examples/screen_assistant_ai.py")
-        return
+    gemini_api_key = require_env("GEMINI_API_KEY")["GEMINI_API_KEY"]
 
     voice_choice = auto_select_provider("VOICE_PROVIDER", "voice")
     tool_choice = auto_select_provider("VISION_TOOL", "vision tool")
-    if voice_choice == "openai" and not os.environ.get("OPENAI_API_KEY"):
-        print("OPENAI_API_KEY is required for OpenAI voice.")
-        return
-    if tool_choice == "openai" and not os.environ.get("OPENAI_API_KEY"):
-        print("OPENAI_API_KEY is required for OpenAI vision tool.")
-        return
+    if "openai" in (voice_choice, tool_choice):
+        require_env("OPENAI_API_KEY")
 
     lang = os.environ.get("LANG_VOICE", os.environ.get("LANG", "en")).lower()[:2]
     monitor = int(os.environ.get("MONITOR", "1"))
@@ -173,9 +176,15 @@ async def main() -> None:
     kit = RoomKit(telemetry=cost_telemetry)
     console_cleanup = setup_console(kit)  # CONSOLE=1 to enable dashboard
 
-    audit_path = f"/tmp/screen_ai/{datetime.now().strftime('%Y%m%d_%H%M%S')}_session.jsonl"
-    auditor = JSONLSessionAuditor(audit_path)
-    auditor.attach(kit)
+    # The session log holds what the user said: written only on request.
+    auditor: JSONLSessionAuditor | None = None
+    audit_dir = os.environ.get("SESSION_AUDIT_DIR", "")
+    if audit_dir:
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        audit_path = Path(audit_dir) / f"{stamp}_session.jsonl"
+        auditor = JSONLSessionAuditor(audit_path)
+        auditor.attach(kit)
+        logger.info("Session log: %s", audit_path)
 
     # --- Shared screen state ------------------------------------------------
     vision = build_vision_provider(tool_choice, gemini_api_key)
@@ -265,6 +274,8 @@ async def main() -> None:
         result = await dispatcher.handle(event.name, event.arguments)  # type: ignore[attr-defined]
         if result is None:
             return HookResult.allow()
+        if auditor is None:
+            return HookResult(action="allow", metadata={"result": result})
         auditor.record_tool(
             ToolAuditEntry(
                 ts=datetime.now().isoformat(),
@@ -333,7 +344,8 @@ async def main() -> None:
             except Exception:
                 pass
         cost_telemetry.print_summary()
-        auditor.print_summary()
+        if auditor is not None:
+            auditor.print_summary()
         logger.info("Vision analyzed %d frames.", state.frame_count)
 
     await run_until_stopped(kit, cleanup=_cleanup)

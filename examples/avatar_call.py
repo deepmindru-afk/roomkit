@@ -8,20 +8,36 @@ Audio flow:  SIP INVITE → RTP audio → Deepgram STT → Claude AI → ElevenL
 Video flow:  TTS audio → Avatar → H.264 encode → RTP video → caller sees avatar
 
 Modes:
-  - **Mock avatar** (default): displays reference image as static frame.
-  - **WebSocket avatar**: connects to a remote animation server (any model).
+  - **Mock avatar** (default): shows the reference image as a static frame.
+  - **WebSocket avatar** (``--avatar-url``): connects to a remote animation
+    server (any model speaking the protocol of
+    ``roomkit.video.avatar.websocket``).
+
+Reference image: no portrait ships with the examples. Put one (PNG/JPEG) at
+``examples/avatar.png`` (next to this file) or pass ``--image PATH``; with
+neither, a solid blue placeholder is used.
 
 Prerequisites:
-    pip install roomkit[sip,video,deepgram,elevenlabs,anthropic]
+    pip install roomkit[sip,video,video-overlay,local-video,webrtc-aec,deepgram,elevenlabs,anthropic]
+    # --avatar-url also needs: pip install roomkit[httpx,websocket]
 
-    Environment variables:
-        DEEPGRAM_API_KEY=...
-        ELEVENLABS_API_KEY=...
-        ANTHROPIC_API_KEY=...
+Environment variables:
+    DEEPGRAM_API_KEY     (required) Deepgram API key
+    ELEVENLABS_API_KEY   (required) ElevenLabs API key
+    ANTHROPIC_API_KEY    (required) Anthropic API key
+    DEEPGRAM_MODEL       Deepgram model (default: nova-2)
+    VOICE_LANGUAGE       Speech language (default: en)
+    ELEVENLABS_VOICE_ID  ElevenLabs voice (default: Rachel)
+    AI_MODEL             Claude model (default: claude-haiku-4-5-20251001)
+    SYSTEM_PROMPT        System prompt override
+    RECORDING_DIR        Record each call (MP4) into this directory;
+                         unset = no recording
+    DEBUG                Set to 1 for verbose logging
 
 Run with:
-    uv run python examples/avatar_call.py --image avatar.png
-    uv run python examples/avatar_call.py --image avatar.png --avatar-url http://gpu-server:8765
+    uv run python examples/avatar_call.py
+    uv run python examples/avatar_call.py --image path/to/portrait.png
+    uv run python examples/avatar_call.py --avatar-url http://gpu-server:8765
 
 Press Ctrl+C to stop.
 """
@@ -34,9 +50,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import argparse
 import asyncio
+import io
 import logging
 import os
 
+from PIL import Image
 from shared import require_env, run_until_stopped, setup_logging, voice_language
 
 from roomkit import (
@@ -45,6 +63,7 @@ from roomkit import (
     RoomKit,
 )
 from roomkit.channels.ai import AIChannel
+from roomkit.providers.anthropic.ai import AnthropicAIProvider, AnthropicConfig
 from roomkit.recorder.base import (
     MediaRecordingConfig,
     RoomRecorderBinding,
@@ -52,10 +71,17 @@ from roomkit.recorder.base import (
 from roomkit.recorder.pyav import PyAVMediaRecorder
 from roomkit.video.avatar.base import AvatarProvider
 from roomkit.video.avatar.mock import MockAvatarProvider
+from roomkit.video.avatar.websocket import WebSocketAvatarProvider
 from roomkit.video.backends.sip import SIPVideoBackend
+from roomkit.video.pipeline.config import VideoPipelineConfig
+from roomkit.video.pipeline.encoder.pyav import PyAVVideoEncoder
 from roomkit.video.pipeline.filter.watermark import WatermarkFilter
 from roomkit.voice.base import VoiceSession
+from roomkit.voice.interruption import InterruptionConfig, InterruptionStrategy
 from roomkit.voice.pipeline import AudioPipelineConfig
+from roomkit.voice.pipeline.aec.webrtc import WebRTCAECProvider
+from roomkit.voice.stt.deepgram import DeepgramConfig, DeepgramSTTProvider
+from roomkit.voice.tts.elevenlabs import ElevenLabsConfig, ElevenLabsTTSProvider
 
 logger = setup_logging("avatar_call")
 
@@ -63,18 +89,44 @@ if os.environ.get("DEBUG") == "1":
     logging.getLogger("roomkit").setLevel(logging.DEBUG)
 
 
+DEFAULT_IMAGE = Path(__file__).resolve().parent / "avatar.png"
+PLACEHOLDER_RGB = (0, 0, 128)  # navy blue
+
+
 def _build_avatar(args: argparse.Namespace) -> AvatarProvider:
     if args.avatar_url:
-        from roomkit.video.avatar.websocket import WebSocketAvatarProvider
-
         return WebSocketAvatarProvider(base_url=args.avatar_url, fps=30)
     return MockAvatarProvider(fps=30, color=(0, 200, 0), idle_color=(80, 80, 80))
+
+
+def _reference_image(image: str | None, width: int, height: int) -> tuple[bytes, str]:
+    """The portrait to animate and a label for the banner.
+
+    ``--image`` wins, then ``avatar.png`` next to this file; otherwise a solid
+    blue PNG. It must be an encoded image: the avatar decodes it, and raw
+    pixel bytes would be rejected (the mock avatar then silently falls back
+    to its own colours).
+    """
+    if image:
+        path = Path(image)
+        if not path.is_file():
+            sys.exit(f"Error: --image {image} not found")
+        return path.read_bytes(), str(path)
+    if DEFAULT_IMAGE.is_file():
+        return DEFAULT_IMAGE.read_bytes(), str(DEFAULT_IMAGE)
+    buf = io.BytesIO()
+    Image.new("RGB", (width, height), PLACEHOLDER_RGB).save(buf, format="PNG")
+    return buf.getvalue(), "placeholder (blue)"
 
 
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Avatar Video Call Demo")
     parser.add_argument("--avatar-url", default=None, help="Avatar service URL")
-    parser.add_argument("--image", default=None, help="Reference portrait image")
+    parser.add_argument(
+        "--image",
+        default=None,
+        help="Reference portrait (PNG/JPEG); default: avatar.png next to this file, else blue",
+    )
     parser.add_argument(
         "--size",
         default="512x512",
@@ -82,6 +134,9 @@ async def main() -> None:
     )
     parser.add_argument("--sip-port", type=int, default=5060, help="SIP port")
     parser.add_argument("--rtp-ip", default="0.0.0.0", help="RTP IP")
+    parser.add_argument(
+        "--rtp-port-start", type=int, default=10000, help="First RTP port (below 20000)"
+    )
     args = parser.parse_args()
 
     # Parse size
@@ -96,13 +151,12 @@ async def main() -> None:
     kit = RoomKit()
 
     # --- STT: Deepgram ----------------------------------------------------------
-    from roomkit.voice.stt.deepgram import DeepgramConfig, DeepgramSTTProvider
-
+    deepgram_model = os.environ.get("DEEPGRAM_MODEL", "nova-2")
     stt = DeepgramSTTProvider(
         config=DeepgramConfig(
             api_key=deepgram_key,
-            model=os.environ.get("DEEPGRAM_MODEL", "nova-2"),
-            language=voice_language("en"),
+            model=deepgram_model,
+            language=voice_language("en") or "en",
             punctuate=True,
             smart_format=True,
             endpointing=300,
@@ -110,8 +164,6 @@ async def main() -> None:
     )
 
     # --- TTS: ElevenLabs --------------------------------------------------------
-    from roomkit.voice.tts.elevenlabs import ElevenLabsConfig, ElevenLabsTTSProvider
-
     tts = ElevenLabsTTSProvider(
         config=ElevenLabsConfig(
             api_key=elevenlabs_key,
@@ -123,12 +175,12 @@ async def main() -> None:
     )
 
     # --- AI: Claude -------------------------------------------------------------
-    from roomkit.providers.anthropic.ai import AnthropicAIProvider, AnthropicConfig
-
+    # A fast model: replies are one or two spoken sentences (256 tokens).
+    ai_model = os.environ.get("AI_MODEL", "claude-haiku-4-5-20251001")
     ai_provider = AnthropicAIProvider(
         AnthropicConfig(
             api_key=anthropic_key,
-            model=os.environ.get("AI_MODEL", "claude-opus-5"),
+            model=ai_model,
             max_tokens=256,
         )
     )
@@ -142,38 +194,28 @@ async def main() -> None:
 
     # --- Avatar -----------------------------------------------------------------
     avatar = _build_avatar(args)
-    if args.image:
-        image_bytes = Path(args.image).read_bytes()
-    else:
-        image_bytes = b"\x00\x00\x80" * (avatar_width * avatar_height)
+    image_bytes, image_label = _reference_image(args.image, avatar_width, avatar_height)
     await avatar.start(image_bytes, width=avatar_width, height=avatar_height)
 
     # --- SIP A/V backend --------------------------------------------------------
     backend = SIPVideoBackend(
         local_sip_addr=("0.0.0.0", args.sip_port),  # nosec B104
         local_rtp_ip=args.rtp_ip,
-        rtp_port_start=10000,
+        rtp_port_start=args.rtp_port_start,
         supported_video_codecs=["H264"],
     )
 
     # --- AEC (echo cancellation) ------------------------------------------------
     # Prevents TTS audio reflecting back through the mic from triggering
     # false barge-in interruptions.
-    from roomkit.voice.pipeline.aec.webrtc import WebRTCAECProvider
-
     aec = WebRTCAECProvider(sample_rate=16000)
 
     # --- H.264 encoder for avatar → RTP ----------------------------------------
-    from roomkit.video.pipeline.config import VideoPipelineConfig
-    from roomkit.video.pipeline.encoder.pyav import PyAVVideoEncoder
-
     avatar_encoder = PyAVVideoEncoder(width=avatar_width, height=avatar_height, fps=avatar.fps)
 
     # --- A/V channel with avatar ------------------------------------------------
     # Disable interruption — SIP echo cancellation can't handle the
     # variable network delay, causing false barge-in triggers.
-    from roomkit.voice.interruption import InterruptionConfig, InterruptionStrategy
-
     av = AudioVideoChannel(
         "voice",
         stt=stt,
@@ -193,6 +235,19 @@ async def main() -> None:
     ai = AIChannel("ai", provider=ai_provider, system_prompt=system_prompt)
     kit.register_channel(ai)
 
+    # --- Recording (opt-in) ----------------------------------------------------
+    recording_dir = os.environ.get("RECORDING_DIR", "")
+
+    def recorders() -> list[RoomRecorderBinding]:
+        if not recording_dir:
+            return []
+        return [
+            RoomRecorderBinding(
+                recorder=PyAVMediaRecorder(),
+                config=MediaRecordingConfig(storage=recording_dir),
+            )
+        ]
+
     # --- Route incoming calls ---------------------------------------------------
     async def on_call(session: VoiceSession) -> None:
         room_id = session.id
@@ -200,15 +255,7 @@ async def main() -> None:
         has_video = session.metadata.get("has_video", False)
         logger.info("Incoming call: room=%s, caller=%s, video=%s", room_id[:8], caller, has_video)
 
-        await kit.create_room(
-            room_id=room_id,
-            recorders=[
-                RoomRecorderBinding(
-                    recorder=PyAVMediaRecorder(),
-                    config=MediaRecordingConfig(storage="recordings"),
-                ),
-            ],
-        )
+        await kit.create_room(room_id=room_id, recorders=recorders())
         await kit.attach_channel(room_id, "voice")
         await kit.attach_channel(room_id, "ai", category=ChannelCategory.INTELLIGENCE)
         await kit.join(room_id, "voice", session=session)
@@ -216,14 +263,13 @@ async def main() -> None:
     backend.on_call(on_call)
 
     # --- Disconnect handler -----------------------------------------------------
-    def on_call_ended(session: object) -> None:
-        session_id = getattr(session, "id", None)
-        if not session_id:
-            return
-        logger.info("Call ended: session=%s", session_id[:8])
-        asyncio.create_task(kit.close_room(session_id))
+    # on_call_disconnected fires on every BYE; SIPVideoBackend.on_client_disconnected
+    # only reports the end of a call's video session.
+    def on_call_ended(session: VoiceSession) -> None:
+        logger.info("Call ended: session=%s", session.id[:8])
+        asyncio.create_task(kit.close_room(session.room_id))
 
-    backend.on_client_disconnected(on_call_ended)
+    backend.on_call_disconnected(on_call_ended)
 
     # --- Start ------------------------------------------------------------------
     await backend.start()
@@ -232,12 +278,14 @@ async def main() -> None:
     print("Avatar Video Call Demo")
     print("=" * 60)
     print(f"Avatar  : {mode} ({avatar.name}, {avatar.fps}fps, {avatar_width}x{avatar_height})")
-    print("STT     : Deepgram nova-3")
+    print(f"STT     : Deepgram {deepgram_model}")
     print("TTS     : ElevenLabs")
-    print("AI      : Claude")
+    print(f"AI      : {ai_model}")
     print(f"SIP     : 0.0.0.0:{args.sip_port}")
-    print(f"Image   : {args.image or 'placeholder (blue)'}")
-    print("Record  : ./recordings/")
+    print(f"Image   : {image_label}")
+    print(
+        f"Record  : {Path(recording_dir).resolve() if recording_dir else 'off (set RECORDING_DIR)'}"
+    )
     print("Press Ctrl+C to stop.\n")
 
     # --- Wait -------------------------------------------------------------------

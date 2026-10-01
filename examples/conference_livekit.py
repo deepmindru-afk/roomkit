@@ -25,6 +25,27 @@ Then run this script (``pip install roomkit[livekit]``):
 
     uv run python examples/conference_livekit.py
 
+Environment, per mode (every variable is optional; extras add to ``livekit``):
+
+    SFU         ROOMKIT_LIVEKIT_URL (ws://127.0.0.1:7880), ROOMKIT_LIVEKIT_API_KEY
+                (devkey), ROOMKIT_LIVEKIT_API_SECRET (secret), ROOMKIT_ROOM
+                (demo-meeting)
+    STT         DEEPGRAM_API_KEY, DEEPGRAM_LANGUAGE (en)        roomkit[deepgram]
+                — without the key, a stubbed STT
+    TTS         ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID         roomkit[elevenlabs]
+                — without the key, a 440 Hz beep
+    AI          ANTHROPIC_API_KEY, ANTHROPIC_MODEL              roomkit[anthropic]
+                (claude-haiku-4-5)
+    Realtime    ROOMKIT_REALTIME=1 with GEMINI_API_KEY          roomkit[realtime-gemini]
+                (GEMINI_MODEL, default gemini-3.8-live) or OPENAI_API_KEY
+                (OPENAI_MODEL, default the provider's)           roomkit[realtime-openai]
+                (Gemini wins when both keys are set); ROOMKIT_VOICE picks
+                the voice, ROOMKIT_ATTRIBUTION=1 keeps
+                the per-track STT beside the provider; replaces TTS and AI
+    VAD         VAD_MODEL (examples/models/ten-vad.onnx)         roomkit[sherpa-onnx]
+                — without the file, the energy VAD
+    Resume      ROOMKIT_RESUME=1, see below
+
 It prints one meeting URL per human — open each in a browser tab. Everything
 works without a single API key: the STT is stubbed (your real audio still
 crosses the resampler and the VAD, and the ATTRIBUTION is real) and the TTS is

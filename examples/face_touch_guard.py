@@ -7,12 +7,33 @@ log warnings.  Inspired by FaceTouchGuard
 
 Requires:
     pip install roomkit[local-video,mediapipe]
+    A webcam (device 0).
+
+Models:
+    On the first analysed frame the filter downloads two MediaPipe models
+    from Google Cloud Storage (the ``float16/latest`` builds, unpinned, so
+    the bytes can change upstream) into ``~/.cache/roomkit/mediapipe/``:
+    ``face_landmarker.task`` (~3.7 MB) and ``hand_landmarker.task``
+    (~7.8 MB). Later runs reuse the cache; nothing is written to the
+    current directory. To pre-fetch them, or to run offline:
+
+        mkdir -p ~/.cache/roomkit/mediapipe && cd ~/.cache/roomkit/mediapipe
+        curl -LO https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task
+        curl -LO https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task
+
+    To use files you have checked yourself, pass their paths as
+    ``FaceTouchConfig(face_model=..., hand_model=...)``: an existing file is
+    used as-is and nothing is downloaded.
 
 Run with:
     uv run python examples/face_touch_guard.py
 """
 
 from __future__ import annotations
+
+import asyncio
+import importlib.util
+import sys
 
 from shared import run_until_stopped, setup_logging
 
@@ -32,6 +53,11 @@ logger = setup_logging("face_touch_guard")
 
 
 async def main() -> None:
+    # The filter imports MediaPipe on the first frame; without it every
+    # analysed frame would log the same ImportError. Fail once, up front.
+    if importlib.util.find_spec("mediapipe") is None:
+        sys.exit("mediapipe is not installed: pip install roomkit[mediapipe]")
+
     kit = RoomKit()
 
     # Local webcam backend
@@ -91,6 +117,4 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    import asyncio
-
     asyncio.run(main())

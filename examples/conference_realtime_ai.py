@@ -26,7 +26,7 @@ response end — which is exactly the callback sequence a real one emits. A
 real deployment swaps two lines and changes nothing else::
 
     from roomkit import LiveKitConferenceBackend, LiveKitConfig
-    from roomkit.providers.gemini import GeminiLiveProvider
+    from roomkit.providers.gemini.realtime import GeminiLiveProvider  # roomkit[realtime-gemini]
 
     backend = LiveKitConferenceBackend(LiveKitConfig(url=..., api_key=..., api_secret=...))
     realtime = ConferenceRealtimeConfig(
@@ -55,6 +55,7 @@ from roomkit import (
 from roomkit.channels.conference import ConferenceChannel
 from roomkit.models.enums import HookExecution, HookTrigger
 from roomkit.voice.audio_frame import AudioFrame
+from roomkit.voice.base import VoiceSession
 from roomkit.voice.realtime.mock import MockRealtimeProvider
 from roomkit.voice.stt.mock import MockSTTProvider
 
@@ -79,6 +80,22 @@ def silence_frame() -> AudioFrame:
     return AudioFrame(data=b"\x00\x00" * SAMPLES_PER_FRAME, sample_rate=SAMPLE_RATE)
 
 
+class SessionRecordingProvider(MockRealtimeProvider):
+    """The mock provider, keeping the session the channel connects.
+
+    A real provider is handed its session in ``connect()`` and drives it from
+    there; this demo plays the provider's half, so it needs the same handle.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.session: VoiceSession | None = None
+
+    async def connect(self, session: VoiceSession, **kwargs: Any) -> None:
+        self.session = session
+        await super().connect(session, **kwargs)
+
+
 async def speak(backend: MockConferenceBackend, track: Any) -> None:
     for _ in range(SPEECH_FRAMES):
         await backend.simulate_audio(track, speech_frame())
@@ -96,7 +113,7 @@ async def until(condition: Any, *, timeout: float = 5.0) -> None:
 
 async def main() -> None:
     backend = MockConferenceBackend()
-    provider = MockRealtimeProvider()
+    provider = SessionRecordingProvider()
     channel = ConferenceChannel(
         "conf",
         backend=backend,
@@ -141,7 +158,7 @@ async def main() -> None:
     print("alice speaks; the mix reaches the provider and the session comes up lazily:")
     await speak(backend, alice_mic)
     await until(lambda: provider.sent_audio)
-    session = channel._realtime.session_for(ROOM)
+    session = provider.session
     assert session is not None
     print(f"      [mix] {len(provider.sent_audio)} mixed windows sent to the provider")
 

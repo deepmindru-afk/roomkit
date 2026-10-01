@@ -4,6 +4,11 @@ A single ``ScreenToolDispatcher.handle(name, arguments)`` method takes
 the place of a 250-line if/elif tree in the example. Returns the tool
 result string, or ``None`` when the tool is not handled here (let the
 hook fall through to ``HookResult.allow()``).
+
+``open_app`` and the focus step before a modifier-key shortcut drive
+``open -a`` and ``osascript``: they work on macOS only. The application
+name comes from the model, so it is checked against a strict pattern
+before it reaches the command line or the AppleScript source.
 """
 
 from __future__ import annotations
@@ -11,7 +16,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import subprocess
+import sys
 
 from .omniview import OmniViewClient
 from .screens import list_screens, switch_screen
@@ -26,6 +33,12 @@ _PLAYWRIGHT_MAX_RESULT = 4000
 _VERIFY_PAUSE_S = 0.5
 _OPEN_APP_PAUSE_S = 2.0
 _OPEN_APP_FOCUS_PAUSE_S = 0.5
+
+# An application name the model may pass to ``open -a`` and interpolate
+# into ``tell application "<name>"``: letters, digits, space, dot, dash and
+# underscore only. No quote, backslash or slash, so the name can neither
+# close the AppleScript string nor point ``open -a`` at a path.
+_SAFE_APP_NAME = re.compile(r"[\w][\w .-]{0,99}")
 
 # Tools that mutate the keyboard/mouse/clipboard. Subject to the
 # "describe_screen after a FAILED action" gate.
@@ -110,6 +123,14 @@ class ScreenToolDispatcher:
 
     async def _open_app(self, app_name: str) -> str:
         logger.info("open_app(%r)", app_name)
+        if sys.platform != "darwin":
+            return "ACTION: open_app\nSTATUS: FAILED\nVERDICT: open_app works on macOS only."
+        if not _is_safe_app_name(app_name):
+            return (
+                f"ACTION: open_app({app_name!r})\nSTATUS: FAILED\n"
+                "VERDICT: invalid application name. Use letters, digits, spaces, "
+                "dots, dashes or underscores only (e.g. 'Google Chrome')."
+            )
         try:
             subprocess.run(  # noqa: ASYNC221
                 ["open", "-a", app_name],
@@ -276,7 +297,10 @@ class ScreenToolDispatcher:
         the user is actually doing.
         """
         target = self.state.target_app
-        if not target:
+        if not target or sys.platform != "darwin":
+            return
+        if not _is_safe_app_name(target):
+            logger.warning("Not activating %r: unsafe application name", target)
             return
         if target.lower() not in self.state.latest_description.lower():
             return
@@ -381,3 +405,8 @@ class ScreenToolDispatcher:
                 "Auto-verify %s: %s → %s", tool_name, verdict["status"], verdict["verdict"]
             )
         return out
+
+
+def _is_safe_app_name(app_name: str) -> bool:
+    """Whether *app_name* may be passed to ``open -a`` and AppleScript."""
+    return _SAFE_APP_NAME.fullmatch(app_name) is not None

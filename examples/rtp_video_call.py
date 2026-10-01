@@ -1,17 +1,22 @@
 """RoomKit — RTP audio+video direct transport.
 
 Connect to a pre-configured RTP endpoint with both audio and video.
-Audio goes through the voice pipeline (mock STT/TTS), video frames
-are delivered to a callback.
+Audio goes through the voice pipeline (energy VAD, mock STT/TTS), video
+frames are delivered to a callback.
+
+The mock STT does not listen to the audio: each utterance the VAD detects
+is "transcribed" as a canned text ("Hello", then "How can I help you?"),
+which shows the audio path end to end without any API key.
 
 Audio flow:
-    RTP audio → Pipeline → STT → print
+    RTP audio → Pipeline (energy VAD) → mock STT → ON_TRANSCRIPTION → print
 
 Video flow:
     RTP video → H.264 NAL → on_video_received → print
 
 Prerequisites:
-    pip install roomkit[rtp]
+    pip install roomkit[rtp,video]
+    (video brings numpy, which the voice channel's audio-level path needs)
 
 Run with:
     uv run python examples/rtp_video_call.py
@@ -51,7 +56,7 @@ from roomkit import (
     RoomKit,
 )
 from roomkit.video.backends.rtp import RTPVideoBackend
-from roomkit.voice.pipeline import AudioPipelineConfig
+from roomkit.voice.pipeline import AudioPipelineConfig, EnergyVADProvider
 from roomkit.voice.stt.mock import MockSTTProvider
 from roomkit.voice.tts.mock import MockTTSProvider
 
@@ -97,12 +102,13 @@ async def main() -> None:
             )
 
     # --- A/V channel -----------------------------------------------------------
+    # The VAD cuts the audio into utterances; without one the STT is never called.
     av = AudioVideoChannel(
         "voice",
         stt=MockSTTProvider(),
         tts=MockTTSProvider(),
         backend=backend,
-        pipeline=AudioPipelineConfig(),
+        pipeline=AudioPipelineConfig(vad=EnergyVADProvider()),
     )
     av.add_video_media_tap(on_video)
     kit.register_channel(av)

@@ -12,6 +12,9 @@ Run with:
     uv run python examples/webcam_recording.py --output ./my_recordings
     uv run python examples/webcam_recording.py --fps 30 --device 0
 
+The MP4 goes to ``<temp dir>/roomkit-recordings`` unless ``--output`` names
+another directory; the banner prints the directory in use.
+
 Press Ctrl+C to stop early.
 """
 
@@ -26,6 +29,7 @@ import asyncio
 import contextlib
 import logging
 import signal
+import tempfile
 
 from shared import setup_logging
 
@@ -38,13 +42,19 @@ from roomkit.video.recorder import MockVideoRecorder, VideoRecordingConfig
 
 setup_logging("webcam_recording", level=logging.WARNING)
 
+DEFAULT_OUTPUT = Path(tempfile.gettempdir()) / "roomkit-recordings"
+
 
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Webcam Recording Demo")
     parser.add_argument("--device", type=int, default=0, help="Camera device index")
     parser.add_argument("--fps", type=int, default=15, help="Capture FPS")
     parser.add_argument("--duration", type=int, default=0, help="Record N seconds (0=Ctrl+C)")
-    parser.add_argument("--output", default="./recordings", help="Output directory")
+    parser.add_argument(
+        "--output",
+        default=str(DEFAULT_OUTPUT),
+        help=f"Output directory (default: {DEFAULT_OUTPUT})",
+    )
     args = parser.parse_args()
 
     kit = RoomKit()
@@ -88,7 +98,7 @@ async def main() -> None:
 
     @kit.hook(HookTrigger.ON_VIDEO_SESSION_STARTED, execution=HookExecution.ASYNC)
     async def on_started(event: SessionStartedEvent, ctx: object) -> None:
-        print(f"  Session started: {event.session.id[:8]}...")  # type: ignore[union-attr]
+        print(f"  Session started: {event.participant_id} on {event.channel_id}")
 
     def on_frame(session: object, frame: VideoFrame) -> None:
         nonlocal frame_count
@@ -97,7 +107,7 @@ async def main() -> None:
             secs = frame_count // args.fps
             print(f"\r  Recording... {secs}s ({frame_count} frames)", end="", flush=True)
 
-    backend.on_video_received(on_frame)
+    video.add_media_tap(on_frame)
 
     # --- Connect and start ---------------------------------------------------
     session = await kit.join("recording-demo", "video-rec", participant_id="local-user")

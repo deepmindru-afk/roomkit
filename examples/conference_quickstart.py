@@ -131,19 +131,25 @@ async def main() -> None:
     # Each subscribed audio track gets a lane of its own — queue, task, VAD
     # state — so one slow recognizer never delays another participant's audio.
     print("\nalice speaks:")
+    before = len(heard)
     frames = await deliver_utterance(backend, alice_mic, speech=SPEECH_FRAMES)
     await channel.active_lanes[alice_mic.id].drain()
-    print(f"      {frames} frames delivered -> {len(heard)} transcription(s)")
+    print(f"      {frames} frames delivered -> {len(heard) - before} transcription(s)")
 
     print("\nbob speaks:")
+    before = len(heard)
     frames = await deliver_utterance(backend, bob_mic, speech=SPEECH_FRAMES)
     await channel.active_lanes[bob_mic.id].drain()
-    print(f"      {frames} frames delivered -> {len(heard) - 1} transcription(s)")
+    print(f"      {frames} frames delivered -> {len(heard) - before} transcription(s)")
 
     print("\nbob's line stays open in silence:")
+    before = len(heard)
     frames = await deliver_utterance(backend, bob_mic, speech=0)
     await channel.active_lanes[bob_mic.id].drain()
-    print(f"      {frames} frames delivered -> 0 transcriptions (silence is not speech)")
+    print(
+        f"      {frames} frames delivered -> {len(heard) - before} transcription(s)"
+        " (silence is not speech)"
+    )
 
     # Transcriptions are ordinary RoomEvents, attributed to the participant
     # whose track carried the voice — track identity is what attributes speech,

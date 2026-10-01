@@ -13,6 +13,9 @@ Run with:
     uv run python examples/pyav_video_recorder.py --codec h264_nvenc
     uv run python examples/pyav_video_recorder.py --output ./my_recordings --fps 30
 
+The MP4 goes to ``<temp dir>/roomkit-recordings`` unless ``--output`` names
+another directory; the path of the file is printed at the end.
+
 Press Ctrl+C to stop early.
 """
 
@@ -26,8 +29,8 @@ import argparse
 import asyncio
 import contextlib
 import logging
-import os
 import signal
+import tempfile
 
 from shared import setup_logging
 
@@ -41,13 +44,19 @@ from roomkit.video.recorder.pyav import PyAVVideoRecorder
 
 setup_logging("pyav_video_recorder", level=logging.WARNING)
 
+DEFAULT_OUTPUT = Path(tempfile.gettempdir()) / "roomkit-recordings"
+
 
 async def main() -> None:
     parser = argparse.ArgumentParser(description="PyAV Video Recorder Demo")
     parser.add_argument("--device", type=int, default=0, help="Camera device index")
     parser.add_argument("--fps", type=int, default=15, help="Capture FPS")
     parser.add_argument("--duration", type=int, default=0, help="Record N seconds (0=Ctrl+C)")
-    parser.add_argument("--output", default="./recordings", help="Output directory")
+    parser.add_argument(
+        "--output",
+        default=str(DEFAULT_OUTPUT),
+        help=f"Output directory (default: {DEFAULT_OUTPUT})",
+    )
     parser.add_argument(
         "--codec",
         default="auto",
@@ -90,7 +99,7 @@ async def main() -> None:
 
     @kit.hook(HookTrigger.ON_VIDEO_SESSION_STARTED, execution=HookExecution.ASYNC)
     async def on_started(event: SessionStartedEvent, ctx: object) -> None:
-        print(f"  Session started: {event.session.id[:8]}...")  # type: ignore[union-attr]
+        print(f"  Session started: {event.participant_id} on {event.channel_id}")
 
     def on_frame(session: object, frame: VideoFrame) -> None:
         nonlocal frame_count
@@ -99,7 +108,7 @@ async def main() -> None:
             secs = frame_count // args.fps
             print(f"\r  Recording... {secs}s ({frame_count} frames)", end="", flush=True)
 
-    backend.on_video_received(on_frame)
+    video.add_media_tap(on_frame)
 
     # --- Connect and start ---------------------------------------------------
     session = await kit.join("recording-demo", "video-rec", participant_id="local-user")
@@ -135,14 +144,13 @@ async def main() -> None:
     await kit.leave(session)
     await kit.close()
 
-    # Show output info
-    output_dir = args.output
-    if os.path.isdir(output_dir):
-        files = sorted(f for f in os.listdir(output_dir) if f.endswith(".mp4"))
-        if files:
-            latest = os.path.join(output_dir, files[-1])
-            size_kb = os.path.getsize(latest) / 1024
-            print(f"  Recorded {frame_count} frames → {latest} ({size_kb:.1f} KB)")
+    # Show output info: the newest MP4 is this run's (file names start with
+    # a random session id, so sorting by name would pick an older one).
+    files = sorted(Path(args.output).glob("*.mp4"), key=lambda f: f.stat().st_mtime)
+    if files:
+        latest = files[-1]
+        size_kb = latest.stat().st_size / 1024
+        print(f"  Recorded {frame_count} frames → {latest} ({size_kb:.1f} KB)")
     print("  Done.")
 
 

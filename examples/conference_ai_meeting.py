@@ -17,8 +17,9 @@ are on display:
 1. **The media loop** — the bot's own TTS audio must not come back through a
    lane, be transcribed, and be answered again. Bot self-exclusion closes it:
    the channel never subscribes to a track its own session published
-   (RFC §12.10.4). Watch the AI call count at the end: one response per human
-   utterance, none for the bot's own voice.
+   (RFC §12.10.4). The example makes the mock SFU report the bot's voice back
+   as a participant track (``simulate_bot_echo``), as some SFUs do, and
+   speaks on it: no frame reaches a lane, and the AI call count does not move.
 2. **The event loop** — the AI must not answer its own answer. ``AIChannel``
    skips events it produced, and the framework bounds any AI-to-AI chain at
    ``max_chain_depth`` (default 5, RFC §8.3), so even two AIs in one room
@@ -36,7 +37,6 @@ Run with:
 from __future__ import annotations
 
 import asyncio
-import struct
 import time
 from typing import Any
 
@@ -50,40 +50,31 @@ from roomkit.channels.ai import AIChannel
 from roomkit.channels.conference import ConferenceChannel
 from roomkit.models.enums import HookExecution, HookTrigger
 from roomkit.providers.ai.mock import MockAIProvider
-from roomkit.voice.audio_frame import AudioFrame
 from roomkit.voice.stt.mock import MockSTTProvider
 from roomkit.voice.tts.mock import MockTTSProvider
 
 ROOM = "standup"
 
-# Same audio arithmetic as conference_quickstart.py: the default pipeline is a
-# 16 kHz mono contract with an energy VAD, and one utterance is speech loud
-# enough, long enough — then enough silence for the VAD to call it finished.
-SAMPLE_RATE = 16_000
-SAMPLES_PER_FRAME = SAMPLE_RATE * 20 // 1000  # 20 ms
+# Same audio arithmetic as conference_quickstart.py: the default pipeline has
+# an energy VAD, and one utterance is speech loud enough, long enough — then
+# enough silence for the VAD to call it finished.
 SPEECH_FRAMES = 15  # 300 ms — past the energy VAD's 200 ms minimum
 SILENCE_FRAMES = 30  # 600 ms — past its 500 ms end-of-speech threshold
 
 
-def speech_frame() -> AudioFrame:
-    """A frame loud enough for the energy VAD to call it speech."""
-    samples = [8000, -8000] * (SAMPLES_PER_FRAME // 2)
-    return AudioFrame(
-        data=struct.pack(f"<{SAMPLES_PER_FRAME}h", *samples), sample_rate=SAMPLE_RATE
-    )
+async def speak(backend: MockConferenceBackend, track: Any) -> int:
+    """Push one utterance's worth of frames through the backend.
 
-
-def silence_frame() -> AudioFrame:
-    """Zeros — no VAD calls this speech."""
-    return AudioFrame(data=b"\x00\x00" * SAMPLES_PER_FRAME, sample_rate=SAMPLE_RATE)
-
-
-async def speak(backend: MockConferenceBackend, track: Any) -> None:
-    """Push one utterance's worth of frames through the backend."""
+    ``frame_for`` builds 20 ms frames in the track's published format: its
+    default amplitude is speech to an energy VAD, ``0.0`` is silence. Returns
+    how many frames the bot was subscribed to receive.
+    """
+    delivered = 0
     for _ in range(SPEECH_FRAMES):
-        await backend.simulate_audio(track, speech_frame())
+        delivered += await backend.simulate_audio(track, backend.frame_for(track))
     for _ in range(SILENCE_FRAMES):
-        await backend.simulate_audio(track, silence_frame())
+        delivered += await backend.simulate_audio(track, backend.frame_for(track, amplitude=0.0))
+    return delivered
 
 
 async def until(condition: Any, *, timeout: float = 5.0) -> None:
@@ -186,6 +177,21 @@ async def main() -> None:
     await speak(backend, alice_mic)
     await until(lambda: len(spoken) == 2)
 
+    # The media loop, exercised: some SFUs report the bot back as a participant
+    # publishing a track. Its voice arrives on that track like anyone else's —
+    # and must reach no lane, no STT, and no AI.
+    print("\nthe SFU reports the bot's own voice back as a participant track:")
+    bot = backend.bots[0]
+    echo = await backend.simulate_bot_echo(bot)
+    generations = len(provider.calls)
+    delivered = await speak(backend, echo)
+    # Time a wrongly subscribed lane would need to transcribe and answer.
+    await asyncio.sleep(0.5)
+    print(
+        f"      {delivered} of {SPEECH_FRAMES + SILENCE_FRAMES} frames reached the bot -> "
+        f"{len(provider.calls) - generations} AI generation(s) from its own voice"
+    )
+
     # The whole exchange is ordinary room history: the humans attributed by
     # their tracks, the AI by its channel. The held-back answer is in here too
     # — blocked from the *audio*, not from the record.
@@ -198,8 +204,7 @@ async def main() -> None:
 
     # The two loop protections, measured rather than asserted in prose: three
     # human utterances produced exactly three AI generations — the bot's own
-    # voice (published below) triggered none, and no answer answered itself.
-    bot = backend.bots[0]
+    # voice (echoed above) triggered none, and no answer answered itself.
     print(
         f"\nloops, closed: {len(heard)} human utterances -> {len(provider.calls)} AI "
         f"generations -> {len(backend.utterances_for(bot))} bot utterances published "

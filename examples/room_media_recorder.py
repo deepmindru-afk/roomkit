@@ -15,6 +15,9 @@ Run with:
     uv run python examples/room_media_recorder.py --output ./my_recordings
     uv run python examples/room_media_recorder.py --fps 15 --device 0
 
+The MP4 goes to ``<temp dir>/roomkit-recordings`` unless ``--output`` names
+another directory; the banner prints the directory in use.
+
 Press Ctrl+C to stop early.
 """
 
@@ -29,6 +32,7 @@ import asyncio
 import contextlib
 import logging
 import signal
+import tempfile
 
 from shared import setup_logging
 
@@ -43,13 +47,19 @@ from roomkit.voice.pipeline.config import AudioPipelineConfig
 setup_logging("room_media_recorder", level=logging.WARNING)
 logging.getLogger("roomkit.recorder").setLevel(logging.INFO)
 
+DEFAULT_OUTPUT = Path(tempfile.gettempdir()) / "roomkit-recordings"
+
 
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Room Media Recording Demo")
     parser.add_argument("--device", type=int, default=0, help="Camera device index")
     parser.add_argument("--fps", type=int, default=15, help="Video capture FPS")
     parser.add_argument("--duration", type=int, default=0, help="Record N seconds (0=Ctrl+C)")
-    parser.add_argument("--output", default="./recordings", help="Output directory")
+    parser.add_argument(
+        "--output",
+        default=str(DEFAULT_OUTPUT),
+        help=f"Output directory (default: {DEFAULT_OUTPUT})",
+    )
     args = parser.parse_args()
 
     # --- Recorder: PyAV if available, mock fallback ----------------------
@@ -119,7 +129,7 @@ async def main() -> None:
                 flush=True,
             )
 
-    video_backend.on_video_received(on_frame)
+    video_ch.add_media_tap(on_frame)
 
     # --- Start capture ---------------------------------------------------
     print("Room Media Recording Demo")
@@ -134,7 +144,7 @@ async def main() -> None:
         print("Duration : until Ctrl+C")
     print()
 
-    await audio_backend.start_listening(voice_session)
+    # kit.join() already started the mic for the voice session.
     await video_backend.start_capture(video_session)
 
     # --- Wait for duration or Ctrl+C ------------------------------------
@@ -152,7 +162,6 @@ async def main() -> None:
     # --- Cleanup ---------------------------------------------------------
     print("\n\n  Stopping...")
     await video_backend.stop_capture(video_session)
-    await audio_backend.stop_listening(voice_session)
     await kit.leave(video_session)
     await kit.leave(voice_session)
     await kit.close_room(room.id)

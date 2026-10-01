@@ -14,11 +14,14 @@ Architecture::
                                          ▲
     Caller B ──video──► Pipeline ────────┘
 
-Optional STT transcribes both sides in parallel (bridge + STT are
-independent paths).
+A mock STT runs on both sides in parallel (bridge + STT are independent
+paths). It does not listen to the audio: each utterance the energy VAD
+detects is "transcribed" as a canned text ("Hello", then "How can I help
+you?"). Swap in a real STT provider to get real transcripts.
 
 Prerequisites:
-    pip install roomkit[sip]
+    pip install roomkit[sip,video]
+    (video brings numpy, which the voice channel's audio-level path needs)
 
 Run with:
     uv run python examples/sip_video_bridge.py
@@ -28,8 +31,9 @@ The two callers will be bridged together.
 
 Environment variables:
     SIP_PORT         SIP listener port (default: 5060)
-    RTP_IP           IP to advertise in SDP (default: 0.0.0.0)
-    RTP_PORT_START   First RTP port to allocate (default: 10000)
+    RTP_IP           IP to bind RTP on (default: 0.0.0.0; the SDP then
+                     advertises the resolved local IP)
+    RTP_PORT_START   First RTP port to allocate, below 20000 (default: 10000)
     DEBUG            Set to 1 for verbose logging
 
 Press Ctrl+C to stop.
@@ -51,7 +55,7 @@ from roomkit import AudioVideoChannel, HookExecution, HookResult, HookTrigger, R
 from roomkit.video.backends.sip import SIPVideoBackend
 from roomkit.video.bridge import VideoBridgeConfig
 from roomkit.voice.base import VoiceSession
-from roomkit.voice.pipeline import AudioPipelineConfig
+from roomkit.voice.pipeline import AudioPipelineConfig, EnergyVADProvider
 from roomkit.voice.stt.mock import MockSTTProvider
 from roomkit.voice.tts.mock import MockTTSProvider
 
@@ -89,12 +93,13 @@ async def main() -> None:
     # --- A/V channel with audio + video bridge --------------------------------
     # bridge=True enables AudioBridge (from VoiceChannel parent).
     # video_bridge=True enables VideoBridge for video forwarding.
+    # The VAD cuts each side's audio into utterances for the STT.
     av = AudioVideoChannel(
         "av",
         stt=MockSTTProvider(),
         tts=MockTTSProvider(),
         backend=backend,
-        pipeline=AudioPipelineConfig(),
+        pipeline=AudioPipelineConfig(vad=EnergyVADProvider()),
         bridge=True,
         video_bridge=VideoBridgeConfig(max_participants=2),
     )
@@ -138,6 +143,13 @@ async def main() -> None:
     av.add_video_media_tap(on_video)
 
     # --- Handle incoming SIP calls --------------------------------------------
+    # The bridges expose no public participant count, so the example keeps its
+    # own: session id → whether the call negotiated video.
+    callers: dict[str, bool] = {}
+
+    def room_summary() -> tuple[int, int]:
+        return len(callers), sum(callers.values())
+
     @backend.on_call
     async def handle_call(session: VoiceSession) -> None:
         meta = session.metadata
@@ -152,9 +164,9 @@ async def main() -> None:
         )
 
         await kit.join(ROOM_ID, "av", session=session)
+        callers[session.id] = bool(has_video)
 
-        audio_count = av._bridge.get_participant_count(ROOM_ID) if av._bridge else 0
-        video_count = av._video_bridge.get_participant_count(ROOM_ID) if av._video_bridge else 0
+        audio_count, video_count = room_summary()
         logger.info(
             "Room: %d audio, %d video — %s",
             audio_count,
@@ -162,12 +174,14 @@ async def main() -> None:
             "bridged!" if audio_count >= 2 else "waiting for second caller",
         )
 
-    def on_call_ended(session: object) -> None:
-        sid = getattr(session, "id", "unknown")
+    # on_call_disconnected fires on every BYE; SIPVideoBackend.on_client_disconnected
+    # only reports the end of a call's video session.
+    def on_call_ended(session: VoiceSession) -> None:
+        sid = session.id
+        callers.pop(sid, None)
         total = frame_counts.pop(sid, 0)
         keys = keyframe_counts.pop(sid, 0)
-        audio_count = av._bridge.get_participant_count(ROOM_ID) if av._bridge else 0
-        video_count = av._video_bridge.get_participant_count(ROOM_ID) if av._video_bridge else 0
+        audio_count, video_count = room_summary()
         logger.info(
             "Call ended: session=%s, %d frames (%d keyframes) — room: %d audio, %d video",
             sid[:8],
@@ -177,7 +191,7 @@ async def main() -> None:
             video_count,
         )
 
-    backend.on_client_disconnected(on_call_ended)
+    backend.on_call_disconnected(on_call_ended)
 
     # --- Start ----------------------------------------------------------------
     await backend.start()
