@@ -499,6 +499,25 @@ class InboundLockedMixin(HelpersMixin):
 
             edit_delete_target = target_event
 
+        decision = await self._gate_commit(room_id, event, context, precheck)
+        if isinstance(decision, _Ready):
+            decision.edit_delete_target = edit_delete_target
+        return decision
+
+    async def _gate_commit(
+        self,
+        room_id: str,
+        event: RoomEvent,
+        context: RoomContext,
+        precheck: SyncPipelineResult | None = None,
+    ) -> _Blocked | _Ready:
+        """RFC §10.1 steps 9 to 11 for an event about to commit: its
+        BEFORE_BROADCAST hooks, then its source's right to write.
+
+        Decides only: a :class:`_Blocked` carries what the hooks decided, so
+        the caller stores the BLOCKED record with its side effects (§7.5 rule
+        3); a :class:`_Ready` carries the event as the hooks left it.
+        """
         # Run sync hooks (before_broadcast). After an off-lock check (RFC
         # §9.5.1) its outcome comes first and only the locked hooks run here.
         sync_result = await self._run_before_broadcast(room_id, event, context, precheck)
@@ -546,7 +565,7 @@ class InboundLockedMixin(HelpersMixin):
                 observations=sync_result.observations,
             )
 
-        return _Ready(event, source_binding, sync_result, context, edit_delete_target)
+        return _Ready(event, source_binding, sync_result, context, None)
 
     async def _run_before_broadcast(
         self,
