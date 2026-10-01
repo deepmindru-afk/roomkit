@@ -147,3 +147,65 @@ class TestPyroscopeProfiler:
         from roomkit.telemetry import PyroscopeProfiler as Cls
 
         assert Cls is PyroscopeProfiler
+
+
+class _CurrentPyroscope:
+    """pyroscope-io 1.x: ``configure`` no longer takes ``detect_subprocesses``."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def configure(
+        self,
+        application_name: str | None = None,
+        server_address: str = "http://localhost:4040",
+        sample_rate: int = 100,
+        oncpu: bool = True,
+        gil_only: bool = True,
+        tags: dict[str, str] | None = None,
+    ) -> None:
+        self.calls.append(
+            {
+                "application_name": application_name,
+                "server_address": server_address,
+                "sample_rate": sample_rate,
+                "oncpu": oncpu,
+                "gil_only": gil_only,
+                "tags": tags,
+            }
+        )
+
+
+class TestPyroscopeVersions:
+    """RMK-353: pyroscope-io 1.2 refused ``detect_subprocesses`` with a TypeError."""
+
+    def test_start_works_with_a_configure_without_detect_subprocesses(self):
+        fake = _CurrentPyroscope()
+        with patch.dict("sys.modules", {"pyroscope": fake}):
+            profiler = PyroscopeProfiler(application_name="app")
+            profiler.start()
+
+        assert profiler._started
+        assert fake.calls[0]["application_name"] == "app"
+
+    def test_asking_for_subprocesses_on_a_version_without_them_warns(self, caplog):
+        fake = _CurrentPyroscope()
+        with patch.dict("sys.modules", {"pyroscope": fake}):
+            profiler = PyroscopeProfiler(detect_subprocesses=True)
+            with caplog.at_level("WARNING", logger="roomkit.telemetry.pyroscope"):
+                profiler.start()
+
+        assert profiler._started
+        assert "detect_subprocesses" in caplog.text
+
+    def test_a_version_that_takes_it_still_receives_it(self):
+        mock_mod = MagicMock()
+
+        def configure(*, detect_subprocesses: bool = False, **kwargs: object) -> None:
+            mock_mod.received = detect_subprocesses
+
+        mock_mod.configure = configure
+        with patch.dict("sys.modules", {"pyroscope": mock_mod}):
+            PyroscopeProfiler(detect_subprocesses=True).start()
+
+        assert mock_mod.received is True

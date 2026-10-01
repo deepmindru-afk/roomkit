@@ -33,12 +33,24 @@ For Grafana Cloud::
 
 from __future__ import annotations
 
+import inspect
 import logging
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from typing import Any
 
 logger = logging.getLogger("roomkit.telemetry.pyroscope")
+
+
+def _accepts_keyword(func: Callable[..., Any], name: str) -> bool:
+    """Whether *func* takes the keyword *name* (or any keyword at all)."""
+    try:
+        parameters = inspect.signature(func).parameters
+    except (TypeError, ValueError):
+        return True
+    return name in parameters or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
+    )
 
 
 class PyroscopeProfiler:
@@ -52,7 +64,9 @@ class PyroscopeProfiler:
         application_name: Name shown in Pyroscope UI.
         server_address: Pyroscope server or Grafana Cloud endpoint.
         sample_rate: Samples per second (default: 100).
-        detect_subprocesses: Profile child processes (default: False).
+        detect_subprocesses: Profile child processes (default: False). Only
+            pyroscope-io releases whose ``configure`` takes it honour it; on
+            the others (1.x) ``True`` is ignored with a warning.
         oncpu: Only measure on-CPU time (default: True).
         gil_only: Only profile GIL-holding threads (default: True).
         tags: Default tags applied to all samples.
@@ -102,11 +116,17 @@ class PyroscopeProfiler:
             "application_name": self._application_name,
             "server_address": self._server_address,
             "sample_rate": self._sample_rate,
-            "detect_subprocesses": self._detect_subprocesses,
             "oncpu": self._oncpu,
             "gil_only": self._gil_only,
             "tags": self._tags,
         }
+        if _accepts_keyword(pyroscope.configure, "detect_subprocesses"):
+            kwargs["detect_subprocesses"] = self._detect_subprocesses
+        elif self._detect_subprocesses:
+            logger.warning(
+                "detect_subprocesses=True ignored: the installed pyroscope-io "
+                "no longer takes it in configure()"
+            )
         if self._basic_auth_username:
             kwargs["basic_auth_username"] = self._basic_auth_username
         if self._basic_auth_password:

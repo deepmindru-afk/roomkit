@@ -153,6 +153,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   recording, so the stop found no room to report to and every recording a
   `VoiceChannel` opened ended without its hook, while `ON_RECORDING_STARTED`
   had announced it.
+- `PyroscopeProfiler.start()` works with pyroscope-io 1.x, whose
+  `configure()` no longer takes `detect_subprocesses` and raised a
+  `TypeError` (RMK-353). The option is passed only to a release that takes
+  it; asking for it on one that does not logs a warning.
 - A LiveKit bot that has spoken leaves its conference instead of hanging
   (RMK-350). In livekit-rtc 1.1.20 a `publish_track` or `unpublish_track`
   that fails leaves the room's event listener stuck: the room stops
