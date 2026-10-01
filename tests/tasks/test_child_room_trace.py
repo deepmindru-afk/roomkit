@@ -19,11 +19,12 @@ import pytest
 from roomkit.channels.ai import AIChannel
 from roomkit.core.event_router import BroadcastResult
 from roomkit.core.framework import RoomKit
-from roomkit.core.mixins._child_execution import _collect_answer
+from roomkit.core.mixins._child_execution import _broadcast_and_collect, _collect_answer
 from roomkit.core.mixins.delegation import _persist_child_stream, run_agent_in_child_room
-from roomkit.models.enums import ChannelType, EventType
+from roomkit.models.enums import ChannelCategory, ChannelType, EventType
 from roomkit.models.event import EventSource, RoomEvent, TextContent, ToolCallContent
 from roomkit.models.room import Room
+from roomkit.models.store_filter import EventFilter
 from roomkit.models.streaming import ThinkingDeltaMarker, ToolCallEndMarker, ToolCallStartMarker
 from roomkit.providers.ai.base import AIImagePart, AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
@@ -413,3 +414,19 @@ class TestRunAgentNonStreaming:
         persisted_types = [e.type for e in kit.store.added]
         assert EventType.TOOL_CALL_END in persisted_types
         assert persisted_types.count(EventType.MESSAGE) == 2  # task + answer
+
+
+async def test_a_muted_worker_answer_is_committed_once() -> None:
+    """A delegated room's trace commits each answer once: a muted worker's
+    answer used to be stored twice under one id, BLOCKED by the router and
+    DELIVERED by the trace (found reviewing RMK-344)."""
+    kit = RoomKit()
+    kit.register_channel(AIChannel("ai1", provider=MockAIProvider(responses=["W1"])))
+    await kit.create_room(room_id="child")
+    await kit.attach_channel("child", "ai1", category=ChannelCategory.INTELLIGENCE, muted=True)
+
+    await _broadcast_and_collect(kit, "child", "task")
+
+    events = await kit.store.list_events("child", event_filter=EventFilter(include_blocked=True))
+    assert len([e for e in events if e.source.channel_id == "ai1"]) == 1
+    await kit.close()

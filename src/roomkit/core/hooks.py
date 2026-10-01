@@ -196,6 +196,10 @@ class HookEngine:
             )
         )
 
+    def has_sync_hooks(self, room_id: str, trigger: HookTrigger, event: RoomEvent) -> bool:
+        """Whether a SYNC hook of *trigger* applies to *event* in *room_id*."""
+        return bool(self._get_hooks(room_id, trigger, HookExecution.SYNC, event=event))
+
     def register(self, hook: HookRegistration) -> None:
         """Register a global hook."""
         self._check_lock_placement(hook, None)

@@ -205,14 +205,7 @@ class DeliveryHandle:
         await asyncio.wait({self._consumer})
         if self._cascade.cancelled is not None:
             await self._cascade.wait_drained()
-        self._result.delivery_results = self._cascade.delivery_results
-        if not self._result.duplicate:
-            self._result.unavailable_targets = list(self._cascade.unavailable_targets)
-        self._result.response_metadata.update(self._cascade.response_metadata)
-        self._result.response_events = list(self._cascade.response_events)
-        if self._result.error is None:
-            self._result.error = self._cascade.error
-        self._result.cancellation_reason = self._cascade.cancelled
+        self._result.report_cascade(self._cascade)
         return self._result
 
 
@@ -283,6 +276,23 @@ class InboundResult(BaseModel):
     Whenever ``blocked`` is ``False`` the handle is there; a hook refusal,
     decided inside the locked region, gets one too (its near-empty cascade
     resolves at once)."""
+
+    def report_cascade(self, cascade: _CascadeLike) -> None:
+        """Report what the caller's completed *cascade* delivered (RFC §10.1
+        step 18): its delivery set, the answers it committed, its record, and
+        its error or cancellation unless the result already names an error.
+
+        The one report of a cascade, whichever call waited for it: an inbound
+        event, a deferred delivery's handle, a regeneration.
+        """
+        self.delivery_results = cascade.delivery_results
+        if not self.duplicate:
+            self.unavailable_targets = list(cascade.unavailable_targets)
+        self.response_metadata.update(cascade.response_metadata)
+        self.response_events = list(cascade.response_events)
+        if self.error is None:
+            self.error = cascade.error
+        self.cancellation_reason = cascade.cancelled
 
 
 class DeliveryError(BaseModel):

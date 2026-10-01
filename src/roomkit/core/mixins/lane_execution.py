@@ -172,6 +172,7 @@ class LaneExecutionMixin(HelpersMixin):
     _handle_block: Any  # InboundLockedMixin
     _gate_commit: Any  # InboundLockedMixin
     _store_blocked: Any  # InboundLockedMixin
+    _announce_blocked: Any  # InboundLockedMixin
     _process_streaming_responses: Any  # InboundStreamingMixin
 
     # -- The planned commit gate --
@@ -236,9 +237,9 @@ class LaneExecutionMixin(HelpersMixin):
     ) -> RoomEvent | None:
         """Commit an event and hand its delivery to the room's lane.
 
-        The one entry point for a caller that owns an event end to end —
-        a greeting, a streamed segment — and that
-        used to commit it and then broadcast it where it stood. Inline
+        The one entry point for a caller that owns an event end to end (a
+        greeting, a streamed segment) rather than committing it and then
+        broadcasting it where it stands. Inline
         execution satisfies per-room order only while nothing else can
         deliver for the room (RFC §10.2), and committing publishes the
         index on the delivery cursor, which is precisely what releases the
@@ -798,12 +799,8 @@ class LaneExecutionMixin(HelpersMixin):
                 },
             )
         else:
-            await self._emit_framework_event(
-                "event_blocked",
-                room_id=room_id,
-                event_id=blocked.id,
-                channel_id=blocked.source.channel_id,
-                data={"reason": blocked.blocked_by, "blocked_by": blocked.blocked_by},
+            await self._announce_blocked(
+                room_id, blocked, reason=blocked.blocked_by, blocked_by=blocked.blocked_by
             )
 
     async def _reentry_commit_pass(
@@ -943,6 +940,23 @@ class LaneExecutionMixin(HelpersMixin):
                 return
             await self._commit_reentry(room_id, decision, response_visibility, cascade)
 
+    def _reentry_plan_factory(
+        self, ready: _Ready, response_visibility: str | None
+    ) -> Callable[[RoomEvent], DeliveryPlan]:
+        """The plan builder of a response its gates accepted, called on the
+        committed event: its delivery set, scoped as its trigger asked, with
+        its hooks' tasks and observations for after delivery."""
+        router = self._get_router()
+
+        def factory(committed: RoomEvent) -> DeliveryPlan:
+            child = router.plan(committed, ready.source_binding, ready.context)
+            child.response_visibility = response_visibility
+            child.hook_tasks = list(ready.sync_result.tasks)
+            child.hook_observations = list(ready.sync_result.observations)
+            return child
+
+        return factory
+
     async def _commit_reentry(
         self,
         room_id: str,
@@ -952,21 +966,8 @@ class LaneExecutionMixin(HelpersMixin):
     ) -> None:
         """Commit a response its gates accepted and lane its delivery (RFC
         §10.1 step 12), under the lock its pass holds."""
-        router = self._get_router()
         reentry, binding = ready.event, ready.source_binding
         sync_result, context = ready.sync_result, ready.context
-
-        def factory(
-            committed: RoomEvent,
-            _binding: Any = binding,
-            _ctx: Any = context,
-            _sync: Any = sync_result,
-        ) -> DeliveryPlan:
-            child = router.plan(committed, _binding, _ctx)
-            child.response_visibility = response_visibility
-            child.hook_tasks = list(_sync.tasks)
-            child.hook_observations = list(_sync.observations)
-            return child
 
         # Commit the response BEFORE delivering any events its hook
         # injected: the response causes the injection, so it takes the
@@ -990,7 +991,7 @@ class LaneExecutionMixin(HelpersMixin):
                 room_id,
                 reentry.model_copy(update={"status": EventStatus.DELIVERED}),
                 cascade,
-                factory,
+                self._reentry_plan_factory(ready, response_visibility),
             )
         if stored is not None:
             cascade.response_events.append(stored)

@@ -328,9 +328,8 @@ class RegenerateMixin(HelpersMixin):
         stream_error, stream_record = await self._finish_cascade(cascade, room_id)
         record.update(stream_record)
 
-        return InboundResult(
-            event=trigger,
-            error=stream_error or broadcast_error,
-            response_metadata=record,
-            response_events=list(cascade.response_events),
+        result = InboundResult(
+            event=trigger, error=stream_error or broadcast_error, response_metadata=record
         )
+        result.report_cascade(cascade)
+        return result

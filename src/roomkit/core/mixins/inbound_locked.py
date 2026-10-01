@@ -43,6 +43,7 @@ if TYPE_CHECKING:
     from roomkit.core.event_router import EventRouter
     from roomkit.core.hooks import HookEngine, SyncPipelineResult
     from roomkit.core.lanes import DeliveryCascade
+    from roomkit.models.channel import ChannelBinding
     from roomkit.store.base import ConversationStore
 
 logger = logging.getLogger("roomkit.framework")
@@ -72,16 +73,37 @@ class _Blocked:
     tasks: list[Task]
     observations: list[Observation]
 
+    @classmethod
+    def after_hooks(
+        cls,
+        event: RoomEvent,
+        context: RoomContext,
+        sync_result: SyncPipelineResult,
+        *,
+        reason: str | None,
+        blocked_by: str | None,
+    ) -> _Blocked:
+        """A block that keeps what the hooks decided (RFC §7.5 rule 3)."""
+        return cls(
+            event,
+            context,
+            reason=reason,
+            blocked_by=blocked_by,
+            injected_events=sync_result.injected_events,
+            tasks=sync_result.tasks,
+            observations=sync_result.observations,
+        )
+
 
 @dataclass(slots=True, eq=False)
 class _Ready:
     """Decision returned by ``_gate_commit``: every gate passed and the
     event is ready to commit (RFC §10.1 step 12).
 
-    The commit is deliberately NOT performed by ``_run_precommit`` — it runs
-    in :meth:`_run_commit`, outside the ``process_timeout`` window, because a
-    timeout that expires mid-commit would leave a committed event reported as
-    blocked (§13.6 MUST NOT).
+    The gate never commits. The inbound path commits in :meth:`_run_commit`,
+    outside the ``process_timeout`` window, because a timeout that expires
+    mid-commit would leave a committed event reported as blocked (§13.6 MUST
+    NOT); a reentry pass in ``_commit_reentry``; a streamed row on its lane.
     """
 
     event: RoomEvent
@@ -512,31 +534,22 @@ class InboundLockedMixin(HelpersMixin):
 
         Decides only: a :class:`_Blocked` carries what the hooks decided, for
         :meth:`_store_blocked`; a :class:`_Ready` carries the event as the
-        hooks left it. The source's binding is read from *context*, built
-        under the room lock (RFC §10.1 steps 6 and 12).
+        hooks left it, with its source's binding as the hooks left it
+        (:meth:`_source_binding`).
         """
+        hooked = self._hook_engine.has_sync_hooks(room_id, HookTrigger.BEFORE_BROADCAST, event)
         # Run sync hooks (before_broadcast). After an off-lock check (RFC
         # §9.5.1) its outcome comes first and only the locked hooks run here.
         sync_result = await self._run_before_broadcast(room_id, event, context, precheck)
-
-        # Emit framework events for any hook errors
-        for hook_err in sync_result.hook_errors:
-            await self._emit_framework_event(
-                "hook_error",
-                room_id=room_id,
-                event_id=event.id,
-                data=hook_err,
-            )
+        await self._announce_hook_errors(room_id, event, sync_result)
 
         if not sync_result.allowed:
-            return _Blocked(
+            return _Blocked.after_hooks(
                 event,
                 context,
+                sync_result,
                 reason=sync_result.reason,
                 blocked_by=sync_result.blocked_by,
-                injected_events=sync_result.injected_events,
-                tasks=sync_result.tasks,
-                observations=sync_result.observations,
             )
 
         # Use potentially modified event. HookResult.event carries whatever
@@ -549,20 +562,43 @@ class InboundLockedMixin(HelpersMixin):
         # audit, still collecting hook side effects (RFC §7.5 rule 3 — side
         # effects are ALWAYS collected), and stop before broadcast. The source
         # binding read here is the one the broadcast plans with.
-        source_binding = context.get_binding(event.source.channel_id)
+        source_binding = await self._source_binding(room_id, event, context, hooked=hooked)
         reason = _source_block_reason(source_binding)
         if reason is not None:
-            return _Blocked(
-                event,
-                context,
-                reason=reason,
-                blocked_by=reason,
-                injected_events=sync_result.injected_events,
-                tasks=sync_result.tasks,
-                observations=sync_result.observations,
+            return _Blocked.after_hooks(
+                event, context, sync_result, reason=reason, blocked_by=reason
             )
 
         return _Ready(event, source_binding, sync_result, context, None)
+
+    async def _source_binding(
+        self, room_id: str, event: RoomEvent, context: RoomContext, *, hooked: bool
+    ) -> ChannelBinding | None:
+        """The binding *event*'s source writes with, as its hooks left it.
+
+        *context* holds the bindings as they were when it was built. For an
+        inbound event and a reentry pass it was built under the room lock
+        (RFC §10.1 steps 6 and 12), where only a hook can change one since (a
+        moderation hook muting the source of the message it reads); for a
+        streamed row, at the start of the stream, the snapshot its delivery
+        is planned with. The store is read again only when a BEFORE_BROADCAST
+        hook ran for *event*.
+        """
+        if hooked:
+            return await self._store.get_binding(room_id, event.source.channel_id)
+        return context.get_binding(event.source.channel_id)
+
+    async def _announce_hook_errors(
+        self, room_id: str, event: RoomEvent, sync_result: SyncPipelineResult
+    ) -> None:
+        """Emit a ``hook_error`` framework event per hook that failed on *event*."""
+        for hook_err in sync_result.hook_errors:
+            await self._emit_framework_event(
+                "hook_error",
+                room_id=room_id,
+                event_id=event.id,
+                data=hook_err,
+            )
 
     async def _run_before_broadcast(
         self,
@@ -715,17 +751,26 @@ class InboundLockedMixin(HelpersMixin):
         # timeline holds what was said in the room, and nobody said this.
         if event.type != EventType.INSTRUCTION:
             blocked_event = await self._commit_indexed(room_id, blocked_event)
+        await self._announce_blocked(room_id, blocked_event, reason=reason, blocked_by=blocked_by)
+        await self._lane_injected_events(injected_events, room_id, context, cascade)
+        return blocked_event
+
+    async def _announce_blocked(
+        self, room_id: str, blocked: RoomEvent, *, reason: str | None, blocked_by: str | None
+    ) -> None:
+        """Emit ``event_blocked`` for a BLOCKED record, naming its source.
+
+        The one announcement of a block, whichever path stored the record (a
+        hook, a source that cannot write, a router block), so subscribers read
+        the same fields everywhere.
+        """
         await self._emit_framework_event(
             "event_blocked",
             room_id=room_id,
-            event_id=blocked_event.id,
-            data={
-                "reason": reason,
-                "blocked_by": blocked_by,
-            },
+            event_id=blocked.id,
+            channel_id=blocked.source.channel_id,
+            data={"reason": reason, "blocked_by": blocked_by},
         )
-        await self._lane_injected_events(injected_events, room_id, context, cascade)
-        return blocked_event
 
     async def _store_blocked(
         self, room_id: str, blocked: _Blocked, cascade: DeliveryCascade

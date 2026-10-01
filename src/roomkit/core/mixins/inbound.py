@@ -463,20 +463,13 @@ class InboundMixin(HelpersMixin):
         # headless caller can react (interactive callers ignore it — the
         # ON_ERROR hooks already fired an error card).
         stream_error, record = await self._finish_cascade(cascade, room_id)
-        result.cancellation_reason = cascade.cancelled
-        if cascade.error is not None and result.error is None:
-            result.error = cascade.error
+        # Step 18 reports the delivery set the caller waited for, read after
+        # the streams: what the other agents answered to a streamed segment
+        # re-entered while it was read.
+        result.report_cascade(cascade)
         if stream_error is not None and result.error is None:
             result.error = stream_error
-        # Step 18 reports the delivery set the caller waited for.
-        result.delivery_results = cascade.delivery_results
-        if not result.duplicate:
-            result.unavailable_targets = list(cascade.unavailable_targets)
-        result.response_metadata.update(cascade.response_metadata)
         result.response_metadata.update(record)
-        # Read after the streams: what the other agents answered to a
-        # streamed segment re-entered while it was read.
-        result.response_events = list(cascade.response_events)
 
         await self._connect_session_if_ready(message, channel, room_id, result)
         return result

@@ -99,12 +99,21 @@ def _user_msg() -> InboundMessage:
 class _Room:
     """A room with a streaming transport, one agent, and a BEFORE_BROADCAST
     hook that records each event of the *watched* channel and files a task
-    for it, and blocks it when asked to."""
+    for it; asked to, it blocks the event, or mutes the event's source and
+    lets it through."""
 
-    def __init__(self, *, watch: str = "ai1", block: bool = False, max_chain_depth: int = 5):
+    def __init__(
+        self,
+        *,
+        watch: str = "ai1",
+        block: bool = False,
+        mutes: bool = False,
+        max_chain_depth: int = 5,
+    ) -> None:
         self.kit = RoomKit(max_chain_depth=max_chain_depth)
         self.transport = _StreamingTransport("sms1")
         self.seen: list[str] = []
+        self.blocked: list[FrameworkEvent] = []
         self.kit.register_channel(self.transport)
 
         @self.kit.hook(HookTrigger.BEFORE_BROADCAST, name="moderation")
@@ -115,7 +124,13 @@ class _Room:
             task = Task(id=f"t{len(self.seen)}", room_id=event.room_id, title=_body(event))
             if block:
                 return HookResult.block("moderated", tasks=[task])
+            if mutes:
+                await self.kit.mute(event.room_id, event.source.channel_id)
             return HookResult(action="allow", tasks=[task])
+
+        @self.kit.on("event_blocked")
+        async def on_blocked(event: FrameworkEvent) -> None:
+            self.blocked.append(event)
 
     async def attach(
         self,
@@ -204,25 +219,78 @@ async def test_a_muted_agent_stream_is_closed_unread() -> None:
     assert (room.seen, await room.rows(), provider.calls) == ([], [], [])
 
 
-@pytest.mark.parametrize("path", ["inbound", "buffered", "streamed"])
-async def test_a_hook_that_blocks_names_the_block_before_the_right_to_write(path: str) -> None:
-    """Step 9 runs before step 11 wherever an event commits: a source that
-    cannot write and that a hook blocks is recorded as the hook's block."""
-    if path == "inbound":
-        room = _Room(watch="sms1", block=True)
-        await room.attach(_agent(False, "A1"), transport_access=Access.READ_ONLY)
-        await room.kit.process_inbound(_user_msg(), room_id="r1")
-        assert await room.rows("sms1") == [("hi", EventStatus.BLOCKED, "moderation")]
-        assert await room.task_titles() == ["hi"]
-        return
+async def test_a_hook_that_blocks_an_inbound_names_the_block_before_the_right_to_write() -> None:
+    """Step 9 runs before step 11: a source that cannot write and that a
+    hook blocks is recorded as the hook's block."""
+    room = _Room(watch="sms1", block=True)
+    await room.attach(_agent(False, "A1"), transport_access=Access.READ_ONLY)
 
+    await room.kit.process_inbound(_user_msg(), room_id="r1")
+
+    assert await room.rows("sms1") == [("hi", EventStatus.BLOCKED, "moderation")]
+    assert await room.task_titles() == ["hi"]
+
+
+async def test_a_hook_that_blocks_an_answer_names_the_block_before_the_right_to_write(
+    streaming: bool,
+) -> None:
     room = _Room(block=True)
-    await room.attach(_agent(path == "streamed", "A1"), access=Access.READ_ONLY)
+    await room.attach(_agent(streaming, "A1"), access=Access.READ_ONLY)
 
     await room.kit.process_inbound(_user_msg(), room_id="r1")
 
     assert await room.rows() == [("A1", EventStatus.BLOCKED, "moderation")]
     assert await room.task_titles() == ["A1"]
+
+
+@pytest.mark.parametrize("path", ["inbound", "buffered", "streamed"])
+async def test_a_hook_that_mutes_the_source_blocks_the_event_it_reads(path: str) -> None:
+    """The right to write is read as the hooks left it: a moderation hook
+    that mutes the source of the event it reads has that event stored
+    BLOCKED ``source_muted``, not only the ones after it."""
+    if path == "inbound":
+        room = _Room(watch="sms1", mutes=True)
+        await room.attach(_agent(False, "A1"))
+        await room.kit.process_inbound(_user_msg(), room_id="r1")
+        assert await room.rows("sms1") == [("hi", EventStatus.BLOCKED, "source_muted")]
+        return
+
+    room = _Room(mutes=True)
+    await room.attach(_agent(path == "streamed", "A1"))
+
+    await room.kit.process_inbound(_user_msg(), room_id="r1")
+
+    assert await room.rows() == [("A1", EventStatus.BLOCKED, "source_muted")]
+    assert [e for e in room.transport.delivered if e.source.channel_id == "ai1"] == []
+
+
+@pytest.mark.parametrize(
+    ("access", "muted", "streaming", "blocked_by"),
+    [
+        (Access.READ_ONLY, False, False, "source_read_only"),
+        (Access.READ_ONLY, False, True, "source_read_only"),
+        (Access.READ_WRITE, True, False, "source_muted"),
+    ],
+    ids=["read-only", "read-only-streamed", "muted"],
+)
+async def test_event_blocked_names_the_answer_source(
+    access: Access, muted: bool, streaming: bool, blocked_by: str
+) -> None:
+    room = _Room()
+    await room.attach(_agent(streaming, "A1"), access=access, muted=muted)
+
+    await room.kit.process_inbound(_user_msg(), room_id="r1")
+
+    assert [(e.channel_id, e.data["blocked_by"]) for e in room.blocked] == [("ai1", blocked_by)]
+
+
+async def test_event_blocked_names_an_inbound_source() -> None:
+    room = _Room(watch="sms1", block=True)
+    await room.attach(_agent(False, "A1"))
+
+    await room.kit.process_inbound(_user_msg(), room_id="r1")
+
+    assert [(e.channel_id, e.data["blocked_by"]) for e in room.blocked] == [("sms1", "moderation")]
 
 
 async def test_a_hook_error_on_an_answer_is_announced(streaming: bool) -> None:
@@ -264,17 +332,29 @@ async def test_a_regenerated_answer_meets_its_hooks(streaming: bool) -> None:
     assert [_body(e) for e in result.response_events] == ["A2"]
 
 
-async def test_a_read_only_agent_regenerated_answer_is_blocked(streaming: bool) -> None:
+@pytest.mark.parametrize(
+    ("access", "muted", "streaming", "blocked_by"),
+    [
+        (Access.READ_ONLY, False, False, "source_read_only"),
+        (Access.READ_ONLY, False, True, "source_read_only"),
+        (Access.READ_WRITE, True, False, "source_muted"),
+    ],
+    ids=["read-only", "read-only-streamed", "muted"],
+)
+async def test_a_non_writable_agent_regenerated_answer_is_blocked(
+    access: Access, muted: bool, streaming: bool, blocked_by: str
+) -> None:
     room = _Room()
-    await room.attach(_agent(streaming, "A1", "A2"), access=Access.READ_ONLY)
+    await room.attach(_agent(streaming, "A1", "A2"), access=access, muted=muted)
     await room.kit.process_inbound(_user_msg(), room_id="r1")
 
     result = await room.kit.regenerate_response("r1")
 
     assert result is not None and result.response_events == []
+    assert room.seen == ["A1", "A2"]
     assert await room.rows() == [
-        ("A1", EventStatus.BLOCKED, "source_read_only"),
-        ("A2", EventStatus.BLOCKED, "source_read_only"),
+        ("A1", EventStatus.BLOCKED, blocked_by),
+        ("A2", EventStatus.BLOCKED, blocked_by),
     ]
 
 
@@ -290,3 +370,15 @@ async def test_a_regeneration_spends_the_reentry_budget() -> None:
 
     capped = [row for row in await room.rows() if row[2] == "reentry_loop_cap"]
     assert len(capped) == 2
+
+
+async def test_a_muted_agent_answers_count_against_the_reentry_budget() -> None:
+    """Every response that re-enters counts (RFC §8.3), a muted source's
+    included: past the budget its answer is capped, not stored muted."""
+    room = _Room(max_chain_depth=2)
+    await room.attach(_Chatty("ai1", count=21), muted=True)
+
+    await room.kit.process_inbound(_user_msg(), room_id="r1")
+
+    reasons = [row[2] for row in await room.rows()]
+    assert reasons == ["source_muted"] * 20 + ["reentry_loop_cap"]

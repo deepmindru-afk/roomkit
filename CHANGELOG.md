@@ -152,12 +152,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     live to a streaming channel. A muted agent's stream is still closed before
     generation;
   - a hook error on a response now emits the `hook_error` framework event, as
-    on an inbound event.
+    on an inbound event;
+  - `event_blocked` names the blocked record's source (`channel_id`) on every
+    path, an inbound event's block included;
+  - a muted or read-only agent's answers count against the reentry budget,
+    like any answer that re-enters;
+  - `regenerate_response()` reports its cascade like `process_inbound()`
+    (error, cancellation, `response_events`).
 
   The inbound, reentry and streamed-row paths share one gate
-  (`_gate_commit`), which reads the source's binding from the context built
-  under the room lock: an inbound event no longer reads it from the store a
-  second time.
+  (`_gate_commit`). It reads the source's binding from the context the pass
+  built, and from the store only when a `BEFORE_BROADCAST` hook ran for the
+  event, so a hook that mutes the source of the message it reads still
+  blocks that message; an inbound event in a room with no such hook no
+  longer reads the binding from the store a second time.
 - A `null` in a binding's metadata now defers to the next level for every
   per-turn setting (`system_prompt`, `temperature`, `max_tokens`,
   `thinking_budget`, `enable_thinking`, `reasoning_effort`, `response_schema`,

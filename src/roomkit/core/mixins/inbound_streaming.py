@@ -355,7 +355,7 @@ class InboundStreamingMixin(HelpersMixin):
     ) -> list[Any]:
         """Find transport channels that support streaming delivery.
 
-        None for a source that cannot write (RFC §7.5 rule 2): a read-only
+        No target for a source that cannot write (RFC §7.5 rule 2): a read-only
         agent's stream is read to its end, each row stored BLOCKED by the
         commit gate, and nothing of it is piped live.
         """
