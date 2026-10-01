@@ -697,7 +697,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
         except ProviderError as exc:
             if not interrupts_turn(exc, after_round=turn.saw_tool_call):
                 raise
-            logger.warning("Streaming tool loop interrupted by a provider error after a round")
+            logger.exception("Streaming tool loop interrupted by a provider error after a round")
             turn.error = exc
             yield turn.end("error", index)
             raise
