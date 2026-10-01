@@ -465,3 +465,42 @@ def _ensure_np() -> None:
     import roomkit.providers.anam.realtime as _mod
 
     _mod._np = np
+
+
+class TestAnamDisconnectIsBounded:
+    """RMK-353: disconnect returns even when Anam's WebRTC close hangs.
+
+    anam 0.11 can hang in ``__aexit__`` (aiortc's sender stop waits forever
+    once the mic track ran); disconnect awaited it with no bound, so Ctrl+C
+    never ended an avatar example.
+    """
+
+    async def test_a_hanging_close_is_given_up_after_the_bound(
+        self,
+        anam_module: ModuleType,
+        config: AnamConfig,
+        session: VoiceSession,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        with patch.dict(sys.modules, {"anam": anam_module}):
+            import roomkit.providers.anam.realtime as _mod
+            from roomkit.providers.anam.realtime import AnamRealtimeProvider
+
+            _mod._anam_mod = None
+            _mod._np = None
+            provider = AnamRealtimeProvider(config)
+            await provider.connect(session)
+
+            async def hang(*_exc: Any) -> None:
+                await asyncio.Event().wait()
+
+            provider._states[session.id].anam_ctx.__aexit__ = hang
+
+            with (
+                patch.object(_mod, "CLOSE_TIMEOUT_S", 0.05),
+                caplog.at_level("WARNING", logger="roomkit.providers.anam.realtime"),
+            ):
+                await asyncio.wait_for(provider.disconnect(session), timeout=2)
+
+            assert session.state == VoiceSessionState.ENDED
+            assert "did not close" in caplog.text

@@ -11,7 +11,6 @@ Requirements:
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 from dataclasses import dataclass
 from typing import Any
@@ -26,6 +25,11 @@ from roomkit.voice.realtime.provider import (
 )
 
 logger = logging.getLogger("roomkit.providers.anam.realtime")
+
+# How long disconnect waits for Anam's WebRTC session to close. anam 0.11 can
+# hang there for good once the mic track has run (aiortc's sender stop never
+# returns), which would keep an application from shutting down.
+CLOSE_TIMEOUT_S = 5.0
 
 # Lazy-loaded optional dependencies
 _anam_mod: Any = None
@@ -292,10 +296,20 @@ class AnamRealtimeProvider(RealtimeAudioVideoProvider):
         if state.responding:
             await self._fire(self._response_end_callbacks, session, label="response_end")
 
-        # Exit the async context manager (closes WebRTC session)
+        # Exit the async context manager (closes WebRTC session), bounded
         if state.anam_ctx is not None:
-            with contextlib.suppress(Exception):
-                await state.anam_ctx.__aexit__(None, None, None)
+            try:
+                await asyncio.wait_for(
+                    state.anam_ctx.__aexit__(None, None, None), timeout=CLOSE_TIMEOUT_S
+                )
+            except TimeoutError:
+                logger.warning(
+                    "Anam session %s did not close within %.0f s; giving up on it",
+                    session.id,
+                    CLOSE_TIMEOUT_S,
+                )
+            except Exception:
+                logger.debug("Anam session close failed: %s", session.id, exc_info=True)
 
         session.state = VoiceSessionState.ENDED
         logger.info("Anam session disconnected: %s", session.id)

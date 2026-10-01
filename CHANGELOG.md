@@ -165,6 +165,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `AnamRealtimeProvider.disconnect()` gives up on Anam's WebRTC close after
+  5 s (`CLOSE_TIMEOUT_S`) and logs a warning (RMK-353): anam 0.11 can hang
+  there for good once the mic track has run (aiortc's sender stop never
+  returns), so Ctrl+C never ended an avatar application.
 - `WebSocketRealtimeTransport` logs a send to a client that already hung up
   at DEBUG (RMK-353): the channel tells the client `session_ended` after the
   socket closed, and every normal end of a session printed an ERROR
