@@ -768,13 +768,15 @@ class ModelInfo(BaseModel):
         deprecated: Whether the provider marks the model deprecated.
         capabilities: Capability tags. In a live listing, the tags the
             source reports (e.g. Ollama's ``"completion"``, ``"embedding"``,
-            ``"vision"``, ``"tools"``), and ``"transcription"`` or
-            ``"speech"`` on a speech-to-text or text-to-speech model
-            (:mod:`roomkit.providers.ai.model_tags`). A curated catalog
-            (``available_models()``) may carry provider-specific tags here
-            too, internal routing flags among them (``chat_tools_refused``,
-            ``deferred_tools``): only ``transcription``, ``speech`` and
-            ``image_gen`` are shared across providers. Empty when the source
+            ``"vision"``, ``"tools"``), or, where it reports no model type
+            at all, the public tags of the provider's catalog (PolarGrid);
+            and ``"transcription"`` or ``"speech"`` on a speech-to-text or
+            text-to-speech model (:mod:`roomkit.providers.ai.model_tags`).
+            A curated catalog (``available_models()``) may carry
+            provider-specific tags here too, internal routing flags among
+            them (``chat_tools_refused``, ``deferred_tools``): only
+            ``transcription``, ``speech`` and ``image_gen`` are defined
+            once, with one meaning across providers. Empty when the source
             reports none — consumers treat empty as "unknown, allow
             everywhere" rather than "none".
         pricing: Vendor list price for this model, if published. It lives
