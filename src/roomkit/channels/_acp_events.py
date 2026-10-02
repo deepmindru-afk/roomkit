@@ -6,7 +6,8 @@ import logging
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from copy import deepcopy
-from typing import TYPE_CHECKING, Any, ClassVar
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from roomkit.channels._acp_client import (
     _SDK,
@@ -40,6 +41,55 @@ if TYPE_CHECKING:
 logger = logging.getLogger("roomkit.channels.acp")
 
 _TURN_ENDED_ERROR = "The ACP turn ended before the tool reported a result"
+
+
+@dataclass(frozen=True, slots=True)
+class _ToolEnd:
+    """How an ACP tool call ended, as each report of its end states it."""
+
+    result: Any
+    status: Literal["completed", "failed"]
+    error: str | None
+    duration_ms: int
+    display: Any
+    """The agent's display payload for the call (ACP tool content), dumped."""
+
+
+def _tool_end(tool: _ToolState, status: str, error: str | None) -> _ToolEnd:
+    """Read how a tool call ended off what the agent reported of it."""
+    display = _model_dump(tool.content) if tool.content is not None else None
+    result = tool.raw_output
+    if result is None and display is not None:
+        result = display
+    end_status: Literal["completed", "failed"] = "failed" if status == "failed" else "completed"
+    # A tool cut short has no result to explain itself with, so the caller
+    # says why instead: "never returned" and "returned an error" read the
+    # same in the timeline otherwise.
+    if error is None and end_status == "failed" and result is not None:
+        # Bounded first: the text of a raw output carrying a screenshot
+        # would put its base64 in the event's error field whole.
+        error = _result_text(tool_event_result(result))
+    duration_ms = max(0, int((time.monotonic() - tool.started_at) * 1000))
+    return _ToolEnd(result, end_status, error, duration_ms, display)
+
+
+def _end_marker(tool: _ToolState, end: _ToolEnd) -> ToolCallEndMarker:
+    """The stream's END marker for a tool call, which the segment writer stores."""
+    # ACP's tool content is the display-intended payload (diffs, formatted
+    # text); carry it beside the raw result so UI surfaces can render it —
+    # structured_content is the field they read.
+    structured = {"acp_content": end.display} if end.display is not None else None
+    return ToolCallEndMarker(
+        tool_name=tool.name,
+        tool_id=tool.tool_id,
+        arguments=tool.arguments,
+        result=_model_dump(end.result),
+        status=end.status,
+        duration_ms=end.duration_ms,
+        error=end.error,
+        structured_content=structured,
+        outcome="failed" if end.status == "failed" else "served",
+    )
 
 
 class ACPEventsMixin:
@@ -84,6 +134,7 @@ class ACPEventsMixin:
                     EphemeralEventType.THINKING_START,
                     {"thinking": "", "round": 0},
                 )
+            turn.thinking.append(thinking)
             turn.queue.put_nowait(ThinkingDeltaMarker(thinking=thinking))
         room_id = self._session_rooms.get(session_id)
         if room_id is not None:
@@ -364,69 +415,51 @@ class ACPEventsMixin:
         *,
         error: str | None = None,
     ) -> None:
+        """Close a tool call once, in every report its end reaches."""
         if tool.finished:
             return
         tool.finished = True
-        duration_ms = max(0, int((time.monotonic() - tool.started_at) * 1000))
-        content_dump = _model_dump(tool.content) if tool.content is not None else None
-        result = tool.raw_output
-        if result is None and content_dump is not None:
-            result = content_dump
-        marker_status = "failed" if status == "failed" else "completed"
-        # A tool cut short has no result to explain itself with, so the caller
-        # says why instead: "never returned" and "returned an error" read the
-        # same in the timeline otherwise.
-        if error is None and marker_status == "failed" and result is not None:
-            # Bounded first: the text of a raw output carrying a screenshot
-            # would put its base64 in the event's error field whole.
-            error = _result_text(tool_event_result(result))
+        end = _tool_end(tool, status, error)
         if turn is not None:
-            # ACP's tool content is the display-intended payload (diffs,
-            # formatted text); carry it beside the raw result so UI surfaces
-            # can render it — structured_content is the field they read.
-            structured = {"acp_content": content_dump} if content_dump is not None else None
-            turn.queue.put_nowait(
-                ToolCallEndMarker(
-                    tool_name=tool.name,
-                    tool_id=tool.tool_id,
-                    arguments=tool.arguments,
-                    result=_model_dump(result),
-                    status=marker_status,
-                    duration_ms=duration_ms,
-                    error=error,
-                    structured_content=structured,
-                    outcome="failed" if marker_status == "failed" else "served",
-                )
-            )
+            turn.queue.put_nowait(_end_marker(tool, end))
         if room_id is not None:
-            await self._publish(
-                room_id,
-                EphemeralEventType.TOOL_CALL_END,
-                {
-                    "tool_calls": [
-                        {
-                            "id": tool.tool_id,
-                            "name": tool.name,
-                            "result": (error or _result_text(result))[:500],
-                            "status": marker_status,
-                        }
-                    ],
-                    "round": 0,
-                    "duration_ms": duration_ms,
-                },
-            )
+            await self._publish_tool_end(room_id, tool, end)
         if self._external_tool_handler is not None:
-            try:
-                await self._external_tool_handler.on_tool_result(
-                    tool.name,
-                    tool.arguments,
-                    _result_text(result),
-                    is_error=marker_status == "failed",
-                    tool_call_id=tool.tool_id,
-                    room_id=room_id,
-                )
-            except Exception:
-                logger.exception("ACP external tool-result handler failed")
+            await self._report_tool_end(self._external_tool_handler, room_id, tool, end)
+
+    async def _publish_tool_end(self, room_id: str, tool: _ToolState, end: _ToolEnd) -> None:
+        await self._publish(
+            room_id,
+            EphemeralEventType.TOOL_CALL_END,
+            {
+                "tool_calls": [
+                    {
+                        "id": tool.tool_id,
+                        "name": tool.name,
+                        "result": (end.error or _result_text(end.result))[:500],
+                        "status": end.status,
+                    }
+                ],
+                "round": 0,
+                "duration_ms": end.duration_ms,
+            },
+        )
+
+    @staticmethod
+    async def _report_tool_end(
+        handler: ExternalToolHandler, room_id: str | None, tool: _ToolState, end: _ToolEnd
+    ) -> None:
+        try:
+            await handler.on_tool_result(
+                tool.name,
+                tool.arguments,
+                _result_text(end.result),
+                is_error=end.status == "failed",
+                tool_call_id=tool.tool_id,
+                room_id=room_id,
+            )
+        except Exception:
+            logger.exception("ACP external tool-result handler failed")
 
     async def _request_permission(
         self,

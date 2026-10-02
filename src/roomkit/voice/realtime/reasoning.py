@@ -275,7 +275,7 @@ class AIProviderReasoningBackend(ReasoningBackend):
         if text:
             parts.append(AITextPart(text=text))
         parts.extend(
-            AIToolCallPart(id=tc.id, name=tc.name, arguments=tc.arguments)
+            AIToolCallPart(id=tc.id, name=tc.name, arguments=tc.arguments, metadata=tc.metadata)
             for tc in response.tool_calls
         )
         history.append(AIMessage(role="assistant", content=parts))

@@ -248,6 +248,7 @@ class ACPTurnMixin:
                     channel_id=self.channel_id,
                     response_content=transcript,
                     segments=segments,
+                    thinking="".join(turn.thinking),
                     room_id=turn.room_id,
                     tool_calls_count=len(turn.tools),
                     usage=_usage_report(turn.tokens, turn.context),

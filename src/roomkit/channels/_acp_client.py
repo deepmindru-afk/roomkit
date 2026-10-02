@@ -69,6 +69,9 @@ class _TurnState:
     would copy the stretch on every one of them.
     """
 
+    thinking: list[str] = field(default_factory=list)
+    """The agent's thought chunks this turn, joined once at the report."""
+
     tokens: dict[str, int] = field(default_factory=dict)
     """Token counters the agent returned when the prompt ended."""
 

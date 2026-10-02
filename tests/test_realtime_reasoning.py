@@ -25,7 +25,7 @@ from roomkit.channels._realtime_delegation import (
 )
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 from roomkit.models.tool_call import ToolCallEvent
-from roomkit.providers.ai.base import AIResponse, AIToolCall
+from roomkit.providers.ai.base import AIResponse, AIToolCall, AIToolCallPart
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.voice.base import VoiceSession, VoiceSessionState
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
@@ -381,6 +381,49 @@ class TestAIProviderReasoningBackend:
             channel_id="rt-1",
             state=VoiceSessionState.ACTIVE,
         )
+
+    async def test_a_call_replays_with_its_metadata(self) -> None:
+        """A call's provider metadata (a Gemini thought signature) goes back
+        with it on the next round, as on the AI channel's loop (RMK-308)."""
+        provider = MockAIProvider(
+            ai_responses=[
+                AIResponse(
+                    content="",
+                    tool_calls=[
+                        AIToolCall(
+                            id="c1",
+                            name="lookup",
+                            arguments={"flight": "UA482"},
+                            metadata={"thought_signature": "TS"},
+                        )
+                    ],
+                ),
+                AIResponse(content="UA482 is cancelled."),
+            ]
+        )
+        backend = AIProviderReasoningBackend(provider)
+
+        async def execute(name: str, arguments: dict[str, Any]) -> str:
+            return '{"status": "cancelled"}'
+
+        request = ReasoningRequest(
+            session=self._session(),
+            delegation_id="d1",
+            transcript=[TranscriptLine("user", "Is UA482 running?")],
+            first=True,
+            tools=[LOOKUP],
+            execute_tool=execute,
+        )
+        _ = [o async for o in backend.run(request)]
+
+        replayed = [
+            part
+            for message in provider.calls[-1].messages
+            if isinstance(message.content, list)
+            for part in message.content
+            if isinstance(part, AIToolCallPart)
+        ]
+        assert [part.metadata for part in replayed] == [{"thought_signature": "TS"}]
 
     async def test_tool_round_then_answer(self) -> None:
         provider = MockAIProvider(

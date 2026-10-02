@@ -1466,6 +1466,7 @@ class TestEndOfTurnReport:
         # The tool call between the two chunks is a segment boundary.
         assert reports[0].response_content == "Working \n\ndone"
         assert reports[0].segments == ["Working ", "done"]
+        assert reports[0].thinking == "checking"
         assert reports[0].tool_calls_count == 1
         assert reports[0].latency_ms >= 0
         assert reports[0].streaming is True
