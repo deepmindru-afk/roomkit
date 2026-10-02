@@ -30,6 +30,7 @@ from roomkit.channels._realtime_response import RealtimeResponseMixin
 from roomkit.channels._realtime_speech import RealtimeSpeechMixin
 from roomkit.channels._realtime_tool_calls import ToolCallBook
 from roomkit.channels._realtime_tool_executor import report_interrupted_calls
+from roomkit.channels._realtime_tool_gate import RealtimeToolGateMixin
 from roomkit.channels._realtime_tool_recovery import RealtimeToolRecoveryMixin
 from roomkit.channels._realtime_tools import RealtimeToolsMixin
 from roomkit.channels._realtime_transcription import RealtimeTranscriptionMixin
@@ -129,6 +130,7 @@ class _ConnectingSession:
 class RealtimeVoiceChannel(
     RealtimeToolRecoveryMixin,
     RealtimeToolsMixin,
+    RealtimeToolGateMixin,
     RealtimeDelegationMixin,
     RealtimeTranscriptionMixin,
     RealtimeSpeechMixin,
