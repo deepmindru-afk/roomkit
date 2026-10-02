@@ -29,6 +29,7 @@ from roomkit.providers.ai.base import (
     tool_call_of,
 )
 from roomkit.providers.ai.response_schema import checked_stream, schema_for_generate
+from roomkit.providers.ai.thinking_blocks import ThinkingBlocks
 from roomkit.providers.anthropic.config import AnthropicConfig
 from roomkit.providers.anthropic.models import MODELS
 from roomkit.providers.anthropic.request import build_kwargs
@@ -292,6 +293,11 @@ class AnthropicAIProvider(AIProvider):
                         cb = event.content_block
                         if hasattr(cb, "type") and cb.type == "tool_use":
                             yield blocks.open(event.index, cb)
+                        elif getattr(cb, "type", None) == "redacted_thinking":
+                            # Replayed as received, its opaque data and all.
+                            yield StreamThinkingDelta(
+                                thinking="", redacted=cb.data, block=event.index
+                            )
 
                     elif event.type == "content_block_delta" and hasattr(event.delta, "type"):
                         delta = event.delta
@@ -299,15 +305,14 @@ class AnthropicAIProvider(AIProvider):
                             if first_token:
                                 self._record_ttfb(t0)
                                 first_token = False
-                            yield StreamThinkingDelta(thinking=delta.thinking)
+                            yield StreamThinkingDelta(thinking=delta.thinking, block=event.index)
                         elif delta.type == "signature_delta":
                             # The thinking block's opaque signature arrives as
-                            # its own delta after the text. Surface it so the
-                            # block can be echoed back in history (Anthropic
-                            # 400s on a thinking block missing its signature).
+                            # its own delta after the text. Surface it, with
+                            # the block it signs, so each block is echoed back
+                            # with its own (RFC §6.4).
                             yield StreamThinkingDelta(
-                                thinking="",
-                                signature=delta.signature,
+                                thinking="", signature=delta.signature, block=event.index
                             )
                         elif delta.type == "text_delta":
                             if first_token:
@@ -364,17 +369,14 @@ class AnthropicAIProvider(AIProvider):
 
     async def generate(self, context: AIContext) -> AIResponse:
         """Generate by consuming the structured stream."""
-        thinking_parts: list[str] = []
-        thinking_signature: str | None = None
+        thinking = ThinkingBlocks()
         text_parts: list[str] = []
         tool_calls: list[AIToolCall] = []
         done_event: StreamDone | None = None
 
         async for event in self.generate_structured_stream(context):
             if isinstance(event, StreamThinkingDelta):
-                thinking_parts.append(event.thinking)
-                if event.signature:
-                    thinking_signature = event.signature
+                thinking.add(event)
             elif isinstance(event, StreamTextDelta):
                 text_parts.append(event.text)
             elif isinstance(event, StreamToolCall):
@@ -383,10 +385,13 @@ class AnthropicAIProvider(AIProvider):
                 done_event = event
 
         finish_reason = done_event.finish_reason if done_event else None
+        parts = thinking.parts()
+        signatures = [part.signature for part in parts if part.signature]
         return AIResponse(
             content="".join(text_parts),
-            thinking="".join(thinking_parts) if thinking_parts else None,
-            thinking_signature=thinking_signature,
+            thinking="".join(part.thinking for part in parts) or None,
+            thinking_signature=signatures[-1] if signatures else None,
+            thinking_parts=parts,
             finish_reason=finish_reason,
             usage=done_event.usage if done_event else {},
             metadata=done_event.metadata if done_event else {},

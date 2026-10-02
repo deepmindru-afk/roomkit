@@ -388,12 +388,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
         context.messages.append(
             AIMessage(
                 role="assistant",
-                content=self._build_assistant_parts(
-                    state.thinking,
-                    state.thinking_signature,
-                    state.text,
-                    [*state.provider_calls, *calls],
-                ),
+                content=state.assistant_parts([*state.provider_calls, *calls]),
             )
         )
         for call in calls:

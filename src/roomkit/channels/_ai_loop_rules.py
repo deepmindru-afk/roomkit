@@ -21,9 +21,6 @@ from roomkit.models.streaming import LoopEndReason
 from roomkit.providers.ai.base import (
     AIContext,
     AIMessage,
-    AITextPart,
-    AIThinkingPart,
-    AIToolCallPart,
     AIToolResultPart,
     ProviderError,
 )
@@ -39,11 +36,8 @@ from roomkit.tools._outcome import OutcomeKind, ToolOutcome
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from roomkit.channels.ai import _ContentPart
     from roomkit.providers.ai.base import (
         AIContext,
-        AIToolCall,
-        StreamToolCall,
     )
     from roomkit.telemetry.base import TelemetryProvider
     from roomkit.tools.context import _ToolLoopContext
@@ -429,30 +423,6 @@ class AIToolLoopRulesMixin(_AIChannelContract):
             context.messages.append(AIMessage(role="assistant", content=final_text))
         context.messages.append(AIMessage(role="user", content=nudge))
         return True
-
-    @staticmethod
-    def _build_assistant_parts(
-        thinking: str,
-        signature: str | None,
-        text: str,
-        tool_calls: Sequence[AIToolCall | StreamToolCall],
-    ) -> list[_ContentPart]:
-        """Assemble the assistant message parts for a tool round."""
-        parts: list[_ContentPart] = []
-        if thinking or signature:
-            parts.append(AIThinkingPart(thinking=thinking, signature=signature))
-        if text:
-            parts.append(AITextPart(text=text))
-        for tc in tool_calls:
-            parts.append(
-                AIToolCallPart(
-                    id=tc.id,
-                    name=tc.name,
-                    arguments=tc.arguments,
-                    metadata=tc.metadata,
-                )
-            )
-        return parts
 
     async def _execute_round_tools(
         self,

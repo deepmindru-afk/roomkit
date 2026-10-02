@@ -113,6 +113,7 @@ class _FakeStream:
             self._events.append(
                 SimpleNamespace(
                     type="content_block_delta",
+                    index=0,
                     delta=SimpleNamespace(type="thinking_delta", thinking=chunk),
                 )
             )
@@ -120,6 +121,7 @@ class _FakeStream:
             self._events.append(
                 SimpleNamespace(
                     type="content_block_delta",
+                    index=0,
                     delta=SimpleNamespace(
                         type="signature_delta", signature=self._thinking_signature
                     ),

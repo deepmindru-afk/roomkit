@@ -25,6 +25,7 @@ from roomkit.providers.ai.base import (
     is_context_overflow_message,
     some_vendor_accepts_tool_name,
     stream_call_of,
+    thinking_parts_of,
     tool_call_of,
 )
 from roomkit.providers.ai.chat_request import OPENAI_CHAT, ChatDialect, chat_messages
@@ -36,6 +37,7 @@ from roomkit.providers.ai.image_parts import (
 from roomkit.providers.ai.json_schema import check_portable_schema, schema_mismatch
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.providers.ai.response_schema import ResponseSchemaError
+from roomkit.providers.ai.thinking_blocks import ThinkingBlocks
 from roomkit.providers.ai.tool_calls import (
     CallIds,
     call_cut,
@@ -80,6 +82,7 @@ __all__ = [
     "StreamThinkingDelta",
     "StreamToolCall",
     "StreamToolCallDelta",
+    "ThinkingBlocks",
     "ToolNameRule",
     "call_cut",
     "call_garbled",
@@ -97,6 +100,7 @@ __all__ = [
     "schema_mismatch",
     "some_vendor_accepts_tool_name",
     "stream_call_of",
+    "thinking_parts_of",
     "tool_arguments",
     "tool_call_of",
     "unreadable_arguments",

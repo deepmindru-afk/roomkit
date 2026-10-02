@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import aclosing
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -13,6 +13,10 @@ from roomkit.channels._ai_resilience import _StreamRetryBoundary
 from roomkit.channels._ai_stream_external_tools import _ExternalStreamTools
 from roomkit.models.streaming import StreamDelta, ThinkingDeltaMarker, ToolCallEndMarker
 from roomkit.providers.ai.base import (
+    AITextPart,
+    AIThinkingPart,
+    AIToolCall,
+    AIToolCallPart,
     AIToolResultPart,
     StreamDone,
     StreamEvent,
@@ -21,6 +25,7 @@ from roomkit.providers.ai.base import (
     StreamToolCall,
     StreamToolCallDelta,
 )
+from roomkit.providers.ai.thinking_blocks import ThinkingBlocks
 from roomkit.providers.utils import _aclose_stream
 from roomkit.realtime.base import EphemeralEventType
 from roomkit.tools._outcome import OutcomeKind, ToolOutcome
@@ -32,7 +37,7 @@ class _StreamRoundState:
     """A generation's raw transcript and the fragments actually delivered."""
 
     thinking_parts: list[str] = field(default_factory=list)
-    thinking_signature: str | None = None
+    thinking_blocks: ThinkingBlocks = field(default_factory=ThinkingBlocks)
     thinking_started: bool = False
     thinking_published: int = 0
     text_parts: list[str] = field(default_factory=list)
@@ -44,6 +49,9 @@ class _StreamRoundState:
     provider_results: list[AIToolResultPart] = field(default_factory=list)
     finish_reason: str | None = None
     cancelled: bool = False
+    # What the round said, in the order it came: ("thinking", block),
+    # ("text", None) at its first text, ("call", call id).
+    layout: list[tuple[str, Any]] = field(default_factory=list)
 
     @property
     def text(self) -> str:
@@ -52,6 +60,24 @@ class _StreamRoundState:
     @property
     def thinking(self) -> str:
         return "".join(self.thinking_parts)
+
+    def assistant_parts(
+        self, calls: Sequence[StreamToolCall | AIToolCall]
+    ) -> list[AITextPart | AIThinkingPart | AIToolCallPart]:
+        """The round as the next one replays it: reasoning, text and *calls*.
+
+        Reasoning a vendor sent in blocks goes back block by block, each where
+        it came relative to the text and the calls (RFC §6.4). A single block
+        goes first, then the text, then the calls.
+        """
+        if not self.thinking_blocks.keyed:
+            parts: list[AITextPart | AIThinkingPart | AIToolCallPart] = list(
+                self.thinking_blocks.parts()
+            )
+            if self.text:
+                parts.append(AITextPart(text=self.text))
+            return parts + [_call_part(call) for call in calls]
+        return _in_order(self.layout, self.thinking_blocks, self.text, calls)
 
 
 class _PrefixDeduplicator:
@@ -152,8 +178,8 @@ class _StreamRound:
 
     async def _add_thinking(self, event: StreamThinkingDelta) -> None:
         state = self.state
-        if event.signature:
-            state.thinking_signature = event.signature
+        if state.thinking_blocks.add(event):
+            state.layout.append(("thinking", event.block))
         if not event.thinking:
             return
         if not state.thinking_started and self.room_id:
@@ -175,6 +201,7 @@ class _StreamRound:
     async def _take_call(self, call: StreamToolCall) -> AsyncGenerator[StreamDelta, None]:
         """Keep a call for the loop to serve, or report the provider's own
         inline and keep it with its result for the next round's transcript."""
+        self.state.layout.append(("call", call.id))
         external = self.external_tools
         if external is None or not external.takes(call):
             self.state.tool_calls.append(call)
@@ -209,6 +236,8 @@ class _StreamRound:
                         yield ThinkingDeltaMarker(thinking=event.thinking)
                 elif isinstance(event, StreamTextDelta):
                     await self._end_thinking()
+                    if not state.text_parts:
+                        state.layout.append(("text", None))
                     state.text_parts.append(event.text)
                     for text in self._dedup.add(event.text):
                         state.reported.append(text)
@@ -237,6 +266,32 @@ class _StreamRound:
                 await _aclose_stream(source)
             finally:
                 await self.close()
+
+
+def _call_part(call: StreamToolCall | AIToolCall) -> AIToolCallPart:
+    return AIToolCallPart(
+        id=call.id, name=call.name, arguments=call.arguments, metadata=call.metadata
+    )
+
+
+def _in_order(
+    layout: list[tuple[str, Any]],
+    blocks: ThinkingBlocks,
+    text: str,
+    calls: Sequence[StreamToolCall | AIToolCall],
+) -> list[AITextPart | AIThinkingPart | AIToolCallPart]:
+    """A round's parts in the order they came; a call the layout never saw
+    (none today) goes last rather than be lost."""
+    pending = {call.id: call for call in calls}
+    parts: list[AITextPart | AIThinkingPart | AIToolCallPart] = []
+    for kind, key in layout:
+        if kind == "thinking" and (part := blocks.part(key)) is not None:
+            parts.append(part)
+        elif kind == "text" and text:
+            parts.append(AITextPart(text=text))
+        elif kind == "call" and key in pending:
+            parts.append(_call_part(pending.pop(key)))
+    return parts + [_call_part(call) for call in pending.values()]
 
 
 def provider_result(call: StreamToolCall, end: ToolCallEndMarker) -> AIToolResultPart:

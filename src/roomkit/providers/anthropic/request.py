@@ -69,16 +69,19 @@ def format_content(
             parts.append(_tool_result_block(part))
             trailing.extend(_result_beside_references(part))
         elif isinstance(part, AIThinkingPart):
-            # Anthropic requires thinking blocks preserved in conversation
-            # history for round-trip fidelity across tool-loop turns.
-            block: dict[str, Any] = {
-                "type": "thinking",
-                "thinking": part.thinking,
-            }
-            if part.signature:
-                block["signature"] = part.signature
-            parts.append(block)
+            parts.append(_thinking_block(part))
     return parts + trailing
+
+
+def _thinking_block(part: AIThinkingPart) -> dict[str, Any]:
+    """A reasoning block as Anthropic sent it: each block of a tool round goes
+    back as received, a redacted one as its opaque data (RFC §6.4)."""
+    if part.redacted is not None:
+        return {"type": "redacted_thinking", "data": part.redacted}
+    block: dict[str, Any] = {"type": "thinking", "thinking": part.thinking}
+    if part.signature:
+        block["signature"] = part.signature
+    return block
 
 
 def _tool_result_block(part: AIToolResultPart) -> dict[str, Any]:

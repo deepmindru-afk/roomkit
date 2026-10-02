@@ -189,11 +189,15 @@ class AIThinkingPart(BaseModel):
         thinking: The reasoning text produced by the model.
         signature: Provider-specific opaque token for caching/validation
             (e.g. Anthropic's thinking block signature).
+        redacted: The opaque data of a block the vendor redacted (Anthropic's
+            ``redacted_thinking``), replayed as received; ``thinking`` is
+            then empty.
     """
 
     type: Literal["thinking"] = "thinking"
     thinking: str
     signature: str | None = None
+    redacted: str | None = None
 
 
 class ProviderError(Exception):
@@ -444,6 +448,11 @@ class AIResponse(BaseModel):
     content: str
     thinking: str | None = None
     thinking_signature: str | None = None
+    thinking_parts: list[AIThinkingPart] = Field(default_factory=list)
+    """The reasoning blocks in the order the vendor sent them, each with its
+    signature or redacted data (RFC §6.4). When set, they are what a tool
+    round replays; ``thinking`` and ``thinking_signature`` remain their
+    joined text and last signature."""
     finish_reason: str | None = None
     usage: dict[str, int] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -464,6 +473,12 @@ class StreamThinkingDelta(BaseModel):
     type: Literal["thinking_delta"] = "thinking_delta"
     thinking: str
     signature: str | None = None
+    block: int | None = None
+    """The reasoning block the delta belongs to, for a vendor whose reasoning
+    comes in blocks each with its own signature (Anthropic's content block
+    index); ``None`` for one whose reasoning is a single block per round."""
+    redacted: str | None = None
+    """A block the vendor redacted: its opaque data, replayed as received."""
 
 
 class StreamTextDelta(BaseModel):
@@ -525,6 +540,18 @@ StreamEvent = (
 )
 
 
+def thinking_parts_of(response: AIResponse) -> list[AIThinkingPart]:
+    """A response's reasoning blocks: its ``thinking_parts``, or for a
+    provider that reports one block its ``thinking`` with its signature."""
+    if response.thinking_parts:
+        return list(response.thinking_parts)
+    if response.thinking or response.thinking_signature:
+        return [
+            AIThinkingPart(thinking=response.thinking or "", signature=response.thinking_signature)
+        ]
+    return []
+
+
 def stream_call_of(call: AIToolCall) -> StreamToolCall:
     """The streamed form of a tool call, every field it carries kept."""
     return StreamToolCall(
@@ -561,9 +588,12 @@ def response_stream_events(
     reason, usage and metadata. *call_deltas* gives the argument fragments a
     stream announces ahead of each call, when there are any.
     """
-    if response.thinking or response.thinking_signature:
+    for block, part in enumerate(thinking_parts_of(response)):
         yield StreamThinkingDelta(
-            thinking=response.thinking or "", signature=response.thinking_signature
+            thinking=part.thinking,
+            signature=part.signature,
+            redacted=part.redacted,
+            block=block if response.thinking_parts else None,
         )
     if response.content:
         yield StreamTextDelta(text=response.content)
