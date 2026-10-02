@@ -193,9 +193,6 @@ class ChannelRegistry:
         self._host_names = host_names
         self._channel: dict[str, _Held] = {}
         self._rooms: dict[str, dict[str, _Held]] = {}
-        # How many entries orchestration set up, over every scope: read on each
-        # dispatch, so kept rather than counted.
-        self._orchestration_count = 0
         self._turn_runners: dict[str, _Slot[TurnRunner]] = {}
         self._session_source: _Slot[SessionSource] | None = None
 
@@ -212,11 +209,6 @@ class ChannelRegistry:
         """
         self.check(entry, room_id=room_id, owner=owner)
         scope = self._channel if room_id is None else self._rooms.setdefault(room_id, {})
-        replaced = scope.get(entry.name)
-        if replaced is not None and replaced.entry.source is ToolSource.ORCHESTRATION:
-            self._orchestration_count -= 1
-        if entry.source is ToolSource.ORCHESTRATION:
-            self._orchestration_count += 1
         scope[entry.name] = _Held(entry, owner)
 
     def register_all(
@@ -283,8 +275,6 @@ class ChannelRegistry:
         held = scope.get(name)
         if held is not None and held.owner is owner:
             del scope[name]
-            if held.entry.source is ToolSource.ORCHESTRATION:
-                self._orchestration_count -= 1
         if room_id is not None and not scope:
             self._rooms.pop(room_id, None)
 
@@ -321,10 +311,6 @@ class ChannelRegistry:
         unless the tool keeps a bound of its own, as its traits or *own* say."""
         traits = self.traits(name, room_id)
         return timeouts.for_call(name, waits=own or (traits is not None and traits.waits))
-
-    def serves_orchestration(self) -> bool:
-        """Whether orchestration set up any tool here, for any room."""
-        return self._orchestration_count > 0
 
     # -- What orchestration installs per room ------------------------------
 

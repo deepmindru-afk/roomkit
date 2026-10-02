@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
-from roomkit.channels._tool_registry import ChannelRegistry
+from roomkit.channels._tool_registry import ChannelRegistry, ToolSource
 from roomkit.core.event_router import BroadcastResult
 from roomkit.core.mixins._child_execution import _scan_for_submitted_result
 from roomkit.core.mixins.delegation import _run_with_structured_result
@@ -87,7 +87,7 @@ class TestStructuredResultGuard:
         assert payload["data"] == {"x": 1}
         assert counter["n"] == 1  # no retries needed
         # The tool was declared in the child room only, and removed afterwards.
-        assert not channel._registry.serves_orchestration()
+        assert not channel._registry.entries("parent::task-1", source=ToolSource.ORCHESTRATION)
 
     async def test_reprompts_until_worker_submits(self) -> None:
         kit, _channel, counter = _make_kit("agent:w1", submit_on_attempt=3)
@@ -242,7 +242,7 @@ class TestAnotherResultTool:
 
         assert json.loads(out) == {"approved": True, "feedback": "", "next_task": "write it up"}
         assert seen == [["submit_verdict"]]
-        assert not channel._registry.serves_orchestration()
+        assert not channel._registry.entries("parent::task-1", source=ToolSource.ORCHESTRATION)
 
     async def test_its_reminder_and_its_missing_payload_are_used(self) -> None:
         kit, _channel, counter = _make_kit(

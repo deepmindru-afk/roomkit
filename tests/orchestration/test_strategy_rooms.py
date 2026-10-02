@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 
 from roomkit import RoomKit
+from roomkit.channels._tool_registry import ToolSource
 from roomkit.channels.agent import Agent
 from roomkit.channels.ai import AIChannel
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
@@ -334,7 +335,7 @@ async def test_a_result_tool_is_declared_in_the_child_room_only() -> None:
     ]
     assert seen == []
     assert slot.payload is None
-    assert not channel._registry.serves_orchestration()
+    assert not channel._registry.entries("parent::task-abc", source=ToolSource.ORCHESTRATION)
 
 
 async def test_the_supervisor_runs_its_sub_runs_without_its_strategy_tool() -> None:

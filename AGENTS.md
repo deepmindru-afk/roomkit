@@ -428,8 +428,9 @@ await kit.unsubscribe_room(sub_id)
 #### Tool Call Events
 
 AIChannel automatically broadcasts `TOOL_CALL_DELTA`, `TOOL_CALL_START` and `TOOL_CALL_END`
-ephemeral events when executing tools in both streaming and non-streaming tool loops
-(`TOOL_CALL_DELTA` on the streaming path only). The streamed text stays clean — no inline XML.
+ephemeral events when executing tools in its tool loop, whatever the provider streams
+(`TOOL_CALL_DELTA` only where the provider streams a call's arguments). The streamed text
+stays clean — no inline XML.
 
 - **TOOL_CALL_DELTA** payload: `{tool_calls: [{id, name, arguments_chars}], round, channel_id}`
 - **TOOL_CALL_START** payload: `{tool_calls: [{id, name, arguments}], round, channel_id}`

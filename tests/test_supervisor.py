@@ -392,7 +392,7 @@ class TestPerWorkerDelegation:
         await s.install(kit, "r1")
 
         with tool_call_in("r1"):
-            result = await boss._tool_handler("delegate_to_w1", {"task": "Do work"})
+            result = await boss._channel_tool_handler("delegate_to_w1", {"task": "Do work"})
         parsed = json.loads(result)
         assert parsed["result"] == "Worker result"
         assert parsed["worker"] == "w1"
@@ -407,7 +407,7 @@ class TestPerWorkerDelegation:
         await s.install(kit, "r1")
 
         with tool_call_in("r1"):
-            result = await boss._tool_handler("delegate_to_w1", {"task": "Do work"})
+            result = await boss._channel_tool_handler("delegate_to_w1", {"task": "Do work"})
         parsed = json.loads(result)
         # A failed task reads as failed, never with its error (RMK-295).
         assert parsed["result"] == "The task failed."
@@ -422,7 +422,7 @@ class TestPerWorkerDelegation:
         await s.install(kit, "r1")
 
         with tool_call_in("r1"):
-            result = await boss._tool_handler("delegate_to_w1", {"task": "Do work"})
+            result = await boss._channel_tool_handler("delegate_to_w1", {"task": "Do work"})
         parsed = json.loads(result)
         assert parsed["status"] == "failed"
 
@@ -439,7 +439,7 @@ class TestPerWorkerDelegation:
         await s.install(kit, "r1")
 
         with tool_call_in("r1"):
-            result = await boss._tool_handler("delegate_to_w1", {"task": "Do work"})
+            result = await boss._channel_tool_handler("delegate_to_w1", {"task": "Do work"})
         parsed = json.loads(result)
         assert parsed["status"] == "delegated"
         assert parsed["task_id"] == "task-123"
@@ -458,11 +458,11 @@ class TestPerWorkerDelegation:
 
         # First call succeeds
         with tool_call_in("r1"):
-            await boss._tool_handler("delegate_to_w1", {"task": "Do work"})
+            await boss._channel_tool_handler("delegate_to_w1", {"task": "Do work"})
 
         # Second call should detect already running
         with tool_call_in("r1"):
-            result = await boss._tool_handler("delegate_to_w1", {"task": "Do more"})
+            result = await boss._channel_tool_handler("delegate_to_w1", {"task": "Do more"})
         parsed = json.loads(result)
         assert parsed["status"] == "already_running"
 
@@ -477,7 +477,7 @@ class TestPerWorkerDelegation:
 
         # Raised on to the channel, which reads it as any failed call (RMK-295).
         with tool_call_in("r1"), pytest.raises(RuntimeError, match="Connection lost"):
-            await boss._tool_handler("delegate_to_w1", {"task": "Do work"})
+            await boss._channel_tool_handler("delegate_to_w1", {"task": "Do work"})
 
     async def test_unknown_tool_falls_through(self) -> None:
         boss = _make_agent("boss")
@@ -487,7 +487,7 @@ class TestPerWorkerDelegation:
         await s.install(kit, "r1")
 
         with tool_call_in("r1"), pytest.raises(UnservedToolCallError):
-            await boss._tool_handler("unknown_tool", {})
+            await boss._channel_tool_handler("unknown_tool", {})
 
 
 # -- Tests: Strategy tool handler ---------------------------------------------
@@ -508,7 +508,7 @@ class TestStrategyToolHandler:
         await s.install(kit, "r1")
 
         with tool_call_in("r1"):
-            result = await boss._tool_handler("delegate_workers", {"task": "analyze"})
+            result = await boss._channel_tool_handler("delegate_workers", {"task": "analyze"})
         # The handler hands the supervisor a review brief (prose), not raw JSON:
         # the request, the worker output, and an instruction to verify + deliver.
         assert "analyze" in result
@@ -535,7 +535,7 @@ class TestStrategyToolHandler:
         await s.install(kit, "r1")
 
         with tool_call_in("r1"):
-            result = await boss._tool_handler("delegate_workers", {"task": "analyze"})
+            result = await boss._channel_tool_handler("delegate_workers", {"task": "analyze"})
         # Review brief carries both workers' outputs for the supervisor to verify.
         assert "analyze" in result
         assert "result 1" in result
@@ -553,7 +553,7 @@ class TestStrategyToolHandler:
         await s.install(kit, "r1")
 
         with tool_call_in("r1"), pytest.raises(UnservedToolCallError):
-            await boss._tool_handler("unknown_tool", {})
+            await boss._channel_tool_handler("unknown_tool", {})
 
     async def test_strategy_tool_exception_returns_error(self) -> None:
         boss = _make_agent("boss")
@@ -569,7 +569,7 @@ class TestStrategyToolHandler:
 
         # Raised on to the channel, which reads it as any failed call (RMK-295).
         with tool_call_in("r1"), pytest.raises(RuntimeError, match="Boom"):
-            await boss._tool_handler("delegate_workers", {"task": "x"})
+            await boss._channel_tool_handler("delegate_workers", {"task": "x"})
 
     async def test_strategy_tool_dedup_cache(self) -> None:
         """Second call within dedup window returns cached result."""
@@ -585,10 +585,12 @@ class TestStrategyToolHandler:
         await s.install(kit, "r1")
 
         with tool_call_in("r1"):
-            result1 = await boss._tool_handler("delegate_workers", {"task": "analyze"})
+            result1 = await boss._channel_tool_handler("delegate_workers", {"task": "analyze"})
         calls_after_first = kit.delegate.call_count
         with tool_call_in("r1"):
-            result2 = await boss._tool_handler("delegate_workers", {"task": "analyze again"})
+            result2 = await boss._channel_tool_handler(
+                "delegate_workers", {"task": "analyze again"}
+            )
 
         # Both should return the same cached result
         assert result1 == result2

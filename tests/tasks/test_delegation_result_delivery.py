@@ -208,7 +208,7 @@ async def test_the_delegating_agent_is_told_by_default() -> None:
     setup_delegation(notified, DelegateHandler(kit))
 
     with tool_call_in("call"):
-        await notified._tool_handler("delegate_task", {"agent": "worker", "task": "look"})
+        await notified._channel_tool_handler("delegate_task", {"agent": "worker", "task": "look"})
     told = await _told(notified, 1)
 
     assert len(told) == 1 and "Findings." in told[0]

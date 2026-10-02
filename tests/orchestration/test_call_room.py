@@ -225,7 +225,7 @@ async def test_a_supervisor_tool_called_outside_a_tool_call_is_not_served(
     await kit.create_room(room_id="r1", orchestration=orchestration)
 
     with pytest.raises(UnservedToolCallError):
-        await supervisor._tool_handler(tool, {"task": "x"})
+        await supervisor._channel_tool_handler(tool, {"task": "x"})
 
     assert await _children(kit) == {}
     await kit.close()

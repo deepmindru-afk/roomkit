@@ -131,7 +131,6 @@ class TestSetupDelegation:
 
         tool_names = [t.name for t in channel.extra_tools]
         assert "delegate_task" in tool_names
-        assert channel._tool_handler is not None
         # The host's handler is left as it was.
         assert channel.tool_handler is None
 
@@ -160,7 +159,7 @@ class TestSetupDelegation:
         setup_delegation(channel, handler)
 
         with tool_call_in("room-1"):
-            result_str = await channel._tool_handler(
+            result_str = await channel._channel_tool_handler(
                 "delegate_task",
                 {"agent": "pr-reviewer", "task": "review PR"},
             )
@@ -176,7 +175,7 @@ class TestSetupDelegation:
         setup_delegation(channel, handler)
 
         # Called directly, outside any tool loop: no call names a room.
-        result_str = await channel._tool_handler(
+        result_str = await channel._channel_tool_handler(
             "delegate_task",
             {"agent": "a", "task": "b"},
         )
@@ -199,7 +198,7 @@ class TestSetupDelegation:
         handler = DelegateHandler(kit)
         setup_delegation(channel, handler)
 
-        result_str = await channel._tool_handler("some_other_tool", {})
+        result_str = await channel._channel_tool_handler("some_other_tool", {})
         assert json.loads(result_str) == {"ok": True}
         assert called == ["some_other_tool"]
 

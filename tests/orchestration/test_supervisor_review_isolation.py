@@ -12,6 +12,7 @@ import asyncio
 from typing import Any
 
 from roomkit import Agent, RoomKit
+from roomkit.channels._tool_registry import ToolSource
 from roomkit.orchestration.strategies.supervisor.supervised import _supervisor_review
 from roomkit.providers.ai.base import (
     AIContext,
@@ -117,4 +118,5 @@ class TestReviewThroughTheToolLoop:
         # And the shared channel is left as it was found.
         assert boss.tool_handler is handler_before
         assert boss.extra_tools == tools_before
-        assert not boss._registry.serves_orchestration()
+        for room in ("room-a", "room-b"):
+            assert not boss._registry.entries(room, source=ToolSource.ORCHESTRATION)

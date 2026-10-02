@@ -141,7 +141,7 @@ class TestSupervisorInstall:
 
         # Call the delegation tool handler
         with tool_call_in("r1"):
-            result = await boss._tool_handler("delegate_to_w1", {"task": "Do something"})
+            result = await boss._channel_tool_handler("delegate_to_w1", {"task": "Do something"})
         parsed = json.loads(result)
 
         assert parsed["status"] == "delegated"
@@ -158,7 +158,7 @@ class TestSupervisorInstall:
         await s.install(kit, "r1")
 
         with tool_call_in("r1"), pytest.raises(UnservedToolCallError):
-            await boss._tool_handler("unknown_tool", {})
+            await boss._channel_tool_handler("unknown_tool", {})
 
     async def test_double_install_skips_tools(self):
         """Second install should not duplicate delegation tools."""
@@ -201,7 +201,7 @@ class TestSupervisorShareChannels:
         await s.install(kit, "r1")
 
         with tool_call_in("r1"):
-            await boss._tool_handler("delegate_to_w1", {"task": "Do something"})
+            await boss._channel_tool_handler("delegate_to_w1", {"task": "Do something"})
 
         _, kwargs = kit.delegate.call_args
         assert kwargs["share_channels"] == ["system", "ws-status"]
@@ -226,7 +226,7 @@ class TestSupervisorShareChannels:
         await s.install(kit, "r1")
 
         with tool_call_in("r1"):
-            await boss._tool_handler("delegate_to_w1", {"task": "Do something"})
+            await boss._channel_tool_handler("delegate_to_w1", {"task": "Do something"})
 
         _, kwargs = kit.delegate.call_args
         assert kwargs["share_channels"] == ["email-out"]
@@ -250,7 +250,7 @@ class TestSupervisorShareChannels:
         await s.install(kit, "r1")
 
         with tool_call_in("r1"):
-            await boss._tool_handler("delegate_workers", {"task": "Analyze this"})
+            await boss._channel_tool_handler("delegate_workers", {"task": "Analyze this"})
 
         _, kwargs = kit.delegate.call_args
         assert kwargs["share_channels"] == ["system"]
@@ -275,7 +275,7 @@ class TestSupervisorShareChannels:
         await s.install(kit, "r1")
 
         with tool_call_in("r1"):
-            await boss._tool_handler("delegate_workers", {"task": "Analyze this"})
+            await boss._channel_tool_handler("delegate_workers", {"task": "Analyze this"})
 
         assert kit.delegate.call_count == 2
         for call in kit.delegate.call_args_list:
@@ -296,7 +296,7 @@ class TestSupervisorShareChannels:
         await s.install(kit, "r1")
 
         with tool_call_in("r1"):
-            await boss._tool_handler("delegate_to_w1", {"task": "Do something"})
+            await boss._channel_tool_handler("delegate_to_w1", {"task": "Do something"})
 
         _, kwargs = kit.delegate.call_args
         assert not kwargs["share_channels"]
@@ -404,7 +404,7 @@ class TestSupervisorShareChannels:
 
         await s.install(kit, "r1")
         with tool_call_in("r1"):
-            await boss._tool_handler("delegate_to_w1", {"task": "Do something"})
+            await boss._channel_tool_handler("delegate_to_w1", {"task": "Do something"})
 
         _, kwargs = kit.delegate.call_args
         assert kwargs["share_channels"] == ["system"]
@@ -453,11 +453,11 @@ class TestSupervisorShareChannels:
 
 
 @pytest.mark.parametrize("refine_task", [False, True], ids=["one-pass", "two-pass"])
-async def test_the_supervisors_answer_is_one_deeper_than_its_event(refine_task: bool) -> None:
+async def test_the_supervisors_turns_answer_at_the_depth_of_its_event(refine_task: bool) -> None:
     """RFC §8.3, §19.7.3: the worker results stand in for the event, so the
     supervisor's answer does not restart the chain at 1: every turn the boss
-    runs answers an event at the depth of the one that woke it, and the room
-    writes the answer one deeper."""
+    runs answers an event at the depth of the one that woke it. The room
+    writes the streamed answer one deeper than that event."""
     boss = _make_agent("boss")
     room = Room(id="r1")
     kit = _make_mock_kit(room)

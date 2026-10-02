@@ -123,7 +123,6 @@ class TestCollisions:
         assert registry.lookup("submit", "A") is not None
         registry.unregister("submit", room_id="A", owner="c1")
         assert registry.lookup("submit", "A") is None
-        assert not registry.serves_orchestration()
 
 
 class TestInstalls:

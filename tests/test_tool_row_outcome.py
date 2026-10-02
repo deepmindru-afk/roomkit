@@ -1,5 +1,5 @@
 """A stored tool row states how its call ended, and the memory rebuilt from the
-rows keeps the calls the live one keeps (RFC §6.4, B18, RMK-308).
+rows keeps the calls the live one keeps (RFC §6.4, RMK-308).
 
 The live memory keeps an oversized answer's data where the row holds its
 eviction placeholder (RMK-217); a memory rebuilt after a restart, when the

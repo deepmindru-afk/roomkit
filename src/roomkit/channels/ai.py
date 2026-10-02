@@ -255,8 +255,6 @@ class AIChannel(
 
         # Active tool loops for steering (loop_id -> context)
         self._active_loops: dict[str, _ToolLoopContext] = {}
-        # Text-only streams being produced — the one turn path that has no loop
-        # context to register above (see ``active_turns``).
 
         self._init_framework_callbacks()
         # External tool handler for provider-executed tools (e.g. Claude Code)
@@ -410,18 +408,6 @@ class AIChannel(
         self._user_tool_handler = value
 
     @property
-    def _tool_handler(self) -> ToolHandler | None:
-        """The unified dispatcher, or ``None`` while nothing serves a tool here:
-        the "no tools" fast path of the turn."""
-        if (
-            self._channel_tool_surface()
-            or self._user_tool_handler is not None
-            or self._registry.serves_orchestration()
-        ):
-            return self._channel_tool_handler
-        return None
-
-    @property
     def provider(self) -> AIProvider:
         """The underlying AI provider."""
         return self._provider
@@ -460,17 +446,6 @@ class AIChannel(
         binding costs a tool round and contradicts the rules in front of it.
         """
         return self._skill_activation.active_names(room_id)
-
-    def _channel_tool_surface(self) -> bool:
-        """Whether this channel object itself contributes tools, binding aside:
-        what decides that the unified dispatcher serves the turn's calls."""
-        return bool(
-            self._user_tools
-            or self._registry.entries(None, source=ToolSource.ORCHESTRATION)
-            or (self._skills is not None and self._skills.skill_count > 0)
-            or self._planner is not None
-            or self._sandbox is not None
-        )
 
     def _propagate_telemetry(self) -> None:
         """Propagate telemetry to AI provider."""

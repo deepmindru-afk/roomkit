@@ -131,7 +131,6 @@ class AIToolsHost(Protocol):
 
     Attributes provided by the host's ``__init__``:
         _provider: AI provider — read for the model id in fold diagnostics.
-        _tool_handler: Tool call handler (or ``None`` if tools disabled).
         _user_tool_handler: User-provided tool handler for fallback dispatch.
         _skills: Skill registry for gated tool resolution.
         _script_executor: Script executor for skill scripts.
@@ -160,7 +159,6 @@ class AIToolsHost(Protocol):
     """
 
     _provider: AIProvider
-    _tool_handler: Any
     _user_tool_handler: Any
     _user_tools: list[AITool]
     _skills: SkillRegistry | None
@@ -220,7 +218,6 @@ class AIToolsMixin:
     """
 
     _provider: AIProvider
-    _tool_handler: Any
     _user_tool_handler: Any
     _user_tools: list[AITool]
     _skills: SkillRegistry | None
@@ -449,7 +446,7 @@ class AIToolsMixin:
         # across rooms, while the loop context is copied into every task spawned
         # by gather below.
         scope = _CallRound(
-            handler=self._tool_handler or self._channel_tool_handler,
+            handler=self._channel_tool_handler,
             telemetry=telemetry,
             room_id=self._get_loop_ctx().room_id,
             declared_tools=declared_tools,

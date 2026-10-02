@@ -459,7 +459,7 @@ class TestSetupHandoff:
         setup_handoff(channel, handler)
 
         with tool_call_in("r1"):
-            result_json = await channel._tool_handler(
+            result_json = await channel._channel_tool_handler(
                 "handoff_conversation",
                 {
                     "target": "agent-b",
@@ -485,7 +485,7 @@ class TestSetupHandoff:
         handler = MagicMock(spec=HandoffHandler)
         setup_handoff(channel, handler)
 
-        result = await channel._tool_handler("some_other_tool", {"arg": "val"})
+        result = await channel._channel_tool_handler("some_other_tool", {"arg": "val"})
         assert json.loads(result) == {"result": "ok"}
         original.assert_called_once_with("some_other_tool", {"arg": "val"})
 
@@ -496,7 +496,7 @@ class TestSetupHandoff:
         setup_handoff(channel, handler)
 
         # Called directly, outside any tool loop: no call names a room.
-        result_json = await channel._tool_handler("handoff_conversation", {"target": "x"})
+        result_json = await channel._channel_tool_handler("handoff_conversation", {"target": "x"})
 
         result = json.loads(result_json)
         assert "error" in result

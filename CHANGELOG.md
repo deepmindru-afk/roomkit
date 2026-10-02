@@ -13,7 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (RMK-308, RFC §6.4): a stored `TOOL_CALL_END` states how its call ended,
   `served`, `refused`, `failed`, `blocked`, `unserved` or `cancelled`, which
   `status` folds into completed/failed; a row written before reads by its
-  `status`. The tool memory rebuilt from the stored rows reads it (B18).
+  `status`. The tool memory and the skill activations rebuilt from the
+  stored rows read it.
 
 - `RealtimeVoiceProvider.submit_tool_error` and
   `RealtimeVoiceProvider.supports_tools` (RMK-299, RFC §12.4). The channel
@@ -104,7 +105,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     and a buffered one its last round's), `streaming` true;
   - the turn's `llm.generate` span is a child of the broadcast it answers,
     as the telemetry guide documents, where a streamed turn's hung from the
-    inbound span;
+    inbound span, and its `llm.streaming` attribute is `true`;
+  - a muted `AIChannel` no longer runs its turn: nothing is generated and no
+    tool runs, where a provider that does not stream ran the turn and stored
+    its rows BLOCKED;
+  - `response_metadata` a tool handler writes during the turn reaches the
+    segments stored after the write, no longer the ones stored before it;
   - when the fallback provider fails before it emits, the primary's error is
     raised, the fallback's as its cause.
 - **BREAKING — who serves a tool call is decided call by call** (RMK-308, RFC
@@ -113,6 +119,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   call is the channel's: an `AIChannel` without a `tool_handler` gates it
   (a `BEFORE_TOOL_USE` BLOCK refuses it) and, nothing serving it, the model
   reads it unserved and the turn goes on, where the turn used to end on it.
+  A round that mixes both hands the next round every call it made, each with
+  its result, and a call the external handler denies, or one the response
+  cut short, is stored `refused`.
 - The room's tool memory no longer keeps a handler's own refusal
   (`ToolRefusedError`), like the channel's refusals (RMK-308): the rule reads
   the call's outcome, the same for the live memory and the one rebuilt from
@@ -193,18 +202,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   never saw.
 - A provider that does not stream lost its thinking signature and every
   call's metadata (a Gemini thought signature among them) on the way to the
-  tool loop, and so did the mock (C10, RMK-308).
+  tool loop, and so did the mock; the realtime reasoning backend dropped a
+  call's metadata on its next round (RMK-308).
 - An `AIChannel` with tools of its own sent a call its provider had already
-  run to local dispatch, where it failed as not declared (C8); a channel
-  without a handler fired `BEFORE_TOOL_USE` on a provider's pending call and
-  dropped its BLOCK (C14); a provider that does not stream had no path for
-  its own calls at all (VC6) (RMK-308).
+  run to local dispatch, where it failed as not declared; a channel without
+  a handler fired `BEFORE_TOOL_USE` on a provider's pending call and dropped
+  its BLOCK; a provider that does not stream had no path for its own calls
+  at all (RMK-308).
 - A turn of a provider that does not stream with more than about two dozen
   tool calls lost its answer: its buffered rows used the reentry budget up,
   and the final message was stored BLOCKED (RMK-308).
 - The tool memory rebuilt from a room's stored rows after a restart took
   refusals and calls nothing served for answers, which the live memory never
-  keeps (B18, RMK-308).
+  keeps, and the skill activations rebuilt from them counted one a hook
+  withheld (RMK-308).
+- `ACPChannel`'s `ON_AI_RESPONSE` carried no `thinking`: it carries the
+  agent's thought chunks of the turn (RMK-308).
 
 - What a realtime provider owes its tool calls (RMK-299, RFC §12.4):
   - ElevenLabs sends a failed call's result as a tool error, where its agent

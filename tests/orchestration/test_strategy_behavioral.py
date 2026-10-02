@@ -135,7 +135,7 @@ class TestSupervisorHandlerIdempotency:
         assert boss.extra_tools == []
 
         with tool_call_in("r2"):
-            result = await boss._tool_handler("delegate_to_w1", {"task": "do it"})
+            result = await boss._channel_tool_handler("delegate_to_w1", {"task": "do it"})
         parsed = json.loads(result)
         assert parsed["status"] == "delegated"
 
@@ -155,7 +155,7 @@ class TestSupervisorHandlerIdempotency:
         await s.install(kit, "r1")
 
         with tool_call_in("r1"), pytest.raises(RuntimeError, match="boom"):
-            await boss._tool_handler("delegate_to_w1", {"task": "fail"})
+            await boss._channel_tool_handler("delegate_to_w1", {"task": "fail"})
 
     async def test_original_handler_preserved(self):
         """User-defined tool_handler on supervisor should still be reachable."""
@@ -178,7 +178,7 @@ class TestSupervisorHandlerIdempotency:
         await s.install(kit, "r1")
 
         # Unknown tool should fall through to original
-        result = await boss._tool_handler("my_custom_tool", {"x": 1})
+        result = await boss._channel_tool_handler("my_custom_tool", {"x": 1})
         parsed = json.loads(result)
         assert parsed["custom"] is True
         assert original_called

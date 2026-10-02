@@ -69,7 +69,9 @@ class TestWaitForResultBasic:
 
         # Call the delegation tool directly
         with tool_call_in("room"):
-            result = await supervisor._tool_handler("delegate_to_worker", {"task": "Do the thing"})
+            result = await supervisor._channel_tool_handler(
+                "delegate_to_worker", {"task": "Do the thing"}
+            )
         parsed = json.loads(result)
 
         assert parsed["status"] == "completed"
@@ -107,7 +109,7 @@ class TestWaitForResultBasic:
         await kit.attach_channel("room", "ws")
 
         with tool_call_in("room"):
-            result = await supervisor._tool_handler("delegate_to_worker", {"task": "test"})
+            result = await supervisor._channel_tool_handler("delegate_to_worker", {"task": "test"})
         parsed = json.loads(result)
 
         # If orchestration leaked to child room, the supervisor would
@@ -160,7 +162,7 @@ class TestWaitForResultHooks:
             hook_events.append(("completed", event.metadata))
 
         with tool_call_in("room"):
-            await supervisor._tool_handler("delegate_to_worker", {"task": "test"})
+            await supervisor._channel_tool_handler("delegate_to_worker", {"task": "test"})
 
         assert len(hook_events) == 2
 
@@ -224,7 +226,9 @@ class TestWaitForResultMultipleWorkers:
         # Delegate to researcher
         with tool_call_in("room"):
             r1 = json.loads(
-                await supervisor._tool_handler("delegate_to_researcher", {"task": "Research AI"})
+                await supervisor._channel_tool_handler(
+                    "delegate_to_researcher", {"task": "Research AI"}
+                )
             )
         assert r1["status"] == "completed"
         assert "Research findings." in r1["result"]
@@ -232,7 +236,9 @@ class TestWaitForResultMultipleWorkers:
         # Delegate to writer
         with tool_call_in("room"):
             r2 = json.loads(
-                await supervisor._tool_handler("delegate_to_writer", {"task": "Write about AI"})
+                await supervisor._channel_tool_handler(
+                    "delegate_to_writer", {"task": "Write about AI"}
+                )
             )
         assert r2["status"] == "completed"
         assert "Article text." in r2["result"]
@@ -272,7 +278,7 @@ class TestWaitForResultFalse:
 
         with tool_call_in("room"):
             result = json.loads(
-                await supervisor._tool_handler("delegate_to_worker", {"task": "Do it"})
+                await supervisor._channel_tool_handler("delegate_to_worker", {"task": "Do it"})
             )
 
         # Async delegation returns immediately with task_id
@@ -318,7 +324,7 @@ class TestInlineDelegationState:
         state_before = get_conversation_state(room)
 
         with tool_call_in("room"):
-            await supervisor._tool_handler("delegate_to_worker", {"task": "test"})
+            await supervisor._channel_tool_handler("delegate_to_worker", {"task": "test"})
 
         # State after delegation — should be unchanged
         room = await kit.get_room("room")
