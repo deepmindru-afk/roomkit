@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `StripBrackets(keep=...)` passes a TTS's own tags through and removes every
+  other bracketed word, and `TTSFilterChain` runs several filters as one
+  channel `tts_filter` (RMK-390). `VUI_TAGS` lists the tags Vui renders as
+  sounds (`breath`, `laugh`, `sigh`, `gasp`, `cough`, `hesitate`): with
+  `TTSFilterChain(StripEmoji(), StripBrackets(keep=VUI_TAGS))`, the emoji and
+  the stage directions a small model writes despite its prompt (`[nod]`,
+  `[smiles]`) no longer reach Vui, which read or garbled them.
+
 - `FluxionsTTSProvider` and `FluxionsTTSConfig` (`roomkit[fluxions]`, RMK-373):
   Vui hosted by fluxions.ai, beside the local `VuiTTSProvider`, with an API
   key and no GPU. Each text is rendered on its own and streamed as 24 kHz

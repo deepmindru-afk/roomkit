@@ -8,6 +8,7 @@ from roomkit.voice.tts.filters import (
     StripBrackets,
     StripEmoji,
     StripInternalTags,
+    TTSFilterChain,
     filtered_stream,
 )
 
@@ -334,3 +335,54 @@ class TestFilteredStream:
         assert "secret" not in result
         assert "Hi" in result
         assert "there" in result
+
+
+# ---------------------------------------------------------------------------
+# StripBrackets(keep=...) and TTSFilterChain
+# ---------------------------------------------------------------------------
+
+
+class TestStripBracketsKeep:
+    def test_kept_tags_pass_and_others_go(self):
+        f = StripBrackets(keep=("laugh", "sigh"))
+        assert f("Oh [laugh] sure [smiles] fine [Sigh].") == "Oh [laugh] sure fine [Sigh]."
+
+    def test_kept_tag_split_across_chunks_streams_through(self):
+        f = StripBrackets(keep=("laugh",))
+        out = f.feed("Oh [lau") + f.feed("gh] yes [no") + f.feed("d] ok") + f.flush()
+        assert out == "Oh [laugh] yes  ok"
+
+    def test_without_keep_every_bracket_goes(self):
+        assert StripBrackets()("Oh [laugh] yes") == "Oh yes"
+
+
+class TestTTSFilterChain:
+    def test_each_chunk_goes_through_every_filter_in_order(self):
+        chain = TTSFilterChain(StripEmoji(), StripBrackets(keep=("laugh",)))
+        chain.reset()
+        out = chain.feed("Hi \U0001f60a [smi") + chain.feed("les] there [laugh]") + chain.flush()
+        assert " ".join(out.split()) == "Hi there [laugh]"
+
+    def test_a_flushed_tail_goes_through_the_later_filters(self):
+        class Holder(StripEmoji):
+            """Holds everything until flush."""
+
+            def __init__(self) -> None:
+                self.held = ""
+
+            def feed(self, chunk: str) -> str:
+                self.held += chunk
+                return ""
+
+            def flush(self) -> str:
+                held, self.held = self.held, ""
+                return held
+
+        chain = TTSFilterChain(Holder(), StripBrackets())
+        chain.reset()
+        assert chain.feed("a [b] c") == ""
+        assert chain.flush() == "a  c"
+
+    def test_called_whole(self):
+        chain = TTSFilterChain(StripEmoji(), StripBrackets(keep=("sigh",)))
+        assert chain("Well \U0001f605 [nod] okay [sigh]") == "Well okay [sigh]"

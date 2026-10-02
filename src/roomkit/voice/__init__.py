@@ -123,6 +123,7 @@ from roomkit.voice.tts.filters import (
     StripBrackets,
     StripEmoji,
     StripInternalTags,
+    TTSFilterChain,
     TTSStreamFilter,
 )
 from roomkit.voice.tts.library import CustomVoice, VoiceConsentError, VoiceLibrary
@@ -259,6 +260,7 @@ __all__ = [
     # TTS filters
     "StripBrackets",
     "StripEmoji",
+    "TTSFilterChain",
     "StripInternalTags",
     "TTSStreamFilter",
 ]

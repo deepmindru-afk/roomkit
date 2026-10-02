@@ -44,6 +44,9 @@ logger = logging.getLogger("roomkit.voice.tts.vui")
 
 SAMPLE_RATE = 24000
 PRESET_VOICES = ("maeve", "abraham", "rhian", "harry")
+# The tags Vui renders as sounds, as its prompting guide lists them
+# (``docs/prompting.md``); any other bracketed word is read or garbled.
+VUI_TAGS = ("breath", "laugh", "sigh", "gasp", "cough", "hesitate")
 
 
 @dataclass(frozen=True)

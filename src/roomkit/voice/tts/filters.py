@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterable
 
 
 class TTSStreamFilter(ABC):
@@ -188,13 +188,20 @@ _BRACKET_RE = re.compile(r"\[[^\]]*\]")
 
 
 class StripBrackets(TTSStreamFilter):
-    """Strip all ``[...]`` bracketed content from TTS text.
+    """Strip ``[...]`` bracketed content from TTS text, but the tags in *keep*.
 
-    A simpler variant that catches markers like ``[Respond in French]``,
-    ``[laughs]``, ``[thinking]``, etc.
+    Catches markers like ``[Respond in French]``, ``[laughs]``,
+    ``[thinking]``, etc. A TTS that reads some tags as sounds keeps those:
+    ``StripBrackets(keep=("laugh", "sigh"))`` passes ``[laugh]`` and
+    ``[Sigh]`` through and drops ``[smiles]``.
+
+    Args:
+        keep: Tags passed through, without brackets, matched ignoring case
+            and surrounding spaces.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, keep: Iterable[str] = ()) -> None:
+        self._keep = frozenset(tag.strip().lower() for tag in keep)
         self._buf = ""
         self._inside = False
 
@@ -202,8 +209,14 @@ class StripBrackets(TTSStreamFilter):
         self._buf = ""
         self._inside = False
 
+    def _kept(self, tag: str) -> bool:
+        return tag.strip().lower() in self._keep
+
+    def _replace(self, match: re.Match[str]) -> str:
+        return match.group(0) if self._kept(match.group(0)[1:-1]) else ""
+
     def __call__(self, text: str) -> str:
-        result = _BRACKET_RE.sub("", text)
+        result = _BRACKET_RE.sub(self._replace, text)
         return re.sub(r"  +", " ", result).strip()
 
     def feed(self, chunk: str) -> str:
@@ -225,6 +238,9 @@ class StripBrackets(TTSStreamFilter):
                 idx = self._buf.find("]")
                 if idx == -1:
                     break
+                tag = self._buf[:idx]
+                if self._kept(tag):
+                    out.append(f"[{tag}]")
                 self._buf = self._buf[idx + 1 :]
                 self._inside = False
 
@@ -279,6 +295,47 @@ class StripEmoji(TTSStreamFilter):
 
     def flush(self) -> str:
         return ""
+
+
+# ---------------------------------------------------------------------------
+# TTSFilterChain — several filters as one
+# ---------------------------------------------------------------------------
+
+
+class TTSFilterChain(TTSStreamFilter):
+    """Run several filters in order, as one ``tts_filter``.
+
+    ``VoiceChannel`` takes one filter: ``TTSFilterChain(StripEmoji(),
+    StripBrackets(keep=...))`` gives it both. Each chunk goes through every
+    filter in turn; at the end of the stream each filter's flush goes through
+    the filters after it.
+    """
+
+    def __init__(self, *filters: TTSStreamFilter) -> None:
+        self._filters = filters
+
+    def __call__(self, text: str) -> str:
+        for f in self._filters:
+            text = f(text)
+        return text
+
+    def reset(self) -> None:
+        for f in self._filters:
+            f.reset()
+
+    def feed(self, chunk: str) -> str:
+        for f in self._filters:
+            chunk = f.feed(chunk)
+        return chunk
+
+    def flush(self) -> str:
+        out = ""
+        for i, f in enumerate(self._filters):
+            tail = f.flush()
+            for later in self._filters[i + 1 :]:
+                tail = later.feed(tail)
+            out += tail
+        return out
 
 
 # ---------------------------------------------------------------------------
