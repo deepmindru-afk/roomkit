@@ -250,6 +250,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Gemini receives a tool result whose call was refused, failed, blocked,
+  served by nothing or cancelled under its function response's `error` key,
+  where it went under `result` like a success (RMK-378, RFC §6.4).
+
+- Mistral reports cached prompt tokens apart (`cache_read_input_tokens`) and
+  leaves them out of `input_tokens`: the SDK hands `prompt_tokens_details` over
+  as a dict, which the provider read as an object and always found empty
+  (RMK-378).
+
 - Anthropic's reasoning goes back to it block by block (RMK-377, RFC §6.4): each
   thinking block of a response keeps its own signature and its place relative to
   the round's calls and stretches of text, and a `redacted_thinking` block is

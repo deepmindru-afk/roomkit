@@ -125,13 +125,16 @@ def _tool_result_contents(types: Any, content: list[Any]) -> list[Any]:
     bytes, so an image tool result keeps the function response text-only and
     the image is decoded onto a following user Content via ``_image_part``
     (inline bytes the model can actually see). Text results are unchanged.
+    A failed result goes under the ``error`` key, Gemini's flag for a call
+    that failed (RFC §6.4), its text the same.
     """
     parts = []
     image_parts: list[Any] = []
     for p in content:
         if isinstance(p, AIToolResultPart):
             text, images = p.split_for_message()
-            parts.append(types.Part.from_function_response(name=p.name, response={"result": text}))
+            response = {"error": text} if p.is_error else {"result": text}
+            parts.append(types.Part.from_function_response(name=p.name, response=response))
             image_parts.extend(_image_part(types, img) for img in images)
     contents = [types.Content(role="user", parts=parts)]
     if image_parts:

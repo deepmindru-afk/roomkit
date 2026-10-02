@@ -161,8 +161,9 @@ class MistralAIProvider(AIProvider):
     def _usage_from(raw: Any) -> dict[str, int]:
         """Separate cached prompt tokens from fresh Mistral input."""
         prompt = raw.prompt_tokens or 0
-        details = getattr(raw, "prompt_tokens_details", None)
-        cached = (getattr(details, "cached_tokens", 0) if details else 0) or 0
+        # The SDK does not declare the field: it keeps it as a plain dict.
+        details = getattr(raw, "prompt_tokens_details", None) or {}
+        cached = details.get("cached_tokens") or 0
         usage = {
             "input_tokens": max(prompt - cached, 0),
             "output_tokens": raw.completion_tokens or 0,

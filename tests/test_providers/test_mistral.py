@@ -144,10 +144,9 @@ def _stream_events(
                 usage=SimpleNamespace(
                     prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens,
+                    # As the SDK hands it over: an undeclared field, a dict.
                     prompt_tokens_details=(
-                        None
-                        if cached_tokens is None
-                        else SimpleNamespace(cached_tokens=cached_tokens)
+                        None if cached_tokens is None else {"cached_tokens": cached_tokens}
                     ),
                 ),
             )
