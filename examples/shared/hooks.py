@@ -62,7 +62,9 @@ def enable_voice_debug(kit: RoomKit) -> None:
     suppressed segments, STT streams, the TTS cache, the AI turns, tool
     arguments and results), turns content logging on for them, and logs each
     speech segment's edges, so a reply can be traced back to the words that
-    caused it. Local runs only: what was heard and said reaches the logs.
+    caused it, and how many messages the LLM receives each turn (the
+    conversation it is given). Local runs only: what was heard and said
+    reaches the logs.
     """
     for name in ("roomkit.voice", "roomkit.channels.ai"):
         logging.getLogger(name).setLevel(logging.DEBUG)
@@ -78,3 +80,13 @@ def enable_voice_debug(kit: RoomKit) -> None:
     @kit.hook(HookTrigger.ON_SPEECH_END, execution=HookExecution.ASYNC)
     async def on_speech_end(event, ctx):
         logger.info("[debug] speech end")
+
+    @kit.hook(HookTrigger.BEFORE_AI_GENERATION)
+    async def before_generation(event, ctx):
+        messages = event.ai_context.messages
+        logger.info(
+            "[debug] the LLM receives %d messages: %s",
+            len(messages),
+            " ".join(message.role for message in messages),
+        )
+        return HookResult.allow()

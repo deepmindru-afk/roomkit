@@ -112,7 +112,12 @@ from roomkit.voice.pipeline import AECProvider, AudioPipelineConfig
 from roomkit.voice.pipeline.turn import SmartTurnConfig, SmartTurnDetector
 from roomkit.voice.pipeline.vad.sherpa_onnx import SherpaOnnxVADConfig, SherpaOnnxVADProvider
 from roomkit.voice.stt.sherpa_onnx import SherpaOnnxSTTConfig, SherpaOnnxSTTProvider
-from roomkit.voice.tts.filters import StripBrackets, StripEmoji, TTSFilterChain
+from roomkit.voice.tts.filters import (
+    StripBrackets,
+    StripEmoji,
+    TTSFilterChain,
+    TTSStreamFilter,
+)
 from roomkit.voice.tts.vui import SAMPLE_RATE, VUI_TAGS, VuiTTSConfig, VuiTTSProvider, VuiVoice
 
 logger = setup_logging("voice_local_vui")
@@ -135,15 +140,30 @@ SMART_TURN_MODEL = "smart-turn-v3.2-cpu.onnx"
 SYSTEM_PROMPT = (
     "You are a friendly voice assistant having a spoken conversation in English. "
     "Keep every reply short and natural, one or two sentences, the way people talk. "
+    "You remember everything said earlier in this conversation and build on it. "
     "Your voice can make these sounds, written exactly so, where a person would: "
     + ", ".join(f"[{tag}]" for tag in VUI_TAGS)
     + ". Never write any other word in square brackets: no [nod], [smiles] or "
     "stage directions. Never use emojis, lists or markdown."
 )
 
-# What the LLM writes despite the prompt: emoji, and bracketed words Vui
-# cannot render. Vui's own tags pass through.
-VUI_TEXT_FILTER = TTSFilterChain(StripEmoji(), StripBrackets(keep=VUI_TAGS))
+
+class StripEmphasis(TTSStreamFilter):
+    """Remove the ``*`` and backticks a model writes for emphasis or code."""
+
+    def reset(self) -> None:
+        pass
+
+    def feed(self, chunk: str) -> str:
+        return chunk.replace("*", "").replace("`", "")
+
+    def flush(self) -> str:
+        return ""
+
+
+# What the LLM writes despite the prompt: emoji, emphasis marks, and bracketed
+# words Vui cannot render. Vui's own tags pass through.
+VUI_TEXT_FILTER = TTSFilterChain(StripEmoji(), StripEmphasis(), StripBrackets(keep=VUI_TAGS))
 
 
 def model_paths() -> dict[str, str]:
