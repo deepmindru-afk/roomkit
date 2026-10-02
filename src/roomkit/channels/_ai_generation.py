@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Container
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING
 
 from roomkit.channels._served_tools import CollisionLog
 from roomkit.channels._turn_notes import turn_input
@@ -16,46 +16,28 @@ from roomkit.telemetry.noop import NoopTelemetryProvider
 from roomkit.tools.context import _current_loop_ctx, _ToolLoopContext
 
 if TYPE_CHECKING:
+    from roomkit.channels._ai_callbacks import BeforeGenerationHook
     from roomkit.providers.ai.base import AITool
 
 logger = logging.getLogger("roomkit.channels.ai")
 
 
-@runtime_checkable
-class AIGenerationHost(Protocol):
-    """Contract: capabilities a host class must provide for AIGenerationMixin.
-
-    Attributes provided by the host's ``__init__``:
-        _before_generation_hook: Optional BEFORE_AI_GENERATION runner.
-        _collisions: The channel's log of tool-name collisions.
-        channel_id: Unique identifier for this channel.
-        provider_name: Human-readable provider name.
-
-    Methods provided by other mixins:
-        _served_tool_names: ``AIToolsMixin`` — what the channel and orchestration serve.
-    """
-
-    _before_generation_hook: Any
-    _collisions: CollisionLog
-    channel_id: str
-    provider_name: str
-
-    def _served_tool_names(self, room_id: str | None) -> Container[str]: ...
-
-
 class AIGenerationMixin:
     """The generation hook, telemetry and provider-error log every turn uses.
 
-    Host contract: :class:`AIGenerationHost`.
+    What it needs from the other mixins and the channel is declared under
+    ``TYPE_CHECKING`` in its body; ``ty`` checks each declaration against the
+    implementation it names.
     """
 
-    _before_generation_hook: Any
+    _before_generation_hook: BeforeGenerationHook | None
     _collisions: CollisionLog
     channel_id: str
     provider_name: str
 
-    # Cross-mixin method — an Any annotation avoids MRO shadowing.
-    _served_tool_names: Any  # see AIGenerationHost
+    if TYPE_CHECKING:
+
+        def _served_tool_names(self, room_id: str | None) -> set[str]: ...
 
     @property
     def _telemetry_provider(self) -> NoopTelemetryProvider:

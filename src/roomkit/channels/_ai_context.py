@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._dangling_recovery import patch_dangling_tool_calls
 from roomkit.channels._instruction import instruction_fingerprint, is_standalone, mark_instruction
@@ -40,16 +40,17 @@ from roomkit.sandbox.tools import SANDBOX_TOOL_PREFIX as _SANDBOX_TOOL_PREFIX
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
+    from roomkit.channels._ai_callbacks import ToolUsageLoader
     from roomkit.channels._skill_activation import SkillActivationMemory
     from roomkit.channels._tool_registry import ChannelRegistry
     from roomkit.channels._tool_usage import ToolUsageMemory
-    from roomkit.channels._turn_config import AIChannelTurnConfig
+    from roomkit.channels._turn_config import AIChannelTurnConfig, ConfigProvider
     from roomkit.channels.ai import _ContentPart
     from roomkit.memory.base import MemoryProvider
     from roomkit.models.channel import ChannelBinding
     from roomkit.models.context import RoomContext
     from roomkit.models.event import RoomEvent
-    from roomkit.providers.ai.base import AIProvider
+    from roomkit.providers.ai.base import AIProvider, AITool
     from roomkit.sandbox.executor import SandboxExecutor
     from roomkit.skills.executor import ScriptExecutor
     from roomkit.skills.registry import SkillRegistry
@@ -84,92 +85,12 @@ _SPEAKER_ATTRIBUTION_NOTE = (
 )
 
 
-@runtime_checkable
-class AIContextHost(Protocol):
-    """Contract: capabilities a host class must provide for AIContextMixin.
-
-    Attributes provided by the host's ``__init__``:
-        _provider: AI provider for generation and capability queries.
-        _fallback_provider: Provider a failing generation falls back to; a cost
-            budget prices its generations at the primary's rate.
-        _system_prompt: Default system prompt (overridable per room).
-        _temperature: Default temperature (overridable per room).
-        _max_tokens: Default max tokens (overridable per room); ``None``
-            defers to the provider's own configured ``max_tokens``.
-        _thinking_budget: Optional thinking budget for extended thinking.
-        _enable_thinking: Default reasoning switch (overridable per room).
-        _reasoning_effort: Default reasoning verbosity (overridable per room).
-        _response_schema: Default JSON Schema the answer must follow (overridable
-            per room); ``None`` leaves the answer free.
-        _turn_budget_tokens: Default billed tokens a turn may spend (overridable
-            per room and per turn); ``None`` for no cap.
-        _turn_budget_usd: Default cost a turn may reach at the catalogue price.
-        _skills: Skill registry for tool injection.
-        _skills_in_prompt: Whether to auto-inject the skills manifest into the prompt.
-        _script_executor: Script executor for skill scripts.
-        _sandbox: Sandbox executor for ad-hoc command execution.
-        _memory: Memory provider for conversation retrieval.
-        _eviction: Tool result eviction / truncation strategy.
-        _skill_activation: Per-room record of the skills active in a conversation.
-        _planner: Optional task planner for planning tools.
-        _registry: The tools the channel serves, with their traits.
-        _user_tools: User-provided tool definitions.
-        channel_id: Unique identifier for this channel.
-
-    Properties / methods provided by other mixins:
-        _orchestration_tools: ``AIChannel`` — the tools orchestration set up
-            for every room and for one room.
-        _orchestration_tool_names: ``AIChannel`` — what Tool Search never defers.
-        _skill_tools: ``AIToolsMixin`` — builds skill tool definitions.
-        _reachable_tools: ``AIToolPolicyMixin`` — the tools policy and gating admit.
-        _policy_allows: ``AIToolPolicyMixin`` — the turn's policy admits a name.
-        _get_loop_ctx: ``AISteeringMixin`` — returns the current tool-loop context.
-    """
-
-    _provider: AIProvider
-    _fallback_provider: AIProvider | None
-    _system_prompt: str | None
-    _temperature: float
-    _max_tokens: int | None
-    _thinking_budget: int | None
-    _enable_thinking: bool | None
-    _reasoning_effort: str | None
-    _response_schema: dict[str, Any] | None
-    _turn_budget_tokens: int | None
-    _turn_budget_usd: float | None
-    _skills: SkillRegistry | None
-    _skills_in_prompt: bool
-    _script_executor: ScriptExecutor | None
-    _sandbox: SandboxExecutor | None
-    _human_input_handler: HumanInputToolHandler | None
-    _memory: MemoryProvider
-    _eviction: ToolEviction
-    _tool_usage: ToolUsageMemory
-    _tool_usage_loader: Any
-    _skill_activation: SkillActivationMemory
-    _planner: TaskPlanner | None
-    _user_tools: list[AITool]
-    _config_provider: Any  # ConfigProvider | None — see channels/_turn_config.py
-    _tool_search: bool | None
-    _tool_search_pinned: set[str]
-    _tool_search_threshold: int
-    _tool_search_threshold_pct: float
-    _tool_search_threshold_tokens: int | None
-    _registry: ChannelRegistry
-    channel_id: str
-
-    def _orchestration_tools(self, room_id: str | None) -> list[AITool]: ...
-    def _orchestration_tool_names(self, room_id: str | None) -> set[str]: ...
-    def _skill_tools(self) -> list[AITool]: ...
-    def _reachable_tools(self, tools: Iterable[AITool]) -> list[AITool]: ...
-    def _policy_allows(self, name: str) -> bool: ...
-    def _get_loop_ctx(self) -> _ToolLoopContext: ...
-
-
 class AIContextMixin:
     """Builds the AIContext passed to the provider from room state and events.
 
-    Host contract: :class:`AIContextHost`.
+    What it needs from the other mixins and the channel is declared under
+    ``TYPE_CHECKING`` in its body; ``ty`` checks each declaration against the
+    implementation it names.
     """
 
     _provider: AIProvider
@@ -191,11 +112,11 @@ class AIContextMixin:
     _memory: MemoryProvider
     _eviction: ToolEviction
     _tool_usage: ToolUsageMemory
-    _tool_usage_loader: Any
+    _tool_usage_loader: ToolUsageLoader | None
     _skill_activation: SkillActivationMemory
     _planner: TaskPlanner | None
     _user_tools: list[AITool]
-    _config_provider: Any  # ConfigProvider | None — see channels/_turn_config.py
+    _config_provider: ConfigProvider | None
     _tool_search: bool | None
     _tool_search_pinned: set[str]
     _tool_search_threshold: int
@@ -206,14 +127,15 @@ class AIContextMixin:
 
     _warned_unoffered_human_tools: set[str]
 
-    # Cross-mixin methods — Any annotations avoid MRO shadowing
-    _orchestration_tools: Any  # see AIContextHost
-    _orchestration_tool_names: Any  # see AIContextHost
-    _skill_tools: Any  # see AIContextHost
-    _reachable_tools: Any  # see AIContextHost
-    _declared_once: Any  # AIToolsMixin: the host's tools, each name once
-    _policy_allows: Any  # see AIContextHost
-    _get_loop_ctx: Any  # see AIContextHost
+    if TYPE_CHECKING:
+
+        def _orchestration_tools(self, room_id: str | None) -> list[AITool]: ...
+        def _orchestration_tool_names(self, room_id: str | None) -> set[str]: ...
+        def _skill_tools(self) -> list[AITool]: ...
+        def _reachable_tools(self, tools: Iterable[AITool]) -> list[AITool]: ...
+        def _declared_once(self, tools: list[AITool], room_id: str | None) -> list[AITool]: ...
+        def _policy_allows(self, name: str) -> bool: ...
+        def _get_loop_ctx(self) -> _ToolLoopContext: ...
 
     def _warn_unoffered_human_input_tools(self, offered: set[str]) -> None:
         """Say so when a human-input tool name is absent from the turn's toolset.

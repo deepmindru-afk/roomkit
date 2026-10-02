@@ -9,7 +9,7 @@ from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import aclosing, asynccontextmanager
 from dataclasses import dataclass, field
 from functools import partial
-from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal
 
 from roomkit.channels._ai_coalescers import _ThinkingCoalescer, _ToolCallDeltaCoalescer
 from roomkit.channels._ai_loop_rules import (
@@ -46,10 +46,13 @@ from roomkit.telemetry.context import get_current_span
 from roomkit.tools.context import _current_loop_ctx, _ToolLoopContext
 
 if TYPE_CHECKING:
+    from roomkit.channels._ai_callbacks import BeforeGenerationHook
     from roomkit.models.channel import ChannelBinding
     from roomkit.models.context import RoomContext
-    from roomkit.providers.ai.base import StreamEvent
+    from roomkit.models.tool_call import AfterResponseCallback, ToolCallObserver
+    from roomkit.providers.ai.base import AIProvider, AITool, ProviderError, StreamEvent
     from roomkit.telemetry.noop import NoopTelemetryProvider
+    from roomkit.tools.external import ExternalToolHandler
 
 
 logger = logging.getLogger("roomkit.channels.ai")
@@ -132,78 +135,6 @@ async def _unrun_call_ends(calls: list[Any]) -> AsyncGenerator[StreamDelta, None
         )
 
 
-@runtime_checkable
-class AIStreamingHost(Protocol):
-    """Contract: capabilities a host class must provide for AIStreamingMixin.
-
-    Attributes provided by the host's ``__init__``:
-        _provider: AI provider for generation.
-        _max_tool_rounds: Maximum tool-loop iterations.
-        _tool_loop_timeout_seconds: Optional wall-clock timeout for the loop.
-        _tool_loop_warn_after: Log a warning after this many rounds.
-        _active_loops: Registry of currently running tool loops.
-        _after_response_hook: Optional callback fired after response generation.
-        channel_id: Unique identifier for this channel.
-
-    Properties / methods provided by other mixins:
-        _build_context: ``AIContextMixin`` — builds AI context from room state.
-        _drain_steering_queue: ``AISteeringMixin`` — drains pending directives.
-        _generate_stream_with_retry: ``AIResilienceMixin`` — stream with retry.
-        _publish_thinking_event: ``AIEventsMixin`` — publish thinking events.
-        _publish_tool_event: ``AIEventsMixin`` — publish tool call events.
-        _telemetry_provider: ``AIGenerationMixin`` property — telemetry provider.
-
-    The shared per-round loop rules (force-stop, empty-retry, budget, parts
-    assembly, tool execution) come from :class:`AIToolLoopRulesMixin`, the
-    mixin's own base — see :class:`AIToolLoopRulesHost` for that contract.
-    """
-
-    _provider: Any
-    _max_tool_rounds: int
-    _tool_loop_timeout_seconds: float | None
-    _tool_loop_warn_after: int
-    _max_empty_retries: int
-    _thinking_coalesce_ms: float
-    _thinking_coalesce_chars: int
-    _active_loops: dict[str, _ToolLoopContext]
-    _after_response_hook: Any
-    _before_generation_hook: Any
-    _tool_report_hook: Any
-    _external_tool_handler: Any
-    channel_id: str
-
-    async def _build_context(
-        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
-    ) -> AIContext: ...
-    def _drain_steering_queue(
-        self, context: AIContext, loop_ctx: _ToolLoopContext
-    ) -> tuple[AIContext, bool]: ...
-    async def _generate_stream_with_retry(
-        self, context: AIContext
-    ) -> AsyncIterator[StreamEvent | _StreamRetryBoundary]: ...
-    def _record_declared_tools(
-        self, loop_ctx: _ToolLoopContext, tools: list[Any] | None
-    ) -> None: ...
-    async def _publish_thinking_event(
-        self,
-        event_type: EphemeralEventType,
-        room_id: str,
-        thinking: str,
-        round_idx: int,
-    ) -> None: ...
-    async def _publish_tool_event(
-        self,
-        event_type: EphemeralEventType,
-        room_id: str,
-        tool_calls: list[Any],
-        round_idx: int,
-        *,
-        duration_ms: int | None = ...,
-    ) -> None: ...
-    @property
-    def _telemetry_provider(self) -> NoopTelemetryProvider: ...
-
-
 async def _answered_or_raise(
     context: AIContext, deltas: AsyncGenerator[StreamDelta, None]
 ) -> AsyncIterator[StreamDelta]:
@@ -226,10 +157,12 @@ async def _answered_or_raise(
 class AIStreamingMixin(AIToolLoopRulesMixin):
     """Streaming AI response generation with tool loop and deduplication.
 
-    Host contract: :class:`AIStreamingHost`.
+    What it needs from the other mixins and the channel is declared under
+    ``TYPE_CHECKING`` in its body; ``ty`` checks each declaration against the
+    implementation it names.
     """
 
-    _provider: Any
+    _provider: AIProvider
     _max_tool_rounds: int
     _tool_loop_timeout_seconds: float | None
     _tool_loop_warn_after: int
@@ -237,24 +170,45 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
     _thinking_coalesce_ms: float
     _thinking_coalesce_chars: int
     _active_loops: dict[str, Any]
-    _after_response_hook: Any
-    _before_generation_hook: Any
-    _tool_report_hook: Any
-    _external_tool_handler: Any
+    _after_response_hook: AfterResponseCallback | None
+    _before_generation_hook: BeforeGenerationHook | None
+    _tool_report_hook: ToolCallObserver | None
+    _external_tool_handler: ExternalToolHandler | None
     channel_id: str
 
-    # Cross-mixin methods — Any annotations avoid MRO shadowing.
-    # _build_context is NOT annotated here: it's a real typed method on
-    # AIContextMixin whose return type must be preserved for subclasses
-    # (Agent.super()._build_context()). Call sites use type: ignore instead.
-    _drain_steering_queue: Any  # see AIStreamingHost
-    _generate_stream_with_retry: Any  # see AIStreamingHost
-    _record_declared_tools: Any  # see AIStreamingHost
-    _publish_thinking_event: Any  # see AIStreamingHost
-    _publish_tool_event: Any  # see AIStreamingHost
-    _telemetry_provider: Any  # see AIStreamingHost
-    _log_provider_error: Any  # AIGenerationMixin: one log line for a failed turn
-    _served_tool_names: Any  # AIToolsMixin: what the channel and orchestration serve
+    if TYPE_CHECKING:
+
+        async def _build_context(
+            self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+        ) -> AIContext: ...
+        async def _fire_before_generation_hook(
+            self, ai_context: AIContext, event: RoomEvent
+        ) -> tuple[AIContext, bool]: ...
+        def _drain_steering_queue(
+            self, context: AIContext, loop_ctx: _ToolLoopContext
+        ) -> tuple[AIContext, bool]: ...
+        def _generate_stream_with_retry(
+            self, context: AIContext
+        ) -> AsyncIterator[StreamEvent | _StreamRetryBoundary]: ...
+        def _record_declared_tools(
+            self, loop_ctx: _ToolLoopContext, tools: list[AITool] | None
+        ) -> None: ...
+        async def _publish_thinking_event(
+            self, event_type: EphemeralEventType, room_id: str, thinking: str, round_idx: int
+        ) -> None: ...
+        async def _publish_tool_event(
+            self,
+            event_type: EphemeralEventType,
+            room_id: str,
+            tool_calls: list[Any],
+            round_idx: int,
+            *,
+            duration_ms: int | None = None,
+        ) -> None: ...
+        @property
+        def _telemetry_provider(self) -> NoopTelemetryProvider: ...
+        def _log_provider_error(self, exc: ProviderError) -> None: ...
+        def _served_tool_names(self, room_id: str | None) -> set[str]: ...
 
     def _new_thinking_coalescer(self, room_id: str | None, round_idx: int) -> _ThinkingCoalescer:
         """Coalescer bound to this channel's publish hook and window config."""
@@ -328,8 +282,8 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
         self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
     ) -> ChannelOutput:
         """Return a streaming response that handles tool calls between rounds."""
-        ai_context = await self._build_context(event, binding, context)  # ty: ignore[unresolved-attribute]
-        ai_context, blocked = await self._fire_before_generation_hook(ai_context, event)  # ty: ignore[unresolved-attribute]
+        ai_context = await self._build_context(event, binding, context)
+        ai_context, blocked = await self._fire_before_generation_hook(ai_context, event)
         if blocked:
             return ChannelOutput.empty()
         # The generator below executes when the CONSUMER iterates the

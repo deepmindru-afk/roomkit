@@ -9,6 +9,7 @@ from roomkit.providers.ai.base import AIToolResultPart
 from roomkit.realtime.base import EphemeralEvent, EphemeralEventType
 
 if TYPE_CHECKING:
+    from roomkit.channels._ai_callbacks import ThinkingHook
     from roomkit.realtime.base import RealtimeBackend
 
 logger = logging.getLogger("roomkit.channels.ai")
@@ -26,7 +27,7 @@ class AIEventsMixin:
     """Publishes tool-call and thinking ephemeral events over the realtime backend."""
 
     _realtime: RealtimeBackend | None
-    _thinking_hook: Any  # ON_AI_THINKING callback — injected by register_channel
+    _thinking_hook: ThinkingHook | None
     channel_id: str
 
     async def _publish_tool_event(

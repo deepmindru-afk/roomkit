@@ -13,7 +13,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._tool_eviction import REREAD_TOOL, ToolEviction
 from roomkit.channels._turn_budget import TurnBudget
@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     from roomkit.channels.ai import _ContentPart
     from roomkit.providers.ai.base import (
         AIContext,
+        AITool,
         AIToolCall,
         StreamToolCall,
     )
@@ -269,51 +270,6 @@ class _ToolLoopState:
             logger.warning("%s reached %d rounds, still running", self.log_label, round_idx)
 
 
-@runtime_checkable
-class AIToolLoopRulesHost(Protocol):
-    """Contract: capabilities a host class must provide for AIToolLoopRulesMixin.
-
-    Attributes provided by the host's ``__init__``:
-        _tool_loop_timeout_seconds: Optional wall-clock timeout for the loop.
-        _tool_loop_warn_after: Log a warning after this many rounds.
-        _max_empty_retries: Bound for the empty-response re-prompt.
-
-    Methods provided by other mixins:
-        _apply_tool_filters: ``AIToolPolicyMixin`` — apply policy + gating filters.
-        _publish_tool_event: ``AIEventsMixin`` — publish tool call events.
-        _execute_tools_parallel: ``AIToolsMixin`` — execute tool calls concurrently.
-    """
-
-    _tool_loop_timeout_seconds: float | None
-    _tool_loop_warn_after: int
-    _max_empty_retries: int
-    _eviction: ToolEviction
-
-    def _apply_tool_filters(self, tools: list[Any]) -> list[Any]: ...
-    def _held_declaration(self, loop_ctx: _ToolLoopContext, shown: list[Any]) -> list[Any]: ...
-    def _open_turn_declaration(
-        self, context: AIContext, loop_ctx: _ToolLoopContext, shown: list[Any]
-    ) -> None: ...
-    async def _publish_tool_event(
-        self,
-        event_type: EphemeralEventType,
-        room_id: str,
-        tool_calls: list[Any],
-        round_idx: int,
-        *,
-        duration_ms: int | None = ...,
-    ) -> None: ...
-    async def _execute_tools_parallel(
-        self,
-        tool_calls: list[Any],
-        telemetry: Any,
-        *,
-        declared_tools: list[Any] | None = ...,
-        parent_span_id: str | None = ...,
-        executed_arguments: dict[str, dict[str, Any]] | None = ...,
-    ) -> list[_ContentPart]: ...
-
-
 def _aborted_results(tool_calls: list[Any]) -> list[AIToolResultPart]:
     """A failed result for each call of a round that was aborted mid-run."""
     body = json.dumps({"error": "Tool call aborted"})
@@ -323,7 +279,9 @@ def _aborted_results(tool_calls: list[Any]) -> list[AIToolResultPart]:
 class AIToolLoopRulesMixin:
     """The tool loop's rules, each defined once.
 
-    Host contract: :class:`AIToolLoopRulesHost`.
+    What it needs from the other mixins and the channel is declared under
+    ``TYPE_CHECKING`` in its body; ``ty`` checks each declaration against the
+    implementation it names.
     """
 
     _tool_loop_timeout_seconds: float | None
@@ -331,12 +289,33 @@ class AIToolLoopRulesMixin:
     _max_empty_retries: int
     _eviction: ToolEviction
 
-    # Cross-mixin methods — Any annotations avoid MRO shadowing.
-    _apply_tool_filters: Any  # see AIToolLoopRulesHost
-    _held_declaration: Any  # AIToolPolicyMixin: tools the provider holds unseen
-    _open_turn_declaration: Any  # AIToolPolicyMixin: the room's declaration, reopened
-    _publish_tool_event: Any  # see AIToolLoopRulesHost
-    _execute_tools_parallel: Any  # see AIToolLoopRulesHost
+    if TYPE_CHECKING:
+
+        def _apply_tool_filters(self, tools: list[AITool]) -> list[AITool]: ...
+        def _held_declaration(
+            self, loop_ctx: _ToolLoopContext, shown: list[AITool]
+        ) -> list[AITool]: ...
+        def _open_turn_declaration(
+            self, context: AIContext, loop_ctx: _ToolLoopContext, shown: list[AITool]
+        ) -> None: ...
+        async def _publish_tool_event(
+            self,
+            event_type: EphemeralEventType,
+            room_id: str,
+            tool_calls: list[Any],
+            round_idx: int,
+            *,
+            duration_ms: int | None = None,
+        ) -> None: ...
+        async def _execute_tools_parallel(
+            self,
+            tool_calls: list[Any],
+            telemetry: Any,
+            *,
+            declared_tools: list[AITool] | None = None,
+            parent_span_id: str | None = None,
+            executed_arguments: dict[str, dict[str, Any]] | None = None,
+        ) -> list[AIToolResultPart]: ...
 
     # Ceiling on the tool calls honoured from ONE generation. The loop already
     # bounds rounds, wall clock, identical repeats and result size; a single

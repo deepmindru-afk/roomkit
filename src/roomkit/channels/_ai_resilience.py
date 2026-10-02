@@ -6,7 +6,7 @@ import asyncio
 import logging
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import aclosing
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING
 
 from roomkit.channels._ai_policy import declared_for
 from roomkit.channels._compaction import compaction_cut, summary_text, with_results_stored
@@ -28,6 +28,7 @@ from roomkit.providers.utils import _aclose_stream
 
 if TYPE_CHECKING:
     from roomkit.channels._tool_eviction import ToolEviction
+    from roomkit.providers.ai.base import AIMessage
     from roomkit.tools.context import _ToolLoopContext
 
 
@@ -50,44 +51,22 @@ class _StreamRetryBoundary:
     """
 
 
-@runtime_checkable
-class ResilienceHost(Protocol):
-    """Contract: capabilities a host class must provide for AIResilienceMixin.
-
-    Attributes provided by the host's ``__init__``:
-        _retry_policy: Retry configuration (max retries, backoff).
-        _provider: Primary AI provider for generation.
-        _fallback_provider: Optional fallback when primary exhausts retries.
-        _eviction: Tool result eviction / truncation strategy.
-
-    Methods other mixins provide:
-        _get_loop_ctx: ``AISteeringMixin`` — the turn's loop context.
-        _show_summarized_references: ``AIToolPolicyMixin`` — held tools a
-            summary unreferences.
-    """
-
-    _retry_policy: RetryPolicy | None
-    _provider: AIProvider
-    _fallback_provider: AIProvider | None
-    _eviction: ToolEviction
-
-    def _get_loop_ctx(self) -> _ToolLoopContext: ...
-
-    def _show_summarized_references(self, summarized: list[AIMessage]) -> None: ...
-
-
 class AIResilienceMixin:
     """Retry logic, streaming retry, context overflow detection, and compaction.
 
-    Host contract: :class:`ResilienceHost`.
+    What it needs from the other mixins and the channel is declared under
+    ``TYPE_CHECKING`` in its body; ``ty`` checks each declaration against the
+    implementation it names.
     """
 
     _retry_policy: RetryPolicy | None
     _provider: AIProvider
     _fallback_provider: AIProvider | None
     _eviction: ToolEviction
-    _show_summarized_references: Any  # AIToolPolicyMixin: held tools a summary unreferences
-    _get_loop_ctx: Any  # AISteeringMixin: the turn's loop context, its input included
+    if TYPE_CHECKING:
+
+        def _show_summarized_references(self, summarized: list[AIMessage]) -> None: ...
+        def _get_loop_ctx(self) -> _ToolLoopContext: ...
 
     async def _generate_stream_with_retry(
         self, context: AIContext

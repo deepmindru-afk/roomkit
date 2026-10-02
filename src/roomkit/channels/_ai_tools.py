@@ -8,7 +8,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._sandbox_handlers import handle_sandbox_command
 from roomkit.channels._served_tools import CollisionLog, declared_once
@@ -79,10 +79,11 @@ from roomkit.tools.validation import fold_hoisted_arguments, validate_tool_argum
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterable
 
+    from roomkit.channels._ai_callbacks import BeforeToolCallHook, PlanUpdatedHook
     from roomkit.channels._skill_activation import SkillActivationMemory
     from roomkit.channels._tool_usage import ToolUsageMemory
-    from roomkit.channels.ai import _ContentPart
     from roomkit.models.tool_call import ToolCallCallback, ToolCallObserver
+    from roomkit.providers.ai.base import AIImagePart, AITextPart
     from roomkit.realtime.base import RealtimeBackend
     from roomkit.sandbox.executor import SandboxExecutor
     from roomkit.skills.executor import ScriptExecutor
@@ -125,82 +126,6 @@ def _log_answer(name: str, result: Any, started: float) -> None:
     logger.debug("Tool %s result: %s", name, redact(_preview(result)))
 
 
-@runtime_checkable
-class AIToolsHost(Protocol):
-    """Contract: capabilities a host class must provide for AIToolsMixin.
-
-    Attributes provided by the host's ``__init__``:
-        _provider: AI provider — read for the model id in fold diagnostics.
-        _user_tool_handler: User-provided tool handler for fallback dispatch.
-        _skills: Skill registry for gated tool resolution.
-        _script_executor: Script executor for skill scripts.
-        _sandbox: Sandbox executor for ad-hoc command execution.
-        _eviction: Tool result eviction / truncation strategy.
-        _registry: The tools the channel serves, with their traits.
-        _skill_activation: Per-room record of the skills active in a conversation.
-        _planner: Optional task planner.
-        _realtime: Realtime backend for ephemeral events.
-        _tool_call_hook: Optional unified ON_TOOL_CALL hook callback.
-        _tool_observer_hook: Optional ON_TOOL_CALL observer callback, fired for
-            a call that failed or was refused.
-        channel_id: Unique identifier for this channel.
-
-    Properties / methods provided by other mixins:
-        _effective_tool_policy: ``AIToolPolicyMixin`` property — resolved policy.
-        _gated_tool_names: ``AIToolPolicyMixin`` property — gated tool names.
-        _maybe_truncate_result: ``AIResilienceMixin`` — truncate large results.
-        _get_loop_ctx: ``AISteeringMixin`` — returns current tool-loop context.
-        _apply_tool_filters: ``AIToolPolicyMixin`` — policy / skill-gating /
-            Tool Search visibility filter.
-        _reachable_tools: ``AIToolPolicyMixin`` — the tools policy and skill
-            gating admit, Tool Search's window aside.
-        _gate_refusal: ``AIToolPolicyMixin`` — why policy or gating refuses a
-            call, or ``None``.
-    """
-
-    _provider: AIProvider
-    _user_tool_handler: Any
-    _user_tools: list[AITool]
-    _skills: SkillRegistry | None
-    _script_executor: ScriptExecutor | None
-    _sandbox: SandboxExecutor | None
-    _eviction: ToolEviction
-    _tool_usage: ToolUsageMemory
-    _skill_activation: SkillActivationMemory
-    _planner: TaskPlanner | None
-    _human_input_handler: HumanInputToolHandler | None
-    _collisions: CollisionLog
-    _registry: ChannelRegistry
-    _tool_timeouts: ToolTimeouts
-    _realtime: RealtimeBackend | None
-    _plan_updated_hook: Any  # ON_PLAN_UPDATED callback — injected by register_channel
-    _tool_call_hook: ToolCallCallback | None
-    _tool_observer_hook: ToolCallObserver | None
-    _before_tool_call_hook: Any
-    _tool_search: bool | None
-    _tool_search_pinned: set[str]
-    _tool_search_threshold: int
-    _tool_search_miss_hint: str | None
-    channel_id: str
-
-    @property
-    def _effective_tool_policy(self) -> ToolPolicy | None: ...
-    @property
-    def _gated_tool_names(self) -> set[str]: ...
-
-    def _maybe_truncate_result(
-        self,
-        result: str | list[AITextPart | AIImagePart],
-        tool_call_id: str = ...,
-    ) -> str | list[AITextPart | AIImagePart]: ...
-    def _get_loop_ctx(self) -> _ToolLoopContext: ...
-    def _orchestration_tool_names(self, room_id: str | None) -> set[str]: ...
-    def _apply_tool_filters(self, tools: list[AITool]) -> list[AITool]: ...
-    def _reachable_tools(self, tools: Iterable[AITool]) -> list[AITool]: ...
-    def _gate_refusal(self, name: str) -> dict[str, str] | None: ...
-    def _reference_shown(self, loop_ctx: _ToolLoopContext) -> list[str]: ...
-
-
 def _tool_name(tool: AITool) -> str:
     return tool.name
 
@@ -220,11 +145,13 @@ def _partial_call_error(tc: Any) -> dict[str, Any]:
 class AIToolsMixin:
     """Parallel tool execution, skill tool definitions, and dispatch routing.
 
-    Host contract: :class:`AIToolsHost`.
+    What it needs from the other mixins and the channel is declared under
+    ``TYPE_CHECKING`` in its body; ``ty`` checks each declaration against the
+    implementation it names.
     """
 
     _provider: AIProvider
-    _user_tool_handler: Any
+    _user_tool_handler: ToolHandler | None
     _user_tools: list[AITool]
     _skills: SkillRegistry | None
     _script_executor: ScriptExecutor | None
@@ -238,28 +165,33 @@ class AIToolsMixin:
     _registry: ChannelRegistry
     _tool_timeouts: ToolTimeouts
     _realtime: RealtimeBackend | None
-    _plan_updated_hook: Any  # ON_PLAN_UPDATED callback — injected by register_channel
+    _plan_updated_hook: PlanUpdatedHook | None
     _tool_call_hook: ToolCallCallback | None
     _tool_observer_hook: ToolCallObserver | None
-    _before_tool_call_hook: Any
+    _before_tool_call_hook: BeforeToolCallHook | None
     _tool_search: bool | None
     _tool_search_pinned: set[str]
     _tool_search_threshold: int
     _tool_search_miss_hint: str | None
     channel_id: str
 
-    # Cross-mixin methods — Any annotations avoid MRO shadowing
-    _effective_tool_policy: Any  # see AIToolsHost
-    _gated_tool_names: Any  # see AIToolsHost
-    _maybe_truncate_result: Any  # see AIToolsHost
-    _get_loop_ctx: Any  # see AIToolsHost
-    _apply_tool_filters: Any  # see AIToolsHost
-    _reachable_tools: Any  # see AIToolsHost
-    _never_deferred: Any  # AIToolPolicyMixin: what Tool Search never defers
-    _gate_refusal: Any  # see AIToolsHost
-    _reference_shown: Any  # AIToolPolicyMixin: held tools a result makes callable
-    _orchestration_tools: Any  # AIChannel: the tools orchestration set up for a room
-    _orchestration_tool_names: Any  # AIChannel: never deferred behind Tool Search
+    if TYPE_CHECKING:
+
+        @property
+        def _effective_tool_policy(self) -> ToolPolicy | None: ...
+        @property
+        def _gated_tool_names(self) -> set[str]: ...
+        def _maybe_truncate_result(
+            self, result: str | list[AITextPart | AIImagePart], tool_call_id: str = ""
+        ) -> str | list[AITextPart | AIImagePart]: ...
+        def _get_loop_ctx(self) -> _ToolLoopContext: ...
+        def _apply_tool_filters(self, tools: list[AITool]) -> list[AITool]: ...
+        def _reachable_tools(self, tools: Iterable[AITool]) -> list[AITool]: ...
+        def _never_deferred(self, loop_ctx: _ToolLoopContext) -> set[str]: ...
+        def _gate_refusal(self, name: str) -> dict[str, str] | None: ...
+        def _reference_shown(self, loop_ctx: _ToolLoopContext) -> list[str]: ...
+        def _orchestration_tools(self, room_id: str | None) -> list[AITool]: ...
+        def _orchestration_tool_names(self, room_id: str | None) -> set[str]: ...
 
     def _tool_parameters(
         self, name: str, declared_tools: list[AITool] | None = None
@@ -441,7 +373,7 @@ class AIToolsMixin:
         declared_tools: list[AITool] | None = None,
         parent_span_id: str | None = None,
         executed_arguments: dict[str, dict[str, Any]] | None = None,
-    ) -> list[_ContentPart]:
+    ) -> list[AIToolResultPart]:
         """Execute tool calls concurrently and return result parts.
 
         A channel without a handler still serves its calls through its own

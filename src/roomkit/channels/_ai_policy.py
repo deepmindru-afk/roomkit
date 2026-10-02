@@ -4,8 +4,8 @@ a provider holds unseen, kept from one turn to the next (RFC §6.4)."""
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Container
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from collections.abc import Container
+from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._tool_reopen import (
     REOPENING,
@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from roomkit.channels._tool_usage import ToolUsageMemory
     from roomkit.models.context import RoomContext
     from roomkit.models.event import RoomEvent
+    from roomkit.providers.ai.base import AIProvider
     from roomkit.skills.registry import SkillRegistry
     from roomkit.tools.context import _ToolLoopContext
 
@@ -49,64 +50,27 @@ def policy_refusal(name: str) -> str:
     return f"Tool '{name}' is not permitted by the agent's tool policy."
 
 
-@runtime_checkable
-class ToolPolicyHost(Protocol):
-    """Contract: capabilities a host class must provide for AIToolPolicyMixin.
-
-    Attributes provided by the host's ``__init__``:
-        _tool_policy: Global tool access policy (may contain per-role overrides).
-        _skills: Skill registry for gated tool resolution.
-        _skill_activation: Per-room record of the skills active in a conversation.
-
-    Methods provided by AISteeringMixin (or equivalent):
-        _get_loop_ctx: Return the current tool-loop context (activated skills,
-            participant role, steering queue).
-
-    Methods provided by AIChannel:
-        _orchestration_tool_names: The tools orchestration injected for a
-            room, which Tool Search never defers.
-
-    Provided by AIToolsMixin:
-        _registry: The tools the channel serves, with their traits.
-
-    Provided by AIChannel's ``__init__``:
-        _tool_usage: The room's tool memory, its kept declaration included.
-
-    Provided by AIContextMixin:
-        _never_hidden: What Tool Search never hides in a room.
-    """
-
-    _tool_policy: ToolPolicy | None
-    _skills: SkillRegistry | None
-    _skill_activation: SkillActivationMemory
-    _tool_search_pinned: set[str]
-    _provider: Any
-    _tool_usage: ToolUsageMemory
-
-    def _never_hidden(self, room_id: str | None) -> set[str]: ...
-
-    def _get_loop_ctx(self) -> _ToolLoopContext: ...
-    def _orchestration_tool_names(self, room_id: str | None) -> set[str]: ...
-    @property
-    def _registry(self) -> ChannelRegistry: ...
-
-
 class AIToolPolicyMixin:
     """Resolves participant roles and enforces tool policy / skill gating.
 
-    Host contract: :class:`ToolPolicyHost`.
+    What it needs from the other mixins and the channel is declared under
+    ``TYPE_CHECKING`` in its body; ``ty`` checks each declaration against the
+    implementation it names.
     """
 
     _tool_policy: ToolPolicy | None
     _skills: SkillRegistry | None
     _skill_activation: SkillActivationMemory
     _tool_search_pinned: set[str]
-    _provider: Any  # AIChannel: whether it holds a tool unseen
-    _get_loop_ctx: Callable[[], _ToolLoopContext]
-    _orchestration_tool_names: Callable[[str | None], set[str]]
+    _provider: AIProvider
     _registry: ChannelRegistry  # the tools the channel serves, with their traits
     _tool_usage: ToolUsageMemory  # the room's tool memory, its kept declaration included
-    _never_hidden: Callable[[str | None], set[str]]  # AIContextMixin
+
+    if TYPE_CHECKING:
+
+        def _get_loop_ctx(self) -> _ToolLoopContext: ...
+        def _orchestration_tool_names(self, room_id: str | None) -> set[str]: ...
+        def _never_hidden(self, room_id: str | None) -> set[str]: ...
 
     def _resolve_participant_role(self, event: RoomEvent, context: RoomContext) -> str | None:
         """Look up the participant role for the event source."""

@@ -451,7 +451,7 @@ class AIChannel(
         """Propagate telemetry to AI provider."""
         telemetry = getattr(self, "_telemetry", None)
         if telemetry is not None:
-            self._provider._telemetry = telemetry
+            self._provider._telemetry = telemetry  # ty: ignore[unresolved-attribute]
 
     @property
     def info(self) -> dict[str, Any]:
