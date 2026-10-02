@@ -19,11 +19,15 @@ from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import replace
 from typing import TYPE_CHECKING, Protocol
 
-from roomkit.channels.ai import _current_loop_ctx, _ToolLoopContext
 from roomkit.core.exceptions import ToolRefusedError, UnservedToolCallError
 from roomkit.models.tool_call import ToolCallVerdict
 from roomkit.tools._outcome import OutcomeKind, ToolOutcome, read_outcome
-from roomkit.tools.context import ToolCallContext, _current_tool_call
+from roomkit.tools.context import (
+    ToolCallContext,
+    _current_loop_ctx,
+    _current_tool_call,
+    _ToolLoopContext,
+)
 from roomkit.tools.result import (
     GateRefusal,
     failure_detail,

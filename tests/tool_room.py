@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from typing import Any
 
 from roomkit.channels._tool_registry import ToolSource
-from roomkit.channels.ai import _current_loop_ctx, _ToolLoopContext
+from roomkit.tools.context import _current_loop_ctx, _ToolLoopContext
 
 
 @contextmanager

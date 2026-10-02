@@ -25,6 +25,7 @@ import pytest
 from roomkit.channels.ai import AIChannel
 from roomkit.providers.ai.base import AIContext, AIMessage, AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.tools.context import _current_loop_ctx, _ToolLoopContext
 from tests.tool_loop_modes import run_tool_loop
 
 NOTE = "identical result"
@@ -55,8 +56,6 @@ def _in_a_turn(ch: AIChannel):
     Outside one, ``_get_loop_ctx`` hands back a FRESH context per call — so a
     direct call to the guard would count to one forever and every assertion
     below would pass for the wrong reason."""
-    from roomkit.channels.ai import _current_loop_ctx, _ToolLoopContext
-
     token = _current_loop_ctx.set(_ToolLoopContext())
     try:
         yield ch

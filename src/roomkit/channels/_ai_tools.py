@@ -81,12 +81,13 @@ if TYPE_CHECKING:
 
     from roomkit.channels._skill_activation import SkillActivationMemory
     from roomkit.channels._tool_usage import ToolUsageMemory
-    from roomkit.channels.ai import _ContentPart, _ToolLoopContext
+    from roomkit.channels.ai import _ContentPart
     from roomkit.models.tool_call import ToolCallCallback, ToolCallObserver
     from roomkit.realtime.base import RealtimeBackend
     from roomkit.sandbox.executor import SandboxExecutor
     from roomkit.skills.executor import ScriptExecutor
     from roomkit.skills.registry import SkillRegistry
+    from roomkit.tools.context import _ToolLoopContext
     from roomkit.tools.human_input import HumanInputToolHandler
     from roomkit.tools.policy import ToolPolicy
 

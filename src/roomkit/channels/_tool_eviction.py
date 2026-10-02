@@ -13,6 +13,7 @@ from roomkit.channels._stored_read import REREAD_DESCRIPTION, REREAD_PARAMETERS,
 from roomkit.core.exceptions import ChannelRefusalError
 from roomkit.memory.token_estimator import estimate_tokens
 from roomkit.providers.ai.base import AIImagePart, AITextPart, AITool
+from roomkit.tools.context import _current_loop_ctx
 
 logger = logging.getLogger("roomkit.channels.ai")
 
@@ -171,8 +172,6 @@ class ToolEviction:
 
     @staticmethod
     def _room_scope() -> str:
-        from roomkit.channels.ai import _current_loop_ctx
-
         ctx = _current_loop_ctx.get()
         return (ctx.room_id if ctx is not None else None) or ""
 

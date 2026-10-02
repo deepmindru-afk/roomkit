@@ -44,12 +44,13 @@ from roomkit.tools._outcome import OutcomeKind, ToolOutcome
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from roomkit.channels.ai import _ContentPart, _ToolLoopContext
+    from roomkit.channels.ai import _ContentPart
     from roomkit.providers.ai.base import (
         AIContext,
         AIToolCall,
         StreamToolCall,
     )
+    from roomkit.tools.context import _ToolLoopContext
 
 logger = logging.getLogger("roomkit.channels.ai")
 

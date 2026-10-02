@@ -22,12 +22,20 @@ channel's. Outside a tool call (a direct call) every accessor returns
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 from roomkit.models.response_metadata import ResponseMetadata
 from roomkit.models.room import Room
+
+if TYPE_CHECKING:
+    from roomkit.channels._turn_budget import TurnBudget
+    from roomkit.models.steering import SteeringDirective
+    from roomkit.models.tool_call import DeclaredTool
+    from roomkit.providers.ai.base import AIMessage
 
 
 @dataclass
@@ -60,6 +68,185 @@ _current_tool_call: contextvars.ContextVar[ToolCallContext | None] = contextvars
 )
 
 
+@dataclass
+class _ToolLoopContext:
+    """Per-invocation state for a tool loop, scoped via contextvar."""
+
+    activated_skills: set[str] = field(default_factory=set)
+    # Tool Search: names revealed by ``find_tools`` this loop. Accrues during
+    # the loop (NOT inherited across for_loop) exactly like ``activated_skills``
+    # — round 0 starts empty, a find_tools call reveals matches, and the next
+    # round's tool re-filter shows them.
+    revealed_tools: set[str] = field(default_factory=set)
+    # Anti-loop guard: count of identical (tool, canonical-args) calls this
+    # turn. Read by ``_repeated_call_guard`` to short-circuit a model stuck
+    # re-issuing the same call instead of answering.
+    repeated_calls: dict[tuple[str, str], int] = field(default_factory=dict)
+    # The same guard's other axis: count of identical (tool, result-hash)
+    # RESULTS this turn. ``repeated_calls`` keys on the ARGUMENTS, so a model
+    # that permutes them walks straight past it while learning nothing —
+    # measured on a stuck turn at 44 distinct argument sets for 25 distinct
+    # results, one of which came back 23 times. Read by
+    # ``_repeated_result_note`` to tell the model the thing it cannot see:
+    # this answer already arrived.
+    repeated_results: dict[tuple[str, str], int] = field(default_factory=dict)
+    # Set by ``_repeated_call_guard`` once a model keeps re-issuing an
+    # identical blocked call (it ignores the advisory error). The tool loop
+    # reads it and force-ends the turn with a plain-text answer instead of
+    # letting the model hammer the same call to the round limit.
+    force_stop: bool = False
+    # Tools the agent already CALLED — or that find_tools already REVEALED —
+    # this conversation, seeded once per turn in ``_build_context`` from
+    # ToolUsageMemory. Unlike ``revealed_tools`` (per-loop find_tools swap
+    # window, starts empty), these are INHERITED across for_loop and unioned
+    # into the Tool Search keep-set by ``_apply_tool_filters`` — so a tool
+    # used or found once stays callable without re-running find_tools.
+    sticky_tools: set[str] = field(default_factory=set)
+    # ``None`` means context construction has not run. An empty list is a
+    # completed, deny-all toolset and must remain distinguishable from it.
+    all_context_tools: list[Any] | None = None
+    # Names BEFORE_AI_GENERATION withdrew from the toolset it saw.
+    # ``all_context_tools`` has already lost them; this keeps the channel's
+    # per-round injections (the eviction re-read) from bringing one back.
+    # Inherited across for_loop like the toolset it amends.
+    withdrawn_tools: frozenset[str] = frozenset()
+    # Names BEFORE_AI_GENERATION added: declared at every round of the turn,
+    # never deferred by Tool Search (RFC §6.4). Inherited like the above.
+    hook_pinned: frozenset[str] = frozenset()
+    # The tools the turn's first round showed the model, when its provider
+    # holds the others unseen: the room's kept declaration
+    # (``_open_turn_declaration``), fixed for the loop, so a reveal or a skill
+    # activation references a tool instead of declaring it.
+    first_shown: frozenset[str] | None = None
+    # A standalone turn (RFC §10.1.1), which reads none of the room's working
+    # state, the room's kept declaration included. Inherited like the above.
+    standalone: bool = False
+    # Held tools a result has referenced this loop, so each is referenced once.
+    referenced: set[str] = field(default_factory=set)
+    # The turn's input, notes included, as _build_context and then the
+    # BEFORE_AI_GENERATION hook left it: what an emergency compaction keeps
+    # whole (RFC §6.4), found among the messages by identity.
+    turn_input: AIMessage | None = None
+    # What the turn may spend, resolved with its other settings (RFC §6.4).
+    turn_budget: TurnBudget | None = None
+    # ``activate_skill`` calls whose activation waits for the call's outcome,
+    # by tool_call_id: committed once the call is served, dropped when
+    # ON_TOOL_CALL blocks it or it fails, so a refused activation opens no gate.
+    pending_activations: dict[str, str] = field(default_factory=dict)
+    # Whether Tool Search is active for this turn (catalogue over threshold).
+    # Decided once in ``_build_context`` and read by ``_apply_tool_filters`` on
+    # every round, so it is inherited across for_loop like ``all_context_tools``.
+    tool_search_active: bool = False
+    current_participant_role: str | None = None
+    # Participant id of whoever's turn this is — the author of the event that
+    # woke the channel. A channel object is registered once per channel_id and
+    # shared by every room it serves, so anything a tool handler wants to know
+    # about *this* turn has to ride the contextvar: the room does
+    # (``room_id``), and so must the person, or a handler acting "for the
+    # user" acts for whoever the channel was built with. ``None`` when the
+    # event carries no participant (a system injection, a webhook) — a caller
+    # must then decide for itself rather than assume the last speaker. It
+    # names the turn without authenticating it: what the id is worth is the
+    # participant's ``identification``, which is why
+    # ``current_tool_actor_id()`` documents the resolution a host owes it.
+    actor_id: str | None = None
+    room_id: str | None = None
+    # The chain depth of the response this turn produces (RFC §8.3, §21.4):
+    # a result delivered later on the turn's behalf, a background
+    # delegation's, inherits it, so a cycle of delegations ends at
+    # ``max_chain_depth`` like any chain. 0 outside a turn.
+    chain_depth: int = 0
+    # The Room of the turn, as ``on_event`` received it in its ``RoomContext``:
+    # the room as the store loaded it when the turn began, carried by
+    # reference so a tool handler reads the same object the turn's hooks,
+    # memory provider and config provider hold, instead of re-reading it by
+    # ``room_id``. A patch written to the store during the turn is not in
+    # it, and a handler must not write on it (``current_tool_room`` says
+    # why). ``None`` for a loop started without a turn above it.
+    room: Room | None = None
+    # Whether a turn above this context merges ``response_metadata`` into the
+    # MESSAGE events it produces. False for the context the realtime voice
+    # channel builds around a tool call: no turn runs there, so
+    # ``current_response_metadata()`` answers ``None`` rather than a record
+    # nothing will carry.
+    has_turn: bool = True
+    steering_queue: asyncio.Queue[SteeringDirective] = field(default_factory=asyncio.Queue)
+    cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
+    loop_id: str = ""
+    # The turn's one response-metadata record (see ``roomkit.models.response_metadata``).
+    # Created here, at the start of the turn, so a memory provider writing during
+    # ``_build_context`` writes the same object a tool handler reaches mid-loop;
+    # ``_build_context`` hands it to ``AIContext`` and ``for_loop`` inherits the
+    # reference, never a copy.
+    response_metadata: ResponseMetadata = field(default_factory=ResponseMetadata)
+    # The tools the provider received, over every round of the turn, keyed by
+    # name in first-declaration order (see ``AIResponseEvent.declared_tools``).
+    # Round 0 is declared under the turn's context and later rounds under the
+    # loop's child, so ``for_loop`` shares this dict by reference like
+    # ``response_metadata``: whichever context recorded a round, the emission
+    # reads the whole turn.
+    declared_tools: dict[str, DeclaredTool] = field(default_factory=dict)
+
+    @classmethod
+    def for_loop(
+        cls,
+        parent: _ToolLoopContext | None,
+        room_id: str | None,
+        room: Room | None = None,
+    ) -> _ToolLoopContext:
+        """Create a tool-loop context inheriting per-turn state from *parent*.
+
+        _build_context ran under the parent (handle_event) ctx and stamped the
+        turn's full toolset there — without this inheritance the per-round
+        tools re-application never fires (skill-gated tools would stay hidden
+        after activation) and per-call allowlist accessors see nothing.
+
+        *room* names the loop's room for a loop started without a turn; with
+        a parent, the parent's is inherited by reference. The id follows the
+        room whenever one is known, so ``current_tool_room_id()`` and
+        ``current_tool_room().id`` cannot disagree; *room_id* stands in only
+        when no room is.
+        """
+        ctx = cls()
+        # A uuid, not id(ctx): CPython recycles object ids after gc, and the
+        # _active_loops registry keyed on a recycled id could cross-target.
+        ctx.loop_id = uuid4().hex
+        if parent is not None:
+            ctx.current_participant_role = parent.current_participant_role
+            ctx.actor_id = parent.actor_id
+            ctx.chain_depth = parent.chain_depth
+            ctx.all_context_tools = parent.all_context_tools
+            ctx.withdrawn_tools = parent.withdrawn_tools
+            ctx.hook_pinned = parent.hook_pinned
+            ctx.tool_search_active = parent.tool_search_active
+            # Carry the used-tools re-exposition seeded in _build_context into the
+            # loop: the per-round re-filter runs under THIS child ctx, so without
+            # this the seed is dropped at round 0 and the model must re-find_tools.
+            ctx.sticky_tools = set(parent.sticky_tools)
+            # By reference: the loop writes into the record the turn already
+            # holds, and the output built before the loop ran reads the same one.
+            ctx.response_metadata = parent.response_metadata
+            # By reference too: round 0 was declared under the parent, the
+            # rounds below run under this child, and the turn reports one union.
+            ctx.declared_tools = parent.declared_tools
+            # The input _build_context gave the turn, which a compaction in
+            # the loop keeps whole.
+            ctx.turn_input = parent.turn_input
+            ctx.standalone = parent.standalone
+            ctx.turn_budget = parent.turn_budget
+        ctx.room = room if room is not None else (parent.room if parent else None)
+        if ctx.room is not None:
+            ctx.room_id = ctx.room.id
+        else:
+            ctx.room_id = room_id or (parent.room_id if parent else None)
+        return ctx
+
+
+_current_loop_ctx: contextvars.ContextVar[_ToolLoopContext | None] = contextvars.ContextVar(
+    "_current_loop_ctx", default=None
+)
+
+
 def current_tool_call() -> ToolCallContext | None:
     """The per-call context of the tool call the caller is executing under.
 
@@ -82,8 +269,6 @@ def current_tool_room_id() -> str | None:
 
     Returns ``None`` when called outside a tool loop.
     """
-    from roomkit.channels.ai import _current_loop_ctx
-
     ctx = _current_loop_ctx.get()
     return ctx.room_id if ctx is not None else None
 
@@ -114,8 +299,6 @@ def current_tool_room() -> Room | None:
     ``None`` outside a tool loop, and ``None`` for a loop started without a
     turn above it.
     """
-    from roomkit.channels.ai import _current_loop_ctx
-
     ctx = _current_loop_ctx.get()
     return ctx.room if ctx is not None else None
 
@@ -148,8 +331,6 @@ def current_tool_actor_id() -> str | None:
     back to a principal it configured on purpose — rather than borrow whoever
     spoke last.
     """
-    from roomkit.channels.ai import _current_loop_ctx
-
     ctx = _current_loop_ctx.get()
     return ctx.actor_id if ctx is not None else None
 
@@ -160,8 +341,6 @@ def _current_turn_chain_depth() -> int:
     What a result delivered later on the turn's behalf inherits (RFC §21.4,
     §23.3). Internal: the delegation paths read it, no host needs to.
     """
-    from roomkit.channels.ai import _current_loop_ctx
-
     ctx = _current_loop_ctx.get()
     return ctx.chain_depth if ctx is not None else 0
 
@@ -179,8 +358,6 @@ def current_tool_allowed_names() -> set[str] | None:
     Returns ``None`` outside a tool loop or before context build, so
     hosts can fall back to their own allowlist.
     """
-    from roomkit.channels.ai import _current_loop_ctx
-
     ctx = _current_loop_ctx.get()
     if ctx is None or ctx.all_context_tools is None:
         return None
@@ -206,7 +383,5 @@ def current_response_metadata() -> ResponseMetadata | None:
     of its own that no MESSAGE event is built from; writes to it are harmless
     and go nowhere.
     """
-    from roomkit.channels.ai import _current_loop_ctx
-
     ctx = _current_loop_ctx.get()
     return ctx.response_metadata if ctx is not None and ctx.has_turn else None

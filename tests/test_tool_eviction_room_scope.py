@@ -16,8 +16,8 @@ from contextlib import contextmanager
 
 from roomkit.channels._tool_eviction import ToolEviction
 from roomkit.channels._tool_usage import ToolUsageMemory
-from roomkit.channels.ai import _current_loop_ctx, _ToolLoopContext
 from roomkit.core.exceptions import ChannelRefusalError
+from roomkit.tools.context import _current_loop_ctx, _ToolLoopContext
 
 _BIG = "line\n" * 20_000  # far past the default 5000-token threshold
 

@@ -4,13 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING
 
 from roomkit.models.steering import Cancel, InjectMessage, SteeringDirective, UpdateSystemPrompt
 from roomkit.providers.ai.base import AIContext, AIMessage
-
-if TYPE_CHECKING:
-    from roomkit.channels.ai import _ToolLoopContext
+from roomkit.tools.context import _current_loop_ctx, _ToolLoopContext
 
 logger = logging.getLogger("roomkit.channels.ai")
 
@@ -22,8 +19,6 @@ class AISteeringMixin:
 
     def _get_loop_ctx(self) -> _ToolLoopContext:
         """Get the current tool loop context (from contextvar or create default)."""
-        from roomkit.channels.ai import _current_loop_ctx, _ToolLoopContext
-
         ctx = _current_loop_ctx.get()
         if ctx is None:
             # Fallback for code paths outside a tool loop

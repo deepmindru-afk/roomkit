@@ -44,7 +44,7 @@ if TYPE_CHECKING:
     from roomkit.channels._tool_registry import ChannelRegistry
     from roomkit.channels._tool_usage import ToolUsageMemory
     from roomkit.channels._turn_config import AIChannelTurnConfig
-    from roomkit.channels.ai import _ContentPart, _ToolLoopContext
+    from roomkit.channels.ai import _ContentPart
     from roomkit.memory.base import MemoryProvider
     from roomkit.models.channel import ChannelBinding
     from roomkit.models.context import RoomContext
@@ -53,6 +53,7 @@ if TYPE_CHECKING:
     from roomkit.sandbox.executor import SandboxExecutor
     from roomkit.skills.executor import ScriptExecutor
     from roomkit.skills.registry import SkillRegistry
+    from roomkit.tools.context import _ToolLoopContext
     from roomkit.tools.human_input import HumanInputToolHandler
 
 logger = logging.getLogger("roomkit.channels.ai")

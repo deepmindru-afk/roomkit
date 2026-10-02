@@ -46,9 +46,9 @@ from roomkit.realtime.base import EphemeralEventType
 from roomkit.telemetry.base import Attr, SpanKind
 from roomkit.telemetry.context import get_current_span
 from roomkit.telemetry.noop import NoopTelemetryProvider
+from roomkit.tools.context import _current_loop_ctx, _ToolLoopContext
 
 if TYPE_CHECKING:
-    from roomkit.channels.ai import _ToolLoopContext
     from roomkit.models.channel import ChannelBinding
     from roomkit.models.context import RoomContext
     from roomkit.models.enums import ChannelType
@@ -246,8 +246,6 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
         # built from — so the loop context adopts the hook's: a tool handler's
         # writes then land where the reply reads, whichever object the hook
         # returned.
-        from roomkit.channels.ai import _current_loop_ctx
-
         loop_ctx = _current_loop_ctx.get()
         if loop_ctx is not None:
             loop_ctx.response_metadata = gen_event.ai_context.response_metadata
@@ -527,11 +525,6 @@ class AIGenerationMixin(AIToolLoopRulesMixin):
         self, context: AIContext, *, parent_span_id: str | None = None
     ) -> ToolLoopResult:
         """Generate -> execute tools -> re-generate until a text response."""
-        from roomkit.channels.ai import (
-            _current_loop_ctx,
-            _ToolLoopContext,
-        )
-
         room = context.room.room if context.room else None
         # The value to put back when the loop ends: a caller running inside
         # its own tool loop (a handler that runs a child channel's turn) must

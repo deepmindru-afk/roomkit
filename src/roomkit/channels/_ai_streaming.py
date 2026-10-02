@@ -45,9 +45,9 @@ from roomkit.providers.utils import _aclose_stream
 from roomkit.realtime.base import EphemeralEventType
 from roomkit.telemetry.base import Attr, SpanKind, TelemetryProvider
 from roomkit.telemetry.context import get_current_span
+from roomkit.tools.context import _current_loop_ctx, _ToolLoopContext
 
 if TYPE_CHECKING:
-    from roomkit.channels.ai import _ToolLoopContext
     from roomkit.models.channel import ChannelBinding
     from roomkit.models.context import RoomContext
     from roomkit.providers.ai.base import StreamEvent
@@ -497,8 +497,6 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
         self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
     ) -> ChannelOutput:
         """Return a streaming response that handles tool calls between rounds."""
-        from roomkit.channels.ai import _current_loop_ctx
-
         ai_context = await self._build_context(event, binding, context)  # ty: ignore[unresolved-attribute]
         ai_context, blocked = await self._fire_before_generation_hook(ai_context, event)  # ty: ignore[unresolved-attribute]
         if blocked:
@@ -536,8 +534,6 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
         self, context: AIContext, parent_loop_ctx: _ToolLoopContext | None
     ) -> AsyncIterator[_StreamTurnState]:
         """Own the invocation context, activity registration and telemetry span."""
-        from roomkit.channels.ai import _current_loop_ctx, _ToolLoopContext
-
         # This body runs in the CONSUMER's context, which may hold a loop
         # context of its own (a handler draining a child channel's stream):
         # that is the value to put back when the turn ends, by value rather

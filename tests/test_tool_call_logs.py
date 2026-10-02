@@ -9,10 +9,11 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 
-from roomkit.channels.ai import AIChannel, _current_loop_ctx, _ToolLoopContext
+from roomkit.channels.ai import AIChannel
 from roomkit.providers.ai.base import AIContext, AIMessage, AIResponse, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.telemetry.redaction import set_content_logging
+from roomkit.tools.context import _current_loop_ctx, _ToolLoopContext
 from tests.tool_loop_modes import run_tool_loop
 
 _LOGGER = "roomkit.channels.ai"

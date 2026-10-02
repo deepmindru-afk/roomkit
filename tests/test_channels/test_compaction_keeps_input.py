@@ -18,7 +18,7 @@ from roomkit import TURN_NOTES_HEADER, add_turn_note
 from roomkit.channels._compaction import SUMMARY_HEADER, summary_text, with_results_stored
 from roomkit.channels._tool_eviction import ToolEviction
 from roomkit.channels._user_text import with_leading_text
-from roomkit.channels.ai import AIChannel, _current_loop_ctx
+from roomkit.channels.ai import AIChannel
 from roomkit.core.hooks import SyncPipelineResult
 from roomkit.memory.base import MemoryProvider, MemoryResult
 from roomkit.models.channel import ChannelBinding
@@ -40,6 +40,7 @@ from roomkit.providers.ai.base import (
     ProviderError,
 )
 from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.tools.context import _current_loop_ctx
 from roomkit.tools.fence import named_blocks
 from tests.conftest import make_event
 from tests.tool_loop_modes import LoopRun, respond

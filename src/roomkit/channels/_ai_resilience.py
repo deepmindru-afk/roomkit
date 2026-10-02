@@ -28,7 +28,7 @@ from roomkit.providers.utils import _aclose_stream
 
 if TYPE_CHECKING:
     from roomkit.channels._tool_eviction import ToolEviction
-    from roomkit.channels.ai import _ToolLoopContext
+    from roomkit.tools.context import _ToolLoopContext
 
 
 logger = logging.getLogger("roomkit.channels.ai")

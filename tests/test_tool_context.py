@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from roomkit.channels.ai import AIChannel, _current_loop_ctx, _ToolLoopContext
+from roomkit.channels.ai import AIChannel
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import ChannelCategory, ChannelType, IdentificationStatus
@@ -31,7 +31,7 @@ from roomkit.tools import (
     current_tool_room,
     current_tool_room_id,
 )
-from roomkit.tools.context import _current_tool_call
+from roomkit.tools.context import _current_loop_ctx, _current_tool_call, _ToolLoopContext
 from roomkit.tools.external import BeforeToolDecision
 from tests.conftest import make_event
 from tests.tool_loop_modes import respond

@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from roomkit.channels._tool_usage import ToolUsageMemory
-from roomkit.channels.ai import AIChannel, _current_loop_ctx, _ToolLoopContext
+from roomkit.channels.ai import AIChannel
 from roomkit.models.channel import ChannelBinding, ChannelCapabilities
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import (
@@ -35,6 +35,7 @@ from roomkit.providers.ai.base import (
     AIToolCall,
 )
 from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.tools.context import _current_loop_ctx, _ToolLoopContext
 from tests.tool_loop_modes import run_tool_loop
 
 # ---------------------------------------------------------------------------

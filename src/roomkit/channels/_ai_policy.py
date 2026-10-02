@@ -23,10 +23,10 @@ if TYPE_CHECKING:
     from roomkit.channels._skill_activation import SkillActivationMemory
     from roomkit.channels._tool_registry import ChannelRegistry
     from roomkit.channels._tool_usage import ToolUsageMemory
-    from roomkit.channels.ai import _ToolLoopContext
     from roomkit.models.context import RoomContext
     from roomkit.models.event import RoomEvent
     from roomkit.skills.registry import SkillRegistry
+    from roomkit.tools.context import _ToolLoopContext
 
 logger = logging.getLogger("roomkit.channels.ai")
 

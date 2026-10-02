@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock
 
-from roomkit.channels.ai import AIChannel, _ToolLoopContext
+from roomkit.channels.ai import AIChannel
 from roomkit.models.steering import Cancel, InjectMessage, UpdateSystemPrompt
 from roomkit.providers.ai.base import (
     AIContext,
@@ -15,6 +15,7 @@ from roomkit.providers.ai.base import (
     StreamToolCall,
 )
 from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.tools.context import _ToolLoopContext
 from tests.tool_loop_modes import run_tool_loop
 
 

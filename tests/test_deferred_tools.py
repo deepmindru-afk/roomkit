@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from roomkit.channels.ai import AIChannel, _current_loop_ctx, _ToolLoopContext
+from roomkit.channels.ai import AIChannel
 from roomkit.models.channel import ChannelBinding, RetryPolicy
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import ChannelCategory, ChannelType
@@ -33,6 +33,7 @@ from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.providers.anthropic import AnthropicAIProvider, AnthropicConfig
 from roomkit.providers.anthropic.request import build_kwargs
 from roomkit.skills import SkillRegistry
+from roomkit.tools.context import _current_loop_ctx, _ToolLoopContext
 from roomkit.tools.policy import ToolPolicy
 from tests.conftest import make_event
 from tests.tool_loop_modes import LoopRun, respond

@@ -123,7 +123,7 @@ class TestGenerateWithRetry:
 
         context = AIContext(messages=[AIMessage(role="user", content="hi")])
         with (
-            patch("roomkit.channels.ai.asyncio.sleep", tracking_sleep),
+            patch("roomkit.channels._ai_resilience.asyncio.sleep", tracking_sleep),
             pytest.raises(ProviderError),
         ):
             await ch._generate_with_retry(context)
