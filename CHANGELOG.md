@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ToolCallContent.outcome` and `ToolCallOutcome`, exported from `roomkit`
+  (RMK-308, RFC §6.4): a stored `TOOL_CALL_END` states how its call ended,
+  `served`, `refused`, `failed`, `blocked`, `unserved` or `cancelled`, which
+  `status` folds into completed/failed; a row written before reads by its
+  `status`. The tool memory rebuilt from the stored rows reads it (B18).
+
 - `RealtimeVoiceProvider.submit_tool_error` and
   `RealtimeVoiceProvider.supports_tools` (RMK-299, RFC §12.4). The channel
   returns a refused, failed, blocked or unserved call through
@@ -80,6 +86,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cache by the frames nobody heard (open upstream, fluxions-ai/vui#42).
   `vui-tts` 1.2 also logs user turns at DEBUG instead of printing them to
   stdout.
+- **BREAKING — an `AIChannel` runs one tool loop for every turn** (RMK-308,
+  RFC §6.4). A provider that does not stream is read through
+  `generate_structured_stream`'s default, which wraps `generate()`, and a turn
+  without tools is one round of the same loop. For a host:
+  - `AIChannel.on_event` answers with a `response_stream` on every turn,
+    never with `response_events`; a host reading the reply off the output
+    drains the stream (the framework always did);
+  - a turn the provider interrupts after a round adds no
+    `[Response interrupted]` message: its record (`loop_end_reason`,
+    `ai_usage`) rides its last message, as a streaming provider's always did;
+    a cancel during the final answer ends the turn `cancelled` instead of
+    storing the answer `completed`, and a turn cancelled while a tool runs
+    keeps its message and its rows;
+  - `ON_AI_RESPONSE` fires from one place for every provider, its `thinking`
+    the turn's reasoning (each round's, where a streamed turn reported none
+    and a buffered one its last round's), `streaming` true;
+  - the turn's `llm.generate` span is a child of the broadcast it answers,
+    as the telemetry guide documents, where a streamed turn's hung from the
+    inbound span;
+  - when the fallback provider fails before it emits, the primary's error is
+    raised, the fallback's as its cause.
+- **BREAKING — who serves a tool call is decided call by call** (RMK-308, RFC
+  §9.3). A call the provider already ran is reported, a pending call to a tool
+  the channel does not serve is the external tool handler's, and every other
+  call is the channel's: an `AIChannel` without a `tool_handler` gates it
+  (a `BEFORE_TOOL_USE` BLOCK refuses it) and, nothing serving it, the model
+  reads it unserved and the turn goes on, where the turn used to end on it.
+- The room's tool memory no longer keeps a handler's own refusal
+  (`ToolRefusedError`), like the channel's refusals (RMK-308): the rule reads
+  the call's outcome, the same for the live memory and the one rebuilt from
+  the stored rows.
 
 - **BREAKING — a BLOCK from a BEFORE_TOOL_USE hook reaches the model in the
   hook's words on every channel** (RMK-306, RFC §9.3), a hook-trigger
@@ -154,6 +191,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   conditioning bias, as Vui's own server renders it (RMK-197): the bias was
   not applied, and the token was set after the prompt, which the prompt
   never saw.
+- A provider that does not stream lost its thinking signature and every
+  call's metadata (a Gemini thought signature among them) on the way to the
+  tool loop, and so did the mock (C10, RMK-308).
+- An `AIChannel` with tools of its own sent a call its provider had already
+  run to local dispatch, where it failed as not declared (C8); a channel
+  without a handler fired `BEFORE_TOOL_USE` on a provider's pending call and
+  dropped its BLOCK (C14); a provider that does not stream had no path for
+  its own calls at all (VC6) (RMK-308).
+- A turn of a provider that does not stream with more than about two dozen
+  tool calls lost its answer: its buffered rows used the reentry budget up,
+  and the final message was stored BLOCKED (RMK-308).
+- The tool memory rebuilt from a room's stored rows after a restart took
+  refusals and calls nothing served for answers, which the live memory never
+  keeps (B18, RMK-308).
 
 - What a realtime provider owes its tool calls (RMK-299, RFC §12.4):
   - ElevenLabs sends a failed call's result as a tool error, where its agent
