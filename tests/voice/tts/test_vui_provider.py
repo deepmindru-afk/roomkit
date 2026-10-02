@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import inspect
 import threading
@@ -31,6 +32,8 @@ class _SlowRow:
         self.offset = 0
         self.stopped_at: int | None = None
         self.closed = False
+        self.fail_close = False
+        self.reset_gate: threading.Event | None = None  # reset() waits on it when set
         self.threads: list[tuple[str, threading.Thread]] = []  # (call, thread it ran on)
         self._ran("load")
         _SlowRow.instances.append(self)
@@ -40,6 +43,8 @@ class _SlowRow:
 
     def reset(self) -> None:
         self._ran("reset")
+        if self.reset_gate is not None:
+            self.reset_gate.wait(5)
         self.offset = 0
 
     def restart(self, voice: str) -> None:
@@ -67,6 +72,8 @@ class _SlowRow:
     def close(self) -> None:
         self._ran("close")
         self.closed = True
+        if self.fail_close:
+            raise RuntimeError("close failed")
 
 
 @pytest.fixture
@@ -159,6 +166,40 @@ class TestVuiThread:
         assert second is not first
         assert second.is_alive()
         await provider.close()
+
+    async def test_a_failing_close_still_stops_the_thread_and_unloads(
+        self, provider: VuiTTSProvider
+    ) -> None:
+        await provider.warmup()
+        row = _SlowRow.instances[0]
+        row.fail_close = True
+
+        with pytest.raises(RuntimeError, match="close failed"):
+            await provider.close()
+
+        assert not row.threads[0][1].is_alive()
+        await provider.warmup()
+        assert len(_SlowRow.instances) == 2  # loaded again, not the failed engine
+        await provider.close()
+
+    async def test_a_cancelled_close_still_unloads_before_the_thread_stops(
+        self, provider: VuiTTSProvider
+    ) -> None:
+        async for _ in provider.synthesize_stream("hi", context=_context()):
+            pass
+        row = _SlowRow.instances[0]
+        row.reset_gate = threading.Event()
+        provider.release_context("s1")  # holds the Vui thread until the gate opens
+        closing = asyncio.create_task(provider.close())
+        await asyncio.sleep(0.05)
+
+        closing.cancel()
+        row.reset_gate.set()
+        with pytest.raises(asyncio.CancelledError):
+            await closing
+
+        assert row.closed
+        assert not row.threads[0][1].is_alive()
 
     def test_a_release_before_any_load_does_nothing(self, provider: VuiTTSProvider) -> None:
         provider.release_context("s1")

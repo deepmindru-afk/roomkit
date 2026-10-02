@@ -267,10 +267,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the shared default executor left that executor's threads in inference
   mode: an engine built later in one of them failed on its first reply
   (`Inplace update to inference tensor outside InferenceMode`), and any
-  torch code run there made inference tensors. `close()` resets the row
-  first, which closes the codec's guard on that thread, and
-  `release_context()` empties the cache there too, after any reply in
-  progress.
+  torch code run there made inference tensors. `release_context()` empties
+  the cache on that thread too, after any reply in progress. `close()`
+  closes the engine's row there, drops the Vui objects and joins the
+  thread, even when cancelled or when closing the row fails; call it when
+  done with the provider, since one dropped without it leaves inference
+  mode on in whichever thread collects it.
 
 - A PolarGrid answer is no longer cut short: with no `max_tokens` set, the
   request carried none and polargrid-sdk sent 150 (the server, given none,
