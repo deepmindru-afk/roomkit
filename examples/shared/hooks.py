@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 
-from roomkit import HookResult
+from roomkit import HookExecution, HookResult, HookTrigger, RoomKit
+from roomkit.telemetry.redaction import set_content_logging
 
 _MAGENTA = "\033[35m"
 _RESULT_PREVIEW = 300
@@ -51,3 +53,28 @@ def log_tool_call(
         print(f"{_MAGENTA}  [{label}] → {cut}{_RESET}")
     print()
     return HookResult.allow()
+
+
+def enable_voice_debug(kit: RoomKit) -> None:
+    """Turn-taking diagnostics: when speech starts and ends, and what became of it.
+
+    Sets RoomKit's voice and AI loggers to DEBUG (the interruption decisions,
+    suppressed segments, STT streams, the TTS cache, the AI turns, tool
+    arguments and results), turns content logging on for them, and logs each
+    speech segment's edges, so a reply can be traced back to the words that
+    caused it. Local runs only: what was heard and said reaches the logs.
+    """
+    for name in ("roomkit.voice", "roomkit.channels.ai"):
+        logging.getLogger(name).setLevel(logging.DEBUG)
+    set_content_logging(True)
+    # The per-second pipeline lines drown the decisions.
+    logging.getLogger("roomkit.voice.pipeline").setLevel(logging.INFO)
+    logger = logging.getLogger("examples.voice_debug")
+
+    @kit.hook(HookTrigger.ON_SPEECH_START, execution=HookExecution.ASYNC)
+    async def on_speech_start(event, ctx):
+        logger.info("[debug] speech start")
+
+    @kit.hook(HookTrigger.ON_SPEECH_END, execution=HookExecution.ASYNC)
+    async def on_speech_end(event, ctx):
+        logger.info("[debug] speech end")

@@ -15,7 +15,7 @@ from .audio import (
 from .bench import IncomingScenarioBackend
 from .console import console_enabled, setup_console
 from .env import auto_select_provider, env_bool, os_info, require_env, voice_language
-from .hooks import log_tool_call
+from .hooks import enable_voice_debug, log_tool_call
 from .lifecycle import run_until_stopped
 from .log import setup_logging
 from .tools import WebSearchTool
@@ -31,6 +31,7 @@ __all__ = [
     "build_turn_detector",
     "build_vad",
     "console_enabled",
+    "enable_voice_debug",
     "env_bool",
     "existing_directory",
     "log_tool_call",

@@ -33,6 +33,9 @@ Models (download once, into examples/models/):
     # microphone speech (model license: huggingface.co/Banafo/Kroko-ASR)
     wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06.tar.bz2
     tar xf sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06.tar.bz2
+    # Turn detection (optional): Smart Turn v3 hears whether a sentence is over;
+    # without it, a turn ends at every 0.6 s pause
+    wget https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/main/smart-turn-v3.2-cpu.onnx
     cd ../..
 
     Vui's weights and voice presets download from Hugging Face on first run.
@@ -41,7 +44,7 @@ Run (from the repository root; .venv-vui keeps the Python 3.12 environment
 apart from the project's .venv):
     UV_PROJECT_ENVIRONMENT=.venv-vui uv run --python 3.12 \\
         --extra local-audio --extra webrtc-aec --extra llamacpp \\
-        --extra sherpa-onnx --extra vui \\
+        --extra sherpa-onnx --extra smart-turn --extra vui \\
         python examples/voice_local_vui.py
 
 Environment variables:
@@ -72,6 +75,12 @@ Environment variables:
     MUTE_MIC            Mute the mic while Vui speaks: 1 | 0 (default: 0 with AEC).
                         Muting disables barge-in.
 
+    --- Debugging ---
+    VOICE_DEBUG         1 to log turn-taking decisions (speech start/end,
+                        suppressed segments, barge-in evaluation, the Vui cache,
+                        AI turns)
+    DEBUG_AUDIO         1 to record every pipeline stage as WAV in ./debug_audio/
+
 Press Ctrl+C to stop.
 """
 
@@ -83,7 +92,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from shared import run_until_stopped, setup_logging
+from shared import build_debug_taps, enable_voice_debug, run_until_stopped, setup_logging
 
 from roomkit import (
     ChannelCategory,
@@ -100,9 +109,11 @@ from roomkit.providers.llamacpp import LlamaCppAIProvider, LlamaCppConfig
 from roomkit.providers.ollama import OllamaAIProvider, OllamaConfig
 from roomkit.voice.backends.local import LocalAudioBackend
 from roomkit.voice.pipeline import AECProvider, AudioPipelineConfig
+from roomkit.voice.pipeline.turn import SmartTurnConfig, SmartTurnDetector
 from roomkit.voice.pipeline.vad.sherpa_onnx import SherpaOnnxVADConfig, SherpaOnnxVADProvider
 from roomkit.voice.stt.sherpa_onnx import SherpaOnnxSTTConfig, SherpaOnnxSTTProvider
-from roomkit.voice.tts.vui import SAMPLE_RATE, VuiTTSConfig, VuiTTSProvider, VuiVoice
+from roomkit.voice.tts.filters import StripBrackets, StripEmoji, TTSFilterChain
+from roomkit.voice.tts.vui import SAMPLE_RATE, VUI_TAGS, VuiTTSConfig, VuiTTSProvider, VuiVoice
 
 logger = setup_logging("voice_local_vui")
 
@@ -119,12 +130,20 @@ MODEL_FILES = {
     "STT_TOKENS": f"{STT_DIR}/tokens.txt",
 }
 
+SMART_TURN_MODEL = "smart-turn-v3.2-cpu.onnx"
+
 SYSTEM_PROMPT = (
     "You are a friendly voice assistant having a spoken conversation in English. "
     "Keep every reply short and natural, one or two sentences, the way people talk. "
-    "You may use [breath], [laugh] or [hesitate] where a person would. "
-    "Never use lists, markdown or emojis."
+    "Your voice can make these sounds, written exactly so, where a person would: "
+    + ", ".join(f"[{tag}]" for tag in VUI_TAGS)
+    + ". Never write any other word in square brackets: no [nod], [smiles] or "
+    "stage directions. Never use emojis, lists or markdown."
 )
+
+# What the LLM writes despite the prompt: emoji, and bracketed words Vui
+# cannot render. Vui's own tags pass through.
+VUI_TEXT_FILTER = TTSFilterChain(StripEmoji(), StripBrackets(keep=VUI_TAGS))
 
 
 def model_paths() -> dict[str, str]:
@@ -140,6 +159,27 @@ def model_paths() -> dict[str, str]:
             logger.error("  %s", path)
         sys.exit(1)
     return paths
+
+
+def build_turn_detector() -> SmartTurnDetector | None:
+    """Smart Turn v3 when its model is in MODELS_DIR: it hears whether a sentence is over.
+
+    The VAD alone ends a turn at every 0.6 s pause, so "I'm just making [pause]
+    a test with you" became two turns and two answers. A turn Smart Turn judges
+    unfinished waits for more speech, and is still answered after 1.5 s.
+    """
+    models_dir = Path(os.environ.get("MODELS_DIR", DEFAULT_MODELS_DIR))
+    model = models_dir / SMART_TURN_MODEL
+    if not model.is_file():
+        logger.info("Turn detection: VAD pauses only (no %s in %s)", SMART_TURN_MODEL, models_dir)
+        return None
+    try:
+        detector = SmartTurnDetector(SmartTurnConfig(model_path=str(model)))
+    except ImportError as exc:
+        logger.warning("Smart Turn needs its extra (--extra smart-turn): %s", exc)
+        return None
+    logger.info("Turn detection: Smart Turn v3 (%s)", model.name)
+    return detector
 
 
 def build_llm() -> AIProvider:
@@ -229,7 +269,12 @@ async def main() -> None:
             tokens=env["STT_TOKENS"],
             sample_rate=MIC_RATE,
             provider="cpu",
+            # Kroko drops the last word with less (measured on Kroko FR).
+            tail_padding_s=1.5,
         )
+    )
+    logger.info(
+        "STT: sherpa-onnx streaming transducer, %s (CPU)", Path(env["STT_ENCODER"]).parent.name
     )
 
     # --- Vui: the reply is generated inside the dialogue ------------------------
@@ -244,6 +289,7 @@ async def main() -> None:
     )
 
     # --- Channels and room -------------------------------------------------------
+    turn_detector = build_turn_detector()
     voice = VoiceChannel(
         "voice",
         stt=stt,
@@ -251,7 +297,13 @@ async def main() -> None:
         backend=backend,
         # No aec= here: the backend feeds the echo reference itself and
         # reports NATIVE_AEC, so a pipeline copy would never run.
-        pipeline=AudioPipelineConfig(vad=vad),
+        pipeline=AudioPipelineConfig(
+            vad=vad,
+            turn_detector=turn_detector,
+            turn_incomplete_wait_ms=1500,
+            debug_taps=build_debug_taps(),
+        ),
+        tts_filter=VUI_TEXT_FILTER,
         # Vui hears the dialogue: your words, and your voice when include_audio.
         tts_context=TTSContextConfig(include_audio=include_audio),
     )
@@ -280,9 +332,15 @@ async def main() -> None:
     async def on_barge_in(event, ctx):
         logger.info("Barge-in: Vui stops and keeps only what you heard")
 
+    if os.environ.get("VOICE_DEBUG") == "1":
+        enable_voice_debug(kit)
+
     # --- Load everything before the first word -----------------------------------
     logger.info("Loading the LLM, Vui, STT and VAD models...")
-    await asyncio.gather(stt.warmup(), tts.warmup(), start_llm(ai_provider))
+    warmups = [stt.warmup(), tts.warmup(), start_llm(ai_provider)]
+    if turn_detector is not None:
+        warmups.append(asyncio.to_thread(turn_detector.warmup))
+    await asyncio.gather(*warmups)
     await kit.attach_channel("local-vui", "voice")  # opens the mic
     logger.info("Ready: speak English into the microphone. Ctrl+C to stop.")
 

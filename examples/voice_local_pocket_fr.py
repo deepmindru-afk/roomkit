@@ -118,7 +118,7 @@ from contextlib import AsyncExitStack
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from shared import log_tool_call, run_until_stopped, setup_logging
+from shared import enable_voice_debug, log_tool_call, run_until_stopped, setup_logging
 
 from roomkit import (
     ChannelCategory,
@@ -132,7 +132,6 @@ from roomkit.channels.ai import AIChannel
 from roomkit.providers.ai.base import AIProvider
 from roomkit.providers.llamacpp import LlamaCppAIProvider, LlamaCppConfig
 from roomkit.providers.ollama import OllamaAIProvider, OllamaConfig
-from roomkit.telemetry.redaction import set_content_logging
 from roomkit.tools import MCPToolProvider
 from roomkit.voice.backends.local import LocalAudioBackend
 from roomkit.voice.pipeline import AECProvider, AudioPipelineConfig, PipelineDebugTaps
@@ -217,30 +216,6 @@ def model_paths() -> dict[str, str]:
             logger.error("  %s", path)
         sys.exit(1)
     return paths
-
-
-def enable_voice_debug(kit: RoomKit) -> None:
-    """Turn-taking diagnostics: when speech starts and ends, and what became of it.
-
-    Sets RoomKit's voice and AI loggers to DEBUG (the interruption decisions,
-    suppressed segments, STT streams, the AI turns, tool arguments and
-    results), turns content logging on for them, and logs each speech
-    segment's edges, so a reply can be traced back to the words that caused it.
-    """
-    for name in ("roomkit.voice", "roomkit.channels.ai"):
-        logging.getLogger(name).setLevel(logging.DEBUG)
-    # What was heard, said and returned, in the DEBUG lines too (local only).
-    set_content_logging(True)
-    # The per-second pipeline lines drown the decisions.
-    logging.getLogger("roomkit.voice.pipeline").setLevel(logging.INFO)
-
-    @kit.hook(HookTrigger.ON_SPEECH_START, execution=HookExecution.ASYNC)
-    async def on_speech_start(event, ctx):
-        logger.info("[debug] speech start")
-
-    @kit.hook(HookTrigger.ON_SPEECH_END, execution=HookExecution.ASYNC)
-    async def on_speech_end(event, ctx):
-        logger.info("[debug] speech end")
 
 
 def build_turn_detector() -> SmartTurnDetector | None:
