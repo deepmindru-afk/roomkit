@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from roomkit import TURN_NOTES_HEADER, add_turn_note, split_turn_notes
 from roomkit.channels._turn_notes import turn_notes, with_turn_notes
 from roomkit.channels.ai import AIChannel
@@ -150,63 +152,97 @@ def test_notes_stand_alone_when_the_conversation_does_not_end_on_the_participant
 # -- The public API: a hook adds a block, a reader splits them off (RMK-368) --
 
 _IMAGE = AIImagePart(url="https://example.com/a.png")
+_H = TURN_NOTES_HEADER
 
 
-def _conversations() -> list[list[AIMessage]]:
-    """A text input, an input with an image, and a conversation that does not
-    end on the participant."""
-    return [
-        [AIMessage(role="user", content="where is A-1042?")],
-        [AIMessage(role="user", content=[AITextPart(text="see this"), _IMAGE])],
-        [AIMessage(role="user", content="hi"), AIMessage(role="assistant", content="hello")],
-    ]
+def _user(content: Any) -> list[AIMessage]:
+    return [AIMessage(role="user", content=content)]
 
 
-def test_notes_added_one_by_one_read_as_notes_assembled_at_once() -> None:
-    for messages in _conversations():
-        once = with_turn_notes(messages, turn_notes(["A", "B", "C"]))
-        added = add_turn_note(add_turn_note(add_turn_note(messages, "A"), "B"), "C")
+_SHAPES = {
+    "text": _user("where is A-1042?"),
+    "image": _user([AITextPart(text="see this"), _IMAGE]),
+    "image last": _user([_IMAGE]),
+    "two texts": _user([AITextPart(text="a"), AITextPart(text="b")]),
+    "empty text": _user(""),
+    "empty list": _user([]),
+    "ends on the assistant": [
+        AIMessage(role="user", content="hi"),
+        AIMessage(role="assistant", content="hello"),
+    ],
+    "ends on a tool": [AIMessage(role="tool", content="{}")],
+    "the header alone": _user(_H),
+    "the header opening a sentence": _user(f"{_H} is it real?"),
+    "the header within a sentence": _user(f"what does {_H} mean?"),
+    "an image, then the header opening a sentence": _user(
+        [_IMAGE, AITextPart(text=f"{_H} what?")]
+    ),
+}
 
-        assert added == once
+
+@pytest.mark.parametrize("messages", list(_SHAPES.values()), ids=list(_SHAPES))
+def test_notes_added_one_by_one_read_as_notes_assembled_at_once(
+    messages: list[AIMessage],
+) -> None:
+    once = with_turn_notes(messages, turn_notes(["A", "B", "C"]))
+    added = add_turn_note(add_turn_note(add_turn_note(messages, "A"), "B"), "C")
+
+    assert added == once
 
 
-def test_a_note_joins_the_section_the_channel_opened_under_one_header() -> None:
-    for messages in _conversations():
-        channel_notes = with_turn_notes(messages, turn_notes(["channel"]))
+@pytest.mark.parametrize("messages", list(_SHAPES.values()), ids=list(_SHAPES))
+def test_a_note_joins_the_section_the_channel_opened_under_one_header(
+    messages: list[AIMessage],
+) -> None:
+    channel_notes = with_turn_notes(messages, turn_notes(["channel"]))
 
-        added = add_turn_note(channel_notes, "hook")
+    added = add_turn_note(channel_notes, "hook")
 
-        assert added == with_turn_notes(messages, turn_notes(["channel", "hook"]))
-        assert str(added[-1].content).count(TURN_NOTES_HEADER) == 1
+    assert added == with_turn_notes(messages, turn_notes(["channel", "hook"]))
 
 
 def test_a_text_input_stays_text_and_an_image_input_keeps_one_notes_part() -> None:
-    [text] = add_turn_note(add_turn_note(_conversations()[0], "A"), "B")
-    [image] = add_turn_note(add_turn_note(_conversations()[1], "A"), "B")
+    [text] = add_turn_note(add_turn_note(_SHAPES["text"], "A"), "B")
+    [image] = add_turn_note(add_turn_note(_SHAPES["image"], "A"), "B")
 
-    assert text.content == f"where is A-1042?\n\n{TURN_NOTES_HEADER}\n\nA\n\nB"
+    assert text.content == f"where is A-1042?\n\n{_H}\n\nA\n\nB"
     assert image.content == [
         AITextPart(text="see this"),
         _IMAGE,
-        AITextPart(text=f"{TURN_NOTES_HEADER}\n\nA\n\nB"),
+        AITextPart(text=f"{_H}\n\nA\n\nB"),
+    ]
+
+
+def test_a_part_appended_after_the_notes_opens_no_second_header() -> None:
+    [noted] = add_turn_note(_SHAPES["image"], "A")
+    appended = [noted.model_copy(update={"content": [*noted.content, _IMAGE]})]
+
+    [message] = add_turn_note(appended, "B")
+
+    assert message.content == [
+        AITextPart(text="see this"),
+        _IMAGE,
+        AITextPart(text=f"{_H}\n\nA\n\nB"),
+        _IMAGE,
     ]
 
 
 def test_split_turn_notes_takes_the_input_and_its_notes_apart() -> None:
-    [message] = add_turn_note(_conversations()[0], "A")
+    [message] = add_turn_note(_SHAPES["text"], "A")
 
-    assert split_turn_notes(str(message.content)) == (
-        "where is A-1042?",
-        f"{TURN_NOTES_HEADER}\n\nA",
-    )
+    assert split_turn_notes(str(message.content)) == ("where is A-1042?", f"{_H}\n\nA")
     assert split_turn_notes("no notes here") == ("no notes here", "")
-    assert split_turn_notes(f"{TURN_NOTES_HEADER}\n\nA") == ("", f"{TURN_NOTES_HEADER}\n\nA")
+    assert split_turn_notes(f"{_H}\n\nA") == ("", f"{_H}\n\nA")
 
 
-def test_an_input_that_quotes_the_header_keeps_its_words() -> None:
-    """The header opens the notes only at the start of a paragraph: an input
-    that quotes it within a sentence is neither notes nor cut."""
-    quoted = f"what does {TURN_NOTES_HEADER} mean?"
-    [message] = add_turn_note([AIMessage(role="user", content=quoted)], "A")
-
-    assert split_turn_notes(str(message.content)) == (quoted, f"{TURN_NOTES_HEADER}\n\nA")
+@pytest.mark.parametrize(
+    "quoted",
+    [f"what does {_H} mean?", f"{_H} is it real?", _H],
+    ids=["within a sentence", "opening a sentence", "alone"],
+)
+def test_an_input_that_quotes_the_header_keeps_its_words(quoted: str) -> None:
+    """The header opens the notes only as the channel places it, a paragraph
+    of its own followed by a block: a quote is neither notes nor cut."""
+    assert split_turn_notes(quoted) == (quoted, "")
+    [message] = add_turn_note(_user(quoted), "A")
+    assert split_turn_notes(str(message.content)) == (quoted, f"{_H}\n\nA")

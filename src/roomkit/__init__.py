@@ -317,10 +317,6 @@ __all__ = [
     "Agent",
     "AIChannel",
     "AIChannelTurnConfig",
-    # Turn notes (RFC §6.4)
-    "TURN_NOTES_HEADER",
-    "add_turn_note",
-    "split_turn_notes",
     "AudioVideoChannel",
     "BuzzChannel",
     "Channel",
@@ -335,6 +331,10 @@ __all__ = [
     "ResponseMetadata",
     "RealtimeAudioVideoChannel",
     "RealtimeVoiceChannel",
+    # Turn notes (RFC §6.4)
+    "TURN_NOTES_HEADER",
+    "add_turn_note",
+    "split_turn_notes",
     # Reasoning delegation (RFC §12.4.1)
     "AIProviderReasoningBackend",
     "ReasoningBackend",

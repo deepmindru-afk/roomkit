@@ -14,21 +14,31 @@ with :func:`split_turn_notes`.
 
 from __future__ import annotations
 
+from typing import Any
+
 from roomkit.channels._user_text import joined
 from roomkit.providers.ai.base import AIMessage, AITextPart
 
-# Opens the notes: nobody in the conversation wrote them, and they ask for
-# nothing, whatever the input above them is (a participant's words, an
-# instruction, or nothing new).
 TURN_NOTES_HEADER = (
     "[Notes kept by the assistant's runtime for this turn. Nobody in the "
     "conversation wrote them, and they ask for nothing.]"
 )
+"""Opens the turn's notes: nobody in the conversation wrote them, and they ask
+for nothing, whatever the input above them is (a participant's words, an
+instruction, or nothing new). It always opens a paragraph and is followed by
+one, the first of the notes' blocks."""
+
+# The blank line between the input and its notes, and between the notes'
+# blocks. The rendering is a contract with the prefix a provider caches.
+_PARAGRAPH = "\n\n"
+
+# The header as it opens the notes: a block always follows it.
+_OPENING = f"{TURN_NOTES_HEADER}{_PARAGRAPH}"
 
 
 def turn_notes(blocks: list[str]) -> str | None:
     """*blocks* under the notes' header, or ``None`` when there are none."""
-    return "\n\n".join([TURN_NOTES_HEADER, *blocks]) if blocks else None
+    return _PARAGRAPH.join([TURN_NOTES_HEADER, *blocks]) if blocks else None
 
 
 def with_turn_notes(messages: list[AIMessage], notes: str | None) -> list[AIMessage]:
@@ -62,59 +72,75 @@ def add_turn_note(messages: list[AIMessage], block: str) -> list[AIMessage]:
 
     The block joins the section the channel opened, under its one header,
     when the turn's input carries it, and opens the section as
-    :func:`with_turn_notes` does otherwise. Either way the notes read exactly
-    as if they had been assembled at once (the same header, the blocks joined
-    by a blank line, a text input still text, an input with images keeping
-    its notes in one text part), so the prefix a provider caches is the same.
+    :func:`with_turn_notes` does otherwise. Either way the notes read as if
+    they had been assembled at once (the same header, the blocks joined by a
+    blank line, a text input still text, an input with images keeping its
+    notes in one text part), so the prefix a provider caches is the same.
 
     For a ``BEFORE_AI_GENERATION`` hook::
 
         event.ai_context.messages = add_turn_note(event.ai_context.messages, block)
+
+    The header is the notes' only mark: an input that quotes it as a
+    paragraph of its own, a blank line after it, reads as carrying notes, and
+    the block then joins the input's text with no header of its own. Add
+    notes before anything a hook appends to the input: a text input takes
+    the block at its very end.
     """
     last = turn_input(messages)
-    if last is None or not _carries_notes(last):
+    noted = _with_block(last, block) if last is not None else None
+    if noted is None:
         return with_turn_notes(messages, turn_notes([block]))
-    return [*messages[:-1], _with_block(last, block)]
+    return [*messages[:-1], noted]
 
 
 def split_turn_notes(text: str) -> tuple[str, str]:
     """*text* as the turn's input and its notes, cut where the header opens
-    them; the notes are empty when the text carries none.
+    them; the notes keep their header, and are empty when the text carries
+    none. An input with images keeps its notes in a text part of their own:
+    split that part's text.
 
-    The header is the notes' only mark, and it always opens a paragraph, so
-    the cut is at its last occurrence that does: an input that quotes the
-    header as a paragraph of its own is the one this misreads.
+    The header is the notes' only mark, so the cut is at its last occurrence
+    that opens a paragraph and is followed by one, as the channel places it:
+    an input, or a note, that quotes the header that way is what this misreads.
     """
     at = _notes_at(text)
     if at < 0:
         return text, ""
-    return text[:at].removesuffix("\n\n"), text[at:]
+    return text[:at].removesuffix(_PARAGRAPH), text[at:]
 
 
 def _notes_at(text: str) -> int:
-    """Where the turn's notes open in *text*, or ``-1``: the header's last
-    occurrence at the start of a paragraph, as the channel places it."""
-    at = text.rfind(f"\n\n{TURN_NOTES_HEADER}")
+    """Where the turn's notes open in *text*, or ``-1``."""
+    at = text.rfind(f"{_PARAGRAPH}{_OPENING}")
     if at >= 0:
-        return at + 2
-    return 0 if text.startswith(TURN_NOTES_HEADER) else -1
+        return at + len(_PARAGRAPH)
+    return 0 if text.startswith(_OPENING) else -1
 
 
-def _carries_notes(message: AIMessage) -> bool:
-    """Whether *message* ends on the turn's notes."""
+def _with_block(message: AIMessage, block: str) -> AIMessage | None:
+    """*message* with *block* after the notes it carries; ``None`` when it
+    carries none."""
     content = message.content
     if isinstance(content, str):
-        return _notes_at(content) >= 0
-    tail = content[-1] if content else None
-    return isinstance(tail, AITextPart) and tail.text.startswith(TURN_NOTES_HEADER)
+        if _notes_at(content) < 0:
+            return None
+        return message.model_copy(update={"content": f"{content}{_PARAGRAPH}{block}"})
+    at = _notes_part(content)
+    if at is None:
+        return None
+    parts = list(content)
+    notes = parts[at]
+    assert isinstance(notes, AITextPart)  # _notes_part  # noqa: S101
+    parts[at] = AITextPart(text=f"{notes.text}{_PARAGRAPH}{block}")
+    return message.model_copy(update={"content": parts})
 
 
-def _with_block(message: AIMessage, block: str) -> AIMessage:
-    """*message*, whose content ends on the turn's notes, with *block* after them."""
-    content = message.content
-    if isinstance(content, str):
-        return message.model_copy(update={"content": f"{content}\n\n{block}"})
-    notes = content[-1]
-    assert isinstance(notes, AITextPart)  # _carries_notes  # noqa: S101
-    tail = AITextPart(text=f"{notes.text}\n\n{block}")
-    return message.model_copy(update={"content": [*content[:-1], tail]})
+def _notes_part(parts: list[Any]) -> int | None:
+    """The index of the text part that holds the turn's notes, the last one
+    the header opens; ``None`` when no part does."""
+    for at in range(len(parts) - 1, -1, -1):
+        part = parts[at]
+        if isinstance(part, AITextPart) and part.text.startswith(_OPENING):
+            return at
+    return None

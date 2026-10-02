@@ -221,7 +221,9 @@ async def test_a_note_a_generation_hook_adds_rides_the_notes_and_survives_compac
 
     provider, _ = await _compacted_turn(streaming, history=[], hook=hook)
 
-    replay = provider.seen[_OVERFLOW_AT]
+    before, replay = provider.seen[_OVERFLOW_AT - 1], provider.seen[_OVERFLOW_AT]
+    assert replay[0] == before[0]  # the input and its notes, kept as the hook left them
+    assert "Full output saved as 'evicted_c1'" in _results(replay)["c1"]  # it did compact
     first = str(replay[0].content)
     assert first.startswith(_QUESTION)
     assert first.count(TURN_NOTES_HEADER) == 1

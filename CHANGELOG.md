@@ -16,8 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The block joins the section the channel opened, under its one header, or
   opens it, and the notes read exactly as if assembled at once, so the prefix
   a provider caches is unchanged; a compaction keeps them whole with the
-  input. `split_turn_notes(text)` returns the input and its notes, cut where
-  the header opens a paragraph for the last time.
+  input. `split_turn_notes(text)` returns the input and its notes. The header
+  is the notes' only mark, recognized as the channel places it (a paragraph
+  of its own, a block after it): an input, or a note, that quotes it that way
+  is what either function misreads.
 
 - `ToolCallResult` and `ReasoningRequest.execute_tool_call` (RMK-306, RFC
   §12.4.1): a reasoning backend's tool call returns its text and whether it
