@@ -256,13 +256,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `list_models()` returns the capability tags the curated catalog knows for a
-  model whose listing reports none, as it already did for its display name,
-  context window, vision flag and price; what the endpoint reports still wins
-  (RMK-389). PolarGrid's edge reports no model type at all, so its chat models
-  came back untagged and its speech models looked like chat models: they now
-  carry `transcription` (`whisper-large-v3-turbo`,
-  `cohere-transcribe-03-2026`) or `speech` (`kokoro-82m`, `tada-3b-ml`).
+- The speech models a chat provider's `list_models()` surfaces carry
+  `transcription` (speech-to-text) or `speech` (text-to-speech) in
+  `capabilities`, so a model picker can keep them out of a chat list: OpenAI
+  (`whisper-1`, `gpt-4o-transcribe`, `tts-1`, `gpt-4o-mini-tts`…), Gemini
+  (`gemini-3.5-transcribe`, `gemini-*-tts`), Mistral (`voxtral-*-transcribe-*`,
+  `voxtral-*-tts-*`) by their names (`roomkit.providers.ai.model_tags`), and
+  PolarGrid from its catalog, whose edge reports no model type: its chat
+  models carry their capability tags too, its speech models (`kokoro-82m`,
+  `tada-3b-ml` among them) theirs (RMK-389). A curated catalog's
+  `capabilities`, mostly internal routing flags, stay out of every other
+  listing.
 
 - PolarGrid errors keep their HTTP status on `ProviderError.status_code`
   (401, 402, 400, 404, 429, 5xx) from the SDK class each is built from, where

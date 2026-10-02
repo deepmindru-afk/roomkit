@@ -40,6 +40,7 @@ from datetime import date
 from pydantic import BaseModel
 
 from roomkit.providers.ai.base import ModelInfo, ModelPricing
+from roomkit.providers.ai.model_tags import SPEECH_CAPABILITY, TRANSCRIPTION_CAPABILITY
 
 
 class PolarGridRegion(BaseModel):
@@ -196,11 +197,6 @@ customer's ``supports_vision`` and ``list_models`` backfill resolve here."""
 # models the configured edge may serve.
 MODELS_BY_ID: dict[str, ModelInfo] = {m.id: m for m in (*MODELS, *PILOT_MODELS)}
 
-TRANSCRIPTION_CAPABILITY = "transcription"
-"""``ModelInfo.capabilities`` tag of a speech-to-text model."""
-SPEECH_CAPABILITY = "speech"
-"""``ModelInfo.capabilities`` tag of a text-to-speech model."""
-
 VOICE_MODELS: list[ModelInfo] = [
     ModelInfo(
         id="whisper-large-v3-turbo",
@@ -225,4 +221,5 @@ CURATED_BY_ID: dict[str, ModelInfo] = {
     **{model.id: model for model in VOICE_MODELS},
 }
 """Every id the provider knows, chat and speech, for ``list_models()`` to
-backfill what the edge leaves blank."""
+backfill what the edge leaves blank, the capability tags included: unlike
+most vendors' catalogs, this one's are public tags, not routing flags."""

@@ -24,6 +24,7 @@ from roomkit.providers.ai.base import (
     tool_call_of,
 )
 from roomkit.providers.ai.chat_request import ChatDialect, chat_messages
+from roomkit.providers.ai.model_tags import with_speech_tags
 from roomkit.providers.ai.openai_dialect import (
     ThinkTagParser,
     ToolCallSlots,
@@ -123,7 +124,7 @@ class MistralAIProvider(AIProvider):
         resp = await self._client.models.list_async()
         data = getattr(resp, "data", None) or []
         live = [ModelInfo(id=m.id) for m in data if getattr(m, "id", None)]
-        return self._merge_curated(live)
+        return with_speech_tags(self._merge_curated(live))
 
     # -- Message formatting ----------------------------------------------------
 

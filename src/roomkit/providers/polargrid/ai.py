@@ -56,6 +56,7 @@ from roomkit.providers.ai.base import (
     StreamToolCallDelta,
 )
 from roomkit.providers.ai.chat_request import ChatDialect, chat_messages
+from roomkit.providers.ai.model_tags import with_speech_tags
 from roomkit.providers.ai.openai_dialect import (
     ThinkTagParser,
     ToolCallSlots,
@@ -185,7 +186,9 @@ class PolarGridAIProvider(AIProvider):
         The edge reports no
         model type, so the curated catalog backfills display names, vision
         and capabilities: a chat model's, and ``transcription`` or ``speech``
-        on a speech model (:data:`~roomkit.providers.polargrid.models.VOICE_MODELS`).
+        on a speech model (:data:`~roomkit.providers.polargrid.models.VOICE_MODELS`,
+        then :func:`~roomkit.providers.ai.model_tags.with_speech_tags` for an
+        id the catalog does not know).
         """
         client = await self._ensure_client()
         try:
@@ -196,13 +199,16 @@ class PolarGridAIProvider(AIProvider):
             raise self._wrap_error(exc) from exc
         data = getattr(response, "data", None) or []
         live = [self._parse_model(m) for m in data]
-        return self._merge_curated(live)
+        return with_speech_tags(self._merge_curated(live))
 
     @staticmethod
     def _parse_model(model: Any) -> ModelInfo:
-        """Map one SDK ``ModelInfo`` to a roomkit :class:`ModelInfo`: its id
-        alone, an edge sending no ``pg_*`` field (measured 2026-10-02)."""
-        return ModelInfo(id=str(getattr(model, "id", "")))
+        """Map one SDK ``ModelInfo`` to a roomkit :class:`ModelInfo`: its id,
+        with the capability tags the catalog knows for it, an edge sending no
+        ``pg_*`` field (measured 2026-10-02)."""
+        model_id = str(getattr(model, "id", ""))
+        known = CURATED_BY_ID.get(model_id)
+        return ModelInfo(id=model_id, capabilities=list(known.capabilities) if known else [])
 
     @classmethod
     def available_regions(cls) -> list[PolarGridRegion]:

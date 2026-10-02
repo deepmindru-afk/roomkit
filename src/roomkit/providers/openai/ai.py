@@ -34,6 +34,7 @@ from roomkit.providers.ai.base import (
     StreamThinkingDelta,
 )
 from roomkit.providers.ai.chat_request import OPENAI_CHAT, ChatDialect, chat_messages
+from roomkit.providers.ai.model_tags import with_speech_tags
 from roomkit.providers.ai.openai_dialect import (
     ThinkTagParser,
     ToolCallSlots,
@@ -217,7 +218,7 @@ class OpenAIAIProvider(AIProvider):
         """
         page = await self._client.models.list()
         live = [ModelInfo(id=m.id) for m in page.data]
-        return self._merge_curated(live)
+        return with_speech_tags(self._merge_curated(live))
 
     def _build_messages(
         self,

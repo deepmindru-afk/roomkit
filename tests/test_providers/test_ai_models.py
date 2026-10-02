@@ -311,7 +311,7 @@ def test_merge_curated_prefers_live_values() -> None:
     assert merged.context_window == 200
 
 
-def test_merge_curated_backfills_capabilities_the_listing_leaves_empty() -> None:
+def test_merge_curated_keeps_a_catalogs_flags_out_of_a_listing() -> None:
     class _Cat(AIProvider):
         @property
         def model_name(self) -> str:
@@ -322,18 +322,13 @@ def test_merge_curated_backfills_capabilities_the_listing_leaves_empty() -> None
 
         @classmethod
         def available_models(cls) -> list[ModelInfo]:
-            return [
-                ModelInfo(id="a", capabilities=["tools", "thinking"]),
-                ModelInfo(id="b", capabilities=["tools"]),
-            ]
+            return [ModelInfo(id="a", capabilities=["chat_tools_refused"])]
 
-    live = [ModelInfo(id="a"), ModelInfo(id="b", capabilities=["embedding"]), ModelInfo(id="c")]
-    merged = {m.id: m for m in _Cat._merge_curated(live)}
+    merged = _Cat._merge_curated([ModelInfo(id="a"), ModelInfo(id="b", capabilities=["tools"])])
 
-    assert merged["a"].capabilities == ["tools", "thinking"]
-    # What the API reports wins, and an unknown id stays unknown.
-    assert merged["b"].capabilities == ["embedding"]
-    assert merged["c"].capabilities == []
+    # A routing flag is the catalog's, not the listing's; what the API
+    # reports stays.
+    assert [m.capabilities for m in merged] == [[], ["tools"]]
 
 
 # --- Curated catalogs (offline, no SDK, no key) --------------------------------
@@ -475,7 +470,12 @@ async def test_openai_list_models_maps_and_merges() -> None:
         models=SimpleNamespace(
             list=AsyncMock(
                 return_value=SimpleNamespace(
-                    data=[SimpleNamespace(id="gpt-4o"), SimpleNamespace(id="text-embedding-3")]
+                    data=[
+                        SimpleNamespace(id="gpt-4o"),
+                        SimpleNamespace(id="text-embedding-3"),
+                        SimpleNamespace(id="whisper-1"),
+                        SimpleNamespace(id="gpt-4o-mini-tts"),
+                    ]
                 )
             )
         )
@@ -486,6 +486,10 @@ async def test_openai_list_models_maps_and_merges() -> None:
     assert models["gpt-4o"].supports_vision is True
     # Unknown id from the raw endpoint: passes through with id only.
     assert models["text-embedding-3"].display_name is None
+    # A catalog flag stays out; a speech model is tagged by what it is.
+    assert models["gpt-4o"].capabilities == []
+    assert models["whisper-1"].capabilities == ["transcription"]
+    assert models["gpt-4o-mini-tts"].capabilities == ["speech"]
 
 
 async def test_anthropic_list_models_maps_and_merges() -> None:
@@ -514,6 +518,12 @@ async def test_gemini_list_models_strips_prefix_and_filters() -> None:
             supported_actions=["generateContent"],
         )
         yield SimpleNamespace(
+            name="models/gemini-3.8-flash-tts",
+            display_name="Gemini 3.8 Flash TTS",
+            input_token_limit=8192,
+            supported_actions=["generateContent"],
+        )
+        yield SimpleNamespace(
             name="models/text-embedding-004",
             display_name="Embedding",
             input_token_limit=2048,
@@ -524,9 +534,10 @@ async def test_gemini_list_models_strips_prefix_and_filters() -> None:
     provider._client = SimpleNamespace(
         aio=SimpleNamespace(models=SimpleNamespace(list=AsyncMock(return_value=_pager())))
     )
-    ids = [m.id for m in await provider.list_models()]
+    models = await provider.list_models()
     # "models/" prefix stripped; embedding model filtered out.
-    assert ids == ["gemini-2.5-flash"]
+    assert [m.id for m in models] == ["gemini-2.5-flash", "gemini-3.8-flash-tts"]
+    assert [m.capabilities for m in models] == [[], ["speech"]]
 
 
 async def test_ollama_list_models_reads_installed() -> None:
@@ -551,7 +562,12 @@ async def test_mistral_list_models_maps_and_merges() -> None:
         models=SimpleNamespace(
             list_async=AsyncMock(
                 return_value=SimpleNamespace(
-                    data=[SimpleNamespace(id="mistral-large-latest"), SimpleNamespace(id="ft:xyz")]
+                    data=[
+                        SimpleNamespace(id="mistral-large-latest"),
+                        SimpleNamespace(id="ft:xyz"),
+                        SimpleNamespace(id="voxtral-mini-transcribe-realtime-2602"),
+                        SimpleNamespace(id="voxtral-mini-tts-latest"),
+                    ]
                 )
             )
         )
@@ -559,3 +575,5 @@ async def test_mistral_list_models_maps_and_merges() -> None:
     models = {m.id: m for m in await provider.list_models()}
     assert models["mistral-large-latest"].display_name == "Mistral Large 3"
     assert models["ft:xyz"].display_name is None
+    assert models["voxtral-mini-transcribe-realtime-2602"].capabilities == ["transcription"]
+    assert models["voxtral-mini-tts-latest"].capabilities == ["speech"]

@@ -28,6 +28,7 @@ from roomkit.providers.ai.base import (
     StreamToolCall,
     tool_call_of,
 )
+from roomkit.providers.ai.model_tags import with_speech_tags
 from roomkit.providers.ai.response_schema import checked_stream, schema_for_generate
 from roomkit.providers.gemini.config import GeminiConfig
 from roomkit.providers.gemini.errors import (
@@ -248,7 +249,7 @@ class GeminiAIProvider(AIProvider):
                     context_window=getattr(m, "input_token_limit", None),
                 )
             )
-        return self._merge_curated(live)
+        return with_speech_tags(self._merge_curated(live))
 
     def _wrap_error(self, exc: Exception) -> ProviderError:
         """Wrap an SDK exception into a ProviderError."""

@@ -766,12 +766,12 @@ class ModelInfo(BaseModel):
         supports_vision: Whether the model accepts image input, if known.
         deprecated: Whether the provider marks the model deprecated.
         capabilities: Provider-reported capability tags (e.g. Ollama's
-            ``"completion"``, ``"embedding"``, ``"vision"``, ``"tools"``),
-            backfilled from the curated catalog where a live listing reports
-            none. ``"transcription"`` and ``"speech"`` mark a speech-to-text
-            and a text-to-speech model a chat provider's listing surfaces.
-            Empty when the source does not report them — consumers treat
-            empty as "unknown, allow everywhere" rather than "none".
+            ``"completion"``, ``"embedding"``, ``"vision"``, ``"tools"``).
+            ``"transcription"`` and ``"speech"`` mark a speech-to-text and a
+            text-to-speech model a chat provider's listing surfaces
+            (:mod:`roomkit.providers.ai.model_tags`). Empty when the source
+            does not report them — consumers treat empty as "unknown, allow
+            everywhere" rather than "none".
         pricing: Vendor list price for this model, if published. It lives
             here, beside the id, because a lineup and its price list turn
             over together: kept apart, adding a model leaves its price
@@ -903,9 +903,10 @@ class AIProvider(ABC):
         A live models endpoint typically returns ids with little metadata.
         For each live model that also appears in :meth:`_curated_index`
         (the advertised catalog, by default), fill any missing
-        ``display_name``/``context_window``/``supports_vision``/``pricing``/
-        ``capabilities`` from the curated entry, keeping whatever the API did
-        report.
+        ``display_name``/``context_window``/``supports_vision``/``pricing``
+        from the curated entry, keeping whatever the API did report. A
+        catalog's ``capabilities`` stay out: most carry internal routing flags
+        (``chat_tools_refused``, ``deferred_tools``), not a public tag set.
         """
         curated = cls._curated_index()
         merged: list[ModelInfo] = []
@@ -925,7 +926,6 @@ class AIProvider(ABC):
                             else match.supports_vision
                         ),
                         "pricing": model.pricing or match.pricing,
-                        "capabilities": model.capabilities or match.capabilities,
                     }
                 )
             )
