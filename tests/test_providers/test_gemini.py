@@ -9,7 +9,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from roomkit.channels._ai_loop_rules import _MALFORMED_CALL_NUDGE
 from roomkit.channels.ai import AIChannel
 from roomkit.providers.ai.base import (
     AIContext,
@@ -23,6 +22,7 @@ from roomkit.providers.ai.base import (
     StreamToolCall,
 )
 from roomkit.providers.ai.response_schema import ResponseSchemaError
+from roomkit.providers.ai.tool_calls import MALFORMED_CALL_NUDGE
 from roomkit.providers.gemini.config import GeminiConfig
 from roomkit.providers.gemini.request import format_content, format_messages
 from tests.tool_loop_modes import run_tool_loop
@@ -469,7 +469,7 @@ class TestGeminiAIProvider:
 
             assert run.text == "Found it."
             assert handler.await_count == 1
-            assert [m.content for m in context.messages].count(_MALFORMED_CALL_NUDGE) == 1
+            assert [m.content for m in context.messages].count(MALFORMED_CALL_NUDGE) == 1
 
     @pytest.mark.asyncio
     async def test_generate_with_tools(self) -> None:

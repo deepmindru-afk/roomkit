@@ -31,6 +31,15 @@ _CALL_CUTTING_FINISH_REASONS = _TRUNCATION_FINISH_REASONS | {"model_length", "co
 _MALFORMED_CALL_FINISH_REASONS = frozenset({"malformed_function_call"})
 
 
+MALFORMED_CALL_NUDGE = (
+    "Your last tool call could not be parsed, so it did not run. Call the tool "
+    "again with arguments that are valid JSON matching its parameters, or answer "
+    "in plain text."
+)
+"""What a model is told when its provider could not parse its tool call, on
+the text loops and on a speech-to-speech session alike (RFC §6.4, §12.4)."""
+
+
 def is_malformed_call(finish_reason: str | None) -> bool:
     """Whether a response ended on a tool call its provider could not parse."""
     return finish_reason is not None and finish_reason.lower() in _MALFORMED_CALL_FINISH_REASONS

@@ -12,7 +12,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from roomkit.channels._ai_loop_rules import _MALFORMED_CALL_NUDGE
 from roomkit.channels.ai import _EMPTY_RETRY_NUDGE, AIChannel
 from roomkit.providers.ai.base import (
     AIContext,
@@ -22,6 +21,7 @@ from roomkit.providers.ai.base import (
     ProviderError,
 )
 from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.providers.ai.tool_calls import MALFORMED_CALL_NUDGE
 from tests.tool_loop_modes import run_tool_loop
 
 
@@ -112,7 +112,7 @@ def _malformed() -> AIResponse:
 
 
 def _told_malformed(context: AIContext) -> int:
-    return sum(1 for m in context.messages if m.content == _MALFORMED_CALL_NUDGE)
+    return sum(1 for m in context.messages if m.content == MALFORMED_CALL_NUDGE)
 
 
 async def test_a_malformed_call_is_told_and_retried_on_the_first_round(streaming: bool) -> None:
@@ -161,7 +161,7 @@ async def test_a_malformed_call_after_text_is_told_too(streaming: bool) -> None:
     assert run.text == "Done"
     assert handler.await_count == 1
     said = [m.content for m in context.messages]
-    assert said.index("Let me check.") + 1 == said.index(_MALFORMED_CALL_NUDGE)
+    assert said.index("Let me check.") + 1 == said.index(MALFORMED_CALL_NUDGE)
 
 
 class _FailsAfterFirst(MockAIProvider):

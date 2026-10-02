@@ -13,6 +13,7 @@ import logging
 from collections.abc import Callable, Coroutine
 from typing import Any
 
+from roomkit.providers.ai.tool_calls import MALFORMED_CALL_NUDGE, is_malformed_call
 from roomkit.providers.gemini.realtime_state import _GeminiSessionState, _GoAwayError
 from roomkit.voice.base import VoiceSession
 from roomkit.voice.realtime.provider import RealtimeVoiceProvider
@@ -87,6 +88,14 @@ def _interaction_is_idle(status: Any) -> bool:
     if status is None:
         return False
     return str(getattr(status, "value", status)).upper() in _IDLE_STATUSES
+
+
+def _ended_on_malformed_call(content: Any) -> bool:
+    """Whether the server ended the turn on a function call it could not parse."""
+    reason = getattr(content, "turn_complete_reason", None)
+    if reason is None:
+        return False
+    return is_malformed_call(getattr(reason, "name", None) or str(reason))
 
 
 class GeminiLiveEventHandlersMixin(RealtimeVoiceProvider):
@@ -197,6 +206,7 @@ class GeminiLiveEventHandlersMixin(RealtimeVoiceProvider):
         if vtype == "ACTIVITY_START":
             logger.info("[VAD] speech_start (session %s)", session.id)
             state.user_speech_active = True
+            state.malformed_call_nudged = False
             # New utterance: a repeat of the previous words is now legitimate.
             state.last_final_text.pop("user", None)
             state.awaiting_new_user_utterance = False
@@ -266,6 +276,7 @@ class GeminiLiveEventHandlersMixin(RealtimeVoiceProvider):
             # interrupted, so this may be the only trigger.
             if not state.user_speech_active:
                 state.user_speech_active = True
+                state.malformed_call_nudged = False
                 state.last_final_text.pop("user", None)
                 state.awaiting_new_user_utterance = False
                 await self._fire(self._speech_start_callbacks, session, label="speech_start")
@@ -314,6 +325,9 @@ class GeminiLiveEventHandlersMixin(RealtimeVoiceProvider):
             await self._flush_transcription_buffer(session, "user")
             await self._flush_transcription_buffer(session, "assistant")
 
+        if turn_complete and _ended_on_malformed_call(content):
+            await self._nudge_malformed_call(session, state)
+
         # Where the server reports its state, only IDLE closes the response.
         # Where it does not, ``turn_complete`` is the only signal there is and
         # keeps its old meaning, so 2.0 Flash Live and 2.5 native audio still
@@ -331,6 +345,27 @@ class GeminiLiveEventHandlersMixin(RealtimeVoiceProvider):
                 state.response_ended_by_interrupt = False
             else:
                 await self._fire(self._response_end_callbacks, session, label="response_end")
+
+    async def _nudge_malformed_call(
+        self, session: VoiceSession, state: _GeminiSessionState
+    ) -> None:
+        """Tell the model its function call could not be parsed and did not
+        run, once until the user speaks again (RFC §12.4): the turn ended on
+        it in silence, and nothing else would tell the model."""
+        if state.malformed_call_nudged:
+            logger.warning(
+                "[Gemini] another unparsable function call ended a turn (session %s); "
+                "the model was already told since the user last spoke",
+                session.id,
+            )
+            return
+        state.malformed_call_nudged = True
+        logger.warning(
+            "[Gemini] a turn ended on a function call the server could not parse "
+            "(session %s); telling the model it did not run",
+            session.id,
+        )
+        await self.inject_text(session, MALFORMED_CALL_NUDGE, role="system")
 
     async def _on_audio_data(
         self, session: VoiceSession, state: _GeminiSessionState, data: bytes

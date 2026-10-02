@@ -62,6 +62,9 @@ class _GeminiSessionState:
     session: VoiceSession
     live_session: Any = None
     ctxmgr: Any = None
+    malformed_call_nudged: bool = False
+    """The model was told its function call could not be parsed, since the
+    user last spoke: once until they speak again (RFC §12.4)."""
     live_config: Any = None
     receive_task: asyncio.Task[None] | None = None
     resumption_handle: str | None = None

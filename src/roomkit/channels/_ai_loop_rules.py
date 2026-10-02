@@ -33,7 +33,11 @@ from roomkit.providers.ai.base import (
     ProviderError,
 )
 from roomkit.providers.ai.response_schema import ResponseSchemaError
-from roomkit.providers.ai.tool_calls import is_malformed_call, is_truncation
+from roomkit.providers.ai.tool_calls import (
+    MALFORMED_CALL_NUDGE,
+    is_malformed_call,
+    is_truncation,
+)
 from roomkit.realtime.base import EphemeralEventType
 from roomkit.tools._outcome import OutcomeKind, ToolOutcome
 
@@ -57,12 +61,6 @@ logger = logging.getLogger("roomkit.channels.ai")
 _EMPTY_RETRY_NUDGE = (
     "You called tools and already have their results above. Now write your "
     "final answer to the user in plain text. Do not call any more tools."
-)
-
-_MALFORMED_CALL_NUDGE = (
-    "Your last tool call could not be parsed, so it did not run. Call the tool "
-    "again with arguments that are valid JSON matching its parameters, or answer "
-    "in plain text."
 )
 
 # Injected when the anti-loop guard force-stops a stuck model. The next
@@ -200,7 +198,7 @@ def _empty_round_nudge(
     whole cap thinking, and the same cap truncates again.
     """
     if is_malformed_call(finish_reason):
-        return _MALFORMED_CALL_NUDGE
+        return MALFORMED_CALL_NUDGE
     if final_text.strip() or not had_tool_round:
         return None
     if is_truncation(finish_reason):
