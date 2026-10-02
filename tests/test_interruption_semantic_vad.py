@@ -22,6 +22,7 @@ from roomkit.voice.backends.mock import MockVoiceBackend
 from roomkit.voice.base import AudioChunk, TranscriptionResult, VoiceSession
 from roomkit.voice.interruption import InterruptionConfig, InterruptionStrategy
 from roomkit.voice.pipeline import AudioPipelineConfig
+from roomkit.voice.pipeline.backchannel import PhraseBackchannelDetector
 from roomkit.voice.pipeline.backchannel.base import (
     BackchannelContext,
     BackchannelDecision,
@@ -83,9 +84,9 @@ class _BatchSTT(STTProvider):
 
 
 async def _room(
-    stt: STTProvider, *, min_speech_ms: int = 300
-) -> tuple[RoomKit, VoiceChannel, VoiceSession, _KeywordDetector, dict[str, list[Any]]]:
-    detector = _KeywordDetector()
+    stt: STTProvider, *, min_speech_ms: int = 300, detector: BackchannelDetector | None = None
+) -> tuple[RoomKit, VoiceChannel, VoiceSession, Any, dict[str, list[Any]]]:
+    detector = detector or _KeywordDetector()
     backend = MockVoiceBackend()
     channel = VoiceChannel(
         "voice-1",
@@ -253,4 +254,37 @@ async def test_a_speech_end_right_after_the_cut_in_keeps_the_turn() -> None:
 
     assert processed == [b"\x11\x22" * 160]
     assert len(seen["barge_in"]) == 1
+    await kit.close()
+
+
+async def test_phrase_detector_lets_the_bot_talk_through_an_okay() -> None:
+    kit, channel, session, _, seen = await _room(
+        _PartialsSTT(["Okay."]), detector=PhraseBackchannelDetector()
+    )
+
+    channel._on_pipeline_vad_event(session, _ONSET)  # noqa: SLF001
+    await asyncio.sleep(0.05)
+    channel._on_pipeline_speech_end(session, b"\x11\x22" * 160)  # noqa: SLF001
+    await asyncio.sleep(0.4)
+
+    assert len(seen["backchannel"]) == 1
+    assert seen["barge_in"] == []
+    assert session.id in channel._playing_sessions  # noqa: SLF001
+    await kit.close()
+
+
+async def test_phrase_detector_cuts_in_when_the_okay_becomes_a_question() -> None:
+    kit, channel, session, _, seen = await _room(
+        _PartialsSTT(["Okay,", "Okay, and do you", "Okay, and do you remember"]),
+        detector=PhraseBackchannelDetector(),
+    )
+
+    channel._on_pipeline_vad_event(session, _ONSET)  # noqa: SLF001
+    await asyncio.sleep(0.05)
+    channel._on_pipeline_speech_end(session, b"\x11\x22" * 160)  # noqa: SLF001
+    await asyncio.sleep(0.1)
+
+    assert len(seen["barge_in"]) == 1
+    assert session.id not in channel._playing_sessions  # noqa: SLF001
+    assert [e.text for e in seen["transcription"]] == ["Okay, and do you remember"]
     await kit.close()

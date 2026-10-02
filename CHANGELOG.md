@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `PhraseBackchannelDetector` (`roomkit.voice.pipeline.backchannel`, RMK-390):
+  RoomKit's first real backchannel detector, for the `SEMANTIC` interruption
+  strategy. An utterance made only of known acknowledgements ("okay",
+  "mm-hmm", "yeah, right", "d'accord", "c'est ça") lets the voice keep
+  talking; anything else stops it, and since each partial transcript is
+  classified as it grows, "okay, and what about..." still cuts in. English
+  and French phrases by default (`ENGLISH_BACKCHANNELS`,
+  `FRENCH_BACKCHANNELS`), `max_words=4`; without words it judges nothing a
+  backchannel and the strategy falls back on duration (RFC §12.3.13). In a
+  session of the local Vui example, 6 of 20 barge-ins were a lone "okay".
+
 - `StripBrackets(keep=...)` passes a TTS's own tags through and removes every
   other bracketed word, and `TTSFilterChain` runs several filters as one
   channel `tts_filter` (RMK-390). `VUI_TAGS` lists the tags Vui renders as

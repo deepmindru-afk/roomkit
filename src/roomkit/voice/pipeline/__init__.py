@@ -3,10 +3,13 @@
 from roomkit.voice.pipeline.aec import AECProvider, MockAECProvider, SpeexAECProvider
 from roomkit.voice.pipeline.agc import AGCConfig, AGCProvider, MockAGCProvider, SimpleAGCProvider
 from roomkit.voice.pipeline.backchannel import (
+    ENGLISH_BACKCHANNELS,
+    FRENCH_BACKCHANNELS,
     BackchannelContext,
     BackchannelDecision,
     BackchannelDetector,
     MockBackchannelDetector,
+    PhraseBackchannelDetector,
 )
 from roomkit.voice.pipeline.config import (
     AudioFormat,
@@ -134,6 +137,9 @@ __all__ = [
     "MockAGCProvider",
     "MockAudioRecorder",
     "MockBackchannelDetector",
+    "PhraseBackchannelDetector",
+    "ENGLISH_BACKCHANNELS",
+    "FRENCH_BACKCHANNELS",
     "MockDenoiserProvider",
     "MockDiarizationProvider",
     "MockDTMFDetector",
