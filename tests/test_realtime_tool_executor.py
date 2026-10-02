@@ -17,10 +17,15 @@ import pytest
 from roomkit import RoomKit, ToolCallResult
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 from roomkit.core.exceptions import ToolRefusedError
-from roomkit.tools import current_tool_call
+from roomkit.telemetry.base import SpanKind
+from roomkit.telemetry.mock import MockTelemetryProvider
+from roomkit.tools import current_tool_actor_id, current_tool_call
+from roomkit.tools.result import bounded_result
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
 from roomkit.voice.realtime.reasoning import ReasoningBackend, ReasoningOutput, ReasoningRequest
 from tests.conference.test_conference_realtime import until
+from tests.test_realtime_fixed_tools import call, channel_context, tool
+from tests.test_realtime_skills import _registry_with_skill
 
 LOOKUP = {"name": "lookup", "description": "Look up", "parameters": {"type": "object"}}
 REFUSED = {"name": "refused", "description": "Always refused", "parameters": {"type": "object"}}
@@ -35,6 +40,7 @@ class _Handler:
             raise ToolRefusedError("not for you")
         ctx = current_tool_call()
         assert ctx is not None
+        assert current_tool_actor_id() == "u1"
         self.contexts.append((ctx.room_id, ctx.tool_call_id, ctx.channel_id))
         return '{"found": true}'
 
@@ -42,14 +48,15 @@ class _Handler:
 class _Backend(ReasoningBackend):
     """Calls each tool of *names* once through ``execute_tool_call``."""
 
-    def __init__(self, *names: str) -> None:
+    def __init__(self, *names: str, arguments: dict[str, Any] | None = None) -> None:
         self.names = names
+        self.arguments = arguments or {}
         self.results: list[ToolCallResult] = []
 
     async def run(self, request: ReasoningRequest) -> AsyncIterator[ReasoningOutput]:
         assert request.execute_tool_call is not None
         for name in self.names:
-            self.results.append(await request.execute_tool_call(name, {}))
+            self.results.append(await request.execute_tool_call(name, dict(self.arguments)))
         yield ReasoningOutput("done", is_final=True)
 
 
@@ -123,3 +130,56 @@ async def test_tool_search_results_are_bounded(name: str, arguments: dict[str, A
     assert len(sent) <= 300
     assert sent.endswith("characters]")
     await kit.close()
+
+
+async def test_a_backend_call_named_like_a_skill_tool_reaches_the_host() -> None:
+    """A recovered or a backend call reaches the host's tools only (RFC §21.1):
+    a channel with skills and no declared catalogue serves a backend's
+    ``read_skill_reference`` through its handler, never the skill's reference."""
+    import tempfile
+    from pathlib import Path
+
+    host: list[str] = []
+
+    async def handler(name: str, arguments: dict[str, Any]) -> str:
+        host.append(name)
+        return "host answer"
+
+    with tempfile.TemporaryDirectory() as root:
+        registry = _registry_with_skill(Path(root), references=[("guide.md", "SECRET REFERENCE")])
+        backend = _Backend(
+            "read_skill_reference", arguments={"skill_name": "test-skill", "filename": "guide.md"}
+        )
+        kit, provider, session = await _channel(
+            handler, tools=None, skills=registry, reasoning_backend=backend
+        )
+        await provider.simulate_delegation(session, "d1", "integrator")
+        await until(lambda: bool(backend.results))
+
+    assert host == ["read_skill_reference"]
+    assert "SECRET" not in backend.results[0].text
+    await kit.close()
+
+
+async def test_a_call_tool_span_names_the_tool_it_carries() -> None:
+    telemetry = MockTelemetryProvider()
+    tools = [tool("calendar"), tool("projects")] + [tool(f"filler_{i}") for i in range(110)]
+    async with channel_context(tools=tools) as ctx:
+        _, channel, provider, session, _ = ctx
+        channel._telemetry = telemetry
+        await call(
+            channel,
+            provider,
+            session,
+            "call_tool",
+            {"name": "calendar", "arguments_json": '{"action":"list"}'},
+        )
+
+    names = [s.name for s in telemetry.get_spans(SpanKind.REALTIME_TOOL_CALL)]
+    assert "realtime_tool:calendar" in names
+
+
+def test_a_bound_shorter_than_its_note_still_holds() -> None:
+    assert bounded_result("x" * 100, 10, "t") == "x" * 10
+    cut = bounded_result("x" * 1000, 100, "t")
+    assert len(cut) == 100 and cut.endswith("[truncated: the result was 1000 characters]")

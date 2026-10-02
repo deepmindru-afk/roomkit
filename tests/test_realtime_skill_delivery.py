@@ -54,7 +54,7 @@ async def running(registry, *, provider=None, **kwargs):
         await kit.close()
 
 
-async def test_complete_body_references_and_prerequisite_schema_after_eighth_skill(tmp_path):
+async def test_complete_body_and_prerequisite_schema_after_eighth_skill(tmp_path):
     body, reference = "Mandatory instruction.\n" * 1600, "Reference detail.\n" * 2500
     registry = _registry_with_skill(
         tmp_path,
@@ -75,7 +75,8 @@ async def test_complete_body_references_and_prerequisite_schema_after_eighth_ski
         assert provider.connect.call_args.kwargs["provider_config"]["preserve_context"] is True
         assert "call_tool" in {t["name"] for t in connected["tools"]}
         assert "calendar" not in {t["name"] for t in connected["tools"]}
-        # The refusal is bounded too (RFC §21.5): read as text, not as JSON.
+        # The refusal is bounded too (RFC §21.5): read as text, not as JSON;
+        # a bound shorter than the truncation note cuts the text alone.
         denied = await raw_call(
             channel,
             provider,
@@ -86,7 +87,7 @@ async def test_complete_body_references_and_prerequisite_schema_after_eighth_ski
                 "arguments_json": '{"action":"list"}',
             },
         )
-        assert "truncated" in denied  # a refusal of more than 40 characters
+        assert len(denied) == 40 and denied.startswith('{"error"')
         handler.assert_not_awaited()
         for _ in range(2):
             result = await call(
@@ -106,7 +107,7 @@ async def test_complete_body_references_and_prerequisite_schema_after_eighth_ski
             "read_skill_reference",
             {"skill_name": "test-skill", "filename": "guide.md"},
         )
-        assert read.endswith("characters]") and "Reference detail" not in read
+        assert len(read) == 40 and read.startswith('{"filename"')
         result = await call(
             channel,
             provider,

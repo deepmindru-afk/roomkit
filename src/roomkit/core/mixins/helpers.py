@@ -893,19 +893,27 @@ class HelpersMixin:
         return _callback
 
     async def _judge_tool_call(
-        self, event: ToolCallEvent, channel_id: str, *, carrying: RoomContext | None = None
+        self,
+        event: ToolCallEvent,
+        channel_id: str,
+        *,
+        carrying: RoomContext | None = None,
+        claim: Callable[[], bool] | None = None,
     ) -> ToolCallVerdict | None:
         """ON_TOOL_CALL's verdict on a call a channel served, its observers told.
 
         What :meth:`_build_tool_call_hook`'s callback runs, for every channel;
         *carrying* is a context the caller already built for this call, which
-        spares the room history a second read.
+        spares the room history a second read. *claim* claims the call's one
+        report between the chain and the observers: when it answers ``False``
+        the outcome was already reported (a cancellation that landed while
+        the chain ran) and nothing more is (RFC §12.4).
         """
         if not event.room_id:
             return None
         chain = await self._run_tool_call_chain(event, event.room_id, carrying=carrying)
         if chain is None:
-            return await self._report_unreachable_tool_call(event, channel_id)
+            return await self._report_unreachable_tool_call(event, channel_id, claim)
         hook_result, context = chain
         verdict = tool_call_verdict(hook_result, event)
         read = verdict.result if verdict.result is not None else event.result
@@ -914,6 +922,8 @@ class HelpersMixin:
             # with its own framework event, and what any hook that
             # failed said for the observers.
             return replace(verdict, error_detail=hook_errors_detail(hook_result))
+        if claim is not None and not claim():
+            return verdict
         if context is not None:
             await self._observe_tool_call(observed_call_event(hook_result, event, read), context)
         await self._emit_tool_call_event(event, channel_id)
@@ -1029,7 +1039,7 @@ class HelpersMixin:
         )
 
     async def _report_unreachable_tool_call(
-        self, event: ToolCallEvent, channel_id: str
+        self, event: ToolCallEvent, channel_id: str, claim: Callable[[], bool] | None = None
     ) -> ToolCallVerdict | None:
         """The verdict on a call whose ON_TOOL_CALL hooks could not run, reported.
 
@@ -1039,7 +1049,7 @@ class HelpersMixin:
         failure it is.
         """
         verdict = self._unreachable_tool_call_verdict(str(event.room_id))
-        if event.result is not None:
+        if event.result is not None and (claim is None or claim()):
             await self._emit_tool_call_event(event, channel_id)
         return verdict
 

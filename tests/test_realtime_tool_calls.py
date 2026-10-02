@@ -171,3 +171,71 @@ async def test_a_cancellation_after_the_result_went_out_is_not_reported() -> Non
     assert steps == ["started", "finished"]
     assert [(e.tool_call_id, e.cancelled) for e in observed] == [("c-find", False)]
     await kit.close()
+
+
+async def test_a_call_whose_handler_ends_its_session_is_reported_once() -> None:
+    """A hang-up tool: the session's end does not take its own call for one it
+    interrupted, so the call reports its own outcome, once."""
+    box: dict[str, Any] = {}
+
+    async def hang_up(name: str, arguments: dict[str, Any]) -> str:
+        await box["channel"].end_session(box["session"])
+        return "bye"
+
+    kit, channel, provider, session, observed = await _channel(hang_up)
+    framework_events: list[Any] = []
+
+    @kit.on("tool_call")
+    async def on_tool_call(event: Any) -> None:
+        framework_events.append(event.data)
+
+    box.update(channel=channel, session=session)
+    await provider.simulate_tool_call(session, "c-bye", "lookup", {})
+    await until(lambda: bool(observed))
+    await asyncio.sleep(0.05)
+
+    assert [(e.tool_call_id, e.cancelled) for e in observed] == [("c-bye", False)]
+    assert len(framework_events) == 1
+    await kit.close()
+
+
+async def test_a_cancellation_while_the_observers_run_adds_no_second_report() -> None:
+    """The judgement claims the call's report before its observers run, so a
+    cancellation landing meanwhile finds the outcome reported (RFC §12.4)."""
+
+    async def found(name: str, arguments: dict[str, Any]) -> str:
+        return "found"
+
+    kit, channel, provider, session, observed = await _channel(found)
+    in_observer, release = asyncio.Event(), asyncio.Event()
+
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="slow-audit")
+    async def slow_audit(event: ToolCallEvent, ctx: RoomContext) -> None:
+        in_observer.set()
+        await release.wait()
+
+    await provider.simulate_tool_call(session, "c1", "lookup", {})
+    await until(in_observer.is_set)
+    await provider.simulate_tool_call_cancellation(session, ["c1"])
+    release.set()
+    await until(lambda: bool(provider.tool_results))
+    await asyncio.sleep(0.05)
+
+    assert [(e.tool_call_id, e.cancelled) for e in observed] == [("c1", False)]
+    assert [r[2] for r in provider.tool_results] == ["found"]
+    await kit.close()
+
+
+async def test_a_refusal_is_on_the_wire_before_it_is_reported() -> None:
+    kit, channel, provider, session, _ = await _channel(_Gated())
+    on_wire: list[int] = []
+
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="wire")
+    async def wire(event: ToolCallEvent, ctx: RoomContext) -> None:
+        on_wire.append(len(provider.tool_results))
+
+    await provider.simulate_tool_call(session, "c1", "undeclared_tool", {})
+    await until(lambda: bool(on_wire))
+
+    assert on_wire == [1]
+    await kit.close()

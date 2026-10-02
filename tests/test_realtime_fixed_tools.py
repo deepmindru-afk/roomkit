@@ -286,7 +286,7 @@ async def test_hangup_cancels_only_its_calls_and_refuses_late_execution(route: s
             await channel._dispatch_recovered_tool_call(
                 session, "calendar", {"action": "list"}, ""
             )
-            await channel._inject_recovered_result(session, "calendar", "late", "{}")
+            await channel._inject_recovered_result(session, "calendar", "{}")
             assert not any(c.method == "inject_text" for c in provider.calls)
         else:
             await provider.simulate_tool_call(session, "late", name, args)

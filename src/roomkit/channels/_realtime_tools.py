@@ -10,6 +10,7 @@ import logging
 import threading
 import time
 from collections.abc import Container, Iterator
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.channels._ai_policy import policy_admits, policy_refusal
@@ -22,9 +23,12 @@ from roomkit.channels._realtime_context import (
 from roomkit.channels._realtime_tool_calls import RealtimeToolCall, ToolCallBook
 from roomkit.channels._realtime_tool_executor import (
     ToolCallDoor,
+    deliver_once,
     judge_tool_call,
-    report_failed_call,
+    refuse_duplicate_call,
+    report_cancelled_call,
     run_tool_call,
+    serve_tool_call,
     serving_tool_call,
     tool_loop_context,
 )
@@ -44,6 +48,7 @@ from roomkit.tools.result import (
     GateRefusal,
     bounded_result,
     declined_answer,
+    failure_detail,
     pre_execution_denial,
     result_text,
 )
@@ -119,9 +124,7 @@ class RealtimeToolsHost(Protocol):
     _transport: VoiceBackend
     _framework: RoomKit | None
     _transcription_order_locks: dict[str, asyncio.Lock]
-    _awaiting_tool_response: set[str]
     _tool_calls: ToolCallBook
-    _scheduled_tasks: set[asyncio.Task[Any]]
     channel_id: str
     _telemetry_provider: Any
 
@@ -163,7 +166,8 @@ class _ProviderDoor:
         self._channel = channel
 
     async def deliver(self, call: RealtimeToolCall, outcome: ToolOutcome) -> bool:
-        return await self._channel._deliver_tool_result(call, result_text(outcome.result))
+        text = result_text(outcome.result)
+        return await self._channel._submit_realtime_tool_result(call.session, call.call_id, text)
 
 
 class _ToolCallSpan:
@@ -220,9 +224,7 @@ class RealtimeToolsMixin:
     _transport: VoiceBackend
     _framework: RoomKit | None
     _transcription_order_locks: dict[str, asyncio.Lock]
-    _awaiting_tool_response: set[str]
     _tool_calls: ToolCallBook
-    _scheduled_tasks: set[asyncio.Task[Any]]
     channel_id: str
     _telemetry_provider: Any
 
@@ -251,7 +253,7 @@ class RealtimeToolsMixin:
         if not self._open_tool_call(call):
             self._track_task(
                 loop,
-                self._refuse_duplicate_call(call),
+                refuse_duplicate_call(self, call),
                 name=f"rt_tool_duplicate:{session.id}:{call_id}",
             )
             return
@@ -286,22 +288,22 @@ class RealtimeToolsMixin:
             return
         for call_id in call_ids:
             call = self._tool_calls.get(session.id, call_id)
-            if call is None or not call.abandonable:
+            if call is None:
                 logger.debug(
                     "Cancelled tool call %s is not in flight for session %s", call_id, session.id
                 )
                 continue
             if self._spared_by_own_reconnect(session, call_id, call.name):
                 continue
-            if call.delivered or call.reported:
+            if self._tool_calls.abandonable(session.id, call_id) is None:
                 logger.debug(
                     "Cancelled tool call %s already gave its outcome for session %s",
                     call_id,
                     session.id,
                 )
                 continue
-            if call.task is not None:
-                call.task.cancel()
+            assert call.task is not None  # abandonable  # noqa: S101
+            call.task.cancel()
             logger.info(
                 "Tool call %s(%s) cancelled by the model for session %s",
                 call.name,
@@ -310,7 +312,7 @@ class RealtimeToolsMixin:
             )
             self._track_task(
                 loop,
-                self._report_cancelled_tool_call(call),
+                report_cancelled_call(self, call, "The model abandoned this call"),
                 name=f"rt_tool_cancelled:{session.id}:{call_id}",
             )
 
@@ -331,39 +333,6 @@ class RealtimeToolsMixin:
             session.id,
         )
         return True
-
-    async def _report_cancelled_tool_call(
-        self,
-        call: RealtimeToolCall,
-        hint: str = "The model abandoned this call before its result; nothing was sent.",
-    ) -> None:
-        """Report an abandoned call to ON_TOOL_CALL's observers (RFC §9.3)."""
-        body = json.dumps({"error": "Tool call cancelled", "tool": call.name, "hint": hint})
-        await report_failed_call(self, call, ToolOutcome(OutcomeKind.CANCELLED, body))
-
-    async def _report_ended_calls(self, calls: list[RealtimeToolCall]) -> None:
-        """Report the calls the session's end interrupted, each once, as
-        cancelled; a call whose result went out was not interrupted (RFC §12.4)."""
-        for call in calls:
-            if not call.delivered:
-                await self._report_cancelled_tool_call(
-                    call, hint="The session ended before its result; nothing was sent."
-                )
-
-    async def _refuse_duplicate_call(self, call: RealtimeToolCall) -> None:
-        """Report a call whose id names a call still in flight, sending nothing.
-
-        The id's one result is the first call's, which runs on (RFC §12.4).
-        """
-        logger.warning(
-            "Tool call %s(%s) arrived while a call with its id is in flight (session %s); "
-            "refused, the first one runs on",
-            call.name,
-            call.call_id,
-            call.session.id,
-        )
-        body = json.dumps({"error": f"Tool call '{call.call_id}' is already running"})
-        await report_failed_call(self, call, ToolOutcome(OutcomeKind.REFUSED, body))
 
     def _session_room(self, session: VoiceSession) -> str | None:
         with self._state_lock:
@@ -408,6 +377,9 @@ class RealtimeToolsMixin:
         session = call.session
         if session.state == VoiceSessionState.ENDED:
             return
+        # Unwrapped first, so the books, the span and every report name the
+        # tool a fixed-declaration call_tool carries, not the transport.
+        call.unreadable = self._unwrap_call_tool(call)
         await self._after_earlier_transcriptions(session)
         if session.state == VoiceSessionState.ENDED:
             return
@@ -509,12 +481,10 @@ class RealtimeToolsMixin:
     async def _authorize_call(
         self, call: RealtimeToolCall, door: ToolCallDoor
     ) -> tuple[GateRefusal | None, RoomContext | None]:
-        """The pre-execution gate (RFC §12.4), after a fixed-declaration
-        ``call_tool`` is unwrapped into the tool it carries."""
-        if door.channel_serves:
-            transport_error = self._unwrap_call_tool(call)
-            if transport_error is not None:
-                return GateRefusal(json.dumps({"error": transport_error})), None
+        """The pre-execution gate (RFC §12.4); a call that cannot be read is
+        refused before any check."""
+        if call.unreadable is not None:
+            return GateRefusal(json.dumps({"error": call.unreadable})), None
         call.arguments, denial, context = await self._authorize_realtime_tool(
             call.name,
             call.arguments,
@@ -535,21 +505,27 @@ class RealtimeToolsMixin:
         around their delivery; ``None`` for any other call."""
         if self._tool_search_support and self._tool_search_support.is_search_tool(call.name):
             return await self._serve_tool_search(call, door)
-        if call.name == TOOL_ACTIVATE_SKILL and self._skill_support:
+        if not (self._skill_support and self._skill_support.is_skill_tool(call.name)):
+            return None
+        if call.name == TOOL_ACTIVATE_SKILL:
             return await self._serve_skill_activation(call, door, carrying)
-        return None
+        return await serve_tool_call(
+            self, call, carrying, answer_with=lambda: self._skill_answer(call)
+        )
+
+    async def _skill_answer(self, call: RealtimeToolCall) -> str:
+        """A skill tool's answer (a reference, a script's output), bounded in time."""
+        answer = self._skill_support.handle_tool_call(call.name, call.arguments, call.session.id)
+        return await answer_within(self._call_timeout(call.name, call.room_id), call.name, answer)
 
     async def _answer_call(self, call: RealtimeToolCall, carrying: RoomContext | None) -> str:
-        """A skill tool's answer, else the handler's, as the text the model reads.
+        """The handler's answer, as the text the model reads.
 
         Raises :class:`~roomkit.core.exceptions.UnservedToolCallError` when
         nothing serves the call, and lets the handler's
         :class:`~roomkit.core.exceptions.ToolRefusedError` through.
         """
         name, session = call.name, call.session
-        if self._skill_support and self._skill_support.is_skill_tool(name):
-            answer = self._skill_support.handle_tool_call(name, call.arguments, session.id)
-            return await answer_within(self._call_timeout(name, call.room_id), name, answer)
         if not self._serves_tool(name, call.room_id or session.room_id):
             raise UnservedToolCallError(name)
         logger.info(
@@ -568,12 +544,10 @@ class RealtimeToolsMixin:
         return text
 
     def _bound_call_result(self, call: RealtimeToolCall, text: str) -> str:
-        """*text* within ``tool_result_max_length`` (RFC §21.5). An activated
-        skill's instructions are exempt, and so is the complete schema
-        ``list_tools(name=...)`` reads: the model needs it whole to call the
-        tool."""
-        if call.name == TOOL_ACTIVATE_SKILL:
-            return text
+        """*text* within ``tool_result_max_length`` (RFC §21.5). The complete
+        schema ``list_tools(name=...)`` reads is exempt: the model needs it
+        whole to call the tool. (An activated skill's instructions, exempt
+        too, go out with the activation itself.)"""
         if call.name == TOOL_LIST_TOOLS and call.arguments.get("name"):
             return text
         return bounded_result(text, self._tool_result_max_length, call.name)
@@ -661,10 +635,14 @@ class RealtimeToolsMixin:
                         OutcomeKind.REFUSED, support.missing_tools_error(missing)
                     )
                     skill = None
+            # An activated skill's instructions go out whole (RFC §21.5); a
+            # refusal, a block or a hook's replacement is bounded.
+            if not (outcome.kind is OutcomeKind.SERVED and outcome.result == result):
+                text = result_text(outcome.result)
+                outcome = replace(outcome, result=self._bound_call_result(call, text))
             # The call ID belongs to the current connection. Deliver before
             # native reconfiguration can replace that connection.
-            call.delivered = True
-            delivered = await door.deliver(call, outcome)
+            delivered = await deliver_once(call, door, outcome)
             if delivered and skill is not None and outcome.kind is OutcomeKind.SERVED:
                 await self._open_skill_gates(session, skill)
         return outcome
@@ -710,16 +688,6 @@ class RealtimeToolsMixin:
             for entry in self._registry.entries(room_id, source=ToolSource.ORCHESTRATION)
             if entry.traits.always_declared and entry.name not in skip
         ]
-
-    async def _deliver_tool_result(self, call: RealtimeToolCall, result: str) -> bool:
-        """Send *call*'s one result (RFC §12.4); whether it reached a live session.
-
-        The call counts as delivered from here on: a cancellation that lands
-        while the result goes out, or a step that fails after it, adds no
-        second outcome.
-        """
-        call.delivered = True
-        return await self._submit_realtime_tool_result(call.session, call.call_id, result)
 
     async def _submit_realtime_tool_result(
         self, session: VoiceSession, call_id: str, result: str
@@ -882,7 +850,7 @@ class RealtimeToolsMixin:
 
         Returns the effective arguments, an optional denial result, and the
         room context this gate built — ``None`` when it built none. The caller
-        hands that context to :meth:`_fire_tool_hook` as ``carrying`` so one
+        hands that context to ON_TOOL_CALL's judgement as ``carrying`` so one
         tool call deserialises the room history once instead of twice.
         """
         served = self._channel_tool_names() if channel_serves else frozenset()
@@ -1006,14 +974,17 @@ class RealtimeToolsMixin:
                 call.name, call.arguments, session.id
             )
             outcome = ToolOutcome(OutcomeKind.SERVED, self._bound_call_result(call, result))
-            call.delivered = True
-            delivered = await door.deliver(call, outcome)
+            delivered = await deliver_once(call, door, outcome)
             if (
                 delivered
                 and updated is not None
                 and self._provider.supports_mid_session_reconfigure
             ):
-                await self._reveal_tools(session)
+                failure = await self._reveal_tools(session)
+                if failure is not None:
+                    # The model read the result; the session never learned the
+                    # tools it revealed. Reported as failed, with what it read.
+                    return replace(outcome, kind=OutcomeKind.FAILED, detail=failure)
         logger.info(
             "Tool-search %s(%s) handled for session %s (%d tools now visible)",
             call.name,
@@ -1024,24 +995,29 @@ class RealtimeToolsMixin:
         await self._report_search_call(call, str(outcome.result))
         return outcome
 
-    async def _reveal_tools(self, session: VoiceSession) -> None:
-        """Declare to the session the tools Tool Search revealed."""
+    async def _reveal_tools(self, session: VoiceSession) -> str | None:
+        """Declare to the session the tools Tool Search revealed; what failed,
+        if the reconfiguration did."""
         with self._state_lock:
             base_tools = self._session_tools.get(session.id, self._tools or [])
-        await self._provider.reconfigure(
-            session,
-            tools=self._compose_session_tools(session, base_tools),
-            system_prompt=self._compose_session_prompt(
-                session, session.metadata.get("system_prompt", self._system_prompt)
-            ),
-        )
+        try:
+            await self._provider.reconfigure(
+                session,
+                tools=self._compose_session_tools(session, base_tools),
+                system_prompt=self._compose_session_prompt(
+                    session, session.metadata.get("system_prompt", self._system_prompt)
+                ),
+            )
+        except Exception as exc:
+            logger.exception("Revealing tools to session %s failed", session.id)
+            return failure_detail(exc)
+        return None
 
     async def _report_search_call(self, call: RealtimeToolCall, result: str) -> None:
         """Report a delivered Tool Search call to every ON_TOOL_CALL hook."""
         framework = self._tool_framework(call)
-        if framework is None:
+        if framework is None or not call.claim_report():
             return
-        call.reported = True
         try:
             await framework._report_tool_call(self._tool_event(call, result), self.channel_id)
         except Exception:

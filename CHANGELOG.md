@@ -45,12 +45,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- A BLOCK from a BEFORE_TOOL_USE hook reaches the model in the hook's words on
-  every channel (RMK-306, RFC §9.3), a hook-trigger behaviour change: an
-  `AIChannel`, a conference and `PolicyExternalToolHandler` gave the plain
-  `Tool 'x' denied by pre-execution hook.` while a realtime session gave the
-  reason. A hook that fails closed, or blocks with no reason, still gives the
-  plain refusal, never its error. `BeforeToolDecision.reason` carries it.
+- **BREAKING — a BLOCK from a BEFORE_TOOL_USE hook reaches the model in the
+  hook's words on every channel** (RMK-306, RFC §9.3), a hook-trigger
+  behaviour change: an `AIChannel`, a conference and
+  `PolicyExternalToolHandler` gave the plain `Tool 'x' denied by pre-execution
+  hook.` while a realtime session gave the reason, so a reason that only logs
+  and observers saw on those channels now reaches the model. Migration: word
+  a block's reason for the model, or block without one
+  (`HookResult.block()`) to keep the plain refusal. A hook that fails closed
+  still gives the plain refusal, never its error. `BeforeToolDecision.reason`
+  carries it.
 
 - **BREAKING — roomkit's own tool handlers decline a call by raising
   `UnservedToolCallError`** (RMK-305, RFC §21.4): `MCPToolProvider.as_tool_handler()`,
@@ -132,7 +136,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     interrupts, or that the provider cancels while ON_TOOL_CALL judges it, is
     reported once, as cancelled (neither was reported);
   - the participant's role a tool policy reads before each call is read
-    under the framework's lease, like every store read a channel makes.
+    under the framework's lease, like every store read a channel makes;
+  - an `activate_skill` refusal, block or hook replacement is bounded as any
+    result is (only the activated instructions go out whole), and a bound
+    shorter than the truncation note cuts the text alone rather than exceed
+    its limit;
+  - a Tool Search call whose reconfiguration fails once its result went out
+    is reported as failed with the result the model read;
+  - a call's span is opened once a fixed-declaration `call_tool` is
+    unwrapped, so it names the tool it carries. A gate refusal's span carries
+    `realtime.tool_denied` as a handler refusal's did, and a recovered or a
+    backend call's span sits under the session's span. A conference handler's
+    context loads the room once per call (`current_tool_room()`).
 
 - A realtime session and a conference emit the `before_tool_use` framework
   event for every tool call, as an `AIChannel` does (RMK-306): they emitted it

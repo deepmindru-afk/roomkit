@@ -13,8 +13,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import replace
 from typing import TYPE_CHECKING, Protocol
 
@@ -151,11 +152,17 @@ async def _decide(host: ToolCallHost, call: RealtimeToolCall, door: ToolCallDoor
 
 
 async def serve_tool_call(
-    host: ToolCallHost, call: RealtimeToolCall, carrying: RoomContext | None
+    host: ToolCallHost,
+    call: RealtimeToolCall,
+    carrying: RoomContext | None,
+    answer_with: Callable[[], Awaitable[str]] | None = None,
 ) -> ToolOutcome:
-    """The answer to a gated *call*, as ON_TOOL_CALL leaves it."""
+    """The answer to a gated *call*, as ON_TOOL_CALL leaves it: the host's
+    handler's, or *answer_with*'s for one of the channel's own tools."""
     try:
-        answer = await host._answer_call(call, carrying)
+        answer = await (
+            answer_with() if answer_with is not None else host._answer_call(call, carrying)
+        )
     except UnservedToolCallError:
         # Nothing served it: the hooks may still (RFC §21.4).
         outcome = ToolOutcome(OutcomeKind.UNSERVED, unserved_tool_error(call.name))
@@ -176,13 +183,16 @@ async def judge_tool_call(
     """*outcome* once ON_TOOL_CALL's SYNC chain judged it, read as on every
     channel (RFC §9.3): a block withholds the result, a hook's result replaces
     the handler's or serves a call nothing served, and a call nothing served
-    failed. The judgement reports a served or blocked call to the observers."""
+    failed. The judgement reports a served or blocked call to the observers,
+    claiming the call's one report before it does."""
     served = outcome.result if outcome.kind is OutcomeKind.SERVED else None
     framework = host._tool_framework(call)
     verdict: ToolCallVerdict | None = None
     if framework is not None:
         event = host._tool_event(call, None if served is None else str(served))
-        verdict = await framework._judge_tool_call(event, host.channel_id, carrying=carrying)
+        verdict = await framework._judge_tool_call(
+            event, host.channel_id, carrying=carrying, claim=call.claim_report
+        )
         # Don't fuse hook dispatch with the delivery into one loop step.
         await asyncio.sleep(0)
     reading = read_tool_call_verdict(call.name, verdict, served)
@@ -190,8 +200,6 @@ async def judge_tool_call(
     if kind is OutcomeKind.UNSERVED:
         detail = verdict.error_detail if verdict is not None else None
         return ToolOutcome(kind, unserved_tool_error(call.name), detail=detail)
-    if framework is not None:
-        call.reported = True
     return ToolOutcome(kind, reading.result)
 
 
@@ -204,12 +212,59 @@ async def finish_tool_call(
     result, and an observer must not stand in front of it.
     """
     outcome = replace(outcome, result=host._bound_call_result(call, result_text(outcome.result)))
-    if not call.delivered:
-        call.delivered = True
-        await door.deliver(call, outcome)
+    await deliver_once(call, door, outcome)
     if outcome.failed:
         await report_failed_call(host, call, outcome)
     return outcome
+
+
+async def deliver_once(call: RealtimeToolCall, door: ToolCallDoor, outcome: ToolOutcome) -> bool:
+    """Deliver *outcome* through *door* unless *call*'s one result already went
+    out (RFC §12.4); whether it reached whoever waits for it.
+
+    The call counts as delivered from here on: a cancellation that lands while
+    the result goes out, or a step that fails after it, adds no second outcome.
+    """
+    if call.delivered:
+        return False
+    call.delivered = True
+    return await door.deliver(call, outcome)
+
+
+async def refuse_duplicate_call(host: ToolCallHost, call: RealtimeToolCall) -> None:
+    """Report a call whose id names a call still in flight, sending nothing:
+    the id's one result is the first call's, which runs on (RFC §12.4)."""
+    logger.warning(
+        "Tool call %s(%s) arrived while a call with its id is in flight on channel %s; "
+        "refused, the first one runs on",
+        call.name,
+        call.call_id,
+        host.channel_id,
+    )
+    body = json.dumps({"error": f"Tool call '{call.call_id}' is already running"})
+    await report_failed_call(host, call, ToolOutcome(OutcomeKind.REFUSED, body))
+
+
+async def report_cancelled_call(host: ToolCallHost, call: RealtimeToolCall, why: str) -> None:
+    """Report *call*, interrupted before its result, once, as cancelled (RFC §9.3)."""
+    body = json.dumps(
+        {
+            "error": "Tool call cancelled",
+            "tool": call.name,
+            "hint": f"{why} before its result; nothing was sent.",
+        }
+    )
+    await report_failed_call(host, call, ToolOutcome(OutcomeKind.CANCELLED, body))
+
+
+async def report_interrupted_calls(
+    host: ToolCallHost, calls: list[RealtimeToolCall], why: str
+) -> None:
+    """Report each call an ending interrupted, once, as cancelled; a call
+    whose result went out was not interrupted (RFC §12.4)."""
+    await asyncio.gather(
+        *(report_cancelled_call(host, call, why) for call in calls if not call.delivered)
+    )
 
 
 async def report_failed_call(
@@ -229,7 +284,7 @@ async def report_failed_call(
     try:
         await framework._observe_failed_tool_call(event, host.channel_id)
     except Exception:
-        logger.debug("ON_TOOL_CALL observation failed for tool %s", call.name, exc_info=True)
+        logger.warning("ON_TOOL_CALL observation failed for tool %s", call.name, exc_info=True)
 
 
 def failed_outcome(call: RealtimeToolCall, exc: BaseException) -> ToolOutcome:

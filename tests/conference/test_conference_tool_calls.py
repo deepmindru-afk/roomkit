@@ -126,3 +126,25 @@ async def test_a_call_cancelled_while_judged_is_reported_cancelled_once() -> Non
     assert [(e.tool_call_id, e.cancelled) for e in observed] == [("c1", True)]
     assert provider.tool_results == []
     await kit.close()
+
+
+async def test_a_cancellation_while_the_observers_run_adds_no_second_report() -> None:
+    handler = _Handler()
+    handler.release.set()
+    kit, _, provider, session, observed = await _conference(handler)
+    in_observer, release = asyncio.Event(), asyncio.Event()
+
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="slow-audit")
+    async def slow_audit(event: ToolCallEvent, ctx: RoomContext) -> None:
+        in_observer.set()
+        await release.wait()
+
+    await provider.simulate_tool_call(session, "c1", "lookup", {})
+    await until(in_observer.is_set)
+    await provider.simulate_tool_call_cancellation(session, ["c1"])
+    release.set()
+    await until(lambda: bool(provider.tool_results))
+    await asyncio.sleep(0.05)
+
+    assert [(e.tool_call_id, e.cancelled) for e in observed] == [("c1", False)]
+    await kit.close()

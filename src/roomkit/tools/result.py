@@ -146,12 +146,15 @@ def is_unknown_tool_answer(result: Any) -> bool:
 def bounded_result(text: str, limit: int, name: str) -> str:
     """*text* cut to *limit* characters with a note saying so, for a model
     that reads a tool result whole (RFC §21.5): a speech-to-speech session
-    keeps no store to read the rest back from."""
+    keeps no store to read the rest back from. A limit too short for the note
+    cuts the text alone: the bound holds."""
     if len(text) <= limit:
         return text
     logger.warning("Tool result for %s truncated from %d to %d chars", name, len(text), limit)
     notice = f"\n... [truncated: the result was {len(text)} characters]"
-    return text[: max(limit - len(notice), 0)] + notice
+    if limit <= len(notice):
+        return text[:limit]
+    return text[: limit - len(notice)] + notice
 
 
 def tool_failure(name: str, exc: BaseException) -> str:

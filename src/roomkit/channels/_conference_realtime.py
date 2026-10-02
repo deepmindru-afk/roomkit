@@ -43,7 +43,9 @@ from roomkit.channels._conference_tools import (
 from roomkit.channels._realtime_tool_calls import RealtimeToolCall, ToolCallBook
 from roomkit.channels._realtime_tool_executor import (
     ToolCallDoor,
-    report_failed_call,
+    refuse_duplicate_call,
+    report_cancelled_call,
+    report_interrupted_calls,
     run_tool_call,
     serving_tool_call,
     tool_loop_context,
@@ -53,7 +55,7 @@ from roomkit.core.exceptions import ToolRefusedError
 from roomkit.core.task_utils import log_task_exception
 from roomkit.models.event import TextContent
 from roomkit.models.tool_call import ToolCallEvent
-from roomkit.tools._outcome import OutcomeKind, ToolOutcome
+from roomkit.tools._outcome import ToolOutcome
 from roomkit.tools.result import GateRefusal, declined_answer, result_text
 from roomkit.tools.timeout import answer_within
 from roomkit.voice.base import AudioChunk, VoiceSession
@@ -155,6 +157,7 @@ class ConferenceRealtime:
         self._tools = ConferenceToolGate(channel_id)
         # The tool calls in flight, per session, each delivered and reported once.
         self._tool_calls = ToolCallBook()
+        self._reports: set[asyncio.Task[None]] = set()
         # Providers register callbacks append-only, so each instance is wired
         # exactly once, ever — a re-plug of the same provider reuses the
         # registration, and the per-session identity guards make callbacks
@@ -527,9 +530,7 @@ class ConferenceRealtime:
             return
         call = RealtimeToolCall(session, call_id, name, arguments, room_id=session.room_id)
         if not self._tool_calls.open(call):
-            # The id's one result is the first call's, which runs on (RFC §12.4).
-            body = json.dumps({"error": f"Tool call '{call_id}' is already running"})
-            room.spawn(report_failed_call(self, call, ToolOutcome(OutcomeKind.REFUSED, body)))
+            room.spawn(refuse_duplicate_call(self, call))
             return
         call.task = room.spawn(self._answer_tool(call))
         call.task.add_done_callback(lambda _: self._tool_calls.close(call))
@@ -546,26 +547,14 @@ class ConferenceRealtime:
         if room is None:
             return
         for call_id in call_ids:
-            call = self._tool_calls.get(session.id, call_id)
-            if call is None or call.delivered or call.reported or call.task is None:
+            call = self._tool_calls.abandonable(session.id, call_id)
+            if call is None:
                 continue
-            if call.task.done():
-                continue
+            assert call.task is not None  # abandonable  # noqa: S101
             call.task.cancel()
             # Off the provider's callback: an audit hook must not hold up the
             # interruption it reports.
-            room.spawn(self._report_cancelled(call, "The model abandoned this call"))
-
-    async def _report_cancelled(self, call: RealtimeToolCall, why: str) -> None:
-        """Report an interrupted call, once, as cancelled (RFC §9.3)."""
-        body = json.dumps(
-            {
-                "error": "Tool call cancelled",
-                "tool": call.name,
-                "hint": f"{why} before its result; nothing was sent.",
-            }
-        )
-        await report_failed_call(self, call, ToolOutcome(OutcomeKind.CANCELLED, body))
+            room.spawn(report_cancelled_call(self, call, "The model abandoned this call"))
 
     async def _answer_tool(self, call: RealtimeToolCall) -> None:
         """Answer one tool call through the realtime tool executor.
@@ -679,14 +668,29 @@ class ConferenceRealtime:
             task.cancel()
         session, room.session = room.session, None
         if session is not None:
-            self._report_detached_calls(room, session)
+            self._report_detached_calls(session)
         return session
 
-    def _report_detached_calls(self, room: _RoomRealtime, session: VoiceSession) -> None:
-        """Report each call the detach interrupted, once, as cancelled (RFC §12.4)."""
-        for call in self._tool_calls.take(session.id):
-            if not call.delivered:
-                room.spawn(self._report_cancelled(call, "The conference left the room"))
+    def _report_detached_calls(self, session: VoiceSession) -> None:
+        """Report each call the detach interrupted, once, as cancelled (RFC §12.4).
+
+        The reports run beside the teardown; the disconnect that follows waits
+        for them, so none races the store's release at close.
+        """
+        calls = self._tool_calls.take(session.id)
+        if not calls:
+            return
+        report = asyncio.ensure_future(
+            report_interrupted_calls(self, calls, "The conference left the room")
+        )
+        self._reports.add(report)
+        report.add_done_callback(self._reports.discard)
+        report.add_done_callback(log_task_exception)
+
+    async def _settle_reports(self) -> None:
+        """Wait for the reports of the calls detaches interrupted."""
+        if self._reports:
+            await asyncio.gather(*list(self._reports), return_exceptions=True)
 
     def abandon_all(self) -> list[VoiceSession]:
         """Every room off the books at once — the channel is closing."""
@@ -703,6 +707,7 @@ class ConferenceRealtime:
         Quiet on a configuration already unplugged: the unplug disconnected
         everything it held, and a detach racing it has nothing left to do.
         """
+        await self._settle_reports()
         config = self._config
         if session is None or config is None:
             return
@@ -731,6 +736,7 @@ class ConferenceRealtime:
         the callbacks inert — and each failure is contained: one session the
         provider will not release is not a reason to leave the rest held.
         """
+        await self._settle_reports()
         for session in sessions:
             try:
                 with self._operations.use(

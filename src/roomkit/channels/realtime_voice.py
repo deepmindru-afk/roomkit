@@ -29,6 +29,7 @@ from roomkit.channels._realtime_delegation import RealtimeDelegationMixin
 from roomkit.channels._realtime_response import RealtimeResponseMixin
 from roomkit.channels._realtime_speech import RealtimeSpeechMixin
 from roomkit.channels._realtime_tool_calls import ToolCallBook
+from roomkit.channels._realtime_tool_executor import report_interrupted_calls
 from roomkit.channels._realtime_tool_recovery import RealtimeToolRecoveryMixin
 from roomkit.channels._realtime_tools import RealtimeToolsMixin
 from roomkit.channels._realtime_transcription import RealtimeTranscriptionMixin
@@ -1502,14 +1503,16 @@ class RealtimeVoiceChannel(
     async def _before_session_teardown(self, session: VoiceSession) -> None:
         """A subclass's own teardown, run by the owner before the base one."""
 
-    async def _end_session_owned(self, session: VoiceSession) -> None:
-        """The teardown itself, run once per session by ``end_session``."""
-        # Stop admitting calls before the first asynchronous cleanup step.
-        # A session hangup must also stop its in-flight tools without touching
-        # calls owned by other sessions sharing this channel.
-        session.state = VoiceSessionState.ENDED
-        interrupted = self._tool_calls.take(session.id)
+    async def _stop_session_tools(self, session: VoiceSession) -> None:
+        """Stop the session's in-flight tools and report each call they leave
+        unanswered, once, as cancelled (RFC §12.4).
+
+        Calls owned by other sessions sharing this channel are left alone. A
+        call whose own handler ends the session (a hang-up tool) is not
+        interrupted: it runs on and reports its own outcome.
+        """
         current = asyncio.current_task()
+        interrupted = [c for c in self._tool_calls.take(session.id) if c.task is not current]
         prefixes = (
             f"rt_tool_call:{session.id}:",
             f"rt_tool_recovery:{session.id}:",
@@ -1528,7 +1531,15 @@ class RealtimeVoiceChannel(
                 logger.warning(
                     "Timed out cancelling %d tools for session %s", len(pending), session.id
                 )
-        await self._report_ended_calls(interrupted)
+        await report_interrupted_calls(self, interrupted, "The session ended")
+
+    async def _end_session_owned(self, session: VoiceSession) -> None:
+        """The teardown itself, run once per session by ``end_session``."""
+        # Stop admitting calls before the first asynchronous cleanup step.
+        # A session hangup must also stop its in-flight tools without touching
+        # calls owned by other sessions sharing this channel.
+        session.state = VoiceSessionState.ENDED
+        await self._stop_session_tools(session)
 
         with self._state_lock:
             room_id = self._session_rooms.get(session.id, session.room_id)

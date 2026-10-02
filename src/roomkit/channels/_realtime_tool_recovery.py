@@ -19,7 +19,6 @@ import asyncio
 import contextlib
 import logging
 import re
-import threading
 from typing import TYPE_CHECKING, Any, Literal, Protocol, cast, runtime_checkable
 from uuid import uuid4
 
@@ -31,7 +30,6 @@ from roomkit.tools.result import result_text
 from roomkit.voice.base import VoiceSessionState
 
 if TYPE_CHECKING:
-    from roomkit.core.framework import RoomKit
     from roomkit.voice.base import VoiceSession
     from roomkit.voice.realtime.provider import RealtimeVoiceProvider
 
@@ -63,17 +61,8 @@ class RealtimeToolRecoveryHost(Protocol):
     Attributes come from ``RealtimeToolsMixin`` and the channel ``__init__``.
     """
 
-    _state_lock: threading.Lock
-    _session_rooms: dict[str, str]
-    _tools: list[dict[str, Any]] | None
-    _session_tools: dict[str, list[dict[str, Any]]]
-    _tool_handler: Any
     _tool_recovery_enabled: bool
-    _tool_result_max_length: int
     _provider: RealtimeVoiceProvider
-    _framework: RoomKit | None
-    channel_id: str
-    _telemetry_provider: Any
 
     def _track_task(self, loop: Any, coro: Any, *, name: str) -> Any: ...
 
@@ -83,6 +72,8 @@ class RealtimeToolRecoveryHost(Protocol):
 
     def _tool_call_span(self, call: RealtimeToolCall, kind: Any, prefix: str) -> Any: ...
 
+    def _session_catalogue(self, session_id: str) -> list[dict[str, Any]]: ...
+
 
 class RealtimeToolRecoveryMixin:
     """Detect and recover tool calls that a voice model emitted as text.
@@ -90,17 +81,8 @@ class RealtimeToolRecoveryMixin:
     Host contract: :class:`RealtimeToolRecoveryHost`.
     """
 
-    _state_lock: threading.Lock
-    _session_rooms: dict[str, str]
-    _tools: list[dict[str, Any]] | None
-    _session_tools: dict[str, list[dict[str, Any]]]
-    _tool_handler: Any
     _tool_recovery_enabled: bool
-    _tool_result_max_length: int
     _provider: RealtimeVoiceProvider
-    _framework: RoomKit | None
-    channel_id: str
-    _telemetry_provider: Any
 
     _track_task: Any  # cross-mixin
     _open_tool_call: Any  # cross-mixin (RealtimeToolsMixin)
@@ -195,7 +177,6 @@ class RealtimeToolRecoveryMixin:
         self,
         session: VoiceSession,
         tool_name: str,
-        call_id: str,
         result_str: str,
         *,
         verb: Literal["completed", "denied", "failed"] = "completed",
@@ -228,9 +209,7 @@ class RealtimeToolRecoveryMixin:
         (RFC §12.4), and inject its outcome as context."""
         if session.state == VoiceSessionState.ENDED:
             return
-        call = RealtimeToolCall(
-            session, f"recovered-{uuid4().hex[:12]}", tool_name, arguments, abandonable=False
-        )
+        call = RealtimeToolCall(session, f"recovered-{uuid4().hex[:12]}", tool_name, arguments)
         call.task = asyncio.current_task()
         self._open_tool_call(call)
         try:
@@ -264,7 +243,7 @@ class _RecoveredDoor:
     async def deliver(self, call: RealtimeToolCall, outcome: ToolOutcome) -> bool:
         verb = _VERBS.get(outcome.kind, "failed")
         await self._channel._inject_recovered_result(
-            call.session, call.name, call.call_id, result_text(outcome.result), verb=verb
+            call.session, call.name, result_text(outcome.result), verb=verb
         )
         return True
 

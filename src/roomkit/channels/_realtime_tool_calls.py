@@ -29,11 +29,11 @@ class RealtimeToolCall:
     arguments: dict[str, Any]
     room_id: str | None = None
     """The room the session served when the call ran."""
+    unreadable: str | None = None
+    """Why the call cannot be read (an unreadable ``call_tool`` transport):
+    the gate refuses it before any other check."""
     mutes: bool = False
     """The call holds the session's input muted while it runs."""
-    abandonable: bool = True
-    """The provider may abandon the call (a provider function call): a
-    recovered or a backend call has no provider id to abandon."""
     task: asyncio.Task[Any] | None = field(default=None, repr=False)
     delivered: bool = False
     reported: bool = False
@@ -71,6 +71,17 @@ class ToolCallBook:
 
     def get(self, session_id: str, call_id: str) -> RealtimeToolCall | None:
         return (self._calls.get(session_id) or {}).get(call_id)
+
+    def abandonable(self, session_id: str, call_id: str) -> RealtimeToolCall | None:
+        """The call a provider cancellation for *call_id* interrupts: in
+        flight, its task running, its result not out, its outcome not
+        reported. ``None`` when there is nothing left to interrupt."""
+        call = self.get(session_id, call_id)
+        if call is None or call.delivered or call.reported:
+            return None
+        if call.task is None or call.task.done():
+            return None
+        return call
 
     def busy(self, session_id: str) -> bool:
         """Whether a call is in flight on the session."""

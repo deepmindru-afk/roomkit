@@ -55,7 +55,6 @@ class RealtimeDelegationHost(Protocol):
     Attributes provided by the host's ``__init__``:
         _state_lock: Guards mutable per-session state from concurrent access.
         _session_rooms: Maps session IDs to room IDs.
-        _session_spans: Telemetry session span per session.
         _session_tools: Resolved declared tool catalogue per session.
         _framework: The RoomKit framework instance (or None).
         _provider: The realtime voice provider.
@@ -68,14 +67,13 @@ class RealtimeDelegationHost(Protocol):
         channel_id: The channel identifier.
 
     Cross-mixin methods (implemented elsewhere in the MRO):
-        _track_task, _rt_span_ctx, _update_idle_event, _telemetry_provider,
+        _track_task, _rt_span_ctx, _update_idle_event,
         _tool_reachable, _open_tool_call, _close_tool_call, _tool_call_span,
         and the executor's host steps.
     """
 
     _state_lock: threading.Lock
     _session_rooms: dict[str, str]
-    _session_spans: dict[str, str]
     _session_tools: dict[str, list[dict[str, Any]]]
     _framework: RoomKit | None
     _provider: RealtimeVoiceProvider
@@ -103,7 +101,6 @@ class RealtimeDelegationMixin:
 
     _state_lock: threading.Lock
     _session_rooms: dict[str, str]
-    _session_spans: dict[str, str]
     _session_tools: dict[str, list[dict[str, Any]]]
     _session_catalogue: Any  # cross-mixin (RealtimeToolsMixin)
     _framework: RoomKit | None
@@ -119,7 +116,6 @@ class RealtimeDelegationMixin:
     _rt_span_ctx: Any  # see RealtimeDelegationHost — cross-mixin
     _expect_provider_output: Any
     _update_idle_event: Any  # see RealtimeDelegationHost — cross-mixin
-    _telemetry_provider: Any  # see RealtimeDelegationHost — cross-mixin
     _tool_reachable: Any  # see RealtimeToolsMixin
     _open_tool_call: Any  # see RealtimeToolsMixin
     _close_tool_call: Any  # see RealtimeToolsMixin
@@ -383,9 +379,10 @@ class RealtimeDelegationMixin:
         """
         if session.state == VoiceSessionState.ENDED:
             return ToolCallResult(json.dumps({"error": "The session has ended."}), is_error=True)
-        call = RealtimeToolCall(
-            session, f"{delegation_id}:{uuid4().hex[:8]}", name, arguments, abandonable=False
-        )
+        call = RealtimeToolCall(session, f"{delegation_id}:{uuid4().hex[:8]}", name, arguments)
+        # The delegation's task serves the call: a call that ends its own
+        # session is then not taken for one the session's end interrupted.
+        call.task = asyncio.current_task()
         self._open_tool_call(call)
         try:
             with self._tool_call_span(
