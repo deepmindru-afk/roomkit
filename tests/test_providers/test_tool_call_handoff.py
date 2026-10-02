@@ -325,13 +325,18 @@ class TestMistral:
 
 
 def test_polargrid_reads_every_buffered_call_the_same_way() -> None:
+    # polargrid-sdk's ToolCall requires an id; a server may repeat one.
     message = SimpleNamespace(
         tool_calls=[
             SimpleNamespace(
-                id=None, function=SimpleNamespace(name="search", arguments='{"q": 1}')
+                id="call_0", function=SimpleNamespace(name="search", arguments='{"q": 1}')
             ),
-            SimpleNamespace(id=None, function=SimpleNamespace(name="search", arguments="null")),
-            SimpleNamespace(id=None, function=SimpleNamespace(name="search", arguments='{"q": ')),
+            SimpleNamespace(
+                id="call_0", function=SimpleNamespace(name="search", arguments="null")
+            ),
+            SimpleNamespace(
+                id="call_0", function=SimpleNamespace(name="search", arguments='{"q": ')
+            ),
         ]
     )
 

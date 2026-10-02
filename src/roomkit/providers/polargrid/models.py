@@ -194,3 +194,27 @@ customer's ``supports_vision`` and ``list_models`` backfill resolve here."""
 # the ``list_models`` backfill — public and pilot alike, because both are
 # models the configured edge may serve.
 MODELS_BY_ID: dict[str, ModelInfo] = {m.id: m for m in (*MODELS, *PILOT_MODELS)}
+
+TRANSCRIPTION_CAPABILITY = "transcription"
+"""``ModelInfo.capabilities`` tag of a speech-to-text model."""
+SPEECH_CAPABILITY = "speech"
+"""``ModelInfo.capabilities`` tag of a text-to-speech model."""
+
+VOICE_MODELS: list[ModelInfo] = [
+    ModelInfo(
+        id="whisper-large-v3-turbo",
+        display_name="Whisper Large v3 Turbo",
+        capabilities=[TRANSCRIPTION_CAPABILITY],
+    ),
+    ModelInfo(
+        id="cohere-transcribe-03-2026",
+        display_name="Cohere Transcribe 03-2026",
+        capabilities=[TRANSCRIPTION_CAPABILITY],
+    ),
+    ModelInfo(id="kokoro-82m", display_name="Kokoro 82M", capabilities=[SPEECH_CAPABILITY]),
+    ModelInfo(id="tada-3b-ml", display_name="TADA 3B ML", capabilities=[SPEECH_CAPABILITY]),
+]
+"""The speech models an edge lists beside its chat models, each checked live
+on 2026-10-02 (yul-01): the first two transcribe, the last two synthesize.
+``generate()`` serves none of them, so they stay out of :data:`MODELS`;
+``list_models()`` tags them, so a caller tells them from a chat model."""

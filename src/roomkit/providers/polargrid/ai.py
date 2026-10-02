@@ -81,6 +81,7 @@ from roomkit.providers.polargrid.models import (
     MODELS,
     MODELS_BY_ID,
     REGIONS,
+    VOICE_MODELS,
     PolarGridRegion,
 )
 from roomkit.providers.utils import _aclose_stream, http_timeout
@@ -116,6 +117,7 @@ class PolarGridAIProvider(AIProvider):
         # re-importing in hot paths and the test suite can swap the
         # module out via sys.modules patching.
         self._auth_error = _pg.AuthenticationError
+        self._billing_error = _pg.BillingError
         self._validation_error = _pg.ValidationError
         self._rate_limit_error = _pg.RateLimitError
         self._network_error = _pg.NetworkError
@@ -171,17 +173,19 @@ class PolarGridAIProvider(AIProvider):
     @classmethod
     def _curated_index(cls) -> dict[str, ModelInfo]:
         # Public and pilot models alike: a pilot edge lists qwen-3.6-35b-a3b,
-        # and its display name and vision flag should backfill there too.
-        return dict(MODELS_BY_ID)
+        # and its display name and vision flag should backfill there too. The
+        # speech models an edge lists get their tags the same way.
+        return {**MODELS_BY_ID, **{model.id: model for model in VOICE_MODELS}}
 
     async def list_models(self) -> list[ModelInfo]:
         """Models loaded on the connected edge, via the SDK's ``list_models``.
 
         Returns whatever the edge reports (chat + STT/TTS), so the result is
         region-specific — ``dfw-02`` carries no STT and no ``kokoro-82m``, a
-        customer-pilot edge lists ``qwen-3.6-35b-a3b``.
-        Curated metadata backfills display names / vision where the endpoint
-        leaves them blank.
+        customer-pilot edge lists ``qwen-3.6-35b-a3b``. The edge reports no
+        model type, so the curated catalog backfills display names, vision
+        and capabilities: a chat model's, and ``transcription`` or ``speech``
+        on a speech model (:data:`~roomkit.providers.polargrid.models.VOICE_MODELS`).
         """
         client = await self._ensure_client()
         try:
@@ -333,6 +337,7 @@ class PolarGridAIProvider(AIProvider):
         """
         retry_map: tuple[tuple[type[BaseException], bool], ...] = (
             (self._auth_error, False),
+            (self._billing_error, False),
             (self._validation_error, False),
             (self._not_found_error, False),
             (self._rate_limit_error, True),
@@ -345,12 +350,31 @@ class PolarGridAIProvider(AIProvider):
                 return retryable
         return True
 
+    def _status_for(self, exc: BaseException) -> int | None:
+        """The HTTP status an SDK exception stands for: the one it carries,
+        else the one the SDK built its class from (a 403 is read as a 401,
+        the SDK folding both into ``AuthenticationError``)."""
+        status = getattr(exc, "status_code", None)
+        if status is not None:
+            return status
+        status_map: tuple[tuple[type[BaseException], int], ...] = (
+            (self._auth_error, 401),
+            (self._billing_error, 402),
+            (self._validation_error, 400),
+            (self._not_found_error, 404),
+            (self._rate_limit_error, 429),
+        )
+        for exc_type, code in status_map:
+            if isinstance(exc, exc_type):
+                return code
+        return None
+
     def _wrap_error(self, exc: BaseException) -> ProviderError:
         return ProviderError(
             str(exc),
             retryable=self._retryable_for(exc),
             provider=self._provider_name,
-            status_code=getattr(exc, "status_code", None),
+            status_code=self._status_for(exc),
         )
 
     # -- Non-streaming ------------------------------------------------------

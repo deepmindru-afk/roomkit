@@ -191,3 +191,13 @@ async def test_a_turn_whose_usage_cannot_be_read_still_ends() -> None:
     assert "".join(e.text for e in events if isinstance(e, StreamTextDelta)) == "Hi"
     [done] = [e for e in events if isinstance(e, StreamDone)]
     assert done.usage == {}
+
+
+async def test_an_error_line_ends_the_turn_as_a_transient_failure() -> None:
+    lines = [_TEXT, {"error": {"message": "edge overloaded"}}]
+    context = AIContext(messages=[AIMessage(role="user", content="Say hi.")])
+
+    with pytest.raises(ProviderError, match="edge overloaded") as failed:
+        await _read(_provider(lines).generate_structured_stream(context))
+
+    assert failed.value.retryable is True

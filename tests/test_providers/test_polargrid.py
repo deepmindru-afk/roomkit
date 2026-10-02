@@ -35,40 +35,6 @@ from roomkit.providers.polargrid.config import PolarGridConfig
 # ---------------------------------------------------------------------------
 
 
-class _PGError(Exception):
-    def __init__(self, message: str, *, status_code: int | None = None) -> None:
-        super().__init__(message)
-        self.status_code = status_code
-
-
-class _AuthError(_PGError):
-    pass
-
-
-class _ValidationError(_PGError):
-    pass
-
-
-class _RateLimitError(_PGError):
-    pass
-
-
-class _NetworkError(_PGError):
-    pass
-
-
-class _TimeoutError(_PGError):
-    pass
-
-
-class _NotFoundError(_PGError):
-    pass
-
-
-class _ServerError(_PGError):
-    pass
-
-
 # Builds and checks request bodies only; nothing listens at its address.
 _BUILDER = polargrid.PolarGrid(api_key="k", base_url="http://127.0.0.1:1")
 
@@ -76,13 +42,14 @@ _BUILDER = polargrid.PolarGrid(api_key="k", base_url="http://127.0.0.1:1")
 def _mock_polargrid_module() -> MagicMock:
     """Return a MagicMock that behaves like the polargrid module."""
     mod = MagicMock()
-    mod.AuthenticationError = _AuthError
-    mod.ValidationError = _ValidationError
-    mod.RateLimitError = _RateLimitError
-    mod.NetworkError = _NetworkError
-    mod.TimeoutError = _TimeoutError
-    mod.NotFoundError = _NotFoundError
-    mod.ServerError = _ServerError
+    mod.AuthenticationError = polargrid.AuthenticationError
+    mod.BillingError = polargrid.BillingError
+    mod.ValidationError = polargrid.ValidationError
+    mod.RateLimitError = polargrid.RateLimitError
+    mod.NetworkError = polargrid.NetworkError
+    mod.TimeoutError = polargrid.TimeoutError
+    mod.NotFoundError = polargrid.NotFoundError
+    mod.ServerError = polargrid.ServerError
 
     # A streamed chat goes through providers/polargrid/sdk_patch.py, which
     # uses the SDK's own types and request builders: the real ones, so only
@@ -211,6 +178,52 @@ def _tool_chunk(
         call["id"] = id
     delta = {"tool_calls": [call]}
     return _raw_chunk([{"index": index, "delta": delta, "finish_reason": finish_reason}])
+
+
+def _respond(mod: MagicMock, raw: dict[str, Any]) -> list[dict[str, Any]]:
+    """Have the client answer *raw*, as PolarGrid's server writes it, through
+    the SDK's own request checks and response types; return the bodies sent."""
+    sent: list[dict[str, Any]] = []
+    edge = polargrid.PolarGrid(api_key="k", base_url="http://127.0.0.1:1")
+
+    async def make_request(
+        endpoint: str,
+        method: str = "GET",
+        body: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        sent.append(body or {})
+        return raw
+
+    edge._make_request = make_request  # type: ignore[method-assign]
+    mod._client.chat_completion = edge.chat_completion
+    mod._client.list_models = edge.list_models
+    return sent
+
+
+def _completion(
+    *, message: dict[str, Any] | None = None, finish_reason: str = "stop"
+) -> dict[str, Any]:
+    """A non-streamed answer as PolarGrid's server writes it."""
+    choices = (
+        []
+        if message is None
+        else [
+            {
+                "index": 0,
+                "message": {"role": "assistant", **message},
+                "finish_reason": finish_reason,
+            }
+        ]
+    )
+    return {
+        "id": "chatcmpl-0",
+        "object": "chat.completion",
+        "created": 0,
+        "model": "qwen-3.8-27b",
+        "choices": choices,
+        "usage": _usage(4, 2),
+    }
 
 
 def _serve(mod: MagicMock, chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -358,15 +371,13 @@ class TestPolarGridGenerate:
     @pytest.mark.asyncio
     async def test_generate_tool_call_malformed_args_preserved(self) -> None:
         provider, mod = _provider()
-        message = SimpleNamespace(
-            role="assistant",
-            content=None,
-            tool_calls=[_tool_call_obj(id="call_1", name="t", arguments="{not json")],
-        )
-        mod._client.chat_completion.return_value = SimpleNamespace(
-            model="qwen-3.5-27b",
-            choices=[SimpleNamespace(index=0, message=message, finish_reason="tool_calls")],
-            usage=None,
+        call = {"id": "call_1", "type": "function"}
+        call["function"] = {"name": "t", "arguments": "{not json"}
+        _respond(
+            mod,
+            _completion(
+                message={"content": None, "tool_calls": [call]}, finish_reason="tool_calls"
+            ),
         )
 
         resp = await provider.generate(_context())
@@ -376,9 +387,7 @@ class TestPolarGridGenerate:
     @pytest.mark.asyncio
     async def test_generate_empty_choices_returns_empty_content(self) -> None:
         provider, mod = _provider()
-        mod._client.chat_completion.return_value = SimpleNamespace(
-            choices=[], usage=None, model="qwen-3.5-27b"
-        )
+        _respond(mod, _completion())
 
         resp = await provider.generate(_context())
 
@@ -857,34 +866,47 @@ class TestPolarGridModels:
         assert unknown.supports_vision is False
 
     @pytest.mark.asyncio
-    async def test_list_models_maps_and_backfills(self) -> None:
+    async def test_list_models_tags_what_the_edge_lists(self) -> None:
         provider, mod = _provider()
-        mod._client.list_models.return_value = SimpleNamespace(
-            data=[
-                SimpleNamespace(id="qwen-3.6-35b-a3b", pg_model_type="llm"),
-                SimpleNamespace(id="kokoro-82m", pg_model_type="tts"),
-                SimpleNamespace(id="whisper-large-v3-turbo", pg_model_type=None),
-            ]
-        )
+        # As the edge answers (measured 2026-10-02, yul-01): no model type.
+        listed = [
+            "qwen-3.6-35b-a3b",
+            "kokoro-82m",
+            "whisper-large-v3-turbo",
+            "tada-3b-ml",
+            "cohere-transcribe-03-2026",
+            "mystery-1b",
+        ]
+        data = [
+            {"id": i, "object": "model", "created": 0, "owned_by": "triton", "root": i}
+            for i in listed
+        ]
+        _respond(mod, {"object": "list", "data": data})
 
-        models = await provider.list_models()
-        by_id = {m.id: m for m in models}
+        by_id = {m.id: m for m in await provider.list_models()}
 
-        # Live edge models are all returned (chat + STT/TTS).
-        assert set(by_id) == {"qwen-3.6-35b-a3b", "kokoro-82m", "whisper-large-v3-turbo"}
-        # pg_model_type → capabilities; curated backfills the display name and
-        # the vision flag, for a pilot model (this is a pilot edge) as for a
-        # public one.
-        assert by_id["kokoro-82m"].capabilities == ["tts"]
+        # Every model the edge lists is returned (chat + STT/TTS).
+        assert set(by_id) == set(listed)
+        # The catalog backfills a chat model (a pilot one too) and tags a
+        # speech model; an id it does not know stays unknown.
         assert by_id["qwen-3.6-35b-a3b"].display_name == "Qwen 3.6 35B-A3B"
         assert by_id["qwen-3.6-35b-a3b"].supports_vision is True
-        # No pg_model_type and not in catalog → empty capabilities, no crash.
-        assert by_id["whisper-large-v3-turbo"].capabilities == []
+        assert by_id["qwen-3.6-35b-a3b"].capabilities == [
+            "completion",
+            "tools",
+            "thinking",
+            "vision",
+        ]
+        assert by_id["kokoro-82m"].capabilities == ["speech"]
+        assert by_id["tada-3b-ml"].capabilities == ["speech"]
+        assert by_id["whisper-large-v3-turbo"].capabilities == ["transcription"]
+        assert by_id["cohere-transcribe-03-2026"].capabilities == ["transcription"]
+        assert by_id["mystery-1b"].capabilities == []
 
     @pytest.mark.asyncio
     async def test_list_models_wraps_sdk_error(self) -> None:
         provider, mod = _provider()
-        mod._client.list_models.side_effect = _ServerError("down", status_code=503)
+        mod._client.list_models.side_effect = polargrid.ServerError("down", 503)
 
         with pytest.raises(ProviderError) as exc:
             await provider.list_models()
@@ -949,7 +971,7 @@ class TestPolarGridErrors:
     @pytest.mark.asyncio
     async def test_auth_error_not_retryable(self) -> None:
         provider, mod = _provider()
-        mod._client.chat_completion.side_effect = _AuthError("bad key", status_code=401)
+        mod._client.chat_completion.side_effect = polargrid.AuthenticationError("bad key")
 
         with pytest.raises(ProviderError) as exc:
             await provider.generate(_context())
@@ -961,7 +983,7 @@ class TestPolarGridErrors:
     @pytest.mark.asyncio
     async def test_validation_error_not_retryable(self) -> None:
         provider, mod = _provider()
-        mod._client.chat_completion.side_effect = _ValidationError("bad input", status_code=400)
+        mod._client.chat_completion.side_effect = polargrid.ValidationError("bad input")
 
         with pytest.raises(ProviderError) as exc:
             await provider.generate(_context())
@@ -969,9 +991,26 @@ class TestPolarGridErrors:
         assert exc.value.retryable is False
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("status", "retryable"),
+        [(401, False), (402, False), (400, False), (404, False), (429, True), (503, True)],
+    )
+    async def test_an_http_error_keeps_its_status(self, status: int, retryable: bool) -> None:
+        """Each error as the SDK builds it from the server's status."""
+        provider, mod = _provider()
+        mod._client.chat_completion.side_effect = polargrid.create_error_from_response(
+            status, None, "refused", None, "req_1"
+        )
+
+        with pytest.raises(ProviderError) as exc:
+            await provider.generate(_context())
+
+        assert (exc.value.status_code, exc.value.retryable) == (status, retryable)
+
+    @pytest.mark.asyncio
     async def test_rate_limit_error_retryable(self) -> None:
         provider, mod = _provider()
-        mod._client.chat_completion.side_effect = _RateLimitError("slow down", status_code=429)
+        mod._client.chat_completion.side_effect = polargrid.RateLimitError("slow down")
 
         with pytest.raises(ProviderError) as exc:
             await provider.generate(_context())
@@ -982,7 +1021,7 @@ class TestPolarGridErrors:
     @pytest.mark.asyncio
     async def test_server_error_retryable(self) -> None:
         provider, mod = _provider()
-        mod._client.chat_completion.side_effect = _ServerError("oops", status_code=503)
+        mod._client.chat_completion.side_effect = polargrid.ServerError("oops", 503)
 
         with pytest.raises(ProviderError) as exc:
             await provider.generate(_context())
@@ -1140,9 +1179,7 @@ class TestPolarGridResponseSchema:
 
     async def test_no_choice_at_all_is_not_a_document(self) -> None:
         provider, mod = _provider()
-        mod._client.chat_completion.return_value = SimpleNamespace(
-            model="qwen-3.5-27b", choices=[], usage=None
-        )
+        _respond(mod, _completion())
 
         with pytest.raises(ResponseSchemaError) as exc:
             await provider.generate(_context(response_schema=_VERDICT))

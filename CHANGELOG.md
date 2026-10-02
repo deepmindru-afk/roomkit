@@ -256,6 +256,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `list_models()` returns the capability tags the curated catalog knows for a
+  model whose listing reports none, as it already did for its display name,
+  context window, vision flag and price; what the endpoint reports still wins
+  (RMK-389). PolarGrid's edge reports no model type at all, so its chat models
+  came back untagged and its speech models looked like chat models: they now
+  carry `transcription` (`whisper-large-v3-turbo`,
+  `cohere-transcribe-03-2026`) or `speech` (`kokoro-82m`, `tada-3b-ml`).
+
+- PolarGrid errors keep their HTTP status on `ProviderError.status_code`
+  (401, 402, 400, 404, 429, 5xx) from the SDK class each is built from, where
+  only a server error kept one, and a `BillingError` (402) is no longer
+  retried (RMK-389).
+
 - A streamed PolarGrid turn reports its usage: polargrid-sdk can neither ask
   for a stream's usage nor read it (no `stream_options` on its request, no
   `usage` on its chunk, measured on 0.10.0), so every streamed turn reported
