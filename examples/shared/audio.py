@@ -12,6 +12,9 @@ import logging
 import os
 import wave
 
+from roomkit.voice.interruption import InterruptionConfig, InterruptionStrategy
+from roomkit.voice.pipeline.backchannel import PhraseBackchannelDetector
+
 logger = logging.getLogger(__name__)
 
 
@@ -236,6 +239,27 @@ def build_vad(sample_rate: int = 24000, *, default: str = "energy") -> object | 
 
     logger.warning("Unknown VAD mode %r — disabling", mode)
     return None
+
+
+def build_interruption(*, default: str = "semantic") -> InterruptionConfig:
+    """Build the barge-in policy based on the ``INTERRUPTION`` env var.
+
+    Env: ``INTERRUPTION=semantic|confirmed|immediate|disabled`` (default from
+    *default*).
+
+    * ``semantic`` — the bot keeps talking through an acknowledgement
+      ("okay", "mm-hmm", "d'accord") and stops for anything else, judged on
+      the words a streaming STT hears (``PhraseBackchannelDetector``)
+    * ``confirmed`` — stops once the user has spoken for 300 ms
+    * ``immediate`` — stops at the first sound taken for speech
+    * ``disabled`` — never stops; the user's speech waits its turn
+
+    Returns an :class:`InterruptionConfig` for ``VoiceChannel(interruption=...)``.
+    """
+    strategy = InterruptionStrategy(os.environ.get("INTERRUPTION", default).lower())
+    detector = PhraseBackchannelDetector() if strategy == InterruptionStrategy.SEMANTIC else None
+    logger.info("Barge-in: %s", strategy.value)
+    return InterruptionConfig(strategy=strategy, backchannel_detector=detector)
 
 
 def build_turn_detector(*, default: str = "0") -> object | None:

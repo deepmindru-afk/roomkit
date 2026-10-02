@@ -75,6 +75,10 @@ Environment variables:
     MUTE_MIC            Mute the mic while Vui speaks: 1 | 0 (default: 0 with AEC).
                         Muting disables barge-in.
 
+    --- Barge-in ---
+    INTERRUPTION        semantic | confirmed | immediate | disabled (default: semantic:
+                        an acknowledgement like "okay" does not stop the voice)
+
     --- Debugging ---
     VOICE_DEBUG         1 to log turn-taking decisions (speech start/end,
                         suppressed segments, barge-in evaluation, the Vui cache,
@@ -92,7 +96,13 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from shared import build_debug_taps, enable_voice_debug, run_until_stopped, setup_logging
+from shared import (
+    build_debug_taps,
+    build_interruption,
+    enable_voice_debug,
+    run_until_stopped,
+    setup_logging,
+)
 
 from roomkit import (
     ChannelCategory,
@@ -324,6 +334,8 @@ async def main() -> None:
             debug_taps=build_debug_taps(),
         ),
         tts_filter=VUI_TEXT_FILTER,
+        # Vui keeps talking through an "okay" and stops for anything else.
+        interruption=build_interruption(),
         # Vui hears the dialogue: your words, and your voice when include_audio.
         tts_context=TTSContextConfig(include_audio=include_audio),
     )

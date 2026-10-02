@@ -58,6 +58,10 @@ Environment variables:
     LLM_MAX_TOKENS      Max response tokens (default: 200)
     SYSTEM_PROMPT       Custom system prompt
 
+    --- Barge-in ---
+    INTERRUPTION        semantic | confirmed | immediate | disabled (default: semantic:
+                        an acknowledgement like "okay" does not stop the voice)
+
     --- Debugging ---
     VOICE_DEBUG         1 to log turn-taking decisions (speech start/end,
                         suppressed segments, barge-in evaluation, AI turns)
@@ -118,7 +122,13 @@ from contextlib import AsyncExitStack
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from shared import enable_voice_debug, log_tool_call, run_until_stopped, setup_logging
+from shared import (
+    build_interruption,
+    enable_voice_debug,
+    log_tool_call,
+    run_until_stopped,
+    setup_logging,
+)
 
 from roomkit import (
     ChannelCategory,
@@ -369,6 +379,8 @@ async def run(stack: AsyncExitStack) -> None:
         ),
         # The LLM adds emoji despite the prompt; spoken, they sound wrong.
         tts_filter=StripEmoji(),
+        # The assistant keeps talking through a "d'accord" and stops for anything else.
+        interruption=build_interruption(),
     )
     kit.register_channel(voice)
     kit.register_channel(
