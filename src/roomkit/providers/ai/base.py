@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time as _time
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Mapping
 from datetime import date
 from typing import Any, Literal, Self
 
@@ -485,6 +485,41 @@ StreamEvent = (
 )
 
 
+def response_stream_events(
+    response: AIResponse,
+    call_deltas: Callable[[AIToolCall], Iterable[StreamToolCallDelta]] | None = None,
+) -> Iterator[StreamEvent]:
+    """A whole response as the events a stream of it carries (RFC §6.4).
+
+    Everything ``generate()`` returned reaches the tool loop: the thinking
+    with its signature (a signature alone too), the text, each call with its
+    metadata (a thought signature among them), then the done event's finish
+    reason, usage and metadata. *call_deltas* gives the argument fragments a
+    stream announces ahead of each call, when there are any.
+    """
+    if response.thinking or response.thinking_signature:
+        yield StreamThinkingDelta(
+            thinking=response.thinking or "", signature=response.thinking_signature
+        )
+    if response.content:
+        yield StreamTextDelta(text=response.content)
+    for call in response.tool_calls:
+        if call_deltas is not None:
+            yield from call_deltas(call)
+        yield StreamToolCall(
+            id=call.id,
+            name=call.name,
+            arguments=call.arguments,
+            metadata=call.metadata,
+            partial=call.partial,
+        )
+    yield StreamDone(
+        finish_reason=response.finish_reason,
+        usage=response.usage,
+        metadata=response.metadata,
+    )
+
+
 # The usage counters a vendor bills, disjoint: a token is counted under one of
 # them only (RFC §6.7). ``reasoning_tokens`` is not one: it is the thinking
 # share of ``output_tokens``.
@@ -861,23 +896,20 @@ class AIProvider(ABC):
         also yield :class:`StreamToolCallDelta` per fragment; it is optional,
         and one that delivers whole calls yields none.
 
-        Default implementation wraps ``generate()`` so every provider works
-        without changes.  Override for true streaming support.
+        The default reads what the provider has, so every provider serves the
+        one tool loop unchanged (RFC §6.4): a turn without tools streams
+        through ``generate_stream`` where the provider streams text, and any
+        other turn wraps ``generate()``, everything it returned kept. Override
+        for true streaming support.
         """
-        response = await self.generate(context)
-        if response.thinking:
-            yield StreamThinkingDelta(thinking=response.thinking)
-        if response.content:
-            yield StreamTextDelta(text=response.content)
-        for tc in response.tool_calls:
-            yield StreamToolCall(
-                id=tc.id, name=tc.name, arguments=tc.arguments, partial=tc.partial
-            )
-        yield StreamDone(
-            finish_reason=response.finish_reason,
-            usage=response.usage,
-            metadata=response.metadata,
-        )
+        if self.supports_streaming and not context.tools:
+            async for text in self.generate_stream(context):
+                yield StreamTextDelta(text=text)
+            # A text stream reports no usage and no stop reason.
+            yield StreamDone(finish_reason="stop")
+            return
+        for event in response_stream_events(await self.generate(context)):
+            yield event
 
     def _record_ttfb(self, t0: float) -> None:
         """Record time-to-first-byte metric via telemetry (if propagated)."""

@@ -11,12 +11,10 @@ from roomkit.providers.ai.base import (
     AIResponse,
     AIToolCall,
     ModelInfo,
-    StreamDone,
     StreamEvent,
     StreamTextDelta,
-    StreamThinkingDelta,
-    StreamToolCall,
     StreamToolCallDelta,
+    response_stream_events,
 )
 from roomkit.providers.ai.response_schema import (
     check_schema_answer,
@@ -171,21 +169,8 @@ class MockAIProvider(AIProvider):
             # it at the done event, as a real provider's stream does.
             self.calls.append(context)
             response = self._next_response()
-        if response.thinking:
-            yield StreamThinkingDelta(thinking=response.thinking)
-        if response.content:
-            yield StreamTextDelta(text=response.content)
-        for tc in response.tool_calls:
-            for delta in self._tool_call_deltas(tc):
-                yield delta
-            yield StreamToolCall(
-                id=tc.id, name=tc.name, arguments=tc.arguments, partial=tc.partial
-            )
-        yield StreamDone(
-            finish_reason=response.finish_reason,
-            usage=response.usage,
-            metadata=response.metadata,
-        )
+        for event in response_stream_events(response, self._tool_call_deltas):
+            yield event
 
     def _tool_call_deltas(self, tool_call: AIToolCall) -> list[StreamToolCallDelta]:
         """Split a call's arguments into ``tool_call_delta_chunks`` fragments.
