@@ -36,9 +36,14 @@ from roomkit.providers.ai.openai_dialect import (
 )
 from roomkit.providers.ai.reasoning import thinking_switch, turn_setting
 from roomkit.providers.ai.response_schema import checked_stream, schema_for_generate
+from roomkit.providers.ai.tool_declaration import ToolNameRule, chat_tool_declarations
 from roomkit.providers.mistral.config import MistralConfig
 from roomkit.providers.mistral.models import MODELS
 from roomkit.providers.utils import _aclose_stream
+
+MISTRAL_TOOL_NAMES = ToolNameRule("mistral", r"[A-Za-z0-9_.-]+")
+"""The tool names Mistral accepts, a dot included, a colon not (measured
+2026-10-02)."""
 
 
 def _server_call_id(call_id: str | None) -> str | None:
@@ -242,17 +247,8 @@ class MistralAIProvider(AIProvider):
         if effort is not None:
             kwargs["reasoning_effort"] = effort
         if context.tools:
-            kwargs["tools"] = [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": t.name,
-                        "description": t.description,
-                        "parameters": t.parameters,
-                    },
-                }
-                for t in context.tools
-            ]
+            MISTRAL_TOOL_NAMES.check(t.name for t in context.tools)
+            kwargs["tools"] = chat_tool_declarations(context.tools)
         if context.response_schema is not None:
             kwargs["response_format"] = json_schema_format(context.response_schema)
         return kwargs

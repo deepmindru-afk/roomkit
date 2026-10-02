@@ -23,10 +23,14 @@ from roomkit.providers.ai.base import (
 )
 from roomkit.providers.ai.image_parts import image_part_base64
 from roomkit.providers.ai.reasoning import thinking_switch
+from roomkit.providers.ai.tool_declaration import ToolNameRule, declared_parameters
 from roomkit.providers.anthropic.config import AnthropicConfig
 
 # Block types that accept a cache_control marker — notably NOT
 # ``thinking`` blocks, which the API rejects as cache targets.
+ANTHROPIC_TOOL_NAMES = ToolNameRule("anthropic", r"[A-Za-z0-9_-]{1,128}")
+"""The tool names Anthropic accepts (measured 2026-10-02)."""
+
 _CACHEABLE_BLOCK_TYPES = ("text", "tool_result", "tool_use", "image")
 
 
@@ -177,10 +181,15 @@ def _tool_definitions(tools: list[AITool]) -> list[dict[str, Any]]:
 
     The API refuses a request whose every tool is deferred: then none is.
     """
+    ANTHROPIC_TOOL_NAMES.check(t.name for t in tools)
     defers = not all(t.defer_loading for t in tools)
     definitions: list[dict[str, Any]] = []
     for t in tools:
-        definition = {"name": t.name, "description": t.description, "input_schema": t.parameters}
+        definition = {
+            "name": t.name,
+            "description": t.description,
+            "input_schema": declared_parameters(t.parameters),
+        }
         if defers and t.defer_loading:
             definition["defer_loading"] = True
         definitions.append(definition)

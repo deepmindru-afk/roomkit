@@ -11,6 +11,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from roomkit.providers.ai.tool_declaration import declared_parameters
 from roomkit.providers.deepgram.config import DeepgramAgentConfig
 
 
@@ -50,9 +51,11 @@ def format_functions(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]]
         name = tool.get("name")
         if not name:
             continue
-        function: dict[str, Any] = {"name": name, "description": tool.get("description", "")}
-        if tool.get("parameters") is not None:
-            function["parameters"] = tool["parameters"]
+        function: dict[str, Any] = {
+            "name": name,
+            "description": tool.get("description", ""),
+            "parameters": declared_parameters(tool.get("parameters")),
+        }
         if tool.get("endpoint"):
             function["endpoint"] = tool["endpoint"]
         functions.append(function)

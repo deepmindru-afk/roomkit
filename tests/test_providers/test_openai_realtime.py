@@ -297,7 +297,7 @@ class TestOpenAIRealtimeProvider:
             ]
         )
         assert result == [
-            {"type": "function", "name": "fn"},
+            {"type": "function", "name": "fn", "parameters": {"type": "object", "properties": {}}},
             {"type": "web_search", "max_results": 5},
         ]
 

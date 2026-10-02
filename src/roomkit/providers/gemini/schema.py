@@ -58,8 +58,13 @@ from typing import Any
 from pydantic import ValidationError
 
 from roomkit.providers.ai.base import ProviderError
+from roomkit.providers.ai.tool_declaration import ToolNameRule, declared_parameters
 
 # Fields that Gemini accepts in a function parameter schema.
+GEMINI_TOOL_NAMES = ToolNameRule("gemini", r"[A-Za-z_][A-Za-z0-9_.:-]{0,127}")
+"""The tool names Gemini accepts, a dot and a colon included, a leading digit
+not (measured 2026-10-02)."""
+
 _GEMINI_ALLOWED_KEYS = frozenset(
     {
         "type",
@@ -368,16 +373,17 @@ def function_declaration(
 ) -> Any:
     """The ``FunctionDeclaration`` of one tool, its schema cleaned.
 
-    A schema the SDK still refuses fails every turn that declares the tool,
-    so the refusal becomes a :class:`ProviderError` naming the tool rather
-    than the SDK's validation error, raised before the request's own
-    error handling.
+    A name Gemini refuses, or a schema the SDK still refuses, fails every
+    turn that declares the tool, so either becomes a :class:`ProviderError`
+    naming the tool rather than Gemini's 400 or the SDK's validation error,
+    raised before the request's own error handling.
     """
+    GEMINI_TOOL_NAMES.check([name])
     try:
         return types.FunctionDeclaration(
             name=name,
             description=description,
-            parameters=clean_gemini_schema(parameters) if parameters else None,
+            parameters=clean_gemini_schema(declared_parameters(parameters)),
             **fields,
         )
     except ValidationError as exc:

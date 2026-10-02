@@ -39,6 +39,11 @@ from roomkit.providers.ai.tool_calls import (
     is_truncation,
     tool_arguments,
 )
+from roomkit.providers.ai.tool_declaration import (
+    ToolNameRule,
+    chat_tool_declarations,
+    declared_parameters,
+)
 
 __all__ = [
     "API_KEY_METADATA_KEY",
@@ -65,9 +70,12 @@ __all__ = [
     "StreamThinkingDelta",
     "StreamToolCall",
     "StreamToolCallDelta",
+    "ToolNameRule",
     "call_cut",
+    "chat_tool_declarations",
     "check_portable_schema",
     "cut_call_error",
+    "declared_parameters",
     "image_part_base64",
     "image_part_payload",
     "image_part_uri",

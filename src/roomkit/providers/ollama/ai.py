@@ -46,6 +46,7 @@ from roomkit.providers.ai.response_schema import (
     schema_for_generate,
 )
 from roomkit.providers.ai.tool_calls import CallIds, tool_arguments
+from roomkit.providers.ai.tool_declaration import chat_tool_declarations
 from roomkit.providers.ollama.config import OllamaConfig
 from roomkit.providers.ollama.models import MODELS
 from roomkit.providers.utils import _aclose_stream, http_timeout
@@ -265,17 +266,7 @@ class OllamaAIProvider(AIProvider):
     def _build_tools(self, tools: list[AITool]) -> list[dict[str, Any]] | None:
         if not tools:
             return None
-        return [
-            {
-                "type": "function",
-                "function": {
-                    "name": t.name,
-                    "description": t.description,
-                    "parameters": t.parameters,
-                },
-            }
-            for t in tools
-        ]
+        return chat_tool_declarations(tools)
 
     def _build_options(self, context: AIContext) -> dict[str, Any]:
         """Translate AIContext + config to Ollama's options dict."""

@@ -74,6 +74,7 @@ from roomkit.providers.ai.response_schema import (
     schema_for_generate,
 )
 from roomkit.providers.ai.tool_calls import CallIds, call_cut, tool_arguments
+from roomkit.providers.ai.tool_declaration import chat_tool_declarations
 from roomkit.providers.polargrid.config import PolarGridConfig
 from roomkit.providers.polargrid.models import (
     MODELS,
@@ -396,17 +397,7 @@ class PolarGridAIProvider(AIProvider):
         """Convert RoomKit tools to PolarGrid's OpenAI-shaped tool list."""
         if not tools:
             return None
-        return [
-            {
-                "type": "function",
-                "function": {
-                    "name": t.name,
-                    "description": t.description,
-                    "parameters": t.parameters,
-                },
-            }
-            for t in tools
-        ]
+        return chat_tool_declarations(tools)
 
     def _build_request(self, context: AIContext, *, stream: bool) -> dict[str, Any]:
         req: dict[str, Any] = {

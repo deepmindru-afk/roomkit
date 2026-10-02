@@ -80,6 +80,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING — a tool name no provider accepts is refused when the tool is
+  defined** (RMK-309, RFC §6.7): `AITool` raises on an empty name or one with
+  a character other than a letter, a digit, `_`, `.`, `:` or `-`, which every
+  vendor refused with a 400 mid-turn. An MCP tool under such a name is
+  skipped with a warning, the server's other tools kept. A name one vendor
+  refuses fails before the request, with a `ProviderError` naming the tool
+  and the vendor's rule, on OpenAI's own endpoint and on Anthropic
+  (`[A-Za-z0-9_-]{1,128}`), Gemini (a dot and a colon accepted, a leading
+  digit not) and Mistral (a dot accepted, a colon not); a server behind a
+  `base_url` decides its names.
+- `declared_parameters`, `chat_tool_declarations` and `ToolNameRule`, in
+  `roomkit.providers.ai`: the declaration every provider builds from (RMK-309).
+
 - `VuiTTSProvider` runs on `vui-tts>=1.2.0,<1.3` and uses no private
   `vui-tts` attribute any more (RMK-197). A barge-in cuts the cache back
   with `Row.truncate`, after the last frame heard and before any word of
@@ -201,6 +214,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bucket), on `MediaRecordingConfig` or `ConferenceRecordingConfig`.
 
 ### Fixed
+
+- A tool without parameters is declared as an object with none, on every
+  provider and realtime session (RMK-309): Anthropic refused the empty map it
+  was sent with a 400, and Mistral and Anthropic refuse a declaration without
+  a schema.
 
 - A Vui preset voice is prefilled with its speaker token and its baked
   conditioning bias, as Vui's own server renders it (RMK-197): the bias was

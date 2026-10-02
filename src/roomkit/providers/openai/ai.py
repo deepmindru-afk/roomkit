@@ -28,6 +28,7 @@ from roomkit.providers.ai.base import (
     AIResponse,
     AITextPart,
     AIThinkingPart,
+    AITool,
     AIToolCall,
     AIToolCallPart,
     AIToolResultPart,
@@ -57,9 +58,13 @@ from roomkit.providers.ai.response_schema import (
     schema_for_generate,
 )
 from roomkit.providers.ai.tool_calls import CallIds, call_cut, tool_arguments
+from roomkit.providers.ai.tool_declaration import ToolNameRule, chat_tool_declarations
 from roomkit.providers.openai.config import OpenAIConfig
 from roomkit.providers.openai.models import MODELS
 from roomkit.providers.utils import _aclose_stream, http_timeout
+
+OPENAI_TOOL_NAMES = ToolNameRule("openai", r"[A-Za-z0-9_-]{1,128}")
+"""The tool names OpenAI's endpoint accepts (measured 2026-10-02)."""
 
 # Fallback only, for ids the catalog does not carry — a snapshot newer than
 # this release, or an OpenAI-compatible server behind ``base_url`` naming its
@@ -125,6 +130,26 @@ class OpenAIAIProvider(AIProvider):
     def _provider_name(self) -> str:
         """Provider identifier used in error messages and telemetry."""
         return "openai"
+
+    @property
+    def _is_openai_endpoint(self) -> bool:
+        """Whether this request goes to OpenAI's own endpoint, whose models
+        and rules this provider knows: not a derivative's service, not a
+        server behind ``base_url``."""
+        return self._provider_name == "openai" and getattr(self._config, "base_url", None) is None
+
+    @property
+    def _tool_name_rule(self) -> ToolNameRule | None:
+        """The tool names this endpoint accepts, checked before the request;
+        ``None`` where the server decides (RFC §6.7)."""
+        return OPENAI_TOOL_NAMES if self._is_openai_endpoint else None
+
+    def _declare_tools(self, tools: list[AITool]) -> list[dict[str, Any]]:
+        """The turn's tools as this endpoint declares them, their names checked."""
+        rule = self._tool_name_rule
+        if rule is not None:
+            rule.check(tool.name for tool in tools)
+        return chat_tool_declarations(tools)
 
     @property
     def model_name(self) -> str:
@@ -344,7 +369,7 @@ class OpenAIAIProvider(AIProvider):
         or an Azure deployment name, whose real model this provider cannot
         know.
         """
-        if self._provider_name != "openai" or getattr(self._config, "base_url", None) is not None:
+        if not self._is_openai_endpoint:
             return None
         info = self.catalog_entry()
         capabilities = info.capabilities if info is not None else []
@@ -444,19 +469,8 @@ class OpenAIAIProvider(AIProvider):
         self._apply_extra_body(kwargs)
         self._apply_response_format(kwargs, context)
 
-        # Add tools if provided
         if context.tools:
-            kwargs["tools"] = [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": t.name,
-                        "description": t.description,
-                        "parameters": t.parameters,
-                    },
-                }
-                for t in context.tools
-            ]
+            kwargs["tools"] = self._declare_tools(context.tools)
 
         t0 = time.monotonic()
         try:
@@ -576,17 +590,7 @@ class OpenAIAIProvider(AIProvider):
         self._apply_response_format(kwargs, context)
         kwargs.update(self._token_limit_kwarg(context.max_tokens or self._config.max_tokens))
         if context.tools:
-            kwargs["tools"] = [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": t.name,
-                        "description": t.description,
-                        "parameters": t.parameters,
-                    },
-                }
-                for t in context.tools
-            ]
+            kwargs["tools"] = self._declare_tools(context.tools)
 
         t0 = time.monotonic()
         first_token = True

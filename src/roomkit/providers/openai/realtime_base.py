@@ -19,6 +19,7 @@ from abc import abstractmethod
 from typing import Any
 
 from roomkit.core.task_utils import cancel_and_wait
+from roomkit.providers.ai.tool_declaration import declared_parameters
 from roomkit.providers.openai.realtime_events import (
     OpenAIRealtimeEventHandlersMixin,
     _OutputAudioState,
@@ -103,9 +104,10 @@ class OpenAIRealtimeBase(OpenAIRealtimeEventHandlersMixin):
                 formatted.append(dict(t))
                 continue
             tool = {"type": "function"}
-            for field in ("name", "description", "parameters"):
+            for field in ("name", "description"):
                 if field in t:
                     tool[field] = t[field]
+            tool["parameters"] = declared_parameters(t.get("parameters"))
             formatted.append(tool)
         return formatted
 

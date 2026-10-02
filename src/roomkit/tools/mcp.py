@@ -10,12 +10,35 @@ from contextlib import AsyncExitStack
 from types import TracebackType
 from typing import Any
 
+from pydantic import ValidationError
+
 from roomkit.core.exceptions import ToolRefusedError, UnservedToolCallError
 from roomkit.providers.ai.base import AITool
 from roomkit.tools._mcp_result import error_text, handler_result, text_body
 from roomkit.tools.compose import ToolHandler, ToolResult
 
 logger = logging.getLogger("roomkit.tools.mcp")
+
+
+def _definition(tool: Any) -> AITool | None:
+    """The definition of a listed MCP tool, or ``None`` for one whose name no
+    provider accepts: skipped, so the server's other tools stay usable
+    (RFC §6.7)."""
+    # FastMCP serializes a tool's tags into `_meta["fastmcp"]["tags"]`;
+    # surface them so Tool Search can match this tool cross-lingually.
+    meta = getattr(tool, "meta", None)
+    tags = meta.get("fastmcp", {}).get("tags", []) if isinstance(meta, dict) else []
+    try:
+        return AITool(
+            name=tool.name,
+            description=tool.description or "",
+            parameters=tool.inputSchema if tool.inputSchema else {},
+            tags=tags or [],
+        )
+    except ValidationError:
+        logger.warning("MCP tool %r skipped: no provider accepts its name", tool.name)
+        return None
+
 
 _DEFAULT_CALL_TIMEOUT = 30.0
 """Seconds a tool call waits: one default shared by :meth:`MCPToolProvider.call_tool`
@@ -212,16 +235,9 @@ class MCPToolProvider:
         for tool in listed.tools:
             if self._tool_filter and not self._tool_filter(tool.name):
                 continue
-            # FastMCP serializes a tool's tags into `_meta["fastmcp"]["tags"]`;
-            # surface them so Tool Search can match this tool cross-lingually.
-            meta = getattr(tool, "meta", None)
-            tags = meta.get("fastmcp", {}).get("tags", []) if isinstance(meta, dict) else []
-            ai_tool = AITool(
-                name=tool.name,
-                description=tool.description or "",
-                parameters=tool.inputSchema if tool.inputSchema else {},
-                tags=tags or [],
-            )
+            ai_tool = _definition(tool)
+            if ai_tool is None:
+                continue
             self._tools.append(ai_tool)
             self._tool_set.add(tool.name)
 

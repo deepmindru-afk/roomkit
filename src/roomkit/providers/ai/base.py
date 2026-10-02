@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time as _time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Mapping
@@ -33,8 +34,18 @@ class AIImagePart(BaseModel):
     mime_type: str | None = None
 
 
+_ANY_VENDOR_TOOL_NAME = re.compile(r"[A-Za-z0-9_.:-]+")
+"""The characters some vendor accepts in a tool name (RFC §6.7); each
+provider checks its own vendor's narrower rule before the request."""
+
+
 class AITool(BaseModel):
-    """Tool definition for function calling."""
+    """Tool definition for function calling.
+
+    A name no vendor accepts (empty, or a character other than a letter, a
+    digit, ``_``, ``.``, ``:`` or ``-``) is refused here; a name some vendors
+    refuse is refused by their provider when it declares the tool (RFC §6.7).
+    """
 
     name: str
     description: str
@@ -49,6 +60,16 @@ class AITool(BaseModel):
     # references it (``AIToolResultPart.references``). Only a channel whose
     # provider ``supports_deferred_tools`` sets it (RFC §6.4).
     defer_loading: bool = False
+
+    @field_validator("name")
+    @classmethod
+    def _a_name_some_vendor_accepts(cls, name: str) -> str:
+        if _ANY_VENDOR_TOOL_NAME.fullmatch(name) is None:
+            raise ValueError(
+                f"tool name {name!r} is accepted by no provider: use letters, digits, "
+                "'_', '.', ':' or '-'"
+            )
+        return name
 
 
 class AIToolCall(BaseModel):

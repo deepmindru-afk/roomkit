@@ -18,6 +18,8 @@ import threading
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
+from roomkit.providers.ai.tool_declaration import declared_parameters
+
 logger = logging.getLogger("roomkit.providers.openai.live")
 
 # --- Client events -----------------------------------------------------------
@@ -158,9 +160,10 @@ def format_backend_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
             formatted.append(dict(tool))
             continue
         shaped: dict[str, Any] = {"type": "function"}
-        for key in ("name", "description", "parameters"):
+        for key in ("name", "description"):
             if key in tool:
                 shaped[key] = tool[key]
+        shaped["parameters"] = declared_parameters(tool.get("parameters"))
         formatted.append(shaped)
     return formatted
 
