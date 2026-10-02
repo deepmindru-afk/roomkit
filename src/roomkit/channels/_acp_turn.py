@@ -57,6 +57,7 @@ class ACPTurnMixin:
     _prompted_index: dict[str, int]
     _room_history: int
     _after_response_hook: AfterResponseCallback | None
+    _closed: bool
 
     # Implemented by the other mixins of the channel. Annotations, never stub
     # methods: a stub would shadow an implementation later in the MRO. An
@@ -125,8 +126,10 @@ class ACPTurnMixin:
                         # Cleanup (runner, tools, maps) precedes reconstruction.
                         await turn_stream.aclose()
                     recovering = True
-                    await self._discard_room_session(room_id, connection)
-                    session_id = await self._session_for(room_id, connection)
+                    rebuilt = await self._rebuild_session(room_id, session_id, connection)
+                    if rebuilt is None:
+                        return
+                    session_id = rebuilt
                     # A new turn owns its outcome; keep the first failure marked
                     # until opening succeeds, then let the retry write its own.
                     metadata["acp"].pop("interrupted", None)
@@ -139,6 +142,32 @@ class ACPTurnMixin:
                         await self._discard_room_session(room_id, connection)
                     finally:
                         self._room_locks.pop(room_id, None)
+
+    async def _rebuild_session(self, room_id: str, session_id: str, connection: Any) -> str | None:
+        """Keep reconstruction in the turn registry so public cancel can stop it."""
+        turn = _TurnState(room_id=room_id, rebuilding=True)
+        turn.runner = asyncio.create_task(self._replace_session(room_id, connection))
+        self._turns[session_id] = turn
+        try:
+            replacement = await turn.runner
+            # A cancel can land after the runner finishes but before we wake.
+            return None if turn.cancel_requested else replacement
+        except asyncio.CancelledError:
+            if not turn.cancel_requested:
+                raise
+            return None
+        finally:
+            if self._turns.get(session_id) is turn:
+                self._turns.pop(session_id, None)
+
+    async def _replace_session(self, room_id: str, connection: Any) -> str:
+        await self._discard_room_session(room_id, connection)
+        if self._closed:
+            raise asyncio.CancelledError
+        session_id = await self._session_for(room_id, connection)
+        if self._closed:
+            raise asyncio.CancelledError
+        return session_id
 
     async def _turn_stream(
         self,

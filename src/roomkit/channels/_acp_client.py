@@ -58,7 +58,10 @@ class _TurnState:
     queue: asyncio.Queue[StreamDelta | _TurnDone] = field(default_factory=asyncio.Queue)
     tools: dict[str, _ToolState] = field(default_factory=dict)
     thinking_open: bool = False
-    runner: asyncio.Task[None] | None = None
+    runner: asyncio.Task[Any] | None = None
+    rebuilding: bool = False
+    """The runner is rebuilding a refused session, before another prompt."""
+    cancel_requested: bool = False
     started_at: float = field(default_factory=time.monotonic)
     segments: list[list[str]] = field(default_factory=list)
     """What the agent said this turn, the chunks of each stretch between tool calls.

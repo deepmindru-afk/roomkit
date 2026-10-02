@@ -429,6 +429,14 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
 
     async def cancel(self, room_id: str) -> bool:
         """Request cancellation of the active ACP turn for a Room."""
+        for turn in self._turns.values():
+            if turn.room_id == room_id and turn.rebuilding:
+                # The invalid session is already forgotten, but the logical
+                # turn still exists. Stop it before a replacement can prompt.
+                turn.cancel_requested = True
+                if turn.runner is not None:
+                    turn.runner.cancel()
+                return True
         # A standalone turn runs in its own session: that is the one to stop.
         session_id = self._turn_sessions.get(room_id) or self._sessions.get(room_id)
         connection = self._connection

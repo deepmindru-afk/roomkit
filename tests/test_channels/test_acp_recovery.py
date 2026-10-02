@@ -205,3 +205,57 @@ async def test_cancel_or_abandon_recovery_cleans_state_and_releases_the_lock(
     # A following prompt obtains a fresh session; no orphaned lock or runner.
     await asyncio.wait_for(_consume(await _output(channel)), 1)
     await channel.close()
+
+
+@pytest.mark.parametrize("stage", ["close", "open", "configured"])
+async def test_public_cancel_stops_reconstruction_before_prompt(tmp_path: Any, stage: str) -> None:
+    channel, connection, _ = _channel(tmp_path, emit_updates=False)
+    reached = asyncio.Event()
+    attempts: list[str] = []
+    opener = connection.new_session
+    closer = connection.close_session
+    publisher = channel._publish_config_options
+
+    async def pause() -> None:
+        reached.set()
+        await asyncio.Event().wait()
+
+    async def prompt(session_id: str, *_args: Any, **_kwargs: Any) -> Any:
+        attempts.append(session_id)
+        raise _refusal()
+
+    async def open_session(**kwargs: Any) -> Any:
+        if attempts and stage == "open":
+            await pause()
+        return await opener(**kwargs)
+
+    async def close_session(session_id: str) -> None:
+        if stage == "close" and session_id == "session-1":
+            await pause()
+        await closer(session_id)
+
+    async def publish(session_id: str, options: Any, values: Any) -> None:
+        if stage == "configured" and session_id == "session-2":
+            await pause()
+        await publisher(session_id, options, values)
+
+    with (
+        patch.object(connection, "prompt", prompt),
+        patch.object(connection, "new_session", open_session),
+        patch.object(connection, "close_session", close_session),
+        patch.object(channel, "_publish_config_options", publish),
+    ):
+        output = await _output(channel)
+        consumer = asyncio.create_task(_consume(output))
+        await asyncio.wait_for(reached.wait(), 1)
+        assert channel.active_turns == 1
+        assert await channel.cancel(ROOM) is True
+        assert await asyncio.wait_for(consumer, 1) == []
+
+    assert attempts == ["session-1"]
+    assert output.response_metadata["acp"]["interrupted"] is True
+    assert channel.active_turns == 0
+    assert channel._sessions == channel._session_rooms == channel._session_options == {}
+    assert channel._turns == channel._prompted_index == channel._room_locks == {}
+    await asyncio.wait_for(_consume(await _output(channel)), 1)
+    await channel.close()
