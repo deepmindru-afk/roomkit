@@ -82,7 +82,8 @@ def format_content(
 
 
 def _tool_result_block(part: AIToolResultPart) -> dict[str, Any]:
-    """The ``tool_result`` block of a call.
+    """The ``tool_result`` block of a call, flagged an error when the call was
+    refused, failed, blocked, served by nothing or cancelled (RFC §6.7).
 
     One that makes tools callable carries their ``tool_reference`` blocks
     alone, where each deferred definition expands out of the cached prefix:
@@ -94,7 +95,14 @@ def _tool_result_block(part: AIToolResultPart) -> dict[str, Any]:
         if part.references
         else _tool_result_content(part.result)
     )
-    return {"type": "tool_result", "tool_use_id": part.tool_call_id, "content": content}
+    block: dict[str, Any] = {
+        "type": "tool_result",
+        "tool_use_id": part.tool_call_id,
+        "content": content,
+    }
+    if part.is_error:
+        block["is_error"] = True
+    return block
 
 
 def _result_beside_references(part: AIToolResultPart) -> list[dict[str, Any]]:

@@ -232,6 +232,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `OpenAIAIProvider` refuses, before the request, a model OpenAI's Chat
+  Completions refuses (RMK-309, RFC §6.7): GPT-6 Astra and GPT-6.1 Sol with
+  function tools, which they take on the Responses API only, and the `-pro`
+  models, not chat models there; each sent its request and came back 400 or
+  404. The catalogue tags them `chat_tools_refused` and `responses_only`; a
+  server behind a `base_url` still decides.
+- Anthropic receives a tool result whose call was refused, failed, blocked,
+  served by nothing or cancelled with `is_error` set (RMK-309, RFC §6.7);
+  the text the model reads is unchanged.
 - A tool without parameters is declared as an object with none, on every
   provider and realtime session (RMK-309): Anthropic refused the empty map it
   was sent with a 400, and Mistral and Anthropic refuse a declaration without

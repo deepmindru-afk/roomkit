@@ -117,9 +117,10 @@ class AIToolResultPart(BaseModel):
     # the tool loop knows (it caught the exception, or it refused the call
     # itself), while a reader of ``result`` would have to recognise both the
     # error envelopes and the prose sentence — and a tool whose own output
-    # happens to look like either would be misread. Never rendered to
-    # providers; it rides the part so tool-call events and the ON_TOOL_CALL
-    # hook can state the outcome instead of guessing it.
+    # happens to look like either would be misread. It rides the part so
+    # tool-call events and the ON_TOOL_CALL hook can state the outcome
+    # instead of guessing it, and a provider whose format flags an error
+    # result renders it (Anthropic's ``is_error``, RFC §6.7).
     is_error: bool = False
     # MCP CallToolResult.structuredContent, captured before the LLM-facing
     # string is flattened and possibly evicted. Never rendered to providers —

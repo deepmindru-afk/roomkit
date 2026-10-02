@@ -258,6 +258,24 @@ class OpenAIAIProvider(AIProvider):
         if effort is not None:
             kwargs["reasoning_effort"] = effort
 
+    def _check_model_serves(self, context: AIContext) -> None:
+        """Refuse, before the request, a turn OpenAI's endpoint refuses its
+        model (RFC §6.7), as the catalogue states it: a model Chat Completions
+        does not serve, or function tools for one that takes none there.
+        Behind a ``base_url`` the server decides."""
+        if not self._is_openai_endpoint:
+            return
+        info = self.catalog_entry()
+        capabilities = info.capabilities if info is not None else []
+        model = self._config.model
+        if "responses_only" in capabilities:
+            refused = f"{model} is served by OpenAI's Responses API only, not Chat Completions"
+        elif context.tools and "chat_tools_refused" in capabilities:
+            refused = f"{model} takes no function tools on Chat Completions"
+        else:
+            return
+        raise ProviderError(refused, provider=self._provider_name, context_overflow=False)
+
     def _tool_turn_effort(self, effort: str | None) -> str | None:
         """The reasoning effort a turn with tools sends on this endpoint.
 
@@ -358,6 +376,7 @@ class OpenAIAIProvider(AIProvider):
     # -- Non-streaming ---------------------------------------------------------
 
     async def generate(self, context: AIContext) -> AIResponse:
+        self._check_model_serves(context)
         messages = self._build_messages(context.messages, context.system_prompt)
 
         kwargs: dict[str, Any] = {
@@ -478,6 +497,7 @@ class OpenAIAIProvider(AIProvider):
 
     async def _stream_events(self, context: AIContext) -> AsyncIterator[StreamEvent]:
         """The streamed call itself."""
+        self._check_model_serves(context)
         messages = self._build_messages(context.messages, context.system_prompt)
         kwargs: dict[str, Any] = {
             "model": self._config.model,

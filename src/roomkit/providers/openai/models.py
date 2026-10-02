@@ -43,12 +43,17 @@ _CTX_1M = 1_050_000
 # the Responses API). Every tagged entry checked on the wire 2026-09-30: the
 # first group takes ``low`` with tools, the second takes ``none`` (gpt-5.4-mini
 # answers 400 to ``low``; gpt-6-sol and gpt-6-luna answer 400 when the effort
-# is left out). An untagged entry gets no effort on such
-# a turn: GPT-6 Astra and GPT-6.1 Sol refuse function tools on Chat
-# Completions whatever the effort, and the ``-pro`` models are served by the
-# Responses API only.
+# is left out). An untagged entry gets no effort on such a turn.
 _TOOLS_REASONING_EFFORT = ["tools_reasoning_effort"]
 _TOOLS_REASONING_NONE = ["tools_reasoning_none"]
+# What Chat Completions refuses a model (RFC §6.7), read by
+# ``OpenAIAIProvider._check_model_serves`` before the request. GPT-6 Astra and
+# GPT-6.1 Sol refuse function tools there whatever the effort (400, checked on
+# the wire 2026-10-02: ``none`` and ``minimal`` are not values they take, and
+# any other is refused with tools); the ``-pro`` models are served by the
+# Responses API only (404 "not a chat model", 2026-10-02).
+_CHAT_TOOLS_REFUSED = ["chat_tools_refused"]
+_RESPONSES_ONLY = ["responses_only"]
 _VERIFIED = date(2026, 8, 5)
 
 # Astra and Sol prices rechecked 2026-09-08:
@@ -65,6 +70,7 @@ MODELS: list[ModelInfo] = [
     ModelInfo(
         id="gpt-6.1-sol",
         display_name="GPT-6.1 Sol",
+        capabilities=_CHAT_TOOLS_REFUSED,
         context_window=_CTX_1M,
         supports_vision=True,
         pricing=ModelPricing(
@@ -81,6 +87,7 @@ MODELS: list[ModelInfo] = [
     ModelInfo(
         id="gpt-6-astra",
         display_name="GPT-6 Astra",
+        capabilities=_CHAT_TOOLS_REFUSED,
         context_window=_CTX_1M,
         supports_vision=True,
         pricing=ModelPricing(
@@ -192,6 +199,7 @@ MODELS: list[ModelInfo] = [
     ModelInfo(
         id="gpt-5.5-pro",
         display_name="GPT-5.5 Pro",
+        capabilities=_RESPONSES_ONLY,
         context_window=_CTX_1M,
         supports_vision=True,
         pricing=ModelPricing(
@@ -216,6 +224,7 @@ MODELS: list[ModelInfo] = [
     ModelInfo(
         id="gpt-5.4-pro",
         display_name="GPT-5.4 Pro",
+        capabilities=_RESPONSES_ONLY,
         context_window=_CTX_1M,
         supports_vision=True,
         pricing=ModelPricing(
@@ -385,6 +394,7 @@ MODELS: list[ModelInfo] = [
     ModelInfo(
         id="o3-pro",
         display_name="o3-pro",
+        capabilities=_RESPONSES_ONLY,
         context_window=200_000,
         supports_vision=True,
         deprecated=True,
