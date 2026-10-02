@@ -164,10 +164,15 @@ async def test_a_cancel_queued_before_the_first_round_is_still_named() -> None:
 
 
 async def test_provider_owned_tool_calls_still_end_with_a_marker() -> None:
-    """No local handler: the calls belong to an external provider, the loop
-    only observes them — and that exit used to be the one carve-out from
+    """The provider ran its calls itself (their results ride them): the loop
+    only reports them, and that exit used to be the one carve-out from
     "every exit yields a marker"."""
-    ch = AIChannel("ai1", provider=MockAIProvider(ai_responses=[_tool()], streaming=True))
+    provider_run = AIResponse(
+        content="",
+        finish_reason="tool_calls",
+        tool_calls=[AIToolCall(id="b1", name="Bash", arguments={"_result": "a.txt"})],
+    )
+    ch = AIChannel("ai1", provider=MockAIProvider(ai_responses=[provider_run], streaming=True))
 
     deltas = await _run(ch, _ctx())
 

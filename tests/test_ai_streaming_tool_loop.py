@@ -180,8 +180,12 @@ class TestStreamingToolLoop:
         assert run.text == "Just text."
         assert len(provider.calls) == 1
 
-    async def test_no_tools_no_handler(self, streaming: bool) -> None:
-        """Tool calls without a handler end the loop after round 1."""
+    async def test_a_call_nothing_serves_is_refused_and_the_turn_goes_on(
+        self, streaming: bool
+    ) -> None:
+        """A channel without a handler serves its calls all the same: past the
+        gate, a call nothing serves is unserved, the model reads that and
+        answers (RFC §9.3, who serves a call)."""
         responses = [
             AIResponse(
                 content="I want to call tools but can't.",
@@ -191,6 +195,7 @@ class TestStreamingToolLoop:
                     AIToolCall(id="tc1", name="search", arguments={}),
                 ],
             ),
+            AIResponse(content="Answering without it.", finish_reason="stop"),
         ]
 
         provider = MockAIProvider(ai_responses=responses, streaming=streaming)
@@ -204,9 +209,11 @@ class TestStreamingToolLoop:
             _ctx(),
         )
 
-        assert run.said == ["I want to call tools but can't."]
-        # Only one round because no handler
-        assert len(provider.calls) == 1
+        assert run.said == ["I want to call tools but can't.", "Answering without it."]
+        [call] = run.calls
+        assert call.failed
+        assert "No handler for tool search" in (call.error or "")
+        assert len(provider.calls) == 2
 
     async def test_max_rounds_honored(self, streaming: bool) -> None:
         """Loop stops at max_tool_rounds even if provider keeps returning tools."""

@@ -9,7 +9,7 @@ from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import aclosing, asynccontextmanager
 from dataclasses import dataclass, field
 from functools import partial
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 from roomkit.channels._ai_coalescers import _ThinkingCoalescer, _ToolCallDeltaCoalescer
 from roomkit.channels._ai_loop_rules import (
@@ -168,7 +168,6 @@ class AIStreamingHost(Protocol):
     _active_loops: dict[str, _ToolLoopContext]
     _after_response_hook: Any
     _before_generation_hook: Any
-    _before_tool_call_hook: Any
     _tool_report_hook: Any
     _external_tool_handler: Any
     channel_id: str
@@ -241,7 +240,6 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
     _active_loops: dict[str, Any]
     _after_response_hook: Any
     _before_generation_hook: Any
-    _before_tool_call_hook: Any
     _tool_report_hook: Any
     _external_tool_handler: Any
     channel_id: str
@@ -257,6 +255,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
     _publish_tool_event: Any  # see AIStreamingHost
     _telemetry_provider: Any  # see AIStreamingHost
     _log_provider_error: Any  # AIGenerationMixin: one log line for a failed turn
+    _served_tool_names: Any  # AIToolsMixin: what the channel and orchestration serve
 
     def _new_thinking_coalescer(self, room_id: str | None, round_idx: int) -> _ThinkingCoalescer:
         """Coalescer bound to this channel's publish hook and window config."""
@@ -559,8 +558,8 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                 channel_id=self.channel_id,
                 room_id=turn.room_id,
                 publish=self._publish_tool_event,
+                serves_locally=partial(self._serves_locally, loop_ctx),
                 handler=self._external_tool_handler,
-                before=self._before_tool_call_hook,
                 report=self._tool_report_hook,
             )
             context, cancelled = self._drain_steering_queue(context, loop_ctx)
@@ -574,18 +573,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                     yield turn.end("cancelled", index)
                     return
                 context = self._prepare_round_context(context, loop_ctx, rules, index)
-                round_ = _StreamRound(
-                    index=index,
-                    room_id=turn.room_id,
-                    cancel_event=loop_ctx.cancel_event,
-                    thinking_coalescer=self._new_thinking_coalescer(turn.room_id, index),
-                    new_composition=partial(self._new_tool_call_coalescer, turn.room_id, index),
-                    publish_thinking=self._publish_thinking_event,
-                    close_thinking=self._close_thinking_window,
-                    record_usage=partial(self._record_stream_usage, turn.usage, rules),
-                    prefix=turn.dedup_prefix,
-                    external_tools=external if self._tool_handler is None else None,
-                )
+                round_ = self._new_stream_round(turn, rules, index, external)
                 turn.segments.append(round_.state.reported)
                 # What this round declares, as the provider receives it.
                 self._record_declared_tools(loop_ctx, context.tools)
@@ -594,51 +582,16 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                 ) as deltas:
                     async for delta in deltas:
                         yield delta
-                state = round_.state
-
-                stop = _round_stop_reason(state, loop_ctx)
-                if stop is not None:
-                    yield turn.end(stop, index)
-                    return
-                if not state.tool_calls:
-                    if self._try_empty_retry(
-                        context,
-                        loop_ctx,
-                        rules,
-                        had_tool_round=turn.saw_tool_call,
-                        final_text=state.text,
-                        finish_reason=state.finish_reason,
-                    ):
-                        continue
-                    reason = final_round_reason(
-                        had_tool_round=turn.saw_tool_call,
-                        final_text=state.text,
-                        finish_reason=state.finish_reason,
-                        limit=rules.limit_passed(),
-                        force_stopped=loop_ctx.force_stop,
-                    )
-                    yield turn.end(reason, index)
-                    return
-
-                turn.saw_tool_call = True
-                if self._tool_handler is None:
-                    await external.observe_calls(state.tool_calls)
-                    yield turn.end("completed", index)
-                    return
-                if index >= self._max_tool_rounds:
-                    logger.warning(
-                        "Streaming tool loop reached max_tool_rounds=%d", self._max_tool_rounds
-                    )
-                    yield turn.end("max_rounds", index)
-                    return
-                limit = rules.limit_reached(index)
-                if limit is not None:
-                    yield turn.end(limit, index)
+                outcome = self._round_outcome(round_.state, turn, context, rules, index)
+                if outcome == "retry":
+                    continue
+                if outcome is not None:
+                    yield turn.end(outcome, index)
                     return
 
                 rules.warn_if_needed(index)
                 async with aclosing(
-                    self._stream_local_tool_round(context, state, turn, index)
+                    self._stream_local_tool_round(context, round_.state, turn, index)
                 ) as deltas:
                     async for delta in deltas:
                         yield delta
@@ -649,3 +602,74 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
 
             # An empty-response retry can consume the final generation slot.
             yield turn.end("max_rounds", self._max_tool_rounds)
+
+    def _new_stream_round(
+        self,
+        turn: _StreamTurnState,
+        rules: _ToolLoopState,
+        index: int,
+        external: _ExternalStreamTools,
+    ) -> _StreamRound:
+        """One generation's consumer, wired to this channel's windows and hooks."""
+        return _StreamRound(
+            index=index,
+            room_id=turn.room_id,
+            cancel_event=turn.loop_ctx.cancel_event,
+            thinking_coalescer=self._new_thinking_coalescer(turn.room_id, index),
+            new_composition=partial(self._new_tool_call_coalescer, turn.room_id, index),
+            publish_thinking=self._publish_thinking_event,
+            close_thinking=self._close_thinking_window,
+            record_usage=partial(self._record_stream_usage, turn.usage, rules),
+            prefix=turn.dedup_prefix,
+            external_tools=external,
+        )
+
+    def _round_outcome(
+        self,
+        state: _StreamRoundState,
+        turn: _StreamTurnState,
+        context: AIContext,
+        rules: _ToolLoopState,
+        index: int,
+    ) -> LoopEndReason | Literal["retry"] | None:
+        """What a generation leaves the loop: the turn's end, another try at an
+        empty answer, or ``None`` for its local calls to run."""
+        loop_ctx = turn.loop_ctx
+        stop = _round_stop_reason(state, loop_ctx)
+        if stop is not None:
+            return stop
+        if state.external_calls and not state.tool_calls:
+            # The provider ran its calls itself, or its handler decided them:
+            # the provider's own loop goes on, not this one (RFC §9.3).
+            turn.saw_tool_call = True
+            return "completed"
+        if not state.tool_calls:
+            if self._try_empty_retry(
+                context,
+                loop_ctx,
+                rules,
+                had_tool_round=turn.saw_tool_call,
+                final_text=state.text,
+                finish_reason=state.finish_reason,
+            ):
+                return "retry"
+            return final_round_reason(
+                had_tool_round=turn.saw_tool_call,
+                final_text=state.text,
+                finish_reason=state.finish_reason,
+                limit=rules.limit_passed(),
+                force_stopped=loop_ctx.force_stop,
+            )
+        turn.saw_tool_call = True
+        if index >= self._max_tool_rounds:
+            logger.warning("Streaming tool loop reached max_tool_rounds=%d", self._max_tool_rounds)
+            return "max_rounds"
+        return rules.limit_reached(index)
+
+    def _serves_locally(self, loop_ctx: _ToolLoopContext, name: str) -> bool:
+        """Whether the turn has a tool of the channel's own under *name*: a call
+        to it is the channel's to serve, never an external handler's."""
+        known = loop_ctx.all_context_tools
+        if known is not None and name in {tool.name for tool in known}:
+            return True
+        return name in self._served_tool_names(loop_ctx.room_id)

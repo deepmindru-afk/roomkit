@@ -34,7 +34,9 @@ class _StreamRoundState:
     thinking_published: int = 0
     text_parts: list[str] = field(default_factory=list)
     reported: list[str] = field(default_factory=list)
+    # The calls the loop serves; the provider's own are reported inline.
     tool_calls: list[StreamToolCall] = field(default_factory=list)
+    external_calls: int = 0
     finish_reason: str | None = None
     cancelled: bool = False
 
@@ -197,13 +199,15 @@ class _StreamRound:
                             event.index, event.id, event.name, len(event.arguments_delta)
                         )
                 elif isinstance(event, StreamToolCall):
-                    state.tool_calls.append(event)
-                    if self.external_tools is not None:
-                        async with aclosing(
-                            self.external_tools.stream_call(event, self.index)
-                        ) as deltas:
-                            async for delta in deltas:
-                                yield delta
+                    if self.external_tools is None or not self.external_tools.takes(event):
+                        state.tool_calls.append(event)
+                        continue
+                    state.external_calls += 1
+                    async with aclosing(
+                        self.external_tools.stream_call(event, self.index)
+                    ) as deltas:
+                        async for delta in deltas:
+                            yield delta
                 elif isinstance(event, StreamDone):
                     state.finish_reason = event.finish_reason
                     if event.usage:

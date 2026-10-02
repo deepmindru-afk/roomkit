@@ -1,10 +1,15 @@
-"""Lifecycle of tool calls served by an external streaming provider."""
+"""Lifecycle of the tool calls a streaming provider serves itself.
+
+A call the provider already ran (its result rides it) is reported, and a call
+its external tool handler decides is decided, then reported. Every other call
+is the channel's own, served by the loop (RFC §9.3, who serves a call).
+"""
 
 from __future__ import annotations
 
 import json
 import time
-from collections.abc import AsyncGenerator, Sequence
+from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -15,7 +20,7 @@ from roomkit.providers.ai.base import StreamToolCall
 from roomkit.providers.ai.tool_calls import cut_call_error
 from roomkit.realtime.base import EphemeralEventType
 from roomkit.tools._outcome import OutcomeKind, ToolOutcome
-from roomkit.tools.external import BeforeToolCallback, ExternalToolHandler
+from roomkit.tools.external import ExternalToolHandler
 from roomkit.tools.result import as_tool_result
 
 
@@ -33,23 +38,29 @@ class _ToolEventPublisher(Protocol):
 
 @dataclass
 class _ExternalStreamTools:
-    """Turn-scoped callbacks for externally served calls, with no local dispatch."""
+    """Turn-scoped routing and lifecycle of the calls the provider serves."""
 
     channel_id: str
     room_id: str | None
     publish: _ToolEventPublisher
+    # Whether the turn has a tool of the channel's own under a name.
+    serves_locally: Callable[[str], bool]
     handler: ExternalToolHandler | None = None
-    before: BeforeToolCallback | None = None
     # ON_TOOL_CALL as a report, for a call the provider already ran (RFC §9.3).
     report: ToolCallObserver | None = None
+
+    def takes(self, call: StreamToolCall) -> bool:
+        """Whether *call* is the provider's: one it already ran, or one its
+        handler decides because no tool of the channel's own carries its name."""
+        if "_result" in call.arguments:
+            return True
+        return self.handler is not None and not self.serves_locally(call.name)
 
     async def stream_call(
         self, call: StreamToolCall, round_idx: int
     ) -> AsyncGenerator[StreamDelta, None]:
-        """Observe a call inline, keeping persistence markers around its callbacks."""
-        handler = self.handler
-        if handler is None:
-            return
+        """Report a call the provider serves inline, keeping persistence markers
+        around its callbacks."""
         arguments = dict(call.arguments)
         already_executed = "_result" in arguments
         result = arguments.pop("_result", None) or ""
@@ -67,18 +78,11 @@ class _ExternalStreamTools:
         started_at = time.monotonic()
         # A proxy's embedded result means the side effect already happened.
         # Only a still-pending call can be denied or rewritten before acting.
-        if not already_executed:
+        if not already_executed and self.handler is not None:
             arguments, result, is_error = await self._decide(
-                handler, call, arguments, result, bool(is_error)
+                self.handler, call, arguments, result, bool(is_error)
             )
-        await handler.on_tool_result(
-            call.name,
-            arguments,
-            result,
-            is_error=bool(is_error),
-            tool_call_id=call.id,
-            room_id=self.room_id,
-        )
+        await self._report(call, arguments, result, bool(is_error))
 
         duration_ms = int((time.monotonic() - started_at) * 1000)
         yield ToolCallEndMarker(
@@ -130,39 +134,36 @@ class _ExternalStreamTools:
             return arguments, decision.result, False
         return arguments, result, is_error
 
-    async def observe_calls(self, calls: Sequence[StreamToolCall]) -> None:
-        """Notify hooks after the round when no external handler served it inline."""
+    async def _report(
+        self, call: StreamToolCall, arguments: dict[str, Any], result: str, is_error: bool
+    ) -> None:
+        """Hand the call's outcome to its handler, or report it to ON_TOOL_CALL's
+        observers when the provider ran it with no handler: an outcome the
+        model already read, so no hook may rewrite it (RFC §9.3)."""
         if self.handler is not None:
+            await self.handler.on_tool_result(
+                call.name,
+                arguments,
+                result,
+                is_error=is_error,
+                tool_call_id=call.id,
+                room_id=self.room_id,
+            )
             return
-        for call in calls:
-            arguments = dict(call.arguments)
-            already_executed = "_result" in arguments
-            result = arguments.pop("_result", None)
-            # The proxy's own verdict on a call it already ran. It travelled
-            # this far as a private argument; drop it from what the hook reads
-            # as arguments, keep it as the outcome it is.
-            is_error = bool(arguments.pop("_is_error", False))
-            event = ToolCallEvent(
+        if self.report is None:
+            return
+        await self.report(
+            ToolCallEvent(
                 channel_id=self.channel_id,
                 channel_type=ChannelType.AI,
                 tool_call_id=call.id,
                 name=call.name,
                 arguments=arguments,
-                # A call the proxy already ran has an outcome, empty when it
-                # sent none (as in stream_call): None would read as a call
-                # nothing served (RFC §9.3).
-                result=(
-                    ("" if result is None else as_tool_result(result))
-                    if already_executed
-                    else None
-                ),
+                result=as_tool_result(result),
                 room_id=self.room_id,
                 is_error=is_error,
             )
-            if already_executed and self.report is not None:
-                await self.report(event)
-            elif not already_executed and self.before is not None:
-                await self.before(event)
+        )
 
 
 def _external_kind(is_error: bool) -> OutcomeKind:

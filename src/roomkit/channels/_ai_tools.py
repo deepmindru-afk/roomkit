@@ -439,14 +439,17 @@ class AIToolsMixin:
         parent_span_id: str | None = None,
         executed_arguments: dict[str, dict[str, Any]] | None = None,
     ) -> list[_ContentPart]:
-        """Execute tool calls concurrently and return result parts."""
-        if self._tool_handler is None:
-            raise RuntimeError("_execute_tools_parallel called without a tool handler")
+        """Execute tool calls concurrently and return result parts.
+
+        A channel without a handler still serves its calls through its own
+        dispatcher: past the gate, a call nothing serves is unserved, which
+        ON_TOOL_CALL's hooks may serve (RFC §9.3).
+        """
         # Capture the invocation-scoped room once. The channel object is shared
         # across rooms, while the loop context is copied into every task spawned
         # by gather below.
         scope = _CallRound(
-            handler=self._tool_handler,
+            handler=self._tool_handler or self._channel_tool_handler,
             telemetry=telemetry,
             room_id=self._get_loop_ctx().room_id,
             declared_tools=declared_tools,
