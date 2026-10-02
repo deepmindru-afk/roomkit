@@ -37,6 +37,7 @@ class Answer:
     deltas: list[StreamToolCallDelta] = field(default_factory=list)
     usage: dict[str, int] = field(default_factory=dict)
     reasoning: list[AIThinkingPart] = field(default_factory=list)
+    finish_reason: str | None = None
 
 
 def tool_context(*tools: AITool, messages: list[AIMessage] | None = None) -> AIContext:
@@ -55,6 +56,7 @@ async def generation(driver: Driver, script: Script, mode: str, context: AIConte
             calls=list(response.tool_calls),
             usage=dict(response.usage),
             reasoning=thinking_parts_of(response),
+            finish_reason=response.finish_reason,
         )
     events = [event async for event in provider.generate_structured_stream(context)]
     done = next((e for e in events if isinstance(e, StreamDone)), None)
@@ -68,4 +70,5 @@ async def generation(driver: Driver, script: Script, mode: str, context: AIConte
         deltas=[e for e in events if isinstance(e, StreamToolCallDelta)],
         usage=dict(done.usage) if done is not None else {},
         reasoning=reasoning.parts(),
+        finish_reason=done.finish_reason if done is not None else None,
     )

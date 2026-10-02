@@ -9,7 +9,7 @@ and every answer is the SDK's own ``ChatResponse`` read back from its JSON.
 from __future__ import annotations
 
 import json
-from typing import Any, ClassVar
+from typing import Any
 
 import httpx
 import ollama
@@ -17,11 +17,14 @@ import ollama
 from roomkit.providers.ai.base import AIProvider
 from roomkit.providers.ollama.ai import OllamaAIProvider
 from roomkit.providers.ollama.config import OllamaConfig
+from tests.text_conformance.chat_wire import ChatDriver
 from tests.text_conformance.driver import (
     ARGUMENT_TEXT,
     CACHE_USAGE,
+    CACHE_WRITE_USAGE,
     CALL_INDEX,
     COMPOSITION,
+    MALFORMED_CALL,
     REASONING_USAGE,
     REDACTED_REASONING,
     REPEATED_ID,
@@ -120,10 +123,10 @@ def _assistant_items(message: dict[str, Any]) -> list[Item]:
     return items
 
 
-class OllamaWire(Driver):
-    label: ClassVar[str] = "ollama"
-    covers: ClassVar[tuple[type[AIProvider], ...]] = (OllamaAIProvider,)
-    cannot: ClassVar[dict[str, str]] = {
+class OllamaWire(ChatDriver):
+    label = "ollama"
+    covers = (OllamaAIProvider,)
+    cannot = {
         ARGUMENT_TEXT: "Ollama parses a call server-side and sends its arguments as an object",
         WRITTEN_UNREADABLE: "a call's arguments are a JSON object (SDK: Mapping[str, Any])",
         CALL_INDEX: "Ollama sends each call whole, with no stream index",
@@ -133,6 +136,8 @@ class OllamaWire(Driver):
         SIGNED_REASONING: "Ollama's thinking is a plain text field, with no signature",
         REDACTED_REASONING: "Ollama has no redacted reasoning",
         CACHE_USAGE: "Ollama reports prompt_eval_count and eval_count only",
+        CACHE_WRITE_USAGE: "Ollama reports prompt_eval_count and eval_count only",
+        MALFORMED_CALL: "Ollama has no stop reason for a call it could not parse",
         REASONING_USAGE: "Ollama counts thinking inside eval_count",
         # A defect, not a wire limit: the server reads JSON Schema, the SDK
         # drops it on the way (RMK-383).
@@ -151,12 +156,6 @@ class OllamaWire(Driver):
             host="http://ollama.test", transport=_transport(script, self.requests)
         )
         return provider
-
-    def declared(self, request: Any) -> dict[str, dict[str, Any]]:
-        return {
-            tool["function"]["name"]: tool["function"]["parameters"]
-            for tool in request.get("tools") or []
-        }
 
     def replayed(self, request: Any) -> list[Item]:
         items: list[Item] = []

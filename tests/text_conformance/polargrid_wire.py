@@ -10,16 +10,19 @@ each request and builds every object the provider reads: its
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from typing import Any, ClassVar
+from typing import Any
 
 import polargrid
 
 from roomkit.providers.ai.base import AIProvider
 from roomkit.providers.polargrid.ai import PolarGridAIProvider
 from roomkit.providers.polargrid.config import PolarGridConfig
+from tests.text_conformance.chat_wire import FINISH, ChatDriver, pieces
 from tests.text_conformance.driver import (
     CACHE_USAGE,
+    CACHE_WRITE_USAGE,
     CALL_INDEX,
+    MALFORMED_CALL,
     REASONING_USAGE,
     REDACTED_REASONING,
     RESPONSE_CALL_WITHOUT_ID,
@@ -27,13 +30,7 @@ from tests.text_conformance.driver import (
     STREAM_USAGE,
     Driver,
 )
-from tests.text_conformance.openai_wire import (
-    _FINISH,
-    _assistant_items,
-    _carries_image,
-    _pieces,
-)
-from tests.text_conformance.script import Call, Item, Script
+from tests.text_conformance.script import Call, Script
 
 _MODEL = "qwen-3.8-27b"
 
@@ -90,15 +87,15 @@ def _fragment(call: Call, first: bool, piece: str) -> dict[str, Any]:
 
 
 def _call_chunks(script: Script) -> list[dict[str, Any]]:
-    pieces = [_pieces(call.arguments, call.fragments) for call in script.calls]
+    cut = [pieces(call.arguments, call.fragments) for call in script.calls]
     chunks: list[dict[str, Any]] = []
     if script.calls_in_one_chunk:
-        firsts = [_fragment(c, True, p[0]) for c, p in zip(script.calls, pieces, strict=True)]
+        firsts = [_fragment(c, True, p[0]) for c, p in zip(script.calls, cut, strict=True)]
         chunks.append(_chunk({"tool_calls": firsts}))
-        for call, rest in zip(script.calls, pieces, strict=True):
+        for call, rest in zip(script.calls, cut, strict=True):
             chunks.extend(_chunk({"tool_calls": [_fragment(call, False, p)]}) for p in rest[1:])
         return chunks
-    for call, parts in zip(script.calls, pieces, strict=True):
+    for call, parts in zip(script.calls, cut, strict=True):
         for n, piece in enumerate(parts):
             chunks.append(_chunk({"tool_calls": [_fragment(call, n == 0, piece)]}))
     return chunks
@@ -110,7 +107,7 @@ def _stream(script: Script) -> list[dict[str, Any]]:
     content = _content(script)
     chunks = [_chunk({"role": "assistant", "content": content})] if content else []
     chunks.extend(_call_chunks(script))
-    finish = _FINISH[script.finish]
+    finish = FINISH[script.finish]
     if finish is not None:
         chunks.append(_chunk({}, finish))
     chunks.append(_chunk(usage=_usage(script)))
@@ -132,7 +129,7 @@ def _response(script: Script) -> dict[str, Any]:
         "object": "chat.completion",
         "created": 0,
         "model": _MODEL,
-        "choices": [{"index": 0, "message": message, "finish_reason": _FINISH[script.finish]}],
+        "choices": [{"index": 0, "message": message, "finish_reason": FINISH[script.finish]}],
         "usage": _usage(script),
     }
 
@@ -161,16 +158,18 @@ def _client(script: Script, requests: list[Any]) -> polargrid.PolarGrid:
     return client
 
 
-class PolarGridWire(Driver):
-    label: ClassVar[str] = "polargrid"
-    covers: ClassVar[tuple[type[AIProvider], ...]] = (PolarGridAIProvider,)
-    cannot: ClassVar[dict[str, str]] = {
+class PolarGridWire(ChatDriver):
+    label = "polargrid"
+    covers = (PolarGridAIProvider,)
+    cannot = {
         CALL_INDEX: "polargrid-sdk's ToolCallDelta requires an index; it skips a chunk without",
         SIGNED_REASONING: "Qwen reasons as <think> text in the content, with no signature",
         REDACTED_REASONING: "Qwen reasons as <think> text in the content, never redacted",
         CACHE_USAGE: "polargrid-sdk's TokenUsage holds prompt, completion and total tokens",
         REASONING_USAGE: "polargrid-sdk's TokenUsage holds prompt, completion and total tokens",
         RESPONSE_CALL_WITHOUT_ID: "polargrid-sdk's ToolCall requires an id on a response",
+        CACHE_WRITE_USAGE: "polargrid-sdk's TokenUsage holds prompt, completion and total tokens",
+        MALFORMED_CALL: "PolarGrid has no stop reason for a call the server could not parse",
         # A defect, not a wire limit: the server sends usage, the SDK drops it
         # (RMK-384).
         STREAM_USAGE: "polargrid-sdk's ChatCompletionChunk has no usage field (RMK-384)",
@@ -183,23 +182,6 @@ class PolarGridWire(Driver):
         provider = PolarGridAIProvider(PolarGridConfig(api_key="k", model=_MODEL))
         provider._client = _client(script, self.requests)
         return provider
-
-    def declared(self, request: Any) -> dict[str, dict[str, Any]]:
-        return {
-            tool["function"]["name"]: tool["function"]["parameters"]
-            for tool in request.get("tools") or []
-        }
-
-    def replayed(self, request: Any) -> list[Item]:
-        items: list[Item] = []
-        for message in request["messages"]:
-            if message["role"] == "assistant":
-                items.extend(_assistant_items(message))
-            elif message["role"] == "tool":
-                items.append(("result", message["tool_call_id"], message["content"], None))
-            elif _carries_image(message):
-                items.append(("image",))
-        return items
 
 
 def wires() -> list[Driver]:

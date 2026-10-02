@@ -19,7 +19,7 @@ from roomkit.providers.ai.base import (
     ModelInfo,
     ProviderError,
 )
-from roomkit.providers.ai.chat_request import chat_messages
+from roomkit.providers.ai.chat_request import ChatDialect, chat_messages
 from roomkit.providers.deepseek.ai import DEEPSEEK_CHAT
 from roomkit.providers.deepseek.config import DeepSeekConfig
 
@@ -409,7 +409,8 @@ class TestResponseSchemaDefault:
 class TestReasoningReplay:
     """Earlier reasoning goes back in ``reasoning_content``: in thinking mode
     DeepSeek refuses a tool round of the turn in progress without it, absent
-    or null, with a 400 (measured 2026-10-02)."""
+    or null, with a 400, unless it issued the round's call ids itself a moment
+    ago (measured 2026-10-02)."""
 
     _CALL = AIToolCallPart(id="c1", name="lookup", arguments={"q": "a"})
 
@@ -432,3 +433,13 @@ class TestReasoningReplay:
 
     def test_an_answer_that_did_not_reason_carries_no_field(self) -> None:
         assert "reasoning_content" not in self._assistant(AITextPart(text="Done."))
+
+    def test_an_answer_that_reasoned_carries_its_reasoning_in_the_field(self) -> None:
+        sent = self._assistant(AIThinkingPart(thinking="why"), AITextPart(text="Done."))
+
+        assert sent["reasoning_content"] == "why"
+        assert sent["content"] == [{"type": "text", "text": "Done."}]
+
+    def test_a_required_field_needs_a_field(self) -> None:
+        with pytest.raises(ValueError, match="thinking_field"):
+            ChatDialect(round_thinking_required=True)

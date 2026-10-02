@@ -7,15 +7,20 @@ from typing import Any, ClassVar
 from roomkit.providers.ai.base import AIContext, ModelInfo
 from roomkit.providers.ai.chat_request import ChatDialect
 from roomkit.providers.ai.reasoning import thinking_switch, turn_setting
+from roomkit.providers.ai.tool_declaration import ToolNameRule
 from roomkit.providers.deepseek.config import DeepSeekConfig
 from roomkit.providers.deepseek.models import MODELS
 from roomkit.providers.openai.ai import OpenAIAIProvider
 
+# Measured 2026-10-02: a dot or a colon, or a 129th character, is a 400.
+DEEPSEEK_TOOL_NAMES = ToolNameRule("deepseek", r"[A-Za-z0-9_-]{1,128}")
+
 # Earlier reasoning goes back in ``reasoning_content``, on every round that
 # called tools: in thinking mode DeepSeek refuses (400) a round of the turn in
-# progress without it, absent or null, and takes an empty one (measured
-# 2026-10-02 on deepseek-v4-pro and -flash). A <think> block in the content
-# would be read as text the model said.
+# progress without it, absent or null, unless it issued the round's call ids
+# itself a moment ago, and takes an empty one (measured 2026-10-02 on
+# deepseek-v4-pro and -flash). A <think> block in the content would be read as
+# text the model said, and billed beside the reasoning DeepSeek recovers.
 DEEPSEEK_CHAT = ChatDialect(thinking_field="reasoning_content", round_thinking_required=True)
 
 
@@ -25,8 +30,9 @@ class DeepSeekAIProvider(OpenAIAIProvider):
     Subclasses :class:`~roomkit.providers.openai.ai.OpenAIAIProvider` —
     DeepSeek speaks the Chat Completions wire format verbatim, so message
     building, tool handling, response parsing, streaming, ``/v1/models``
-    discovery, and client construction are all inherited unchanged. Four
-    things are genuinely DeepSeek's own: which models exist, how a thinking
+    discovery, and client construction are all inherited unchanged. What is
+    genuinely DeepSeek's own lives here: which models exist, which tool names
+    it accepts, that it constrains no output to a schema, how a thinking
     request is spelled, where earlier reasoning goes back, and how a cache hit
     is reported.
 
@@ -48,6 +54,13 @@ class DeepSeekAIProvider(OpenAIAIProvider):
     def _provider_name(self) -> str:
         """Provider identifier used in error messages and telemetry."""
         return "deepseek"
+
+    @property
+    def _tool_name_rule(self) -> ToolNameRule | None:
+        """DeepSeek's rule on its own endpoint; behind another URL the server
+        decides (RFC §6.7)."""
+        default = DeepSeekConfig.model_fields["base_url"].default
+        return DEEPSEEK_TOOL_NAMES if self._config.base_url == default else None
 
     @classmethod
     def available_models(cls) -> list[ModelInfo]:

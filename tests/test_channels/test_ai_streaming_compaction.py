@@ -25,6 +25,8 @@ import asyncio
 from typing import Any
 from unittest.mock import AsyncMock
 
+import httpx
+import openai
 import pytest
 
 from roomkit.channels.ai import AIChannel
@@ -43,6 +45,7 @@ from roomkit.providers.ai.base import (
     is_context_overflow_message,
 )
 from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.providers.ai.openai_dialect import overflow_fact
 
 
 class _ScriptedStreamProvider(MockAIProvider):
@@ -384,18 +387,32 @@ def test_the_shared_phrase_list_covers_both_packages_wordings() -> None:
     assert not is_context_overflow_message(_TPM_RATE_LIMIT)
 
 
-def test_openai_status_errors_carry_the_typed_fact() -> None:
-    from roomkit.providers.ai.openai_dialect import overflow_fact
+async def _sdk_status_error(code: Any) -> Exception:
+    """The error the openai SDK raises for a 400 whose body names *code*,
+    built by the SDK itself: its ``body`` is the server's ``error`` object,
+    not the whole response."""
 
-    class _FakeStatusError(Exception):
-        def __init__(self, body: Any) -> None:
-            self.body = body
+    def answer(request: httpx.Request) -> httpx.Response:
+        error = {"message": "maximum context length", "type": "invalid_request_error"}
+        return httpx.Response(400, json={"error": {**error, "code": code}})
 
-    overflow = _FakeStatusError({"error": {"code": "context_length_exceeded"}})
-    other = _FakeStatusError({"error": {"code": "invalid_request_error"}})
-    assert overflow_fact(overflow) is True
+    client = openai.AsyncOpenAI(
+        api_key="k",
+        max_retries=0,
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(answer)),
+    )
+    with pytest.raises(openai.BadRequestError) as caught:
+        await client.chat.completions.create(
+            model="m", messages=[{"role": "user", "content": "x"}]
+        )
+    return caught.value
+
+
+async def test_openai_status_errors_carry_the_typed_fact() -> None:
+    assert overflow_fact(await _sdk_status_error("context_length_exceeded")) is True
     # A miss is "nobody classified", never "no": the compatible vendors put
     # integers or generic strings in ``code`` and their overflows must stay
     # catchable by the phrase fallback.
-    assert overflow_fact(other) is None
-    assert overflow_fact(_FakeStatusError(None)) is None
+    assert overflow_fact(await _sdk_status_error("invalid_request_error")) is None
+    assert overflow_fact(await _sdk_status_error(400)) is None
+    assert overflow_fact(RuntimeError("no body")) is None

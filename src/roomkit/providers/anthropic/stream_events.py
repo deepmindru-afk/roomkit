@@ -52,6 +52,11 @@ def done_event(final: Any) -> StreamDone:
         usage["cache_creation_input_tokens"] = final.usage.cache_creation_input_tokens or 0
     if hasattr(final.usage, "cache_read_input_tokens"):
         usage["cache_read_input_tokens"] = final.usage.cache_read_input_tokens or 0
+    # A detail of output_tokens, which already counts it.
+    details = getattr(final.usage, "output_tokens_details", None)
+    thinking = (getattr(details, "thinking_tokens", 0) if details else 0) or 0
+    if thinking:
+        usage["reasoning_tokens"] = thinking
     metadata = {"model": final.model}
     return StreamDone(finish_reason=final.stop_reason, usage=usage, metadata=metadata)
 

@@ -250,18 +250,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- DeepSeek receives a tool round's earlier reasoning in `reasoning_content`,
-  on every round that called tools and empty when the round did not reason,
-  where it went inline as a `<think>` block in the content (RMK-309, RFC
-  §6.4). In thinking mode DeepSeek refuses a round of the turn in progress
+- DeepSeek receives earlier reasoning in `reasoning_content`, on every round
+  that called tools (empty when the round did not reason) and on an answer
+  that reasoned, where it went inline as a `<think>` block in the content
+  (RMK-309, RFC §6.4). In thinking mode DeepSeek refuses a round of the turn in progress
   without that field (400): it recovers the reasoning of a call it issued
   itself a moment ago, and refuses a call id it does not know. The inline copy
   was also billed on top of the recovered one (measured on `deepseek-v4-pro`:
   1,057 prompt tokens, 813 now).
 
-- Gemini receives a tool result whose call was refused, failed, blocked,
-  served by nothing or cancelled under its function response's `error` key,
-  where it went under `result` like a success (RMK-378, RFC §6.4).
+- Gemini (and Vertex) receives a tool result whose call was refused, failed,
+  blocked, served by nothing or cancelled under its function response's
+  `error` key, where it went under `result` like a success (RMK-378, RFC
+  §6.4). Gemini Live does not yet (RMK-375).
+
+- Anthropic reports a response's thinking tokens as `reasoning_tokens`, a
+  detail of `output_tokens`, from the `output_tokens_details.thinking_tokens`
+  it sends (RMK-378).
+
+- An OpenAI or Azure context-overflow error is recognised by its
+  `context_length_exceeded` code again: the `openai` SDK hands over the
+  body's `error` object itself, which the check read one level too deep, so
+  only the message wording caught it (RMK-378).
+
+- DeepSeek checks a tool name against its rule (`[A-Za-z0-9_-]{1,128}`,
+  measured) before the request on its own endpoint, where a dot or a colon
+  failed the turn with DeepSeek's 400 (RMK-309).
 
 - Mistral reports cached prompt tokens apart (`cache_read_input_tokens`) and
   leaves them out of `input_tokens`: the SDK hands `prompt_tokens_details` over

@@ -59,11 +59,15 @@ class TestDeclaration:
     async def test_a_name_the_vendor_refuses_fails_before_the_request(
         self, driver: Driver
     ) -> None:
+        if not driver.refused_names:
+            pytest.skip(f"{driver.label}: the server decides its names, the provider checks none")
         for name in driver.refused_names:
             tool = AITool(name=name, description="d")
             with pytest.raises(ProviderError, match=name):
                 await generation(driver, Script(text="ok"), "stream", tool_context(tool))
         assert driver.requests == []
+
+    async def test_a_name_the_vendor_accepts_is_declared(self, driver: Driver) -> None:
         for name in driver.accepted_names:
             await generation(
                 driver,
@@ -93,13 +97,14 @@ async def _replay(driver: Driver, *history: AIMessage) -> list[Any]:
 
 class TestReplay:
     async def test_a_call_and_its_results_go_back_paired(self, driver: Driver) -> None:
-        second = AIToolCallPart(id="c2", name="lookup", arguments={"q": "b"})
+        # Two tools, so a wire that pairs by name pairs something.
+        second = AIToolCallPart(id="c2", name="fetch", arguments={"q": "b"})
         items = await _replay(
             driver,
             _round(AITextPart(text="Looking."), _CALL, second),
             _results(
                 AIToolResultPart(tool_call_id="c1", name="lookup", result="found"),
-                AIToolResultPart(tool_call_id="c2", name="lookup", result="denied", is_error=True),
+                AIToolResultPart(tool_call_id="c2", name="fetch", result="denied", is_error=True),
             ),
         )
 
@@ -155,11 +160,19 @@ class TestReplay:
         assert ("redacted", "RRR") in items
 
 
+_REASONING_KINDS = ("thinking", "redacted", "inline", "field", "signature")
+# What a received round's reasoning ("why", signed "S0") goes back as.
+_GOES_BACK_AS: dict[str, list[tuple[str, ...]]] = {
+    "blocks": [("thinking", "why", "S0")],
+    "inline": [("inline", "why")],
+    "field": [("field", "why")],
+    "dropped": [],
+}
+
+
 class TestRoundTrip:
-    async def test_a_signed_round_goes_back_signed(self, driver: Driver) -> None:
+    async def test_a_received_round_goes_back_as_the_wire_needs(self, driver: Driver) -> None:
         """A round received, kept as the loop keeps it, then replayed."""
-        if driver.reasoning not in ("blocks", "call_signature"):
-            pytest.skip(f"{driver.label}: its reasoning goes back unsigned")
         script = Script(
             reasoning=(Reasoning("why", signature="S0"),),
             calls=(
@@ -182,8 +195,9 @@ class TestRoundTrip:
             ),
         )
 
-        if driver.reasoning == "blocks":
-            assert ("thinking", "why", "S0") in items
-        else:
+        reasoning = [i for i in items if i[0] in _REASONING_KINDS]
+        if driver.reasoning == "call_signature":
             # Gemini signs the first call only; every call goes back signed.
-            assert [i[2] for i in items if i[0] == "signature"] == ["S0", "S0"]
+            assert [i[2] for i in reasoning] == ["S0", "S0"]
+        else:
+            assert reasoning == _GOES_BACK_AS[driver.reasoning]

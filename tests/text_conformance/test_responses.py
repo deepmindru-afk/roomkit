@@ -5,12 +5,15 @@ from __future__ import annotations
 
 import pytest
 
+from roomkit.providers.ai.tool_calls import is_malformed_call, is_truncation
 from tests.text_conformance.driver import (
     ARGUMENT_TEXT,
     CACHE_USAGE,
+    CACHE_WRITE_USAGE,
     CALL_INDEX,
     CALLS_IN_ONE_CHUNK,
     COMPOSITION,
+    MALFORMED_CALL,
     REASONING_USAGE,
     REDACTED_REASONING,
     REPEATED_ID,
@@ -133,8 +136,13 @@ class TestCalls:
 
         answer = await generation(driver, script, "stream", tool_context(LOOKUP))
 
-        assert answer.deltas
-        assert {d.id for d in answer.deltas} <= {c.id for c in answer.calls}
+        # Each call's composition events, under the id it ends with, spell its
+        # arguments: none is announced under another call's id.
+        composed: dict[str, str] = {}
+        for delta in answer.deltas:
+            composed[delta.id] = composed.get(delta.id, "") + delta.arguments_delta
+        expected = zip(answer.calls, script.calls, strict=True)
+        assert composed == {call.id: written.arguments for call, written in expected}
 
 
 class TestCallsThatDoNotRun:
@@ -170,7 +178,33 @@ class TestCallsThatDoNotRun:
         assert (call.partial, call.garbled) == (True, True)
 
 
+class TestEndings:
+    async def test_a_response_the_output_cap_cut_says_so(self, driver: Driver, mode: str) -> None:
+        answer = await generation(
+            driver, Script(text="Half an ans", finish="cut"), mode, tool_context(LOOKUP)
+        )
+
+        assert is_truncation(answer.finish_reason), answer.finish_reason
+
+    async def test_a_call_the_vendor_could_not_parse_says_so(
+        self, driver: Driver, mode: str
+    ) -> None:
+        driver.require(MALFORMED_CALL)
+        answer = await generation(driver, Script(finish="malformed"), mode, tool_context(LOOKUP))
+
+        assert is_malformed_call(answer.finish_reason), answer.finish_reason
+
+
 class TestReasoningReceived:
+    async def test_reasoning_reaches_the_loop(self, driver: Driver, mode: str) -> None:
+        # Signed, for a wire that drops an unsigned block; a wire without
+        # signatures does not write it.
+        script = Script(reasoning=(Reasoning("why", signature="S0"),), text="ok")
+
+        answer = await generation(driver, script, mode, tool_context(LOOKUP))
+
+        assert [p.thinking for p in answer.reasoning] == ["why"]
+
     async def test_a_signed_block_keeps_its_signature(self, driver: Driver, mode: str) -> None:
         driver.require(SIGNED_REASONING)
         script = Script(
@@ -196,22 +230,48 @@ class TestReasoningReceived:
         assert [p.redacted for p in answer.reasoning] == ["RRR"]
 
 
+def _usage_mode(driver: Driver, mode: str) -> None:
+    if mode == "stream":
+        driver.require(STREAM_USAGE)
+
+
 class TestUsage:
-    async def test_usage_reaches_the_loop(self, driver: Driver, mode: str) -> None:
-        if mode == "stream":
-            driver.require(STREAM_USAGE)
-        # Cache reads and reasoning only where the wire reports them apart: a
-        # wire without the breakdown counts them inside input and output.
-        cache = 0 if CACHE_USAGE in driver.cannot else 5
-        reasoning = 0 if REASONING_USAGE in driver.cannot else 3
-        script = Script(
-            text="ok", usage=Usage(input=11, output=7, cache_read=cache, reasoning=reasoning)
-        )
+    async def test_input_and_output_reach_the_loop(self, driver: Driver, mode: str) -> None:
+        _usage_mode(driver, mode)
+        script = Script(text="ok", usage=Usage(input=11, output=7))
 
         answer = await generation(driver, script, mode, tool_context(LOOKUP))
 
         assert (answer.usage["input_tokens"], answer.usage["output_tokens"]) == (11, 7)
-        if cache:
-            assert answer.usage.get("cache_read_input_tokens") == cache
-        if reasoning:
-            assert answer.usage.get("reasoning_tokens") == reasoning
+
+    async def test_cache_reads_are_counted_apart(self, driver: Driver, mode: str) -> None:
+        _usage_mode(driver, mode)
+        driver.require(CACHE_USAGE)
+        script = Script(text="ok", usage=Usage(input=11, output=7, cache_read=5))
+
+        answer = await generation(driver, script, mode, tool_context(LOOKUP))
+
+        assert answer.usage["input_tokens"] == 11
+        assert answer.usage.get("cache_read_input_tokens") == 5
+
+    async def test_cache_writes_are_counted_apart(self, driver: Driver, mode: str) -> None:
+        _usage_mode(driver, mode)
+        driver.require(CACHE_WRITE_USAGE)
+        script = Script(text="ok", usage=Usage(input=11, output=7, cache_write=4))
+
+        answer = await generation(driver, script, mode, tool_context(LOOKUP))
+
+        assert answer.usage["input_tokens"] == 11
+        assert answer.usage.get("cache_creation_input_tokens") == 4
+
+    async def test_reasoning_tokens_are_a_detail_of_output(
+        self, driver: Driver, mode: str
+    ) -> None:
+        _usage_mode(driver, mode)
+        driver.require(REASONING_USAGE)
+        script = Script(text="ok", usage=Usage(input=11, output=7, reasoning=3))
+
+        answer = await generation(driver, script, mode, tool_context(LOOKUP))
+
+        assert answer.usage["output_tokens"] == 7
+        assert answer.usage.get("reasoning_tokens") == 3

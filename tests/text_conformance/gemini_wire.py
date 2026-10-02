@@ -6,7 +6,7 @@ import base64
 import json
 from collections.abc import Callable
 from types import SimpleNamespace
-from typing import Any, ClassVar
+from typing import Any
 
 from google.genai import types
 
@@ -14,8 +14,10 @@ from roomkit.providers.ai.base import AIProvider
 from roomkit.providers.gemini.ai import GeminiAIProvider
 from roomkit.providers.gemini.config import GeminiConfig
 from roomkit.providers.gemini.vertex import GeminiVertexConfig, GeminiVertexProvider
+from tests.text_conformance.chat_wire import iterate
 from tests.text_conformance.driver import (
     ARGUMENT_TEXT,
+    CACHE_WRITE_USAGE,
     CALL_INDEX,
     COMPOSITION,
     REDACTED_REASONING,
@@ -26,7 +28,6 @@ from tests.text_conformance.driver import (
     Driver,
     ReasoningConvention,
 )
-from tests.text_conformance.openai_wire import _iterate
 from tests.text_conformance.script import Item, Reasoning, Script
 
 # Gemini has no stop reason of its own for a round of calls: it ends STOP.
@@ -34,6 +35,7 @@ _FINISH = {
     "stop": types.FinishReason.STOP,
     "tool": types.FinishReason.STOP,
     "cut": types.FinishReason.MAX_TOKENS,
+    "malformed": types.FinishReason.MALFORMED_FUNCTION_CALL,
     "none": None,
 }
 
@@ -49,6 +51,7 @@ _CANNOT = {
         "one thought_signature signs the round, on its first function call, not each thought part"
     ),
     REDACTED_REASONING: "Gemini has no redacted reasoning",
+    CACHE_WRITE_USAGE: "Gemini's usage counts no cache writes",
     SCHEMA_AS_GIVEN: (
         "the provider declares Gemini's OpenAPI subset (parameters), not "
         "parameters_json_schema, which is unmeasured (RMK-386)"
@@ -192,7 +195,7 @@ class GeminiWire(Driver):
 
     # The round's thought_signature goes back on each of its calls; the
     # thought parts themselves are not replayed.
-    reasoning: ClassVar[ReasoningConvention] = "call_signature"
+    reasoning: ReasoningConvention = "call_signature"
     # FunctionResponse.response takes an "error" key for a failed call.
     error_flag = True
     calls_by_name = True
@@ -209,9 +212,9 @@ class GeminiWire(Driver):
     ) -> None:
         super().__init__()
         self._build = build
-        self.label = label  # type: ignore[misc]
-        self.covers = (provider_cls,)  # type: ignore[misc]
-        self.cannot = cannot  # type: ignore[misc]
+        self.label = label
+        self.covers = (provider_cls,)
+        self.cannot = cannot
 
     def provider(self, script: Script) -> AIProvider:
         provider = self._build()
@@ -219,7 +222,7 @@ class GeminiWire(Driver):
 
         async def generate_content_stream(**kwargs: Any) -> Any:
             self.requests.append(kwargs)
-            return _iterate(chunks)
+            return iterate(chunks)
 
         async def generate_content(**kwargs: Any) -> Any:
             self.requests.append(kwargs)

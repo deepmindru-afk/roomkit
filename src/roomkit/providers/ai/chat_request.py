@@ -42,7 +42,12 @@ class ChatDialect:
     round_thinking_required: bool = False
     """Every round that called tools carries the thinking field, empty when the
     round did not reason: DeepSeek in thinking mode refuses a round of the turn
-    in progress without its ``reasoning_content``."""
+    in progress without its ``reasoning_content``, unless it issued the round's
+    call ids itself a moment ago."""
+
+    def __post_init__(self) -> None:
+        if self.round_thinking_required and (self.thinking_field is None or self.drops_thinking):
+            raise ValueError("round_thinking_required needs a thinking_field to send")
 
 
 OPENAI_CHAT = ChatDialect()

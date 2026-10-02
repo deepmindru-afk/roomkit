@@ -9,7 +9,7 @@ SDK put on the wire.
 from __future__ import annotations
 
 import json
-from typing import Any, ClassVar
+from typing import Any
 
 import httpx
 from mistralai.client import Mistral
@@ -17,18 +17,19 @@ from mistralai.client import Mistral
 from roomkit.providers.ai.base import AIProvider
 from roomkit.providers.mistral.ai import MistralAIProvider
 from roomkit.providers.mistral.config import MistralConfig
+from tests.text_conformance.chat_wire import FINISH, ChatDriver, assistant_items
 from tests.text_conformance.driver import (
+    CACHE_WRITE_USAGE,
     COMPOSITION,
+    MALFORMED_CALL,
     REASONING_USAGE,
     REDACTED_REASONING,
     SIGNED_REASONING,
     STREAM_WITHOUT_FINISH,
     Driver,
 )
-from tests.text_conformance.openai_wire import _assistant_items, _carries_image
 from tests.text_conformance.script import Call, Item, Reasoning, Script, Usage
 
-_FINISH = {"stop": "stop", "tool": "tool_calls", "cut": "length", "none": None}
 _MODEL = "mistral-large-latest"
 
 
@@ -96,7 +97,7 @@ def _events(script: Script) -> bytes:
     if script.text:
         chunks.append(_chunk({"content": script.text}))
     chunks.extend(_call_chunks(script))
-    finish = _FINISH[script.finish]
+    finish = FINISH[script.finish]
     lines = [f"data: {json.dumps(chunk)}\n\n" for chunk in chunks]
     if finish is not None:
         final = _chunk({"content": ""}, finish, _usage(script.usage))
@@ -108,21 +109,23 @@ def _round_items(message: dict[str, Any]) -> list[Item]:
     """An assistant round, its ThinkChunks read as the signed blocks they are."""
     content = message.get("content")
     if not isinstance(content, list):
-        return _assistant_items(message)
+        return assistant_items(message)
     thinking: list[Item] = [
         ("thinking", "".join(t.get("text", "") for t in c["thinking"]), c.get("signature"))
         for c in content
         if c.get("type") == "thinking"
     ]
     rest = [c for c in content if c.get("type") != "thinking"]
-    return thinking + _assistant_items({**message, "content": rest})
+    return thinking + assistant_items({**message, "content": rest})
 
 
-class MistralWire(Driver):
-    label: ClassVar[str] = "mistral"
-    covers: ClassVar[tuple[type[AIProvider], ...]] = (MistralAIProvider,)
-    cannot: ClassVar[dict[str, str]] = {
+class MistralWire(ChatDriver):
+    label = "mistral"
+    covers = (MistralAIProvider,)
+    cannot = {
         COMPOSITION: "Mistral streams each call whole, its arguments in one piece",
+        CACHE_WRITE_USAGE: "Mistral's usage has no cache-write counter",
+        MALFORMED_CALL: "Mistral has no stop reason for a call it could not parse",
         REDACTED_REASONING: "a Mistral ThinkChunk carries text and a signature, no redacted form",
         STREAM_WITHOUT_FINISH: "Mistral streams each call whole in one chunk: none stops mid-call",
         # Measured 2026-10-02 on mistral-medium-latest with reasoning_effort high.
@@ -150,23 +153,8 @@ class MistralWire(Driver):
         provider._client = Mistral(api_key="k", async_client=http)
         return provider
 
-    def declared(self, request: Any) -> dict[str, dict[str, Any]]:
-        return {
-            tool["function"]["name"]: tool["function"]["parameters"]
-            for tool in request.get("tools") or []
-        }
-
-    def replayed(self, request: Any) -> list[Item]:
-        items: list[Item] = []
-        for message in request["messages"]:
-            if message["role"] == "assistant":
-                items.extend(_round_items(message))
-                continue
-            if message["role"] == "tool":
-                items.append(("result", message["tool_call_id"], message["content"], None))
-            if _carries_image(message):
-                items.append(("image",))
-        return items
+    def assistant_items(self, message: dict[str, Any]) -> list[Item]:
+        return _round_items(message)
 
 
 def wires() -> list[Driver]:

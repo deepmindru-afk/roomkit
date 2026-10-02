@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, ClassVar, Literal
+from collections.abc import Mapping
+from typing import Any, Literal
 
 import pytest
 
@@ -33,7 +34,9 @@ SIGNED_REASONING = "signed_reasoning"
 REDACTED_REASONING = "redacted_reasoning"
 """A reasoning block can come redacted, as opaque data."""
 CACHE_USAGE = "cache_usage"
-"""Usage reports cache reads and writes."""
+"""Usage reports cache reads."""
+CACHE_WRITE_USAGE = "cache_write_usage"
+"""Usage reports cache writes."""
 REASONING_USAGE = "reasoning_usage"
 """Usage reports reasoning tokens."""
 STREAM_USAGE = "stream_usage"
@@ -42,6 +45,8 @@ SCHEMA_AS_GIVEN = "schema_as_given"
 """A tool's parameter schema is declared as the tool gave it."""
 IMAGE_RESULTS = "image_results"
 """A tool result can carry an image."""
+MALFORMED_CALL = "malformed_call"
+"""The response can end on a call the vendor could not parse."""
 
 ReasoningConvention = Literal["blocks", "call_signature", "inline", "field", "dropped"]
 """How a wire replays earlier reasoning: as signed blocks, as one signature on
@@ -57,19 +62,19 @@ class Driver(ABC):
     sends lands in ``requests``.
     """
 
-    label: ClassVar[str]
-    covers: ClassVar[tuple[type[AIProvider], ...]] = ()
+    label: str
+    covers: tuple[type[AIProvider], ...] = ()
     """The provider classes this driver stands for."""
-    cannot: ClassVar[dict[str, str]] = {}
-    reasoning: ClassVar[ReasoningConvention] = "inline"
+    cannot: Mapping[str, str] = {}
+    reasoning: ReasoningConvention = "inline"
     """How the wire replays a model's earlier reasoning."""
-    error_flag: ClassVar[bool] = False
+    error_flag: bool = False
     """The wire flags a failed tool result."""
-    calls_by_name: ClassVar[bool] = False
+    calls_by_name: bool = False
     """The wire pairs a result with its call by the tool's name, not an id."""
-    refused_names: ClassVar[tuple[str, ...]] = ()
+    refused_names: tuple[str, ...] = ()
     """Tool names the provider refuses before the request."""
-    accepted_names: ClassVar[tuple[str, ...]] = ("lookup",)
+    accepted_names: tuple[str, ...] = ("lookup",)
 
     def __init__(self) -> None:
         self.requests: list[Any] = []

@@ -129,16 +129,15 @@ def overflow_fact(exc: object) -> bool | None:
     """The structured overflow fact off an OpenAI-style status error, if any.
 
     OpenAI and Azure carry ``error.code == "context_length_exceeded"`` in the
-    error body — a first-hand fact, unlike the message wording. The other
+    error body — a first-hand fact, unlike the message wording. The SDK hands
+    over that ``error`` object itself as the exception's ``body``. The other
     compatible vendors put integers or generic strings in ``code``, so a miss
     is ``None`` (nobody classified), never ``False``: their overflows are
     still caught by the shared phrase fallback.
     """
     body = getattr(exc, "body", None)
-    if isinstance(body, dict):
-        error = body.get("error")
-        if isinstance(error, dict) and error.get("code") == "context_length_exceeded":
-            return True
+    if isinstance(body, dict) and body.get("code") == "context_length_exceeded":
+        return True
     return None
 
 

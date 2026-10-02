@@ -2,20 +2,21 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from types import SimpleNamespace
-from typing import Any, ClassVar
+from typing import Any
 
 from roomkit.providers.ai.base import AIProvider
 from roomkit.providers.anthropic.ai import AnthropicAIProvider
 from roomkit.providers.anthropic.config import AnthropicConfig
+from tests.text_conformance.chat_wire import pieces
 from tests.text_conformance.driver import (
     CALL_INDEX,
     CALLS_IN_ONE_CHUNK,
-    REASONING_USAGE,
+    MALFORMED_CALL,
     WRITTEN_UNREADABLE,
     Driver,
 )
-from tests.text_conformance.openai_wire import _pieces
 from tests.text_conformance.script import Item, Script
 
 _STOP = {"stop": "end_turn", "tool": "tool_use", "cut": "max_tokens", "none": None}
@@ -83,7 +84,7 @@ def _events(script: Script) -> tuple[list[Any], list[Any]]:
     for n, call in enumerate(script.calls):
         call_id = call.id or f"toolu_{n}"
         events.append(_start(index, type="tool_use", id=call_id, name=call.name))
-        for piece in _pieces(call.arguments, call.fragments):
+        for piece in pieces(call.arguments, call.fragments):
             events.append(_delta(index, type="input_json_delta", partial_json=piece))
         last = n == len(script.calls) - 1
         if last and script.finish in ("cut", "none"):
@@ -107,6 +108,8 @@ def _final(script: Script, left_open: list[Any]) -> Any:
             output_tokens=usage.output,
             cache_creation_input_tokens=usage.cache_write,
             cache_read_input_tokens=usage.cache_read,
+            # A detail of output_tokens, which counts it.
+            output_tokens_details=SimpleNamespace(thinking_tokens=usage.reasoning),
         ),
         stop_reason=_STOP[script.finish],
         model="claude",
@@ -119,35 +122,37 @@ def _content_text(content: Any) -> str:
     return "".join(block.get("text", "") for block in content if isinstance(block, dict))
 
 
+def _tool_result_items(block: dict[str, Any]) -> list[Item]:
+    content = block.get("content", "")
+    error = bool(block.get("is_error"))
+    items: list[Item] = [("result", block["tool_use_id"], _content_text(content), error)]
+    if isinstance(content, list) and any(b.get("type") == "image" for b in content):
+        items.append(("image",))
+    return items
+
+
+_BLOCK_ITEMS: dict[str, Callable[[dict[str, Any]], list[Item]]] = {
+    "thinking": lambda block: [("thinking", block["thinking"], block.get("signature"))],
+    "redacted_thinking": lambda block: [("redacted", block["data"])],
+    "text": lambda block: [("text", block["text"])],
+    "tool_use": lambda block: [("call", block["id"], block["input"])],
+    "tool_result": _tool_result_items,
+}
+
+
 def _block_items(block: dict[str, Any]) -> list[Item]:
-    kind = block.get("type")
-    if kind == "thinking":
-        return [("thinking", block["thinking"], block.get("signature"))]
-    if kind == "redacted_thinking":
-        return [("redacted", block["data"])]
-    if kind == "text":
-        return [("text", block["text"])]
-    if kind == "tool_use":
-        return [("call", block["id"], block["input"])]
-    if kind == "tool_result":
-        content = block.get("content", "")
-        items: list[Item] = [
-            ("result", block["tool_use_id"], _content_text(content), bool(block.get("is_error")))
-        ]
-        if isinstance(content, list) and any(b.get("type") == "image" for b in content):
-            items.append(("image",))
-        return items
-    return []
+    read = _BLOCK_ITEMS.get(block.get("type", ""))
+    return read(block) if read is not None else []
 
 
 class AnthropicWire(Driver):
-    label: ClassVar[str] = "anthropic"
-    covers: ClassVar[tuple[type[AIProvider], ...]] = (AnthropicAIProvider,)
-    cannot: ClassVar[dict[str, str]] = {
+    label = "anthropic"
+    covers = (AnthropicAIProvider,)
+    cannot = {
         CALL_INDEX: "every block carries its own index",
         CALLS_IN_ONE_CHUNK: "each call is a content block of its own",
-        REASONING_USAGE: "Anthropic counts reasoning inside output tokens",
         WRITTEN_UNREADABLE: "a closed tool_use block always parses; one that does not was cut",
+        MALFORMED_CALL: "Anthropic has no stop reason for a call it could not parse",
     }
     reasoning = "blocks"
     error_flag = True
