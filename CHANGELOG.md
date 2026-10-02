@@ -69,15 +69,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `VuiTTSProvider` runs on `vui-tts>=1.2.0,<1.3` and uses no private
   `vui-tts` attribute any more (RMK-197). A barge-in cuts the cache back
-  with `Row.truncate`. A preset voice is loaded with
-  `load_official_prompt` and prefilled with its speaker token and its baked
-  conditioning bias, as Vui's own server renders it: before, the bias was
-  not applied and the token was set after the prompt, which the prompt
-  never saw. A cloned voice zeroes the bias first, since a prefill without
-  one keeps the last voice's. The audio decoder is no longer re-seeded at
-  each reply: `vui-tts` 1.2 counts the user's audio in its 10 s clock and
-  keeps the decoder on that grid itself (RMK-199). `vui-tts` 1.2 also logs
-  user turns at DEBUG instead of printing them to stdout.
+  with `Row.truncate`, after the last frame heard and before any word of
+  the text chunk that follows it. A cloned voice zeroes the conditioning
+  bias first, since a prefill without one keeps the last voice's. The
+  audio decoder is no longer re-seeded at each reply: `vui-tts` 1.2 counts
+  the user's audio in its 10 s clock and keeps the decoder on that grid
+  (RMK-199), except after a barge-in cut. `Row.truncate` leaves the codec's
+  count on every frame generated, so from the cut until the conversation
+  restarts from the prompt, the decoder's 10 s restarts run ahead of the
+  cache by the frames nobody heard (open upstream, fluxions-ai/vui#42).
+  `vui-tts` 1.2 also logs user turns at DEBUG instead of printing them to
+  stdout.
 
 - **BREAKING — a BLOCK from a BEFORE_TOOL_USE hook reaches the model in the
   hook's words on every channel** (RMK-306, RFC §9.3), a hook-trigger
@@ -147,6 +149,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bucket), on `MediaRecordingConfig` or `ConferenceRecordingConfig`.
 
 ### Fixed
+
+- A Vui preset voice is prefilled with its speaker token and its baked
+  conditioning bias, as Vui's own server renders it (RMK-197): the bias was
+  not applied, and the token was set after the prompt, which the prompt
+  never saw.
 
 - What a realtime provider owes its tool calls (RMK-299, RFC §12.4):
   - ElevenLabs sends a failed call's result as a tool error, where its agent

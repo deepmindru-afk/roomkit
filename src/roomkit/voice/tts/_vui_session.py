@@ -100,6 +100,21 @@ class _Generation:
     frame_offsets: list[int] = field(default_factory=list)
 
 
+def _end_of_heard(generation: _Generation, heard: int) -> int:
+    """The KV offset that keeps the first *heard* frames of *generation* and nothing after.
+
+    ``frame_offsets[k]`` is read as frame k is yielded, and frame k's codes are
+    written one position later, with the next step: ``frame_offsets[heard - 1] + 1``
+    ends the last heard frame. ``frame_offsets[heard]`` caps it: the next text
+    chunk (``[spk]`` and its words) can sit between the two, and frames released
+    together share one offset, whose ``+ 1`` the cache does not hold yet.
+    """
+    if heard == 0:
+        return generation.start_offset
+    offsets = generation.frame_offsets
+    return min(offsets[heard - 1] + 1, offsets[heard])
+
+
 class VuiConversation:
     """One Vui row following one voice session's dialogue at a time.
 
@@ -256,10 +271,7 @@ class VuiConversation:
             return
         heard = math.ceil((turn.played_ms or 0) / FRAME_MS)
         if turn.interrupted and heard < len(pending.frame_offsets):
-            # frame_offsets[k], read as frame k was yielded, covers frames 0..k-1:
-            # the cache already holds that much, even when a cancelled stream
-            # stopped before writing the last frame it yielded.
-            offset = pending.frame_offsets[heard] if heard > 0 else pending.start_offset
+            offset = _end_of_heard(pending, heard)
             self._cache.truncate(offset)
             self._audio -= len(pending.frame_offsets) - heard
             logger.debug(

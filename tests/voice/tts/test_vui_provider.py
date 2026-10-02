@@ -271,6 +271,10 @@ class TestVuiPublicApi:
         assert "spk_emb" in prefill
         assert prefill["cond_bias"].kind is inspect.Parameter.KEYWORD_ONLY
         assert "offset" in inspect.signature(engine_mod.Row.truncate).parameters
+        assert {"text", "codes"} <= inspect.signature(engine_mod.Row.add_user).parameters.keys()
+        stream = list(inspect.signature(engine_mod.Row.stream).parameters)
+        assert stream[1:4] == ["text", "cfg", "cancel"]
+        assert "final_turn" in stream
         assert callable(engine_mod.Engine.set_conditioning)
         assert isinstance(engine_mod.Engine.checkpoint, property)
         assert "checkpoint" in inspect.signature(prompts_mod.load_official_prompt).parameters

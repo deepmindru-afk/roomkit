@@ -23,11 +23,21 @@ class FakeCache:
 
     Like Vui, a frame's codes enter the cache with the next decoding step:
     after the k-th frame is yielded, ``offset`` covers frames 0..k-1.
+    ``chunk_before`` writes a new text chunk (``[spk]`` and its words) before
+    a frame; a frame in ``released_with_previous`` is yielded at the previous
+    frame's offset, as Vui releases frames it held back.
     """
 
     def __init__(
-        self, frames_per_reply: int = 10, capacity: int = 100_000, audio_capacity: int = 100_000
+        self,
+        frames_per_reply: int = 10,
+        capacity: int = 100_000,
+        audio_capacity: int = 100_000,
+        chunk_before: dict[int, int] | None = None,
+        released_with_previous: frozenset[int] = frozenset(),
     ) -> None:
+        self.chunk_before = chunk_before or {}
+        self.released_with_previous = released_with_previous
         self.offset = 0
         self.prompt_end = 0
         self.capacity = capacity
@@ -58,11 +68,15 @@ class FakeCache:
     def generate(self, text: str, cancel: threading.Event) -> Iterator[bytes]:
         self.offset += 3  # [spk] + text
         self.log.append(("generate", text))
+        owed = 0
         for i in range(self.frames_per_reply):
             if cancel.is_set():
                 return
             if i:
-                self.offset += 1  # the previous frame's codes enter the cache
+                owed += 1  # the previous frame's codes enter the cache
+            if i not in self.released_with_previous:
+                self.offset += owed + self.chunk_before.get(i, 0)
+                owed = 0
             yield b"\x00\x00"
 
 
@@ -150,6 +164,24 @@ class TestFollowingTurns:
 
         # [spk]+text (3 positions), then the 3 frames the user heard
         assert ("truncate", reply_start + 3 + heard) in cache.log
+
+    def test_a_cut_before_a_new_text_chunk_keeps_none_of_its_words(self) -> None:
+        cache = FakeCache(frames_per_reply=10, chunk_before={3: 4})
+        conv = VuiConversation(cache)
+        _speak(conv, _ctx(_user("u1"), next_turn_id="a1"))
+
+        _speak(
+            conv,
+            _ctx(
+                _user("u1"),
+                _agent("a1", int(3 * FRAME_MS), interrupted=True),
+                _user("u2"),
+                next_turn_id="a2",
+            ),
+        )
+
+        # frames 0..2 and not the 4 positions of the chunk frame 3 opens
+        assert ("truncate", 105 + 3 + 3) in cache.log
 
     def test_a_reply_nobody_heard_is_dropped(self) -> None:
         cache = FakeCache()
@@ -331,3 +363,26 @@ class TestCancel:
         )
 
         assert ("truncate", 105 + 3 + 1) in cache.log
+
+    def test_frames_released_together_are_cut_within_what_the_cache_holds(self) -> None:
+        cache = FakeCache(frames_per_reply=10, released_with_previous=frozenset({3, 4}))
+        conv = VuiConversation(cache)
+        cancel = threading.Event()
+        frames = conv.speak(_ctx(_user("u1"), next_turn_id="a1"), "maeve", "long", cancel)
+        for _ in range(5):
+            next(frames)
+        cancel.set()
+        assert list(frames) == []
+
+        _speak(
+            conv,
+            _ctx(
+                _user("u1"),
+                _agent("a1", int(4 * FRAME_MS), interrupted=True),
+                _user("u2"),
+                next_turn_id="a2",
+            ),
+        )
+
+        # frames 2..4 share one offset, which the cancelled stream never passed
+        assert ("truncate", 105 + 3 + 2) in cache.log
