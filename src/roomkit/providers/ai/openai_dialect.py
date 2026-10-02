@@ -193,7 +193,14 @@ class ToolCallSlots:
         """Fold one fragment in; return the composition event it warrants."""
         key = index if index is not None else 0
         position = self._by_index.get(key)
-        if position is None or self._starts_another_call(position, call_id, name, fragment):
+        if position is not None and self._starts_another_call(position, call_id, name, fragment):
+            held = self._slots[position]
+            if not name and call_id in (None, "", held["id"]):
+                # Opened by a new JSON object under no new id or name: a
+                # second call to the held call's tool.
+                name = held["name"]
+            position = None
+        if position is None:
             self._slots.append(self._new_slot(name))
             position = self._by_index[key] = len(self._slots) - 1
         slot = self._slots[position]
@@ -223,19 +230,23 @@ class ToolCallSlots:
     ) -> bool:
         """Whether a fragment on an occupied index is the start of another call.
 
-        Another server id says so. Without one, only a name can: another name
-        once the held call is whole (no arguments, or complete JSON), or the
-        same name bringing arguments of its own after whole ones, a second
-        call to the same tool. A server may repeat a call's name on every
-        fragment, so the same name with nothing or blanks starts nothing.
+        Another server id says so. Without one: another name once the held
+        call is whole (no arguments, or complete JSON); the same name bringing
+        arguments of its own after whole ones, a second call to the same tool;
+        or, after whole arguments, a fragment that opens another JSON object,
+        which no continuation of them can. A server may repeat a call's name
+        on every fragment, so the same name with nothing or blanks starts
+        nothing.
         """
         slot = self._slots[position]
         if call_id and not slot["minted"] and call_id != slot["id"]:
             return True
-        if not name or not slot["name"]:
-            return False
         held = slot["arguments"]
         whole = not arguments_cut(held)
+        if not slot["name"]:
+            return False
+        if not name:
+            return bool(held.strip()) and whole and fragment.lstrip().startswith("{")
         if name != slot["name"]:
             return whole
         return bool(fragment.strip()) and bool(held.strip()) and whole

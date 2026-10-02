@@ -252,3 +252,21 @@ async def test_a_call_the_handler_denies_is_a_refusal(streaming: bool) -> None:
     assert end.outcome == "refused"
     assert "not on this host" in str(end.result)
     assert proxy.results == ["Bash"]
+
+
+async def test_a_call_written_unreadable_is_refused_before_the_handler(streaming: bool) -> None:
+    """A provider-side call whose arguments do not read never reaches the
+    external handler, and the refusal says the model wrote them so."""
+    garbled = AIToolCall(
+        id="p1", name="Bash", arguments={"raw": "[1, 2]"}, partial=True, garbled=True
+    )
+    provider = MockAIProvider(ai_responses=[_calls(garbled)], streaming=streaming)
+    proxy = _Proxy()
+    room = await _Room(AIChannel("ai1", provider=provider, external_tool_handler=proxy)).open()
+
+    await room.say()
+
+    assert proxy.decided == []
+    [end] = await room.ends()
+    assert end.outcome == "refused"
+    assert "arguments unreadable" in str(end.result)

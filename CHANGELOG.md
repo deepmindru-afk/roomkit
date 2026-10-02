@@ -83,32 +83,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **BREAKING — a tool name no provider accepts is refused when the tool is
   defined** (RMK-309, RFC §6.7): `AITool` raises on an empty name or one with
   a character other than a letter, a digit, `_`, `.`, `:` or `-`, which every
-  vendor refused with a 400 mid-turn. An MCP tool under such a name is
-  skipped with a warning, the server's other tools kept. A name one vendor
-  refuses fails before the request, with a `ProviderError` naming the tool
-  and the vendor's rule, on OpenAI's own endpoint and on Anthropic
+  vendor refused with a 400 mid-turn. That holds for every definition: a
+  tool given as a dict in binding metadata fails the turn that builds it,
+  and a supervisor whose worker's channel id carries such a character
+  (`delegate_to_<channel_id>`) fails to install. An MCP tool under such a
+  name is skipped with a warning, the server's other tools kept. A name one
+  vendor refuses fails before the request, with a `ProviderError` naming the
+  tool and the vendor's rule, on OpenAI's own endpoint and on Anthropic
   (`[A-Za-z0-9_-]{1,128}`), Gemini (a dot and a colon accepted, a leading
   digit not) and Mistral (a dot accepted, a colon not); a server behind a
-  `base_url` decides its names.
+  custom URL (`base_url`, Mistral's `server_url`) decides its names.
+  `some_vendor_accepts_tool_name` states the first rule.
 - **BREAKING — a tool call whose arguments do not read as an object never
-  runs** (RMK-309, RFC §6.4), on every provider and whatever stop reason the
-  response gave: invalid JSON, an array or a scalar marks the call
+  runs** (RMK-309, RFC §6.4), on every AI provider and whatever stop reason
+  the response gave: invalid JSON, an array or a scalar marks the call
   `partial`, where only a call the output cap or a content filter cut was,
   and a tool whose schema required nothing ran with `{"raw": …}`. The model
   reads why: cut (the response was cut short, a stream that stopped without
-  a stop reason included) or written unreadable, which a provider marks with
-  the new `AIToolCall.garbled` / `StreamToolCall.garbled`; `partial` alone
-  still reads as cut. `unreadable_arguments`, `call_garbled`,
-  `partial_call_error` and `tool_call_of` join the helpers of
-  `roomkit.providers.ai`.
+  a stop reason or Mistral's `error` included) or written unreadable, which a
+  provider marks with the new `AIToolCall.garbled` /
+  `StreamToolCall.garbled`; `partial` alone still reads as cut. `call_cut`
+  is true accordingly for a response without a stop reason and for
+  complete JSON that is not an object. The realtime reasoning backend
+  records such a call `refused`, as the tool loop does, where it recorded it
+  `failed`. A speech-to-speech provider does not mark such calls yet
+  (RMK-375). `unreadable_arguments`, `call_garbled`, `partial_call_error`,
+  `unreadable_call_error`, `tool_call_of` and `stream_call_of` join the
+  helpers of `roomkit.providers.ai`.
 - `declared_parameters`, `chat_tool_declarations` and `ToolNameRule`, in
   `roomkit.providers.ai`: the declaration every provider builds from (RMK-309).
 - OpenAI and its derivatives, Mistral and PolarGrid render a conversation
   through one builder, `chat_messages` in `roomkit.providers.ai` (RMK-309):
   what a provider renders differently, where a model's earlier reasoning goes,
   whether a tool message names its tool, whether text goes flat, is its
-  `ChatDialect` (Cerebras's `reasoning` field among them). The providers'
-  `_build_messages` keep their output.
+  `ChatDialect` (Cerebras's `reasoning` field among them), and
+  `OPENAI_CHAT` is OpenAI's own. The providers' `_build_messages` keep their
+  output, but for a history whose tool calls ride a message other than the
+  assistant's, which PolarGrid now sends as an assistant round as the others
+  do.
 
 - `VuiTTSProvider` runs on `vui-tts>=1.2.0,<1.3` and uses no private
   `vui-tts` attribute any more (RMK-197). A barge-in cuts the cache back
@@ -252,9 +264,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   event named a call by an id it did not end with when two calls shared a
   server id or the id came after the first fragment. Gemini folds a call
   re-emitted in a later chunk whichever copy carries an id, where one with
-  and one without ran twice. Anthropic hands two blocks under one server id
-  their own ids and runs both, where the second was dropped; Ollama mints
-  ids once per response and replays every reasoning part of a message.
+  and one without ran twice. Two id-less calls to the same tool on one index
+  stay two when each brings arguments; two that bring none stay one, which
+  the wire cannot tell from a name repeated on every fragment. Anthropic
+  hands two blocks under one server id their own ids and runs both, where
+  the second was dropped, and a block the response ended before closing
+  keeps the id its composition announced and the arguments that streamed,
+  where it took the SDK's parse of them; Ollama mints ids once per response
+  and replays every reasoning part of a message.
 
 - A Vui preset voice is prefilled with its speaker token and its baked
   conditioning bias, as Vui's own server renders it (RMK-197): the bias was

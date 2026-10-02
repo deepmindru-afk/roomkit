@@ -465,12 +465,26 @@ class TestAIProviderReasoningBackend:
         assert [m.role for m in second_call.messages] == ["user", "assistant", "tool"]
         assert second_call.messages[2].content[0].result == '{"status": "cancelled"}'
 
-    async def test_a_partial_call_is_answered_without_running(self) -> None:
-        """A call cut before its arguments were complete never runs (RFC §6.4)."""
-        cut = AIToolCall(id="c1", name="lookup", arguments={"raw": '{"flight": "UA'}, partial=True)
+    @pytest.mark.parametrize(
+        ("garbled", "error"),
+        [(False, "Tool call cut off"), (True, "Tool call arguments unreadable")],
+        ids=["cut", "garbled"],
+    )
+    async def test_a_partial_call_is_answered_without_running(
+        self, garbled: bool, error: str
+    ) -> None:
+        """A call whose arguments do not read never runs; the model reads
+        whether it was cut or written unreadable (RFC §6.4)."""
+        call = AIToolCall(
+            id="c1",
+            name="lookup",
+            arguments={"raw": '{"flight": "UA'},
+            partial=True,
+            garbled=garbled,
+        )
         provider = MockAIProvider(
             ai_responses=[
-                AIResponse(content="", finish_reason="length", tool_calls=[cut]),
+                AIResponse(content="", finish_reason="length", tool_calls=[call]),
                 AIResponse(content="Let me try again."),
             ]
         )
@@ -492,8 +506,9 @@ class TestAIProviderReasoningBackend:
         _ = [o async for o in backend.run(request)]
 
         assert executed == []
-        answer = provider.calls[1].messages[-1].content[0].result
-        assert json.loads(answer)["error"] == "Tool call cut off"
+        [answer] = provider.calls[1].messages[-1].content
+        assert json.loads(answer.result)["error"] == error
+        assert answer.outcome == "refused"
 
     async def test_history_persists_across_delegations_until_the_session_ends(self) -> None:
         provider = MockAIProvider(responses=["one", "two"])

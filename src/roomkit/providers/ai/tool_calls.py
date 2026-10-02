@@ -22,8 +22,13 @@ from uuid import uuid4
 _TRUNCATION_FINISH_REASONS = frozenset({"length", "max_tokens"})
 
 # Endings that can stop a call mid-arguments: the output cap under its
-# spellings, Mistral's context cap, and a content filter cutting the stream.
-_CALL_CUTTING_FINISH_REASONS = _TRUNCATION_FINISH_REASONS | {"model_length", "content_filter"}
+# spellings, Mistral's context cap and its generation error, and a content
+# filter cutting the stream.
+_CALL_CUTTING_FINISH_REASONS = _TRUNCATION_FINISH_REASONS | {
+    "model_length",
+    "error",
+    "content_filter",
+}
 
 
 # Endings where the model tried to call a tool and the provider could not

@@ -25,20 +25,14 @@ from roomkit.providers.ai.base import (
     StreamTextDelta,
     StreamThinkingDelta,
     StreamToolCall,
-    StreamToolCallDelta,
     request_api_key,
     tool_call_of,
 )
 from roomkit.providers.ai.response_schema import checked_stream, schema_for_generate
-from roomkit.providers.ai.tool_calls import (
-    CallIds,
-    is_truncation,
-    tool_arguments,
-    unreadable_arguments,
-)
 from roomkit.providers.anthropic.config import AnthropicConfig
 from roomkit.providers.anthropic.models import MODELS
 from roomkit.providers.anthropic.request import build_kwargs
+from roomkit.providers.anthropic.tool_blocks import ToolUseBlocks
 from roomkit.providers.utils import _aclose_stream
 
 logger = logging.getLogger("roomkit.providers.anthropic.ai")
@@ -287,10 +281,7 @@ class AnthropicAIProvider(AIProvider):
         first_token = True
 
         try:
-            # Track in-progress tool_use blocks for real-time streaming
-            _tool_blocks: dict[int, dict[str, Any]] = {}  # index → {id, name, input_json}
-            _yielded_tool_ids: set[str] = set()  # the server's ids
-            ids = CallIds()
+            blocks = ToolUseBlocks()
 
             async with client.messages.stream(**kwargs) as stream:
                 async for event in stream:
@@ -300,21 +291,7 @@ class AnthropicAIProvider(AIProvider):
                     if event.type == "content_block_start":
                         cb = event.content_block
                         if hasattr(cb, "type") and cb.type == "tool_use":
-                            _tool_blocks[event.index] = {
-                                "id": ids(cb.id, cb.name),
-                                "server_id": cb.id,
-                                "name": cb.name,
-                                "input_json": "",
-                            }
-                            # The name is known here, before a single argument
-                            # byte: emit it at once so a host can say what is
-                            # being composed for the whole composition.
-                            yield StreamToolCallDelta(
-                                id=_tool_blocks[event.index]["id"],
-                                name=cb.name,
-                                index=event.index,
-                                arguments_delta="",
-                            )
+                            yield blocks.open(event.index, cb)
 
                     elif event.type == "content_block_delta" and hasattr(event.delta, "type"):
                         delta = event.delta
@@ -338,45 +315,19 @@ class AnthropicAIProvider(AIProvider):
                                 first_token = False
                             yield StreamTextDelta(text=delta.text)
                         elif delta.type == "input_json_delta":
-                            idx = event.index
-                            if idx in _tool_blocks:
-                                tb = _tool_blocks[idx]
-                                tb["input_json"] += delta.partial_json
-                                yield StreamToolCallDelta(
-                                    id=tb["id"],
-                                    name=tb["name"],
-                                    index=idx,
-                                    arguments_delta=delta.partial_json,
-                                )
+                            composed = blocks.add(event.index, delta.partial_json)
+                            if composed is not None:
+                                yield composed
 
                     elif event.type == "content_block_stop":
-                        idx = event.index
-                        if idx in _tool_blocks:
-                            tb = _tool_blocks.pop(idx)
-                            # Every closed block is a call of its own, even
-                            # under a server id another one carried (RFC §6.4).
-                            _yielded_tool_ids.add(tb["server_id"])
-                            # A complete tool_use always parses: one that
-                            # does not was cut by max_tokens (RFC §6.4).
-                            yield StreamToolCall(
-                                id=tb["id"],
-                                name=tb["name"],
-                                arguments=tool_arguments(tb["input_json"]),
-                                partial=unreadable_arguments(tb["input_json"]),
-                            )
+                        call = blocks.close(event.index)
+                        if call is not None:
+                            yield call
 
                 final = await stream.get_final_message()
 
-            # Yield any tool calls from final message not already yielded; one
-            # the stream did not close is partial when the output cap ended it.
-            for block in final.content:
-                if block.type == "tool_use" and block.id not in _yielded_tool_ids:
-                    yield StreamToolCall(
-                        id=ids(block.id, block.name),
-                        name=block.name,
-                        arguments=tool_arguments(block.input),
-                        partial=is_truncation(final.stop_reason),
-                    )
+            for call in blocks.remaining(final):
+                yield call
 
             usage: dict[str, int] = {
                 "input_tokens": final.usage.input_tokens,

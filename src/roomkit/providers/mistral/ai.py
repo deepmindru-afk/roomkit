@@ -149,7 +149,9 @@ class MistralAIProvider(AIProvider):
         if effort is not None:
             kwargs["reasoning_effort"] = effort
         if context.tools:
-            MISTRAL_TOOL_NAMES.check(t.name for t in context.tools)
+            if self._config.server_url is None:
+                # Behind a server_url the server decides its names (RFC §6.7).
+                MISTRAL_TOOL_NAMES.check(t.name for t in context.tools)
             kwargs["tools"] = chat_tool_declarations(context.tools)
         if context.response_schema is not None:
             kwargs["response_format"] = json_schema_format(context.response_schema)

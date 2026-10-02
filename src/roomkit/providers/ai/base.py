@@ -39,6 +39,11 @@ _ANY_VENDOR_TOOL_NAME = re.compile(r"[A-Za-z0-9_.:-]+")
 provider checks its own vendor's narrower rule before the request."""
 
 
+def some_vendor_accepts_tool_name(name: str) -> bool:
+    """Whether at least one vendor accepts *name* for a tool (RFC §6.7)."""
+    return _ANY_VENDOR_TOOL_NAME.fullmatch(name) is not None
+
+
 class AITool(BaseModel):
     """Tool definition for function calling.
 
@@ -64,7 +69,7 @@ class AITool(BaseModel):
     @field_validator("name")
     @classmethod
     def _a_name_some_vendor_accepts(cls, name: str) -> str:
-        if _ANY_VENDOR_TOOL_NAME.fullmatch(name) is None:
+        if not some_vendor_accepts_tool_name(name):
             raise ValueError(
                 f"tool name {name!r} is accepted by no provider: use letters, digits, "
                 "'_', '.', ':' or '-'"
@@ -517,6 +522,18 @@ StreamEvent = (
 )
 
 
+def stream_call_of(call: AIToolCall) -> StreamToolCall:
+    """The streamed form of a tool call, every field it carries kept."""
+    return StreamToolCall(
+        id=call.id,
+        name=call.name,
+        arguments=call.arguments,
+        metadata=call.metadata,
+        partial=call.partial,
+        garbled=call.garbled,
+    )
+
+
 def tool_call_of(event: StreamToolCall) -> AIToolCall:
     """The tool call a streamed one is, every field it carries kept."""
     return AIToolCall(
@@ -550,14 +567,7 @@ def response_stream_events(
     for call in response.tool_calls:
         if call_deltas is not None:
             yield from call_deltas(call)
-        yield StreamToolCall(
-            id=call.id,
-            name=call.name,
-            arguments=call.arguments,
-            metadata=call.metadata,
-            partial=call.partial,
-            garbled=call.garbled,
-        )
+        yield stream_call_of(call)
     yield StreamDone(
         finish_reason=response.finish_reason,
         usage=response.usage,

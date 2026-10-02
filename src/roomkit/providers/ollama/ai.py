@@ -37,6 +37,7 @@ from roomkit.providers.ai.base import (
     StreamTextDelta,
     StreamThinkingDelta,
     StreamToolCall,
+    stream_call_of,
 )
 from roomkit.providers.ai.image_parts import image_part_base64
 from roomkit.providers.ai.reasoning import nearest_level, thinking_switch
@@ -468,10 +469,9 @@ class OllamaAIProvider(AIProvider):
                 # arguments across chunks the way OpenAI does). Collect
                 # them but defer the yield until the run finishes so
                 # the consumer sees text-then-tools in the natural order.
-                for tc in self._extract_tool_calls(message, ids):
-                    accumulated_tool_calls.append(
-                        StreamToolCall(id=tc.id, name=tc.name, arguments=tc.arguments)
-                    )
+                accumulated_tool_calls.extend(
+                    stream_call_of(tc) for tc in self._extract_tool_calls(message, ids)
+                )
 
                 done = self._get_attr(chunk, "done", False)
                 if done:

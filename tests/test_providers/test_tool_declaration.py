@@ -26,10 +26,14 @@ from roomkit.providers.ai.tool_declaration import (
 from roomkit.providers.anthropic.config import AnthropicConfig
 from roomkit.providers.anthropic.request import build_kwargs
 from roomkit.providers.deepgram.settings import format_functions
+from roomkit.providers.gemini.realtime_config import _live_tools
+from roomkit.providers.gemini.realtime_models import live_model_profile
 from roomkit.providers.gemini.schema import function_declaration
 from roomkit.providers.mistral.config import MistralConfig
+from roomkit.providers.ollama.ai import OllamaAIProvider
 from roomkit.providers.openai.config import OpenAIConfig
 from roomkit.providers.openai.live_events import format_backend_tools
+from roomkit.providers.polargrid.ai import PolarGridAIProvider
 from roomkit.tools.mcp import _definition
 
 NO_PARAMETERS = {"type": "object", "properties": {}}
@@ -186,3 +190,43 @@ class TestMCP:
         definition = _definition(listed)
 
         assert definition is not None and definition.name == "files.read"
+
+
+class TestAServerBehindAURLDecides:
+    def test_anthropic_behind_a_base_url_checks_no_name(self) -> None:
+        config = AnthropicConfig(api_key="k", model="claude-haiku-4-5", base_url="http://gw")
+        kwargs = build_kwargs(config, _context("files.read"))
+        assert kwargs["tools"][0]["name"] == "files.read"
+
+    def test_mistral_behind_a_server_url_checks_no_name(self) -> None:
+        module = MagicMock()
+        with patch.dict(sys.modules, {"mistralai": module, "mistralai.client": module}):
+            from roomkit.providers.mistral.ai import MistralAIProvider
+
+            provider = MistralAIProvider(MistralConfig(api_key="k", server_url="http://gw"))
+        kwargs = provider._build_kwargs(_context("ns:tool"))
+        assert kwargs["tools"][0]["function"]["name"] == "ns:tool"
+
+
+class TestEveryDeclarationDeclaresAnEmptyObject:
+    def test_gemini_live(self) -> None:
+        model = "gemini-live-2.5-flash-preview"
+        profile = live_model_profile(model)
+        [tool] = _live_tools(genai_types, model, profile, [{"name": "now"}], set())
+        assert tool.function_declarations[0].parameters.properties == {}
+
+    def test_polargrid_and_ollama(self) -> None:
+        tools = [AITool(name="now", description="d")]
+        polargrid = PolarGridAIProvider._build_tools(SimpleNamespace(), tools)
+        ollama = OllamaAIProvider._build_tools(SimpleNamespace(), tools)
+        assert polargrid == ollama == chat_tool_declarations(tools)
+        assert polargrid[0]["function"]["parameters"] == NO_PARAMETERS
+
+
+def test_an_mcp_tool_rejected_for_another_reason_is_not_blamed_on_its_name() -> None:
+    listed = SimpleNamespace(
+        name="lookup", description="d", inputSchema={}, meta={"fastmcp": {"tags": "not-a-list"}}
+    )
+
+    with pytest.raises(ValidationError, match="tags"):
+        _definition(listed)

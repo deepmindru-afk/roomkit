@@ -148,6 +148,26 @@ class TestSplitting:
 
         assert [(c.name, c.arguments, c.partial) for c in calls] == [("now", {"a": 1}, False)]
 
+    def test_the_same_tool_called_twice_with_name_only_first_fragments_stays_two(
+        self,
+    ) -> None:
+        _, calls = _fold(
+            (0, None, "roll", ""),
+            (0, None, None, '{"d": 6}'),
+            (0, None, "roll", ""),
+            (0, None, None, '{"d": 20}'),
+        )
+
+        assert [(c.name, c.arguments, c.partial) for c in calls] == [
+            ("roll", {"d": 6}, False),
+            ("roll", {"d": 20}, False),
+        ]
+
+    def test_a_call_opened_by_a_new_id_takes_the_name_that_follows(self) -> None:
+        _, calls = _fold((0, "c1", "f", "{}"), (0, "c2", None, ""), (0, None, "g", "{}"))
+
+        assert [(c.id, c.name, c.arguments) for c in calls] == [("c1", "f", {}), ("c2", "g", {})]
+
     def test_the_same_tool_called_twice_whole_stays_two(self) -> None:
         _, calls = _fold((0, None, "roll", '{"d": 6}'), (0, None, "roll", '{"d": 20}'))
 
@@ -263,6 +283,26 @@ async def test_anthropic_calls_sharing_a_server_id_get_their_own() -> None:
     deltas = [e for e in items if isinstance(e, StreamToolCallDelta)]
     assert len({c.id for c in calls}) == 2
     assert {d.id for d in deltas} == {c.id for c in calls}
+
+
+async def test_an_anthropic_block_the_stream_never_closed_keeps_its_announced_id() -> None:
+    usage = SimpleNamespace(
+        input_tokens=1, output_tokens=1, cache_creation_input_tokens=0, cache_read_input_tokens=0
+    )
+    block = SimpleNamespace(type="tool_use", id="toolu_1", name="now", input={"path": "/a"})
+    final = SimpleNamespace(content=[block], usage=usage, stop_reason="max_tokens", model="claude")
+    events = _anthropic_block(0, "toolu_1", '{"path": "/a", "content": "hel')[:2]
+    provider = AnthropicAIProvider(AnthropicConfig(api_key="k", model="claude-sonnet-5-5"))
+    provider._client = SimpleNamespace(
+        messages=SimpleNamespace(stream=lambda **kw: _AnthropicStream(events, final))
+    )
+
+    items = [e async for e in provider.generate_structured_stream(_CTX)]
+
+    [call] = [e for e in items if isinstance(e, StreamToolCall)]
+    assert {e.id for e in items if isinstance(e, StreamToolCallDelta)} == {call.id}
+    assert (call.partial, call.garbled) == (True, False)
+    assert call.arguments == {"raw": '{"path": "/a", "content": "hel'}
 
 
 def _ollama() -> Any:

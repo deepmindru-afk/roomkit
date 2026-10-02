@@ -10,10 +10,8 @@ from contextlib import AsyncExitStack
 from types import TracebackType
 from typing import Any
 
-from pydantic import ValidationError
-
 from roomkit.core.exceptions import ToolRefusedError, UnservedToolCallError
-from roomkit.providers.ai.base import AITool
+from roomkit.providers.ai.base import AITool, some_vendor_accepts_tool_name
 from roomkit.tools._mcp_result import error_text, handler_result, text_body
 from roomkit.tools.compose import ToolHandler, ToolResult
 
@@ -26,18 +24,17 @@ def _definition(tool: Any) -> AITool | None:
     (RFC §6.7)."""
     # FastMCP serializes a tool's tags into `_meta["fastmcp"]["tags"]`;
     # surface them so Tool Search can match this tool cross-lingually.
-    meta = getattr(tool, "meta", None)
-    tags = meta.get("fastmcp", {}).get("tags", []) if isinstance(meta, dict) else []
-    try:
-        return AITool(
-            name=tool.name,
-            description=tool.description or "",
-            parameters=tool.inputSchema if tool.inputSchema else {},
-            tags=tags or [],
-        )
-    except ValidationError:
+    if not some_vendor_accepts_tool_name(tool.name):
         logger.warning("MCP tool %r skipped: no provider accepts its name", tool.name)
         return None
+    meta = getattr(tool, "meta", None)
+    tags = meta.get("fastmcp", {}).get("tags", []) if isinstance(meta, dict) else []
+    return AITool(
+        name=tool.name,
+        description=tool.description or "",
+        parameters=tool.inputSchema if tool.inputSchema else {},
+        tags=tags or [],
+    )
 
 
 _DEFAULT_CALL_TIMEOUT = 30.0

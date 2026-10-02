@@ -142,6 +142,37 @@ def _call_key(
     return key
 
 
+def _fold_function_call(
+    part: Any,
+    in_chunk: dict[str, int],
+    calls: dict[str, dict[str, Any]],
+    order: list[str],
+) -> None:
+    """Fold a function-call part into the response's calls: a new call, or a
+    re-emission of one, which keeps what either copy carries (RFC §6.4)."""
+    fc = part.function_call
+    name = fc.name or ""
+    args = dict(fc.args) if fc.args else {}
+    # thought_signature lives on the Part (bytes), not the FunctionCall.
+    # Encode to a portable str for metadata.
+    raw_sig = getattr(part, "thought_signature", None)
+    sig = base64.b64encode(raw_sig).decode("ascii") if isinstance(raw_sig, bytes) else raw_sig
+    key = _call_key(fc, name, args, in_chunk, calls)
+    held = calls.get(key)
+    if held is None:
+        calls[key] = {
+            "id": f"call_{uuid4().hex[:12]}",
+            "server_id": getattr(fc, "id", None) or None,
+            "name": name,
+            "arguments": args,
+            "signature": sig,
+        }
+        order.append(key)
+        return
+    held["signature"] = held["signature"] or sig
+    held["server_id"] = held["server_id"] or getattr(fc, "id", None)
+
+
 class GeminiAIProvider(AIProvider):
     """AI provider using the Google Gemini API."""
 
@@ -343,32 +374,7 @@ class GeminiAIProvider(AIProvider):
                         else:
                             yield StreamTextDelta(text=part.text)
                     elif hasattr(part, "function_call") and part.function_call:
-                        fc = part.function_call
-                        fc_name = fc.name or ""
-                        fc_args = dict(fc.args) if fc.args else {}
-                        # thought_signature lives on the Part (bytes), not the
-                        # FunctionCall. Encode to a portable str for metadata.
-                        raw_sig = getattr(part, "thought_signature", None)
-                        sig = (
-                            base64.b64encode(raw_sig).decode("ascii")
-                            if isinstance(raw_sig, bytes)
-                            else raw_sig
-                        )
-                        key = _call_key(fc, fc_name, fc_args, in_chunk, fcalls)
-                        if key not in fcalls:
-                            fcalls[key] = {
-                                "id": f"call_{uuid4().hex[:12]}",
-                                "server_id": getattr(fc, "id", None) or None,
-                                "name": fc_name,
-                                "arguments": fc_args,
-                                "signature": sig,
-                            }
-                            fcall_order.append(key)
-                        else:
-                            # A re-emission keeps what either copy carries.
-                            held = fcalls[key]
-                            held["signature"] = held["signature"] or sig
-                            held["server_id"] = held["server_id"] or getattr(fc, "id", None)
+                        _fold_function_call(part, in_chunk, fcalls, fcall_order)
 
             if fcall_order:
                 logger.debug(

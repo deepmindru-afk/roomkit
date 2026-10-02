@@ -125,3 +125,15 @@ def test_polargrid_sends_text_flat_drops_reasoning_and_skips_empty_messages() ->
             ],
         ),
     ]
+
+
+def test_a_reasoning_field_is_the_assistants_own() -> None:
+    message = AIMessage(role="user", content=[_THOUGHT, AITextPart(text="u")])
+    [rendered] = _render(CerebrasAIProvider._chat_dialect, message)
+    assert "reasoning" not in rendered
+    assert rendered["content"][0] == {"type": "text", "text": "<think>why</think>"}
+
+
+def test_an_empty_part_list_stays_a_list() -> None:
+    [rendered] = _render(OPENAI_CHAT, AIMessage(role="user", content=[]))
+    assert rendered["content"] == []

@@ -23,6 +23,8 @@ from roomkit.providers.ai.base import (
     StreamToolCall,
     StreamToolCallDelta,
     is_context_overflow_message,
+    some_vendor_accepts_tool_name,
+    stream_call_of,
     tool_call_of,
 )
 from roomkit.providers.ai.chat_request import OPENAI_CHAT, ChatDialect, chat_messages
@@ -93,6 +95,8 @@ __all__ = [
     "is_truncation",
     "partial_call_error",
     "schema_mismatch",
+    "some_vendor_accepts_tool_name",
+    "stream_call_of",
     "tool_arguments",
     "tool_call_of",
     "unreadable_arguments",

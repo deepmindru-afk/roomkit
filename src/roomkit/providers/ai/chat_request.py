@@ -86,7 +86,7 @@ def _rendered(message: AIMessage, dialect: ChatDialect, provider: str) -> list[d
         return [{"role": message.role, "content": content}]
     calls = [p for p in content if isinstance(p, AIToolCallPart)]
     if calls:
-        return [_call_round(message, calls, dialect)]
+        return [_call_round(message, calls, dialect, provider)]
     results = [p for p in content if isinstance(p, AIToolResultPart)]
     if results:
         return _tool_messages(results, dialect, provider)
@@ -94,17 +94,20 @@ def _rendered(message: AIMessage, dialect: ChatDialect, provider: str) -> list[d
 
 
 def _call_round(
-    message: AIMessage, calls: list[AIToolCallPart], dialect: ChatDialect
+    message: AIMessage, calls: list[AIToolCallPart], dialect: ChatDialect, provider: str
 ) -> dict[str, Any]:
     """An assistant round that called tools, what it said beside its calls."""
     parts = list(message.content)
-    if dialect.thinking_field is None and not dialect.drops_thinking:
-        text = round_text(parts)
+    content: str | list[dict[str, Any]]
+    if dialect.flattens_text:
+        content = _flat(parts, provider)
+    elif _inline_thinking(message, dialect):
+        content = round_text(parts)
     else:
-        text = "".join(p.text for p in parts if isinstance(p, AITextPart))
+        content = "".join(p.text for p in parts if isinstance(p, AITextPart))
     rendered: dict[str, Any] = {
         "role": "assistant",
-        "content": text or None,
+        "content": content or None,
         "tool_calls": [
             {
                 "id": call.id,
@@ -114,7 +117,7 @@ def _call_round(
             for call in calls
         ],
     }
-    return _with_thinking_field(rendered, parts, dialect)
+    return _with_thinking_field(rendered, message, dialect)
 
 
 def _tool_messages(
@@ -148,10 +151,10 @@ def _plain(message: AIMessage, dialect: ChatDialect, provider: str) -> list[dict
     """A message without tool parts: its text and images, its reasoning where
     the dialect sends it."""
     parts = list(message.content)
-    if dialect.flattens_text and not any(isinstance(p, AIImagePart) for p in parts):
-        text = "".join(p.text for p in parts if isinstance(p, AITextPart))
-        return [{"role": message.role, "content": text}] if text else []
-    inline = dialect.thinking_field is None and not dialect.drops_thinking
+    if dialect.flattens_text:
+        flat = _flat(parts, provider)
+        return [{"role": message.role, "content": flat}] if flat else []
+    inline = _inline_thinking(message, dialect)
     blocks: list[dict[str, Any]] = []
     for part in parts:
         if isinstance(part, AITextPart):
@@ -160,20 +163,47 @@ def _plain(message: AIMessage, dialect: ChatDialect, provider: str) -> list[dict
             blocks.append(_image(part, provider))
         elif isinstance(part, AIThinkingPart) and inline:
             blocks.append({"type": "text", "text": f"<think>{part.thinking}</think>"})
-    if dialect.flattens_text and not blocks:
-        return []
-    rendered = {"role": message.role, "content": blocks or ""}
-    return [_with_thinking_field(rendered, parts, dialect)]
+    # A message whose only part is reasoning moved to a field keeps an empty
+    # string for content.
+    content = blocks if blocks or _thinking_field(message, dialect) is None else ""
+    rendered = {"role": message.role, "content": content}
+    return [_with_thinking_field(rendered, message, dialect)]
+
+
+def _flat(parts: list[Any], provider: str) -> str | list[dict[str, Any]]:
+    """Text parts as one string, or text and image blocks when an image is
+    among them; reasoning is not sent."""
+    if not any(isinstance(p, AIImagePart) for p in parts):
+        return "".join(p.text for p in parts if isinstance(p, AITextPart))
+    return [
+        {"type": "text", "text": p.text} if isinstance(p, AITextPart) else _image(p, provider)
+        for p in parts
+        if isinstance(p, AITextPart | AIImagePart)
+    ]
+
+
+def _thinking_field(message: AIMessage, dialect: ChatDialect) -> str | None:
+    """The field *message*'s reasoning rides: the dialect's, for the
+    assistant's own messages."""
+    if dialect.drops_thinking or message.role != "assistant":
+        return None
+    return dialect.thinking_field
+
+
+def _inline_thinking(message: AIMessage, dialect: ChatDialect) -> bool:
+    """Whether *message*'s reasoning is sent inline, as ``<think>`` blocks."""
+    return not dialect.drops_thinking and _thinking_field(message, dialect) is None
 
 
 def _with_thinking_field(
-    rendered: dict[str, Any], parts: list[Any], dialect: ChatDialect
+    rendered: dict[str, Any], message: AIMessage, dialect: ChatDialect
 ) -> dict[str, Any]:
     """*rendered*, its reasoning in the dialect's field when it has one."""
-    if dialect.thinking_field is not None and not dialect.drops_thinking:
-        thinking = _thinking(parts)
+    field = _thinking_field(message, dialect)
+    if field is not None:
+        thinking = _thinking(list(message.content))
         if thinking:
-            rendered[dialect.thinking_field] = thinking
+            rendered[field] = thinking
     return rendered
 
 

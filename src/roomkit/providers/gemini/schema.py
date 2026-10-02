@@ -60,11 +60,11 @@ from pydantic import ValidationError
 from roomkit.providers.ai.base import ProviderError
 from roomkit.providers.ai.tool_declaration import ToolNameRule, declared_parameters
 
-# Fields that Gemini accepts in a function parameter schema.
 GEMINI_TOOL_NAMES = ToolNameRule("gemini", r"[A-Za-z_][A-Za-z0-9_.:-]{0,127}")
 """The tool names Gemini accepts, a dot and a colon included, a leading digit
 not (measured 2026-10-02)."""
 
+# Fields that Gemini accepts in a function parameter schema.
 _GEMINI_ALLOWED_KEYS = frozenset(
     {
         "type",
