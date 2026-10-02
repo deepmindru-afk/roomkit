@@ -258,13 +258,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   still building, authenticating and parsing the rest
   (`providers/polargrid/sdk_patch.py`, RMK-384).
 
-- Ollama receives a tool's parameter schema whole: ollama-python drops a
-  nested object's properties, `anyOf`, `$ref` and every constraint from a
-  declaration before the request leaves (ollama/ollama-python#724, measured on
-  0.6.2 and 0.6.3), and the model then invented the missing keys (`code` for
-  a declared `zq_code`, measured on qwen3:8b). Until a release keeps them, a
-  request that declares tools goes through the SDK's own request method with
-  the declarations as given (`providers/ollama/sdk_patch.py`, RMK-383).
+- Ollama receives a tool's nested parameters: ollama-python drops a nested
+  object's `properties` and `required` and an `anyOf` from a declaration
+  before the request leaves (ollama/ollama-python#724, measured on 0.6.2 and
+  0.6.3), although the server reads them, and the model then invented the
+  missing keys (`code` for a declared `zq_code`, measured on qwen3:8b). Until
+  a release sends them, a request that declares tools goes through the SDK's
+  own request method, its messages built by the SDK's own types and the
+  declarations as given (`providers/ollama/sdk_patch.py`, RMK-383). The
+  server itself still drops a `$ref` and the constraints.
 
 - DeepSeek receives earlier reasoning in `reasoning_content`, on every round
   that called tools (empty when the round did not reason) and on an answer

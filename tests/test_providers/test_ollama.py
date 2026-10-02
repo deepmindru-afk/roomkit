@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import ollama
 import pytest
 
 from roomkit.providers.ai.base import (
@@ -43,8 +44,12 @@ def _mock_ollama_module() -> MagicMock:
     client = MagicMock()
     client.chat = AsyncMock()
     # A request that declares tools goes through the client's own request
-    # method (providers/ollama/sdk_patch.py).
+    # method (providers/ollama/sdk_patch.py), its messages built by the SDK's
+    # own types: the real ones.
     client._request = AsyncMock()
+    mod.Message = ollama.Message
+    mod.Image = ollama.Image
+    mod.ChatResponse = ollama.ChatResponse
     mod.AsyncClient.return_value = client
     return mod
 

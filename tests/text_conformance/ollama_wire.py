@@ -1,9 +1,11 @@
 """The Ollama native chat wire: whole calls with no ids, results paired by tool name.
 
 The provider keeps the real ``ollama.AsyncClient``; only its HTTP transport is
-fake. A request is recorded as the JSON body the SDK puts on the wire, so what
-the SDK drops (an empty field) is dropped here too, and every answer is the
-SDK's own ``ChatResponse`` read back from its JSON.
+fake. A request is recorded as the JSON body put on the wire, by the SDK or,
+when it declares tools, by the provider's SDK patch, so what they drop (an
+empty field) is dropped here too, and every answer is the SDK's own
+``ChatResponse`` read back from its JSON. The server's own tool struct drops
+a ``$ref`` and the constraints; that happens past the wire, out of reach.
 """
 
 from __future__ import annotations

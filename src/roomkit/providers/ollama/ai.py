@@ -92,7 +92,8 @@ class OllamaAIProvider(AIProvider):
             ) from exc
         self._config = config
         self._response_error = _ollama.ResponseError
-        self._chat_response = _ollama.ChatResponse
+        # The module the client comes from, for the SDK patch (sdk_patch.py).
+        self._sdk = _ollama
         self._client = _ollama.AsyncClient(
             host=config.host,
             timeout=http_timeout(config),
@@ -370,7 +371,7 @@ class OllamaAIProvider(AIProvider):
         kwargs = self._build_kwargs(context, stream=False)
         t0 = time.monotonic()
         try:
-            response = await sdk_patch.chat(self._client, self._chat_response, **kwargs)
+            response = await sdk_patch.chat(self._sdk, self._client, **kwargs)
         except ProviderError:
             raise
         except Exception as exc:  # ResponseError or transport error
@@ -450,7 +451,7 @@ class OllamaAIProvider(AIProvider):
         ids = CallIds()
 
         try:
-            stream = await sdk_patch.chat(self._client, self._chat_response, **kwargs)
+            stream = await sdk_patch.chat(self._sdk, self._client, **kwargs)
             async for chunk in stream:
                 message = self._get_message(chunk)
                 thinking_delta = self._get_attr(message, "thinking", None)
