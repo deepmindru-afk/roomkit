@@ -151,7 +151,7 @@ class ACPTurnMixin:
         try:
             replacement = await turn.runner
             # A cancel can land after the runner finishes but before we wake.
-            return None if turn.cancel_requested else replacement
+            return None if self._closed or turn.cancel_requested else replacement
         except asyncio.CancelledError:
             if not turn.cancel_requested:
                 raise

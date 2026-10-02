@@ -73,6 +73,41 @@ async def test_recovery_is_bounded_and_requires_authorization(
     await channel.close()
 
 
+async def test_close_after_reconstruction_finishes_prevents_replacement_prompt(
+    tmp_path: Any,
+) -> None:
+    channel, connection, _ = _channel(tmp_path, emit_updates=False)
+    replace = channel._replace_session
+    closing: asyncio.Task[None] | None = None
+    attempts: list[str] = []
+
+    async def prompt(session_id: str, *_args: Any, **_kwargs: Any) -> Any:
+        attempts.append(session_id)
+        raise _refusal()
+
+    async def replace_then_close(room_id: str, conn: Any) -> str:
+        nonlocal closing
+        session_id = await replace(room_id, conn)
+        # Schedule shutdown before the completed runner wakes its consumer.
+        closing = asyncio.create_task(channel.close())
+        return session_id
+
+    with (
+        patch.object(connection, "prompt", prompt),
+        patch.object(channel, "_replace_session", replace_then_close),
+    ):
+        output = await _output(channel)
+        assert await asyncio.wait_for(_consume(output), 1) == []
+        assert closing is not None
+        await asyncio.wait_for(closing, 1)
+
+    assert attempts == ["session-1"]
+    assert output.response_metadata["acp"]["interrupted"] is True
+    assert channel.active_turns == 0
+    assert channel._sessions == channel._session_rooms == channel._session_options == {}
+    assert channel._turns == channel._prompted_index == channel._room_locks == {}
+
+
 @pytest.mark.parametrize("activity", ["text", "thinking", "tool", "plan", "permission"])
 async def test_activity_makes_even_an_authorized_signal_terminal(
     tmp_path: Any, activity: str
