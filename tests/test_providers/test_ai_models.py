@@ -311,6 +311,31 @@ def test_merge_curated_prefers_live_values() -> None:
     assert merged.context_window == 200
 
 
+def test_merge_curated_backfills_capabilities_the_listing_leaves_empty() -> None:
+    class _Cat(AIProvider):
+        @property
+        def model_name(self) -> str:
+            return "c"
+
+        async def generate(self, context: AIContext) -> AIResponse:
+            return AIResponse(content="")
+
+        @classmethod
+        def available_models(cls) -> list[ModelInfo]:
+            return [
+                ModelInfo(id="a", capabilities=["tools", "thinking"]),
+                ModelInfo(id="b", capabilities=["tools"]),
+            ]
+
+    live = [ModelInfo(id="a"), ModelInfo(id="b", capabilities=["embedding"]), ModelInfo(id="c")]
+    merged = {m.id: m for m in _Cat._merge_curated(live)}
+
+    assert merged["a"].capabilities == ["tools", "thinking"]
+    # What the API reports wins, and an unknown id stays unknown.
+    assert merged["b"].capabilities == ["embedding"]
+    assert merged["c"].capabilities == []
+
+
 # --- Curated catalogs (offline, no SDK, no key) --------------------------------
 
 
