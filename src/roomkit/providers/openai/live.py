@@ -376,6 +376,7 @@ class OpenAILiveProvider(
             del self._states[session.id]
         state.user_turn.cancel()
         state.assistant_turn.cancel()
+        await self._abandon_open_calls(state)
         was_active = session.state == VoiceSessionState.ACTIVE
         session.state = VoiceSessionState.ENDED
         if not state.started.is_set():
@@ -390,6 +391,13 @@ class OpenAILiveProvider(
                 self._error_callbacks, session, "connection_closed", error_message, label="error"
             )
         await self._close_socket(state)
+
+    async def _abandon_open_calls(self, state: _LiveSession) -> None:
+        """Report the hosted calls this connection leaves unanswered: no other
+        connection issued them, so their results will never be read (RFC §12.4)."""
+        abandoned = list(state.open_calls)
+        state.open_calls.clear()
+        await self._abandon_tool_calls(state.session, abandoned)
 
     async def _close_socket(self, state: _LiveSession, *, timeout: float | None = None) -> None:
         """Close one socket under the library's own bound.
@@ -442,6 +450,7 @@ class OpenAILiveProvider(
             session.state = VoiceSessionState.ENDED
             return
         state.closing = True
+        await self._abandon_open_calls(state)
 
         # Deliver the finals of turns still open while the session can take
         # them; a session the channel already ended gets nothing more.
@@ -583,19 +592,9 @@ class OpenAILiveProvider(
         session = state.session
         merged_pc = {**state.provider_config, **(provider_config or {})}
         logger.info("[%s] replacing session %s (voice or codec changed)", _LOG_TAG, session.id)
-        # The new connection never issued the calls the old one left open:
-        # the model will not read their results, which the channel is told
-        # (RFC §12.4). A call whose own handler asked for this restart (a
-        # handoff) is the channel's to spare.
-        orphaned = list(state.open_calls)
-        state.open_calls.clear()
-        if orphaned:
-            await self._fire(
-                self._tool_call_cancelled_callbacks,
-                session,
-                orphaned,
-                label="tool_call_cancelled",
-            )
+        # The disconnect reports the calls the old connection left open; one
+        # whose own handler asked for this restart (a handoff) is the
+        # channel's to spare.
         await self.disconnect(session)
         # The participant's session did not end — only the upstream connection
         # did (RFC §12.1 forbids a transition out of ENDED otherwise).

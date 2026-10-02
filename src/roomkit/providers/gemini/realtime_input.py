@@ -334,6 +334,9 @@ class GeminiLiveInputMixin(RealtimeVoiceProvider):
         await state.live_session.send_realtime_input(
             activity_start=types.ActivityStart(),
         )
+        # The user speaks again: a call the model then fails to write is
+        # worth telling it about (RFC §12.4).
+        state.malformed_call_nudged = False
         logger.debug("Sent ActivityStart for session %s", session.id)
 
     async def send_activity_end(self, session: VoiceSession) -> None:

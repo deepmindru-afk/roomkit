@@ -560,7 +560,7 @@ class RealtimeVoiceChannel(
         self._collisions = CollisionLog(self.channel_id)
         refuse_given_twice((dict_tool_name(tool) for tool in tool_defs or []), self.channel_id)
         self._tools = tool_defs
-        warn_tools_uncallable(tool_defs, self._provider, self.channel_id)
+        warn_tools_uncallable(tool_defs, "tool(s)", self._provider, self.channel_id)
         # What the channel serves itself and what orchestration sets up on it,
         # each tool with its traits, for every room or one (RFC §19.7, §21.1).
         self._registry = ChannelRegistry(self.channel_id, self._host_tool_names)
@@ -586,6 +586,8 @@ class RealtimeVoiceChannel(
         tool_search_pinned: list[str] | None,
     ) -> None:
         """The tools the channel serves itself: the skills' and Tool Search's."""
+        names = skills.skill_names if skills is not None else None
+        warn_tools_uncallable(names, "skill(s)", self._provider, self.channel_id)
         self._skill_support = self._skill_support_for(skills, script_executor, skill_delivery_mode)
         self._tool_search_support = self._tool_search_for(
             self._tools,
@@ -1685,6 +1687,8 @@ class RealtimeVoiceChannel(
         search_active: bool | None = None,
     ) -> str | None:
         """One composition path for connection, discovery, activation and handoff."""
+        if not self._provider.supports_tools:
+            return prompt  # no tool to call, so no skill or search to advertise
         if self._skill_support:
             scripts_allowed = policy_admits(
                 self._session_policy(session.id), TOOL_RUN_SCRIPT, self._exempt_tool_names()

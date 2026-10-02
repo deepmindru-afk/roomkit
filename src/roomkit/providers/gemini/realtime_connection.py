@@ -46,6 +46,7 @@ class GeminiLiveConnectionMixin(RealtimeVoiceProvider):
     _release_calls_lost_with_the_connection: Callable[
         [_GeminiSessionState], Coroutine[Any, Any, None]
     ]
+    _abandon_open_calls: Callable[[_GeminiSessionState], Coroutine[Any, Any, None]]
     _handle_server_response: Callable[[VoiceSession, Any], Coroutine[Any, Any, None]]
 
     async def _open_live_session(self, live_config: Any) -> tuple[Any, Any]:
@@ -93,6 +94,7 @@ class GeminiLiveConnectionMixin(RealtimeVoiceProvider):
         state.audio_buffer.clear()
         state.queued_text_injections.clear()
         state.queued_injections.clear()
+        await self._abandon_open_calls(state)
         session.state = VoiceSessionState.ENDED
         await self._fire(
             self._error_callbacks,
@@ -135,6 +137,7 @@ class GeminiLiveConnectionMixin(RealtimeVoiceProvider):
                         self._MAX_RECONNECTS,
                     )
                     state.audio_buffer.clear()
+                    await self._abandon_open_calls(state)
                     session.state = VoiceSessionState.ENDED
                     await self._fire(
                         self._error_callbacks,
@@ -221,6 +224,7 @@ class GeminiLiveConnectionMixin(RealtimeVoiceProvider):
                 # instead of a silent disconnect after 5 useless retries.
                 if close_code in self._NON_RETRYABLE_CLOSE_CODES:
                     state.audio_buffer.clear()
+                    await self._abandon_open_calls(state)
                     session.state = VoiceSessionState.ENDED
                     await self._fire(
                         self._error_callbacks,

@@ -3,7 +3,8 @@
 One scenario per provider, each on its own fake transport:
 
 - a call the provider abandons (Gemini's cancellation, ElevenLabs' wait timing
-  out, GPT-Live's restart) is reported to the channel once;
+  out, GPT-Live's restart, a session's connection lost or closed) is reported
+  to the channel once;
 - a failed call's result travels as an error where the protocol can say so;
 - the tasks a session lives on run in a context of their own;
 - a provider whose model calls no tool is declared none;
@@ -14,22 +15,27 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import json
 import logging
 from collections.abc import Awaitable, Callable
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from pydantic import SecretStr
 
 from roomkit import ConferenceRealtimeConfig, RoomKit
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 from roomkit.providers.ai.tool_calls import MALFORMED_CALL_NUDGE
 from roomkit.providers.anam.config import AnamConfig
 from roomkit.providers.anam.realtime import AnamRealtimeProvider
+from roomkit.providers.deepgram.config import DeepgramAgentConfig
+from roomkit.providers.deepgram.realtime import DeepgramAgentProvider
 from roomkit.providers.elevenlabs.config import ElevenLabsRealtimeConfig
 from roomkit.providers.elevenlabs.realtime import ElevenLabsRealtimeProvider
 from roomkit.providers.openai.live_config import HostedReasoning
+from roomkit.providers.openai.realtime import OpenAIRealtimeProvider
 from roomkit.providers.personaplex.realtime import PersonaPlexRealtimeProvider
 from roomkit.voice.base import VoiceSession, VoiceSessionState
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
@@ -41,6 +47,8 @@ from tests.test_providers.test_gemini_realtime import (
     _load_provider,
     _make_session,
 )
+from tests.test_realtime_deepgram import _connect as deepgram_connect
+from tests.test_realtime_elevenlabs import _FakeAsyncConversation, _install_fake_sdk
 
 Told = list[list[str]]
 _ELEVENLABS = ElevenLabsRealtimeConfig(api_key="xi-test", agent_id="agent")
@@ -56,13 +64,19 @@ def _session() -> VoiceSession:
     )
 
 
+def _told(provider: Any) -> Told:
+    """What the provider reports through ``on_tool_call_cancelled``."""
+    told: Told = []
+    provider.on_tool_call_cancelled(lambda s, ids: told.append(list(ids)))
+    return told
+
+
 # -- An abandoned call is reported to the channel, once -----------------------
 
 
 async def _gemini_cancels() -> tuple[Told, list[str]]:
     provider, session, _state, _live = _blocking_call_state()
-    told: Told = []
-    provider.on_tool_call_cancelled(lambda s, ids: told.append(list(ids)))
+    told = _told(provider)
 
     cancellation = SimpleNamespace(tool_call_cancellation=SimpleNamespace(ids=["call-1"]))
     await provider._handle_server_response(session, cancellation)
@@ -73,8 +87,7 @@ async def _gemini_cancels() -> tuple[Told, list[str]]:
 async def _elevenlabs_times_out() -> tuple[Told, list[str]]:
     provider = ElevenLabsRealtimeProvider(_ELEVENLABS.model_copy(update={"tool_timeout_s": 0.01}))
     session = _session()
-    told: Told = []
-    provider.on_tool_call_cancelled(lambda s, ids: told.append(list(ids)))
+    told = _told(provider)
     handler = provider._make_tool_handler(session, "get_weather")
 
     with pytest.raises(RuntimeError, match="did not return"):
@@ -86,8 +99,7 @@ async def _elevenlabs_times_out() -> tuple[Told, list[str]]:
 async def _gpt_live_restarts() -> tuple[Told, list[str]]:
     provider = _provider(delegation=HostedReasoning(model="gpt-5.6-terra"), close_timeout_s=0)
     session = _session()
-    told: Told = []
-    provider.on_tool_call_cancelled(lambda s, ids: told.append(list(ids)))
+    told = _told(provider)
     first, second = _FakeWS(), _FakeWS()
     first.push(_started())
     second.push(_started())
@@ -101,10 +113,131 @@ async def _gpt_live_restarts() -> tuple[Told, list[str]]:
     return told, ["call_1"]
 
 
+class _ClosedForGoodError(Exception):
+    """A Live socket closed with a code no reconnect recovers from."""
+
+    code = 1008
+
+
+async def _raising(exc: Exception) -> Any:
+    raise exc
+    yield  # an async generator, as the Live session's receive() is
+
+
+async def _gemini_closes_for_good() -> tuple[Told, list[str]]:
+    provider, session, _state, live = _blocking_call_state()
+    session.state = VoiceSessionState.ACTIVE
+    told = _told(provider)
+    live.receive = MagicMock(return_value=_raising(_ClosedForGoodError("policy violation")))
+
+    await provider._receive_loop(session)
+
+    return told, ["call-1"]
+
+
+async def _gemini_cannot_preserve_its_context() -> tuple[Told, list[str]]:
+    provider, session, state, _live = _blocking_call_state()
+    told = _told(provider)
+
+    await provider._end_preserved_context(session, state)
+
+    return told, ["call-1"]
+
+
+async def _gemini_disconnects() -> tuple[Told, list[str]]:
+    provider, session, _state, _live = _blocking_call_state()
+    told = _told(provider)
+
+    await provider.disconnect(session)
+
+    return told, ["call-1"]
+
+
+def _elevenlabs_waiting_on(call_id: str) -> tuple[ElevenLabsRealtimeProvider, VoiceSession, Told]:
+    provider = ElevenLabsRealtimeProvider(_ELEVENLABS)
+    session = _session()
+    provider._sessions[session.id] = session
+    provider._pending_tools[session.id] = {call_id: asyncio.get_running_loop().create_future()}
+    return provider, session, _told(provider)
+
+
+async def _elevenlabs_disconnects() -> tuple[Told, list[str]]:
+    # A handoff reconnects through here: the base reconfigure.
+    provider, session, told = _elevenlabs_waiting_on("c1")
+
+    await provider.disconnect(session)
+
+    return told, ["c1"]
+
+
+async def _elevenlabs_conversation_fails() -> tuple[Told, list[str]]:
+    provider, session, told = _elevenlabs_waiting_on("c1")
+
+    await provider._fail_session(session, "session_ended", "ended by the service")
+
+    return told, ["c1"]
+
+
+async def _gpt_live_loses_its_connection() -> tuple[Told, list[str]]:
+    provider = _provider(delegation=HostedReasoning(model="gpt-5.6-terra"))
+    session = _session()
+    told = _told(provider)
+    ws = _FakeWS()
+    ws.push(_started())
+    with patch("websockets.connect", AsyncMock(return_value=ws)):
+        await provider.connect(session, tools=[TOOL])
+
+    ws.push(_function_call("call_1", "get_weather", "{}"))
+    ws.end()
+    await until(lambda: bool(told))
+
+    return told, ["call_1"]
+
+
+async def _deepgram_loses_its_connection() -> tuple[Told, list[str]]:
+    provider = DeepgramAgentProvider(DeepgramAgentConfig(api_key=SecretStr("dg-key")))
+    session = _session()
+    told = _told(provider)
+    ws = await deepgram_connect(provider, session)
+    call = {"id": "fc_1", "name": "get_weather", "arguments": "{}", "client_side": True}
+
+    ws.push(json.dumps({"type": "FunctionCallRequest", "functions": [call]}))
+    ws.finish()
+    await until(lambda: bool(told))
+
+    return told, ["fc_1"]
+
+
+async def _openai_loses_its_connection() -> tuple[Told, list[str]]:
+    provider = OpenAIRealtimeProvider(api_key="sk-test")
+    session = _session()
+    session.state = VoiceSessionState.ACTIVE
+    ws = AsyncMock()
+    provider._connections[session.id] = ws
+    provider._sessions[session.id] = session
+    told = _told(provider)
+    for call_id in ("c1", "c2"):
+        call = {"call_id": call_id, "name": "lookup", "arguments": "{}"}
+        await provider._on_function_call_done(session, call)
+    await provider.submit_tool_result(session, "c2", "{}")
+
+    await provider._discard_connection(session, ws, error_message="connection lost")
+
+    return told, ["c1"]  # c2 was answered
+
+
 _ABANDONS: dict[str, Callable[[], Awaitable[tuple[Told, list[str]]]]] = {
     "gemini-cancellation": _gemini_cancels,
+    "gemini-closed-for-good": _gemini_closes_for_good,
+    "gemini-context-not-preserved": _gemini_cannot_preserve_its_context,
+    "gemini-disconnect": _gemini_disconnects,
     "elevenlabs-timeout": _elevenlabs_times_out,
+    "elevenlabs-disconnect": _elevenlabs_disconnects,
+    "elevenlabs-conversation-failure": _elevenlabs_conversation_fails,
     "gpt-live-restart": _gpt_live_restarts,
+    "gpt-live-connection-lost": _gpt_live_loses_its_connection,
+    "deepgram-connection-lost": _deepgram_loses_its_connection,
+    "openai-connection-lost": _openai_loses_its_connection,
 }
 
 
@@ -226,6 +359,33 @@ async def test_a_gpt_live_receive_loop_does_not_inherit_its_starters_context() -
     await provider.disconnect(session)
 
 
+async def test_the_elevenlabs_sdk_session_starts_in_a_context_of_its_own(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The SDK creates the conversation's receive task inside start_session.
+    _install_fake_sdk(monkeypatch)
+    seen: list[str | None] = []
+
+    async def start(conversation: _FakeAsyncConversation) -> None:
+        seen.append(_CALLER.get())
+        conversation.started.set()
+
+    monkeypatch.setattr(_FakeAsyncConversation, "start_session", start)
+    provider = ElevenLabsRealtimeProvider(_ELEVENLABS)
+    session = _session()
+    _CALLER.set("the handler's call")
+
+    connect = asyncio.create_task(provider.connect(session))
+    await until(lambda: bool(_FakeAsyncConversation.instances))
+    conversation = _FakeAsyncConversation.instances[0]
+    await conversation.started.wait()
+    await conversation.audio_interface.start(AsyncMock())
+    await connect
+
+    assert seen == [None]
+    await provider.disconnect(session)
+
+
 async def test_a_session_task_runs_in_a_context_of_its_own() -> None:
     seen: list[str | None] = []
 
@@ -268,7 +428,12 @@ async def test_a_toolless_provider_is_declared_no_tool(caplog: pytest.LogCapture
     tools = [{"name": "lookup", "description": "d", "parameters": {"type": "object"}}]
     with caplog.at_level(logging.WARNING, logger="roomkit.channels.tools"):
         channel = RealtimeVoiceChannel(
-            "rt", provider=provider, transport=MockRealtimeTransport(), tools=tools
+            "rt",
+            provider=provider,
+            transport=MockRealtimeTransport(),
+            tools=tools,
+            tool_search=True,
+            system_prompt="Be brief.",
         )
     kit = RoomKit()
     kit.register_channel(channel)
@@ -279,6 +444,8 @@ async def test_a_toolless_provider_is_declared_no_tool(caplog: pytest.LogCapture
 
     connect = next(c for c in provider.calls if c.method == "connect")
     assert not connect.args.get("tools")
+    # Nor a Tool Search preamble naming tools it cannot call.
+    assert connect.args.get("system_prompt") == "Be brief."
     assert any("cannot call tools" in r.getMessage() for r in caplog.records)
     await kit.close()
 

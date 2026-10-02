@@ -42,12 +42,14 @@ from roomkit.channels._conference_tools import (
 )
 from roomkit.channels._realtime_tool_calls import RealtimeToolCall, ToolCallBook
 from roomkit.channels._realtime_tool_executor import (
+    ABANDONED_BY_PROVIDER,
     ToolCallDoor,
     refuse_duplicate_call,
     report_cancelled_call,
     report_interrupted_calls,
     run_tool_call,
     serving_tool_call,
+    submit_tool_outcome,
     tool_loop_context,
 )
 from roomkit.channels._served_tools import CollisionLog, warn_tools_uncallable
@@ -199,7 +201,7 @@ class ConferenceRealtime:
             provider.on_tool_call(self._on_tool_call)
             provider.on_tool_call_cancelled(self._on_tool_call_cancelled)
         warn_unused_role_overrides(config, self._channel_id)
-        warn_tools_uncallable(config.tools, config.provider, self._channel_id)
+        warn_tools_uncallable(config.tools, "tool(s)", config.provider, self._channel_id)
         self._config = config
         self.mixer.configure(input_sample_rate=config.input_sample_rate)
         self._voice.set_on_interrupted(self.interrupt)
@@ -537,8 +539,9 @@ class ConferenceRealtime:
         call.task.add_done_callback(lambda _: self._tool_calls.close(call))
 
     async def _on_tool_call_cancelled(self, session: VoiceSession, call_ids: list[str]) -> None:
-        """The model abandoned these calls: interrupt their handlers, send
-        nothing, and report them to ON_TOOL_CALL's observers as cancelled.
+        """The model will not read these calls' results: interrupt their
+        handlers, send nothing, and report them to ON_TOOL_CALL's observers as
+        cancelled.
 
         A call whose result went out, or whose outcome ON_TOOL_CALL already
         has, is left to finish: a second report would put two outcomes on one
@@ -555,7 +558,7 @@ class ConferenceRealtime:
             call.task.cancel()
             # Off the provider's callback: an audit hook must not hold up the
             # interruption it reports.
-            room.spawn(report_cancelled_call(self, call, "The model abandoned this call"))
+            room.spawn(report_cancelled_call(self, call, ABANDONED_BY_PROVIDER))
 
     async def _answer_tool(self, call: RealtimeToolCall) -> None:
         """Answer one tool call through the realtime tool executor.
@@ -623,13 +626,17 @@ class ConferenceRealtime:
     async def _submit_tool_result(
         self, config: ConferenceRealtimeConfig, call: RealtimeToolCall, outcome: ToolOutcome
     ) -> bool:
-        provider = config.provider
-        submit = provider.submit_tool_error if outcome.failed else provider.submit_tool_result
         try:
             with self._operations.use(
                 ConferenceResource.REALTIME, what=f"tool result for room {call.room_id}"
             ):
-                await submit(call.session, call.call_id, result_text(outcome.result))
+                await submit_tool_outcome(
+                    config.provider,
+                    call.session,
+                    call.call_id,
+                    result_text(outcome.result),
+                    failed=outcome.failed,
+                )
         except Exception:
             logger.warning(
                 "Conference channel %r could not return the result of tool %r to the "

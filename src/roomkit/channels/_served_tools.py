@@ -55,16 +55,17 @@ def refuse_given_twice(names: Iterable[str | None], channel_id: str) -> None:
 
 
 def warn_tools_uncallable(
-    tools: Sized | None, provider: RealtimeVoiceProvider, channel_id: str
+    given: Sized | None, what: str, provider: RealtimeVoiceProvider, channel_id: str
 ) -> None:
-    """Log that the tools given to a channel are declared to no session: its
-    provider's model calls no tool (RFC §12.4)."""
-    if tools and not provider.supports_tools:
+    """Log that the tools or skills (*what*) given to a channel are declared
+    to no session: its provider's model calls no tool (RFC §12.4)."""
+    if given and not provider.supports_tools:
         logger.warning(
-            "Channel %s: %s cannot call tools; the %d tool(s) given are declared to no session",
+            "Channel %s: %s cannot call tools; the %d %s given are declared to no session",
             channel_id,
             provider.name,
-            len(tools),
+            len(given),
+            what,
         )
 
 

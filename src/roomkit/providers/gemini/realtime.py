@@ -249,6 +249,7 @@ class GeminiLiveProvider(
             session.state = VoiceSessionState.ENDED
             return
 
+        await self._abandon_open_calls(state)
         session.state = VoiceSessionState.ENDED
         state.audio_buffer.clear()
 

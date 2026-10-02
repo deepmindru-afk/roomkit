@@ -64,6 +64,9 @@ class OpenAIRealtimeBase(OpenAIRealtimeEventHandlersMixin):
         # The current response's function calls: the model is asked to go on
         # once that response is done and every call has its output (RFC §12.4)
         self._pending_responses: dict[str, PendingResponse] = {}
+        # Every function call issued and not yet answered, whatever its
+        # response: the connection's end abandons them (RFC §12.4)
+        self._open_calls: dict[str, set[str]] = {}
         # provider_config as passed to connect, kept so mid-session calls
         # (image injection, for one) can read settings fixed at connect time
         self._provider_configs: dict[str, dict[str, Any]] = {}
@@ -320,6 +323,7 @@ class OpenAIRealtimeBase(OpenAIRealtimeEventHandlersMixin):
         await self._request_response(session, ws, "text injected")
 
     async def submit_tool_result(self, session: VoiceSession, call_id: str, result: str) -> None:
+        self._open_calls.get(session.id, set()).discard(call_id)
         ws = self._connections.get(session.id)
         if ws is None:
             return
@@ -438,6 +442,11 @@ class OpenAIRealtimeBase(OpenAIRealtimeEventHandlersMixin):
         self._output_bytes_per_ms.pop(session_id, None)
         self._audio_codecs.pop(session_id, None)
 
+    async def _abandon_open_calls(self, session: VoiceSession) -> None:
+        """Report the calls this connection leaves unanswered: no other
+        connection will read their results (RFC §12.4)."""
+        await self._abandon_tool_calls(session, self._open_calls.pop(session.id, ()))
+
     async def _discard_connection(
         self,
         session: VoiceSession,
@@ -451,6 +460,7 @@ class OpenAIRealtimeBase(OpenAIRealtimeEventHandlersMixin):
         self._connections.pop(session.id, None)
         self._sessions.pop(session.id, None)
         self._receive_tasks.pop(session.id, None)
+        await self._abandon_open_calls(session)
         self._forget_session(session.id)
         was_active = session.state == VoiceSessionState.ACTIVE
         session.state = VoiceSessionState.ENDED
@@ -564,6 +574,7 @@ class OpenAIRealtimeBase(OpenAIRealtimeEventHandlersMixin):
         # Close WebSocket (short timeout to avoid blocking on close handshake)
         ws = self._connections.pop(session.id, None)
         self._sessions.pop(session.id, None)
+        await self._abandon_open_calls(session)
         self._forget_session(session.id)
         if ws is not None:
             with contextlib.suppress(Exception):

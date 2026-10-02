@@ -6,7 +6,7 @@ import asyncio
 import contextvars
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Iterable
 from typing import TYPE_CHECKING, Any
 
 from roomkit.core.task_utils import log_task_exception
@@ -32,7 +32,7 @@ RealtimeSpeechEndCallback = Callable[[VoiceSession], Any]
 RealtimeToolCallCallback = Callable[[VoiceSession, str, str, dict[str, Any]], Any]
 """(session, call_id, name, arguments)"""
 RealtimeToolCallCancelledCallback = Callable[[VoiceSession, list[str]], Any]
-"""(session, call_ids) — the model abandoned these outstanding calls"""
+"""(session, call_ids) — the model will not read these calls' results"""
 RealtimeResponseStartCallback = Callable[[VoiceSession], Any]
 RealtimeResponseEndCallback = Callable[[VoiceSession], Any]
 RealtimeErrorCallback = Callable[[VoiceSession, str, str], Any]
@@ -599,18 +599,15 @@ class RealtimeVoiceProvider(ABC):
         self._tool_call_callbacks.append(callback)
 
     def on_tool_call_cancelled(self, callback: RealtimeToolCallCancelledCallback) -> None:
-        """Register callback for tool calls the model abandoned (RFC §12.4).
+        """Register callback for tool calls the model will not read (RFC §12.4).
 
-        Called as ``(session, call_ids)`` when the provider learns that the
-        model will not read the results of calls it issued: Gemini Live sends
-        ``tool_call_cancellation`` when the user interrupts while calls are
-        outstanding, and a reconnect orphans every call the old socket issued,
-        blocking or not (call ids are connection-scoped). The channel cancels
-        the handler still running for such a call and reports it to
-        ON_TOOL_CALL's observers as cancelled. A provider whose protocol has
-        no such event never fires it — OpenAI's function calls stay in the
-        conversation and their outputs are read on the next turn — so the
-        default is silence, not a no-op to override.
+        Called as ``(session, call_ids)`` for every call the provider
+        abandons, whatever the cause: the model discarding it (Gemini Live's
+        ``tool_call_cancellation`` when the user interrupts), a reconnect
+        orphaning it (call ids are connection-scoped), the provider's own
+        wait on the result timing out, the connection or the session ending.
+        The channel cancels the handler still running for such a call and
+        reports it to ON_TOOL_CALL's observers as cancelled.
         """
         self._tool_call_cancelled_callbacks.append(callback)
 
@@ -655,6 +652,21 @@ class RealtimeVoiceProvider(ABC):
         self._error_callbacks.append(callback)
 
     # -- Callback dispatch --
+
+    async def _abandon_tool_calls(self, session: VoiceSession, call_ids: Iterable[str]) -> None:
+        """Report calls whose results the model will not read (RFC §12.4).
+
+        Every call a provider abandons is reported here, whatever the cause;
+        the call ids come from the provider's own book of open calls.
+        """
+        abandoned = list(call_ids)
+        if abandoned:
+            await self._fire(
+                self._tool_call_cancelled_callbacks,
+                session,
+                abandoned,
+                label="tool_call_cancelled",
+            )
 
     async def _fire(
         self,

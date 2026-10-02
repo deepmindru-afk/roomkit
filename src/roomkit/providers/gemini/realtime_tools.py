@@ -182,7 +182,8 @@ class GeminiLiveToolsMixin(RealtimeVoiceProvider):
         state.call_names.pop(call_id, None)
 
     async def _release_calls_lost_with_the_connection(self, state: _GeminiSessionState) -> None:
-        """Forget every tool call the old socket issued.
+        """Forget every tool call the old socket issued, then deliver the
+        injections a blocking one held.
 
         Call ids are connection-scoped: the new socket never issued them and
         will not read their results, blocking or not. Left in the books, a
@@ -191,25 +192,7 @@ class GeminiLiveToolsMixin(RealtimeVoiceProvider):
         the result of any of them then went out for an id the server did not
         know.
         """
-        orphaned = sorted(state.pending_call_ids)
-        state.pending_call_ids.clear()
-        state.blocking_call_ids.clear()
-        state.call_names.clear()
-        if orphaned:
-            logger.info(
-                "[Gemini] %d tool call(s) did not survive the reconnect (session %s)",
-                len(orphaned),
-                state.session.id,
-            )
-            state.cancelled_call_ids.update(orphaned)
-            # The application is still working for the old socket. Same fact
-            # as a server cancellation: the model will not read the result.
-            await self._fire(
-                self._tool_call_cancelled_callbacks,
-                state.session,
-                orphaned,
-                label="tool_call_cancelled",
-            )
+        await self._abandon_open_calls(state)
         try:
             await self._flush_queued_injections(state)
         except Exception:
@@ -219,6 +202,25 @@ class GeminiLiveToolsMixin(RealtimeVoiceProvider):
                 state.session.id,
                 exc_info=True,
             )
+
+    async def _abandon_open_calls(self, state: _GeminiSessionState) -> None:
+        """Forget every tool call the connection issued and report them: no
+        other connection will read their results (RFC §12.4)."""
+        orphaned = sorted(state.pending_call_ids)
+        state.pending_call_ids.clear()
+        state.blocking_call_ids.clear()
+        state.call_names.clear()
+        if not orphaned:
+            return
+        logger.info(
+            "[Gemini] %d tool call(s) did not survive the connection (session %s)",
+            len(orphaned),
+            state.session.id,
+        )
+        state.cancelled_call_ids.update(orphaned)
+        # The application is still working for the old socket. Same fact as
+        # a server cancellation: the model will not read the result.
+        await self._abandon_tool_calls(state.session, orphaned)
 
     async def _on_tool_call(
         self, session: VoiceSession, state: _GeminiSessionState, tool_call: Any
@@ -279,8 +281,6 @@ class GeminiLiveToolsMixin(RealtimeVoiceProvider):
         for call_id in ids:
             self._release_call(state, call_id)
             state.cancelled_call_ids.add(call_id)
-        await self._fire(
-            self._tool_call_cancelled_callbacks, session, ids, label="tool_call_cancelled"
-        )
+        await self._abandon_tool_calls(session, ids)
         if not state.blocking_call_ids:
             await self._flush_queued_injections(state)

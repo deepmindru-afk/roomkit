@@ -15,8 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `submit_tool_error`, which a provider whose protocol marks an error
   overrides and which otherwise sends the result as `submit_tool_result`
   does. `supports_tools` is `False` on Anam and PersonaPlex, whose models
-  call no tool: the channel, and a conference, declare them none and warn
-  once rather than leave every call unanswered.
+  call no tool: the channel, and a conference, declare them none, offer
+  them no skill or Tool Search in the prompt, and warn once rather than
+  leave every call unanswered.
 
 - `add_turn_note`, `split_turn_notes` and `TURN_NOTES_HEADER`, exported from
   `roomkit` and `roomkit.channels` (RMK-368, RFC §6.4): a
@@ -138,15 +139,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - What a realtime provider owes its tool calls (RMK-299, RFC §12.4):
   - ElevenLabs sends a failed call's result as a tool error, where its agent
     read a refusal or a failure as a success;
-  - ElevenLabs reports the call its `tool_timeout_s` cuts and the calls the
-    conversation's end drops, and GPT-Live the calls still open on the
-    connection a restart replaces (a voice or codec change): the channel
-    reported their handler's result as one the model read, and now reports
-    them once, cancelled, and cancels the handler;
-  - every provider runs a session's receive loop, keepalive and supervisor
-    in a context of their own, as Gemini Live did alone: a session reopened
-    from inside a tool handler (a GPT-Live handoff) carried that call's
-    context into every event of the new connection;
+  - every provider reports the calls it abandons, where only Gemini Live's
+    cancellation and reconnect did: ElevenLabs the call its
+    `tool_timeout_s` cuts and the calls a disconnect or a handoff drops,
+    GPT-Live the calls still open on the connection a restart replaces (a
+    voice or codec change), and Gemini Live, ElevenLabs, GPT-Live, OpenAI
+    Realtime, xAI and Deepgram the calls still open when their connection
+    is lost or closed. The channel and a conference recorded their
+    handler's result as one the model read; they now report them once,
+    cancelled, and cancel the handler;
+  - every provider runs a session's receive loop, keepalive and supervisor,
+    and ElevenLabs its SDK's conversation task, in a context of their own,
+    as Gemini Live did alone: a session reopened from inside a tool handler
+    (a handoff) carried that call's context into every event of the new
+    connection;
   - Gemini Live tells the model, once until the user speaks again, that a
     call it ended its turn on without being able to write
     (`MALFORMED_FUNCTION_CALL`) did not run, where the turn ended in

@@ -205,12 +205,7 @@ class GeminiLiveEventHandlersMixin(RealtimeVoiceProvider):
             return
         if vtype == "ACTIVITY_START":
             logger.info("[VAD] speech_start (session %s)", session.id)
-            state.user_speech_active = True
-            state.malformed_call_nudged = False
-            # New utterance: a repeat of the previous words is now legitimate.
-            state.last_final_text.pop("user", None)
-            state.awaiting_new_user_utterance = False
-            await self._fire(self._speech_start_callbacks, session, label="speech_start")
+            await self._user_speech_started(session, state)
         elif vtype == "ACTIVITY_END":
             logger.info("[VAD] speech_end (session %s)", session.id)
             state.user_speech_active = False
@@ -267,24 +262,8 @@ class GeminiLiveEventHandlersMixin(RealtimeVoiceProvider):
             self._log_event(session.id, "response_start", turn=state.turn_count)
             await self._fire(self._response_start_callbacks, session, label="response_start")
 
-        # Interrupted — user barged in while model was speaking
         if getattr(content, "interrupted", None):
-            logger.info("[Gemini] INTERRUPTED — AI cut off by barge-in (session %s)", session.id)
-            await self._flush_transcription_buffer(session, "assistant")
-            # Fire speech_start ONLY if ACTIVITY_START wasn't already
-            # received — Gemini doesn't always send voice_activity before
-            # interrupted, so this may be the only trigger.
-            if not state.user_speech_active:
-                state.user_speech_active = True
-                state.malformed_call_nudged = False
-                state.last_final_text.pop("user", None)
-                state.awaiting_new_user_utterance = False
-                await self._fire(self._speech_start_callbacks, session, label="speech_start")
-            if state.response_started:
-                state.response_started = False
-                state.response_ended_by_interrupt = True
-                await self._fire(self._response_end_callbacks, session, label="response_end")
-            state.assistant_response_observed = False
+            await self._on_interrupted(session, state)
 
         # Turn complete, and separately, interaction complete.
         #
@@ -325,9 +304,6 @@ class GeminiLiveEventHandlersMixin(RealtimeVoiceProvider):
             await self._flush_transcription_buffer(session, "user")
             await self._flush_transcription_buffer(session, "assistant")
 
-        if turn_complete and _ended_on_malformed_call(content):
-            await self._nudge_malformed_call(session, state)
-
         # Where the server reports its state, only IDLE closes the response.
         # Where it does not, ``turn_complete`` is the only signal there is and
         # keeps its old meaning, so 2.0 Flash Live and 2.5 native audio still
@@ -345,6 +321,37 @@ class GeminiLiveEventHandlersMixin(RealtimeVoiceProvider):
                 state.response_ended_by_interrupt = False
             else:
                 await self._fire(self._response_end_callbacks, session, label="response_end")
+
+        # After the response's end: the reminder starts the model's next one.
+        if turn_complete and _ended_on_malformed_call(content):
+            await self._nudge_malformed_call(session, state)
+
+    async def _on_interrupted(self, session: VoiceSession, state: _GeminiSessionState) -> None:
+        """The user barged in while the model was speaking."""
+        logger.info("[Gemini] INTERRUPTED — AI cut off by barge-in (session %s)", session.id)
+        await self._flush_transcription_buffer(session, "assistant")
+        # Fire speech_start ONLY if ACTIVITY_START wasn't already
+        # received — Gemini doesn't always send voice_activity before
+        # interrupted, so this may be the only trigger.
+        if not state.user_speech_active:
+            await self._user_speech_started(session, state)
+        if state.response_started:
+            state.response_started = False
+            state.response_ended_by_interrupt = True
+            await self._fire(self._response_end_callbacks, session, label="response_end")
+        state.assistant_response_observed = False
+
+    async def _user_speech_started(
+        self, session: VoiceSession, state: _GeminiSessionState
+    ) -> None:
+        """Open a new user utterance, as the server detected it."""
+        state.user_speech_active = True
+        # A repeat of the previous words is legitimate again, and so is
+        # another reminder of a call the model could not write.
+        state.last_final_text.pop("user", None)
+        state.malformed_call_nudged = False
+        state.awaiting_new_user_utterance = False
+        await self._fire(self._speech_start_callbacks, session, label="speech_start")
 
     async def _nudge_malformed_call(
         self, session: VoiceSession, state: _GeminiSessionState

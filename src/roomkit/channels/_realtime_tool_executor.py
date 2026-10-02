@@ -39,8 +39,15 @@ if TYPE_CHECKING:
     from roomkit.models.context import RoomContext
     from roomkit.models.room import Room
     from roomkit.models.tool_call import ToolCallEvent
+    from roomkit.voice.base import VoiceSession
+    from roomkit.voice.realtime.provider import RealtimeVoiceProvider
 
 logger = logging.getLogger("roomkit.channels.realtime_tools")
+
+ABANDONED_BY_PROVIDER = "The provider abandoned this call"
+"""Why a call the provider reported abandoned was cancelled: the model
+discarded it, a reconnect orphaned it, the provider's wait on it timed out,
+or the connection ended (RFC §12.4)."""
 
 
 class ToolCallDoor(Protocol):
@@ -243,6 +250,20 @@ async def refuse_duplicate_call(host: ToolCallHost, call: RealtimeToolCall) -> N
     )
     body = json.dumps({"error": f"Tool call '{call.call_id}' is already running"})
     await report_failed_call(host, call, ToolOutcome(OutcomeKind.REFUSED, body))
+
+
+async def submit_tool_outcome(
+    provider: RealtimeVoiceProvider,
+    session: VoiceSession,
+    call_id: str,
+    result: str,
+    *,
+    failed: bool,
+) -> None:
+    """Send a call's result through *provider*, as an error when the call
+    failed, for a protocol that can say so (RFC §12.4)."""
+    submit = provider.submit_tool_error if failed else provider.submit_tool_result
+    await submit(session, call_id, result)
 
 
 async def report_cancelled_call(host: ToolCallHost, call: RealtimeToolCall, why: str) -> None:

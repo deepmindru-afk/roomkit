@@ -249,9 +249,13 @@ class ElevenLabsRealtimeProvider(RealtimeVoiceProvider):
         self._audio_locks[session.id] = asyncio.Lock()
         self._closing.discard(session.id)
 
-        # Start the SDK session (creates async task internally)
+        # The SDK creates the session's receive task inside start_session:
+        # started from a fresh context, it inherits nothing from the caller,
+        # which may be a tool handler reconnecting the session (RFC §12.4).
         try:
-            await conversation.start_session()
+            await self._session_task(
+                conversation.start_session(), name=f"elevenlabs_start:{session.id}"
+            )
         except Exception:
             self._forget_session(session.id)
             raise
@@ -411,7 +415,10 @@ class ElevenLabsRealtimeProvider(RealtimeVoiceProvider):
         self._closing.add(session.id)
 
         await self._end_response(session)
-        self._reject_pending_tools(session.id, "the voice session ended")
+        # A handoff reconnects through here too (the base reconfigure): the
+        # new conversation never issued these calls (RFC §12.4).
+        abandoned = self._reject_pending_tools(session.id, "the voice session ended")
+        await self._abandon_tool_calls(session, abandoned)
 
         conversation = self._conversations.pop(session.id, None)
         try:
@@ -579,7 +586,7 @@ class ElevenLabsRealtimeProvider(RealtimeVoiceProvider):
             except TimeoutError:
                 # The agent reads an error now and never the result: the call
                 # is abandoned, which the channel is told (RFC §12.4).
-                await self._abandon_tools(session, [call_id])
+                await self._abandon_tool_calls(session, [call_id])
                 # Raising is how the SDK is told this is an error result;
                 # returning a string would read as a successful call.
                 raise RuntimeError(
@@ -600,16 +607,6 @@ class ElevenLabsRealtimeProvider(RealtimeVoiceProvider):
             if not future.done():
                 future.set_exception(RuntimeError(f"Tool call {call_id} abandoned: {reason}"))
         return list(pending)
-
-    async def _abandon_tools(self, session: VoiceSession, call_ids: list[str]) -> None:
-        """Tell the channel the agent will not read these calls' results."""
-        if call_ids:
-            await self._fire(
-                self._tool_call_cancelled_callbacks,
-                session,
-                call_ids,
-                label="tool_call_cancelled",
-            )
 
     # -- Response lifecycle --
 
@@ -686,7 +683,7 @@ class ElevenLabsRealtimeProvider(RealtimeVoiceProvider):
         await self._end_response(session)
         abandoned = self._reject_pending_tools(session.id, message)
         self._forget_session(session.id)
-        await self._abandon_tools(session, abandoned)
+        await self._abandon_tool_calls(session, abandoned)
 
         session.state = VoiceSessionState.ENDED
         await self._fire(self._error_callbacks, session, code, message, label="error")

@@ -864,7 +864,10 @@ class DeepgramAgentProvider(RealtimeVoiceProvider):
             await self._flush_assistant_transcript(state)
         state.responding = False
         state.audio_started = False
+        # The agent will not read these calls' results (RFC §12.4).
+        abandoned = list(state.pending_calls)
         state.pending_calls.clear()
+        await self._abandon_tool_calls(state.session, abandoned)
         state.deferred_messages.clear()
         state.deferred_bytes = 0
         state.session.state = VoiceSessionState.ENDED

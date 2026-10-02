@@ -72,6 +72,7 @@ class OpenAIRealtimeEventHandlersMixin(RealtimeVoiceProvider):
     _connections: dict[str, Any]
     _responding: set[str]
     _pending_responses: dict[str, PendingResponse]
+    _open_calls: dict[str, set[str]]
     _floor_held: set[str]
     _turns_owed: set[str]
     _provider_configs: dict[str, dict[str, Any]]
@@ -257,6 +258,7 @@ class OpenAIRealtimeEventHandlersMixin(RealtimeVoiceProvider):
         pending = self._pending_responses.setdefault(session.id, PendingResponse())
         pending.call_ids.add(call_id)
         pending.had_calls = True
+        self._open_calls.setdefault(session.id, set()).add(call_id)
         await self._fire(
             self._tool_call_callbacks,
             session,

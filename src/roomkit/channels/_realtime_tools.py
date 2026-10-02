@@ -21,6 +21,7 @@ from roomkit.channels._realtime_context import (
 )
 from roomkit.channels._realtime_tool_calls import RealtimeToolCall, ToolCallBook
 from roomkit.channels._realtime_tool_executor import (
+    ABANDONED_BY_PROVIDER,
     ToolCallDoor,
     deliver_once,
     judge_tool_call,
@@ -29,6 +30,7 @@ from roomkit.channels._realtime_tool_executor import (
     run_tool_call,
     serve_tool_call,
     serving_tool_call,
+    submit_tool_outcome,
     tool_loop_context,
 )
 from roomkit.channels._skill_constants import TOOL_ACTIVATE_SKILL
@@ -256,7 +258,7 @@ class RealtimeToolsMixin:
         call.task.add_done_callback(lambda _: self._close_tool_call(call))
 
     def _on_provider_tool_call_cancelled(self, session: VoiceSession, call_ids: list[str]) -> Any:
-        """Provider callback: the model abandoned outstanding calls (RFC §12.4).
+        """Provider callback: the model will not read these calls' results (RFC §12.4).
 
         The handler still running for one of them is working for a result
         nobody will read. Its task is cancelled and the call is reported to
@@ -296,14 +298,14 @@ class RealtimeToolsMixin:
             assert call.task is not None  # abandonable  # noqa: S101
             call.task.cancel()
             logger.info(
-                "Tool call %s(%s) cancelled by the model for session %s",
+                "Tool call %s(%s) abandoned by the provider for session %s",
                 call.name,
                 call_id,
                 session.id,
             )
             self._track_task(
                 loop,
-                report_cancelled_call(self, call, "The model abandoned this call"),
+                report_cancelled_call(self, call, ABANDONED_BY_PROVIDER),
                 name=f"rt_tool_cancelled:{session.id}:{call_id}",
             )
 
@@ -672,8 +674,7 @@ class RealtimeToolsMixin:
             # The new socket never issued this id (RFC §9.3)
             return False
         self._expect_provider_output(session.id)
-        submit = self._provider.submit_tool_error if failed else self._provider.submit_tool_result
-        await submit(session, call_id, result)
+        await submit_tool_outcome(self._provider, session, call_id, result, failed=failed)
         return session.state != VoiceSessionState.ENDED
 
     async def _serve_tool_search(self, call: RealtimeToolCall, door: ToolCallDoor) -> ToolOutcome:
