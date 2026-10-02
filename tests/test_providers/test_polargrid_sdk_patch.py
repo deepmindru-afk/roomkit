@@ -83,6 +83,20 @@ async def test_the_sdk_still_cannot_stream_its_usage() -> None:
     )
 
 
+def test_the_sdk_still_replaces_a_zero_temperature() -> None:
+    """The day this fails, polargrid-sdk sends the values it is given: drop
+    ``_GIVEN_AS_IS`` from ``providers/polargrid/sdk_patch.py``."""
+    client = polargrid.PolarGrid(api_key="k", base_url="http://127.0.0.1:1")
+    request = polargrid.ChatCompletionRequest(**{**_REQUEST, "temperature": 0.0})
+
+    body = client._build_chat_completion_body(request, stream_override=False)
+
+    assert body["temperature"] != 0.0, (
+        "polargrid-sdk now sends a zero temperature: drop _GIVEN_AS_IS from "
+        "providers/polargrid/sdk_patch.py"
+    )
+
+
 async def test_the_usage_the_stream_asked_for_comes_last() -> None:
     sent: list[dict[str, Any]] = []
 

@@ -295,18 +295,34 @@ class PolarGridAIProvider(AIProvider):
             return None
         return chat_tool_declarations(tools)
 
-    def _max_tokens(self, context: AIContext) -> int:
-        """The output cap a request carries: the turn's or the configured one,
-        within the API's range, else the API's maximum (:data:`MAX_TOKENS`)."""
+    def _max_tokens(self, context: AIContext, request: dict[str, Any]) -> int:
+        """The output cap *request* carries: the turn's or the configured one,
+        within polargrid-sdk's range, else :meth:`_room_left`."""
         asked = context.max_tokens or self._config.max_tokens
         if asked is None:
-            return MAX_TOKENS
+            return self._room_left(request)
         if asked > MAX_TOKENS and not self._warned_max_tokens:
             self._warned_max_tokens = True
             logger.warning(
-                "PolarGrid caps max_tokens at %d; %d asked, %d sent", MAX_TOKENS, asked, MAX_TOKENS
+                "polargrid-sdk caps max_tokens at %d; %d asked, %d sent",
+                MAX_TOKENS,
+                asked,
+                MAX_TOKENS,
             )
         return min(asked, MAX_TOKENS)
+
+    def _room_left(self, request: dict[str, Any]) -> int:
+        """What the model's window leaves an answer after *request*, at most
+        :data:`MAX_TOKENS`: a small window (a pilot model's 8192) cannot take
+        a 4096-token answer behind a long prompt, which the server refuses."""
+        known = self._curated_index().get(str(request.get("model")))
+        if known is None or known.context_window is None:
+            return MAX_TOKENS
+        # Three characters a token over-counts the prompt, keeping the sum
+        # under the window.
+        sent = [request.get("messages"), request.get("tools")]
+        prompt = len(json.dumps(sent, ensure_ascii=False, default=str)) // 3
+        return max(1, min(MAX_TOKENS, known.context_window - prompt))
 
     def _build_request(self, context: AIContext, *, stream: bool) -> dict[str, Any]:
         req: dict[str, Any] = {
@@ -327,7 +343,7 @@ class PolarGridAIProvider(AIProvider):
             # the streaming/non-streaming paths split out as thinking. The
             # turn's switch outranks the configured one (RFC §6.7).
             req["enable_thinking"] = thinking
-        req["max_tokens"] = self._max_tokens(context)
+        req["max_tokens"] = self._max_tokens(context, req)
         if context.temperature is not None:
             req["temperature"] = context.temperature
         if self._config.top_p is not None:
@@ -407,7 +423,7 @@ class PolarGridAIProvider(AIProvider):
 
         t0 = time.monotonic()
         try:
-            response = await client.chat_completion(request)
+            response = await sdk_patch.chat_completion(self._sdk, client, request)
         except ProviderError:
             raise
         except Exception as exc:

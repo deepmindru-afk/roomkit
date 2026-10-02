@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, SecretStr, field_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator
 
 from roomkit.providers.polargrid.models import region_choices, resolve_region_id
 
@@ -30,9 +30,10 @@ class PolarGridConfig(BaseModel):
             nearest edge that already serves the configured model
             (``routing_model``, polargrid-sdk 0.10.0) — convenient for
             dev, but pin a region in production when residency matters.
-        max_tokens: Maximum tokens in the response, within the API's 1 to
-            4096; more is sent as 4096, with a warning. ``None`` sends 4096:
-            the API's own default (150) cuts an answer mid-sentence.
+        max_tokens: Maximum tokens in the response, at least 1. More than
+            polargrid-sdk's 4096 is sent as 4096, with a warning. ``None``
+            sends 4096, or what the model's window leaves after the prompt:
+            the SDK's own default (150) cuts an answer mid-sentence.
         top_p: Nucleus sampling probability (0.0-1.0).
         thinking: Toggle qwen's reasoning via the ``enable_thinking``
             request flag (polargrid-sdk 0.8.5+). ``True`` turns reasoning
@@ -43,8 +44,8 @@ class PolarGridConfig(BaseModel):
             turn outranks it (RFC §6.7): ``thinking_budget`` (``0`` off,
             above ``0`` on), ``enable_thinking``, or a
             ``reasoning_effort`` of ``"none"``. Thinking responses are
-            larger and slower, so raise ``timeout`` and ``max_tokens``
-            when enabling it.
+            larger and slower, so raise ``timeout`` when enabling it, and
+            a ``max_tokens`` set below 4096.
         timeout: HTTP request timeout in seconds.
         connect_timeout: TCP connect timeout in seconds, kept apart from
             ``timeout`` so a host that no longer accepts connections is given
@@ -58,7 +59,7 @@ class PolarGridConfig(BaseModel):
     api_key: SecretStr
     model: str = "qwen-3.8-27b"
     region: str | None = None
-    max_tokens: int | None = None
+    max_tokens: int | None = Field(default=None, ge=1)
     top_p: float = 0.9
     thinking: bool | None = None
     timeout: float = 30.0

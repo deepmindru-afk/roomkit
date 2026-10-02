@@ -265,9 +265,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   request carried none and polargrid-sdk sent 150 (the server, given none,
   stops near 200), cutting an answer mid-sentence under a `stop` finish
   (measured: 132 words of a 600-word answer). The provider now always sends a
-  cap, 4096 (the API's documented maximum) when none is set, and sends a
-  larger one as 4096 with one warning, where polargrid-sdk refused it and
-  failed the turn (RMK-389).
+  cap: 4096 (PolarGrid's documented maximum, which polargrid-sdk enforces)
+  when none is set, or what the model's window leaves after the prompt on a
+  small-window model; a larger one is sent as 4096 with one warning, where
+  polargrid-sdk refused it and failed the turn (RMK-389).
+
+- PolarGrid receives a `temperature` (or `top_p`) of 0 as given, on
+  `generate()` and the stream alike: polargrid-sdk's body builder read a 0 as
+  unset and sent 0.7 (0.9), so a deterministic call, a memory summary
+  included, ran at 0.7 (RMK-389).
 
 - The speech models a chat provider's `list_models()` surfaces carry
   `transcription` (speech-to-text) or `speech` (text-to-speech) in

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -60,7 +59,10 @@ def _mock_polargrid_module() -> MagicMock:
     mod.TokenUsage = polargrid.TokenUsage
 
     client = MagicMock()
-    client.chat_completion = AsyncMock()
+    # A chat request goes through the SDK's own checks, body builder and
+    # response converter (sdk_patch.py); only its HTTP call is faked.
+    client._make_request = AsyncMock()
+    client._convert_chat_completion_response = _BUILDER._convert_chat_completion_response
     client._validate_chat_completion_request = _BUILDER._validate_chat_completion_request
     client._build_chat_completion_body = _BUILDER._build_chat_completion_body
     client.list_models = AsyncMock()
@@ -99,27 +101,25 @@ def _context(**overrides: Any) -> AIContext:
 
 def _response_obj(
     *,
-    content: str = "",
+    content: str | None = "",
     finish_reason: str = "stop",
     prompt_tokens: int = 11,
     completion_tokens: int = 7,
     model: str = "qwen-3.5-27b",
-) -> SimpleNamespace:
-    return SimpleNamespace(
-        model=model,
-        choices=[
-            SimpleNamespace(
-                index=0,
-                message=SimpleNamespace(role="assistant", content=content),
-                finish_reason=finish_reason,
-            )
-        ],
-        usage=SimpleNamespace(
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            total_tokens=prompt_tokens + completion_tokens,
-        ),
-    )
+    tool_calls: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """A non-streamed answer as PolarGrid's server writes it."""
+    message: dict[str, Any] = {"role": "assistant", "content": content}
+    if tool_calls:
+        message["tool_calls"] = tool_calls
+    return {
+        "id": "chatcmpl-0",
+        "object": "chat.completion",
+        "created": 0,
+        "model": model,
+        "choices": [{"index": 0, "message": message, "finish_reason": finish_reason}],
+        "usage": _usage(prompt_tokens, completion_tokens),
+    }
 
 
 def _raw_chunk(
@@ -196,7 +196,7 @@ def _respond(mod: MagicMock, raw: dict[str, Any]) -> list[dict[str, Any]]:
         return raw
 
     edge._make_request = make_request  # type: ignore[method-assign]
-    mod._client.chat_completion = edge.chat_completion
+    mod._client._make_request = make_request
     mod._client.list_models = edge.list_models
     return sent
 
@@ -239,13 +239,10 @@ def _serve(mod: MagicMock, chunks: list[dict[str, Any]]) -> list[dict[str, Any]]
     return sent
 
 
-def _tool_call_obj(*, id: str, name: str, arguments: str) -> SimpleNamespace:
-    """A non-streaming ``ToolCall``: ``function.arguments`` is a JSON string."""
-    return SimpleNamespace(
-        id=id,
-        type="function",
-        function=SimpleNamespace(name=name, arguments=arguments),
-    )
+def _tool_call_obj(*, id: str, name: str, arguments: str) -> dict[str, Any]:
+    """A non-streamed tool call as the server writes it: its arguments a JSON
+    string."""
+    return {"id": id, "type": "function", "function": {"name": name, "arguments": arguments}}
 
 
 def _provider(mod: MagicMock | None = None, **config_overrides: Any) -> tuple[Any, MagicMock]:
@@ -265,7 +262,7 @@ class TestPolarGridGenerate:
     @pytest.mark.asyncio
     async def test_generate_success(self) -> None:
         provider, mod = _provider()
-        mod._client.chat_completion.return_value = _response_obj(content="Hello!")
+        mod._client._make_request.return_value = _response_obj(content="Hello!")
 
         resp = await provider.generate(_context())
 
@@ -276,11 +273,11 @@ class TestPolarGridGenerate:
     @pytest.mark.asyncio
     async def test_generate_builds_messages_with_system_prompt(self) -> None:
         provider, mod = _provider()
-        mod._client.chat_completion.return_value = _response_obj(content="ok")
+        mod._client._make_request.return_value = _response_obj(content="ok")
 
         await provider.generate(_context(system_prompt="Be terse."))
 
-        request = mod._client.chat_completion.await_args.args[0]
+        request = mod._client._make_request.await_args.kwargs["body"]
         assert request["messages"][0] == {"role": "system", "content": "Be terse."}
         assert request["messages"][1] == {"role": "user", "content": "Hi"}
 
@@ -289,37 +286,70 @@ class TestPolarGridGenerate:
         # Left out, the SDK sends 150 and the server stops near 200 tokens,
         # mid-sentence, under a "stop" finish.
         provider, mod = _provider()
-        mod._client.chat_completion.return_value = _response_obj(content="ok")
+        mod._client._make_request.return_value = _response_obj(content="ok")
         sent = _serve(mod, [_stream_chunk(content="ok", finish_reason="stop")])
 
         await provider.generate(_context(max_tokens=None))
         _ = [e async for e in provider.generate_structured_stream(_context(max_tokens=None))]
 
-        assert mod._client.chat_completion.await_args.args[0]["max_tokens"] == 4096
+        assert mod._client._make_request.await_args.kwargs["body"]["max_tokens"] == 4096
         assert sent[0]["max_tokens"] == 4096
 
     @pytest.mark.asyncio
-    async def test_a_cap_above_the_apis_maximum_is_sent_as_the_maximum(
-        self, caplog: pytest.LogCaptureFixture
+    @pytest.mark.parametrize("where", ["turn", "config"])
+    async def test_a_cap_above_the_sdks_maximum_is_sent_as_the_maximum(
+        self, where: str, caplog: pytest.LogCaptureFixture
     ) -> None:
-        provider, mod = _provider()
-        mod._client.chat_completion.return_value = _response_obj(content="ok")
+        # The stream path runs the SDK's own validator, which refuses more
+        # than 4096: the turn goes through instead of failing.
+        provider, mod = _provider(**({"max_tokens": 8192} if where == "config" else {}))
+        mod._client._make_request.return_value = _response_obj(content="ok")
+        sent = _serve(mod, [_stream_chunk(content="ok", finish_reason="stop")])
+        context = _context(max_tokens=8192 if where == "turn" else None)
 
         with caplog.at_level(logging.WARNING, logger="roomkit.providers.polargrid"):
-            await provider.generate(_context(max_tokens=8192))
-            await provider.generate(_context(max_tokens=8192))
+            await provider.generate(context)
+            _ = [e async for e in provider.generate_structured_stream(context)]
 
-        assert mod._client.chat_completion.await_args.args[0]["max_tokens"] == 4096
+        assert mod._client._make_request.await_args.kwargs["body"]["max_tokens"] == 4096
+        assert sent[0]["max_tokens"] == 4096
         assert caplog.text.count("caps max_tokens at 4096") == 1
+
+    @pytest.mark.asyncio
+    async def test_a_small_window_bounds_the_default_cap(self) -> None:
+        # The pilot model serves 8192 tokens: a 4096-token answer behind a
+        # long prompt would overflow it, which the server refuses.
+        provider, mod = _provider(model="qwen-3.6-35b-a3b")
+        mod._client._make_request.return_value = _response_obj(content="ok")
+        long_prompt = [AIMessage(role="user", content="word " * 3000)]
+
+        await provider.generate(_context(messages=long_prompt, max_tokens=None))
+
+        cap = mod._client._make_request.await_args.kwargs["body"]["max_tokens"]
+        assert 0 < cap < 4096
+        assert cap + len("word " * 3000) // 4 <= 8192
+
+    @pytest.mark.asyncio
+    async def test_a_zero_temperature_goes_out_as_zero(self) -> None:
+        # The SDK's body builder reads a 0 as unset and sends 0.7.
+        provider, mod = _provider()
+        mod._client._make_request.return_value = _response_obj(content="ok")
+        sent = _serve(mod, [_stream_chunk(content="ok", finish_reason="stop")])
+
+        await provider.generate(_context(temperature=0.0))
+        _ = [e async for e in provider.generate_structured_stream(_context(temperature=0.0))]
+
+        assert mod._client._make_request.await_args.kwargs["body"]["temperature"] == 0.0
+        assert sent[0]["temperature"] == 0.0
 
     @pytest.mark.asyncio
     async def test_generate_passes_temperature_and_max_tokens(self) -> None:
         provider, mod = _provider()
-        mod._client.chat_completion.return_value = _response_obj(content="ok")
+        mod._client._make_request.return_value = _response_obj(content="ok")
 
         await provider.generate(_context(max_tokens=512, temperature=0.2))
 
-        request = mod._client.chat_completion.await_args.args[0]
+        request = mod._client._make_request.await_args.kwargs["body"]
         assert request["model"] == "qwen-3.5-27b"
         assert request["temperature"] == 0.2
         assert request["max_tokens"] == 512
@@ -329,7 +359,7 @@ class TestPolarGridGenerate:
     @pytest.mark.asyncio
     async def test_generate_forwards_tools(self) -> None:
         provider, mod = _provider()
-        mod._client.chat_completion.return_value = _response_obj(content="ok")
+        mod._client._make_request.return_value = _response_obj(content="ok")
 
         tool = AITool(
             name="get_weather",
@@ -342,7 +372,7 @@ class TestPolarGridGenerate:
         )
         await provider.generate(_context(tools=[tool]))
 
-        request = mod._client.chat_completion.await_args.args[0]
+        request = mod._client._make_request.await_args.kwargs["body"]
         assert request["tools"][0]["type"] == "function"
         assert request["tools"][0]["function"]["name"] == "get_weather"
         assert request["tools"][0]["function"]["parameters"]["required"] == ["city"]
@@ -352,7 +382,7 @@ class TestPolarGridGenerate:
     @pytest.mark.asyncio
     async def test_debug_logs_full_request(self, caplog: pytest.LogCaptureFixture) -> None:
         provider, mod = _provider(thinking=True)
-        mod._client.chat_completion.return_value = _response_obj(content="ok")
+        mod._client._make_request.return_value = _response_obj(content="ok")
 
         with caplog.at_level(logging.DEBUG, logger="roomkit.providers.polargrid"):
             await provider.generate(_context())
@@ -366,21 +396,11 @@ class TestPolarGridGenerate:
     @pytest.mark.asyncio
     async def test_generate_extracts_tool_calls(self) -> None:
         provider, mod = _provider()
-        message = SimpleNamespace(
-            role="assistant",
-            content=None,
-            tool_calls=[
-                _tool_call_obj(
-                    id="call_1",
-                    name="get_weather",
-                    arguments=json.dumps({"city": "Montreal"}),
-                )
-            ],
+        call = _tool_call_obj(
+            id="call_1", name="get_weather", arguments=json.dumps({"city": "Montreal"})
         )
-        mod._client.chat_completion.return_value = SimpleNamespace(
-            model="qwen-3.5-27b",
-            choices=[SimpleNamespace(index=0, message=message, finish_reason="tool_calls")],
-            usage=SimpleNamespace(prompt_tokens=5, completion_tokens=3, total_tokens=8),
+        mod._client._make_request.return_value = _response_obj(
+            content=None, finish_reason="tool_calls", tool_calls=[call]
         )
 
         resp = await provider.generate(
@@ -430,7 +450,7 @@ class TestPolarGridRegionRouting:
     @pytest.mark.asyncio
     async def test_region_none_uses_async_create(self) -> None:
         provider, mod = _provider()  # region defaults to None
-        mod._client.chat_completion.return_value = _response_obj(content="ok")
+        mod._client._make_request.return_value = _response_obj(content="ok")
 
         await provider.generate(_context())
 
@@ -445,7 +465,7 @@ class TestPolarGridRegionRouting:
     @pytest.mark.asyncio
     async def test_region_pinned_uses_sync_constructor(self) -> None:
         provider, mod = _provider(region="toronto")
-        mod._client.chat_completion.return_value = _response_obj(content="ok")
+        mod._client._make_request.return_value = _response_obj(content="ok")
 
         await provider.generate(_context())
 
@@ -578,7 +598,7 @@ class TestPolarGridThinking:
     @pytest.mark.asyncio
     async def test_generate_extracts_thinking(self) -> None:
         provider, mod = _provider()
-        mod._client.chat_completion.return_value = _response_obj(
+        mod._client._make_request.return_value = _response_obj(
             content="<think>Let me reason about it.</think>The answer is 42."
         )
 
@@ -590,7 +610,7 @@ class TestPolarGridThinking:
     @pytest.mark.asyncio
     async def test_generate_no_thinking_leaves_content(self) -> None:
         provider, mod = _provider()
-        mod._client.chat_completion.return_value = _response_obj(content="Just an answer.")
+        mod._client._make_request.return_value = _response_obj(content="Just an answer.")
 
         resp = await provider.generate(_context())
 
@@ -656,11 +676,11 @@ class TestPolarGridThinking:
     @pytest.mark.asyncio
     async def test_thinking_true_sets_enable_thinking(self) -> None:
         provider, mod = _provider(thinking=True)
-        mod._client.chat_completion.return_value = _response_obj(content="ok")
+        mod._client._make_request.return_value = _response_obj(content="ok")
 
         await provider.generate(_context())
 
-        request = mod._client.chat_completion.await_args.args[0]
+        request = mod._client._make_request.await_args.kwargs["body"]
         assert request["enable_thinking"] is True
         # The toggle rides on enable_thinking, so the user message is untouched.
         user = [m for m in request["messages"] if m["role"] == "user"][-1]
@@ -669,21 +689,21 @@ class TestPolarGridThinking:
     @pytest.mark.asyncio
     async def test_thinking_false_sets_enable_thinking_false(self) -> None:
         provider, mod = _provider(thinking=False)
-        mod._client.chat_completion.return_value = _response_obj(content="ok")
+        mod._client._make_request.return_value = _response_obj(content="ok")
 
         await provider.generate(_context())
 
-        request = mod._client.chat_completion.await_args.args[0]
+        request = mod._client._make_request.await_args.kwargs["body"]
         assert request["enable_thinking"] is False
 
     @pytest.mark.asyncio
     async def test_thinking_none_omits_enable_thinking(self) -> None:
         provider, mod = _provider()  # thinking defaults to None
-        mod._client.chat_completion.return_value = _response_obj(content="ok")
+        mod._client._make_request.return_value = _response_obj(content="ok")
 
         await provider.generate(_context())
 
-        request = mod._client.chat_completion.await_args.args[0]
+        request = mod._client._make_request.await_args.kwargs["body"]
         assert "enable_thinking" not in request
 
     @pytest.mark.asyncio
@@ -691,7 +711,7 @@ class TestPolarGridThinking:
         # qwen echoes any wrapper we feed back, so prior reasoning must be
         # dropped from history — not re-sent as [thinking] text.
         provider, mod = _provider()
-        mod._client.chat_completion.return_value = _response_obj(content="ok")
+        mod._client._make_request.return_value = _response_obj(content="ok")
 
         messages = [
             AIMessage(role="user", content="hi"),
@@ -706,7 +726,7 @@ class TestPolarGridThinking:
         ]
         await provider.generate(_context(messages=messages, system_prompt=None))
 
-        request = mod._client.chat_completion.await_args.args[0]
+        request = mod._client._make_request.await_args.kwargs["body"]
         blob = json.dumps(request)
         assert "[thinking]" not in blob
         assert "secret chain of thought" not in blob
@@ -724,7 +744,7 @@ class TestPolarGridToolMessages:
     @pytest.mark.asyncio
     async def test_renders_tool_call_and_result_messages(self) -> None:
         provider, mod = _provider()
-        mod._client.chat_completion.return_value = _response_obj(content="ok")
+        mod._client._make_request.return_value = _response_obj(content="ok")
 
         messages = [
             AIMessage(role="user", content="Weather in Montreal?"),
@@ -747,7 +767,7 @@ class TestPolarGridToolMessages:
         ]
         await provider.generate(_context(messages=messages, system_prompt=None))
 
-        msgs = mod._client.chat_completion.await_args.args[0]["messages"]
+        msgs = mod._client._make_request.await_args.kwargs["body"]["messages"]
         assistant = next(m for m in msgs if m["role"] == "assistant")
         assert assistant["tool_calls"][0]["id"] == "call_1"
         assert assistant["tool_calls"][0]["type"] == "function"
@@ -1008,7 +1028,7 @@ def _failing_stream(error: Exception) -> Any:
 
 
 _FAILURES: dict[str, Any] = {
-    "generate": lambda client, error: setattr(client.chat_completion, "side_effect", error),
+    "generate": lambda client, error: setattr(client._make_request, "side_effect", error),
     "stream": lambda client, error: setattr(client, "_stream_post", _failing_stream(error)),
     "list_models": lambda client, error: setattr(client.list_models, "side_effect", error),
 }
@@ -1054,7 +1074,7 @@ class TestPolarGridErrors:
     @pytest.mark.asyncio
     async def test_unknown_error_retryable(self) -> None:
         provider, mod = _provider()
-        mod._client.chat_completion.side_effect = RuntimeError("???")
+        mod._client._make_request.side_effect = RuntimeError("???")
 
         with pytest.raises(ProviderError) as exc:
             await provider.generate(_context())
@@ -1168,12 +1188,12 @@ class TestPolarGridResponseSchema:
 
     async def test_the_schema_rides_the_response_format(self) -> None:
         provider, mod = _provider()
-        mod._client.chat_completion.return_value = _response_obj(content='{"label": "yes"}')
+        mod._client._make_request.return_value = _response_obj(content='{"label": "yes"}')
 
         result = await provider.generate(_context(response_schema=_VERDICT))
 
         assert result.content == '{"label": "yes"}'
-        request = mod._client.chat_completion.await_args.args[0]
+        request = mod._client._make_request.await_args.kwargs["body"]
         assert request["response_format"] == {
             "type": "json_schema",
             "json_schema": {"name": "response", "schema": _VERDICT, "strict": True},
@@ -1191,7 +1211,7 @@ class TestPolarGridResponseSchema:
         self, content: str, finish_reason: str, reason: str
     ) -> None:
         provider, mod = _provider()
-        mod._client.chat_completion.return_value = _response_obj(
+        mod._client._make_request.return_value = _response_obj(
             content=content, finish_reason=finish_reason
         )
 

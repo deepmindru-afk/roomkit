@@ -151,6 +151,15 @@ def region_choices() -> str:
     return f"ids ({ids}) or aliases ({aliases})"
 
 
+MAX_TOKENS = 4096
+"""The most output tokens a request may ask for: PolarGrid's documented range
+is 1 to 4096 and polargrid-sdk refuses more before sending (the server itself
+takes up to 16384). Sent, or as much as the model's window leaves, when
+nothing else is set: left out, the SDK sends 150 and the server, given none,
+stops near 200, both cutting an answer mid-sentence under a ``stop`` finish
+(measured 2026-10-02, qwen-3.8-27b on yul-01)."""
+
+
 # Vision: PolarGrid rolled out multimodal chat with polargrid-sdk 0.9.0 (the
 # chat endpoint accepts OpenAI-shaped image_url content), but vision is the
 # deployed model's capability, not the SDK's. Only qwen-3.6-35b-a3b actually
@@ -158,13 +167,6 @@ def region_choices() -> str:
 # public. qwen-3.8-27b is refused server-side ("model 'qwen-3.8-27b' does not
 # support image input", verified live 2026-08-19): a clean error, text-only all
 # the same.
-MAX_TOKENS = 4096
-"""The most output tokens a request may ask for: the API's documented range is
-1 to 4096, and polargrid-sdk refuses more before sending. Sent when nothing
-else is set, too: left out, the SDK sends 150 and the server, given none,
-stops near 200, both cutting an answer mid-sentence under a ``stop`` finish
-(measured 2026-10-02, qwen-3.8-27b on yul-01)."""
-
 _VERIFIED = date(2026, 9, 2)
 
 MODELS: list[ModelInfo] = [
