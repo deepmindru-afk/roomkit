@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import threading
 import time
 import types
@@ -158,49 +159,118 @@ def test_lazy_getters() -> None:
     assert get_vui_voice() is VuiVoice
 
 
-def test_each_reply_reseeds_the_audio_decoder_from_a_short_tail() -> None:
-    """RMK-199: before streaming, the decoder is seeded from the last second only."""
-    order: list[object] = []
+class _FakeRow:
+    """The public ``vui.engine.Row`` calls, recorded; no ``_codec_ctx`` to reach into."""
 
-    class _Ctx:
-        _buf: object = None
+    def __init__(self, log: list[tuple[object, ...]]) -> None:
+        self.log = log
 
-        def prefill(self, n_codebooks: int = 0, device: str = "cuda") -> None:
-            order.append(("prefill", self._buf))
-            assert n_codebooks == 0
+    def reset(self) -> None:
+        self.log.append(("reset",))
 
-    class _Buf:
-        shape = (1, 16, 300)
+    def prefill(self, segments: list[object], spk_emb: object = None, *, cond_bias=None) -> None:
+        self.log.append(("prefill", segments, spk_emb, cond_bias))
 
-        def __getitem__(self, key: object) -> str:
-            return f"tail{key[2].start}"
+    def truncate(self, offset: int) -> None:
+        self.log.append(("truncate", offset))
 
-    ctx = _Ctx()
-    ctx._buf = _Buf()
+    def stream(self, text: str, cfg: object, cancel: threading.Event, final_turn: bool):
+        self.log.append(("stream", text))
+        yield from ()
 
-    class _Row:
-        _codec_ctx = ctx
 
-        def stream(self, text, cfg, cancel, final_turn):
-            order.append("stream")
-            yield from ()
+class _FakeEngine:
+    checkpoint = "vui-nano-1.1.safetensors"
 
+    def __init__(self, log: list[tuple[object, ...]]) -> None:
+        self.log = log
+
+    def set_conditioning(self) -> None:
+        self.log.append(("set_conditioning",))
+
+
+_CODES = types.SimpleNamespace(shape=(50, 16))
+
+
+def _vui_row(**prompts: vui_module._Prompt) -> tuple[vui_module._VuiRow, list[tuple]]:
+    """A ``_VuiRow`` over a fake engine and row, without loading anything."""
+    log: list[tuple[object, ...]] = []
     row = object.__new__(vui_module._VuiRow)
-    row._row = _Row()
-    row._gen = types.SimpleNamespace(n_codebooks=0)
+    row._engine = _FakeEngine(log)
+    row._row = _FakeRow(log)
+    row._segment = lambda text, codes: (text, codes)
+    row._gen = types.SimpleNamespace()
     row._torch = types.SimpleNamespace()
-
-    list(row.generate("hi", threading.Event()))
-
-    assert order == [("prefill", "tail-12"), "stream"]
-    assert isinstance(ctx._buf, _Buf)  # the full buffer is back
+    row._prompts = prompts
+    return row, log
 
 
-def test_an_empty_codec_buffer_is_left_to_vui() -> None:
-    """Right after a reset there is nothing to seed from: Vui starts cold itself."""
-    seeded: list[bool] = []
-    ctx = types.SimpleNamespace(_buf=None, prefill=lambda **kw: seeded.append(True))
+class TestVuiRow:
+    def test_a_preset_prompt_is_the_one_baked_for_the_engine_checkpoint(self) -> None:
+        row, _ = _vui_row()
+        calls: list[tuple[str, object]] = []
 
-    vui_module._reseed_decoder(types.SimpleNamespace(_codec_ctx=ctx), 12, 0)
+        def official_prompt(voice: str, checkpoint: object = None) -> tuple:
+            calls.append((voice, checkpoint))
+            return "transcript", _CODES, "token", "bias"
 
-    assert seeded == []
+        row._official_prompt = official_prompt
+
+        prompt = row._load_prompt(VuiVoice("rhian"))
+
+        assert calls == [("rhian", "vui-nano-1.1.safetensors")]
+        assert prompt == vui_module._Prompt("transcript", _CODES, "token", "bias")
+
+    def test_a_preset_is_prefilled_with_its_speaker_token_and_bias(self) -> None:
+        row, log = _vui_row(maeve=vui_module._Prompt("hi", _CODES, "token", "bias"))
+
+        row.restart("maeve")
+
+        assert log == [("reset",), ("prefill", [("hi", _CODES)], "token", "bias")]
+        assert row.prompt_frames == 50
+
+    def test_a_cloned_voice_after_a_preset_drops_the_preset_bias(self) -> None:
+        row, log = _vui_row(
+            maeve=vui_module._Prompt("hi", _CODES, "token", "bias"),
+            clone=vui_module._Prompt("me", _CODES, "embedding"),
+        )
+        row.restart("maeve")
+        log.clear()
+
+        row.restart("clone")
+
+        assert log == [
+            ("reset",),
+            ("set_conditioning",),
+            ("prefill", [("me", _CODES)], "embedding", None),
+        ]
+
+    def test_a_cut_reply_goes_through_row_truncate(self) -> None:
+        row, log = _vui_row()
+
+        row.truncate(120)
+
+        assert log == [("truncate", 120)]
+
+    def test_a_reply_leaves_the_audio_decoder_to_vui(self) -> None:
+        """vui-tts 1.2 keeps the decoder on its 10 s grid (RMK-199): no re-seed."""
+        row, log = _vui_row()
+
+        list(row.generate("hi", threading.Event()))
+
+        assert log == [("stream", "hi")]
+
+
+class TestVuiPublicApi:
+    def test_the_public_api_the_provider_calls_exists(self) -> None:
+        """Fails when vui-tts drops or reshapes what the provider calls (RMK-197)."""
+        engine_mod = pytest.importorskip("vui.engine")
+        prompts_mod = pytest.importorskip("vui.prompt_files")
+
+        prefill = inspect.signature(engine_mod.Row.prefill).parameters
+        assert "spk_emb" in prefill
+        assert prefill["cond_bias"].kind is inspect.Parameter.KEYWORD_ONLY
+        assert "offset" in inspect.signature(engine_mod.Row.truncate).parameters
+        assert callable(engine_mod.Engine.set_conditioning)
+        assert isinstance(engine_mod.Engine.checkpoint, property)
+        assert "checkpoint" in inspect.signature(prompts_mod.load_official_prompt).parameters

@@ -29,6 +29,7 @@ class FakeCache:
         self, frames_per_reply: int = 10, capacity: int = 100_000, audio_capacity: int = 100_000
     ) -> None:
         self.offset = 0
+        self.prompt_end = 0
         self.capacity = capacity
         self.audio_capacity = audio_capacity
         self.prompt_frames = 50
@@ -37,14 +38,16 @@ class FakeCache:
         self.log: list[tuple[str, object]] = []
 
     def restart(self, voice: str) -> None:
-        self.offset = 100  # the prompt
+        self.offset = self.prompt_end = 100  # the prompt
         self.log.append(("restart", voice))
 
     def reset(self) -> None:
-        self.offset = 0
+        self.offset = self.prompt_end = 0
         self.log.append(("reset", None))
 
     def truncate(self, offset: int) -> None:
+        if not self.prompt_end <= offset <= self.offset:  # as vui's Row.truncate refuses
+            raise ValueError(f"offset {offset} is outside {self.prompt_end}..{self.offset}")
         self.offset = offset
         self.log.append(("truncate", offset))
 
@@ -328,20 +331,3 @@ class TestCancel:
         )
 
         assert ("truncate", 105 + 3 + 1) in cache.log
-
-
-class TestVuiPrivateApi:
-    def test_the_private_accesses_still_exist(self) -> None:
-        """Fails when vui-tts drops what the provider relies on (RMK-197)."""
-        import inspect
-
-        engine_mod = pytest.importorskip("vui.engine")
-        codec_mod = pytest.importorskip("vui.qwen_codec")
-
-        assert hasattr(engine_mod.Engine, "_rewind_row")
-        assert "_spk_token" in inspect.getsource(engine_mod.Row.__init__)
-        assert "_codec_ctx" in inspect.getsource(engine_mod.Row.__init__)
-        assert hasattr(codec_mod.CodecCtx, "prefill")
-        # our seed survives only if Vui seeds when the state is closed
-        assert "_stack is None" in inspect.getsource(engine_mod.Engine._stream_row)
-        assert "_buf" in inspect.getsource(codec_mod.CodecCtx.__init__)

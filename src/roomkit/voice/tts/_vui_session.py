@@ -75,7 +75,7 @@ class VuiCache(Protocol):
         ...
 
     def truncate(self, offset: int) -> None:
-        """Move the KV position back to *offset*."""
+        """Move the KV position back to *offset*, between the prompt's end and now."""
         ...
 
     def add_user(self, text: str, audio: AudioFrame | None) -> None:
@@ -87,7 +87,8 @@ class VuiCache(Protocol):
 
         The codes of a frame reach the KV cache with the decoding step of the
         next one: after the k-th frame is yielded, ``offset`` covers frames
-        ``0 .. k-1``.
+        ``0 .. k-1``. A cancelled stream may stop before writing the last frame
+        it yielded.
         """
         ...
 
@@ -255,8 +256,10 @@ class VuiConversation:
             return
         heard = math.ceil((turn.played_ms or 0) / FRAME_MS)
         if turn.interrupted and heard < len(pending.frame_offsets):
-            # frame_offsets[k] covers frames 0..k-1; frame heard-1 ends one later.
-            offset = pending.frame_offsets[heard - 1] + 1 if heard > 0 else pending.start_offset
+            # frame_offsets[k], read as frame k was yielded, covers frames 0..k-1:
+            # the cache already holds that much, even when a cancelled stream
+            # stopped before writing the last frame it yielded.
+            offset = pending.frame_offsets[heard] if heard > 0 else pending.start_offset
             self._cache.truncate(offset)
             self._audio -= len(pending.frame_offsets) - heard
             logger.debug(

@@ -10,11 +10,9 @@ Constraints of the model and of ``vui-tts``: English only, Python 3.12, a CUDA
 GPU for real-time streaming, and one active conversation per provider (a
 single KV cache). Install with ``pip install roomkit[vui]``.
 
-Three operations use private ``vui-tts`` attributes: cutting the cache back to
-the middle of a turn after a barge-in, setting a preset voice's speaker token
-(both as Vui's own server does), and re-seeding the audio decoder at the start
-of each reply. The dependency is pinned (``vui-tts>=1.1.4,<1.2``) until Vui exposes
-them.
+It needs ``vui-tts`` 1.2: ``Row.truncate`` cuts the cache back to what the
+user heard after a barge-in, and ``Row.prefill`` takes a preset's speaker token
+and conditioning bias, as Vui's own server applies them.
 """
 
 from __future__ import annotations
@@ -44,7 +42,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger("roomkit.voice.tts.vui")
 
 SAMPLE_RATE = 24000
-_RESEED_FRAMES = 12  # ~1 s of decoder context at the start of a reply
 PRESET_VOICES = ("maeve", "abraham", "rhian", "harry")
 
 
@@ -180,9 +177,8 @@ class _VuiRow:
             import soundfile
             import torch
             from julius.resample import resample_frac
-            from safetensors import safe_open
             from vui.engine import Engine, GenConfig, Segment
-            from vui.prompt_files import hub_prompt, hub_prompt_transcript
+            from vui.prompt_files import load_official_prompt
             from vui.qwen_codec import QwenCodecEncoder
             from vui.qwen_spk_enc import QwenSpeakerEncoder
         except ImportError as exc:
@@ -191,8 +187,11 @@ class _VuiRow:
                 "Install it with: pip install roomkit[vui]"
             ) from exc
         self._torch = torch
+        self._soundfile = soundfile
         self._segment = Segment
         self._resample = resample_frac
+        self._official_prompt = load_official_prompt
+        self._speaker_encoder = QwenSpeakerEncoder
         self._engine = Engine(config.checkpoint, max_rows=1)  # places everything on CUDA
         self._row = self._engine.new_row()
         self._encoder = QwenCodecEncoder.from_pretrained().cuda().float().eval()
@@ -202,31 +201,25 @@ class _VuiRow:
         trained_secs = float(self._engine.model.config.data.max_secs)
         self._audio_capacity = math.floor(trained_secs * 1000 / FRAME_MS)
         self._prompt_frames = 0
-        self._prompts: dict[str, _Prompt] = {}
-        for name, voice in config.voices.items():
-            if voice.preset is not None:
-                path = hub_prompt(voice.preset, config.checkpoint)
-                with safe_open(path, "pt") as f:
-                    names = set(f.keys())  # noqa: SIM118 (safe_open has no __contains__)
-                    codes = f.get_tensor("codes")
-                    token = f.get_tensor("spk_token_emb") if "spk_token_emb" in names else None
-                self._prompts[name] = _Prompt(
-                    text=hub_prompt_transcript(voice.preset, path),
-                    codes=codes[:, : self._engine.Q].long().cuda(),
-                    spk_token=token.cuda().to(self._engine.dtype) if token is not None else None,
-                )
-            else:
-                data, rate = soundfile.read(voice.ref_audio, dtype="int16", always_2d=True)
-                mono = data.mean(axis=1).astype("int16")
-                spk_emb = None
-                if getattr(self._engine.model, "spk_proj", None) is not None:
-                    pcm = torch.from_numpy(mono).float() / 32768.0
-                    wav24 = resample_frac(pcm.unsqueeze(0), rate, SAMPLE_RATE).squeeze(0)
-                    spk_emb = QwenSpeakerEncoder.from_pretrained().embed(wav24[: 30 * SAMPLE_RATE])
-                frame = AudioFrame(data=mono.tobytes(), sample_rate=rate, sample_width=2)
-                self._prompts[name] = _Prompt(
-                    text=voice.ref_text or "", codes=self.encode(frame), spk_emb=spk_emb
-                )
+        self._prompts = {name: self._load_prompt(voice) for name, voice in config.voices.items()}
+
+    def _load_prompt(self, voice: VuiVoice) -> _Prompt:
+        """A voice's prompt: a preset baked for this checkpoint, or a clip encoded here."""
+        if voice.preset is not None:
+            # The speaker token and the bias fit only the checkpoint they were baked for.
+            text, codes, token, bias = self._official_prompt(
+                voice.preset, checkpoint=self._engine.checkpoint
+            )
+            return _Prompt(text=text, codes=codes, spk_emb=token, cond_bias=bias)
+        data, rate = self._soundfile.read(voice.ref_audio, dtype="int16", always_2d=True)
+        mono = data.mean(axis=1).astype("int16")
+        spk_emb = None
+        if getattr(self._engine.model, "spk_proj", None) is not None:
+            pcm = self._torch.from_numpy(mono).float() / 32768.0
+            wav24 = self._resample(pcm.unsqueeze(0), rate, SAMPLE_RATE).squeeze(0)
+            spk_emb = self._speaker_encoder.from_pretrained().embed(wav24[: 30 * SAMPLE_RATE])
+        frame = AudioFrame(data=mono.tobytes(), sample_rate=rate, sample_width=2)
+        return _Prompt(text=voice.ref_text or "", codes=self.encode(frame), spk_emb=spk_emb)
 
     @property
     def offset(self) -> int:
@@ -252,16 +245,21 @@ class _VuiRow:
         prompt = self._prompts[voice]
         self._prompt_frames = int(prompt.codes.shape[0])
         self._row.reset()
-        self._row.prefill([self._segment(prompt.text, prompt.codes)], spk_emb=prompt.spk_emb)
-        if prompt.spk_token is not None:
-            _set_speaker_token(self._row, prompt.spk_token)
+        if prompt.cond_bias is None:
+            # The bias is engine-wide, and a prefill without one keeps the last voice's.
+            self._engine.set_conditioning()
+        self._row.prefill(
+            [self._segment(prompt.text, prompt.codes)],
+            spk_emb=prompt.spk_emb,
+            cond_bias=prompt.cond_bias,
+        )
 
     def reset(self) -> None:
         # Offset 0: the KV cache and the codec's rolling context are both emptied.
         self._row.reset()
 
     def truncate(self, offset: int) -> None:
-        _truncate_kv(self._engine, self._row, offset)
+        self._row.truncate(offset)
 
     def add_user(self, text: str, audio: AudioFrame | None) -> None:
         codes = self.encode(audio) if audio is not None else None
@@ -269,14 +267,6 @@ class _VuiRow:
 
     def generate(self, text: str, cancel: threading.Event) -> Iterator[bytes]:
         torch = self._torch
-        # The audio decoder restarts cold every 10 s of decoded audio, counted
-        # from its last (re)seed. Left running across turns, that restart lands
-        # mid-reply one time in four (an audible jump). Re-seeding it at the
-        # turn change from the last second of the codec buffer (the user's
-        # turn when it carried audio, else the tail of the previous reply)
-        # keeps the reply's start continuous and puts the next restart about
-        # 9 s into it, then every 10 s (RMK-199).
-        _reseed_decoder(self._row, _RESEED_FRAMES, self._gen.n_codebooks)
         for frame in self._row.stream(text, self._gen, cancel, final_turn=True):
             # The yielded tensor is a reused graph buffer: convert it now.
             samples = frame.detach().float().reshape(-1).clamp(-1.0, 1.0)
@@ -301,39 +291,5 @@ class _VuiRow:
 class _Prompt:
     text: str
     codes: Any
-    spk_emb: Any = None
-    spk_token: Any = None
-
-
-# The private vui-tts accesses (see the module docstring, and RMK-197).
-
-
-def _truncate_kv(engine: Any, row: Any, offset: int) -> None:
-    """Move *row*'s KV position back to *offset*, mid-turn included."""
-    engine._rewind_row(row, offset)
-
-
-def _set_speaker_token(row: Any, token: Any) -> None:
-    """Condition *row*'s agent turns on a preset's projected speaker token."""
-    row._spk_token = token
-
-
-def _reseed_decoder(row: Any, frames: int, n_codebooks: int) -> None:
-    """Re-seed the codec's streaming decoder from the last *frames* of its buffer.
-
-    ``CodecCtx.prefill`` seeds from ``len(buffer) % 10 s`` so restarts land on
-    absolute 10 s boundaries, as the codec was trained. That alignment does
-    not hold in a dialogue: user codes enter the buffer through ``add()``,
-    which the decoder clock never counts, and the buffer is trimmed. Seeding
-    from a short tail instead puts the next restart at ``10 s - frames``,
-    never at the start of a reply.
-    """
-    ctx = row._codec_ctx
-    buffer = ctx._buf
-    if buffer is None or buffer.shape[2] == 0:
-        return
-    ctx._buf = buffer[:, :, -frames:]
-    try:
-        ctx.prefill(n_codebooks=n_codebooks, device="cuda")
-    finally:
-        ctx._buf = buffer
+    spk_emb: Any = None  # a clip's speaker embedding, or a preset's projected token
+    cond_bias: Any = None  # a preset's baked conditioning bias
