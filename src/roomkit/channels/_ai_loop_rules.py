@@ -42,11 +42,16 @@ if TYPE_CHECKING:
     from roomkit.channels.ai import _ContentPart
     from roomkit.providers.ai.base import (
         AIContext,
-        AITool,
         AIToolCall,
         StreamToolCall,
     )
+    from roomkit.telemetry.base import TelemetryProvider
     from roomkit.tools.context import _ToolLoopContext
+
+if TYPE_CHECKING:
+    from roomkit.channels._ai_contract import _AIChannelContract
+else:
+    _AIChannelContract = object
 
 logger = logging.getLogger("roomkit.channels.ai")
 
@@ -276,46 +281,18 @@ def _aborted_results(tool_calls: list[Any]) -> list[AIToolResultPart]:
     return [ToolOutcome(OutcomeKind.CANCELLED, body).as_part(tc.id, tc.name) for tc in tool_calls]
 
 
-class AIToolLoopRulesMixin:
+class AIToolLoopRulesMixin(_AIChannelContract):
     """The tool loop's rules, each defined once.
 
-    What it needs from the other mixins and the channel is declared under
-    ``TYPE_CHECKING`` in its body; ``ty`` checks each declaration against the
-    implementation it names.
+    What it calls on the other mixins is declared once, in
+    :class:`~roomkit.channels._ai_contract._AIChannelContract`, which it
+    derives from for the type checker only.
     """
 
     _tool_loop_timeout_seconds: float | None
     _tool_loop_warn_after: int
     _max_empty_retries: int
     _eviction: ToolEviction
-
-    if TYPE_CHECKING:
-
-        def _apply_tool_filters(self, tools: list[AITool]) -> list[AITool]: ...
-        def _held_declaration(
-            self, loop_ctx: _ToolLoopContext, shown: list[AITool]
-        ) -> list[AITool]: ...
-        def _open_turn_declaration(
-            self, context: AIContext, loop_ctx: _ToolLoopContext, shown: list[AITool]
-        ) -> None: ...
-        async def _publish_tool_event(
-            self,
-            event_type: EphemeralEventType,
-            room_id: str,
-            tool_calls: list[Any],
-            round_idx: int,
-            *,
-            duration_ms: int | None = None,
-        ) -> None: ...
-        async def _execute_tools_parallel(
-            self,
-            tool_calls: list[Any],
-            telemetry: Any,
-            *,
-            declared_tools: list[AITool] | None = None,
-            parent_span_id: str | None = None,
-            executed_arguments: dict[str, dict[str, Any]] | None = None,
-        ) -> list[AIToolResultPart]: ...
 
     # Ceiling on the tool calls honoured from ONE generation. The loop already
     # bounds rounds, wall clock, identical repeats and result size; a single
@@ -481,7 +458,7 @@ class AIToolLoopRulesMixin:
         self,
         context: AIContext,
         tool_calls: list[Any],
-        telemetry: Any,
+        telemetry: TelemetryProvider,
         room_id: str | None,
         round_idx: int,
         *,

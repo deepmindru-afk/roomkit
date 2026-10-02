@@ -4,15 +4,21 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import TYPE_CHECKING
 
 from roomkit.models.steering import Cancel, InjectMessage, SteeringDirective, UpdateSystemPrompt
 from roomkit.providers.ai.base import AIContext, AIMessage
 from roomkit.tools.context import _current_loop_ctx, _ToolLoopContext
 
+if TYPE_CHECKING:
+    from roomkit.channels._ai_contract import _AIChannelContract
+else:
+    _AIChannelContract = object
+
 logger = logging.getLogger("roomkit.channels.ai")
 
 
-class AISteeringMixin:
+class AISteeringMixin(_AIChannelContract):
     """Handles steering directives that modify a running tool loop."""
 
     _active_loops: dict[str, _ToolLoopContext]

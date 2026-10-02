@@ -9,10 +9,17 @@ for a long trace, all on the shared event loop. These batch that onto a window.
 from __future__ import annotations
 
 import time
-from typing import Any
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._ai_events import THINKING_PREVIEW_LIMIT
 from roomkit.realtime.base import EphemeralEventType
+
+if TYPE_CHECKING:
+    from roomkit.channels._ai_stream_external_tools import _ToolEventPublisher
+
+_ThinkingPublisher = Callable[[EphemeralEventType, str | None, str, int], Awaitable[None]]
+"""``(event_type, room_id, thinking, round_idx)``: the channel's thinking publish."""
 
 
 class _Window:
@@ -69,7 +76,7 @@ class _ThinkingCoalescer:
 
     def __init__(
         self,
-        publish: Any,
+        publish: _ThinkingPublisher,
         room_id: str | None,
         round_idx: int,
         *,
@@ -126,7 +133,7 @@ class _ToolCallDeltaCoalescer:
 
     def __init__(
         self,
-        publish: Any,
+        publish: _ToolEventPublisher,
         room_id: str | None,
         round_idx: int,
         *,

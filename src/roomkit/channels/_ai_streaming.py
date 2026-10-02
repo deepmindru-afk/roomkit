@@ -20,7 +20,6 @@ from roomkit.channels._ai_loop_rules import (
     require_schema_answer,
     turn_span_status,
 )
-from roomkit.channels._ai_resilience import _StreamRetryBoundary
 from roomkit.channels._ai_stream_external_tools import _ExternalStreamTools
 from roomkit.channels._ai_stream_round import _StreamRound, _StreamRoundState
 from roomkit.models.channel import ChannelOutput
@@ -50,10 +49,14 @@ if TYPE_CHECKING:
     from roomkit.models.channel import ChannelBinding
     from roomkit.models.context import RoomContext
     from roomkit.models.tool_call import AfterResponseCallback, ToolCallObserver
-    from roomkit.providers.ai.base import AIProvider, AITool, ProviderError, StreamEvent
-    from roomkit.telemetry.noop import NoopTelemetryProvider
+    from roomkit.providers.ai.base import AIProvider
     from roomkit.tools.external import ExternalToolHandler
 
+
+if TYPE_CHECKING:
+    from roomkit.channels._ai_contract import _AIChannelContract
+else:
+    _AIChannelContract = object
 
 logger = logging.getLogger("roomkit.channels.ai")
 
@@ -157,9 +160,9 @@ async def _answered_or_raise(
 class AIStreamingMixin(AIToolLoopRulesMixin):
     """Streaming AI response generation with tool loop and deduplication.
 
-    What it needs from the other mixins and the channel is declared under
-    ``TYPE_CHECKING`` in its body; ``ty`` checks each declaration against the
-    implementation it names.
+    What it calls on the other mixins is declared once, in
+    :class:`~roomkit.channels._ai_contract._AIChannelContract`, which it
+    derives from for the type checker only.
     """
 
     _provider: AIProvider
@@ -169,46 +172,12 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
     _max_empty_retries: int
     _thinking_coalesce_ms: float
     _thinking_coalesce_chars: int
-    _active_loops: dict[str, Any]
+    _active_loops: dict[str, _ToolLoopContext]
     _after_response_hook: AfterResponseCallback | None
     _before_generation_hook: BeforeGenerationHook | None
     _tool_report_hook: ToolCallObserver | None
     _external_tool_handler: ExternalToolHandler | None
     channel_id: str
-
-    if TYPE_CHECKING:
-
-        async def _build_context(
-            self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
-        ) -> AIContext: ...
-        async def _fire_before_generation_hook(
-            self, ai_context: AIContext, event: RoomEvent
-        ) -> tuple[AIContext, bool]: ...
-        def _drain_steering_queue(
-            self, context: AIContext, loop_ctx: _ToolLoopContext
-        ) -> tuple[AIContext, bool]: ...
-        def _generate_stream_with_retry(
-            self, context: AIContext
-        ) -> AsyncIterator[StreamEvent | _StreamRetryBoundary]: ...
-        def _record_declared_tools(
-            self, loop_ctx: _ToolLoopContext, tools: list[AITool] | None
-        ) -> None: ...
-        async def _publish_thinking_event(
-            self, event_type: EphemeralEventType, room_id: str, thinking: str, round_idx: int
-        ) -> None: ...
-        async def _publish_tool_event(
-            self,
-            event_type: EphemeralEventType,
-            room_id: str,
-            tool_calls: list[Any],
-            round_idx: int,
-            *,
-            duration_ms: int | None = None,
-        ) -> None: ...
-        @property
-        def _telemetry_provider(self) -> NoopTelemetryProvider: ...
-        def _log_provider_error(self, exc: ProviderError) -> None: ...
-        def _served_tool_names(self, room_id: str | None) -> set[str]: ...
 
     def _new_thinking_coalescer(self, room_id: str | None, round_idx: int) -> _ThinkingCoalescer:
         """Coalescer bound to this channel's publish hook and window config."""

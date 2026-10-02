@@ -59,7 +59,7 @@ from roomkit.providers.ai.base import (
 )
 from roomkit.providers.ai.tool_calls import partial_call_error
 from roomkit.sandbox.tools import SANDBOX_TOOL_PREFIX, TOOL_SANDBOX_BASH
-from roomkit.telemetry.base import SpanKind
+from roomkit.telemetry.base import SpanKind, TelemetryProvider
 from roomkit.telemetry.redaction import redact
 from roomkit.tools._outcome import OutcomeKind, ToolOutcome, kept_in_tool_memory, read_outcome
 from roomkit.tools.context import ToolCallContext, _current_tool_call
@@ -77,10 +77,10 @@ from roomkit.tools.timeout import ToolTimeouts, answer_within
 from roomkit.tools.validation import fold_hoisted_arguments, validate_tool_arguments
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Iterable
+    from collections.abc import Awaitable, Callable
 
-    from roomkit.channels._ai_callbacks import BeforeToolCallHook, PlanUpdatedHook
     from roomkit.channels._skill_activation import SkillActivationMemory
+    from roomkit.channels._task_planner import PlanUpdatedCallback
     from roomkit.channels._tool_usage import ToolUsageMemory
     from roomkit.models.tool_call import ToolCallCallback, ToolCallObserver
     from roomkit.providers.ai.base import AIImagePart, AITextPart
@@ -89,11 +89,16 @@ if TYPE_CHECKING:
     from roomkit.skills.executor import ScriptExecutor
     from roomkit.skills.registry import SkillRegistry
     from roomkit.tools.context import _ToolLoopContext
+    from roomkit.tools.external import BeforeToolCallback
     from roomkit.tools.human_input import HumanInputToolHandler
-    from roomkit.tools.policy import ToolPolicy
 
     ToolResult = str | list[AITextPart | AIImagePart]
     ToolHandler = Callable[[str, dict[str, Any]], Awaitable[ToolResult]]
+
+if TYPE_CHECKING:
+    from roomkit.channels._ai_contract import _AIChannelContract
+else:
+    _AIChannelContract = object
 
 logger = logging.getLogger("roomkit.channels.ai")
 
@@ -103,7 +108,7 @@ class _CallRound:
     """What every call of one round shares: its handler, telemetry, room and declarations."""
 
     handler: Any
-    telemetry: Any
+    telemetry: TelemetryProvider
     room_id: str | None
     declared_tools: list[AITool] | None
     parent_span_id: str | None
@@ -142,12 +147,12 @@ def _partial_call_error(tc: Any) -> dict[str, Any]:
     return partial_call_error(tc.name, garbled=garbled)
 
 
-class AIToolsMixin:
+class AIToolsMixin(_AIChannelContract):
     """Parallel tool execution, skill tool definitions, and dispatch routing.
 
-    What it needs from the other mixins and the channel is declared under
-    ``TYPE_CHECKING`` in its body; ``ty`` checks each declaration against the
-    implementation it names.
+    What it calls on the other mixins is declared once, in
+    :class:`~roomkit.channels._ai_contract._AIChannelContract`, which it
+    derives from for the type checker only.
     """
 
     _provider: AIProvider
@@ -165,33 +170,15 @@ class AIToolsMixin:
     _registry: ChannelRegistry
     _tool_timeouts: ToolTimeouts
     _realtime: RealtimeBackend | None
-    _plan_updated_hook: PlanUpdatedHook | None
+    _plan_updated_hook: PlanUpdatedCallback | None
     _tool_call_hook: ToolCallCallback | None
     _tool_observer_hook: ToolCallObserver | None
-    _before_tool_call_hook: BeforeToolCallHook | None
+    _before_tool_call_hook: BeforeToolCallback | None
     _tool_search: bool | None
     _tool_search_pinned: set[str]
     _tool_search_threshold: int
     _tool_search_miss_hint: str | None
     channel_id: str
-
-    if TYPE_CHECKING:
-
-        @property
-        def _effective_tool_policy(self) -> ToolPolicy | None: ...
-        @property
-        def _gated_tool_names(self) -> set[str]: ...
-        def _maybe_truncate_result(
-            self, result: str | list[AITextPart | AIImagePart], tool_call_id: str = ""
-        ) -> str | list[AITextPart | AIImagePart]: ...
-        def _get_loop_ctx(self) -> _ToolLoopContext: ...
-        def _apply_tool_filters(self, tools: list[AITool]) -> list[AITool]: ...
-        def _reachable_tools(self, tools: Iterable[AITool]) -> list[AITool]: ...
-        def _never_deferred(self, loop_ctx: _ToolLoopContext) -> set[str]: ...
-        def _gate_refusal(self, name: str) -> dict[str, str] | None: ...
-        def _reference_shown(self, loop_ctx: _ToolLoopContext) -> list[str]: ...
-        def _orchestration_tools(self, room_id: str | None) -> list[AITool]: ...
-        def _orchestration_tool_names(self, room_id: str | None) -> set[str]: ...
 
     def _tool_parameters(
         self, name: str, declared_tools: list[AITool] | None = None
@@ -368,7 +355,7 @@ class AIToolsMixin:
     async def _execute_tools_parallel(
         self,
         tool_calls: list[Any],
-        telemetry: Any,
+        telemetry: TelemetryProvider,
         *,
         declared_tools: list[AITool] | None = None,
         parent_span_id: str | None = None,

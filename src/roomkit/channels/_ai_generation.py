@@ -12,6 +12,7 @@ from roomkit.channels._turn_notes import turn_input
 from roomkit.models.event import RoomEvent
 from roomkit.models.tool_call import AIGenerationEvent
 from roomkit.providers.ai.base import AIContext, ProviderError
+from roomkit.telemetry.base import TelemetryProvider
 from roomkit.telemetry.noop import NoopTelemetryProvider
 from roomkit.tools.context import _current_loop_ctx, _ToolLoopContext
 
@@ -19,15 +20,20 @@ if TYPE_CHECKING:
     from roomkit.channels._ai_callbacks import BeforeGenerationHook
     from roomkit.providers.ai.base import AITool
 
+if TYPE_CHECKING:
+    from roomkit.channels._ai_contract import _AIChannelContract
+else:
+    _AIChannelContract = object
+
 logger = logging.getLogger("roomkit.channels.ai")
 
 
-class AIGenerationMixin:
+class AIGenerationMixin(_AIChannelContract):
     """The generation hook, telemetry and provider-error log every turn uses.
 
-    What it needs from the other mixins and the channel is declared under
-    ``TYPE_CHECKING`` in its body; ``ty`` checks each declaration against the
-    implementation it names.
+    What it calls on the other mixins is declared once, in
+    :class:`~roomkit.channels._ai_contract._AIChannelContract`, which it
+    derives from for the type checker only.
     """
 
     _before_generation_hook: BeforeGenerationHook | None
@@ -35,12 +41,8 @@ class AIGenerationMixin:
     channel_id: str
     provider_name: str
 
-    if TYPE_CHECKING:
-
-        def _served_tool_names(self, room_id: str | None) -> set[str]: ...
-
     @property
-    def _telemetry_provider(self) -> NoopTelemetryProvider:
+    def _telemetry_provider(self) -> TelemetryProvider:
         """Access telemetry provider (set by register_channel)."""
         return getattr(self, "_telemetry", None) or NoopTelemetryProvider()
 

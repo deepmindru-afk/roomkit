@@ -28,7 +28,7 @@ class _ToolEventPublisher(Protocol):
     async def __call__(
         self,
         event_type: EphemeralEventType,
-        room_id: str,
+        room_id: str | None,
         tool_calls: list[Any],
         round_idx: int,
         *,

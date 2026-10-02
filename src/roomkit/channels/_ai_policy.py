@@ -29,6 +29,11 @@ if TYPE_CHECKING:
     from roomkit.skills.registry import SkillRegistry
     from roomkit.tools.context import _ToolLoopContext
 
+if TYPE_CHECKING:
+    from roomkit.channels._ai_contract import _AIChannelContract
+else:
+    _AIChannelContract = object
+
 logger = logging.getLogger("roomkit.channels.ai")
 
 
@@ -50,12 +55,12 @@ def policy_refusal(name: str) -> str:
     return f"Tool '{name}' is not permitted by the agent's tool policy."
 
 
-class AIToolPolicyMixin:
+class AIToolPolicyMixin(_AIChannelContract):
     """Resolves participant roles and enforces tool policy / skill gating.
 
-    What it needs from the other mixins and the channel is declared under
-    ``TYPE_CHECKING`` in its body; ``ty`` checks each declaration against the
-    implementation it names.
+    What it calls on the other mixins is declared once, in
+    :class:`~roomkit.channels._ai_contract._AIChannelContract`, which it
+    derives from for the type checker only.
     """
 
     _tool_policy: ToolPolicy | None
@@ -65,12 +70,6 @@ class AIToolPolicyMixin:
     _provider: AIProvider
     _registry: ChannelRegistry  # the tools the channel serves, with their traits
     _tool_usage: ToolUsageMemory  # the room's tool memory, its kept declaration included
-
-    if TYPE_CHECKING:
-
-        def _get_loop_ctx(self) -> _ToolLoopContext: ...
-        def _orchestration_tool_names(self, room_id: str | None) -> set[str]: ...
-        def _never_hidden(self, room_id: str | None) -> set[str]: ...
 
     def _resolve_participant_role(self, event: RoomEvent, context: RoomContext) -> str | None:
         """Look up the participant role for the event source."""

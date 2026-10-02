@@ -12,6 +12,11 @@ if TYPE_CHECKING:
     from roomkit.channels._ai_callbacks import ThinkingHook
     from roomkit.realtime.base import RealtimeBackend
 
+if TYPE_CHECKING:
+    from roomkit.channels._ai_contract import _AIChannelContract
+else:
+    _AIChannelContract = object
+
 logger = logging.getLogger("roomkit.channels.ai")
 
 # Per-event cap on the ``thinking`` payload published to the realtime bus.
@@ -23,7 +28,7 @@ THINKING_PREVIEW_LIMIT = 1000
 _RESULT_PREVIEW = 500
 
 
-class AIEventsMixin:
+class AIEventsMixin(_AIChannelContract):
     """Publishes tool-call and thinking ephemeral events over the realtime backend."""
 
     _realtime: RealtimeBackend | None
@@ -33,7 +38,7 @@ class AIEventsMixin:
     async def _publish_tool_event(
         self,
         event_type: EphemeralEventType,
-        room_id: str,
+        room_id: str | None,
         tool_calls: list[Any],
         round_idx: int,
         *,
@@ -83,7 +88,7 @@ class AIEventsMixin:
     async def _publish_thinking_event(
         self,
         event_type: EphemeralEventType,
-        room_id: str,
+        room_id: str | None,
         thinking: str,
         round_idx: int,
     ) -> None:

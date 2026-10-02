@@ -38,8 +38,6 @@ from roomkit.sandbox.tools import SANDBOX_PREAMBLE as _SANDBOX_PREAMBLE
 from roomkit.sandbox.tools import SANDBOX_TOOL_PREFIX as _SANDBOX_TOOL_PREFIX
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
-
     from roomkit.channels._ai_callbacks import ToolUsageLoader
     from roomkit.channels._skill_activation import SkillActivationMemory
     from roomkit.channels._tool_registry import ChannelRegistry
@@ -50,12 +48,17 @@ if TYPE_CHECKING:
     from roomkit.models.channel import ChannelBinding
     from roomkit.models.context import RoomContext
     from roomkit.models.event import RoomEvent
-    from roomkit.providers.ai.base import AIProvider, AITool
+    from roomkit.providers.ai.base import AIProvider
     from roomkit.sandbox.executor import SandboxExecutor
     from roomkit.skills.executor import ScriptExecutor
     from roomkit.skills.registry import SkillRegistry
     from roomkit.tools.context import _ToolLoopContext
     from roomkit.tools.human_input import HumanInputToolHandler
+
+if TYPE_CHECKING:
+    from roomkit.channels._ai_contract import _AIChannelContract
+else:
+    _AIChannelContract = object
 
 logger = logging.getLogger("roomkit.channels.ai")
 
@@ -85,12 +88,12 @@ _SPEAKER_ATTRIBUTION_NOTE = (
 )
 
 
-class AIContextMixin:
+class AIContextMixin(_AIChannelContract):
     """Builds the AIContext passed to the provider from room state and events.
 
-    What it needs from the other mixins and the channel is declared under
-    ``TYPE_CHECKING`` in its body; ``ty`` checks each declaration against the
-    implementation it names.
+    What it calls on the other mixins is declared once, in
+    :class:`~roomkit.channels._ai_contract._AIChannelContract`, which it
+    derives from for the type checker only.
     """
 
     _provider: AIProvider
@@ -126,16 +129,6 @@ class AIContextMixin:
     channel_id: str
 
     _warned_unoffered_human_tools: set[str]
-
-    if TYPE_CHECKING:
-
-        def _orchestration_tools(self, room_id: str | None) -> list[AITool]: ...
-        def _orchestration_tool_names(self, room_id: str | None) -> set[str]: ...
-        def _skill_tools(self) -> list[AITool]: ...
-        def _reachable_tools(self, tools: Iterable[AITool]) -> list[AITool]: ...
-        def _declared_once(self, tools: list[AITool], room_id: str | None) -> list[AITool]: ...
-        def _policy_allows(self, name: str) -> bool: ...
-        def _get_loop_ctx(self) -> _ToolLoopContext: ...
 
     def _warn_unoffered_human_input_tools(self, offered: set[str]) -> None:
         """Say so when a human-input tool name is absent from the turn's toolset.

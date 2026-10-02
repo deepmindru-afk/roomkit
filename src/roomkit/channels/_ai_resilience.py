@@ -29,8 +29,12 @@ from roomkit.providers.utils import _aclose_stream
 if TYPE_CHECKING:
     from roomkit.channels._tool_eviction import ToolEviction
     from roomkit.providers.ai.base import AIMessage
-    from roomkit.tools.context import _ToolLoopContext
 
+
+if TYPE_CHECKING:
+    from roomkit.channels._ai_contract import _AIChannelContract
+else:
+    _AIChannelContract = object
 
 logger = logging.getLogger("roomkit.channels.ai")
 
@@ -51,22 +55,18 @@ class _StreamRetryBoundary:
     """
 
 
-class AIResilienceMixin:
+class AIResilienceMixin(_AIChannelContract):
     """Retry logic, streaming retry, context overflow detection, and compaction.
 
-    What it needs from the other mixins and the channel is declared under
-    ``TYPE_CHECKING`` in its body; ``ty`` checks each declaration against the
-    implementation it names.
+    What it calls on the other mixins is declared once, in
+    :class:`~roomkit.channels._ai_contract._AIChannelContract`, which it
+    derives from for the type checker only.
     """
 
     _retry_policy: RetryPolicy | None
     _provider: AIProvider
     _fallback_provider: AIProvider | None
     _eviction: ToolEviction
-    if TYPE_CHECKING:
-
-        def _show_summarized_references(self, summarized: list[AIMessage]) -> None: ...
-        def _get_loop_ctx(self) -> _ToolLoopContext: ...
 
     async def _generate_stream_with_retry(
         self, context: AIContext

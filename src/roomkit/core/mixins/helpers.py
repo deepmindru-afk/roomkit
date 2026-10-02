@@ -99,11 +99,19 @@ def _source_block_reason(binding: ChannelBinding | None) -> str | None:
 
 
 if TYPE_CHECKING:
+    from roomkit.channels._ai_callbacks import (
+        BeforeGenerationHook,
+        ThinkingHook,
+        ToolUsageLoader,
+    )
+    from roomkit.channels._task_planner import PlanUpdatedCallback
     from roomkit.channels.base import Channel
     from roomkit.core.hooks import HookEngine, IdentityHookRegistration
     from roomkit.models.channel import ChannelBinding
     from roomkit.models.room import Room
+    from roomkit.models.tool_call import AfterResponseCallback, ToolCallCallback, ToolCallObserver
     from roomkit.store.base import ConversationStore
+    from roomkit.tools.external import BeforeToolCallback
 
 logger = logging.getLogger("roomkit.framework")
 
@@ -852,7 +860,7 @@ class HelpersMixin:
                 skip_event_filter=True,
             )
 
-    def _build_tool_usage_loader(self) -> Any:
+    def _build_tool_usage_loader(self) -> ToolUsageLoader:
         """Build the tool-usage hydration loader for an AIChannel.
 
         Fetches a room's most recent persisted ``TOOL_CALL_END`` events so the
@@ -880,7 +888,7 @@ class HelpersMixin:
 
         return _load
 
-    def _build_tool_call_hook(self, channel_id: str) -> Any:
+    def _build_tool_call_hook(self, channel_id: str) -> ToolCallCallback:
         """Build the ON_TOOL_CALL callback for a call a channel served.
 
         The returned callback runs ON_TOOL_CALL's SYNC hooks as a chain on the
@@ -965,7 +973,7 @@ class HelpersMixin:
         )
         return hook_result, context
 
-    def _build_tool_report_hook(self, channel_id: str) -> Any:
+    def _build_tool_report_hook(self, channel_id: str) -> ToolCallObserver:
         """Build the ON_TOOL_CALL callback for a call an external handler ran.
 
         A report, by construction (RFC §9.3): the agent already read the
@@ -1075,7 +1083,7 @@ class HelpersMixin:
         reason = json.dumps({"error": f"hook_error:{closed}"})
         return ToolCallVerdict(result=reason, blocked=True)
 
-    def _build_tool_observer_hook(self, channel_id: str) -> Any:
+    def _build_tool_observer_hook(self, channel_id: str) -> ToolCallObserver:
         """Build a ToolCallObserver closure for an AIChannel.
 
         The counterpart of :meth:`_build_tool_call_hook` for a call that failed
@@ -1123,7 +1131,7 @@ class HelpersMixin:
             "tool_call", room_id=event.room_id, channel_id=channel_id, data=data
         )
 
-    def _build_thinking_hook(self, channel_id: str) -> Any:
+    def _build_thinking_hook(self, channel_id: str) -> ThinkingHook:
         """Build an ON_AI_THINKING callback closure for an AIChannel.
 
         RFC §9.2. The same reasoning also goes out as an ephemeral event for
@@ -1154,7 +1162,7 @@ class HelpersMixin:
 
         return _callback
 
-    def _build_plan_updated_hook(self, channel_id: str) -> Any:
+    def _build_plan_updated_hook(self, channel_id: str) -> PlanUpdatedCallback:
         """Build an ON_PLAN_UPDATED callback closure for an AIChannel."""
         kit_ref = self
 
@@ -1175,7 +1183,7 @@ class HelpersMixin:
 
         return _callback
 
-    def _build_before_tool_call_hook(self, channel_id: str) -> Any:
+    def _build_before_tool_call_hook(self, channel_id: str) -> BeforeToolCallback:
         """Build a BEFORE_TOOL_USE callback closure for an AIChannel.
 
         The returned callback runs BEFORE_TOOL_USE sync hooks against the
@@ -1298,7 +1306,7 @@ class HelpersMixin:
 
         return _callback
 
-    def _build_after_response_hook(self, channel_id: str) -> Any:
+    def _build_after_response_hook(self, channel_id: str) -> AfterResponseCallback:
         """Build an AfterResponseCallback closure for an AIChannel.
 
         The returned callback runs ON_AI_RESPONSE async hooks against
@@ -1338,7 +1346,7 @@ class HelpersMixin:
 
         return _callback
 
-    def _build_before_generation_hook(self, channel_id: str) -> Any:
+    def _build_before_generation_hook(self, channel_id: str) -> BeforeGenerationHook:
         """Build a BeforeGenerationCallback closure for an AIChannel.
 
         The returned callback runs BEFORE_AI_GENERATION sync hooks against

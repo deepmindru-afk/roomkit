@@ -382,16 +382,16 @@ class AIChannel(
         self._tool_observer_hook: ToolCallObserver | None = None
         # Fired for a call a provider already ran — a report, nothing applied.
         self._tool_report_hook: ToolCallObserver | None = None
-        self._before_tool_call_hook: Any = None
-        self._after_response_hook: Any = None
-        self._before_generation_hook: Any = None
-        self._thinking_hook: Any = None
-        self._plan_updated_hook: Any = None
+        self._before_tool_call_hook = None
+        self._after_response_hook = None
+        self._before_generation_hook = None
+        self._thinking_hook = None
+        self._plan_updated_hook = None
         # Tool-usage hydration loader: fetches a room's persisted
         # TOOL_CALL_END history so ToolUsageMemory survives channel-object
         # lifetimes (restarts, cache expiry) — the in-memory store dies with
         # the object while conversations outlive it.
-        self._tool_usage_loader: Any = None
+        self._tool_usage_loader = None
 
     @property
     def tool_handler(self) -> ToolHandler | None:
@@ -451,7 +451,7 @@ class AIChannel(
         """Propagate telemetry to AI provider."""
         telemetry = getattr(self, "_telemetry", None)
         if telemetry is not None:
-            self._provider._telemetry = telemetry  # ty: ignore[unresolved-attribute]
+            self._provider._telemetry = telemetry
 
     @property
     def info(self) -> dict[str, Any]:

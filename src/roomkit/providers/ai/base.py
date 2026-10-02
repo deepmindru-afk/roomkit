@@ -7,7 +7,7 @@ import time as _time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Mapping
 from datetime import date
-from typing import Any, Literal, Self
+from typing import TYPE_CHECKING, Any, Literal, Self
 
 from pydantic import BaseModel, Field, SecretStr, field_validator
 
@@ -17,6 +17,9 @@ from roomkit.models.enums import ChannelMediaType, ToolCallOutcome
 from roomkit.models.response_metadata import ResponseMetadata
 from roomkit.models.task import Observation, Task
 from roomkit.providers.ai.json_schema import check_portable_schema
+
+if TYPE_CHECKING:
+    from roomkit.telemetry.base import TelemetryProvider
 
 
 class AITextPart(BaseModel):
@@ -753,6 +756,9 @@ class ModelInfo(BaseModel):
 
 class AIProvider(ABC):
     """AI model provider for generating responses."""
+
+    _telemetry: TelemetryProvider | None = None
+    """Set by the channel that serves the provider, for its metrics."""
 
     @property
     def name(self) -> str:

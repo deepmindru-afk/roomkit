@@ -1,8 +1,9 @@
-"""The callbacks the framework hands an AIChannel when it registers it.
+"""The callbacks the framework hands an AIChannel when it registers it, for
+those no public alias already names (``BeforeToolCallback``,
+``PlanUpdatedCallback`` and ``AfterResponseCallback`` do).
 
 ``register_channel`` builds each one from the room's hooks and sets it on the
-channel; the mixins that call them read these types. Aliases only: nothing
-here runs.
+channel; the mixins that call them read these types.
 """
 
 from __future__ import annotations
@@ -12,20 +13,15 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from roomkit.core.hooks import SyncPipelineResult
-    from roomkit.models.tool_call import AIGenerationEvent, ToolCallEvent
-    from roomkit.tools.external import BeforeToolDecision
+    from roomkit.models.tool_call import AIGenerationEvent
 
-type BeforeGenerationHook = Callable[[AIGenerationEvent], Awaitable[SyncPipelineResult]]
-"""BEFORE_AI_GENERATION for a turn's context: allowed or blocked, and why."""
+BeforeGenerationHook = Callable[["AIGenerationEvent"], Awaitable["SyncPipelineResult"]]
+"""BEFORE_AI_GENERATION for a turn's context: allowed or blocked, and why. The
+public ``BeforeGenerationCallback`` leaves the result untyped, which models
+cannot name without importing core."""
 
-type BeforeToolCallHook = Callable[[ToolCallEvent], Awaitable[BeforeToolDecision]]
-"""BEFORE_TOOL_USE for one call: its decision."""
-
-type ThinkingHook = Callable[[str, str, int], Awaitable[None]]
+ThinkingHook = Callable[[str, str, int], Awaitable[None]]
 """ON_AI_THINKING: ``(room_id, thinking, round_idx)``."""
 
-type PlanUpdatedHook = Callable[[str, list[dict[str, Any]]], Awaitable[None]]
-"""ON_PLAN_UPDATED: ``(room_id, tasks)``."""
-
-type ToolUsageLoader = Callable[[str], Awaitable[list[dict[str, Any]]]]
+ToolUsageLoader = Callable[[str], Awaitable[list[dict[str, Any]]]]
 """A room's stored tool calls, read to rebuild the channel's tool memory."""
