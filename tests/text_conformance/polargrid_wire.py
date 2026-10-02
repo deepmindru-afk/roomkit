@@ -27,7 +27,6 @@ from tests.text_conformance.driver import (
     REDACTED_REASONING,
     RESPONSE_CALL_WITHOUT_ID,
     SIGNED_REASONING,
-    STREAM_USAGE,
     Driver,
 )
 from tests.text_conformance.script import Call, Script
@@ -101,16 +100,17 @@ def _call_chunks(script: Script) -> list[dict[str, Any]]:
     return chunks
 
 
-def _stream(script: Script) -> list[dict[str, Any]]:
-    """The stream's lines, each a JSON chunk; the SDK drops what its chunk type
-    does not hold, the usage of the last one among it."""
+def _stream(script: Script, body: dict[str, Any]) -> list[dict[str, Any]]:
+    """The stream's lines, each a JSON chunk; the usage last, when the request
+    asks for it, as the server sends it (measured 2026-10-02)."""
     content = _content(script)
     chunks = [_chunk({"role": "assistant", "content": content})] if content else []
     chunks.extend(_call_chunks(script))
     finish = FINISH[script.finish]
     if finish is not None:
         chunks.append(_chunk({}, finish))
-    chunks.append(_chunk(usage=_usage(script)))
+    if (body.get("stream_options") or {}).get("include_usage"):
+        chunks.append(_chunk(usage=_usage(script)))
     return chunks
 
 
@@ -150,7 +150,7 @@ def _client(script: Script, requests: list[Any]) -> polargrid.PolarGrid:
 
     async def stream_post(endpoint: str, body: dict[str, Any]) -> AsyncIterator[dict[str, Any]]:
         requests.append(body)
-        for chunk in _stream(script):
+        for chunk in _stream(script, body):
             yield chunk
 
     client._make_request = make_request  # type: ignore[method-assign]
@@ -170,9 +170,6 @@ class PolarGridWire(ChatDriver):
         RESPONSE_CALL_WITHOUT_ID: "polargrid-sdk's ToolCall requires an id on a response",
         CACHE_WRITE_USAGE: "polargrid-sdk's TokenUsage holds prompt, completion and total tokens",
         MALFORMED_CALL: "PolarGrid has no stop reason for a call the server could not parse",
-        # A defect, not a wire limit: the server sends usage, the SDK drops it
-        # (RMK-384).
-        STREAM_USAGE: "polargrid-sdk's ChatCompletionChunk has no usage field (RMK-384)",
     }
     reasoning = "dropped"
     # PolarGrid states no tool name rule, and the provider checks none.

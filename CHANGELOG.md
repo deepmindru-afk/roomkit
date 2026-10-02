@@ -250,6 +250,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A streamed PolarGrid turn reports its usage: polargrid-sdk can neither ask
+  for a stream's usage nor read it (no `stream_options` on its request, no
+  `usage` on its chunk, measured on 0.10.0), so every streamed turn reported
+  no tokens. Until the SDK carries it, the provider streams through a patch
+  that asks for the usage and reads it from the server's last line, the SDK
+  still building, authenticating and parsing the rest
+  (`providers/polargrid/sdk_patch.py`, RMK-384).
+
 - Ollama receives a tool's parameter schema whole: ollama-python drops a
   nested object's properties, `anyOf`, `$ref` and every constraint from a
   declaration before the request leaves (ollama/ollama-python#724, measured on

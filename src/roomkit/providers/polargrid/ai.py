@@ -75,6 +75,7 @@ from roomkit.providers.ai.tool_calls import (
     unreadable_arguments,
 )
 from roomkit.providers.ai.tool_declaration import chat_tool_declarations
+from roomkit.providers.polargrid import sdk_patch
 from roomkit.providers.polargrid.config import PolarGridConfig
 from roomkit.providers.polargrid.models import (
     MODELS,
@@ -467,9 +468,9 @@ class PolarGridAIProvider(AIProvider):
         parser = ThinkTagParser()
 
         try:
-            stream = client.chat_completion_stream(request)
+            stream = sdk_patch.chat_completion_stream(self._sdk, client, request)
             async for chunk in stream:
-                # Final chunk may carry usage with empty/no choices.
+                # The usage comes last, as a chunk with no choices.
                 chunk_usage = self._extract_usage(chunk)
                 if chunk_usage:
                     usage = chunk_usage

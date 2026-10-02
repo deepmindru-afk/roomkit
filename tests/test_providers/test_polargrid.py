@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import polargrid
 import pytest
 
 from roomkit.providers.ai.base import (
@@ -68,6 +69,10 @@ class _ServerError(_PGError):
     pass
 
 
+# Builds and checks request bodies only; nothing listens at its address.
+_BUILDER = polargrid.PolarGrid(api_key="k", base_url="http://127.0.0.1:1")
+
+
 def _mock_polargrid_module() -> MagicMock:
     """Return a MagicMock that behaves like the polargrid module."""
     mod = MagicMock()
@@ -79,11 +84,18 @@ def _mock_polargrid_module() -> MagicMock:
     mod.NotFoundError = _NotFoundError
     mod.ServerError = _ServerError
 
+    # A streamed chat goes through providers/polargrid/sdk_patch.py, which
+    # uses the SDK's own types and request builders: the real ones, so only
+    # the server's lines (``_serve``) are faked.
+    mod.Message = polargrid.Message
+    mod.ChatCompletionRequest = polargrid.ChatCompletionRequest
+    mod.ChatCompletionChunk = polargrid.ChatCompletionChunk
+    mod.TokenUsage = polargrid.TokenUsage
+
     client = MagicMock()
     client.chat_completion = AsyncMock()
-    # chat_completion_stream is sync-returning-async-iterable; we set
-    # its return value per-test to an _FakeStream instance.
-    client.chat_completion_stream = MagicMock()
+    client._validate_chat_completion_request = _BUILDER._validate_chat_completion_request
+    client._build_chat_completion_body = _BUILDER._build_chat_completion_body
     client.list_models = AsyncMock()
     client.get_region_id = MagicMock(return_value="yul-02")
     client.get_region_name = MagicMock(return_value="Montreal 02")
@@ -143,39 +155,40 @@ def _response_obj(
     )
 
 
-class _FakeStream:
-    def __init__(self, chunks: list[SimpleNamespace]) -> None:
-        self._chunks = chunks
-        self._i = 0
+def _raw_chunk(
+    choices: list[dict[str, Any]], usage: dict[str, int] | None = None
+) -> dict[str, Any]:
+    """One streamed line as PolarGrid's server writes it."""
+    chunk: dict[str, Any] = {
+        "id": "chatcmpl-0",
+        "object": "chat.completion.chunk",
+        "created": 0,
+        "model": "qwen-3.5-27b",
+        "choices": choices,
+    }
+    if usage is not None:
+        chunk["usage"] = usage
+    return chunk
 
-    def __aiter__(self) -> _FakeStream:
-        return self
 
-    async def __anext__(self) -> SimpleNamespace:
-        if self._i >= len(self._chunks):
-            raise StopAsyncIteration
-        chunk = self._chunks[self._i]
-        self._i += 1
-        return chunk
+def _usage(prompt_tokens: int, completion_tokens: int) -> dict[str, int]:
+    return {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": prompt_tokens + completion_tokens,
+    }
 
 
 def _stream_chunk(
-    *,
-    content: str | None = None,
-    finish_reason: str | None = None,
-    prompt_tokens: int | None = None,
-    completion_tokens: int | None = None,
-) -> SimpleNamespace:
-    delta = SimpleNamespace(content=content) if content is not None else SimpleNamespace()
-    choice = SimpleNamespace(index=0, delta=delta, finish_reason=finish_reason)
-    fields: dict[str, Any] = {"choices": [choice]}
-    if prompt_tokens is not None or completion_tokens is not None:
-        fields["usage"] = SimpleNamespace(
-            prompt_tokens=prompt_tokens or 0,
-            completion_tokens=completion_tokens or 0,
-            total_tokens=(prompt_tokens or 0) + (completion_tokens or 0),
-        )
-    return SimpleNamespace(**fields)
+    *, content: str | None = None, finish_reason: str | None = None
+) -> dict[str, Any]:
+    delta = {"content": content} if content is not None else {}
+    return _raw_chunk([{"index": 0, "delta": delta, "finish_reason": finish_reason}])
+
+
+def _usage_chunk(prompt_tokens: int, completion_tokens: int) -> dict[str, Any]:
+    """The last line when the request asks for the usage: no choices."""
+    return _raw_chunk([], _usage(prompt_tokens, completion_tokens))
 
 
 def _tool_chunk(
@@ -185,22 +198,32 @@ def _tool_chunk(
     name: str | None = None,
     arguments: str | None = None,
     finish_reason: str | None = None,
-) -> SimpleNamespace:
-    """A streaming chunk carrying a fragmented tool-call delta.
-
-    Mirrors polargrid-sdk's ``ToolCallDelta``: ``function`` is a dict and
-    arguments arrive in fragments to be concatenated per ``index``.
-    """
+) -> dict[str, Any]:
+    """A line carrying a fragmented tool-call delta: arguments arrive in
+    fragments to be concatenated per ``index``."""
     func: dict[str, Any] = {}
     if name is not None:
         func["name"] = name
     if arguments is not None:
         func["arguments"] = arguments
-    tc = SimpleNamespace(index=index, id=id, type="function", function=func or None)
-    delta = SimpleNamespace(content=None, tool_calls=[tc])
-    return SimpleNamespace(
-        choices=[SimpleNamespace(index=index, delta=delta, finish_reason=finish_reason)]
-    )
+    call: dict[str, Any] = {"index": index, "type": "function", "function": func}
+    if id is not None:
+        call["id"] = id
+    delta = {"tool_calls": [call]}
+    return _raw_chunk([{"index": index, "delta": delta, "finish_reason": finish_reason}])
+
+
+def _serve(mod: MagicMock, chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Have the client's stream answer *chunks*; return the bodies it is sent."""
+    sent: list[dict[str, Any]] = []
+
+    async def stream_post(endpoint: str, body: dict[str, Any]) -> Any:
+        sent.append(body)
+        for chunk in chunks:
+            yield chunk
+
+    mod._client._stream_post = stream_post
+    return sent
 
 
 def _tool_call_obj(*, id: str, name: str, arguments: str) -> SimpleNamespace:
@@ -407,17 +430,15 @@ class TestPolarGridStreaming:
     @pytest.mark.asyncio
     async def test_streams_text_deltas_and_done(self) -> None:
         provider, mod = _provider()
-        mod._client.chat_completion_stream.return_value = _FakeStream(
+        _serve(
+            mod,
             [
                 _stream_chunk(content="42"),
                 _stream_chunk(content=" is "),
                 _stream_chunk(content="it.", finish_reason="stop"),
-                # Final usage-only chunk with no choices.
-                SimpleNamespace(
-                    choices=[],
-                    usage=SimpleNamespace(prompt_tokens=12, completion_tokens=5, total_tokens=17),
-                ),
-            ]
+                # The usage, last, with no choices: the request asked for it.
+                _usage_chunk(12, 5),
+            ],
         )
 
         events = [e async for e in provider.generate_structured_stream(_context())]
@@ -430,24 +451,25 @@ class TestPolarGridStreaming:
         assert done_events[0].usage == {"input_tokens": 12, "output_tokens": 5}
 
     @pytest.mark.asyncio
-    async def test_streaming_passes_stream_true(self) -> None:
+    async def test_streaming_asks_for_a_stream_and_its_usage(self) -> None:
         provider, mod = _provider()
-        mod._client.chat_completion_stream.return_value = _FakeStream([])
+        sent = _serve(mod, [])
 
         async for _ in provider.generate_structured_stream(_context()):
             pass
 
-        request = mod._client.chat_completion_stream.call_args.args[0]
-        assert request["stream"] is True
+        assert sent[0]["stream"] is True
+        assert sent[0]["stream_options"] == {"include_usage": True}
 
     @pytest.mark.asyncio
     async def test_generate_stream_yields_text_only(self) -> None:
         provider, mod = _provider()
-        mod._client.chat_completion_stream.return_value = _FakeStream(
+        _serve(
+            mod,
             [
                 _stream_chunk(content="a"),
                 _stream_chunk(content="b", finish_reason="stop"),
-            ]
+            ],
         )
 
         chunks = [c async for c in provider.generate_stream(_context())]
@@ -456,26 +478,16 @@ class TestPolarGridStreaming:
     @pytest.mark.asyncio
     async def test_streaming_emits_tool_calls(self) -> None:
         provider, mod = _provider()
-        mod._client.chat_completion_stream.return_value = _FakeStream(
+        _serve(
+            mod,
             [
                 # id + name + first arg fragment, then the tail fragment.
                 _tool_chunk(index=0, id="call_1", name="get_weather", arguments='{"ci'),
                 _tool_chunk(index=0, arguments='ty": "Montreal"}'),
-                # Finish marker, then a usage-only chunk.
-                SimpleNamespace(
-                    choices=[
-                        SimpleNamespace(
-                            index=0,
-                            delta=SimpleNamespace(content=None, tool_calls=None),
-                            finish_reason="tool_calls",
-                        )
-                    ]
-                ),
-                SimpleNamespace(
-                    choices=[],
-                    usage=SimpleNamespace(prompt_tokens=4, completion_tokens=2, total_tokens=6),
-                ),
-            ]
+                # Finish marker, then the usage.
+                _raw_chunk([{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]),
+                _usage_chunk(4, 2),
+            ],
         )
 
         events = [e async for e in provider.generate_structured_stream(_context())]
@@ -499,12 +511,13 @@ class TestPolarGridStreaming:
     @pytest.mark.asyncio
     async def test_streaming_text_then_tool_call_ordering(self) -> None:
         provider, mod = _provider()
-        mod._client.chat_completion_stream.return_value = _FakeStream(
+        _serve(
+            mod,
             [
                 _stream_chunk(content="Let me check. "),
                 _tool_chunk(index=0, id="call_9", name="lookup", arguments="{}"),
-                SimpleNamespace(choices=[], usage=None),
-            ]
+                _raw_chunk([]),
+            ],
         )
 
         events = [e async for e in provider.generate_structured_stream(_context())]
@@ -551,13 +564,14 @@ class TestPolarGridThinking:
     @pytest.mark.asyncio
     async def test_streaming_emits_thinking_then_text(self) -> None:
         provider, mod = _provider()
-        mod._client.chat_completion_stream.return_value = _FakeStream(
+        _serve(
+            mod,
             [
                 _stream_chunk(content="<think>"),
                 _stream_chunk(content="reasoning here"),
                 _stream_chunk(content="</think>"),
                 _stream_chunk(content="final answer", finish_reason="stop"),
-            ]
+            ],
         )
 
         events = [e async for e in provider.generate_structured_stream(_context())]
@@ -577,13 +591,14 @@ class TestPolarGridThinking:
     @pytest.mark.asyncio
     async def test_streaming_thinking_tag_split_across_chunks(self) -> None:
         provider, mod = _provider()
-        mod._client.chat_completion_stream.return_value = _FakeStream(
+        _serve(
+            mod,
             [
                 _stream_chunk(content="<th"),
                 _stream_chunk(content="ink>deep "),
                 _stream_chunk(content="thoughts</thi"),
                 _stream_chunk(content="nk>the answer", finish_reason="stop"),
-            ]
+            ],
         )
 
         events = [e async for e in provider.generate_structured_stream(_context())]
@@ -596,9 +611,7 @@ class TestPolarGridThinking:
     @pytest.mark.asyncio
     async def test_generate_stream_filters_out_thinking(self) -> None:
         provider, mod = _provider()
-        mod._client.chat_completion_stream.return_value = _FakeStream(
-            [_stream_chunk(content="<think>hidden</think>visible", finish_reason="stop")]
-        )
+        _serve(mod, [_stream_chunk(content="<think>hidden</think>visible", finish_reason="stop")])
 
         chunks = [c async for c in provider.generate_stream(_context())]
 
@@ -1148,8 +1161,8 @@ class TestPolarGridResponseSchema:
 
     async def test_a_streamed_answer_is_checked_before_its_done_event(self) -> None:
         provider, mod = _provider()
-        mod._client.chat_completion_stream.return_value = _FakeStream(
-            [_stream_chunk(content='{"label": "yes"}'), _stream_chunk(finish_reason="stop")]
+        sent = _serve(
+            mod, [_stream_chunk(content='{"label": "yes"}'), _stream_chunk(finish_reason="stop")]
         )
 
         events, error = await self._drain(
@@ -1161,16 +1174,13 @@ class TestPolarGridResponseSchema:
         assert (
             "".join(e.text for e in events if isinstance(e, StreamTextDelta)) == '{"label": "yes"}'
         )
-        request = mod._client.chat_completion_stream.call_args.args[0]
-        assert request["response_format"]["json_schema"]["schema"] == _VERDICT
+        assert sent[0]["response_format"]["json_schema"]["schema"] == _VERDICT
 
     async def test_a_streamed_answer_that_is_not_the_document_raises_instead_of_done(
         self,
     ) -> None:
         provider, mod = _provider()
-        mod._client.chat_completion_stream.return_value = _FakeStream(
-            [_stream_chunk(content="Yes."), _stream_chunk(finish_reason="stop")]
-        )
+        _serve(mod, [_stream_chunk(content="Yes."), _stream_chunk(finish_reason="stop")])
 
         events, error = await self._drain(
             provider.generate_structured_stream(_context(response_schema=_VERDICT))
