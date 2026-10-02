@@ -1,7 +1,7 @@
 """Overflow recovery and replay safety live in the resilience wrappers.
 
-Every generation path that goes through the retry wrappers (the streaming
-tool loop, the no-tools streaming path, the non-streaming loop) compacts and
+Every generation goes through the retry wrapper (a turn with tools or
+without, whatever its provider streams), which compacts and
 replays a context-window refusal once, before the retry budget or the
 fallback provider see the oversized request. One guard rules every recovery,
 and only the wrapper can enforce it: **a stream that has yielded anything is
@@ -328,23 +328,23 @@ async def test_overflow_is_recovered_before_retry_and_fallback() -> None:
     assert any(isinstance(e, StreamTextDelta) and e.text == "Done" for e in items)
 
 
-# ── the no-tools streaming path shares the recovery ─────────────────
+# ── a turn without tools shares the recovery ────────────────────────
 
 
-async def test_the_no_tools_streaming_path_compacts_too() -> None:
+async def test_a_turn_without_tools_compacts_too() -> None:
     provider = _ScriptedStreamProvider(
         [_overflow_by_phrase(), AIResponse(content="Done", tool_calls=[])]
     )
-    items = await _drain(_channel(provider)._stream_text_with_thinking(_ctx()))
+    items = await _drain(_channel(provider)._run_streaming_tool_loop(_ctx()))
 
     assert _texts(items).count("Done") == 1
     assert len(provider.calls) == 2
     assert provider.seen_compacted == [False, True]
 
 
-async def test_the_no_tools_streaming_path_retries_and_falls_back() -> None:
-    # The no-tools path draws retry and fallback from the wrapper like every
-    # other generation path — the policy's word holds here too.
+async def test_a_turn_without_tools_retries_and_falls_back() -> None:
+    # A turn without tools draws retry and fallback from the wrapper like any
+    # other — the policy's word holds here too.
     fallback = MockAIProvider(streaming=True, responses=["from fallback"])
     provider = _ScriptedStreamProvider([ProviderError("503", retryable=True)])
     ch = _channel(
@@ -353,7 +353,7 @@ async def test_the_no_tools_streaming_path_retries_and_falls_back() -> None:
         fallback=fallback,
     )
 
-    items = await _drain(ch._stream_text_with_thinking(_ctx()))
+    items = await _drain(ch._run_streaming_tool_loop(_ctx()))
 
     assert len(provider.calls) == 3  # every attempt the policy announces
     assert _texts(items) == "from fallback"

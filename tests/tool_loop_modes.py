@@ -1,16 +1,15 @@
-"""Drive an AIChannel tool loop the same way in both generation modes.
+"""Drive an AIChannel's tool loop and read what it produced.
 
-Every in-repo provider streams, so an AIChannel with tools runs the streaming
-tool loop in production; the non-streaming loop serves a provider that cannot
-stream. A tool-loop test takes the ``streaming`` fixture (``tests/conftest.py``)
-and drives the turn through the helpers below, which read either loop's
-outcome into the same :class:`LoopRun`:
+An AIChannel runs one tool loop whatever its provider streams (RFC §6.4): a
+provider that does not stream is read through its ``generate()``. A tool-loop
+test takes the ``streaming`` fixture (``tests/conftest.py``) to run against
+both kinds of provider, and drives the turn through the helpers below, which
+read the loop's outcome into a :class:`LoopRun`:
 
-- :func:`respond` goes through ``on_event``, where the provider picks the
-  loop: pass the fixture's value to ``MockAIProvider(streaming=...)``. Under
-  the fixture it checks that the reply came in the mode the test runs in.
-- :func:`run_tool_loop` calls a loop directly, picked by its ``streaming``
-  argument; the provider's flag plays no part.
+- :func:`respond` goes through ``on_event``: pass the fixture's value to
+  ``MockAIProvider(streaming=...)``. Under the fixture it checks that the
+  provider streams in the mode the test runs in.
+- :func:`run_tool_loop` runs the loop directly on a context.
 """
 
 from __future__ import annotations
@@ -20,10 +19,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from roomkit.channels.ai import AIChannel
-from roomkit.models.channel import ChannelBinding
+from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import EventType
-from roomkit.models.event import RoomEvent, TextContent, ToolCallContent
+from roomkit.models.event import RoomEvent, ToolCallContent
 from roomkit.models.streaming import (
     LoopEndMarker,
     LoopEndReason,
@@ -68,9 +67,8 @@ class LoopRun:
 
     ``said`` is every non-empty text segment in order: what the model said
     before each tool round, then its answer. ``text`` is the answer alone.
-    ``reason`` is the loop's end reason (``LoopEndMarker.reason`` /
-    ``ToolLoopResult.reason``); ``None`` when a non-streaming reply carries no
-    final message to read it from. ``metadata`` is the reply's response
+    ``reason`` is the loop's end reason (``LoopEndMarker.reason``); ``None``
+    when the loop did not reach its end. ``metadata`` is the reply's response
     metadata (the turn's live record), read once the turn has ended.
     """
 
@@ -97,48 +95,27 @@ def open_tool_calls(events: list[RoomEvent]) -> list[str]:
     ]
 
 
-async def run_tool_loop(channel: AIChannel, context: AIContext, *, streaming: bool) -> LoopRun:
-    """Run the channel's tool loop for ``context`` in the given mode."""
-    if streaming:
-        return await _read_stream(channel._run_streaming_tool_loop(context))
-    result = await channel._run_tool_loop(context)
-    run = LoopRun(text=result.response.content or "", reason=result.reason)
-    for rnd in result.rounds:
-        if rnd.text_before:
-            run.said.append(rnd.text_before)
-        for call, part in zip(rnd.tool_calls, rnd.results, strict=False):
-            run.calls.append(
-                LoopCall(
-                    name=call.name,
-                    id=call.id,
-                    requested=call.arguments,
-                    arguments=rnd.arguments_ran(call),
-                    result=part.result,
-                    failed=part.is_error,
-                    error=part.as_text() if part.is_error else None,
-                    structured_content=part.structured_content,
-                )
-            )
-    if run.text:
-        run.said.append(run.text)
-    return run
+async def run_tool_loop(channel: AIChannel, context: AIContext) -> LoopRun:
+    """Run the channel's tool loop for ``context``."""
+    return await _read_stream(channel._run_streaming_tool_loop(context))
 
 
 async def respond(
     channel: AIChannel, event: RoomEvent, binding: ChannelBinding, context: RoomContext
 ) -> LoopRun:
-    """Deliver ``event`` to the channel and read its reply, streamed or not."""
-    output = await channel.on_event(event, binding, context)
-    streamed = output.response_stream is not None
-    if _expected_streaming is not None and streamed != _expected_streaming:
+    """Deliver ``event`` to the channel and read its reply."""
+    streams = channel.provider.supports_structured_streaming
+    if _expected_streaming is not None and streams != _expected_streaming:
         raise AssertionError(
-            f"the test runs streaming={_expected_streaming} but the reply came "
-            f"streaming={streamed}: pass the fixture to the provider"
+            f"the test runs streaming={_expected_streaming} but the provider "
+            f"streams={streams}: pass the fixture to the provider"
         )
-    if output.response_stream is not None:
-        run = await _read_stream(output.response_stream)
-    else:
-        run = _read_events(output.response_events)
+    return await read_reply(await channel.on_event(event, binding, context))
+
+
+async def read_reply(output: ChannelOutput) -> LoopRun:
+    """Read a reply ``on_event`` handed back: its stream runs the turn."""
+    run = await _read_stream(output.response_stream) if output.response_stream else LoopRun()
     run.metadata = dict(output.response_metadata or {})
     return run
 
@@ -183,32 +160,3 @@ def _flush(run: LoopRun, pending: list[str]) -> None:
     pending.clear()
     if text:
         run.said.append(text)
-
-
-def _read_events(events: list[RoomEvent]) -> LoopRun:
-    run = LoopRun()
-    requested: dict[str, dict[str, Any]] = {}
-    for event in events:
-        content = event.content
-        if event.type == EventType.MESSAGE and isinstance(content, TextContent):
-            if content.body:
-                run.said.append(content.body)
-            if "loop_end_reason" in event.metadata:
-                run.text = content.body
-                run.reason = event.metadata["loop_end_reason"]
-        elif event.type == EventType.TOOL_CALL_START and isinstance(content, ToolCallContent):
-            requested[content.tool_id] = content.arguments
-        elif event.type == EventType.TOOL_CALL_END and isinstance(content, ToolCallContent):
-            run.calls.append(
-                LoopCall(
-                    name=content.tool_name,
-                    id=content.tool_id,
-                    requested=requested.get(content.tool_id, {}),
-                    arguments=content.arguments,
-                    result=content.result,
-                    failed=content.status == "failed",
-                    error=content.error,
-                    structured_content=content.structured_content,
-                )
-            )
-    return run

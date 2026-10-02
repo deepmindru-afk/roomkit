@@ -176,17 +176,17 @@ async def test_non_streaming_provider_error_propagates_with_cause() -> None:
     assert len(errors) == 1  # ON_ERROR card still fires
 
 
-async def test_non_streaming_provider_error_logs_warning_no_traceback(caplog) -> None:
-    """The router logs a non-streaming ProviderError as WARNING without a stack,
-    matching the streaming path's _log_stream_failure."""
+async def test_a_turn_failing_before_any_round_logs_one_warning_no_traceback(caplog) -> None:
+    """The channel logs a ProviderError that fails a turn before any round as
+    one WARNING line without a stack, whatever the provider streams."""
     exc = ProviderError("connection refused", provider="mock")
-    with caplog.at_level(logging.WARNING, logger="roomkit.event_router"):
+    with caplog.at_level(logging.WARNING, logger="roomkit.channels.ai"):
         await _run_headless_turn(AIChannel("ai1", provider=_GenerateRaisingProvider(exc)))
 
-    target_records = [r for r in caplog.records if "Processing target" in r.message]
-    assert len(target_records) == 1
-    assert target_records[0].levelno == logging.WARNING
-    assert target_records[0].exc_info is None
+    records = [r for r in caplog.records if "AI provider error" in r.message]
+    assert len(records) == 1
+    assert records[0].levelno == logging.WARNING
+    assert records[0].exc_info is None
 
 
 # ── regenerate_response surfaces the same error ───────────────────────────

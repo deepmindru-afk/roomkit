@@ -257,7 +257,7 @@ class TestPolicyExecutionGuard:
             max_tool_rounds=5,
         )
         context = AIContext(messages=[AIMessage(role="user", content="go")])
-        await run_tool_loop(ch, context, streaming=streaming)
+        await run_tool_loop(ch, context)
 
         # The handler should NOT have been called for the forbidden tool
         handler.assert_not_called()
@@ -279,7 +279,7 @@ class TestPolicyExecutionGuard:
             max_tool_rounds=5,
         )
         context = AIContext(messages=[AIMessage(role="user", content="go")])
-        await run_tool_loop(ch, context, streaming=streaming)
+        await run_tool_loop(ch, context)
 
         handler.assert_called_once_with("safe_tool", {"q": "test"})
 
@@ -386,7 +386,7 @@ class TestSkillGatingExecution:
             max_tool_rounds=5,
         )
         context = AIContext(messages=[AIMessage(role="user", content="go")])
-        await run_tool_loop(ch, context, streaming=streaming)
+        await run_tool_loop(ch, context)
 
         # Handler not called — gating blocked it
         handler.assert_not_called()
@@ -422,7 +422,7 @@ class TestSkillGatingExecution:
             max_tool_rounds=10,
         )
         context = AIContext(messages=[AIMessage(role="user", content="go")])
-        await run_tool_loop(ch, context, streaming=streaming)
+        await run_tool_loop(ch, context)
 
         # The skill-aware handler dispatched activate_skill internally,
         # then run_query was forwarded to the user handler.
@@ -451,7 +451,7 @@ class TestActivationTracking:
         try:
             context = AIContext(messages=[AIMessage(role="user", content="go")])
             # The tool loop creates a fresh _ToolLoopContext, so "s1" is NOT inherited
-            await run_tool_loop(ch, context, streaming=streaming)
+            await run_tool_loop(ch, context)
             # After tool loop, active_loops should be empty
             assert len(ch._active_loops) == 0
         finally:

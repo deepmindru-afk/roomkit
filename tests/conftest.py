@@ -56,15 +56,16 @@ def room() -> Room:
 
 @pytest.fixture(params=[False, True], ids=["non-streaming", "streaming"])
 def streaming(request: pytest.FixtureRequest) -> Iterator[bool]:
-    """Run a tool-loop test once per AIChannel generation mode.
+    """Run a tool-loop test once per kind of provider: one that streams and
+    one read through its ``generate()``.
 
-    Every in-repo provider streams, so production runs the streaming tool
-    loop; a test written against one loop only is blind to the other. Drive
-    the turn with ``tests/tool_loop_modes.py``: through ``respond`` the
-    provider picks the loop (pass the value to ``MockAIProvider(streaming=...)``,
-    which ``respond`` checks), through ``run_tool_loop`` its argument does.
+    An AIChannel runs one tool loop whatever its provider streams (RFC §6.4);
+    the two kinds reach it through different adapters. Pass the value to
+    ``MockAIProvider(streaming=...)`` and drive the turn with
+    ``tests/tool_loop_modes.py``, whose ``respond`` checks the provider runs in
+    the mode the test does.
 
-    A known divergence between the loops is marked on the test with
+    A known divergence between the two kinds is marked on the test with
     ``@pytest.mark.xfail_streaming("RMK-…: …")`` (or ``xfail_non_streaming``):
     that variant alone becomes a strict xfail, so the fix turns it red until
     the mark goes.

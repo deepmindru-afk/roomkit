@@ -340,8 +340,7 @@ class AIContext(BaseModel):
         default_factory=ResponseMetadata,
         description=(
             "The turn's one response-metadata record, merged into every MESSAGE "
-            "event built for the turn, on both the streaming and non-streaming "
-            "paths — each event carries the record as it stands when the event "
+            "event built for the turn — each event carries the record as it stands when the event "
             "is created. Live for the whole turn: a memory provider writes it "
             "while the context is built, a BEFORE_AI_GENERATION hook through "
             "this attribute, a tool handler through "

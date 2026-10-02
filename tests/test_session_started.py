@@ -1003,7 +1003,8 @@ class TestGreetingGate:
         assert not result.blocked
         rooms = await kit._store.list_rooms()
         assert len(rooms) == 1
-        events = await kit._store.list_events(rooms[0].id)
+        # The two agents answer each other past the default page (RMK-370).
+        events = await kit._store.list_events(rooms[0].id, limit=500)
 
         greeting_events = [e for e in events if e.metadata.get("auto_greeting") is True]
         # Filter for the actual user inbound message (from sms-1), not AI responses

@@ -18,12 +18,9 @@ from roomkit.channels._tool_event_result import (
 )
 from roomkit.channels.ai import AIChannel
 from roomkit.core.framework import RoomKit
-from roomkit.models.channel import ChannelBinding
-from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
-from roomkit.models.enums import ChannelCategory, ChannelType, EventType
+from roomkit.models.enums import ChannelCategory, EventType
 from roomkit.models.event import TextContent, ToolCallContent
-from roomkit.models.room import Room
 from roomkit.providers.ai.base import (
     AIImagePart,
     AIResponse,
@@ -33,7 +30,6 @@ from roomkit.providers.ai.base import (
     AIToolResultPart,
 )
 from roomkit.providers.ai.mock import MockAIProvider
-from tests.conftest import make_event
 from tests.test_framework import SimpleChannel
 
 
@@ -178,8 +174,9 @@ def _images(result: Any) -> int:
     return sum(isinstance(p, AIImagePart) for p in result)
 
 
-async def test_a_streamed_turn_persists_the_bounded_event_and_the_model_keeps_all() -> None:
-    provider = MockAIProvider(streaming=True, vision=True, ai_responses=_responses())
+@pytest.mark.parametrize("streaming", [True, False])
+async def test_a_turn_persists_the_bounded_event_and_the_model_keeps_all(streaming: bool) -> None:
+    provider = MockAIProvider(streaming=streaming, vision=True, ai_responses=_responses())
     kit = RoomKit()
     kit.register_channel(SimpleChannel("sms1"))
     kit.register_channel(
@@ -207,28 +204,3 @@ async def test_a_streamed_turn_persists_the_bounded_event_and_the_model_keeps_al
     part = tool_message.content[0]
     assert isinstance(part, AIToolResultPart)
     assert _images(part.result) == 3
-
-
-async def test_a_non_streamed_turn_returns_the_bounded_event() -> None:
-    provider = MockAIProvider(streaming=False, vision=True, ai_responses=_responses())
-    ch = AIChannel(
-        "ai1",
-        provider=provider,
-        tool_handler=_screenshot_handler,
-        tools=[AITool(name="shoot", description="Screenshot")],
-    )
-
-    output = await ch.on_event(
-        make_event(body="go", channel_id="sms1"),
-        ChannelBinding(
-            channel_id="ai1",
-            room_id="r1",
-            channel_type=ChannelType.AI,
-            category=ChannelCategory.INTELLIGENCE,
-        ),
-        RoomContext(room=Room(id="r1")),
-    )
-
-    ends = [e for e in output.response_events if e.type == EventType.TOOL_CALL_END]
-    assert isinstance(ends[0].content, ToolCallContent)
-    assert _images(ends[0].content.result) == 1

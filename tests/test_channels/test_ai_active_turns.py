@@ -20,7 +20,13 @@ from roomkit.models.channel import ChannelBinding
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import ChannelCategory, ChannelType
 from roomkit.models.room import Room
-from roomkit.providers.ai.base import AIContext, AIResponse, AIToolCall, StreamTextDelta
+from roomkit.providers.ai.base import (
+    AIContext,
+    AIProvider,
+    AIResponse,
+    AIToolCall,
+    StreamTextDelta,
+)
 from roomkit.providers.ai.mock import MockAIProvider
 from tests.conftest import make_event
 
@@ -62,11 +68,14 @@ def _context() -> RoomContext:
 
 
 class _TextOnlyGatedProvider(_GatedProvider):
-    """Streams, but not structurally: the ``generate_stream`` fallback."""
+    """Streams text alone: the default structured stream reads ``generate_stream``."""
 
     @property
     def supports_structured_streaming(self) -> bool:
         return False
+
+    def generate_structured_stream(self, context: AIContext) -> Any:
+        return AIProvider.generate_structured_stream(self, context)
 
     async def generate_stream(self, context: AIContext) -> Any:
         yield "Working "
@@ -139,17 +148,17 @@ class TestActiveTurns:
         await asyncio.wait_for(consumer, timeout=5)
         assert ch.active_turns == 0
 
-    async def test_non_streaming_turn_counts_while_generating(self) -> None:
+    async def test_a_turn_read_through_generate_counts_while_generating(self) -> None:
         provider = _GatedProvider(streaming=False)
         ch = AIChannel("ai1", provider=provider)
 
-        turn = asyncio.create_task(ch.on_event(make_event(body="hi"), _binding(), _context()))
+        output = await ch.on_event(make_event(body="hi"), _binding(), _context())
+        consumer = asyncio.create_task(_drain(output.response_stream))
         await asyncio.wait_for(provider.reached.wait(), timeout=5)
         assert ch.active_turns == 1
 
         provider.gate.set()
-        output = await asyncio.wait_for(turn, timeout=5)
-        assert output.responded is True
+        await asyncio.wait_for(consumer, timeout=5)
         assert ch.active_turns == 0
 
     async def test_stream_cancelled_from_the_outside_returns_to_zero(self) -> None:
@@ -192,8 +201,7 @@ class TestActiveTurns:
         assert "".join(c for c in chunks if isinstance(c, str)) == "Working Hello from AI"
         assert memory.closed is True
 
-    async def test_plain_generate_stream_fallback_is_counted_too(self) -> None:
-        """The one branch that returns from inside the counted span."""
+    async def test_a_provider_that_streams_text_alone_is_counted_too(self) -> None:
         provider = _TextOnlyGatedProvider(streaming=True)
         ch = AIChannel("ai1", provider=provider)
 
@@ -204,7 +212,7 @@ class TestActiveTurns:
 
         provider.gate.set()
         chunks = await asyncio.wait_for(consumer, timeout=5)
-        assert "".join(chunks) == "Working done"
+        assert "".join(c for c in chunks if isinstance(c, str)) == "Working done"
         assert ch.active_turns == 0
 
     async def test_a_provider_error_mid_stream_returns_to_zero(self) -> None:
@@ -221,8 +229,8 @@ class TestActiveTurns:
         assert isinstance(results[0], Exception)
         assert ch.active_turns == 0
 
-    async def test_a_text_stream_and_a_tool_loop_add_up(self) -> None:
-        """The two counters are a sum, not one of the halves."""
+    async def test_a_turn_without_tools_and_one_with_add_up(self) -> None:
+        """Every turn runs a loop, with tools or without, and each counts."""
         provider = _GatedProvider(
             streaming=True,
             ai_responses=[
@@ -245,7 +253,7 @@ class TestActiveTurns:
 
         await asyncio.wait_for(both_started(), timeout=5)
         assert ch.active_turns == 2
-        assert len(ch._active_loops) == 1 and ch._text_streams == 1
+        assert len(ch._active_loops) == 2
 
         provider.gate.set()
         await asyncio.wait_for(asyncio.gather(*consumers), timeout=5)

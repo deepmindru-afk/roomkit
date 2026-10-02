@@ -393,7 +393,7 @@ async def test_a_partial_call_never_runs_and_the_model_reads_why(streaming: bool
     channel = AIChannel("ai1", provider=provider, tool_handler=handler, tool_search=False)
     context = AIContext(messages=[AIMessage(role="user", content="go")], tools=_CTX.tools)
 
-    run = await run_tool_loop(channel, context, streaming=streaming)
+    run = await run_tool_loop(channel, context)
 
     handler.assert_not_awaited()
     [call] = run.calls

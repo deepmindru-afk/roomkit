@@ -67,7 +67,8 @@ async def test_a_part_list_result_reaches_the_provider_intact() -> None:
     provider = MockAIProvider(ai_responses=_responses(), vision=True)
     ch = AIChannel("ai1", provider=provider, tool_handler=_handler)
 
-    await ch.on_event(
+    await respond(
+        ch,
         make_event(body="go", channel_id="sms1"),
         _binding(),
         RoomContext(room=Room(id="r1")),

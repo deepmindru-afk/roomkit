@@ -22,6 +22,7 @@ from roomkit.models.room import Room
 from roomkit.providers.ai.base import AIMessage, AITool, ProviderError
 from roomkit.providers.ai.mock import MockAIProvider
 from tests.conftest import make_event
+from tests.tool_loop_modes import respond
 
 
 def test_current_turn_joins_the_existing_non_history_reserve() -> None:
@@ -130,7 +131,7 @@ async def test_image_bytes_do_not_cost_text_tokens_or_reject_a_valid_turn(
     binding = ChannelBinding(room_id="test-room", channel_id="ai", channel_type=ChannelType.AI)
     ctx = RoomContext(room=Room(id="test-room"), bindings=[binding])
     # Keep the history through the real channel's visibility gate.
-    await channel.on_event(current, binding, ctx)
+    await respond(channel, current, binding, ctx)
     assert len(provider.calls) == 1
     assert estimate_event_tokens(current) < 1100
     assert any("historyhistory" in str(m.content) for m in provider.calls[0].messages)

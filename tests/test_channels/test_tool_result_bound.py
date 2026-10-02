@@ -49,7 +49,7 @@ async def _model_copy(
     ch: AIChannel, provider: MockAIProvider, *, streaming: bool
 ) -> AIToolResultPart:
     context = AIContext(messages=[AIMessage(role="user", content="go")])
-    await run_tool_loop(ch, context, streaming=streaming)
+    await run_tool_loop(ch, context)
     tool_message = next(m for m in provider.calls[-1].messages if m.role == "tool")
     part = tool_message.content[0]
     assert isinstance(part, AIToolResultPart)

@@ -1,14 +1,9 @@
-"""Shared per-round decision rules for the AI tool loops (single definition).
+"""Per-round decision rules for the AI tool loop.
 
-The non-streaming loop (``AIGenerationMixin._run_tool_loop``) and the
-streaming loop (``AIStreamingMixin._run_streaming_tool_loop``) share the
-same business rules per round — force-stop ripcord, bounded empty-retry,
-deadline/warn budget, assistant-message assembly, tool execution — but
-differ in how a round is *generated* (blocking response vs streamed
-deltas). Keeping the rules here, as the single base of both loop mixins,
-guarantees a loop rule cannot exist in one path and be missing from the
-other — a rule enforced by only one loop would silently cover only the
-providers that use that generation mode.
+The rules the loop (``AIStreamingMixin._run_streaming_tool_loop``) applies
+to every round — force-stop ripcord, bounded empty-retry, deadline/warn
+budget, assistant-message assembly, tool execution — apart from how a round
+is generated and streamed.
 """
 
 from __future__ import annotations
@@ -81,9 +76,9 @@ def _accumulate_usage(total: dict[str, int], round_usage: dict[str, Any]) -> Non
 
     Every integer counter is carried, not just input and output: cache reads
     and writes are what tell a re-read prefix apart from fresh input, and the
-    two are billed an order of magnitude apart. Shared by both loops — a turn
-    that only reports its final round's usage under-counts a multi-round loop
-    by every round but the last.
+    two are billed an order of magnitude apart. A turn that only reports its
+    final round's usage under-counts a multi-round loop by every round but
+    the last.
     """
     for counter, value in round_usage.items():
         if isinstance(value, int):

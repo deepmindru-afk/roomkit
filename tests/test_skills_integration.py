@@ -623,7 +623,7 @@ class TestUserToolHandlerDelegation:
 
 
 class TestStreamingGuard:
-    """Skills with streaming provider use the streaming tool loop."""
+    """Skills run the tool loop, whatever the provider streams."""
 
     async def test_streaming_with_skills_uses_streaming_tool_loop(self, tmp_path: Path) -> None:
         _make_skill_dir(tmp_path, "stream-test")
@@ -641,7 +641,9 @@ class TestStreamingGuard:
         chunks = [chunk async for chunk in output.response_stream]
         assert "".join(c for c in chunks if isinstance(c, str)) == "ok"
 
-    async def test_non_streaming_provider_with_skills_uses_generate(self, tmp_path: Path) -> None:
+    async def test_a_provider_that_does_not_stream_serves_skills_through_generate(
+        self, tmp_path: Path
+    ) -> None:
         _make_skill_dir(tmp_path, "no-stream")
         registry = SkillRegistry()
         registry.discover(tmp_path)
@@ -649,10 +651,10 @@ class TestStreamingGuard:
         provider = MockAIProvider(responses=["ok"])
         # MockAIProvider.supports_streaming is False by default
         ch = AIChannel("ai1", provider=provider, skills=registry)
-        output = await ch.on_event(make_event(body="go", channel_id="sms1"), _binding(), _ctx())
-        # Non-streaming provider → _generate_response path
-        assert output.responded is True
-        assert output.response_stream is None
+        run = await respond(ch, make_event(body="go", channel_id="sms1"), _binding(), _ctx())
+        # The same loop, its generation read through generate()
+        assert run.text == "ok"
+        assert "activate_skill" in {tool.name for tool in provider.calls[0].tools}
 
 
 class TestNoSkillsNoop:
@@ -661,8 +663,7 @@ class TestNoSkillsNoop:
     async def test_no_skills_no_change(self) -> None:
         provider = MockAIProvider(responses=["hello"])
         ch = AIChannel("ai1", provider=provider, system_prompt="Be nice.")
-        output = await ch.on_event(make_event(body="hi", channel_id="sms1"), _binding(), _ctx())
-        assert output.responded is True
+        await respond(ch, make_event(body="hi", channel_id="sms1"), _binding(), _ctx())
         assert provider.calls[0].system_prompt == "Be nice."
         assert len(provider.calls[0].tools) == 0
 
@@ -670,8 +671,7 @@ class TestNoSkillsNoop:
         registry = SkillRegistry()  # empty
         provider = MockAIProvider(responses=["hello"])
         ch = AIChannel("ai1", provider=provider, system_prompt="Be nice.", skills=registry)
-        output = await ch.on_event(make_event(body="hi", channel_id="sms1"), _binding(), _ctx())
-        assert output.responded is True
+        await respond(ch, make_event(body="hi", channel_id="sms1"), _binding(), _ctx())
         assert provider.calls[0].system_prompt == "Be nice."
         assert len(provider.calls[0].tools) == 0
 

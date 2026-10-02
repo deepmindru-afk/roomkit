@@ -1,4 +1,5 @@
-"""AIChannel mixin for streaming response generation with tool loops."""
+"""AIChannel mixin for the tool loop every turn runs, whatever its provider
+streams and whether it carries tools (RFC §6.4)."""
 
 from __future__ import annotations
 
@@ -28,18 +29,14 @@ from roomkit.models.streaming import (
     LoopEndMarker,
     LoopEndReason,
     StreamDelta,
-    ThinkingDeltaMarker,
     ToolCallEndMarker,
     ToolCallStartMarker,
 )
-from roomkit.models.tool_call import AIResponseEvent, DeclaredTool, response_transcript
+from roomkit.models.tool_call import AIResponseEvent, response_transcript
 from roomkit.providers.ai.base import (
     AIContext,
     AIMessage,
     ProviderError,
-    StreamDone,
-    StreamTextDelta,
-    StreamThinkingDelta,
 )
 from roomkit.providers.utils import _aclose_stream
 from roomkit.realtime.base import EphemeralEventType
@@ -73,6 +70,8 @@ class _StreamTurnState:
     started_at: float = field(default_factory=time.monotonic)
     dedup_prefix: str = ""
     saw_tool_call: bool = False
+    # Each round's reasoning, for the turn's ON_AI_RESPONSE.
+    thinking: list[str] = field(default_factory=list)
     # The provider error that interrupted the turn after a round (reason
     # ``error``): the turn reaches its end on it, then it is raised (RFC §6.4).
     error: Exception | None = None
@@ -142,7 +141,6 @@ class AIStreamingHost(Protocol):
         _tool_loop_warn_after: Log a warning after this many rounds.
         _tool_handler: Tool call handler (or ``None`` if tools disabled).
         _active_loops: Registry of currently running tool loops.
-        _text_streams: Count of text-only streams currently being produced.
         _after_response_hook: Optional callback fired after response generation.
         channel_id: Unique identifier for this channel.
 
@@ -168,7 +166,6 @@ class AIStreamingHost(Protocol):
     _thinking_coalesce_chars: int
     _tool_handler: Any
     _active_loops: dict[str, _ToolLoopContext]
-    _text_streams: int
     _after_response_hook: Any
     _before_generation_hook: Any
     _before_tool_call_hook: Any
@@ -242,7 +239,6 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
     _thinking_coalesce_chars: int
     _tool_handler: Any
     _active_loops: dict[str, Any]
-    _text_streams: int
     _after_response_hook: Any
     _before_generation_hook: Any
     _before_tool_call_hook: Any
@@ -260,6 +256,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
     _publish_thinking_event: Any  # see AIStreamingHost
     _publish_tool_event: Any  # see AIStreamingHost
     _telemetry_provider: Any  # see AIStreamingHost
+    _log_provider_error: Any  # AIGenerationMixin: one log line for a failed turn
 
     def _new_thinking_coalescer(self, room_id: str | None, round_idx: int) -> _ThinkingCoalescer:
         """Coalescer bound to this channel's publish hook and window config."""
@@ -329,170 +326,6 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
             flush_chars=self._thinking_coalesce_chars,
         )
 
-    async def _start_streaming_response(
-        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
-    ) -> ChannelOutput:
-        """Return a streaming response handle (generator starts on consumption)."""
-        ai_context = await self._build_context(event, binding, context)  # ty: ignore[unresolved-attribute]
-        ai_context, blocked = await self._fire_before_generation_hook(ai_context, event)  # ty: ignore[unresolved-attribute]
-        if blocked:
-            return ChannelOutput.empty()
-        return ChannelOutput(
-            responded=True,
-            response_stream=self._stream_text_with_thinking(ai_context),
-            response_metadata=ai_context.response_metadata,
-        )
-
-    async def _stream_text_with_thinking(
-        self, ai_context: AIContext
-    ) -> AsyncIterator[StreamDelta]:
-        """Yield text deltas + thinking markers, publish realtime events.
-
-        Two parallel mechanisms by design:
-
-        * **Inline (channel stream)** — every ``StreamThinkingDelta`` becomes
-          a :class:`ThinkingDeltaMarker` yielded in arrival order alongside
-          text deltas. Channels that want to render reasoning in line with
-          the answer (CLI, web) consume them; text-only channels filter
-          them out via ``isinstance(chunk, str)``.
-
-        * **Out-of-band (realtime bus)** — one ``THINKING_END`` event per
-          reasoning window, carrying that window's block and nothing else,
-          is published for observers (dashboards, audit logs). A model that
-          reasons, answers and reasons again opens several windows in one
-          round, and a subscriber appends what it receives. This matches the
-          tool-loop and non-streaming paths so payloads stay consistent.
-
-        Falls back to ``generate_stream`` for providers that don't expose
-        a structured stream.
-        """
-        # Counted from the first consumption to the close of the generator, the
-        # way a tool loop registers itself in ``_active_loops`` for the same
-        # span: a caller retiring this object (``active_turns``) must know a
-        # text-only stream is still being produced, and this path has no loop
-        # context to register.
-        self._text_streams += 1
-        # Declared ahead of the try so the finally can reach them: a provider
-        # that dies mid-reasoning, or a consumer that stops reading, leaves
-        # this stream at a point where the window is still open.
-        # ``thinking_started`` is True exactly while a window is open on the
-        # bus.
-        room_id = ai_context.room.room.id if ai_context.room else None
-        started_at = time.monotonic()
-        text_parts: list[str] = []
-        usage: dict[str, Any] = {}
-        completed = False
-        thinking_parts: list[str] = []
-        thinking_published = 0
-        thinking_started = False
-        coalescer = self._new_thinking_coalescer(room_id, round_idx=0)
-        stream: Any = None
-        try:
-            if not self._provider.supports_structured_streaming:
-                stream = self._provider.generate_stream(ai_context)
-                # A constrained answer is checked when the stream ends: its text
-                # waits until then, and never leaves when the check fails.
-                held = ai_context.response_schema is not None
-                async for chunk in stream:
-                    text_parts.append(chunk)
-                    if not held:
-                        yield chunk
-                for chunk in text_parts if held else ():
-                    yield chunk
-                # Text only, as this path always was: no marker, so no record
-                completed = True
-                return
-
-            # Through the resilience wrapper, like every structured generation:
-            # retry, fallback and overflow compaction are the wrapper's to give,
-            # never a per-path courtesy.
-            stream = self._generate_stream_with_retry(ai_context)
-            async for ev in stream:
-                if isinstance(ev, _StreamRetryBoundary):
-                    continue
-                if isinstance(ev, StreamThinkingDelta):
-                    if not thinking_started and room_id:
-                        thinking_started = True
-                        await self._publish_thinking_event(
-                            EphemeralEventType.THINKING_START, room_id, "", 0
-                        )
-                    thinking_parts.append(ev.thinking)
-                    # Buffer each delta and publish in windows on the realtime bus so
-                    # remote subscribers (browser WS clients, etc.) stream the
-                    # reasoning as it arrives, not only the buffered text at
-                    # THINKING_END. The ``thinking`` field carries the delta, not the
-                    # accumulator — clients append to their own buffer.
-                    await coalescer.add(ev.thinking)
-                    yield ThinkingDeltaMarker(thinking=ev.thinking)
-                elif isinstance(ev, StreamTextDelta):
-                    if thinking_started and thinking_parts and room_id:
-                        thinking_started = False
-                        thinking_published = await self._close_thinking_window(
-                            coalescer, room_id, thinking_parts, 0, published=thinking_published
-                        )
-                    text_parts.append(ev.text)
-                    yield ev.text
-                elif isinstance(ev, StreamDone):
-                    usage.update(ev.usage)
-
-            # Thinking with no following text — close the boundary anyway so
-            # subscribers see the reasoning even if the model emitted nothing else.
-            if thinking_started and thinking_parts and room_id:
-                thinking_started = False
-                await self._close_thinking_window(
-                    coalescer, room_id, thinking_parts, 0, published=thinking_published
-                )
-            # No tool loop, but the turn's record all the same (RFC §6.4)
-            yield LoopEndMarker(reason="completed", usage=dict(usage))
-            completed = True
-        finally:
-            try:
-                await _aclose_stream(stream)
-                # A window still open here was left by an abnormal exit — a
-                # provider error, a consumer that closed the stream — and
-                # closes with the block reasoned so far, so THINKING_START
-                # never stays unpaired. Publishing is best-effort: the error
-                # that ended the stream is the one that propagates.
-                if thinking_started and thinking_parts and room_id:
-                    await self._close_thinking_window(
-                        coalescer, room_id, thinking_parts, 0, published=thinking_published
-                    )
-            finally:
-                # The close publishes, and a publish that suspends can be
-                # cancelled under a consumer already being torn down. The
-                # count comes down whatever happens to it, or a caller
-                # retiring the channel waits for zero forever.
-                self._text_streams -= 1
-                # Exhaustion, not merely entering finally, marks a completed
-                # response. Provider errors and consumers closing early must
-                # not report a successful turn to evaluation/accounting hooks.
-                if completed and self._after_response_hook:
-                    try:
-                        segments, transcript = response_transcript(["".join(text_parts)])
-                        await self._after_response_hook(
-                            AIResponseEvent(
-                                channel_id=self.channel_id,
-                                response_content=transcript,
-                                segments=segments,
-                                room_id=room_id,
-                                usage=usage,
-                                thinking="".join(thinking_parts),
-                                latency_ms=int((time.monotonic() - started_at) * 1000),
-                                streaming=True,
-                                # No tool loop ran, and the hook fires only on
-                                # exhaustion: the turn ended on its own terms.
-                                loop_end_reason="completed",
-                                # One round, and Tool Search only gates a tool
-                                # loop's catalogue: whatever is declared here
-                                # (a hook's addition, typically) was never hidden.
-                                declared_tools=[
-                                    DeclaredTool.from_tool(tool) for tool in ai_context.tools or []
-                                ],
-                            )
-                        )
-                    except Exception:
-                        logger.debug("After-response hook failed (streaming)", exc_info=True)
-
     async def _start_streaming_tool_response(
         self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
     ) -> ChannelOutput:
@@ -504,12 +337,18 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
         # The generator below executes when the CONSUMER iterates the
         # stream — by then handle_event has reset the loop contextvar, so
         # the parent ctx (participant role, room, the toolset stamped by
-        # _build_context) must be captured NOW and passed explicitly.
+        # _build_context) must be captured NOW and passed explicitly. So is
+        # the span the turn answers under (the broadcast's), which the
+        # consumer no longer runs in.
         return ChannelOutput(
             responded=True,
             response_stream=_answered_or_raise(
                 ai_context,
-                self._run_streaming_tool_loop(ai_context, parent_loop_ctx=_current_loop_ctx.get()),
+                self._run_streaming_tool_loop(
+                    ai_context,
+                    parent_loop_ctx=_current_loop_ctx.get(),
+                    parent_span_id=get_current_span(),
+                ),
             ),
             response_metadata=ai_context.response_metadata,
         )
@@ -531,7 +370,10 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
 
     @asynccontextmanager
     async def _streaming_tool_turn(
-        self, context: AIContext, parent_loop_ctx: _ToolLoopContext | None
+        self,
+        context: AIContext,
+        parent_loop_ctx: _ToolLoopContext | None,
+        parent_span_id: str | None = None,
     ) -> AsyncIterator[_StreamTurnState]:
         """Own the invocation context, activity registration and telemetry span."""
         # This body runs in the CONSUMER's context, which may hold a loop
@@ -550,7 +392,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
             span_id = telemetry.start_span(
                 SpanKind.LLM_GENERATE,
                 "llm.generate",
-                parent_id=get_current_span(),
+                parent_id=parent_span_id or get_current_span(),
                 room_id=room_id,
                 channel_id=self.channel_id,
                 attributes={
@@ -599,6 +441,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                         round_count=turn.tool_rounds_count,
                         loop_end_reason=turn.reason,
                         declared_tools=list(turn.loop_ctx.declared_tools.values()),
+                        thinking="\n\n".join(turn.thinking),
                         usage={"input_tokens": 0, "output_tokens": 0, **turn.usage},
                         latency_ms=int((time.monotonic() - turn.started_at) * 1000),
                         streaming=True,
@@ -681,8 +524,9 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
         """One round's generation; a provider error once a round ran ends the turn.
 
         The rounds already reached the room, so the turn reaches its end on
-        the error, reported as the buffered loop reports it, and the error
-        then reaches the consumer (RFC §6.4).
+        the error, its ON_AI_RESPONSE fired, and the error then reaches the
+        consumer (RFC §6.4). A turn that fails before any round is one log
+        line here and the error itself.
         """
         try:
             async with aclosing(
@@ -692,17 +536,24 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                     yield delta
         except ProviderError as exc:
             if not interrupts_turn(exc, after_round=turn.saw_tool_call):
+                self._log_provider_error(exc)
                 raise
             logger.exception("Streaming tool loop interrupted by a provider error after a round")
             turn.error = exc
             yield turn.end("error", index)
             raise
+        if round_.state.thinking:
+            turn.thinking.append(round_.state.thinking)
 
     async def _run_streaming_tool_loop(
-        self, context: AIContext, *, parent_loop_ctx: _ToolLoopContext | None = None
+        self,
+        context: AIContext,
+        *,
+        parent_loop_ctx: _ToolLoopContext | None = None,
+        parent_span_id: str | None = None,
     ) -> AsyncGenerator[StreamDelta, None]:
         """Orchestrate generation, termination decisions and local tool rounds."""
-        async with self._streaming_tool_turn(context, parent_loop_ctx) as turn:
+        async with self._streaming_tool_turn(context, parent_loop_ctx, parent_span_id) as turn:
             loop_ctx = turn.loop_ctx
             external = _ExternalStreamTools(
                 channel_id=self.channel_id,

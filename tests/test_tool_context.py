@@ -87,7 +87,8 @@ class TestCurrentToolActorId:
         provider = MockAIProvider(ai_responses=_tool_round_responses(), streaming=False)
         ch = AIChannel("ai1", provider=provider, tool_handler=tool_handler)
 
-        await ch.on_event(
+        await respond(
+            ch,
             make_event(room_id="room-a", body="go", channel_id="sms1", participant_id="alice"),
             _binding("room-a"),
             RoomContext(room=Room(id="room-a")),
@@ -225,7 +226,8 @@ class TestCurrentToolRoomId:
         provider = MockAIProvider(ai_responses=_tool_round_responses(), streaming=False)
         ch = AIChannel("ai1", provider=provider, tool_handler=tool_handler)
 
-        await ch.on_event(
+        await respond(
+            ch,
             make_event(room_id="room-b", body="go", channel_id="sms1"),
             _binding("room-b"),
             RoomContext(room=Room(id="room-b")),
@@ -316,8 +318,11 @@ class TestCurrentToolRoom:
         ch = AIChannel("ai1", provider=provider, tool_handler=tool_handler)
         context = RoomContext(room=Room(id="room-a", metadata={"tenant": "acme"}))
 
-        await ch.on_event(
-            make_event(room_id="room-a", body="go", channel_id="sms1"), _binding("room-a"), context
+        await respond(
+            ch,
+            make_event(room_id="room-a", body="go", channel_id="sms1"),
+            _binding("room-a"),
+            context,
         )
 
         assert len(seen) == 1
@@ -467,7 +472,8 @@ class TestCurrentToolAllowedNames:
         provider = MockAIProvider(ai_responses=_tool_round_responses(), streaming=False)
         ch = AIChannel("ai1", provider=provider, tool_handler=tool_handler)
 
-        await ch.on_event(
+        await respond(
+            ch,
             make_event(room_id="room-b", body="go", channel_id="sms1"),
             _binding("room-b"),
             RoomContext(room=Room(id="room-b")),
@@ -493,7 +499,8 @@ class TestCurrentToolAllowedNames:
         provider = MockAIProvider(ai_responses=_tool_round_responses(), streaming=False)
         ch = AIChannel("ai1", provider=provider, tool_handler=handler)
 
-        await ch.on_event(
+        await respond(
+            ch,
             make_event(room_id="room-empty", body="go", channel_id="sms1"),
             _binding_without_tools("room-empty"),
             RoomContext(room=Room(id="room-empty")),

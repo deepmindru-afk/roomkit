@@ -64,7 +64,7 @@ def _in_a_turn(ch: AIChannel):
 
 
 async def _run(ch: AIChannel, ctx: AIContext, *, streaming: bool) -> None:
-    await run_tool_loop(ch, ctx, streaming=streaming)
+    await run_tool_loop(ch, ctx)
 
 
 def _tool_results(ctx: AIContext) -> list[str]:

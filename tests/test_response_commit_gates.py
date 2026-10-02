@@ -27,6 +27,7 @@ from roomkit.models.hook import HookResult
 from roomkit.models.store_filter import EventFilter
 from roomkit.models.task import Task
 from roomkit.providers.ai.mock import MockAIProvider
+from tests.buffered_agent import BufferedAgent
 from tests.test_framework import SimpleChannel
 
 
@@ -163,10 +164,12 @@ class _Room:
         return [t.title for t in await self.kit.store.list_tasks("r1")]
 
 
-def _agent(streaming: bool, *responses: str) -> AIChannel:
-    return AIChannel(
-        "ai1", provider=MockAIProvider(responses=list(responses), streaming=streaming)
-    )
+def _agent(streaming: bool, *responses: str) -> Channel:
+    """The answering agent: an ``AIChannel`` streams its answer, and an agent
+    that answers at once drives the framework's buffered path."""
+    if streaming:
+        return AIChannel("ai1", provider=MockAIProvider(responses=list(responses), streaming=True))
+    return BufferedAgent("ai1", *responses)
 
 
 @pytest.mark.parametrize(

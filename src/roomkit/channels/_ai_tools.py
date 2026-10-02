@@ -632,7 +632,7 @@ class AIToolsMixin:
         if scope.executed_arguments is not None:
             # Snapshot the post-hook payload before handing it to user
             # code. Persistence can then distinguish what the model
-            # requested from what actually executed, in both loops.
+            # requested from what actually executed.
             scope.executed_arguments[tc.id] = dict(arguments)
         outcome = await self._judged_call(tc, arguments, scope)
         self._settle_activation(tc.id, served=not outcome.failed)

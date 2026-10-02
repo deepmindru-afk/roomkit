@@ -127,9 +127,9 @@ class TestTurn:
         channel = AIChannel("ai1", provider=provider, response_schema=TRIAGE)
         binding = _binding()
 
-        output = await channel.on_event(make_event(body="charged twice"), binding, _ctx(binding))
+        run = await respond(channel, make_event(body="charged twice"), binding, _ctx(binding))
 
-        assert json.loads(output.response_events[0].content.body) == {"department": "billing"}
+        assert json.loads(run.text) == {"department": "billing"}
         assert provider.calls[0].response_schema == TRIAGE
 
     async def test_a_provider_without_support_fails_the_turn_before_any_request(self) -> None:
@@ -138,7 +138,7 @@ class TestTurn:
         binding = _binding()
 
         with pytest.raises(ResponseSchemaError) as exc:
-            await channel.on_event(make_event(body="charged twice"), binding, _ctx(binding))
+            await respond(channel, make_event(body="charged twice"), binding, _ctx(binding))
 
         assert exc.value.reason == "unsupported"
         assert provider.calls == []
@@ -281,20 +281,10 @@ class TestToolLoopCutShort:
             max_tool_rounds=2,
         )
 
-    async def test_the_non_streaming_turn_raises_truncated(self) -> None:
+    @pytest.mark.parametrize("streaming", [True, False])
+    async def test_the_turn_raises_truncated(self, streaming: bool) -> None:
         binding = _binding()
-
-        with pytest.raises(ResponseSchemaError) as exc:
-            await self._channel(streaming=False).on_event(
-                make_event(body="go"), binding, _ctx(binding)
-            )
-
-        assert exc.value.reason == "truncated"
-        assert "max_rounds" in str(exc.value)
-
-    async def test_the_streaming_turn_raises_truncated(self) -> None:
-        binding = _binding()
-        output = await self._channel(streaming=True).on_event(
+        output = await self._channel(streaming=streaming).on_event(
             make_event(body="go"), binding, _ctx(binding)
         )
 

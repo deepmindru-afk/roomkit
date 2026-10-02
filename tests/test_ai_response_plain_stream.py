@@ -1,4 +1,5 @@
-"""Plain streams report completed responses, including usage and reasoning."""
+"""A turn without tools reports its completed response, usage and reasoning
+included, through the one tool loop (RFC §6.4)."""
 
 from __future__ import annotations
 
@@ -9,14 +10,37 @@ import pytest
 from roomkit import AIChannel
 from roomkit.models.streaming import LoopEndMarker
 from roomkit.models.tool_call import AIResponseEvent
-from roomkit.providers.ai.base import AIContext, AIResponse, ProviderError, StreamEvent
+from roomkit.providers.ai.base import (
+    AIContext,
+    AIProvider,
+    AIResponse,
+    ProviderError,
+    StreamEvent,
+)
 from roomkit.providers.ai.mock import MockAIProvider
 
 
-class TextOnlyProvider(MockAIProvider):
+class TextOnlyProvider(AIProvider):
+    """Streams text alone: no structured stream of its own, so the default
+    reads a turn without tools through ``generate_stream``."""
+
+    def __init__(self, *, ai_responses: list[AIResponse], streaming: bool = True) -> None:
+        self._response = ai_responses[0]
+
     @property
-    def supports_structured_streaming(self) -> bool:
-        return False
+    def model_name(self) -> str:
+        return "text-only"
+
+    @property
+    def supports_streaming(self) -> bool:
+        return True
+
+    async def generate(self, context: AIContext) -> AIResponse:
+        return self._response
+
+    async def generate_stream(self, context: AIContext) -> AsyncIterator[str]:
+        if self._response.content:
+            yield self._response.content
 
 
 class BrokenProvider(MockAIProvider):
@@ -48,7 +72,7 @@ async def test_completed_plain_stream_reports_once(structured: bool, content: st
         seen.append(event)
 
     channel._after_response_hook = observe
-    async for _ in channel._stream_text_with_thinking(AIContext()):
+    async for _ in channel._run_streaming_tool_loop(AIContext()):
         pass
     assert channel.active_turns == 0
     assert len(seen) == 1
@@ -57,7 +81,12 @@ async def test_completed_plain_stream_reports_once(structured: bool, content: st
     assert event.segments == ([content] if content else [])
     assert event.streaming
     assert event.thinking == ("reasoning" if structured else "")
-    assert event.usage == (provider._ai_responses[0].usage if structured else {})
+    # A text stream reports no usage: the counters read zero.
+    assert event.usage == (
+        {"input_tokens": 11, "output_tokens": 7, "cache_read_input_tokens": 3}
+        if structured
+        else {"input_tokens": 0, "output_tokens": 0}
+    )
     assert event.tool_calls_count == event.round_count == 0
     assert event.loop_end_reason == "completed", "an exhausted stream ended on its own terms"
 
@@ -71,7 +100,7 @@ async def test_unfinished_plain_stream_does_not_report_completion(close_early: b
         seen.append(event)
 
     channel._after_response_hook = observe
-    stream = channel._stream_text_with_thinking(AIContext())
+    stream = channel._run_streaming_tool_loop(AIContext())
     assert await anext(stream) == "partial"
     if close_early:
         await stream.aclose()
@@ -90,7 +119,7 @@ async def test_plain_stream_hook_failure_does_not_break_delivery() -> None:
         raise RuntimeError("observer unavailable")
 
     channel._after_response_hook = observe
-    items = [item async for item in channel._stream_text_with_thinking(AIContext())]
+    items = [item async for item in channel._run_streaming_tool_loop(AIContext())]
     assert items[:-1] == ["ok"]
     # The turn's record closes the structured stream (RMK-289)
     assert isinstance(items[-1], LoopEndMarker) and items[-1].reason == "completed"

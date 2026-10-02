@@ -1,8 +1,8 @@
-"""Tests for AIChannel's tool loop, most of them in both generation modes.
+"""Tests for AIChannel's tool loop, most of them for both kinds of provider.
 
-Born for the streaming loop; the tests whose subject both loops share take
-the ``streaming`` fixture, the rest (markers, progressive delivery, stream
-tokens) stay on the stream.
+The tests whose subject does not depend on how the provider streams take the
+``streaming`` fixture; the rest (markers, progressive delivery, stream tokens)
+use a streaming provider.
 """
 
 from __future__ import annotations
@@ -506,10 +506,9 @@ class TestToolCallEphemeralEvents:
         assert run.calls[0].requested == {"q": "token"}
         assert run.calls[0].arguments == {"q": "redacted-value"}
 
-    async def test_non_streaming_returns_tool_events(self) -> None:
-        """Non-streaming tool loop returns tool call events in response_events."""
-        from roomkit.models.enums import EventType
-        from roomkit.models.event import ToolCallContent
+    async def test_a_provider_that_does_not_stream_yields_the_same_rows(self) -> None:
+        """A provider read through generate() yields each round's text and its
+        calls' start and end, in order, like any other."""
 
         async def tool_handler(name: str, args: dict[str, Any]) -> str:
             return f"Result for {name}"
@@ -548,39 +547,15 @@ class TestToolCallEphemeralEvents:
             ],
         )
 
-        output = await ch.on_event(
-            make_event(body="what is 6*7?", channel_id="sms1"),
-            _binding(),
-            _ctx(),
+        run = await respond(
+            ch, make_event(body="what is 6*7?", channel_id="sms1"), _binding(), _ctx()
         )
 
-        assert output.responded is True
-
-        # Should have interleaved events:
-        # text("Checking."), tool_start, tool_end, text("The answer is 42.")
-        events = output.response_events
-        assert len(events) == 4
-
-        assert events[0].type == EventType.MESSAGE
-        assert events[0].content.body == "Checking."  # type: ignore[union-attr]
-
-        assert events[1].type == EventType.TOOL_CALL_START
-        assert isinstance(events[1].content, ToolCallContent)
-        assert events[1].content.tool_name == "calculate"
-        assert events[1].content.status == "pending"
-
-        assert events[2].type == EventType.TOOL_CALL_END
-        assert isinstance(events[2].content, ToolCallContent)
-        assert events[2].content.tool_name == "calculate"
-        assert events[2].content.status == "completed"
-
-        assert events[3].type == EventType.MESSAGE
-        assert events[3].content.body == "The answer is 42."  # type: ignore[union-attr]
-
-        # All events share a correlation_id
-        corr_ids = {e.correlation_id for e in events}
-        assert len(corr_ids) == 1
-        assert None not in corr_ids
+        assert run.said == ["Checking.", "The answer is 42."]
+        [call] = run.calls
+        assert call.name == "calculate"
+        assert call.requested == {"x": "6*7"}
+        assert not call.failed
 
 
 class TestStreamingTokenAccumulation:

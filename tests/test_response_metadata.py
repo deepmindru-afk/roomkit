@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from roomkit.channels.ai import AIChannel
 from roomkit.core.framework import RoomKit
 from roomkit.core.hooks import SyncPipelineResult
@@ -62,65 +64,6 @@ def _ctx() -> RoomContext:
 
 
 class TestResponseMetadataDirect:
-    async def test_non_streaming_message_event_carries_metadata(self) -> None:
-        provider = MockAIProvider(responses=["AI reply"])
-        ch = AIChannel("ai1", provider=provider)
-
-        async def _hook(gen_event: AIGenerationEvent) -> SyncPipelineResult:
-            _attribution_hook(gen_event)
-            return SyncPipelineResult(allowed=True)
-
-        ch._before_generation_hook = _hook
-        output = await ch.on_event(make_event(body="hi", channel_id="sms1"), _binding(), _ctx())
-
-        assert len(output.response_events) == 1
-        meta = output.response_events[0].metadata
-        assert meta["rag_sources"] == _SOURCES
-        # Existing usage stamp is preserved alongside.
-        assert "ai_usage" in meta
-
-    async def test_tool_round_message_events_carry_metadata(self) -> None:
-        async def tool_handler(name: str, args: dict[str, Any]) -> str:
-            return "result"
-
-        responses = [
-            AIResponse(
-                content="Let me search.",
-                finish_reason="tool_calls",
-                usage={"prompt_tokens": 10, "completion_tokens": 5},
-                tool_calls=[AIToolCall(id="tc1", name="search", arguments={"q": "x"})],
-            ),
-            AIResponse(
-                content="Here are the results.",
-                finish_reason="stop",
-                usage={"prompt_tokens": 20, "completion_tokens": 10},
-            ),
-        ]
-        provider = MockAIProvider(ai_responses=responses)
-        ch = AIChannel("ai1", provider=provider, tool_handler=tool_handler)
-
-        async def _hook(gen_event: AIGenerationEvent) -> SyncPipelineResult:
-            _attribution_hook(gen_event)
-            return SyncPipelineResult(allowed=True)
-
-        ch._before_generation_hook = _hook
-        binding = ChannelBinding(
-            channel_id="ai1",
-            room_id="r1",
-            channel_type=ChannelType.AI,
-            category=ChannelCategory.INTELLIGENCE,
-            metadata={"tools": [{"name": "search", "description": "Search"}]},
-        )
-        output = await ch.on_event(make_event(body="search", channel_id="sms1"), binding, _ctx())
-
-        messages = [e for e in output.response_events if e.type == EventType.MESSAGE]
-        tool_events = [e for e in output.response_events if e.type != EventType.MESSAGE]
-        assert messages, "expected at least one MESSAGE event"
-        for e in messages:
-            assert e.metadata["rag_sources"] == _SOURCES
-        for e in tool_events:
-            assert "rag_sources" not in e.metadata
-
     async def test_streaming_output_carries_response_metadata(self) -> None:
         provider = MockAIProvider(responses=["AI reply"], streaming=True)
         ch = AIChannel("ai1", provider=provider)
@@ -351,31 +294,15 @@ class TestLiveRecord:
     def test_accessor_is_none_outside_a_turn(self) -> None:
         assert current_response_metadata() is None
 
-    async def test_tool_handler_write_lands_on_the_reply_non_streaming(self) -> None:
-        provider = MockAIProvider(ai_responses=list(_TOOL_ROUNDS))
-        ch = AIChannel("ai1", provider=provider, tool_handler=_citing_handler)
-        binding = ChannelBinding(
-            channel_id="ai1",
-            room_id="r1",
-            channel_type=ChannelType.AI,
-            category=ChannelCategory.INTELLIGENCE,
-            metadata=_TOOLS_BINDING_META,
-        )
-        output = await ch.on_event(make_event(body="read", channel_id="sms1"), binding, _ctx())
-
-        messages = [e for e in output.response_events if e.type == EventType.MESSAGE]
-        assert messages
-        for e in messages:
-            assert e.metadata["cited"] == [{"tool": "read_page", "page": 3}]
-
-    async def test_tool_handler_write_lands_on_the_streamed_answer(self, advance) -> None:
+    @pytest.mark.parametrize("streaming", [True, False])
+    async def test_tool_handler_write_lands_on_the_answer(self, advance, streaming: bool) -> None:
         from roomkit.channels import SMSChannel
         from roomkit.providers.sms.mock import MockSMSProvider
 
         kit = RoomKit()
         ai = AIChannel(
             "ai1",
-            provider=MockAIProvider(ai_responses=list(_TOOL_ROUNDS), streaming=True),
+            provider=MockAIProvider(ai_responses=list(_TOOL_ROUNDS), streaming=streaming),
             tool_handler=_citing_handler,
             system_prompt="test",
         )

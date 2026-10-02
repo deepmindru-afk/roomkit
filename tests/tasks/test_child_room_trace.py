@@ -29,6 +29,7 @@ from roomkit.models.streaming import ThinkingDeltaMarker, ToolCallEndMarker, Too
 from roomkit.providers.ai.base import AIImagePart, AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.tools.context import current_tool_call
+from tests.buffered_agent import BufferedAgent
 
 
 def _recording_store() -> MagicMock:
@@ -263,20 +264,15 @@ class TestAChildTraceCutShort:
         await asyncio.gather(task, return_exceptions=True)
 
         rows = await _child_rows(kit)
-        if streaming:
-            # Every start has its end: a start row never stays pending, and
-            # the text already produced is kept, marked cancelled (RFC §23.3).
-            assert [(t, getattr(c, "status", None)) for t, c in rows] == [
-                (EventType.MESSAGE, None),
-                (EventType.TOOL_CALL_START, "pending"),
-                (EventType.TOOL_CALL_END, "failed"),
-            ]
-            assert rows[2][1].error == "cancelled"
-            assert rows[0][1].body == "Working."
-        else:
-            # The buffered loop writes its rows once the turn ends: a turn
-            # cancelled mid-tool leaves none, so none is left open.
-            assert rows == []
+        # Every start has its end: a start row never stays pending, and the
+        # text already produced is kept, marked cancelled (RFC §23.3).
+        assert [(t, getattr(c, "status", None)) for t, c in rows] == [
+            (EventType.MESSAGE, None),
+            (EventType.TOOL_CALL_START, "pending"),
+            (EventType.TOOL_CALL_END, "failed"),
+        ]
+        assert rows[2][1].error == "cancelled"
+        assert rows[0][1].body == "Working."
         # The response is closed, so its generation ends with the delegation.
         assert not kit.channels["worker"]._active_loops
         await kit.close()
@@ -418,10 +414,11 @@ class TestRunAgentNonStreaming:
 
 async def test_a_muted_worker_answer_is_committed_once() -> None:
     """A delegated room's trace commits each answer once: a muted worker's
-    answer used to be stored twice under one id, BLOCKED by the router and
-    DELIVERED by the trace (found reviewing RMK-344)."""
+    buffered answer used to be stored twice under one id, BLOCKED by the
+    router and DELIVERED by the trace (found reviewing RMK-344). A muted
+    AIChannel's stream is closed unread, so the case is a buffered agent's."""
     kit = RoomKit()
-    kit.register_channel(AIChannel("ai1", provider=MockAIProvider(responses=["W1"])))
+    kit.register_channel(BufferedAgent("ai1", "W1"))
     await kit.create_room(room_id="child")
     await kit.attach_channel("child", "ai1", category=ChannelCategory.INTELLIGENCE, muted=True)
 

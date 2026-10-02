@@ -265,7 +265,7 @@ def response_transcript(segments: Iterable[str]) -> tuple[list[str], str]:
 
     Drops the empty stretches (a tool round in which the model said nothing)
     and returns the segments kept, and their join. The one place the contract
-    lives: the streaming, non-streaming and ACP paths all report through it.
+    lives: the AI channel's tool loop and the ACP channel both report through it.
     """
     kept = [segment for segment in segments if segment]
     return kept, RESPONSE_SEGMENT_SEPARATOR.join(kept)
@@ -350,9 +350,8 @@ class AIResponseEvent:
     loop_end_reason: LoopEndReason | None = None
     """Which of the tool loop's rules ended the turn, or None if unreported.
 
-    The streaming loop already named this on its :class:`LoopEndMarker` and the
-    buffered loop on ``ToolLoopResult.reason``, but neither reached this event:
-    a hook could see *that* a turn ended and how much work it did, never
+    The loop names it on its :class:`LoopEndMarker`, and this event carries
+    it: without it a hook could see *that* a turn ended and how much work it did, never
     whether it finished or was cut off. Counting tool calls does not answer it
     — :attr:`tool_calls_count` reports the calls the turn *ran*, so a healthy
     multi-round answer and one guillotined by the round cap both report a

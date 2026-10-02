@@ -25,8 +25,16 @@ from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelCategory, ChannelType
 from roomkit.models.event import EventSource, RoomEvent, TextContent
-from roomkit.models.streaming import ToolCallEndMarker, ToolCallStartMarker
-from roomkit.providers.ai.base import AIContext, AIProvider, AIResponse
+from roomkit.providers.ai.base import (
+    AIContext,
+    AIProvider,
+    AIResponse,
+    AITool,
+    StreamDone,
+    StreamEvent,
+    StreamTextDelta,
+    StreamToolCall,
+)
 
 ROOM = "r-order"
 
@@ -144,7 +152,10 @@ async def test_a_later_index_does_not_overtake_a_stalled_inline_delivery() -> No
 
 
 class _SegmentedAI(AIProvider):
-    """Streams two text segments split by a tool call."""
+    """Streams two text segments split by a tool call the channel runs."""
+
+    def __init__(self) -> None:
+        self._rounds = 0
 
     @property
     def model_name(self) -> str:
@@ -154,17 +165,27 @@ class _SegmentedAI(AIProvider):
     def supports_streaming(self) -> bool:
         return True
 
+    @property
+    def supports_structured_streaming(self) -> bool:
+        return True
+
     async def generate(self, context: AIContext) -> AIResponse:  # pragma: no cover
         return AIResponse(content="unused")
 
-    async def generate_stream(self, context: AIContext) -> AsyncIterator[Any]:
-        yield "first "
-        yield "half"
-        yield ToolCallStartMarker(tool_name="lookup", tool_id="t1", arguments={})
-        yield ToolCallEndMarker(
-            tool_name="lookup", tool_id="t1", arguments={}, result="ok", status="completed"
-        )
-        yield "second half"
+    async def generate_structured_stream(self, context: AIContext) -> AsyncIterator[StreamEvent]:
+        self._rounds += 1
+        if self._rounds == 1:
+            yield StreamTextDelta(text="first ")
+            yield StreamTextDelta(text="half")
+            yield StreamToolCall(id="t1", name="lookup")
+            yield StreamDone(finish_reason="tool_calls")
+            return
+        yield StreamTextDelta(text="second half")
+        yield StreamDone(finish_reason="stop")
+
+
+async def _lookup(name: str, arguments: dict[str, Any]) -> str:
+    return "ok"
 
 
 @pytest.mark.asyncio
@@ -182,7 +203,10 @@ async def test_a_streamed_segment_holds_the_cursor_until_it_is_delivered() -> No
     transport.gate = asyncio.Event()
     transport.gate_for = "first half"
     kit.register_channel(transport)
-    kit.register_channel(AIChannel("ai", provider=_SegmentedAI()))
+    lookup = AITool(name="lookup", description="Look it up.", parameters={"type": "object"})
+    kit.register_channel(
+        AIChannel("ai", provider=_SegmentedAI(), tools=[lookup], tool_handler=_lookup)
+    )
     await kit.create_room(room_id=ROOM)
     await kit.attach_channel(ROOM, "t", category=ChannelCategory.TRANSPORT)
     await kit.attach_channel(ROOM, "ai", category=ChannelCategory.INTELLIGENCE)

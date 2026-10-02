@@ -11,7 +11,7 @@ import pytest
 from roomkit.channels._tool_registry import ChannelRegistry
 from roomkit.channels.agent import Agent
 from roomkit.core.exceptions import UnservedToolCallError
-from roomkit.models.channel import ChannelBinding
+from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import ChannelType, EventType
 from roomkit.models.event import EventSource, RoomEvent, TextContent
@@ -455,7 +455,9 @@ class TestSupervisorShareChannels:
 @pytest.mark.parametrize("refine_task", [False, True], ids=["one-pass", "two-pass"])
 async def test_the_supervisors_answer_is_one_deeper_than_its_event(refine_task: bool) -> None:
     """RFC §8.3, §19.7.3: the worker results stand in for the event, so the
-    supervisor's answer does not restart the chain at 1."""
+    supervisor's answer does not restart the chain at 1: every turn the boss
+    runs answers an event at the depth of the one that woke it, and the room
+    writes the answer one deeper."""
     boss = _make_agent("boss")
     room = Room(id="r1")
     kit = _make_mock_kit(room)
@@ -470,6 +472,16 @@ async def test_the_supervisors_answer_is_one_deeper_than_its_event(refine_task: 
         refine_task=refine_task,
     )
     await supervisor.install(kit, "r1")
+    answered: list[RoomEvent] = []
+    respond = boss._respond
+
+    async def spy(
+        event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        answered.append(event)
+        return await respond(event, binding, context)
+
+    boss._respond = spy  # type: ignore[method-assign]
 
     output = await boss.on_event(
         RoomEvent(
@@ -483,5 +495,6 @@ async def test_the_supervisors_answer_is_one_deeper_than_its_event(refine_task: 
         RoomContext(room=room, bindings=[], recent_events=[]),
     )
 
-    assert output.response_events
-    assert {e.chain_depth for e in output.response_events} == {3}
+    assert output.response_stream is not None
+    assert answered
+    assert {e.chain_depth for e in answered} == {2}

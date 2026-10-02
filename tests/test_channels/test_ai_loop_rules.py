@@ -1,11 +1,10 @@
-"""The tool-loop rules are single-definition: both loops must consume them.
+"""The tool loop consumes its per-round rules from one place.
 
-The non-streaming (``_run_tool_loop``) and streaming
-(``_run_streaming_tool_loop``) tool loops share their per-round business
-rules via ``AIToolLoopRulesMixin`` (``channels/_ai_loop_rules.py``). These
-tests patch a shared rule and assert BOTH paths reflect the patch — they
-fail if a rule is re-inlined into one loop only, which would leave the
-other generation mode without it.
+The loop (``_run_streaming_tool_loop``) takes its per-round business rules
+from ``AIToolLoopRulesMixin`` (``channels/_ai_loop_rules.py``). These tests
+patch a rule and assert the loop reflects the patch, for a provider that
+streams and one read through its ``generate()``: they fail if a rule is
+re-inlined into the loop.
 """
 
 from __future__ import annotations
@@ -111,11 +110,8 @@ async def test_empty_retry_rule_drives_both_paths(monkeypatch, streaming: bool) 
         max_empty_retries=1,
     )
     context = AIContext(messages=[AIMessage(role="user", content="go")])
-    if streaming:
-        async for _ in ch._run_streaming_tool_loop(context):
-            pass
-    else:
-        await ch._run_tool_loop(context)
+    async for _ in ch._run_streaming_tool_loop(context):
+        pass
 
     # With the rule forced to "no retry", neither loop may re-generate or
     # nudge: a re-inlined local retry rule would produce a third provider
@@ -158,11 +154,8 @@ async def test_length_truncation_reaches_the_rule_on_both_paths(
         max_empty_retries=1,
     )
     context = AIContext(messages=[AIMessage(role="user", content="go")])
-    if streaming:
-        async for _ in ch._run_streaming_tool_loop(context):
-            pass
-    else:
-        await ch._run_tool_loop(context)
+    async for _ in ch._run_streaming_tool_loop(context):
+        pass
 
     assert seen == ["length"]
     # Truncation is not silence: the nudge would be truncated again under the
@@ -199,11 +192,8 @@ async def test_every_provider_spelling_of_truncation_is_understood(
         max_empty_retries=1,
     )
     context = AIContext(messages=[AIMessage(role="user", content="go")])
-    if streaming:
-        async for _ in ch._run_streaming_tool_loop(context):
-            pass
-    else:
-        await ch._run_tool_loop(context)
+    async for _ in ch._run_streaming_tool_loop(context):
+        pass
 
     assert len(provider.calls) == 2
     assert sum(1 for m in context.messages if m.content == _EMPTY_RETRY_NUDGE) == 0
@@ -227,11 +217,8 @@ async def test_empty_without_length_still_retries_on_both_paths(streaming: bool)
         max_empty_retries=1,
     )
     context = AIContext(messages=[AIMessage(role="user", content="go")])
-    if streaming:
-        async for _ in ch._run_streaming_tool_loop(context):
-            pass
-    else:
-        await ch._run_tool_loop(context)
+    async for _ in ch._run_streaming_tool_loop(context):
+        pass
 
     assert len(provider.calls) == 3
     assert sum(1 for m in context.messages if m.content == _EMPTY_RETRY_NUDGE) == 1

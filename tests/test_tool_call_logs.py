@@ -53,7 +53,7 @@ async def _run_turn(caplog, level: str, *, streaming: bool) -> list[str]:
     ch = _channel()
     with _in_a_turn():
         ctx = AIContext(messages=[AIMessage(role="user", content="my cards?")])
-        await run_tool_loop(ch, ctx, streaming=streaming)
+        await run_tool_loop(ch, ctx)
     return [r.getMessage() for r in caplog.records if r.name == _LOGGER]
 
 

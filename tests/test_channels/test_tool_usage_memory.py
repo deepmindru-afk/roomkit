@@ -405,7 +405,7 @@ class TestToolUsageInContext:
         _current_loop_ctx.set(_ToolLoopContext(room_id="r1"))
         try:
             turn = AIContext(messages=[AIMessage(role="user", content="my boards?")])
-            await run_tool_loop(ch, turn, streaming=streaming)
+            await run_tool_loop(ch, turn)
             ctx = await _first_round(ch)
         finally:
             _current_loop_ctx.set(None)
@@ -417,7 +417,7 @@ class TestToolUsageInContext:
         _current_loop_ctx.set(_ToolLoopContext(room_id="r1"))
         try:
             turn = AIContext(messages=[AIMessage(role="user", content="go")])
-            await run_tool_loop(ch, turn, streaming=streaming)
+            await run_tool_loop(ch, turn)
         finally:
             _current_loop_ctx.set(None)
         return ch._tool_usage.render_digest("r1") or ""

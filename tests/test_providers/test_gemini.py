@@ -465,7 +465,7 @@ class TestGeminiAIProvider:
             context = _context(
                 tools=[AITool(name="search", description="Search", parameters={"type": "object"})]
             )
-            run = await run_tool_loop(channel, context, streaming=streaming)
+            run = await run_tool_loop(channel, context)
 
             assert run.text == "Found it."
             assert handler.await_count == 1

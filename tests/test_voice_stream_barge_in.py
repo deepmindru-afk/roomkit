@@ -18,8 +18,16 @@ from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import EventType, HookTrigger
 from roomkit.models.event import RoomEvent, TextContent
 from roomkit.models.hook import HookResult
-from roomkit.models.streaming import ToolCallEndMarker, ToolCallStartMarker
-from roomkit.providers.ai.base import AIContext, AIProvider, AIResponse
+from roomkit.providers.ai.base import (
+    AIContext,
+    AIProvider,
+    AIResponse,
+    AITool,
+    StreamDone,
+    StreamEvent,
+    StreamTextDelta,
+    StreamToolCall,
+)
 from roomkit.voice.backends.mock import MockVoiceBackend
 from roomkit.voice.base import AudioChunk, VoiceCapability, VoiceSession
 from roomkit.voice.interruption import InterruptionConfig
@@ -27,20 +35,27 @@ from roomkit.voice.tts.base import TTSProvider
 
 HEARD = ["Sentence one is right here. ", "Sentence two is right here. "]
 AFTER = "Sentence three was never said. "
+ANSWER = "Your table is booked. "
+
+
+BOOK = AITool(name="book_table", description="Book a table.", parameters={"type": "object"})
 
 
 class _HeldAI(AIProvider):
     """Streams two sentences, then holds until released, then calls a tool.
 
     Held is where a barge-in lands: the next pull is in flight inside the
-    provider, the point where a tool call could slip past the stop.
+    provider, the point where a tool call could slip past the stop. The
+    channel runs the call it asks for; the next round answers.
     """
 
     def __init__(self) -> None:
         self.release = asyncio.Event()
         self.held = asyncio.Event()
+        # How the first generation ended: "done", or the exception that closed it.
         self.ended: list[str] = []
         self.tool_reached = False
+        self._generations = 0
 
     @property
     def model_name(self) -> str:
@@ -50,64 +65,80 @@ class _HeldAI(AIProvider):
     def supports_streaming(self) -> bool:
         return True
 
+    @property
+    def supports_structured_streaming(self) -> bool:
+        return True
+
     async def generate(self, context: AIContext) -> AIResponse:  # pragma: no cover
         return AIResponse(content="unused")
 
-    async def generate_stream(self, context: AIContext) -> AsyncIterator[Any]:
+    async def generate_structured_stream(self, context: AIContext) -> AsyncIterator[StreamEvent]:
+        self._generations += 1
+        if self._generations > 1:
+            async for event in self._next_round():
+                yield event
+            return
         try:
-            for sentence in HEARD:
-                yield sentence
-            self.held.set()
-            await self.release.wait()
-            yield AFTER
-            self.tool_reached = True
-            yield ToolCallStartMarker(tool_name="book_table", tool_id="t1", arguments={})
-            yield ToolCallEndMarker(
-                tool_name="book_table", tool_id="t1", arguments={}, result="ok"
-            )
+            async for event in self._first_round():
+                yield event
         except BaseException as exc:
             self.ended.append(type(exc).__name__)
             raise
         self.ended.append("done")
+
+    async def _first_round(self) -> AsyncIterator[StreamEvent]:
+        for sentence in HEARD:
+            yield StreamTextDelta(text=sentence)
+        self.held.set()
+        await self.release.wait()
+        yield StreamTextDelta(text=AFTER)
+        self.tool_reached = True
+        yield StreamToolCall(id="t1", name="book_table")
+        yield StreamDone(finish_reason="tool_calls")
+
+    async def _next_round(self) -> AsyncIterator[StreamEvent]:
+        yield StreamTextDelta(text=ANSWER)
+        yield StreamDone(finish_reason="stop")
+
+    async def serve(self, name: str, arguments: dict[str, Any]) -> str:
+        return "ok"
 
 
 class _ToolRunningAI(_HeldAI):
-    """Starts a tool whose execution holds until released, then answers."""
+    """Asks for a tool whose execution holds until released, then answers."""
 
-    async def generate_stream(self, context: AIContext) -> AsyncIterator[Any]:
-        try:
-            yield HEARD[0]
-            yield ToolCallStartMarker(tool_name="book_table", tool_id="t1", arguments={})
-            self.held.set()
-            await self.release.wait()  # the tool is executing
-            yield ToolCallEndMarker(
-                tool_name="book_table", tool_id="t1", arguments={}, result="booked"
-            )
-            self.tool_reached = True  # the model's next round
-            yield "Your table is booked. "
-        except BaseException as exc:
-            self.ended.append(type(exc).__name__)
-            raise
-        self.ended.append("done")
+    async def _first_round(self) -> AsyncIterator[StreamEvent]:
+        yield StreamTextDelta(text=HEARD[0])
+        yield StreamToolCall(id="t1", name="book_table")
+        yield StreamDone(finish_reason="tool_calls")
+
+    async def _next_round(self) -> AsyncIterator[StreamEvent]:
+        self.tool_reached = True  # the model's next round
+        async for event in super()._next_round():
+            yield event
+
+    async def serve(self, name: str, arguments: dict[str, Any]) -> str:
+        self.held.set()
+        await self.release.wait()  # the tool is executing
+        return "booked"
 
 
 class _RoundAI(_HeldAI):
-    """One tool round over *ids*: every start, then execution, then the ends."""
+    """One tool round over *ids*: every call announced, then executed."""
 
     def __init__(self, ids: list[str]) -> None:
         super().__init__()
         self.ids = ids
 
-    async def generate_stream(self, context: AIContext) -> AsyncIterator[Any]:
-        yield HEARD[0]
+    async def _first_round(self) -> AsyncIterator[StreamEvent]:
+        yield StreamTextDelta(text=HEARD[0])
         for tool_id in self.ids:
-            yield ToolCallStartMarker(tool_name="book_table", tool_id=tool_id, arguments={})
+            yield StreamToolCall(id=tool_id, name="book_table")
+        yield StreamDone(finish_reason="tool_calls")
+
+    async def serve(self, name: str, arguments: dict[str, Any]) -> str:
         self.tool_reached = True  # the round executes here
-        for tool_id in self.ids:
-            yield ToolCallEndMarker(
-                tool_name="book_table", tool_id=tool_id, arguments={}, result="ok"
-            )
-        yield "Booked. "
+        return "ok"
 
 
 class _SentenceTTS(TTSProvider):
@@ -181,7 +212,7 @@ async def _setup(
     voice = VoiceChannel("voice-1", tts=_SentenceTTS(), backend=backend, interruption=interruption)
     kit = RoomKit(voice=backend)
     kit.register_channel(voice)
-    kit.register_channel(AIChannel("ai-1", provider=ai))
+    kit.register_channel(AIChannel("ai-1", provider=ai, tools=[BOOK], tool_handler=ai.serve))
     room = await kit.create_room()
     await kit.attach_channel(room.id, "voice-1")
     await kit.attach_channel(room.id, "ai-1")
@@ -272,11 +303,12 @@ class TestBargeInDuringStreamedResponse:
         assert ai.ended == ["done"]
         rows = [e for e in _ai_rows(await _events(kit, room_id)) if e.type == EventType.MESSAGE]
         assert [r.content.body for r in rows if isinstance(r.content, TextContent)] == [
-            "".join(HEARD) + AFTER
+            "".join(HEARD) + AFTER,
+            ANSWER,
         ]
         assert all(not r.metadata.get("cancelled") for r in rows)
-        # The session that kept listening heard every sentence.
-        assert backend.played[second.id] == len(HEARD) + 1
+        # The session that kept listening heard every sentence, the answer included.
+        assert backend.played[second.id] == len(HEARD) + 2
         await kit.close()
 
     async def test_without_flush_the_response_plays_and_is_stored_whole(self) -> None:
@@ -344,10 +376,10 @@ class TestBargeInDuringStreamedResponse:
         ai.release.set()
         await asyncio.wait_for(turn, 2)
 
-        # The tool went to its end and its result is stored; the model's next
-        # round never started.
+        # The generation had ended before its call ran; the tool went to its
+        # end and its result is stored; the model's next round never started.
         assert not ai.tool_reached
-        assert ai.ended == ["GeneratorExit"]
+        assert ai.ended == ["done"]
         events = await _events(kit, room_id)
         (end,) = [e for e in events if e.type == EventType.TOOL_CALL_END]
         assert getattr(end.content, "result", None) == "booked"

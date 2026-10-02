@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from roomkit.channels.ai import AIChannel
+from roomkit.models.streaming import LoopEndMarker
 from roomkit.providers.ai.base import (
     AIContext,
     AIMessage,
@@ -62,7 +63,7 @@ class TestToolLoopTimeout:
 
         context = AIContext(messages=[AIMessage(role="user", content="go")])
         with patch.object(asyncio.get_running_loop(), "time", advancing_time):
-            await run_tool_loop(ch, context, streaming=streaming)
+            await run_tool_loop(ch, context)
 
         # Timeout must have stopped the loop — far fewer than max_tool_rounds
         assert handler.call_count < max_rounds
@@ -82,7 +83,7 @@ class TestToolLoopTimeout:
         )
 
         context = AIContext(messages=[AIMessage(role="user", content="go")])
-        run = await run_tool_loop(ch, context, streaming=streaming)
+        run = await run_tool_loop(ch, context)
 
         assert run.text == "Done"
         assert handler.call_count == 2
@@ -114,7 +115,7 @@ class TestToolLoopTimeout:
 
         context = AIContext(messages=[AIMessage(role="user", content="go")])
         with patch.object(asyncio.get_running_loop(), "time", already_expired):
-            run = await run_tool_loop(ch, context, streaming=streaming)
+            run = await run_tool_loop(ch, context)
 
         # At most 1 round completes (the one in-flight when timeout is checked)
         assert handler.call_count <= 1
@@ -141,7 +142,7 @@ class TestToolLoopTimeout:
         )
 
         context = AIContext(messages=[AIMessage(role="user", content="go")])
-        run = await run_tool_loop(ch, context, streaming=streaming)
+        run = await run_tool_loop(ch, context)
 
         assert call_count == 1
         assert run.text == "Done"
@@ -167,7 +168,7 @@ class TestToolLoopWarning:
 
         context = AIContext(messages=[AIMessage(role="user", content="go")])
         with caplog.at_level(logging.WARNING, logger="roomkit.channels.ai"):
-            await run_tool_loop(ch, context, streaming=streaming)
+            await run_tool_loop(ch, context)
 
         warning_msgs = [r.message for r in caplog.records if r.levelno == logging.WARNING]
         assert any(f"reached {warn_after} rounds, still running" in m for m in warning_msgs), (
@@ -192,7 +193,7 @@ class TestToolLoopWarning:
 
         context = AIContext(messages=[AIMessage(role="user", content="go")])
         with caplog.at_level(logging.WARNING, logger="roomkit.channels.ai"):
-            await run_tool_loop(ch, context, streaming=streaming)
+            await run_tool_loop(ch, context)
 
         warning_msgs = [r.message for r in caplog.records if r.levelno == logging.WARNING]
         assert not any("still running" in m for m in warning_msgs)
@@ -223,7 +224,7 @@ class TestToolLoopWarning:
         )
 
         context = AIContext(messages=[AIMessage(role="user", content="go")])
-        await run_tool_loop(ch, context, streaming=streaming)
+        await run_tool_loop(ch, context)
 
         assert handler.call_count == max_rounds
 
@@ -258,7 +259,7 @@ class TestParallelToolExecution:
         )
 
         context = AIContext(messages=[AIMessage(role="user", content="go")])
-        run = await run_tool_loop(ch, context, streaming=streaming)
+        run = await run_tool_loop(ch, context)
 
         assert run.text == "Done"
         assert len(execution_order) == 4
@@ -295,7 +296,7 @@ class TestParallelToolExecution:
         )
 
         context = AIContext(messages=[AIMessage(role="user", content="go")])
-        await run_tool_loop(ch, context, streaming=streaming)
+        await run_tool_loop(ch, context)
 
         # Messages: [0]=user "go", [1]=assistant (tool calls), [2]=tool (results)
         assert context.messages[1].role == "assistant"
@@ -463,13 +464,14 @@ class TestContextOverflowRecovery:
         context = AIContext(
             messages=[AIMessage(role="user", content=f"msg{i}") for i in range(10)]
         )
-        run = await run_tool_loop(ch, context, streaming=streaming)
+        run = await run_tool_loop(ch, context)
 
         assert run.text == "Recovered"
         assert call_count == 3
 
     async def test_non_overflow_error_returns_partial(self) -> None:
-        """A non-overflow error keeps the rounds that ran and ends on the marker."""
+        """A non-overflow error after a round keeps the round that ran and ends
+        the turn on ``error``, then raises (RFC §6.4)."""
         call_count = 0
 
         async def generate_failing(context: AIContext) -> AIResponse:
@@ -491,14 +493,20 @@ class TestContextOverflowRecovery:
         )
 
         context = AIContext(messages=[AIMessage(role="user", content="go")])
-        result = await ch._run_tool_loop(context)
+        said: list[str] = []
+        end: LoopEndMarker | None = None
+        with pytest.raises(ProviderError, match="Internal server error"):
+            async for delta in ch._run_streaming_tool_loop(context):
+                if isinstance(delta, str):
+                    said.append(delta)
+                elif isinstance(delta, LoopEndMarker):
+                    end = delta
 
-        # The round's text survives as its own segment; the terminal message
-        # adds only the marker, not that text again, and never the provider's
-        # own error string, which carries API detail (RFC §6.4).
-        assert [rnd.text_before for rnd in result.rounds] == ["Thinking..."]
-        assert result.response.content == "[Response interrupted]"
-        assert result.reason == "error"
+        # The round's text survives as its own segment, said once, and the
+        # provider's own error string, which carries API detail, is no text
+        # of the turn (RFC §6.4).
+        assert "".join(said) == "Thinking..."
+        assert end is not None and end.reason == "error"
 
     @staticmethod
     def _overflowing_channel(tool_handler: AsyncMock | None = None) -> AIChannel:
@@ -529,25 +537,14 @@ class TestContextOverflowRecovery:
         # still overflows.
         return AIContext(messages=[AIMessage(role="user", content=f"msg{i}") for i in range(10)])
 
-    async def test_compaction_still_overflowing_ends_the_turn_on_the_marker(self) -> None:
+    async def test_compaction_still_overflowing_raises_out_of_the_turn(self) -> None:
         """After a round, an overflow compaction does not cure interrupts the
-        turn: delivered once its loop ends, it keeps the round and ends on the
-        marker (RFC §6.4)."""
-        channel, context = self._overflowing_channel(), self._long_context()
-
-        run = await run_tool_loop(channel, context, streaming=False)
-
-        assert run.text == "[Response interrupted]"
-        assert run.reason == "error"
-        assert [call.failed for call in run.calls] == [False]
-
-    async def test_compaction_still_overflowing_raises_out_of_a_streamed_turn(self) -> None:
-        """Streamed, the round is out already: the overflow raises (RFC §6.4)."""
+        turn: the round is out already, and the overflow raises (RFC §6.4)."""
         handler = AsyncMock(return_value="ok")
         channel, context = self._overflowing_channel(handler), self._long_context()
 
         with pytest.raises(ProviderError, match="context length exceeded"):
-            await run_tool_loop(channel, context, streaming=True)
+            await run_tool_loop(channel, context)
         handler.assert_awaited_once()
 
     def test_is_context_overflow_matches_known_patterns(self) -> None:
@@ -629,7 +626,7 @@ class TestToolLoopContextAccumulation:
         )
 
         context = AIContext(messages=[AIMessage(role="user", content="go")])
-        run = await run_tool_loop(ch, context, streaming=streaming)
+        run = await run_tool_loop(ch, context)
 
         assert run.text == "Done"
         # First call: 1 message (user "go")
@@ -668,7 +665,7 @@ class TestToolLoopContextAccumulation:
         )
 
         context = AIContext(messages=[AIMessage(role="user", content="go")])
-        await run_tool_loop(ch, context, streaming=streaming)
+        await run_tool_loop(ch, context)
 
         tool_msg = context.messages[2]
         assert tool_msg.role == "tool"
@@ -721,7 +718,7 @@ class TestEvictionToolAvailableMidLoop:
         )
 
         context = AIContext(messages=[AIMessage(role="user", content="go")])
-        await run_tool_loop(ch, context, streaming=streaming)
+        await run_tool_loop(ch, context)
 
         # The round *after* the eviction advertises the re-read tool…
         assert len(provider.calls) == 3
@@ -749,7 +746,7 @@ class TestEvictionToolAvailableMidLoop:
         )
 
         context = AIContext(messages=[AIMessage(role="user", content="go")])
-        await run_tool_loop(ch, context, streaming=streaming)
+        await run_tool_loop(ch, context)
 
         assert len(provider.calls) == 2
         round2_tools = [t.name for t in (provider.calls[1].tools or [])]

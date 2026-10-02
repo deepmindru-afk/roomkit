@@ -65,11 +65,8 @@ async def test_aborted_parallel_round_joins_other_tool_finalizers(
     context = AIContext(messages=[AIMessage(role="user", content="go")])
 
     async def run() -> None:
-        if streaming:
-            async for _ in channel._run_streaming_tool_loop(context):
-                pass
-        else:
-            await channel._run_tool_loop(context)
+        async for _ in channel._run_streaming_tool_loop(context):
+            pass
 
     try:
         error = RuntimeError if failure == "gate_error" else asyncio.CancelledError
@@ -127,11 +124,8 @@ async def test_cancelling_tool_turn_closes_span(streaming: bool, phase: str) -> 
 
     async def run() -> None:
         context = AIContext(messages=[AIMessage(role="user", content="go")])
-        if streaming:
-            async for _ in channel._run_streaming_tool_loop(context):
-                pass
-        else:
-            await channel._run_tool_loop(context)
+        async for _ in channel._run_streaming_tool_loop(context):
+            pass
 
     task = asyncio.create_task(run())
     try:

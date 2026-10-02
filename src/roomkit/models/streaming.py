@@ -77,10 +77,9 @@ class ThinkingDeltaMarker:
 #:
 #: ``error`` is a turn the provider interrupted after a tool round: the rounds
 #: are kept, each round's text as its own message, and it is an error too
-#: (ON_ERROR fires, the caller reads it on ``InboundResult.error``). The
-#: non-streaming loop ends it on the ``[Response interrupted]`` marker alone
-#: (``ChannelOutput.error``); the streaming loop yields its ``LoopEndMarker``,
-#: then the exception reaches the consumer. RFC §6.4.
+#: (ON_ERROR fires, the caller reads it on ``InboundResult.error``). The loop
+#: yields its ``LoopEndMarker``, then the exception reaches the consumer.
+#: RFC §6.4.
 LoopEndReason = Literal[
     "completed",
     "max_rounds",
@@ -120,9 +119,6 @@ class LoopEndMarker:
     repeated here. ``usage`` is what the turn's generations used, summed over
     every round: with the reason, it is the turn's record, which the stream's
     consumer writes on the turn's last message (RFC §6.4).
-
-    Streaming only: the non-streaming loop hands back an ``AIResponse`` the
-    caller already holds, rather than a stream whose end is silent.
     """
 
     reason: LoopEndReason

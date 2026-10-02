@@ -38,6 +38,7 @@ from roomkit.tools.context import _current_turn_chain_depth
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
 from tests.conftest import make_event
 from tests.test_framework import SimpleChannel
+from tests.tool_loop_modes import respond
 from tests.tool_room import room_tool_names
 
 TENANTS = ("tenant-A", "tenant-B")
@@ -320,7 +321,8 @@ async def test_a_result_tool_is_declared_in_the_child_room_only() -> None:
 
     # A delegation to this same agent runs in another room meanwhile.
     with capture_result(channel, "parent::task-abc", SUBMIT_RESULT) as slot:
-        await channel.on_event(
+        await respond(
+            channel,
             make_event(room_id="customer-room", body="hi", channel_id="sms1"),
             binding,
             RoomContext(room=Room(id="customer-room")),

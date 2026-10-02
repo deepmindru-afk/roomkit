@@ -2,8 +2,8 @@
 
 Small models sometimes run a tool, get the result, then return no text instead
 of a final answer. The tool loop re-prompts once (bounded by ``max_empty_retries``)
-for the final answer rather than ending empty. Covers both the non-streaming
-(``_run_tool_loop``) and streaming (``_run_streaming_tool_loop``) paths.
+for the final answer rather than ending empty. Covers a provider that streams
+and one read through its ``generate()``.
 """
 
 from __future__ import annotations
@@ -54,7 +54,7 @@ async def test_retries_empty_after_tool_and_recovers(streaming: bool) -> None:
         max_empty_retries=1,
     )
     context = _ctx()
-    run = await run_tool_loop(ch, context, streaming=streaming)
+    run = await run_tool_loop(ch, context)
     assert run.text == "Recovered"
     assert _nudged(context) == 1  # one corrective re-prompt injected
 
@@ -69,7 +69,7 @@ async def test_no_retry_when_budget_zero(streaming: bool) -> None:
         max_empty_retries=0,
     )
     context = _ctx()
-    run = await run_tool_loop(ch, context, streaming=streaming)
+    run = await run_tool_loop(ch, context)
     assert run.text == ""
     assert _nudged(context) == 0
 
@@ -85,7 +85,7 @@ async def test_no_retry_without_prior_tool(streaming: bool) -> None:
         max_empty_retries=2,
     )
     context = _ctx()
-    await run_tool_loop(ch, context, streaming=streaming)
+    await run_tool_loop(ch, context)
     assert _nudged(context) == 0
     assert len(provider.calls) == 1  # no extra generation
 
@@ -101,7 +101,7 @@ async def test_bounded_gives_up_when_still_empty(streaming: bool) -> None:
         max_empty_retries=1,
     )
     context = _ctx()
-    run = await run_tool_loop(ch, context, streaming=streaming)
+    run = await run_tool_loop(ch, context)
     assert run.text == ""
     assert _nudged(context) == 1  # exactly one retry, then give up
 
@@ -127,7 +127,7 @@ async def test_a_malformed_call_is_told_and_retried_on_the_first_round(streaming
         max_empty_retries=1,
     )
     context = _ctx()
-    run = await run_tool_loop(ch, context, streaming=streaming)
+    run = await run_tool_loop(ch, context)
     assert run.text == "Done"
     assert _told_malformed(context) == 1
     assert handler.await_count == 1
@@ -142,7 +142,7 @@ async def test_a_malformed_call_past_the_budget_ends_the_turn_empty(streaming: b
         tool_loop_timeout_seconds=None,
         max_empty_retries=0,
     )
-    run = await run_tool_loop(ch, _ctx(), streaming=streaming)
+    run = await run_tool_loop(ch, _ctx())
     assert run.text == ""
     assert run.reason == "empty_response"
 
@@ -157,7 +157,7 @@ async def test_a_malformed_call_after_text_is_told_too(streaming: bool) -> None:
     provider = MockAIProvider(ai_responses=[narrated, _tool(), _final("Done")])
     ch = AIChannel("ai1", provider=provider, tool_handler=handler, tool_loop_timeout_seconds=None)
     context = _ctx()
-    run = await run_tool_loop(ch, context, streaming=streaming)
+    run = await run_tool_loop(ch, context)
     assert run.text == "Done"
     assert handler.await_count == 1
     said = [m.content for m in context.messages]
@@ -181,7 +181,7 @@ async def test_a_failure_before_any_round_is_the_turn_s_own_error(streaming: boo
         tool_loop_timeout_seconds=None,
     )
     with pytest.raises(ProviderError):
-        await run_tool_loop(ch, _ctx(), streaming=streaming)
+        await run_tool_loop(ch, _ctx())
 
 
 async def test_a_schema_turn_asks_again_instead_of_failing_its_check(streaming: bool) -> None:
@@ -203,5 +203,5 @@ async def test_a_schema_turn_asks_again_instead_of_failing_its_check(streaming: 
             }
         }
     )
-    run = await run_tool_loop(ch, context, streaming=streaming)
+    run = await run_tool_loop(ch, context)
     assert run.text == '{"city": "Paris"}'

@@ -1,12 +1,12 @@
 """A turn cut short delivers nothing twice and nothing from an earlier turn (RFC §6.4; RMK-156).
 
 The room already holds each round's text as its own message. A turn the
-provider interrupts after a round is an error; delivered once its loop ends,
-it ends on the marker alone, while a streamed one keeps what it streamed.
-Both loops report it on ON_AI_RESPONSE with ``error``, then ON_ERROR fires,
-and both record how the turn ended on its last message (RMK-289). A turn
-cancelled between rounds adds no terminal text. The history the model was
-given is context, never this turn's output.
+provider interrupts after a round is an error: it keeps what its rounds said
+and adds no message to say so (RMK-308). It is reported on ON_AI_RESPONSE
+with ``error``, then ON_ERROR fires, and how it ended rides its last message
+(RMK-289). A turn cancelled between rounds adds no terminal text. The history
+the model was given is context, never this turn's output. Every case runs
+against a provider that streams and one read through its ``generate()``.
 """
 
 from __future__ import annotations
@@ -131,23 +131,10 @@ async def test_an_interrupted_turn_replays_nothing(streaming: bool) -> None:
     await kit.close()
 
 
-async def test_an_interrupted_turn_ends_on_the_marker_alone() -> None:
-    """Delivered once its loop ends, the turn closes on the marker and reports
-    its transcript, the segments once each (RFC §6.4)."""
-    kit, _, responses = await _room(_FailingAt(4, HISTORY, streaming=False))
-
-    await _say(kit, "first", "second", "third")
-
-    assert await _ai_messages(kit) == ["Earlier answer.", "Second answer.", "Looking.", MARKER]
-    assert responses[-1].response_content == f"Looking.\n\n{MARKER}"
-    assert "req_abc123" not in responses[-1].response_content
-    await kit.close()
-
-
-async def test_an_interrupted_streamed_turn_keeps_what_it_streamed() -> None:
-    """A streamed turn adds no marker: what it streamed stays, and its error
-    surfaces (RFC §6.4)."""
-    kit, _, _ = await _room(_FailingAt(4, HISTORY, streaming=True))
+async def test_an_interrupted_turn_keeps_what_its_rounds_said(streaming: bool) -> None:
+    """The turn adds no marker: what its rounds said stays, it reports that
+    transcript without the provider's error, and the error surfaces (RFC §6.4)."""
+    kit, _, responses = await _room(_FailingAt(4, HISTORY, streaming=streaming))
     errors: list[Any] = []
 
     @kit.hook(HookTrigger.ON_ERROR, execution=HookExecution.ASYNC, name="card")
@@ -157,12 +144,13 @@ async def test_an_interrupted_streamed_turn_keeps_what_it_streamed() -> None:
     await _say(kit, "first", "second", "third")
 
     assert await _ai_messages(kit) == ["Earlier answer.", "Second answer.", "Looking."]
+    assert responses[-1].response_content == "Looking."
     assert len(errors) == 1
     await kit.close()
 
 
 async def test_an_interrupted_turn_is_reported_then_raised(streaming: bool) -> None:
-    """RMK-289: both loops report the turn on ON_AI_RESPONSE with ``error``
+    """RMK-289: the turn is reported on ON_AI_RESPONSE with ``error``
     and what its rounds used, then ON_ERROR fires (RFC §6.4)."""
     used = {"input_tokens": 120, "output_tokens": 7}
     answers = [_looking().model_copy(update={"usage": used}), AIResponse(content="never")]
@@ -222,8 +210,7 @@ async def test_an_interrupted_round_without_text_keeps_its_calls(streaming: bool
     kinds = [e.type for e in events if e.source.channel_id == "ai1"]
     assert EventType.TOOL_CALL_START in kinds
     assert EventType.TOOL_CALL_END in kinds
-    # The marker closes a turn delivered once its loop ends (RFC §6.4).
-    assert await _ai_messages(kit) == ([] if streaming else [MARKER])
+    assert await _ai_messages(kit) == []
     await kit.close()
 
 
@@ -297,17 +284,13 @@ async def test_every_generation_after_a_round_keeps_the_round(
     kinds = [e.type for e in events if e.source.channel_id == "ai1"]
     assert EventType.TOOL_CALL_END in kinds
     messages = await _ai_messages(kit)
-    # The marker closes a turn delivered once its loop ends (RFC §6.4).
-    if streaming:
-        assert MARKER not in messages
-    else:
-        assert messages[-1] == MARKER
+    assert MARKER not in messages
     await kit.close()
 
 
 async def test_an_interrupted_turn_is_an_error(streaming: bool) -> None:
     """The turn is delivered and it is an error: ON_ERROR fires and the
-    caller reads the provider's error, on both loops."""
+    caller reads the provider's error, whatever the provider streams."""
     kit, _, _ = await _room(
         _FailingAt(2, [_looking(), AIResponse(content="never")], streaming=streaming)
     )
@@ -328,34 +311,28 @@ async def test_an_interrupted_turn_is_an_error(streaming: bool) -> None:
     await kit.close()
 
 
-class _Watcher(SimpleChannel):
-    """A second agent in the room: records the messages it is asked to act on."""
-
-    category = ChannelCategory.INTELLIGENCE
-    channel_type = ChannelType.AI
-
-    def __init__(self, channel_id: str) -> None:
-        super().__init__(channel_id)
-        self.asked: list[str] = []
-
-    async def on_event(self, event: RoomEvent, binding: Any, context: Any) -> ChannelOutput:
-        if event.type == EventType.MESSAGE and isinstance(event.content, TextContent):
-            self.asked.append(event.content.body)
-        return ChannelOutput.empty()
-
-
 class TestTheMarkerIsNoAnswer:
-    """RMK-289: the interruption marker is marked, solicits no agent, and is
-    never read as an agent's answer (RFC §6.4, §19.3)."""
+    """A stored interruption marker is known for what it is, solicits no
+    agent, and is never read as an agent's answer (RFC §6.4, §19.3)."""
 
-    async def test_it_is_marked(self) -> None:
-        kit, _, _ = await _room(_FailingAt(4, HISTORY, streaming=False))
+    async def test_an_interrupted_turn_writes_none(self, streaming: bool) -> None:
+        kit, _, _ = await _room(_FailingAt(4, HISTORY, streaming=streaming))
 
         await _say(kit, "first", "second", "third")
 
         events = await kit.store.list_events("r1")
         ai = [e for e in events if e.type == EventType.MESSAGE and e.source.channel_id == "ai1"]
-        assert [is_interruption_marker(e) for e in ai] == [False, False, False, True]
+        assert [is_interruption_marker(e) for e in ai] == [False, False, False]
+
+    def test_a_stored_one_is_marked(self) -> None:
+        marker = RoomEvent(
+            room_id="r1",
+            source=EventSource(channel_id="ai1", channel_type=ChannelType.AI),
+            content=TextContent(body=MARKER),
+            metadata={INTERRUPTION_MARKER_KEY: True},
+        )
+
+        assert is_interruption_marker(marker) is True
 
     def test_it_solicits_nobody(self) -> None:
         marker = RoomEvent(
@@ -367,28 +344,6 @@ class TestTheMarkerIsNoAnswer:
         )
         for channel_id in ("ai2", "supervisor", "ai3"):
             assert _solicits(marker, channel_id, source_is_agent=True) is False
-
-    async def test_another_agent_is_not_asked_to_answer_it(self) -> None:
-        kit, _, _ = await _room(
-            _FailingAt(2, [_looking(""), AIResponse(content="never")], streaming=False)
-        )
-        watcher = _Watcher("ai2")
-        kit.register_channel(watcher)
-        await kit.attach_channel("r1", "ai2", category=ChannelCategory.INTELLIGENCE)
-
-        await kit.process_inbound(
-            InboundMessage(
-                channel_id="sms1",
-                sender_id="u",
-                content=TextContent(body="go"),
-                addressed_to=["ai1"],
-            )
-        )
-        await asyncio.sleep(0.1)
-
-        assert await _ai_messages(kit) == [MARKER]
-        assert watcher.asked == []
-        await kit.close()
 
     def test_a_voice_barge_in_record_is_not_one(self) -> None:
         """RFC §12.3.13's ``interrupted`` marks a spoken reply cut by a barge-in:

@@ -19,16 +19,22 @@ from roomkit.providers.ai.base import (
 from roomkit.providers.ai.mock import MockAIProvider
 
 
-class TestGenerateWithRetry:
+async def _answer(ch: AIChannel, context: AIContext) -> str:
+    """What one generation through the channel's retry and fallback said."""
+    events = [event async for event in ch._generate_stream_with_retry(context)]
+    return "".join(event.text for event in events if isinstance(event, StreamTextDelta))
+
+
+class TestRetry:
     async def test_succeeds_first_try(self) -> None:
         """No retry when first attempt succeeds."""
         provider = MockAIProvider(responses=["ok"])
         ch = AIChannel("ai1", provider=provider, retry_policy=RetryPolicy(max_retries=3))
 
         context = AIContext(messages=[AIMessage(role="user", content="hi")])
-        response = await ch._generate_with_retry(context)
+        response = await _answer(ch, context)
 
-        assert response.content == "ok"
+        assert response == "ok"
         assert len(provider.calls) == 1
 
     async def test_retries_on_retryable_error(self) -> None:
@@ -51,9 +57,9 @@ class TestGenerateWithRetry:
         )
 
         context = AIContext(messages=[AIMessage(role="user", content="hi")])
-        response = await ch._generate_with_retry(context)
+        response = await _answer(ch, context)
 
-        assert response.content == "recovered"
+        assert response == "recovered"
         assert call_count == 3  # 2 failures + 1 success
 
     async def test_non_retryable_error_raises_immediately(self) -> None:
@@ -75,7 +81,7 @@ class TestGenerateWithRetry:
 
         context = AIContext(messages=[AIMessage(role="user", content="hi")])
         with pytest.raises(ProviderError, match="invalid api key"):
-            await ch._generate_with_retry(context)
+            await _answer(ch, context)
 
         assert call_count == 1  # No retry
 
@@ -95,7 +101,7 @@ class TestGenerateWithRetry:
 
         context = AIContext(messages=[AIMessage(role="user", content="hi")])
         with pytest.raises(ProviderError, match="overloaded"):
-            await ch._generate_with_retry(context)
+            await _answer(ch, context)
 
     async def test_backoff_delays_are_exponential(self) -> None:
         """Verify delays follow exponential backoff pattern."""
@@ -126,7 +132,7 @@ class TestGenerateWithRetry:
             patch("roomkit.channels._ai_resilience.asyncio.sleep", tracking_sleep),
             pytest.raises(ProviderError),
         ):
-            await ch._generate_with_retry(context)
+            await _answer(ch, context)
 
         assert len(delays) == 3  # 3 retries
         assert delays[0] == pytest.approx(1.0)  # 1.0 * 2^0
@@ -145,7 +151,7 @@ class TestGenerateWithRetry:
 
         context = AIContext(messages=[AIMessage(role="user", content="hi")])
         with pytest.raises(ProviderError):
-            await ch._generate_with_retry(context)
+            await _answer(ch, context)
 
 
 class TestFallbackProvider:
@@ -167,9 +173,9 @@ class TestFallbackProvider:
         )
 
         context = AIContext(messages=[AIMessage(role="user", content="hi")])
-        response = await ch._generate_with_retry(context)
+        response = await _answer(ch, context)
 
-        assert response.content == "fallback response"
+        assert response == "fallback response"
         assert len(fallback.calls) == 1
 
     async def test_fallback_failure_raises_original_error(self) -> None:
@@ -195,7 +201,7 @@ class TestFallbackProvider:
 
         context = AIContext(messages=[AIMessage(role="user", content="hi")])
         with pytest.raises(ProviderError, match="primary error") as exc_info:
-            await ch._generate_with_retry(context)
+            await _answer(ch, context)
 
         # Fallback error should be chained
         assert exc_info.value.__cause__ is not None
@@ -213,9 +219,9 @@ class TestFallbackProvider:
         )
 
         context = AIContext(messages=[AIMessage(role="user", content="hi")])
-        response = await ch._generate_with_retry(context)
+        response = await _answer(ch, context)
 
-        assert response.content == "primary ok"
+        assert response == "primary ok"
         assert len(fallback.calls) == 0
 
     async def test_no_fallback_on_non_retryable_error(self) -> None:
@@ -237,7 +243,7 @@ class TestFallbackProvider:
 
         context = AIContext(messages=[AIMessage(role="user", content="hi")])
         with pytest.raises(ProviderError, match="bad key"):
-            await ch._generate_with_retry(context)
+            await _answer(ch, context)
 
         assert len(fallback.calls) == 0
 

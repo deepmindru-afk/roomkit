@@ -156,9 +156,7 @@ async def test_a_call_that_fails_after_its_copy_was_captured_keeps_none(streamin
     ch = AIChannel("ai1", provider=provider, tool_handler=_publishing_handler)
     ch._tool_call_hook = AsyncMock(side_effect=RuntimeError("hook dispatch broke"))
 
-    await run_tool_loop(
-        ch, AIContext(messages=[AIMessage(role="user", content="go")]), streaming=streaming
-    )
+    await run_tool_loop(ch, AIContext(messages=[AIMessage(role="user", content="go")]))
 
     tool_message = next(m for m in provider.calls[-1].messages if m.role == "tool")
     part = tool_message.content[0]
@@ -196,9 +194,7 @@ async def test_a_block_without_a_reason_never_serves_the_original(streaming: boo
     ch = AIChannel("ai1", provider=provider, tool_handler=_publishing_handler)
     ch._tool_call_hook = AsyncMock(return_value=ToolCallVerdict(blocked=True))
 
-    await run_tool_loop(
-        ch, AIContext(messages=[AIMessage(role="user", content="go")]), streaming=streaming
-    )
+    await run_tool_loop(ch, AIContext(messages=[AIMessage(role="user", content="go")]))
 
     part = next(m for m in provider.calls[-1].messages if m.role == "tool").content[0]
     assert part.is_error

@@ -8,12 +8,11 @@ from roomkit.memory.sliding_window import SlidingWindowMemory
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import ChannelCategory, ChannelMediaType, ChannelType
-from roomkit.models.event import TextContent
 from roomkit.models.room import Room
 from roomkit.providers.ai.base import AIImagePart, AIMessage, AITextPart, AITool
 from roomkit.providers.ai.mock import MockAIProvider
 from tests.conftest import make_event, make_media_event
-from tests.tool_loop_modes import respond
+from tests.tool_loop_modes import read_reply, respond
 
 
 class TestAIChannel:
@@ -30,25 +29,7 @@ class TestAIChannel:
         event = make_event(body="hello", channel_id="sms1")
         output = await ch.on_event(event, binding, ctx)
         assert output.responded is True
-        assert len(output.response_events) == 1
-        resp = output.response_events[0]
-        assert isinstance(resp.content, TextContent)
-        assert resp.content.body == "AI says hello"
-        assert resp.chain_depth == 1
-
-    async def test_chain_depth_increments(self) -> None:
-        provider = MockAIProvider(responses=["reply"])
-        ch = AIChannel("ai1", provider=provider)
-        binding = ChannelBinding(
-            channel_id="ai1",
-            room_id="r1",
-            channel_type=ChannelType.AI,
-            category=ChannelCategory.INTELLIGENCE,
-        )
-        ctx = RoomContext(room=Room(id="r1"))
-        event = make_event(body="hi", chain_depth=3)
-        output = await ch.on_event(event, binding, ctx)
-        assert output.response_events[0].chain_depth == 4
+        assert (await read_reply(output)).text == "AI says hello"
 
     async def test_provider_records_calls(self) -> None:
         provider = MockAIProvider(responses=["ok"])
@@ -61,7 +42,7 @@ class TestAIChannel:
         )
         ctx = RoomContext(room=Room(id="r1"))
         event = make_event(body="question")
-        await ch.on_event(event, binding, ctx)
+        await respond(ch, event, binding, ctx)
         assert len(provider.calls) == 1
         assert provider.calls[0].system_prompt == "test"
 
@@ -139,6 +120,7 @@ class TestAIChannel:
             channel_id="sms1",
         )
         output = await ch.on_event(event, binding, ctx)
+        await read_reply(output)
 
         assert output.responded is True
         assert len(provider.calls) == 1
@@ -173,6 +155,7 @@ class TestAIChannel:
             channel_id="sms1",
         )
         output = await ch.on_event(event, binding, ctx)
+        await read_reply(output)
 
         assert output.responded is True
         call_ctx = provider.calls[0]
@@ -199,6 +182,7 @@ class TestAIChannel:
             channel_id="sms1",
         )
         output = await ch.on_event(event, binding, ctx)
+        await read_reply(output)
 
         # Should still respond but with no content extracted
         assert output.responded is True
@@ -225,6 +209,7 @@ class TestAIChannel:
             channel_id="sms1",
         )
         output = await ch.on_event(event, binding, ctx)
+        await read_reply(output)
 
         assert output.responded is True
         call_ctx = provider.calls[0]
@@ -256,7 +241,7 @@ class TestPerRoomConfiguration:
         )
         ctx = RoomContext(room=Room(id="r1"))
         event = make_event(body="hello", channel_id="sms1")
-        await ch.on_event(event, binding, ctx)
+        await respond(ch, event, binding, ctx)
 
         assert len(provider.calls) == 1
         assert provider.calls[0].system_prompt == "Custom for this room"
@@ -274,7 +259,7 @@ class TestPerRoomConfiguration:
         )
         ctx = RoomContext(room=Room(id="r1"))
         event = make_event(body="hello", channel_id="sms1")
-        await ch.on_event(event, binding, ctx)
+        await respond(ch, event, binding, ctx)
 
         assert len(provider.calls) == 1
         assert provider.calls[0].temperature == 0.3
@@ -292,7 +277,7 @@ class TestPerRoomConfiguration:
         )
         ctx = RoomContext(room=Room(id="r1"))
         event = make_event(body="hello", channel_id="sms1")
-        await ch.on_event(event, binding, ctx)
+        await respond(ch, event, binding, ctx)
 
         assert len(provider.calls) == 1
         assert provider.calls[0].max_tokens == 2048
@@ -372,7 +357,7 @@ class TestPerRoomConfiguration:
         )
         ctx = RoomContext(room=Room(id="r1"))
         event = make_event(body="hello", channel_id="sms1")
-        await ch.on_event(event, binding, ctx)
+        await respond(ch, event, binding, ctx)
 
         assert len(provider.calls) == 1
         assert provider.calls[0].tools == []
@@ -395,7 +380,7 @@ class TestPerRoomConfiguration:
         )
         ctx = RoomContext(room=Room(id="r1"))
         event = make_event(body="hello", channel_id="sms1")
-        await ch.on_event(event, binding, ctx)
+        await respond(ch, event, binding, ctx)
 
         assert len(provider.calls) == 1
         assert provider.calls[0].system_prompt == "Default"
@@ -433,7 +418,7 @@ class TestMemoryIntegration:
         ctx = RoomContext(room=Room(id="r1"))
         event = make_event(body="hello", channel_id="sms1", room_id="r1")
 
-        await ch.on_event(event, binding, ctx)
+        await respond(ch, event, binding, ctx)
 
         assert len(mock_memory.retrieve_calls) == 1
         assert mock_memory.retrieve_calls[0].room_id == "r1"
@@ -454,7 +439,7 @@ class TestMemoryIntegration:
         ctx = RoomContext(room=Room(id="r1"))
         event = make_event(body="hello", channel_id="sms1")
 
-        await ch.on_event(event, binding, ctx)
+        await respond(ch, event, binding, ctx)
 
         assert len(provider.calls) == 1
         messages = provider.calls[0].messages
@@ -480,7 +465,7 @@ class TestMemoryIntegration:
         ctx = RoomContext(room=Room(id="r1"))
         event = make_event(body="current", channel_id="sms1")
 
-        await ch.on_event(event, binding, ctx)
+        await respond(ch, event, binding, ctx)
 
         messages = provider.calls[0].messages
         assert len(messages) == 2
@@ -503,7 +488,7 @@ class TestMemoryIntegration:
         ctx = RoomContext(room=Room(id="r1"))
         event = make_event(body="current", channel_id="sms1")
 
-        await ch.on_event(event, binding, ctx)
+        await respond(ch, event, binding, ctx)
 
         messages = provider.calls[0].messages
         # Order: summary message, then converted event, then current event

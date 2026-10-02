@@ -9,8 +9,8 @@ responses using an AI provider.  Behaviour is composed from focused mixins:
 - :class:`~._ai_resilience.AIResilienceMixin` — retry / fallback / compaction
 - :class:`~._ai_context.AIContextMixin` — AI context building
 - :class:`~._ai_tools.AIToolsMixin` — tool execution & dispatch
-- :class:`~._ai_generation.AIGenerationMixin` — non-streaming generation
-- :class:`~._ai_streaming.AIStreamingMixin` — streaming generation
+- :class:`~._ai_generation.AIGenerationMixin` — generation hook, telemetry, provider errors
+- :class:`~._ai_streaming.AIStreamingMixin` — the tool loop every turn runs
 """
 
 from __future__ import annotations
@@ -257,7 +257,6 @@ class AIChannel(
         self._active_loops: dict[str, _ToolLoopContext] = {}
         # Text-only streams being produced — the one turn path that has no loop
         # context to register above (see ``active_turns``).
-        self._text_streams = 0
 
         self._init_framework_callbacks()
         # External tool handler for provider-executed tools (e.g. Claude Code)
@@ -463,15 +462,8 @@ class AIChannel(
         return self._skill_activation.active_names(room_id)
 
     def _channel_tool_surface(self) -> bool:
-        """Whether this channel object itself contributes tools, binding aside.
-
-        The single definition behind two decisions that once drifted apart
-        (847e2ce7 — a ``config_provider`` present in one predicate and missing
-        from the other): installing the unified dispatcher at construction,
-        and routing a turn to the tool loop. Each caller adds only its own
-        extra terms (the dispatcher needs a handler; a turn also counts the
-        binding snapshot, config provider, external and human-input tools).
-        """
+        """Whether this channel object itself contributes tools, binding aside:
+        what decides that the unified dispatcher serves the turn's calls."""
         return bool(
             self._user_tools
             or self._registry.entries(None, source=ToolSource.ORCHESTRATION)
@@ -494,16 +486,15 @@ class AIChannel(
     def active_turns(self) -> int:
         """Turns being produced right now.
 
-        A tool loop — streamed or not — registers itself in ``_active_loops``
-        for steering, from the start of its generation to its ``finally``; a
-        text-only stream has no loop context to register and is counted on
-        its own. Both spans start when the turn is *consumed*: a streaming
-        output handed back by ``on_event`` and not yet iterated reads 0, a
-        window the caller's own wait has to cover. ``close()`` tears the
-        provider down under whichever of them is running, so a caller
-        retiring this object waits for zero first.
+        Every turn's tool loop registers itself in ``_active_loops`` for
+        steering, from the start of its generation to its ``finally``. The
+        span starts when the turn is *consumed*: a streaming output handed
+        back by ``on_event`` and not yet iterated reads 0, a window the
+        caller's own wait has to cover. ``close()`` tears the provider down
+        under whichever turn is running, so a caller retiring this object
+        waits for zero first.
         """
-        return len(self._active_loops) + self._text_streams
+        return len(self._active_loops)
 
     def capabilities(self) -> ChannelCapabilities:
         media_types = [ChannelMediaType.TEXT, ChannelMediaType.RICH]
@@ -538,12 +529,11 @@ class AIChannel(
     ) -> ChannelOutput:
         """Answer an event with this channel's own turn.
 
-        Skips events from this channel to prevent self-loops.
-        When the provider supports streaming or structured streaming:
-        - With tools: uses the streaming tool loop that executes tool calls
-          between generation rounds while yielding text deltas progressively.
-        - Without tools: returns a plain streaming response.
-        Otherwise falls back to the non-streaming generate path.
+        Skips events from this channel to prevent self-loops. Every other
+        event runs the one tool loop (RFC §6.4): it yields text deltas round
+        by round and executes tool calls between rounds, whatever the provider
+        streams (one that does not is read through its ``generate()``) and
+        whether the turn carries tools (a turn without any is one round).
         """
         if event.source.channel_id == self.channel_id:
             return ChannelOutput.empty()
@@ -564,12 +554,7 @@ class AIChannel(
 
         token = _current_loop_ctx.set(self._turn_loop_ctx(event, context))
         try:
-            if self._provider.supports_streaming or self._provider.supports_structured_streaming:
-                if self._turn_has_tools(binding):
-                    return await self._start_streaming_tool_response(event, binding, context)
-                return await self._start_streaming_response(event, binding, context)
-
-            return await self._generate_response(event, binding, context)
+            return await self._start_streaming_tool_response(event, binding, context)
         finally:
             _current_loop_ctx.reset(token)
 
@@ -592,23 +577,6 @@ class AIChannel(
         ctx.room_id = context.room.id if context.room else event.room_id
         ctx.room = context.room
         return ctx
-
-    def _turn_has_tools(self, binding: ChannelBinding) -> bool:
-        """Whether a streaming turn goes through the tool loop.
-
-        A config_provider may deliver tools at _build_context time even when
-        the binding carries no snapshot, so it routes to the tool loop for
-        those tools to be executable. An empty turn toolset just runs the loop
-        for a single round.
-        """
-        return (
-            bool(binding.metadata.get("tools"))
-            or self._config_provider is not None
-            or self._channel_tool_surface()
-            or bool(self._orchestration_tools(binding.room_id))
-            or self._external_tool_handler is not None
-            or (self._human_input_handler is not None and bool(self._human_input_handler.tools))
-        )
 
     def _orchestration_tools(self, room_id: str | None) -> list[AITool]:
         """The tools orchestration set up for every room and for *room_id*

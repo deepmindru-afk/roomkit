@@ -220,7 +220,7 @@ class TestToolLoopCancellation:
         provider.generate = generate_with_cancel  # type: ignore[assignment]
 
         context = AIContext(messages=[AIMessage(role="user", content="go")])
-        run = await run_tool_loop(ch, context, streaming=streaming)
+        run = await run_tool_loop(ch, context)
 
         # Tool execution should be skipped because cancel was set
         assert handler.call_count == 0
@@ -249,7 +249,7 @@ class TestToolLoopCancellation:
         )
 
         context = AIContext(messages=[AIMessage(role="user", content="go")])
-        run = await run_tool_loop(ch, context, streaming=streaming)
+        run = await run_tool_loop(ch, context)
 
         # Tool handler runs once, then drain catches the cancel
         assert call_count == 1
@@ -285,7 +285,7 @@ class TestToolLoopCancellation:
         )
 
         context = AIContext(messages=[AIMessage(role="user", content="go")])
-        run = await run_tool_loop(ch, context, streaming=streaming)
+        run = await run_tool_loop(ch, context)
 
         assert run.text == "saw it"
         # Second generate call should have the injected message
@@ -376,7 +376,7 @@ class TestStreamingToolLoopCancellation:
 
 class TestToolLoopContextIsolation:
     async def test_loop_context_cleaned_up_after_run(self) -> None:
-        """_active_loops is cleaned up after _run_tool_loop completes."""
+        """_active_loops is cleaned up after a loop read through generate() completes."""
         provider = MockAIProvider(ai_responses=[_final_response()])
         ch = AIChannel(
             "ai1",
@@ -386,7 +386,8 @@ class TestToolLoopContextIsolation:
         )
 
         context = AIContext(messages=[AIMessage(role="user", content="go")])
-        await ch._run_tool_loop(context)
+        async for _ in ch._run_streaming_tool_loop(context):
+            pass
 
         assert len(ch._active_loops) == 0
 

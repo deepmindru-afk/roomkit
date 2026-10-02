@@ -217,12 +217,14 @@ class TestRefusedEventsStayRefused:
         assert "hello" in _prompted(provider)
         await kit.close()
 
-    async def test_a_muted_agent_loses_its_own_silenced_answers(self) -> None:
-        """RFC §7.5 rule 2 stores a muted channel's answers BLOCKED
-        (``source_muted``); nobody received them, so they are not history the
-        agent may continue from — the room's other turns still are."""
+    async def test_an_agent_that_cannot_write_loses_its_own_refused_answers(self) -> None:
+        """RFC §7.5 rule 2 stores the answers of an agent that cannot write
+        BLOCKED (a read-only agent's stream is read to its end, each row
+        ``source_read_only``; a muted one's is closed unread); nobody received
+        them, so they are not history the agent may continue from — the
+        room's other turns still are."""
         kit, provider = await _room()
-        await kit.mute("r1", "ai1")
+        await kit.set_access("r1", "ai1", Access.READ_ONLY)
 
         await kit.process_inbound(
             InboundMessage(channel_id="ws1", sender_id="u1", content=TextContent(body="first"))
@@ -234,11 +236,11 @@ class TestRefusedEventsStayRefused:
         received = await kit.store.list_events("r1")
         assert [e for e in received if e.source.channel_id == "ai1"] == []
         events = await kit.store.list_events("r1", event_filter=EventFilter(include_blocked=True))
-        silenced = [e for e in events if e.source.channel_id == "ai1"]
-        assert [e.status for e in silenced] == [EventStatus.BLOCKED] * 2
-        assert {e.blocked_by for e in silenced} == {"source_muted"}
+        refused = [e for e in events if e.source.channel_id == "ai1"]
+        assert [e.status for e in refused] == [EventStatus.BLOCKED] * 2
+        assert {e.blocked_by for e in refused} == {"source_read_only"}
         # The brain kept tracking: two generations, the second one carrying
-        # the user's first turn and none of the agent's silenced answers.
+        # the user's first turn and none of the agent's refused answers.
         assert len(provider.calls) == 2
         last = provider.calls[-1].messages
         assert [m.content for m in last] == ["first", "second"]

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
+from contextlib import aclosing
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.channels._ai_policy import declared_for
@@ -16,7 +17,6 @@ from roomkit.providers.ai.base import (
     AIImagePart,
     AIMessage,
     AIProvider,
-    AIResponse,
     AITextPart,
     ProviderError,
     StreamEvent,
@@ -89,72 +89,6 @@ class AIResilienceMixin:
     _show_summarized_references: Any  # AIToolPolicyMixin: held tools a summary unreferences
     _get_loop_ctx: Any  # AISteeringMixin: the turn's loop context, its input included
 
-    async def _generate_with_retry(self, context: AIContext) -> AIResponse:
-        """Call provider.generate() with compaction, retry and optional fallback.
-
-        A context overflow is handled before the retry budget and the
-        fallback provider see it: replaying the same context is a
-        deterministic refusal, so the one recovery with a chance is the
-        compacted replay — once per call. The compaction mutates
-        ``context.messages`` in place, so a caller running a tool loop
-        builds its next rounds on the compacted history.
-        """
-        policy = self._retry_policy or RetryPolicy(max_retries=0)
-        last_error: ProviderError | None = None
-        compacted = False
-
-        provider = self._provider
-        attempt = 0
-        while attempt <= policy.max_retries:
-            try:
-                return await provider.generate(context)
-            except ProviderError as exc:
-                if not compacted and self._is_context_overflow(exc):
-                    # Compact once and replay. A refusal that survives the
-                    # replay falls through to the ordinary retry semantics
-                    # below, so an error that only *sounded* like an overflow
-                    # keeps its retry budget and its fallback.
-                    logger.warning("Context overflow. Compacting and replaying.")
-                    compacted = True
-                    await self._compact_context(context)
-                    continue
-                last_error = exc
-                if not exc.retryable:
-                    raise
-                if attempt >= policy.max_retries:
-                    break
-                delay = min(
-                    policy.base_delay_seconds * (policy.exponential_base**attempt),
-                    policy.max_delay_seconds,
-                )
-                logger.warning(
-                    "Provider error (attempt %d/%d, status=%s): %s. Retrying in %.1fs",
-                    attempt + 1,
-                    policy.max_retries,
-                    exc.status_code,
-                    exc,
-                    delay,
-                )
-                await asyncio.sleep(delay)
-                attempt += 1
-
-        # All retries exhausted — try fallback provider
-        if self._fallback_provider and last_error:
-            logger.warning(
-                "Primary provider failed after %d attempts. Trying fallback.",
-                policy.max_retries + 1,
-            )
-            try:
-                fallback = self._fallback_provider
-                return await fallback.generate(declared_for(fallback, context))
-            except ProviderError as fallback_exc:
-                logger.error("Fallback provider also failed: %s", fallback_exc)
-                raise last_error from fallback_exc
-
-        if last_error:
-            raise last_error
-        raise RuntimeError("_generate_with_retry completed without result or exception")
-
     async def _generate_stream_with_retry(
         self, context: AIContext
     ) -> AsyncIterator[StreamEvent | _StreamRetryBoundary]:
@@ -205,8 +139,9 @@ class AIResilienceMixin:
                 if emitted:
                     raise
                 if not compacted and self._is_context_overflow(exc):
-                    # Same fall-through as the non-streaming wrapper: one
-                    # compacted replay, then ordinary retry semantics.
+                    # One compacted replay, then ordinary retry semantics: an
+                    # error that only *sounded* like an overflow keeps its
+                    # retry budget and its fallback.
                     logger.warning("Context overflow on stream. Compacting and replaying.")
                     compacted = True
                     await self._compact_context(context)
@@ -238,25 +173,50 @@ class AIResilienceMixin:
 
         # Fallback — only reachable when nothing was emitted.
         if self._fallback_provider and last_error:
-            logger.warning("Trying fallback provider for stream.")
-            projected_composition = False
-            fallback = self._fallback_provider
-            stream = self._structured_stream(fallback, declared_for(fallback, context))
-            try:
-                async for event in stream:
-                    if isinstance(event, StreamToolCallDelta):
-                        projected_composition = True
+            async with aclosing(self._fallback_stream(context, last_error)) as events:
+                async for event in events:
                     yield event
-            except Exception:
-                if projected_composition:
-                    yield _StreamRetryBoundary()
-                raise
-            finally:
-                await _aclose_stream(stream)
             return
 
         if last_error:
             raise last_error
+
+    async def _fallback_stream(
+        self, context: AIContext, primary_error: ProviderError
+    ) -> AsyncGenerator[StreamEvent | _StreamRetryBoundary, None]:
+        """The fallback provider's stream, once the primary's retries are spent
+        and nothing reached the consumer.
+
+        A fallback that fails before it emits leaves the primary's error as
+        the turn's, its own failure riding as the cause: the fallback was a
+        second chance, not the turn's provider.
+        """
+        logger.warning("Trying fallback provider for stream.")
+        fallback = self._fallback_provider
+        assert fallback is not None  # noqa: S101 — the caller checked
+        stream = self._structured_stream(fallback, declared_for(fallback, context))
+        emitted = False
+        projected_composition = False
+        try:
+            async for event in stream:
+                if isinstance(event, StreamToolCallDelta):
+                    projected_composition = True
+                else:
+                    emitted = True
+                yield event
+        except ProviderError as fallback_exc:
+            if projected_composition:
+                yield _StreamRetryBoundary()
+            if emitted:
+                raise
+            logger.error("Fallback provider also failed: %s", fallback_exc)
+            raise primary_error from fallback_exc
+        except Exception:
+            if projected_composition:
+                yield _StreamRetryBoundary()
+            raise
+        finally:
+            await _aclose_stream(stream)
 
     @staticmethod
     def _structured_stream(provider: AIProvider, context: AIContext) -> AsyncIterator[StreamEvent]:

@@ -20,6 +20,7 @@ from roomkit.models.room import Room
 from roomkit.models.tool_call import AIGenerationEvent
 from roomkit.providers.ai.mock import MockAIProvider
 from tests.conftest import make_event
+from tests.tool_loop_modes import read_reply, respond
 
 # ---------------------------------------------------------------------------
 # Direct channel-level tests (unit)
@@ -52,7 +53,7 @@ class TestBeforeGenerationHookDirect:
         event = make_event(body="hi", channel_id="sms1")
         output = await ch.on_event(event, binding, ctx)
         assert output.responded is True
-        assert len(output.response_events) == 1
+        assert (await read_reply(output)).text
 
     async def test_hook_fires_with_correct_event(self):
         ch, binding, ctx = _make_channel_and_ctx()
@@ -64,7 +65,7 @@ class TestBeforeGenerationHookDirect:
 
         ch._before_generation_hook = _hook
         event = make_event(body="question", channel_id="sms1", room_id="r1")
-        await ch.on_event(event, binding, ctx)
+        await respond(ch, event, binding, ctx)
 
         assert len(captured) == 1
         gen = captured[0]
@@ -100,7 +101,7 @@ class TestBeforeGenerationHookDirect:
 
         ch._before_generation_hook = _modify
         event = make_event(body="hi", channel_id="sms1")
-        await ch.on_event(event, binding, ctx)
+        await respond(ch, event, binding, ctx)
 
         # Provider should receive the modified context
         assert len(provider.calls) == 1
@@ -120,7 +121,7 @@ class TestBeforeGenerationHookDirect:
 
         ch._before_generation_hook = _inject
         event = make_event(body="hello", channel_id="sms1")
-        await ch.on_event(event, binding, ctx)
+        await respond(ch, event, binding, ctx)
 
         assert len(provider.calls) == 1
         messages = provider.calls[0].messages

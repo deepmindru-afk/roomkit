@@ -22,6 +22,7 @@ from roomkit.models.framework_event import FrameworkEvent
 from roomkit.models.hook import HookResult
 from roomkit.models.store_filter import EventFilter
 from roomkit.providers.ai.mock import MockAIProvider
+from tests.buffered_agent import BufferedAgent
 
 
 def _user_messages(events: list, transport_id: str) -> list:
@@ -454,7 +455,20 @@ class TestRegenerateBlocked:
         await kit.close()
 
     async def test_a_muted_agents_regenerated_answer_is_stored_blocked(self) -> None:
-        kit, _ = await _kit_with_turn(streaming=False)
+        """An agent that answers at once has its regenerated answer meet the
+        write check: muted, it is stored BLOCKED (RFC §7.5 rule 2). A muted
+        AIChannel's stream is closed unread instead, its reply never generated."""
+        kit = RoomKit()
+        kit.register_channel(SMSChannel("sms1"))
+        kit.register_channel(BufferedAgent("ai1", "First answer", "Second answer"))
+        await kit.create_room(room_id="r1")
+        await kit.attach_channel("r1", "sms1")
+        await kit.attach_channel("r1", "ai1", category=ChannelCategory.INTELLIGENCE)
+        await kit.process_inbound(
+            InboundMessage(
+                channel_id="sms1", sender_id="user1", content=TextContent(body="Weather?")
+            )
+        )
         binding = await kit.store.get_binding("r1", "ai1")
         assert binding is not None
         await kit.store.update_binding(binding.model_copy(update={"muted": True}))

@@ -2,9 +2,9 @@
 
 A tool call cuts the model's text into segments, one MESSAGE each. Joined with
 nothing between them, the hook's ``response_content`` read as one run-on
-sentence (``first.Working``), and the non-streaming loop reported the last
-segment alone. The paths now report the same thing, and the streaming one
-reports what the room saw, not the raw text the dedup filter withheld.
+sentence (``first.Working``), and a loop that read only its last generation
+reported the last segment alone. The loop reports what the room saw, not the
+raw text the dedup filter withheld.
 """
 
 from __future__ import annotations

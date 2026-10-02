@@ -197,24 +197,6 @@ def _ai_binding() -> ChannelBinding:
     )
 
 
-class TestAIResponseInheritsThreadNonStreaming:
-    async def test_reply_inherits_thread_root(self) -> None:
-        ch = AIChannel("ai1", provider=MockAIProvider(responses=["in-thread answer"]))
-        ctx = RoomContext(room=Room(id="r1"))
-        trigger = make_event(body="hi", channel_id="ws1", parent_event_id="root-42")
-        output = await ch.on_event(trigger, _ai_binding(), ctx)
-        assert output.response_events
-        assert all(e.parent_event_id == "root-42" for e in output.response_events)
-
-    async def test_top_level_trigger_stays_top_level(self) -> None:
-        ch = AIChannel("ai1", provider=MockAIProvider(responses=["top-level answer"]))
-        ctx = RoomContext(room=Room(id="r1"))
-        trigger = make_event(body="hi", channel_id="ws1")
-        output = await ch.on_event(trigger, _ai_binding(), ctx)
-        assert output.response_events
-        assert all(e.parent_event_id is None for e in output.response_events)
-
-
 class TestInboundCarriesThreadParent:
     async def test_bare_channel_inbound_is_threaded_centrally(self) -> None:
         # Channels build their own RoomEvent in handle_inbound and need NOT copy

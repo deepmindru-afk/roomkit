@@ -20,6 +20,7 @@ from roomkit.voice.stt.mock import MockSTTProvider
 from roomkit.voice.tts.base import TTSProvider
 from roomkit.voice.tts.mock import MockTTSProvider
 from roomkit.voice.tts.sentence_splitter import split_sentences
+from tests.tool_loop_modes import read_reply
 
 # ---------------------------------------------------------------------------
 # Sentence splitter tests (unchanged — unit tests, no architecture dependency)
@@ -334,8 +335,9 @@ class TestAIChannelStreamingResponse:
         chunks = [chunk async for chunk in output.response_stream]
         assert "".join(c for c in chunks if isinstance(c, str)) == "hello"
 
-    async def test_falls_back_when_provider_not_streaming(self) -> None:
-        """AIChannel uses generate() when provider doesn't support streaming."""
+    async def test_reads_a_provider_that_does_not_stream_through_generate(self) -> None:
+        """AIChannel streams the answer of a provider that does not stream:
+        its generate() read as one chunk (RFC §6.4)."""
         ai = _NonStreamingAIProvider("fallback response")
         channel = AIChannel("ai-1", provider=ai, system_prompt="Test")
 
@@ -357,8 +359,7 @@ class TestAIChannelStreamingResponse:
 
         output = await channel.on_event(event, binding, context)
         assert output.responded is True
-        assert output.response_stream is None
-        assert len(output.response_events) == 1
+        assert (await read_reply(output)).text == "fallback response"
 
 
 # ---------------------------------------------------------------------------
@@ -473,8 +474,9 @@ class TestStreamingAiToTts:
 
         await kit.close()
 
-    async def test_non_streaming_provider_uses_normal_routing(self) -> None:
-        """When AI doesn't support streaming, normal generate() path is used."""
+    async def test_a_provider_that_does_not_stream_reaches_tts_as_one_chunk(self) -> None:
+        """When AI doesn't support streaming, its generate() answer still
+        reaches the TTS through the streaming route, as one chunk."""
         ai = _NonStreamingAIProvider("non-streaming response")
         tts = _StreamingInputTTS()
         kit, channel, backend, vad, _ = _build_kit(ai, tts=tts)
@@ -490,9 +492,7 @@ class TestStreamingAiToTts:
 
         await asyncio.sleep(0.5)
 
-        # TTS streaming input should NOT be called (normal deliver() path)
-        assert len(tts.synthesize_stream_input_calls) == 0
-        # AI generate() WAS called (non-streaming)
+        assert tts.synthesize_stream_input_calls == [["non-streaming response"]]
         assert len(ai.generate_calls) >= 1
 
         await kit.close()

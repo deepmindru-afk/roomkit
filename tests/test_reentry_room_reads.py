@@ -16,14 +16,13 @@ from contextvars import ContextVar
 from typing import Any
 
 from roomkit.channels.agent import Agent
-from roomkit.channels.ai import AIChannel
 from roomkit.core.framework import RoomKit
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelCategory, RoomStatus
 from roomkit.models.event import TextContent
-from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.store.memory import InMemoryStore
+from tests.buffered_agent import BufferedAgent
 from tests.test_framework import SimpleChannel
 
 # The reads of the commit running, by store method.
@@ -66,53 +65,37 @@ def _count_commits(kit: RoomKit, method: str) -> list[dict[str, int]]:
     return commits
 
 
-def _answers(rounds: int) -> list[AIResponse]:
-    steps = [
-        AIResponse(
-            content=f"Step {i}.",
-            finish_reason="tool_calls",
-            tool_calls=[AIToolCall(id=f"t{i}", name="lookup", arguments={})],
-        )
-        for i in range(rounds)
-    ]
-    return [*steps, AIResponse(content="Answer.", finish_reason="stop")]
-
-
-async def _tool_room(turns: int) -> RoomKit:
-    async def lookup(name: str, arguments: dict[str, Any]) -> str:
-        return "ok"
-
-    kit = RoomKit(store=_CountingStore())
-    kit.register_channel(SimpleChannel("sms1"))
-    provider = MockAIProvider(ai_responses=_answers(3) * turns)
-    tools = [AITool(name="lookup", description="d")]
-    kit.register_channel(AIChannel("ai1", provider=provider, tool_handler=lookup, tools=tools))
-    await kit.create_room(room_id="r1")
-    await kit.attach_channel("r1", "sms1")
-    await kit.attach_channel("r1", "ai1", category=ChannelCategory.INTELLIGENCE)
-    return kit
-
-
 async def _say(kit: RoomKit) -> None:
     await kit.process_inbound(
         InboundMessage(channel_id="sms1", sender_id="u1", content=TextContent(body="go"))
     )
 
 
+async def _buffered_room() -> RoomKit:
+    """An agent that answers at once, ten rows a turn: the buffered path."""
+    kit = RoomKit(store=_CountingStore())
+    kit.register_channel(SimpleChannel("sms1"))
+    kit.register_channel(BufferedAgent("ai1", *(f"Row {i}." for i in range(10)), rows=10))
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "sms1")
+    await kit.attach_channel("r1", "ai1", category=ChannelCategory.INTELLIGENCE)
+    return kit
+
+
 async def test_each_reentry_pass_reads_the_room_once_and_no_binding() -> None:
-    kit = await _tool_room(turns=1)
+    kit = await _buffered_room()
     passes = _count_commits(kit, "_run_reentry_pass")
 
     await _say(kit)
 
-    # Three rounds of a text, a call's start row and its end row, then the answer.
+    # A pass per row of the buffered answer.
     assert len(passes) == 10
     assert all(reads == {"get_room": 1} for reads in passes), passes
     await kit.close()
 
 
 async def test_each_regenerated_answer_reads_the_room_once_and_no_binding() -> None:
-    kit = await _tool_room(turns=2)
+    kit = await _buffered_room()
     await _say(kit)
     passes = _count_commits(kit, "_run_reentry_pass")
 
