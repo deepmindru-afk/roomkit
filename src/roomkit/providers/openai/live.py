@@ -320,7 +320,7 @@ class OpenAILiveProvider(
             await self._discard(state)
             raise
 
-        state.receive_task = asyncio.create_task(
+        state.receive_task = self._session_task(
             self._receive_loop(state), name=f"openai_live_recv:{session.id}"
         )
         try:
@@ -583,6 +583,19 @@ class OpenAILiveProvider(
         session = state.session
         merged_pc = {**state.provider_config, **(provider_config or {})}
         logger.info("[%s] replacing session %s (voice or codec changed)", _LOG_TAG, session.id)
+        # The new connection never issued the calls the old one left open:
+        # the model will not read their results, which the channel is told
+        # (RFC §12.4). A call whose own handler asked for this restart (a
+        # handoff) is the channel's to spare.
+        orphaned = list(state.open_calls)
+        state.open_calls.clear()
+        if orphaned:
+            await self._fire(
+                self._tool_call_cancelled_callbacks,
+                session,
+                orphaned,
+                label="tool_call_cancelled",
+            )
         await self.disconnect(session)
         # The participant's session did not end — only the upstream connection
         # did (RFC §12.1 forbids a transition out of ENDED otherwise).

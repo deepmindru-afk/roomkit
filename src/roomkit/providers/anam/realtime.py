@@ -114,6 +114,11 @@ class AnamRealtimeProvider(RealtimeAudioVideoProvider):
         return "AnamRealtimeProvider"
 
     @property
+    def supports_tools(self) -> bool:
+        """Anam's model calls no tool: the channel declares none to it."""
+        return False
+
+    @property
     def supports_mid_session_reconfigure(self) -> bool:
         """Anam sessions cannot be reconfigured in place.
 
@@ -212,11 +217,11 @@ class AnamRealtimeProvider(RealtimeAudioVideoProvider):
         session.provider_session_id = session.id
 
         # Start background consume loops for audio and video
-        state.audio_task = asyncio.create_task(
+        state.audio_task = self._session_task(
             self._audio_consume_loop(session.id),
             name=f"anam_audio:{session.id}",
         )
-        state.video_task = asyncio.create_task(
+        state.video_task = self._session_task(
             self._video_consume_loop(session.id),
             name=f"anam_video:{session.id}",
         )

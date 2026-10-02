@@ -133,6 +133,11 @@ class PersonaPlexRealtimeProvider(RealtimeVoiceProvider):
         return "PersonaPlexRealtimeProvider"
 
     @property
+    def supports_tools(self) -> bool:
+        """PersonaPlex's model calls no tool: the channel declares none to it."""
+        return False
+
+    @property
     def supports_mid_session_reconfigure(self) -> bool:
         """PersonaPlex sessions cannot be reconfigured in place.
 
@@ -209,7 +214,7 @@ class PersonaPlexRealtimeProvider(RealtimeVoiceProvider):
         # Signal conversation start
         await ws.send(bytes([_MSG_CONTROL, _CTRL_START]))
 
-        state.receive_task = asyncio.create_task(
+        state.receive_task = self._session_task(
             self._receive_loop(session.id),
             name=f"personaplex_recv:{session.id}",
         )

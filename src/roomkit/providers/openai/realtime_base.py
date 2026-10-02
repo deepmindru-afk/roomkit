@@ -235,7 +235,7 @@ class OpenAIRealtimeBase(OpenAIRealtimeEventHandlersMixin):
         session.state = VoiceSessionState.ACTIVE
         session.provider_session_id = session.id
 
-        self._receive_tasks[session.id] = asyncio.create_task(
+        self._receive_tasks[session.id] = self._session_task(
             self._receive_loop(session),
             name=f"{self._recv_task_prefix}:{session.id}",
         )

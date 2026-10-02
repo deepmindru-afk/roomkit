@@ -157,7 +157,9 @@ class _ProviderDoor:
 
     async def deliver(self, call: RealtimeToolCall, outcome: ToolOutcome) -> bool:
         text = result_text(outcome.result)
-        return await self._channel._submit_realtime_tool_result(call.session, call.call_id, text)
+        return await self._channel._submit_realtime_tool_result(
+            call.session, call.call_id, text, failed=outcome.failed
+        )
 
 
 class _ToolCallSpan:
@@ -654,9 +656,11 @@ class RealtimeToolsMixin:
             support.commit_activation(session.id, skill)
 
     async def _submit_realtime_tool_result(
-        self, session: VoiceSession, call_id: str, result: str
+        self, session: VoiceSession, call_id: str, result: str, *, failed: bool = False
     ) -> bool:
-        """Send a call's result; whether it reached a live session.
+        """Send a call's result, marked as an error when the call *failed* and
+        the provider's protocol can say so (RFC §12.4); whether it reached a
+        live session.
 
         False when the session ended, or when the call lost its id to a
         reconnect its own handler caused: the new socket never issued it, and
@@ -668,7 +672,8 @@ class RealtimeToolsMixin:
             # The new socket never issued this id (RFC §9.3)
             return False
         self._expect_provider_output(session.id)
-        await self._provider.submit_tool_result(session, call_id, result)
+        submit = self._provider.submit_tool_error if failed else self._provider.submit_tool_result
+        await submit(session, call_id, result)
         return session.state != VoiceSessionState.ENDED
 
     async def _serve_tool_search(self, call: RealtimeToolCall, door: ToolCallDoor) -> ToolOutcome:

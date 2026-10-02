@@ -50,7 +50,7 @@ from roomkit.channels._realtime_tool_executor import (
     serving_tool_call,
     tool_loop_context,
 )
-from roomkit.channels._served_tools import CollisionLog
+from roomkit.channels._served_tools import CollisionLog, warn_tools_uncallable
 from roomkit.core.exceptions import ToolRefusedError
 from roomkit.core.task_utils import log_task_exception
 from roomkit.models.event import TextContent
@@ -199,6 +199,7 @@ class ConferenceRealtime:
             provider.on_tool_call(self._on_tool_call)
             provider.on_tool_call_cancelled(self._on_tool_call_cancelled)
         warn_unused_role_overrides(config, self._channel_id)
+        warn_tools_uncallable(config.tools, config.provider, self._channel_id)
         self._config = config
         self.mixer.configure(input_sample_rate=config.input_sample_rate)
         self._voice.set_on_interrupted(self.interrupt)
@@ -620,13 +621,15 @@ class ConferenceRealtime:
         return bound_result(text, call.name)
 
     async def _submit_tool_result(
-        self, config: ConferenceRealtimeConfig, call: RealtimeToolCall, result: str
+        self, config: ConferenceRealtimeConfig, call: RealtimeToolCall, outcome: ToolOutcome
     ) -> bool:
+        provider = config.provider
+        submit = provider.submit_tool_error if outcome.failed else provider.submit_tool_result
         try:
             with self._operations.use(
                 ConferenceResource.REALTIME, what=f"tool result for room {call.room_id}"
             ):
-                await config.provider.submit_tool_result(call.session, call.call_id, result)
+                await submit(call.session, call.call_id, result_text(outcome.result))
         except Exception:
             logger.warning(
                 "Conference channel %r could not return the result of tool %r to the "
@@ -771,6 +774,4 @@ class _ConferenceDoor:
         self._config = config
 
     async def deliver(self, call: RealtimeToolCall, outcome: ToolOutcome) -> bool:
-        return await self._realtime._submit_tool_result(
-            self._config, call, result_text(outcome.result)
-        )
+        return await self._realtime._submit_tool_result(self._config, call, outcome)

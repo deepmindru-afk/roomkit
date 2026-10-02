@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import contextvars
 import logging
 import time
 from collections.abc import Callable, Coroutine
@@ -68,10 +67,8 @@ class GeminiLiveConnectionMixin(RealtimeVoiceProvider):
         serves) into every event of the new connection.
         """
         session = state.session
-        state.receive_task = asyncio.create_task(
-            self._receive_loop(session),
-            name=f"gemini_live_recv:{session.id}",
-            context=contextvars.Context(),
+        state.receive_task = self._session_task(
+            self._receive_loop(session), name=f"gemini_live_recv:{session.id}"
         )
 
     _MAX_RECONNECTS = 5

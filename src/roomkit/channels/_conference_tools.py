@@ -43,7 +43,7 @@ def declared_tools(
 ) -> list[dict[str, Any]] | None:
     """The tools a conference declares to its provider: what its policy admits,
     each name once, the later definition kept as its gate reads it (RFC §21.1)."""
-    if config.tools is None:
+    if config.tools is None or not config.provider.supports_tools:
         return None
     tools = declared_once(config.tools, dict_tool_name, _NO_CHANNEL_TOOLS, collisions)
     return [

@@ -303,10 +303,10 @@ class DeepgramAgentProvider(RealtimeVoiceProvider):
         session.provider_session_id = session.id
         state.callbacks_ready = True
 
-        state.receive_task = asyncio.create_task(
+        state.receive_task = self._session_task(
             self._receive_loop(session.id), name=f"deepgram_agent_recv:{session.id}"
         )
-        state.keepalive_task = asyncio.create_task(
+        state.keepalive_task = self._session_task(
             self._keepalive_loop(session.id), name=f"deepgram_agent_ka:{session.id}"
         )
 

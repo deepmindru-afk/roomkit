@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING, Any
 
 from roomkit.core.task_utils import log_task_exception
@@ -129,6 +130,28 @@ class RealtimeVoiceProvider(ABC):
         change). Providers default to ``True`` for backwards
         compatibility; subclasses override to ``False`` when their
         upstream model cannot safely reconfigure.
+        """
+        return True
+
+    @staticmethod
+    def _session_task(coro: Coroutine[Any, Any, Any], *, name: str) -> asyncio.Task[Any]:
+        """A task a session lives on (its receive loop, its keepalive), in a
+        context of its own (RFC §12.4).
+
+        A connection can open inside whatever called it, a tool handler for a
+        handoff that reconfigures the session, and a task created there would
+        carry that call's context (its voice session, its AI loop, the call it
+        serves) into every event of the new connection.
+        """
+        return asyncio.create_task(coro, name=name, context=contextvars.Context())
+
+    @property
+    def supports_tools(self) -> bool:
+        """Whether the model can call tools (RFC §12.4).
+
+        ``False`` for a provider whose service never issues a function call:
+        the channel then declares none to it and warns once, rather than leave
+        a catalogue nobody can call.
         """
         return True
 
@@ -338,6 +361,16 @@ class RealtimeVoiceProvider(ABC):
             result: JSON-serialized result string.
         """
         ...
+
+    async def submit_tool_error(self, session: VoiceSession, call_id: str, result: str) -> None:
+        """Submit the result of a call that failed: refused, failed, blocked,
+        served by nothing (RFC §12.4).
+
+        A provider whose protocol marks a result as an error overrides this so
+        the model does not read a refusal as a success. The default submits
+        it as any result: the body says it failed.
+        """
+        await self.submit_tool_result(session, call_id, result)
 
     async def submit_delegation_output(
         self,

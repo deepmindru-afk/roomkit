@@ -39,6 +39,7 @@ from roomkit.channels._served_tools import (
     dict_tool_name,
     refuse_given_twice,
     refuse_served_names,
+    warn_tools_uncallable,
 )
 from roomkit.channels._skill_constants import (
     ACTIVATE_SKILL_SCHEMA,
@@ -559,6 +560,7 @@ class RealtimeVoiceChannel(
         self._collisions = CollisionLog(self.channel_id)
         refuse_given_twice((dict_tool_name(tool) for tool in tool_defs or []), self.channel_id)
         self._tools = tool_defs
+        warn_tools_uncallable(tool_defs, self._provider, self.channel_id)
         # What the channel serves itself and what orchestration sets up on it,
         # each tool with its traits, for every room or one (RFC §19.7, §21.1).
         self._registry = ChannelRegistry(self.channel_id, self._host_tool_names)
@@ -1760,6 +1762,8 @@ class RealtimeVoiceChannel(
         """Compose the same infrastructure, orchestration and skill gates on
         connect, discovery, activation and handoff; *search_active* decides Tool
         Search for tools the session is about to declare."""
+        if not self._provider.supports_tools:
+            return None  # the model calls no tool (RFC §12.4)
         session_id, room_id = session.id, session.room_id
         orchestration = self._orchestration_dicts(room_id)
         if (

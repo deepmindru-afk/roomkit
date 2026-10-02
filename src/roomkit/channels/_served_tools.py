@@ -13,9 +13,13 @@ Shared by every channel kind whatever the shape of its tool definitions (an
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Container, Iterable
+from collections.abc import Callable, Container, Iterable, Sized
+from typing import TYPE_CHECKING
 
 from roomkit.channels._tool_search_constants import TOOL_SEARCH_INFRA_TOOL_NAMES
+
+if TYPE_CHECKING:
+    from roomkit.voice.realtime.provider import RealtimeVoiceProvider
 
 logger = logging.getLogger("roomkit.channels.tools")
 
@@ -48,6 +52,20 @@ def refuse_given_twice(names: Iterable[str | None], channel_id: str) -> None:
                 "cannot serve one name, rename one of them (RFC §21.1)"
             )
         seen.add(name)
+
+
+def warn_tools_uncallable(
+    tools: Sized | None, provider: RealtimeVoiceProvider, channel_id: str
+) -> None:
+    """Log that the tools given to a channel are declared to no session: its
+    provider's model calls no tool (RFC §12.4)."""
+    if tools and not provider.supports_tools:
+        logger.warning(
+            "Channel %s: %s cannot call tools; the %d tool(s) given are declared to no session",
+            channel_id,
+            provider.name,
+            len(tools),
+        )
 
 
 class CollisionLog:
