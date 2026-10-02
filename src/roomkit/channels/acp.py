@@ -486,10 +486,21 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
 
     async def _say_goodbye(self) -> None:
         """Best-effort graceful half: stop the turns, close the sessions."""
+        rebuilding = [
+            turn.runner
+            for turn in self._turns.values()
+            if turn.rebuilding and turn.runner is not None
+        ]
+        for runner in rebuilding:
+            runner.cancel()
         connection = self._connection
         if connection is not None:
             await asyncio.gather(
-                *(connection.cancel(session_id) for session_id in self._turns),
+                *(
+                    connection.cancel(session_id)
+                    for session_id, turn in self._turns.items()
+                    if not turn.rebuilding
+                ),
                 return_exceptions=True,
             )
         runners = [turn.runner for turn in self._turns.values() if turn.runner is not None]
