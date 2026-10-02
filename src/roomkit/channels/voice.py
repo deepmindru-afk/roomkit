@@ -383,6 +383,7 @@ class VoiceChannel(
         # Pending audio for audio-native turn detectors (session_id -> accumulated PCM)
         self._pending_audio: dict[str, bytearray] = {}
         self._turn_speech_state: dict[str, tuple[bool, float]] = {}
+        self._turn_transcripts_due: dict[str, int] = {}
         self._turn_wait_tasks: dict[str, asyncio.Task[None]] = {}
         # The routed turn per session whose response is not heard yet (RFC §12.3.12)
         self._unheard_turns = UnheardTurns()
@@ -682,7 +683,14 @@ class VoiceChannel(
         dtmf_kwargs = {"dtmf_seen": True} if dtmf_seen else {}
         self._schedule(
             self._process_speech_end(
-                session, audio, room_id, stream_state, speaker_claim=speaker_claim, **dtmf_kwargs
+                session,
+                audio,
+                room_id,
+                stream_state,
+                speaker_claim=speaker_claim,
+                # Due from now: a turn waiting in silence holds for these words.
+                transcript=self._expect_transcript(session.id),
+                **dtmf_kwargs,
             ),
             name=f"speech_end:{session.id}",
         )
@@ -1678,6 +1686,7 @@ class VoiceChannel(
                 speech_duration_ms=duration_ms,
                 speaker_claim=speaker_claim,
                 dtmf_seen=dtmf_seen,
+                transcript=self._expect_transcript(session.id),
             ),
             name=f"held_speech_end:{session.id}",
         )

@@ -301,6 +301,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A sentence the user resumes is answered once, even when the STT is slower
+  than the turn's wait (RMK-391, RFC §12.3.12). The wait for an incomplete
+  turn, or for a complete one held because the user spoke again, counted
+  silence from the end of the resumed speech and routed the turn when that
+  silence lasted the wait, before the resumed speech's transcript arrived:
+  a streaming STT finalizes after the speech. The first words were answered
+  alone and the rest became a second turn with a second answer ("Mm so um",
+  then "...give me a poem about Quebec", whose final came 0.4 s after a
+  1.5 s wait). The wait now ends only once every transcript of ended speech
+  has joined the turn and been judged, or turned out empty; one that never
+  comes holds the turn at most 10 s more.
+
 - `VuiTTSProvider` runs every `vui-tts` call on a thread of its own,
   started with the engine and stopped by `close()` (RMK-371). Vui's codec
   keeps `torch.inference_mode()` entered between calls, and calling it from

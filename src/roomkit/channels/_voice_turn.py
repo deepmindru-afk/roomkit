@@ -30,6 +30,41 @@ logger = logging.getLogger("roomkit.voice")
 # SmartTurnDetector uses the last 8s (≈256KB) so this is generous.
 _MAX_PENDING_AUDIO_BYTES = 1_048_576
 
+# How long, past its silence, a turn's wait holds for a transcript still on its
+# way (RFC §12): beyond the STT stream's own 5 s and a batch fallback, it is lost.
+_TRANSCRIPT_WAIT_MAX_S = 10.0
+_TRANSCRIPT_POLL_S = 0.05
+
+
+class DueTranscript:
+    """The transcript of a speech segment that ended, on its way to the session's turn.
+
+    While one is due, an incomplete turn's wait does not end (RFC §12): a
+    streaming STT finalizes after the speech, and the words join the turn
+    they continue instead of becoming a turn of their own. ``settle`` is
+    idempotent: called once the words have joined and been judged, and again
+    on every way out of the segment's processing.
+    """
+
+    def __init__(self, due: dict[str, int], lock: threading.Lock, session_id: str) -> None:
+        self._due = due
+        self._lock = lock
+        self._session_id = session_id
+        self._settled = False
+        with lock:
+            due[session_id] = due.get(session_id, 0) + 1
+
+    def settle(self) -> None:
+        if self._settled:
+            return
+        self._settled = True
+        with self._lock:
+            left = self._due.get(self._session_id, 0) - 1
+            if left > 0:
+                self._due[self._session_id] = left
+            else:
+                self._due.pop(self._session_id, None)
+
 
 @runtime_checkable
 class TurnHost(Protocol):
@@ -48,6 +83,8 @@ class TurnHost(Protocol):
         _turn_speech_state: Per session, whether the user is speaking and the
             ``time.monotonic()`` of the last speech onset or end, written from VAD
             events, so a wait for an incomplete turn measures silence, not time.
+        _turn_transcripts_due: Per session, how many ended segments' transcripts
+            have not reached the turn yet (see :class:`DueTranscript`).
         _turn_wait_tasks: The pending wait per session, cancelled when replaced.
         _scheduled_tasks: Background tasks that ``close()`` cancels.
         _unheard_turns: The routed turn per session whose response is not heard yet.
@@ -65,6 +102,7 @@ class TurnHost(Protocol):
     _transcript_locks: dict[str, asyncio.Lock]
     _pending_audio: dict[str, bytearray]
     _turn_speech_state: dict[str, tuple[bool, float]]
+    _turn_transcripts_due: dict[str, int]
     _turn_wait_tasks: dict[str, asyncio.Task[None]]
     _scheduled_tasks: set[asyncio.Task[Any]]
     _unheard_turns: UnheardTurns
@@ -89,6 +127,7 @@ class VoiceTurnMixin:
     _transcript_locks: dict[str, asyncio.Lock]
     _pending_audio: dict[str, bytearray]
     _turn_speech_state: dict[str, tuple[bool, float]]
+    _turn_transcripts_due: dict[str, int]
     _turn_wait_tasks: dict[str, asyncio.Task[None]]
     _scheduled_tasks: set[asyncio.Task[Any]]
     _unheard_turns: UnheardTurns
@@ -109,6 +148,7 @@ class VoiceTurnMixin:
         audio_bytes: bytes | None = None,
         speaker: SpeakerAttribution | None = None,
         await_delivery: bool = True,
+        transcript: DueTranscript | None = None,
     ) -> None:
         """Evaluate turn completion using the configured TurnDetector.
 
@@ -116,6 +156,8 @@ class VoiceTurnMixin:
         turn has one speaker (RFC §12.2.3): a pending turn with another is
         routed first, as its own message. ``await_delivery=False`` returns once
         a routed turn is committed, without waiting for the reply to it.
+        ``transcript`` is settled once ``text`` has joined the turn and been
+        judged, so a wait the turn is under may end from there.
         """
         if not self._framework or not self._pipeline_config:
             return
@@ -157,6 +199,8 @@ class VoiceTurnMixin:
             audio_sample_rate=sample_rate,
         )
         decision = await asyncio.to_thread(turn_detector.evaluate, turn_ctx)
+        if transcript is not None:
+            transcript.settle()
         logger.debug(
             "Turn %s by %s (confidence %.2f, %s)",
             "complete" if decision.is_complete else "incomplete",
@@ -281,20 +325,7 @@ class VoiceTurnMixin:
     async def _route_turn_after_wait(
         self, session: VoiceSession, room_id: str, context: RoomContext, wait_ms: float
     ) -> None:
-        wait_s = max(wait_ms, 0) / 1000
-        silence_since = time.monotonic()
-        while True:
-            with self._state_lock:
-                speaking, changed_at = self._turn_speech_state.get(session.id, (False, 0.0))
-            if speaking:
-                # The user is talking: the turn goes on, and silence restarts when they stop.
-                await asyncio.sleep(wait_s)
-                continue
-            silence_since = max(silence_since, changed_at)
-            remaining = silence_since + wait_s - time.monotonic()
-            if remaining <= 0:
-                break
-            await asyncio.sleep(remaining)
+        await self._wait_out_turn_silence(session.id, max(wait_ms, 0) / 1000)
         if self._turn_wait_tasks.get(session.id) is asyncio.current_task():
             self._turn_wait_tasks.pop(session.id, None)
         if session.id not in self._session_bindings or session.id not in self._pending_turns:
@@ -310,6 +341,42 @@ class VoiceTurnMixin:
                 await self._complete_waited_turn_in_order(session, room_id, context, lock)
         except Exception:
             logger.exception("Error routing the turn after its wait")
+
+    async def _wait_out_turn_silence(self, session_id: str, wait_s: float) -> None:
+        """Return once the user has been silent *wait_s* and no transcript is due (RFC §12).
+
+        A transcript still on its way when the silence is over holds the turn:
+        it continues it. Its evaluation then completes the turn or arms a new
+        wait; one that is lost holds it no longer than ``_TRANSCRIPT_WAIT_MAX_S``.
+        """
+        silence_since = time.monotonic()
+        while True:
+            with self._state_lock:
+                speaking, changed_at = self._turn_speech_state.get(session_id, (False, 0.0))
+                transcript_due = session_id in self._turn_transcripts_due
+            if speaking:
+                # The user is talking: the turn goes on, and silence restarts when they stop.
+                await asyncio.sleep(wait_s)
+                continue
+            silence_since = max(silence_since, changed_at)
+            overdue = time.monotonic() - (silence_since + wait_s)
+            if overdue < 0:
+                await asyncio.sleep(-overdue)
+            elif not transcript_due:
+                return
+            elif overdue < _TRANSCRIPT_WAIT_MAX_S:
+                await asyncio.sleep(_TRANSCRIPT_POLL_S)
+            else:
+                logger.warning(
+                    "Transcript of %s still due %.0f s after the turn's wait: routing without it",
+                    session_id,
+                    overdue,
+                )
+                return
+
+    def _expect_transcript(self, session_id: str) -> DueTranscript:
+        """A segment ended: its transcript is due to the session's turn until settled."""
+        return DueTranscript(self._turn_transcripts_due, self._state_lock, session_id)
 
     async def _complete_waited_turn_in_order(
         self, session: VoiceSession, room_id: str, context: RoomContext, lock: asyncio.Lock
@@ -347,6 +414,7 @@ class VoiceTurnMixin:
             task.cancel()
         with self._state_lock:
             self._turn_speech_state.pop(session_id, None)
+            self._turn_transcripts_due.pop(session_id, None)
 
     async def _route_text(
         self,

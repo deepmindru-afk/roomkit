@@ -269,7 +269,32 @@ class TestTurnDetection:
         assert len(turn_calls) == 0
 
 
-def _wired_channel(detector, vad_events, transcripts, **config_kwargs):
+class _LateSTT(_MockSTT):
+    """Transcripts that come late, as a streaming STT's final comes after the speech."""
+
+    def __init__(self, transcripts: list[str], delays: list[float]) -> None:
+        super().__init__(transcripts)
+        self._delays = delays
+
+    async def transcribe(self, frame: AudioFrame):
+        from roomkit.voice.base import TranscriptionResult
+
+        index = self._index
+        self._index += 1
+        await asyncio.sleep(self._delays[index])
+        return TranscriptionResult(text=self._transcripts[index])
+
+
+class _SilentSTT(_MockSTT):
+    """An STT that answers the first segment and never the next ones."""
+
+    async def transcribe(self, frame: AudioFrame):
+        if self._index == 0:
+            return await super().transcribe(frame)
+        await asyncio.Event().wait()
+
+
+def _wired_channel(detector, vad_events, transcripts, *, stt=None, **config_kwargs):
     """A VoiceChannel on mocks, bound to one session, with a recording framework."""
     from unittest.mock import AsyncMock, MagicMock
 
@@ -281,7 +306,8 @@ def _wired_channel(detector, vad_events, transcripts, **config_kwargs):
     config = AudioPipelineConfig(vad=vad, turn_detector=detector, **config_kwargs)
     backend = _MockBackend()
     backend._audio_cbs = []
-    channel = VoiceChannel("ch1", stt=_MockSTT(transcripts), backend=backend, pipeline=config)
+    stt = stt if stt is not None else _MockSTT(transcripts)
+    channel = VoiceChannel("ch1", stt=stt, backend=backend, pipeline=config)
     fw = AsyncMock()
     fw._build_context = AsyncMock(return_value=AsyncMock())
     fw.hook_engine.has_hooks = MagicMock(return_value=True)
@@ -466,6 +492,81 @@ class TestIncompleteTurnWait:
         await backend.simulate_audio(session, AudioFrame(data=b"\x02\x00"))  # speech ends
         await asyncio.sleep(0.3)
         assert _routed_texts(fw) == ["J'aimerais bien voir le board et les cartes aussi"]
+
+    async def test_a_resumption_transcribed_after_the_wait_joins_the_turn(self):
+        # The log of RMK-391: "Mm so um" was held, the user went on, and the
+        # streaming STT's final for the rest came 0.4 s after the 1.5 s wait.
+        # The wait routed "Mm so um" alone and the rest got a second answer.
+        transcripts = ["Mm so um", "can you give me a poem about Quebec"]
+        channel, backend, session, fw = _wired_channel(
+            MockTurnDetector(
+                decisions=[_INCOMPLETE, TurnDecision(is_complete=True, confidence=0.9)]
+            ),
+            [
+                VADEvent(type=VADEventType.SPEECH_END, audio_bytes=b"audio1"),
+                VADEvent(type=VADEventType.SPEECH_START),
+                VADEvent(type=VADEventType.SPEECH_END, audio_bytes=b"audio2"),
+            ],
+            transcripts,
+            stt=_LateSTT(transcripts, delays=[0.0, 0.3]),
+            turn_incomplete_wait_ms=100,
+        )
+        await backend.simulate_audio(session, AudioFrame(data=b"\x00\x00"))
+        await asyncio.sleep(0.05)
+        await backend.simulate_audio(session, AudioFrame(data=b"\x01\x00"))  # speech resumes
+        await backend.simulate_audio(session, AudioFrame(data=b"\x02\x00"))  # and ends
+        await asyncio.sleep(0.2)  # the wait is over, the transcript still on its way
+        assert _routed_texts(fw) == []
+
+        await asyncio.sleep(0.3)
+        assert _routed_texts(fw) == ["Mm so um can you give me a poem about Quebec"]
+
+    async def test_a_resumption_that_turns_out_empty_after_the_wait_releases_the_turn(self):
+        transcripts = ["Combien de boards je vois,", ""]
+        channel, backend, session, fw = _wired_channel(
+            MockTurnDetector(decisions=[_INCOMPLETE]),
+            [
+                VADEvent(type=VADEventType.SPEECH_END, audio_bytes=b"audio1"),
+                VADEvent(type=VADEventType.SPEECH_START),
+                VADEvent(type=VADEventType.SPEECH_END, audio_bytes=b"audio2"),
+            ],
+            transcripts,
+            stt=_LateSTT(transcripts, delays=[0.0, 0.3]),
+            turn_incomplete_wait_ms=100,
+        )
+        await backend.simulate_audio(session, AudioFrame(data=b"\x00\x00"))
+        await asyncio.sleep(0.05)
+        await backend.simulate_audio(session, AudioFrame(data=b"\x01\x00"))
+        await backend.simulate_audio(session, AudioFrame(data=b"\x02\x00"))
+        await asyncio.sleep(0.2)
+        assert _routed_texts(fw) == []
+
+        await asyncio.sleep(0.3)
+        assert _routed_texts(fw) == ["Combien de boards je vois,"]
+
+    async def test_a_transcript_that_never_comes_does_not_hold_the_turn_forever(self, monkeypatch):
+        monkeypatch.setattr("roomkit.channels._voice_turn._TRANSCRIPT_WAIT_MAX_S", 0.2)
+        channel, backend, session, fw = _wired_channel(
+            MockTurnDetector(decisions=[_INCOMPLETE]),
+            [
+                VADEvent(type=VADEventType.SPEECH_END, audio_bytes=b"audio1"),
+                VADEvent(type=VADEventType.SPEECH_START),
+                VADEvent(type=VADEventType.SPEECH_END, audio_bytes=b"audio2"),
+            ],
+            ["Combien de boards je vois,"],
+            stt=_SilentSTT(["Combien de boards je vois,"]),
+            turn_incomplete_wait_ms=100,
+        )
+        await backend.simulate_audio(session, AudioFrame(data=b"\x00\x00"))
+        await asyncio.sleep(0.05)
+        await backend.simulate_audio(session, AudioFrame(data=b"\x01\x00"))
+        await backend.simulate_audio(session, AudioFrame(data=b"\x02\x00"))
+        await asyncio.sleep(0.2)
+        assert _routed_texts(fw) == []
+
+        await asyncio.sleep(0.3)
+        assert _routed_texts(fw) == ["Combien de boards je vois,"]
+        await channel.close()
 
     async def test_a_turn_judged_complete_in_silence_is_routed_at_once(self):
         channel, backend, session, fw = _wired_channel(

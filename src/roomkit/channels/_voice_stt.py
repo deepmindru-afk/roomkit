@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     import threading
     from concurrent.futures import Future
 
+    from roomkit.channels._voice_turn import DueTranscript
     from roomkit.core.framework import RoomKit
     from roomkit.models.channel import ChannelBinding
     from roomkit.models.context import RoomContext
@@ -230,6 +231,7 @@ class VoiceSTTMixin:
     _route_text: Any  # see STTHost — VoiceTurnMixin._route_text
     _supersede_unheard_turn: Any  # VoiceTurnMixin._supersede_unheard_turn
     _release_unheard_turn: Any  # VoiceTurnMixin._release_unheard_turn
+    _expect_transcript: Any  # VoiceTurnMixin._expect_transcript
     _fire_speech_start_hooks: Any  # see STTHost — VoiceHooksMixin
     _resolve_session_backend: Any  # see STTHost — VoiceChannel._resolve_session_backend
     _broadcast_bridge_transcription: Any  # see STTHost — VoiceChannel
@@ -1195,6 +1197,7 @@ class VoiceSTTMixin:
         speech_duration_ms: int,
         speaker_claim: Future[SpeakerAttribution | None] | None = None,
         dtmf_seen: bool = False,
+        transcript: DueTranscript | None = None,
     ) -> None:
         """Process a held segment that ended before its first word, if its final words are a turn.
 
@@ -1203,29 +1206,34 @@ class VoiceSTTMixin:
         is discarded while the bot talks on; anything else cuts the bot off if
         it still speaks and becomes the user's turn.
         """
-        if stream_state.task is not None:
-            await _await_stream_end(stream_state.task, session.id)
-        words = stream_state.final_text or stream_state.partial_text or ""
-        if not await self._held_words_are_a_turn(session, room_id, words, speech_duration_ms):
-            logger.debug("Held speech of %s ended without a turn in it: discarded", session.id)
-            self._release_unheard_turn(session.id)
-            return
-        logger.info(
-            "Held speech judged on its final words %r (session %s)", redact(words), session.id
-        )
-        with self._state_lock:
-            playback = self._playing_sessions.get(session.id)
-        await self._fire_speech_start_hooks(session, room_id)
-        if playback is not None:
-            await self._handle_barge_in(session, playback, room_id)
-        await self._process_speech_end(
-            session,
-            audio,
-            room_id,
-            stream_state,
-            dtmf_seen=dtmf_seen,
-            speaker_claim=speaker_claim,
-        )
+        transcript = transcript or self._expect_transcript(session.id)
+        try:
+            if stream_state.task is not None:
+                await _await_stream_end(stream_state.task, session.id)
+            words = stream_state.final_text or stream_state.partial_text or ""
+            if not await self._held_words_are_a_turn(session, room_id, words, speech_duration_ms):
+                logger.debug("Held speech of %s ended without a turn in it: discarded", session.id)
+                self._release_unheard_turn(session.id)
+                return
+            logger.info(
+                "Held speech judged on its final words %r (session %s)", redact(words), session.id
+            )
+            with self._state_lock:
+                playback = self._playing_sessions.get(session.id)
+            await self._fire_speech_start_hooks(session, room_id)
+            if playback is not None:
+                await self._handle_barge_in(session, playback, room_id)
+            await self._process_speech_end(
+                session,
+                audio,
+                room_id,
+                stream_state,
+                dtmf_seen=dtmf_seen,
+                speaker_claim=speaker_claim,
+                transcript=transcript,
+            )
+        finally:
+            transcript.settle()
 
     async def _held_words_are_a_turn(
         self, session: VoiceSession, room_id: str, words: str, speech_duration_ms: int
@@ -1255,6 +1263,7 @@ class VoiceSTTMixin:
         *,
         dtmf_seen: bool = False,
         speaker_claim: Future[SpeakerAttribution | None] | None = None,
+        transcript: DueTranscript | None = None,
     ) -> None:
         """Process speech end: fire hooks, transcribe, route inbound.
 
@@ -1268,8 +1277,12 @@ class VoiceSTTMixin:
                 SPEECH_START overwriting _stt_streams[session.id].
             speaker_claim: With ``pipeline_speakers``, the utterance's
                 speaker as the diarization stage will have heard it.
+            transcript: The segment's transcript as the turn waits for it,
+                expected when the speech ended; settled here at the latest.
         """
+        transcript = transcript or self._expect_transcript(session.id)
         if not self._framework:
+            transcript.settle()
             return
 
         from roomkit.telemetry.context import reset_span, set_current_span
@@ -1464,7 +1477,13 @@ class VoiceSTTMixin:
             turn_detector = self._pipeline_config.turn_detector if self._pipeline_config else None
             if turn_detector is not None:
                 await self._evaluate_turn(
-                    session, final_text, room_id, context, audio_bytes=audio, speaker=speaker
+                    session,
+                    final_text,
+                    room_id,
+                    context,
+                    audio_bytes=audio,
+                    speaker=speaker,
+                    transcript=transcript,
                 )
             else:
                 # No turn detector — route immediately
@@ -1486,6 +1505,7 @@ class VoiceSTTMixin:
                 except Exception:
                     logger.exception("Error emitting stt_error")
         finally:
+            transcript.settle()
             if not settled:
                 # No transcript, blocked or failed: the held response plays.
                 self._release_unheard_turn(session.id)

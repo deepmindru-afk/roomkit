@@ -331,6 +331,8 @@ class TestHeldSpeechEndingBeforeItsWords:
             channel._playing_sessions.pop(session.id)  # noqa: SLF001
         channel._on_pipeline_speech_end(session, b"\x11\x22" * 160)  # noqa: SLF001
         await asyncio.sleep(0.2)
+        # Whatever the verdict, no turn waits on the segment's transcript any more.
+        assert channel._turn_transcripts_due == {}  # noqa: SLF001
         return kit, channel, session, seen
 
     async def test_an_okay_lets_the_bot_talk_on(self) -> None:
