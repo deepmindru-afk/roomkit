@@ -30,10 +30,30 @@ from typing import Any
 
 from roomkit.channels._acp_client import _absolute_path, _load_sdk
 from roomkit.core.task_utils import cancel_and_wait
+from roomkit.providers.ai.base import ProviderError
 
 logger = logging.getLogger("roomkit.channels.acp")
 
-__all__ = ["ACPTransport", "StdioACPTransport"]
+__all__ = ["ACPSessionInvalidatedError", "ACPTransport", "StdioACPTransport"]
+
+
+class ACPSessionInvalidatedError(ProviderError):
+    """A transport's connection refused a prompt before executing any of it.
+
+    Raise from ``connection.prompt`` only when the session is no longer usable.
+    ``recovery_authorized=True`` asserts that the host has reserved a safe retry
+    for this event, including any durable admission/deduplication it needs. The
+    channel cannot infer that authorization from an error message or wire code.
+
+    For a room session, the channel then forgets that session and its catch-up
+    cursor, opens a new one normally, and prompts the same event once under the
+    same turn lock. Any observed activity, a second refusal, or a standalone
+    turn is terminal. No persistent retry policy is implemented by RoomKit.
+    """
+
+    def __init__(self, reason: str, *, recovery_authorized: bool = False) -> None:
+        super().__init__(reason, provider="acp")
+        self.recovery_authorized = recovery_authorized
 
 
 def _resolve_spawn_env(

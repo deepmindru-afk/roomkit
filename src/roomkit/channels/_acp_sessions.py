@@ -38,6 +38,7 @@ class ACPSessionsMixin:
     _turn_sessions: dict[str, str]
     _session_rooms: dict[str, str]
     _session_options: dict[str, list[Any]]
+    _prompted_index: dict[str, int]
     _agent_closes_sessions: bool
 
     # Implemented elsewhere on the channel. Declared as annotations, never as
@@ -74,6 +75,22 @@ class ACPSessionsMixin:
             _config_values(self._session_options[session_id]),
         )
         return session_id
+
+    async def _discard_room_session(self, room_id: str, connection: Any) -> bool:
+        """Forget a room session while its caller holds the turn lock.
+
+        Keep the lock registered: a recovery must exclude other prompts until
+        its replacement turn finishes. Only the public close retires the lock.
+        """
+        session_id = self._sessions.pop(room_id, None)
+        self._prompted_index.pop(room_id, None)
+        if session_id is None:
+            return False
+        self._session_rooms.pop(session_id, None)
+        self._session_options.pop(session_id, None)
+        if connection is not None:
+            await self._release_session(connection, session_id)
+        return True
 
     def _options_for(self, room_id: str) -> list[Any]:
         session_id = self._sessions.get(room_id)

@@ -33,6 +33,33 @@ agent = ACPChannel(
 
 `ACPTransport` (ABC, `channels/acp_transport.py`) is the pipe, and nothing more: `open(client, *, queue) -> ClientSideConnection` (build it with `acp.connect_to_agent(client, writer, reader, queue=queue)` — the protocol only needs a reader/writer pair; `queue` is `None` under SDK ≥0.12.1, which removed it and rejects the keyword, so forward it only when set), `close()` (must not raise; called on teardown *and* on a failed handshake), `is_alive()` (default `True`), and a `name` property surfaced as `info["transport"]`. `StdioACPTransport(command, cwd=…, env=…, inherit_env=…)` is the default, constructed for you from `command=`, and owns the spawn: argument-vector validation, `_resolve_spawn_env`, the stderr drain, and `returncode`-based liveness. Everything protocol-level — `initialize`, version negotiation, `authenticate`, sessions, prompts, permissions, config options, event mapping — stays on the channel, so a transport inherits it.
 
+### Recovering a refused room prompt
+
+A custom transport's connection may raise
+`ACPSessionInvalidatedError(reason, recovery_authorized=True)` from `prompt()`
+only after proving the session is unusable **and no part of the prompt ran**.
+Authorization belongs to the host: reserve any durable retry identity before
+raising, and keep the refusal's receipt. An ordinary error or the default
+`recovery_authorized=False` authorizes nothing. This is a local Python contract,
+not a new ACP wire error or a general retry policy.
+
+RoomKit keeps the room's turn lock, closes the failed stream, forgets that
+session and its catch-up cursor, then opens a session normally on the same
+connection. The same event id, contributed blocks and request are prompted once
+more, with the visible room tail recomposed under `room_history`. Opening uses
+the usual cwd, MCP servers and transport-provided instructions/configuration;
+RoomKit does not restore private agent state or copy obsolete session options.
+A successful recovery reports one response without a stale `interrupted` mark.
+
+Any observed update (including a plan, usage or thinking) or permission request
+makes the refusal terminal. So do a second refusal, an opening failure and a
+standalone turn. Cancellation/abandonment during recovery discards the replacement
+session and releases the lock. Existing transports do not opt in implicitly.
+The host must enforce its retry budget across redelivery, restarts and workers;
+RoomKit limits only this one stream to two attempts.
+
+Runnable without a remote agent: `examples/acp_session_recovery.py`.
+
 ### Process and session model
 
 One connection per channel, opened lazily on the first prompt; one ACP **session** per Room, created on demand; its `session/new` `_meta` carries `roomkit.live/roomId` and `roomkit.live/sessionScope: "room"`. A standalone `INSTRUCTION` (RFC §10.1.1 step 7) runs in a session of its own, opened for that turn with `roomkit.live/sessionScope: "turn"` and closed after it; the room's session is neither prompted nor told, and catches up on the reply at its next turn. A relay that keeps one remote session per room must file a `"turn"` session apart and close only that one; one that answers the turn with an open session fails the turn with `RuntimeError`. Prompts are serialized per Room (per-room lock); different Rooms progress concurrently through the same connection. When the transport reports the connection dead (for stdio: the subprocess exited), the next prompt reconnects and clears all session mappings — a reconnect never resumes sessions. The client declares no fs/terminal capabilities: `fs/*`, `terminal/*`, and `session/request_input` (elicitation) requests get `method_not_found` — `ON_USER_INPUT_REQUIRED` never fires from ACP.

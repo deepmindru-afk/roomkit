@@ -24,7 +24,11 @@ from roomkit.channels import (
 from roomkit.channels._acp_context import ACPContextContributor
 from roomkit.channels._turn_config import AIChannelTurnConfig
 from roomkit.channels.acp import ACPChannel
-from roomkit.channels.acp_transport import ACPTransport, StdioACPTransport
+from roomkit.channels.acp_transport import (
+    ACPSessionInvalidatedError,
+    ACPTransport,
+    StdioACPTransport,
+)
 from roomkit.channels.agent import Agent
 from roomkit.channels.ai import AIChannel
 from roomkit.channels.av import AudioVideoChannel
@@ -315,6 +319,7 @@ __all__ = [
     "ACPChannel",
     "ACPContextContributor",
     "ACPTransport",
+    "ACPSessionInvalidatedError",
     "Agent",
     "AIChannel",
     "AIChannelTurnConfig",

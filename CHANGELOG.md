@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ACPSessionInvalidatedError`: a transport may authorize one reconstruction
+  of a room session after a pre-execution refusal. The same turn lock spans
+  the refusal, normal session opening and recomposed visible catch-up. Partial
+  activity, standalone turns and a second refusal are never retried; the host
+  retains responsibility for durable admission and retry authorization.
+
 - `ToolCallContent.outcome` and `ToolCallOutcome`, exported from `roomkit`
   (RMK-308, RFC §6.4): a stored `TOOL_CALL_END` states how its call ended,
   `served`, `refused`, `failed`, `blocked`, `unserved` or `cancelled`, which

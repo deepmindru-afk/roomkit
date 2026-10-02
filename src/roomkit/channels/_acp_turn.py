@@ -26,6 +26,7 @@ from roomkit.channels._acp_usage import (
     _usage_report,
     _usage_tokens,
 )
+from roomkit.channels.acp_transport import ACPSessionInvalidatedError
 from roomkit.models.context import RoomContext
 from roomkit.models.event import RoomEvent
 from roomkit.models.response_metadata import ResponseMetadata
@@ -68,11 +69,13 @@ class ACPTurnMixin:
     _drain_session_updates: Callable[[str], Coroutine[Any, Any, None]]
     _room_turn_lock: Callable[[str], AbstractAsyncContextManager[None]]
     _session_for: Callable[[str, Any], Coroutine[Any, Any, str]]
+    _discard_room_session: Callable[[str, Any], Coroutine[Any, Any, bool]]
     _open_turn_session: Callable[[str, Any], Coroutine[Any, Any, str]]
     _close_turn_session: Callable[[str, str, Any], Coroutine[Any, Any, None]]
     session_config: Callable[[str], dict[str, str | bool]]
     _close_open_tools: Callable[..., Coroutine[Any, Any, bool]]
     _publish: Callable[..., Coroutine[Any, Any, None]]
+    _room_locks: dict[str, asyncio.Lock]
 
     async def _prompt_stream(
         self,
@@ -93,29 +96,49 @@ class ACPTurnMixin:
                 session_id = await self._open_turn_session(room_id, connection)
             else:
                 session_id = await self._session_for(room_id, connection)
-            # The turn session is closed whatever ends the turn: a failure, a
-            # consumer that stops reading, a cancellation mid-setup. The inner
-            # stream is closed explicitly so its own cleanup runs first.
-            turn_stream = self._turn_stream(
-                room_id,
-                session_id,
-                connection,
-                event_id,
-                blocks,
-                context,
-                trigger,
-                text,
-                seen_index,
-                metadata,
-                standalone=standalone,
-            )
+            recovering = False
+            completed = False
             try:
-                async for item in turn_stream:
-                    yield item
+                for attempt in range(2):
+                    turn_stream = self._turn_stream(
+                        room_id,
+                        session_id,
+                        connection,
+                        event_id,
+                        blocks,
+                        context,
+                        trigger,
+                        text,
+                        seen_index,
+                        metadata,
+                        standalone=standalone,
+                    )
+                    try:
+                        async for item in turn_stream:
+                            yield item
+                        completed = not metadata["acp"].get("interrupted", False)
+                        return
+                    except ACPSessionInvalidatedError as exc:
+                        if standalone or attempt or exc.recovery_authorized is not True:
+                            raise
+                    finally:
+                        # Cleanup (runner, tools, maps) precedes reconstruction.
+                        await turn_stream.aclose()
+                    recovering = True
+                    await self._discard_room_session(room_id, connection)
+                    session_id = await self._session_for(room_id, connection)
+                    # A new turn owns its outcome; keep the first failure marked
+                    # until opening succeeds, then let the retry write its own.
+                    metadata["acp"].pop("interrupted", None)
             finally:
-                await turn_stream.aclose()
                 if standalone:
                     await self._close_turn_session(room_id, session_id, connection)
+                elif recovering and not completed:
+                    metadata["acp"]["interrupted"] = True
+                    try:
+                        await self._discard_room_session(room_id, connection)
+                    finally:
+                        self._room_locks.pop(room_id, None)
 
     async def _turn_stream(
         self,
@@ -199,6 +222,16 @@ class ACPTurnMixin:
                     if item.error is not None:
                         if isinstance(item.error, asyncio.CancelledError):
                             return
+                        if (
+                            isinstance(item.error, ACPSessionInvalidatedError)
+                            and turn.activity_seen
+                        ):
+                            # Even an authorized signal cannot make observed
+                            # activity safe to repeat (including plans/tools).
+                            raise ProviderError(
+                                "ACP session invalidated after turn activity; recovery refused",
+                                provider="acp",
+                            ) from item.error
                         if isinstance(item.error, ProviderError):
                             raise item.error
                         raise ProviderError(
@@ -323,6 +356,13 @@ class ACPTurnMixin:
             # The prompt never returned, so no stop reason exists to record:
             # the turn ended on the way, and that is the fact to carry.
             acp_meta["interrupted"] = True
+            if isinstance(exc, ACPSessionInvalidatedError):
+                # SDK callbacks may still be queued when prompt() raises. They
+                # must count as activity before the stream considers recovery.
+                try:
+                    await self._drain_session_updates(session_id)
+                except BaseException as drain_error:
+                    exc = drain_error
             turn.usage_finalized = True
             turn.queue.put_nowait(_TurnDone(error=exc))
         else:

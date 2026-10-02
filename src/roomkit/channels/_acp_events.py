@@ -107,6 +107,8 @@ class ACPEventsMixin:
     _realtime: RealtimeBackend | None
 
     async def _receive_update(self, session_id: str, update: Any) -> None:
+        if (turn := self._turns.get(session_id)) is not None:
+            turn.activity_seen = True
         update_type = str(getattr(update, "session_update", ""))
         handler = self._UPDATE_HANDLERS.get(update_type)
         if handler is not None:
@@ -470,6 +472,8 @@ class ACPEventsMixin:
         sdk = self._sdk()
         room_id = self._session_rooms.get(session_id)
         turn = self._turns.get(session_id)
+        if turn is not None:
+            turn.activity_seen = True
         tool = self._merge_tool(turn, tool_call)
         tool_id = str(getattr(tool_call, "tool_call_id", "") or "")
         tool_name = str(getattr(tool_call, "title", "") or "") or (

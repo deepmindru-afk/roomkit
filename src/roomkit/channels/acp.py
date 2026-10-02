@@ -450,19 +450,10 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
         ``True`` once the session is forgotten, ``False`` when there was none.
         """
         async with self._room_turn_lock(room_id):
-            session_id = self._sessions.pop(room_id, None)
-            if session_id is None:
-                return False
-            self._session_rooms.pop(session_id, None)
-            self._session_options.pop(session_id, None)
-            # The catch-up mark tracks what *this session* was told. A room
-            # whose session is gone starts over: the next one opens empty and
-            # has missed everything.
-            self._prompted_index.pop(room_id, None)
-            if self._connection is not None:
-                await self._release_session(self._connection, session_id)
-            self._room_locks.pop(room_id, None)
-            return True
+            try:
+                return await self._discard_room_session(room_id, self._connection)
+            finally:
+                self._room_locks.pop(room_id, None)
 
     async def close(self) -> None:
         """Cancel turns, close sessions where the agent can, and close the transport.

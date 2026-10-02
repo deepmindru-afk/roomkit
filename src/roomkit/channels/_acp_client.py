@@ -53,6 +53,8 @@ class _TurnDone:
 @dataclass(slots=True)
 class _TurnState:
     room_id: str
+    activity_seen: bool = False
+    """Any update or permission request rules out a pre-execution refusal."""
     queue: asyncio.Queue[StreamDelta | _TurnDone] = field(default_factory=asyncio.Queue)
     tools: dict[str, _ToolState] = field(default_factory=dict)
     thinking_open: bool = False

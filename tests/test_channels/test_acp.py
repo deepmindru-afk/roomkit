@@ -38,6 +38,7 @@ from acp.schema import (
 from roomkit import (
     ACPChannel,
     ACPContextContributor,
+    ACPSessionInvalidatedError,
     ACPTransport,
     AIChannel,
     CLIChannel,
@@ -2252,4 +2253,94 @@ class TestTurnOutcomeReachesTheCaller:
         acp_record = result.response_metadata["acp"]
         assert "stop_reason" not in acp_record
         assert "interrupted" not in acp_record
+        await channel.close()
+
+
+class TestACPSessionRecovery:
+    async def test_authorized_recovery_rebuilds_catch_up_without_interleaving(
+        self, tmp_path: Any
+    ) -> None:
+        async def contribute(_context: Any, _trigger: RoomEvent) -> list[str]:
+            return ["Host policy"]
+
+        channel, connection, _ = _channel(
+            tmp_path, emit_updates=False, room_history=1, context_contributor=contribute
+        )
+        earlier = make_event(room_id="room-1", body="earlier request", index=4)
+        await _prompt(channel, earlier, _context(earlier))
+        rejected = asyncio.Event()
+        resume = asyncio.Event()
+        order: list[str] = []
+        prompts: list[tuple[str, str, dict[str, Any]]] = []
+        original_prompt = connection.prompt
+        original_close = connection.close_session
+        reports: list[Any] = []
+
+        async def report(event: Any) -> None:
+            reports.append(event)
+
+        channel._after_response_hook = report
+
+        async def close_session(session_id: str) -> None:
+            order.append("close")
+            rejected.set()
+            await resume.wait()
+            await original_close(session_id)
+
+        async def prompt(session_id: str, blocks: list[Any], **kwargs: Any) -> Any:
+            prompts.append((session_id, blocks[0].text, kwargs))
+            order.append("first" if len(prompts) == 1 else blocks[0].text.splitlines()[-1])
+            if len(prompts) == 1:
+                raise ACPSessionInvalidatedError("session lost", recovery_authorized=True)
+            await connection.client.session_update(
+                session_id, acp.update_agent_message_text("served")
+            )
+            return await original_prompt(session_id, blocks, **kwargs)
+
+        old = make_event(room_id="room-1", body="outside window", index=0)
+        hidden = make_event(
+            room_id="room-1", body="secret", index=5, visibility=Visibility.TRANSPORT
+        )
+        trigger = make_event(room_id="room-1", body="retry me", index=6)
+        following = make_event(room_id="room-1", body="following", index=7)
+        with (
+            patch.object(connection, "prompt", prompt),
+            patch.object(connection, "close_session", close_session),
+        ):
+            output = await channel.on_event(
+                trigger, _binding(), _context(old, earlier, hidden, trigger)
+            )
+
+            async def consume() -> list[Any]:
+                return [chunk async for chunk in output.response_stream]
+
+            first = asyncio.create_task(consume())
+            await asyncio.wait_for(rejected.wait(), 1)
+            lock = channel._room_locks["room-1"]
+            second = asyncio.create_task(_prompt(channel, following, _context(trigger, following)))
+            await asyncio.sleep(0)
+            assert not second.done()
+            assert order == ["first", "close"]
+            assert channel._room_locks["room-1"] is lock
+            resume.set()
+            assert await asyncio.wait_for(first, 1) == ["served"]
+            await asyncio.wait_for(second, 1)
+
+        assert order == ["first", "close", "retry me", "following"]
+        assert [p[0] for p in prompts] == ["session-1", "session-2", "session-2"]
+        assert "earlier request" not in prompts[0][1]
+        assert "earlier request" in prompts[1][1]
+        assert "secret" not in prompts[1][1]
+        assert "outside window" not in prompts[1][1]
+        assert prompts[1][1].startswith("Host policy")
+        assert prompts[0][2] == prompts[1][2] == {"roomkit.live/eventId": trigger.id}
+        assert connection.new_session_calls[0] == connection.new_session_calls[1]
+        assert channel.session_config("room-1") == {"model": "opus"}
+        assert "interrupted" not in output.response_metadata["acp"]
+        assert "stop_reason" not in output.response_metadata["acp"]
+        assert len(reports) == 2  # One per successful event, none for the refusal.
+        assert channel._turns == {}
+        assert channel._session_options.keys() == {"session-2"}
+        assert channel._session_rooms == {"session-2": "room-1"}
+        assert channel._prompted_index["room-1"] == 7
         await channel.close()
