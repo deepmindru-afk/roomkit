@@ -36,6 +36,7 @@ from roomkit.models.tool_call import AIResponseEvent, response_transcript
 from roomkit.providers.ai.base import (
     AIContext,
     AIMessage,
+    AIToolResultPart,
     ProviderError,
 )
 from roomkit.providers.utils import _aclose_stream
@@ -140,7 +141,6 @@ class AIStreamingHost(Protocol):
         _max_tool_rounds: Maximum tool-loop iterations.
         _tool_loop_timeout_seconds: Optional wall-clock timeout for the loop.
         _tool_loop_warn_after: Log a warning after this many rounds.
-        _tool_handler: Tool call handler (or ``None`` if tools disabled).
         _active_loops: Registry of currently running tool loops.
         _after_response_hook: Optional callback fired after response generation.
         channel_id: Unique identifier for this channel.
@@ -165,7 +165,6 @@ class AIStreamingHost(Protocol):
     _max_empty_retries: int
     _thinking_coalesce_ms: float
     _thinking_coalesce_chars: int
-    _tool_handler: Any
     _active_loops: dict[str, _ToolLoopContext]
     _after_response_hook: Any
     _before_generation_hook: Any
@@ -237,7 +236,6 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
     _max_empty_retries: int
     _thinking_coalesce_ms: float
     _thinking_coalesce_chars: int
-    _tool_handler: Any
     _active_loops: dict[str, Any]
     _after_response_hook: Any
     _before_generation_hook: Any
@@ -462,11 +460,16 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
         logger.info("Streaming tool round %d: %d call(s)", index + 1, len(calls))
         if state.text:
             turn.dedup_prefix = state.text
+        # The provider's own calls of the round go back with the channel's,
+        # each with its result, so the model reads every call it made.
         context.messages.append(
             AIMessage(
                 role="assistant",
                 content=self._build_assistant_parts(
-                    state.thinking, state.thinking_signature, state.text, calls
+                    state.thinking,
+                    state.thinking_signature,
+                    state.text,
+                    [*state.provider_calls, *calls],
                 ),
             )
         )
@@ -479,18 +482,30 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
         ends = (
             _unrun_call_ends(calls)
             if turn.loop_ctx.cancel_event.is_set()
-            else self._run_announced_calls(context, calls, turn, index)
+            else self._run_announced_calls(context, calls, turn, index, state.provider_results)
         )
         async with aclosing(ends) as deltas:
             async for delta in deltas:
                 yield delta
 
     async def _run_announced_calls(
-        self, context: AIContext, calls: list[Any], turn: _StreamTurnState, index: int
+        self,
+        context: AIContext,
+        calls: list[Any],
+        turn: _StreamTurnState,
+        index: int,
+        answered: list[AIToolResultPart],
     ) -> AsyncGenerator[StreamDelta, None]:
-        """Execute a round's announced calls and yield one end marker per call."""
+        """Execute a round's announced calls and yield one end marker per call;
+        *answered* are the round's calls the provider served, read beside them."""
         results, duration_ms, executed_arguments = await self._execute_round_tools(
-            context, calls, turn.telemetry, turn.room_id, index, parent_span_id=turn.span_id
+            context,
+            calls,
+            turn.telemetry,
+            turn.room_id,
+            index,
+            parent_span_id=turn.span_id,
+            answered=answered,
         )
         turn.tool_calls_count += len(calls)
         turn.tool_rounds_count += 1
@@ -640,7 +655,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
         stop = _round_stop_reason(state, loop_ctx)
         if stop is not None:
             return stop
-        if state.external_calls and not state.tool_calls:
+        if state.provider_calls and not state.tool_calls:
             # The provider ran its calls itself, or its handler decided them:
             # the provider's own loop goes on, not this one (RFC §9.3).
             turn.saw_tool_call = True
@@ -670,7 +685,11 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
 
     def _serves_locally(self, loop_ctx: _ToolLoopContext, name: str) -> bool:
         """Whether the turn has a tool of the channel's own under *name*: a call
-        to it is the channel's to serve, never an external handler's."""
+        to it is the channel's to serve, never an external handler's. A tool
+        BEFORE_AI_GENERATION withdrew stays the channel's, whose gate refuses
+        it (RFC §6.4)."""
+        if name in loop_ctx.withdrawn_tools:
+            return True
         known = loop_ctx.all_context_tools
         if known is not None and name in {tool.name for tool in known}:
             return True

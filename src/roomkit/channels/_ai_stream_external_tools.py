@@ -76,13 +76,15 @@ class _ExternalStreamTools:
             )
 
         started_at = time.monotonic()
+        kind = OutcomeKind.FAILED if is_error else OutcomeKind.SERVED
         # A proxy's embedded result means the side effect already happened.
         # Only a still-pending call can be denied or rewritten before acting.
         if not already_executed and self.handler is not None:
-            arguments, result, is_error = await self._decide(
-                self.handler, call, arguments, result, bool(is_error)
+            arguments, result, kind = await self._decide(
+                self.handler, call, arguments, result, kind
             )
-        await self._report(call, arguments, result, bool(is_error))
+        is_error = kind is not OutcomeKind.SERVED
+        await self._report(call, arguments, result, is_error)
 
         duration_ms = int((time.monotonic() - started_at) * 1000)
         yield ToolCallEndMarker(
@@ -93,13 +95,13 @@ class _ExternalStreamTools:
             status="failed" if is_error else "completed",
             duration_ms=duration_ms,
             error=result if is_error else None,
-            outcome=_external_kind(bool(is_error)).value,
+            outcome=kind.value,
         )
         if self.room_id:
             await self.publish(
                 EphemeralEventType.TOOL_CALL_END,
                 self.room_id,
-                [ToolOutcome(_external_kind(is_error), result).as_part(call.id, call.name)],
+                [ToolOutcome(kind, result).as_part(call.id, call.name)],
                 round_idx,
                 duration_ms=duration_ms,
             )
@@ -110,16 +112,16 @@ class _ExternalStreamTools:
         call: StreamToolCall,
         arguments: dict[str, Any],
         result: str,
-        is_error: bool,
-    ) -> tuple[dict[str, Any], str, bool]:
-        """What a still-pending call becomes: its arguments, result and error flag.
+        kind: OutcomeKind,
+    ) -> tuple[dict[str, Any], str, OutcomeKind]:
+        """What a still-pending call becomes: its arguments, result and outcome.
 
         A call the response cut before its arguments were complete is refused
         without asking the handler (RFC §6.4); any other is the handler's to
-        deny, rewrite or serve.
+        refuse, rewrite or serve.
         """
         if call.partial:
-            return arguments, json.dumps(cut_call_error(call.name)), True
+            return arguments, json.dumps(cut_call_error(call.name)), OutcomeKind.REFUSED
         decision = await handler.process_tool_call(
             call.name, arguments, tool_call_id=call.id, room_id=self.room_id
         )
@@ -127,13 +129,13 @@ class _ExternalStreamTools:
             return (
                 arguments,
                 json.dumps({"error": decision.reason or f"Tool '{call.name}' was denied"}),
-                True,
+                OutcomeKind.REFUSED,
             )
         if decision.modified_input is not None:
             arguments = decision.modified_input
         if decision.result is not None:
-            return arguments, decision.result, False
-        return arguments, result, is_error
+            return arguments, decision.result, OutcomeKind.SERVED
+        return arguments, result, kind
 
     async def _report(
         self, call: StreamToolCall, arguments: dict[str, Any], result: str, is_error: bool
@@ -165,8 +167,3 @@ class _ExternalStreamTools:
                 is_error=is_error,
             )
         )
-
-
-def _external_kind(is_error: bool) -> OutcomeKind:
-    """How a call the provider or the external handler ran ended, as it reported."""
-    return OutcomeKind.FAILED if is_error else OutcomeKind.SERVED

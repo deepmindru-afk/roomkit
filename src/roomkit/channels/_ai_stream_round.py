@@ -11,8 +11,9 @@ from typing import Any, Protocol
 from roomkit.channels._ai_coalescers import _ThinkingCoalescer, _ToolCallDeltaCoalescer
 from roomkit.channels._ai_resilience import _StreamRetryBoundary
 from roomkit.channels._ai_stream_external_tools import _ExternalStreamTools
-from roomkit.models.streaming import StreamDelta, ThinkingDeltaMarker
+from roomkit.models.streaming import StreamDelta, ThinkingDeltaMarker, ToolCallEndMarker
 from roomkit.providers.ai.base import (
+    AIToolResultPart,
     StreamDone,
     StreamEvent,
     StreamTextDelta,
@@ -22,6 +23,8 @@ from roomkit.providers.ai.base import (
 )
 from roomkit.providers.utils import _aclose_stream
 from roomkit.realtime.base import EphemeralEventType
+from roomkit.tools._outcome import OutcomeKind, ToolOutcome
+from roomkit.tools.result import as_tool_result
 
 
 @dataclass
@@ -34,9 +37,11 @@ class _StreamRoundState:
     thinking_published: int = 0
     text_parts: list[str] = field(default_factory=list)
     reported: list[str] = field(default_factory=list)
-    # The calls the loop serves; the provider's own are reported inline.
+    # The calls the loop serves; the provider's own are reported inline, then
+    # replayed with their results beside the loop's (RFC §9.3).
     tool_calls: list[StreamToolCall] = field(default_factory=list)
-    external_calls: int = 0
+    provider_calls: list[StreamToolCall] = field(default_factory=list)
+    provider_results: list[AIToolResultPart] = field(default_factory=list)
     finish_reason: str | None = None
     cancelled: bool = False
 
@@ -167,6 +172,22 @@ class _StreamRound:
             if self.room_id:
                 await self._composition.close()
 
+    async def _take_call(self, call: StreamToolCall) -> AsyncGenerator[StreamDelta, None]:
+        """Keep a call for the loop to serve, or report the provider's own
+        inline and keep it with its result for the next round's transcript."""
+        external = self.external_tools
+        if external is None or not external.takes(call):
+            self.state.tool_calls.append(call)
+            return
+        async with aclosing(external.stream_call(call, self.index)) as deltas:
+            async for delta in deltas:
+                if isinstance(delta, ToolCallEndMarker):
+                    self.state.provider_calls.append(
+                        call.model_copy(update={"arguments": delta.arguments})
+                    )
+                    self.state.provider_results.append(provider_result(call, delta))
+                yield delta
+
     async def stream(
         self, source: AsyncIterator[StreamEvent | _StreamRetryBoundary]
     ) -> AsyncGenerator[StreamDelta, None]:
@@ -199,13 +220,7 @@ class _StreamRound:
                             event.index, event.id, event.name, len(event.arguments_delta)
                         )
                 elif isinstance(event, StreamToolCall):
-                    if self.external_tools is None or not self.external_tools.takes(event):
-                        state.tool_calls.append(event)
-                        continue
-                    state.external_calls += 1
-                    async with aclosing(
-                        self.external_tools.stream_call(event, self.index)
-                    ) as deltas:
+                    async with aclosing(self._take_call(event)) as deltas:
                         async for delta in deltas:
                             yield delta
                 elif isinstance(event, StreamDone):
@@ -222,3 +237,12 @@ class _StreamRound:
                 await _aclose_stream(source)
             finally:
                 await self.close()
+
+
+def provider_result(call: StreamToolCall, end: ToolCallEndMarker) -> AIToolResultPart:
+    """The part the model reads of a call the provider served: its result, as
+    the end row states it."""
+    outcome = end.outcome or ("failed" if end.status == "failed" else "served")
+    return ToolOutcome(OutcomeKind(outcome), as_tool_result(end.result or "")).as_part(
+        call.id, call.name
+    )

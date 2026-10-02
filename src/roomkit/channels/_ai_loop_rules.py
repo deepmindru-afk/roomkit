@@ -247,7 +247,7 @@ class _ToolLoopState:
 
     def limit_reached(self, rounds: int) -> LoopEndReason | None:
         """The limit passed at a round boundary after *rounds* rounds, logged.
-        Both loops ask it there, before running the round's calls."""
+        The loop asks it there, before running the round's calls."""
         limit = self.limit_passed()
         if limit == "timeout":
             logger.warning(
@@ -321,7 +321,7 @@ def _aborted_results(tool_calls: list[Any]) -> list[AIToolResultPart]:
 
 
 class AIToolLoopRulesMixin:
-    """Single-definition loop rules shared by both tool loops.
+    """The tool loop's rules, each defined once.
 
     Host contract: :class:`AIToolLoopRulesHost`.
     """
@@ -507,12 +507,13 @@ class AIToolLoopRulesMixin:
         round_idx: int,
         *,
         parent_span_id: str | None = None,
+        answered: Sequence[AIToolResultPart] = (),
     ) -> tuple[list[AIToolResultPart], int, dict[str, dict[str, Any]]]:
-        """Publish TOOL_CALL_START, execute the calls, append the tool message.
+        """Publish TOOL_CALL_START, execute the calls, append the tool message,
+        the results of the round's calls the provider served (*answered*) first.
 
-        The TOOL_CALL_END publish (and, in streaming, the persistence
-        markers) stays at the call sites — their relative order around this
-        helper differs legitimately between the two loops.
+        The TOOL_CALL_END publish and the persistence markers stay with the
+        caller, which orders them around this helper.
         """
         if room_id:
             await self._publish_tool_event(
@@ -543,5 +544,5 @@ class AIToolLoopRulesMixin:
                 )
             raise
         duration_ms = int((time.monotonic() - t0) * 1000)
-        context.messages.append(AIMessage(role="tool", content=result_parts))
+        context.messages.append(AIMessage(role="tool", content=[*answered, *result_parts]))
         return result_parts, duration_ms, executed_arguments

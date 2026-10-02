@@ -24,7 +24,7 @@ from roomkit.models.enums import (
 from roomkit.models.event import TextContent, ToolCallContent
 from roomkit.models.hook import HookResult
 from roomkit.models.tool_call import ToolCallEvent
-from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
+from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall, AIToolCallPart
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.tools.external import ExternalToolHandler, ToolDecision
 from tests.test_framework import SimpleChannel
@@ -33,10 +33,12 @@ LOOKUP = AITool(name="lookup", description="Look it up.", parameters={"type": "o
 
 
 class _Proxy(ExternalToolHandler):
-    """Approves every call it is asked about, and records what reaches it."""
+    """Approves every call it is asked about, or denies every one, and records
+    what reaches it."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, approves: bool = True) -> None:
         super().__init__()
+        self.approves = approves
         self.decided: list[str] = []
         self.results: list[str] = []
 
@@ -44,6 +46,8 @@ class _Proxy(ExternalToolHandler):
         self, tool_name: str, tool_input: dict[str, Any], **kwargs: Any
     ) -> ToolDecision:
         self.decided.append(tool_name)
+        if not self.approves:
+            return ToolDecision(approved=False, reason="not on this host")
         return ToolDecision(approved=True, result="proxy ran it")
 
     async def on_tool_result(
@@ -104,7 +108,7 @@ class _Room:
 
 
 async def test_a_call_the_provider_ran_is_reported_beside_local_tools(streaming: bool) -> None:
-    """C8: the provider's result rides the call; a local tool beside it does
+    """The provider's result rides the call; a local tool beside it does
     not make it the channel's to dispatch."""
     ran = AIToolCall(id="b1", name="Bash", arguments={"cmd": "ls", "_result": "a.txt"})
     proxy, local = _Proxy(), _Local()
@@ -126,7 +130,7 @@ async def test_a_call_the_provider_ran_is_reported_beside_local_tools(streaming:
 async def test_a_call_the_provider_ran_reaches_the_observers_without_a_handler(
     streaming: bool,
 ) -> None:
-    """VC6: with no external handler, the provider's own call still gets its
+    """With no external handler, the provider's own call still gets its
     rows and its report, whatever the provider streams."""
     ran = AIToolCall(id="b1", name="Bash", arguments={"cmd": "ls", "_result": "a.txt"})
     provider = MockAIProvider(ai_responses=[_calls(ran)], streaming=streaming)
@@ -162,10 +166,20 @@ async def test_the_handler_decides_a_tool_the_channel_does_not_serve(streaming: 
 
     assert proxy.decided == ["Bash"]
     assert local.served == ["lookup"]
+    # The next round reads every call of the round, the provider's included,
+    # each with its result.
+    replay = provider.calls[-1].messages
+    asked = next(m for m in replay if m.role == "assistant" and isinstance(m.content, list))
+    assert [p.name for p in asked.content if isinstance(p, AIToolCallPart)] == ["Bash", "lookup"]
+    answered = next(m for m in replay if m.role == "tool")
+    assert [(p.name, p.result) for p in answered.content] == [
+        ("Bash", "proxy ran it"),
+        ("lookup", "served here"),
+    ]
 
 
 async def test_a_block_refuses_a_call_on_a_channel_without_a_handler(streaming: bool) -> None:
-    """C14: BEFORE_TOOL_USE's BLOCK is the call's refusal, which the model
+    """BEFORE_TOOL_USE's BLOCK is the call's refusal, which the model
     reads, and the turn goes on."""
     provider = MockAIProvider(
         ai_responses=[
@@ -189,3 +203,52 @@ async def test_a_block_refuses_a_call_on_a_channel_without_a_handler(streaming: 
     tool_message = next(m for m in provider.calls[-1].messages if m.role == "tool")
     assert "denied by policy" in str(tool_message.content)
     assert len(provider.calls) == 2
+
+
+async def test_a_tool_the_hook_withdrew_stays_the_channels_to_refuse(streaming: bool) -> None:
+    """A tool BEFORE_AI_GENERATION withdrew is gone from the turn: with an
+    external handler at hand too, the channel's gate refuses it."""
+    provider = MockAIProvider(
+        ai_responses=[
+            _calls(AIToolCall(id="l1", name="lookup", arguments={})),
+            AIResponse(content="ok"),
+        ],
+        streaming=streaming,
+    )
+    proxy, local = _Proxy(), _Local()
+    ai = AIChannel(
+        "ai1", provider=provider, external_tool_handler=proxy, tools=[LOOKUP], tool_handler=local
+    )
+    room = await _Room(ai).open()
+
+    @room.kit.hook(HookTrigger.BEFORE_AI_GENERATION, name="withdraw")
+    async def withdraw(event: Any, ctx: Any) -> HookResult:
+        event.ai_context.tools[:] = [t for t in event.ai_context.tools if t.name != "lookup"]
+        return HookResult.allow()
+
+    await room.say()
+
+    assert proxy.decided == [] and local.served == []
+    [end] = await room.ends()
+    assert end.outcome == "refused"
+
+
+async def test_a_call_the_handler_denies_is_a_refusal(streaming: bool) -> None:
+    """The handler's denial is a refusal, stored as the channel's own
+    refusals are; the provider's loop, not the channel's, reads it."""
+    provider = MockAIProvider(
+        ai_responses=[
+            _calls(AIToolCall(id="p1", name="Bash", arguments={"cmd": "rm -rf /"})),
+            AIResponse(content="Understood."),
+        ],
+        streaming=streaming,
+    )
+    proxy = _Proxy(approves=False)
+    room = await _Room(AIChannel("ai1", provider=provider, external_tool_handler=proxy)).open()
+
+    await room.say()
+
+    [end] = await room.ends()
+    assert end.outcome == "refused"
+    assert "not on this host" in str(end.result)
+    assert proxy.results == ["Bash"]
