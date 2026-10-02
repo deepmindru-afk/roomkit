@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 
 from roomkit.providers.ai.base import AIMessage, AITextPart, AIThinkingPart, AIToolCallPart
-from roomkit.providers.ai.openai_dialect import round_text
+from roomkit.providers.ai.chat_request import round_text
 from roomkit.providers.mistral.ai import MistralAIProvider
 from roomkit.providers.mistral.config import MistralConfig
 from roomkit.providers.openai.ai import OpenAIAIProvider

@@ -8,13 +8,12 @@ from typing import Any, ClassVar
 
 from roomkit.providers.ai.base import (
     AIContext,
-    AIMessage,
     AIResponse,
-    AIThinkingPart,
     ModelInfo,
     StreamEvent,
     StreamToolCall,
 )
+from roomkit.providers.ai.chat_request import ChatDialect
 from roomkit.providers.ai.reasoning import turn_setting
 from roomkit.providers.cerebras.config import CerebrasConfig
 from roomkit.providers.cerebras.models import MODELS
@@ -70,6 +69,9 @@ class CerebrasAIProvider(OpenAIAIProvider):
 
     _config: CerebrasConfig
     _install_extra: ClassVar[str] = "cerebras"
+    _chat_dialect: ClassVar[ChatDialect] = ChatDialect(thinking_field="reasoning")
+    """Cerebras reads a model's earlier reasoning from a ``reasoning`` field
+    beside ``content``, tool rounds included, rather than inline."""
 
     async def generate(self, context: AIContext) -> AIResponse:
         response = await super().generate(context)
@@ -135,31 +137,3 @@ class CerebrasAIProvider(OpenAIAIProvider):
             value = getattr(self._config, key)
             if value is not None:
                 kwargs.setdefault("extra_body", {})[key] = value
-
-    def _build_messages(
-        self,
-        messages: list[AIMessage],
-        system_prompt: str | None = None,
-    ) -> list[dict[str, Any]]:
-        """Return assistant reasoning in Cerebras's separate ``reasoning`` field.
-
-        The common builder embeds thinking in text tags for local servers.
-        Cerebras expects a sibling of ``content``, including on tool turns.
-        Copy the model before removing thinking so shared history is unchanged.
-        """
-        result = super()._build_messages([], system_prompt)
-        for message in messages:
-            reasoning = ""
-            if message.role == "assistant" and isinstance(message.content, list):
-                reasoning = "".join(
-                    part.thinking for part in message.content if isinstance(part, AIThinkingPart)
-                )
-                content = [
-                    part for part in message.content if not isinstance(part, AIThinkingPart)
-                ]
-                message = message.model_copy(update={"content": content or ""})
-            converted = super()._build_messages([message])
-            if reasoning:
-                converted[0]["reasoning"] = reasoning
-            result.extend(converted)
-        return result

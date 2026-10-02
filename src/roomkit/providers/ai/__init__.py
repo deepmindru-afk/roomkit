@@ -24,6 +24,7 @@ from roomkit.providers.ai.base import (
     StreamToolCallDelta,
     is_context_overflow_message,
 )
+from roomkit.providers.ai.chat_request import OPENAI_CHAT, ChatDialect, chat_messages
 from roomkit.providers.ai.image_parts import (
     image_part_base64,
     image_part_payload,
@@ -59,9 +60,11 @@ __all__ = [
     "AIToolCallPart",
     "AIToolResultPart",
     "CallIds",
+    "ChatDialect",
     "MockAIProvider",
     "ModelInfo",
     "ModelPricing",
+    "OPENAI_CHAT",
     "ProviderError",
     "ResponseSchemaError",
     "StreamDone",
@@ -72,6 +75,7 @@ __all__ = [
     "StreamToolCallDelta",
     "ToolNameRule",
     "call_cut",
+    "chat_messages",
     "chat_tool_declarations",
     "check_portable_schema",
     "cut_call_error",

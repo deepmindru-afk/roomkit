@@ -7,8 +7,9 @@ read, not how a request is built: the two reasoning conventions (inline
 across stream chunks, the structured context-overflow fact off a status
 error, and why a constrained answer was withheld. It lives with the AI provider
 ABC rather than under one vendor because three vendor packages consume it. The
-one request piece is the strict ``json_schema`` response format (RFC §6.7),
-which every speaker of the dialect asks for in the same words.
+one request piece here is the strict ``json_schema`` response format (RFC
+§6.7), which every speaker of the dialect asks for in the same words; the
+messages a request carries are rendered by ``chat_request``.
 """
 
 from __future__ import annotations
@@ -17,8 +18,6 @@ import re
 from typing import Any, Literal
 
 from roomkit.providers.ai.base import (
-    AITextPart,
-    AIThinkingPart,
     StreamToolCall,
     StreamToolCallDelta,
 )
@@ -44,18 +43,6 @@ def field_reasoning(carrier: Any) -> str | None:
     """
     value = getattr(carrier, "reasoning_content", None) or getattr(carrier, "reasoning", None)
     return value if isinstance(value, str) and value else None
-
-
-def round_text(parts: list[Any]) -> str:
-    """The content of an assistant round that called tools: its reasoning as
-    a leading ``<think>`` block, then what it said.
-
-    Both are kept, whatever their order: a round that said something besides
-    its calls keeps its reasoning too, which is how the next round reads it.
-    """
-    thinking = "".join(p.thinking for p in parts if isinstance(p, AIThinkingPart))
-    text = "".join(p.text for p in parts if isinstance(p, AITextPart))
-    return f"<think>{thinking}</think>{text}" if thinking else text
 
 
 def merge_thinking(inline: str | None, field: str | None) -> str | None:

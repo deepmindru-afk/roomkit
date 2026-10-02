@@ -1121,10 +1121,15 @@ class TestOpenAIImageDataURIs:
             from roomkit.providers.openai.ai import OpenAIAIProvider
 
             provider = OpenAIAIProvider(_config())
-            parts = provider._format_content(
-                [AIImagePart(url="data:;base64,QUJDMTIz", mime_type="image/png")]
+            [message] = provider._build_messages(
+                [
+                    AIMessage(
+                        role="user",
+                        content=[AIImagePart(url="data:;base64,QUJDMTIz", mime_type="image/png")],
+                    )
+                ]
             )
-            assert parts == [
+            assert message["content"] == [
                 {"type": "image_url", "image_url": {"url": "data:image/png;base64,QUJDMTIz"}}
             ]
 
@@ -1135,7 +1140,14 @@ class TestOpenAIImageDataURIs:
 
             provider = OpenAIAIProvider(_config())
             with pytest.raises(ProviderError, match="not valid base64") as excinfo:
-                provider._format_content([AIImagePart(url="data:image/png;base64,not*base64")])
+                provider._build_messages(
+                    [
+                        AIMessage(
+                            role="user",
+                            content=[AIImagePart(url="data:image/png;base64,not*base64")],
+                        )
+                    ]
+                )
             assert excinfo.value.retryable is False
             assert excinfo.value.provider == "openai"
 
@@ -1145,8 +1157,10 @@ class TestOpenAIImageDataURIs:
             from roomkit.providers.openai.ai import OpenAIAIProvider
 
             provider = OpenAIAIProvider(_config())
-            parts = provider._format_content([AIImagePart(url="https://example.com/a.png")])
-            assert parts == [
+            [message] = provider._build_messages(
+                [AIMessage(role="user", content=[AIImagePart(url="https://example.com/a.png")])]
+            )
+            assert message["content"] == [
                 {"type": "image_url", "image_url": {"url": "https://example.com/a.png"}}
             ]
 

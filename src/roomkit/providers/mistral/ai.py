@@ -10,15 +10,10 @@ from typing import Any
 from roomkit.providers.ai.base import (
     RETRYABLE_STATUS_CODES,
     AIContext,
-    AIImagePart,
     AIMessage,
     AIProvider,
     AIResponse,
-    AITextPart,
-    AIThinkingPart,
     AIToolCall,
-    AIToolCallPart,
-    AIToolResultPart,
     ModelInfo,
     ProviderError,
     StreamDone,
@@ -27,12 +22,11 @@ from roomkit.providers.ai.base import (
     StreamThinkingDelta,
     StreamToolCall,
 )
-from roomkit.providers.ai.image_parts import image_part_uri
+from roomkit.providers.ai.chat_request import ChatDialect, chat_messages
 from roomkit.providers.ai.openai_dialect import (
     ThinkTagParser,
     ToolCallSlots,
     json_schema_format,
-    round_text,
 )
 from roomkit.providers.ai.reasoning import thinking_switch, turn_setting
 from roomkit.providers.ai.response_schema import checked_stream, schema_for_generate
@@ -40,6 +34,10 @@ from roomkit.providers.ai.tool_declaration import ToolNameRule, chat_tool_declar
 from roomkit.providers.mistral.config import MistralConfig
 from roomkit.providers.mistral.models import MODELS
 from roomkit.providers.utils import _aclose_stream
+
+MISTRAL_CHAT = ChatDialect(names_tool_results=True)
+"""Mistral renders a conversation as OpenAI does, each tool message naming its
+tool."""
 
 MISTRAL_TOOL_NAMES = ToolNameRule("mistral", r"[A-Za-z0-9_.-]+")
 """The tool names Mistral accepts, a dot included, a colon not (measured
@@ -128,110 +126,13 @@ class MistralAIProvider(AIProvider):
 
     # -- Message formatting ----------------------------------------------------
 
-    def _format_content(
-        self,
-        content: (
-            str
-            | list[AITextPart | AIImagePart | AIToolCallPart | AIToolResultPart | AIThinkingPart]
-        ),
-    ) -> str | list[dict[str, Any]]:
-        """Format message content for the Mistral API.
-
-        AIThinkingPart is re-injected as ``<think>`` text so the model sees
-        its own prior reasoning when the conversation is sent back.
-        """
-        if isinstance(content, str):
-            return content
-
-        parts: list[dict[str, Any]] = []
-        for part in content:
-            if isinstance(part, AITextPart):
-                parts.append({"type": "text", "text": part.text})
-            elif isinstance(part, AIImagePart):
-                parts.append(
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": image_part_uri(part, provider="mistral")},
-                    }
-                )
-            elif isinstance(part, AIThinkingPart):
-                parts.append({"type": "text", "text": f"<think>{part.thinking}</think>"})
-        return parts
-
     def _build_messages(
         self,
         messages: list[AIMessage],
         system_prompt: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Build Mistral-formatted messages with tool call/result support."""
-        result: list[dict[str, Any]] = []
-        if system_prompt:
-            result.append({"role": "system", "content": system_prompt})
-        for m in messages:
-            if isinstance(m.content, list) and any(
-                isinstance(p, AIToolCallPart) for p in m.content
-            ):
-                tool_calls = []
-                content_text = round_text(m.content)
-                for p in m.content:
-                    if isinstance(p, AIToolCallPart):
-                        tool_calls.append(
-                            {
-                                "id": p.id,
-                                "type": "function",
-                                "function": {
-                                    "name": p.name,
-                                    "arguments": json.dumps(p.arguments),
-                                },
-                            }
-                        )
-                msg: dict[str, Any] = {
-                    "role": "assistant",
-                    "content": content_text or None,
-                    "tool_calls": tool_calls,
-                }
-                result.append(msg)
-            elif isinstance(m.content, list) and any(
-                isinstance(p, AIToolResultPart) for p in m.content
-            ):
-                # Mistral tool messages are text-only; image_url parts are
-                # user-only. So an image result keeps the tool message
-                # text-only and the image is split onto a synthetic user
-                # message after every tool message. Text results are unchanged.
-                pending_images: list[AIImagePart] = []
-                for p in m.content:
-                    if isinstance(p, AIToolResultPart):
-                        text, images = p.split_for_message()
-                        result.append(
-                            {
-                                "role": "tool",
-                                "tool_call_id": p.tool_call_id,
-                                "name": p.name,
-                                "content": text,
-                            }
-                        )
-                        pending_images.extend(images)
-                if pending_images:
-                    result.append(
-                        {
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "image_url",
-                                    "image_url": {"url": image_part_uri(img, provider="mistral")},
-                                }
-                                for img in pending_images
-                            ],
-                        }
-                    )
-            else:
-                result.append(
-                    {
-                        "role": m.role,
-                        "content": self._format_content(m.content),
-                    }
-                )
-        return result
+        """The conversation as Mistral reads it (``chat_request``)."""
+        return chat_messages(messages, system_prompt, MISTRAL_CHAT, provider="mistral")
 
     def _build_kwargs(self, context: AIContext) -> dict[str, Any]:
         """Build kwargs shared by generate and streaming paths."""

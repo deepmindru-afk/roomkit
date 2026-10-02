@@ -634,7 +634,14 @@ class TestMistralImageDataURIs:
 
             provider = MistralAIProvider(_config())
             with pytest.raises(ProviderError, match="not valid base64") as excinfo:
-                provider._format_content([AIImagePart(url="data:image/png;base64,not*base64")])
+                provider._build_messages(
+                    [
+                        AIMessage(
+                            role="user",
+                            content=[AIImagePart(url="data:image/png;base64,not*base64")],
+                        )
+                    ]
+                )
             assert excinfo.value.retryable is False
             assert excinfo.value.provider == "mistral"
 

@@ -42,16 +42,11 @@ from typing import Any
 
 from roomkit.providers.ai.base import (
     AIContext,
-    AIImagePart,
     AIMessage,
     AIProvider,
     AIResponse,
-    AITextPart,
-    AIThinkingPart,
     AITool,
     AIToolCall,
-    AIToolCallPart,
-    AIToolResultPart,
     ModelInfo,
     ProviderError,
     StreamDone,
@@ -60,7 +55,7 @@ from roomkit.providers.ai.base import (
     StreamThinkingDelta,
     StreamToolCallDelta,
 )
-from roomkit.providers.ai.image_parts import image_part_uri
+from roomkit.providers.ai.chat_request import ChatDialect, chat_messages
 from roomkit.providers.ai.openai_dialect import (
     ThinkTagParser,
     ToolCallSlots,
@@ -85,6 +80,13 @@ from roomkit.providers.polargrid.models import (
 from roomkit.providers.utils import _aclose_stream, http_timeout
 
 logger = logging.getLogger("roomkit.providers.polargrid")
+
+
+POLARGRID_CHAT = ChatDialect(drops_thinking=True, names_tool_results=True, flattens_text=True)
+"""PolarGrid's rendering: text sent flat (blocks only for an image), no empty
+message, each tool message naming its tool, and no earlier reasoning: Qwen
+regenerates its own each turn and echoes any wrapper it is fed back (Qwen's
+multi-turn guidance is to strip ``<think>`` from history)."""
 
 
 def _content_filtered(done: StreamDone) -> str | None:
@@ -266,132 +268,13 @@ class PolarGridAIProvider(AIProvider):
 
     # -- Message + tool conversion ------------------------------------------
 
-    def _format_content(
-        self,
-        content: (
-            str
-            | list[AITextPart | AIImagePart | AIToolCallPart | AIToolResultPart | AIThinkingPart]
-        ),
-    ) -> str | list[dict[str, Any]]:
-        """Format message content for the PolarGrid chat request.
-
-        A plain string passes through. A part list flattens to text unless it
-        carries an :class:`AIImagePart` — then it renders as an OpenAI-shaped
-        multimodal block list (``text`` + ``image_url`` parts, order preserved),
-        which polargrid-sdk 0.9.0 accepts.
-
-        Thinking is NOT round-tripped: qwen regenerates its reasoning each turn
-        and echoes any wrapper we feed back (qwen multi-turn guidance is to strip
-        ``<think>`` from history). Tool call/result parts are rendered as
-        structured messages by :meth:`_render_message`, not inline here.
-        """
-        if isinstance(content, str):
-            return content
-
-        if any(isinstance(p, AIImagePart) for p in content):
-            blocks: list[dict[str, Any]] = []
-            for part in content:
-                if isinstance(part, AITextPart):
-                    blocks.append({"type": "text", "text": part.text})
-                elif isinstance(part, AIImagePart):
-                    blocks.append(
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": image_part_uri(part, provider=self._provider_name)
-                            },
-                        }
-                    )
-            return blocks
-
-        return "".join(p.text for p in content if isinstance(p, AITextPart))
-
-    def _render_message(self, m: AIMessage) -> list[dict[str, Any]]:
-        """Render one RoomKit message into PolarGrid chat message(s).
-
-        Tool calls become an assistant message carrying ``tool_calls``
-        (OpenAI-shaped, ``arguments`` as a JSON string). Tool results
-        become one ``role="tool"`` message each, paired back to their
-        call via ``tool_call_id``, with any image split onto a synthetic
-        ``user`` message. Everything else renders to a single message whose
-        content is a string, or an ``image_url`` block list when it carries an
-        image (empty ones are skipped).
-        """
-        if isinstance(m.content, str):
-            return [{"role": m.role, "content": m.content}] if m.content else []
-
-        parts = m.content
-        tool_calls = [p for p in parts if isinstance(p, AIToolCallPart)]
-        if tool_calls:
-            text = self._format_content(parts)
-            return [
-                {
-                    "role": m.role,
-                    "content": text or None,
-                    "tool_calls": [
-                        {
-                            "id": p.id,
-                            "type": "function",
-                            "function": {
-                                "name": p.name,
-                                "arguments": json.dumps(p.arguments),
-                            },
-                        }
-                        for p in tool_calls
-                    ],
-                }
-            ]
-
-        tool_results = [p for p in parts if isinstance(p, AIToolResultPart)]
-        if tool_results:
-            # A tool/function-response message rejects image content, so keep it
-            # text-only and carry any image on a synthetic ``user`` message right
-            # after (OpenAI-shaped ``image_url``, accepted since polargrid-sdk
-            # 0.9.0). Text-only results are unchanged — no user message emitted.
-            rendered: list[dict[str, Any]] = []
-            pending_images: list[AIImagePart] = []
-            for r in tool_results:
-                text, images = r.split_for_message()
-                rendered.append(
-                    {
-                        "role": "tool",
-                        "content": text,
-                        "tool_call_id": r.tool_call_id,
-                        "name": r.name,
-                    }
-                )
-                pending_images.extend(images)
-            if pending_images:
-                rendered.append(
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": image_part_uri(img, provider=self._provider_name)
-                                },
-                            }
-                            for img in pending_images
-                        ],
-                    }
-                )
-            return rendered
-
-        text = self._format_content(parts)
-        return [{"role": m.role, "content": text}] if text else []
-
     def _build_messages(
         self,
         messages: list[AIMessage],
         system_prompt: str | None,
     ) -> list[dict[str, Any]]:
-        result: list[dict[str, Any]] = []
-        if system_prompt:
-            result.append({"role": "system", "content": system_prompt})
-        for m in messages:
-            result.extend(self._render_message(m))
-        return result
+        """The conversation as PolarGrid reads it (``chat_request``)."""
+        return chat_messages(messages, system_prompt, POLARGRID_CHAT, provider=self._provider_name)
 
     def _build_tools(self, tools: list[AITool]) -> list[dict[str, Any]] | None:
         """Convert RoomKit tools to PolarGrid's OpenAI-shaped tool list."""

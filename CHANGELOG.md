@@ -92,6 +92,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `base_url` decides its names.
 - `declared_parameters`, `chat_tool_declarations` and `ToolNameRule`, in
   `roomkit.providers.ai`: the declaration every provider builds from (RMK-309).
+- OpenAI and its derivatives, Mistral and PolarGrid render a conversation
+  through one builder, `chat_messages` in `roomkit.providers.ai` (RMK-309):
+  what a provider renders differently, where a model's earlier reasoning goes,
+  whether a tool message names its tool, whether text goes flat, is its
+  `ChatDialect` (Cerebras's `reasoning` field among them). The providers'
+  `_build_messages` keep their output.
 
 - `VuiTTSProvider` runs on `vui-tts>=1.2.0,<1.3` and uses no private
   `vui-tts` attribute any more (RMK-197). A barge-in cuts the cache back

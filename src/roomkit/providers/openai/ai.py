@@ -14,7 +14,6 @@ assembly, error mapping and result reading for the SDK's two response shapes.
 
 from __future__ import annotations
 
-import json
 import time
 from collections.abc import AsyncIterator
 from typing import Any, ClassVar
@@ -22,16 +21,11 @@ from typing import Any, ClassVar
 from roomkit.providers.ai.base import (
     RETRYABLE_STATUS_CODES,
     AIContext,
-    AIImagePart,
     AIMessage,
     AIProvider,
     AIResponse,
-    AITextPart,
-    AIThinkingPart,
     AITool,
     AIToolCall,
-    AIToolCallPart,
-    AIToolResultPart,
     ModelInfo,
     ProviderError,
     StreamDone,
@@ -39,7 +33,7 @@ from roomkit.providers.ai.base import (
     StreamTextDelta,
     StreamThinkingDelta,
 )
-from roomkit.providers.ai.image_parts import image_part_uri
+from roomkit.providers.ai.chat_request import OPENAI_CHAT, ChatDialect, chat_messages
 from roomkit.providers.ai.openai_dialect import (
     ThinkTagParser,
     ToolCallSlots,
@@ -49,7 +43,6 @@ from roomkit.providers.ai.openai_dialect import (
     json_schema_format,
     merge_thinking,
     overflow_fact,
-    round_text,
 )
 from roomkit.providers.ai.reasoning import turn_setting
 from roomkit.providers.ai.response_schema import (
@@ -99,6 +92,10 @@ class OpenAIAIProvider(AIProvider):
     its own extra, so the hint has to follow the class rather than the
     dependency — telling a DeepSeek user to install ``roomkit[openai]`` sends
     them to an extra they did not choose."""
+
+    _chat_dialect: ClassVar[ChatDialect] = OPENAI_CHAT
+    """How this endpoint renders a conversation: OpenAI's own rendering, which
+    a derivative whose service differs replaces."""
 
     _response_schema_default: ClassVar[bool] = True
     """Whether this endpoint honours a ``json_schema`` response format when the
@@ -217,117 +214,15 @@ class OpenAIAIProvider(AIProvider):
         live = [ModelInfo(id=m.id) for m in page.data]
         return self._merge_curated(live)
 
-    def _format_content(
-        self,
-        content: (
-            str
-            | list[AITextPart | AIImagePart | AIToolCallPart | AIToolResultPart | AIThinkingPart]
-        ),
-    ) -> str | list[dict[str, Any]]:
-        """Format message content for OpenAI API.
-
-        Converts AITextPart/AIImagePart to OpenAI's content block format.
-        AIThinkingPart is re-injected as a ``<think>`` text block so
-        vLLM / Ollama models see their own reasoning in history.
-        """
-        if isinstance(content, str):
-            return content
-
-        parts: list[dict[str, Any]] = []
-        for part in content:
-            if isinstance(part, AITextPart):
-                parts.append({"type": "text", "text": part.text})
-            elif isinstance(part, AIImagePart):
-                parts.append(
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": image_part_uri(part, provider=self._provider_name)},
-                    }
-                )
-            elif isinstance(part, AIThinkingPart):
-                # Re-wrap thinking as <think> tags so the model sees its own
-                # prior reasoning when the conversation is sent back.
-                parts.append({"type": "text", "text": f"<think>{part.thinking}</think>"})
-        return parts
-
     def _build_messages(
         self,
         messages: list[AIMessage],
         system_prompt: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Build OpenAI-formatted messages with tool call/result support."""
-        result: list[dict[str, Any]] = []
-        if system_prompt:
-            result.append({"role": "system", "content": system_prompt})
-        for m in messages:
-            if isinstance(m.content, list) and any(
-                isinstance(p, AIToolCallPart) for p in m.content
-            ):
-                # Assistant message with tool calls
-                tool_calls = []
-                content_text = round_text(m.content)
-                for p in m.content:
-                    if isinstance(p, AIToolCallPart):
-                        tool_calls.append(
-                            {
-                                "id": p.id,
-                                "type": "function",
-                                "function": {
-                                    "name": p.name,
-                                    "arguments": json.dumps(p.arguments),
-                                },
-                            }
-                        )
-                msg: dict[str, Any] = {
-                    "role": "assistant",
-                    "content": content_text or None,
-                    "tool_calls": tool_calls,
-                }
-                result.append(msg)
-            elif isinstance(m.content, list) and any(
-                isinstance(p, AIToolResultPart) for p in m.content
-            ):
-                # Tool results → separate messages with role="tool". Chat
-                # Completions accepts only text on a tool message (image_url
-                # parts are user-only), so an image result keeps the tool
-                # message text-only and the image is split onto a synthetic
-                # user message emitted after every tool message — the
-                # call/result pairing stays valid. Text results are unchanged.
-                pending_images: list[AIImagePart] = []
-                for p in m.content:
-                    if isinstance(p, AIToolResultPart):
-                        text, images = p.split_for_message()
-                        result.append(
-                            {
-                                "role": "tool",
-                                "tool_call_id": p.tool_call_id,
-                                "content": text,
-                            }
-                        )
-                        pending_images.extend(images)
-                if pending_images:
-                    result.append(
-                        {
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "image_url",
-                                    "image_url": {
-                                        "url": image_part_uri(img, provider=self._provider_name)
-                                    },
-                                }
-                                for img in pending_images
-                            ],
-                        }
-                    )
-            else:
-                result.append(
-                    {
-                        "role": m.role,
-                        "content": self._format_content(m.content),
-                    }
-                )
-        return result
+        """The conversation as this endpoint reads it (``chat_request``)."""
+        return chat_messages(
+            messages, system_prompt, self._chat_dialect, provider=self._provider_name
+        )
 
     def _token_limit_kwarg(self, value: int) -> dict[str, int]:
         """Build the output-cap kwarg under the name the endpoint expects.

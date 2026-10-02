@@ -1,0 +1,127 @@
+"""One rendering of a conversation as Chat Completions messages (RFC §6.7,
+RMK-309).
+
+OpenAI, its derivatives, Mistral and PolarGrid render through
+``chat_messages``; what they do differently is their ``ChatDialect``.
+"""
+
+from __future__ import annotations
+
+from roomkit.providers.ai.base import (
+    AIImagePart,
+    AIMessage,
+    AITextPart,
+    AIThinkingPart,
+    AIToolCallPart,
+    AIToolResultPart,
+)
+from roomkit.providers.ai.chat_request import OPENAI_CHAT, ChatDialect, chat_messages
+from roomkit.providers.cerebras.ai import CerebrasAIProvider
+from roomkit.providers.mistral.ai import MISTRAL_CHAT
+from roomkit.providers.polargrid.ai import POLARGRID_CHAT
+
+_IMAGE = "https://example.com/a.png"
+_THOUGHT = AIThinkingPart(thinking="why")
+
+
+def _round(*parts: object) -> AIMessage:
+    return AIMessage(
+        role="assistant",
+        content=[*parts, AIToolCallPart(id="c1", name="lookup", arguments={"q": "x"})],
+    )
+
+
+def _results(*results: AIToolResultPart) -> AIMessage:
+    return AIMessage(role="tool", content=list(results))
+
+
+def _render(dialect: ChatDialect, *messages: AIMessage, system: str | None = None) -> list:
+    return chat_messages(list(messages), system, dialect, provider="acme")
+
+
+def test_the_system_prompt_comes_first() -> None:
+    rendered = _render(OPENAI_CHAT, AIMessage(role="user", content="hi"), system="Be brief.")
+    assert rendered == [
+        {"role": "system", "content": "Be brief."},
+        {"role": "user", "content": "hi"},
+    ]
+
+
+def test_a_tool_round_keeps_its_reasoning_inline_and_its_calls() -> None:
+    [rendered] = _render(OPENAI_CHAT, _round(AITextPart(text="Looking."), _THOUGHT))
+    assert rendered == {
+        "role": "assistant",
+        "content": "<think>why</think>Looking.",
+        "tool_calls": [
+            {
+                "id": "c1",
+                "type": "function",
+                "function": {"name": "lookup", "arguments": '{"q": "x"}'},
+            }
+        ],
+    }
+
+
+def test_a_plain_answer_keeps_its_reasoning_inline() -> None:
+    message = AIMessage(role="assistant", content=[_THOUGHT, AITextPart(text="Done.")])
+    [rendered] = _render(OPENAI_CHAT, message)
+    assert rendered["content"] == [
+        {"type": "text", "text": "<think>why</think>"},
+        {"type": "text", "text": "Done."},
+    ]
+
+
+def test_a_dialect_with_a_reasoning_field_carries_it_there() -> None:
+    dialect = CerebrasAIProvider._chat_dialect
+    [round_] = _render(dialect, _round(_THOUGHT, AITextPart(text="Looking.")))
+    [answer] = _render(dialect, AIMessage(role="assistant", content=[_THOUGHT]))
+    assert (round_["content"], round_["reasoning"]) == ("Looking.", "why")
+    assert answer == {"role": "assistant", "content": "", "reasoning": "why"}
+
+
+def test_an_image_result_rides_a_user_message_after_the_tool_messages() -> None:
+    rendered = _render(
+        MISTRAL_CHAT,
+        _results(
+            AIToolResultPart(
+                tool_call_id="c1",
+                name="shot",
+                result=[AITextPart(text="here"), AIImagePart(url=_IMAGE)],
+            ),
+            AIToolResultPart(tool_call_id="c2", name="lookup", result="found"),
+        ),
+    )
+    assert rendered == [
+        {"role": "tool", "tool_call_id": "c1", "name": "shot", "content": "here"},
+        {"role": "tool", "tool_call_id": "c2", "name": "lookup", "content": "found"},
+        {"role": "user", "content": [{"type": "image_url", "image_url": {"url": _IMAGE}}]},
+    ]
+
+
+def test_openai_tool_messages_do_not_name_their_tool() -> None:
+    [rendered] = _render(
+        OPENAI_CHAT, _results(AIToolResultPart(tool_call_id="c1", name="x", result="r"))
+    )
+    assert "name" not in rendered
+
+
+def test_polargrid_sends_text_flat_drops_reasoning_and_skips_empty_messages() -> None:
+    rendered = _render(
+        POLARGRID_CHAT,
+        AIMessage(role="user", content=""),
+        AIMessage(role="assistant", content=[_THOUGHT]),
+        AIMessage(role="assistant", content=[_THOUGHT, AITextPart(text="Hi.")]),
+        _round(_THOUGHT, AITextPart(text="Looking.")),
+        AIMessage(role="user", content=[AITextPart(text="see"), AIImagePart(url=_IMAGE)]),
+    )
+    assert [(m["role"], m["content"]) for m in rendered] == [
+        ("assistant", "Hi."),
+        ("assistant", "Looking."),
+        (
+            "user",
+            [
+                {"type": "text", "text": "see"},
+                {"type": "image_url", "image_url": {"url": _IMAGE}},
+            ],
+        ),
+    ]
