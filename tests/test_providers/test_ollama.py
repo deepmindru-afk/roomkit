@@ -42,6 +42,9 @@ def _mock_ollama_module() -> MagicMock:
     mod.ResponseError = _FakeResponseError
     client = MagicMock()
     client.chat = AsyncMock()
+    # A request that declares tools goes through the client's own request
+    # method (providers/ollama/sdk_patch.py).
+    client._request = AsyncMock()
     mod.AsyncClient.return_value = client
     return mod
 
@@ -193,7 +196,7 @@ class TestOllamaAIProviderGenerate:
     @pytest.mark.asyncio
     async def test_generate_extracts_tool_calls(self) -> None:
         provider, mod = _provider()
-        mod.AsyncClient.return_value.chat.return_value = _response_obj(
+        mod.AsyncClient.return_value._request.return_value = _response_obj(
             content="",
             tool_calls=[
                 {
@@ -226,7 +229,7 @@ class TestOllamaAIProviderGenerate:
         turn = {
             "function": {"name": "ping", "arguments": {}},
         }
-        mod.AsyncClient.return_value.chat.side_effect = [
+        mod.AsyncClient.return_value._request.side_effect = [
             _response_obj(content="", tool_calls=[turn]),
             _response_obj(content="", tool_calls=[turn]),
             _response_obj(content="", tool_calls=[turn]),
@@ -248,7 +251,7 @@ class TestOllamaAIProviderGenerate:
     @pytest.mark.asyncio
     async def test_generate_passes_tools(self) -> None:
         provider, mod = _provider()
-        mod.AsyncClient.return_value.chat.return_value = _response_obj(content="ok")
+        mod.AsyncClient.return_value._request.return_value = _response_obj(content="ok")
 
         await provider.generate(
             _context(
@@ -262,7 +265,9 @@ class TestOllamaAIProviderGenerate:
             )
         )
 
-        kwargs = mod.AsyncClient.return_value.chat.await_args.kwargs
+        request = mod.AsyncClient.return_value._request.await_args
+        assert request.args == (mod.ChatResponse, "POST", "/api/chat")
+        kwargs = request.kwargs["json"]
         assert kwargs["tools"] == [
             {
                 "type": "function",

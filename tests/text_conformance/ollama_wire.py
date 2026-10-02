@@ -2,8 +2,8 @@
 
 The provider keeps the real ``ollama.AsyncClient``; only its HTTP transport is
 fake. A request is recorded as the JSON body the SDK puts on the wire, so what
-the SDK drops (an unknown schema keyword, an empty field) is dropped here too,
-and every answer is the SDK's own ``ChatResponse`` read back from its JSON.
+the SDK drops (an empty field) is dropped here too, and every answer is the
+SDK's own ``ChatResponse`` read back from its JSON.
 """
 
 from __future__ import annotations
@@ -28,7 +28,6 @@ from tests.text_conformance.driver import (
     REASONING_USAGE,
     REDACTED_REASONING,
     REPEATED_ID,
-    SCHEMA_AS_GIVEN,
     SIGNED_REASONING,
     STREAM_WITHOUT_FINISH,
     WRITTEN_UNREADABLE,
@@ -139,12 +138,6 @@ class OllamaWire(ChatDriver):
         CACHE_WRITE_USAGE: "Ollama reports prompt_eval_count and eval_count only",
         MALFORMED_CALL: "Ollama has no stop reason for a call it could not parse",
         REASONING_USAGE: "Ollama counts thinking inside eval_count",
-        # A defect, not a wire limit: the server reads JSON Schema, the SDK
-        # drops it on the way (RMK-383).
-        SCHEMA_AS_GIVEN: (
-            "the ollama SDK's Tool model keeps only type, items, description and enum "
-            "on a property, so a $ref is dropped (RMK-383)"
-        ),
     }
     reasoning = "field"
     calls_by_name = True

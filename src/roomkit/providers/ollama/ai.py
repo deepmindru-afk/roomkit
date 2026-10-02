@@ -48,6 +48,7 @@ from roomkit.providers.ai.response_schema import (
 )
 from roomkit.providers.ai.tool_calls import CallIds, tool_arguments
 from roomkit.providers.ai.tool_declaration import chat_tool_declarations
+from roomkit.providers.ollama import sdk_patch
 from roomkit.providers.ollama.config import OllamaConfig
 from roomkit.providers.ollama.models import MODELS
 from roomkit.providers.utils import _aclose_stream, http_timeout
@@ -91,6 +92,7 @@ class OllamaAIProvider(AIProvider):
             ) from exc
         self._config = config
         self._response_error = _ollama.ResponseError
+        self._chat_response = _ollama.ChatResponse
         self._client = _ollama.AsyncClient(
             host=config.host,
             timeout=http_timeout(config),
@@ -368,7 +370,7 @@ class OllamaAIProvider(AIProvider):
         kwargs = self._build_kwargs(context, stream=False)
         t0 = time.monotonic()
         try:
-            response = await self._client.chat(**kwargs)
+            response = await sdk_patch.chat(self._client, self._chat_response, **kwargs)
         except ProviderError:
             raise
         except Exception as exc:  # ResponseError or transport error
@@ -448,7 +450,7 @@ class OllamaAIProvider(AIProvider):
         ids = CallIds()
 
         try:
-            stream = await self._client.chat(**kwargs)
+            stream = await sdk_patch.chat(self._client, self._chat_response, **kwargs)
             async for chunk in stream:
                 message = self._get_message(chunk)
                 thinking_delta = self._get_attr(message, "thinking", None)
