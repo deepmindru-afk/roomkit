@@ -12,7 +12,6 @@ render in the account's history. Install with ``pip install roomkit[fluxions]``.
 
 from __future__ import annotations
 
-import base64
 import contextlib
 import logging
 from collections.abc import AsyncIterator
@@ -23,7 +22,7 @@ import httpx
 
 from roomkit.providers.utils import http_timeout
 from roomkit.voice.base import AudioChunk
-from roomkit.voice.tts.audio_utils import wrap_wav
+from roomkit.voice.tts.audio_utils import collect_wav_content
 from roomkit.voice.tts.base import TTSProvider
 from roomkit.voice.voices import VoiceInfo, filter_voices
 
@@ -178,16 +177,8 @@ class FluxionsTTSProvider(TTSProvider):
 
     async def synthesize(self, text: str, *, voice: str | None = None) -> AudioContent:
         """Render *text* whole, as a WAV data URL."""
-        from roomkit.models.event import AudioContent as AudioContentModel
-
-        pcm = b"".join([chunk.data async for chunk in self.synthesize_stream(text, voice=voice)])
-        wav = wrap_wav(pcm, SAMPLE_RATE)
-        return AudioContentModel(
-            url=f"data:audio/wav;base64,{base64.b64encode(wav).decode()}",
-            mime_type="audio/wav",
-            transcript=text,
-            duration_seconds=len(pcm) / 2 / SAMPLE_RATE,
-        )
+        stream = self.synthesize_stream(text, voice=voice)
+        return await collect_wav_content(stream, text=text, sample_rate=SAMPLE_RATE)
 
     async def close(self) -> None:
         """Release the HTTP client."""

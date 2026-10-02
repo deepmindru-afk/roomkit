@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import base64
 import io
 import struct
 import wave
+from collections.abc import AsyncIterator
 from typing import Any
+
+from roomkit.models.event import AudioContent
+from roomkit.voice.base import AudioChunk
 
 
 def wrap_wav(pcm_data: bytes, sample_rate: int, num_channels: int = 1) -> bytes:
@@ -31,6 +36,20 @@ def wrap_wav(pcm_data: bytes, sample_rate: int, num_channels: int = 1) -> bytes:
         data_size,
     )
     return header + pcm_data
+
+
+async def collect_wav_content(
+    chunks: AsyncIterator[AudioChunk], *, text: str, sample_rate: int
+) -> AudioContent:
+    """Collect a stream of 16-bit mono PCM chunks into a WAV data URL with its duration."""
+    pcm = b"".join([chunk.data async for chunk in chunks])
+    wav = wrap_wav(pcm, sample_rate)
+    return AudioContent(
+        url=f"data:audio/wav;base64,{base64.b64encode(wav).decode()}",
+        mime_type="audio/wav",
+        transcript=text,
+        duration_seconds=len(pcm) / 2 / sample_rate,
+    )
 
 
 def wav_duration_seconds(wav: bytes) -> float:

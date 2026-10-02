@@ -14,7 +14,6 @@ https://huggingface.co/kyutai/tts-voices.
 from __future__ import annotations
 
 import asyncio
-import base64
 import contextlib
 import logging
 import threading
@@ -24,7 +23,7 @@ from typing import TYPE_CHECKING
 
 from roomkit.voice.base import AudioChunk
 from roomkit.voice.tts._thread_stream import iterate_in_thread
-from roomkit.voice.tts.audio_utils import wrap_wav
+from roomkit.voice.tts.audio_utils import collect_wav_content
 from roomkit.voice.tts.base import TTSProvider
 
 if TYPE_CHECKING:
@@ -122,16 +121,8 @@ class PocketTTSProvider(TTSProvider):
 
     async def synthesize(self, text: str, *, voice: str | None = None) -> AudioContent:
         """Synthesize *text* as a WAV data URL."""
-        from roomkit.models.event import AudioContent as AudioContentModel
-
-        pcm = b"".join([chunk.data async for chunk in self.synthesize_stream(text, voice=voice)])
-        wav = wrap_wav(pcm, SAMPLE_RATE)
-        return AudioContentModel(
-            url=f"data:audio/wav;base64,{base64.b64encode(wav).decode()}",
-            mime_type="audio/wav",
-            transcript=text,
-            duration_seconds=len(pcm) / 2 / SAMPLE_RATE,
-        )
+        stream = self.synthesize_stream(text, voice=voice)
+        return await collect_wav_content(stream, text=text, sample_rate=SAMPLE_RATE)
 
     async def close(self) -> None:
         async with self._lock:
