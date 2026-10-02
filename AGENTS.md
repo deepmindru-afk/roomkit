@@ -187,6 +187,7 @@ tests/
 ├── test_voice*.py           # Voice subsystem tests
 ├── test_channels/           # Channel-specific tests
 ├── test_integration/        # Integration tests
+├── text_conformance/        # Same tool scenarios on every AI provider, one driver per wire
 └── test_providers/          # Provider-specific tests
 
 examples/                    # 32 runnable examples (uv run python examples/<name>.py)
@@ -689,6 +690,11 @@ For a messaging or AI provider — one implementing an ABC that lives under
 4. Export from `__init__.py`
 5. Add to main `roomkit/__init__.py` exports
 6. Add tests in `tests/test_<name>_provider.py`
+7. For an `AIProvider`: register it with the text conformance suite
+   (`tests/text_conformance/`). A provider on an existing wire adds one entry
+   to that family's `wires()`; a new wire gets its own driver module. The suite
+   fails on a provider class with neither a driver nor an exemption, with its
+   reason, in `registry.EXEMPT`
 
 ### Adding a New Backend (subsystem ABC)
 
