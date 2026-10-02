@@ -10,7 +10,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from roomkit.channels._turn_notes import with_turn_notes
+from roomkit import TURN_NOTES_HEADER, add_turn_note, split_turn_notes
+from roomkit.channels._turn_notes import turn_notes, with_turn_notes
 from roomkit.channels.ai import AIChannel
 from roomkit.core.hooks import SyncPipelineResult
 from roomkit.models.channel import ChannelBinding
@@ -144,3 +145,68 @@ def test_notes_stand_alone_when_the_conversation_does_not_end_on_the_participant
     assert result[2] == AIMessage(role="user", content="NOTES")
     assert with_turn_notes(messages, None) == messages
     assert with_turn_notes([AIMessage(role="user", content="")], "NOTES")[0].content == "NOTES"
+
+
+# -- The public API: a hook adds a block, a reader splits them off (RMK-368) --
+
+_IMAGE = AIImagePart(url="https://example.com/a.png")
+
+
+def _conversations() -> list[list[AIMessage]]:
+    """A text input, an input with an image, and a conversation that does not
+    end on the participant."""
+    return [
+        [AIMessage(role="user", content="where is A-1042?")],
+        [AIMessage(role="user", content=[AITextPart(text="see this"), _IMAGE])],
+        [AIMessage(role="user", content="hi"), AIMessage(role="assistant", content="hello")],
+    ]
+
+
+def test_notes_added_one_by_one_read_as_notes_assembled_at_once() -> None:
+    for messages in _conversations():
+        once = with_turn_notes(messages, turn_notes(["A", "B", "C"]))
+        added = add_turn_note(add_turn_note(add_turn_note(messages, "A"), "B"), "C")
+
+        assert added == once
+
+
+def test_a_note_joins_the_section_the_channel_opened_under_one_header() -> None:
+    for messages in _conversations():
+        channel_notes = with_turn_notes(messages, turn_notes(["channel"]))
+
+        added = add_turn_note(channel_notes, "hook")
+
+        assert added == with_turn_notes(messages, turn_notes(["channel", "hook"]))
+        assert str(added[-1].content).count(TURN_NOTES_HEADER) == 1
+
+
+def test_a_text_input_stays_text_and_an_image_input_keeps_one_notes_part() -> None:
+    [text] = add_turn_note(add_turn_note(_conversations()[0], "A"), "B")
+    [image] = add_turn_note(add_turn_note(_conversations()[1], "A"), "B")
+
+    assert text.content == f"where is A-1042?\n\n{TURN_NOTES_HEADER}\n\nA\n\nB"
+    assert image.content == [
+        AITextPart(text="see this"),
+        _IMAGE,
+        AITextPart(text=f"{TURN_NOTES_HEADER}\n\nA\n\nB"),
+    ]
+
+
+def test_split_turn_notes_takes_the_input_and_its_notes_apart() -> None:
+    [message] = add_turn_note(_conversations()[0], "A")
+
+    assert split_turn_notes(str(message.content)) == (
+        "where is A-1042?",
+        f"{TURN_NOTES_HEADER}\n\nA",
+    )
+    assert split_turn_notes("no notes here") == ("no notes here", "")
+    assert split_turn_notes(f"{TURN_NOTES_HEADER}\n\nA") == ("", f"{TURN_NOTES_HEADER}\n\nA")
+
+
+def test_an_input_that_quotes_the_header_keeps_its_words() -> None:
+    """The header opens the notes only at the start of a paragraph: an input
+    that quotes it within a sentence is neither notes nor cut."""
+    quoted = f"what does {TURN_NOTES_HEADER} mean?"
+    [message] = add_turn_note([AIMessage(role="user", content=quoted)], "A")
+
+    assert split_turn_notes(str(message.content)) == (quoted, f"{TURN_NOTES_HEADER}\n\nA")

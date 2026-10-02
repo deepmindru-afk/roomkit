@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `add_turn_note`, `split_turn_notes` and `TURN_NOTES_HEADER`, exported from
+  `roomkit` and `roomkit.channels` (RMK-368, RFC §6.4): a
+  `BEFORE_AI_GENERATION` hook adds a block to the turn's notes with
+  `event.ai_context.messages = add_turn_note(event.ai_context.messages, block)`.
+  The block joins the section the channel opened, under its one header, or
+  opens it, and the notes read exactly as if assembled at once, so the prefix
+  a provider caches is unchanged; a compaction keeps them whole with the
+  input. `split_turn_notes(text)` returns the input and its notes, cut where
+  the header opens a paragraph for the last time.
+
 - `ToolCallResult` and `ReasoningRequest.execute_tool_call` (RMK-306, RFC
   §12.4.1): a reasoning backend's tool call returns its text and whether it
   failed, so the backend's model reads a refused, failed or unserved call as

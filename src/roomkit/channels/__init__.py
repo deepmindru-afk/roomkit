@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from roomkit.channels._turn_notes import TURN_NOTES_HEADER as TURN_NOTES_HEADER
+from roomkit.channels._turn_notes import add_turn_note as add_turn_note
+from roomkit.channels._turn_notes import split_turn_notes as split_turn_notes
 from roomkit.channels.acp import ACPChannel as ACPChannel
 from roomkit.channels.ai import AIChannel as AIChannel
 from roomkit.channels.cli import CLIChannel as CLIChannel

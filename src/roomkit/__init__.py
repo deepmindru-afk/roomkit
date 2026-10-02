@@ -6,6 +6,7 @@ import contextlib
 
 from roomkit._version import __version__
 from roomkit.channels import (
+    TURN_NOTES_HEADER,
     BuzzChannel,
     DiscordChannel,
     EmailChannel,
@@ -17,6 +18,8 @@ from roomkit.channels import (
     TelegramChannel,
     WhatsAppChannel,
     WhatsAppPersonalChannel,
+    add_turn_note,
+    split_turn_notes,
 )
 from roomkit.channels._acp_context import ACPContextContributor
 from roomkit.channels._turn_config import AIChannelTurnConfig
@@ -314,6 +317,10 @@ __all__ = [
     "Agent",
     "AIChannel",
     "AIChannelTurnConfig",
+    # Turn notes (RFC §6.4)
+    "TURN_NOTES_HEADER",
+    "add_turn_note",
+    "split_turn_notes",
     "AudioVideoChannel",
     "BuzzChannel",
     "Channel",

@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 
+from roomkit import TURN_NOTES_HEADER, add_turn_note
 from roomkit.channels._compaction import SUMMARY_HEADER, summary_text, with_results_stored
 from roomkit.channels._tool_eviction import ToolEviction
 from roomkit.channels._user_text import with_leading_text
@@ -204,6 +205,28 @@ async def test_an_input_a_generation_hook_rewrote_is_the_one_kept(streaming: boo
     assert str(replay[0].content).startswith(_QUESTION)
     assert str(replay[0].content).endswith("[ok]")
     assert "Full output saved as 'evicted_c1'" in _results(replay)["c1"]
+
+
+async def test_a_note_a_generation_hook_adds_rides_the_notes_and_survives_compaction(
+    streaming: bool,
+) -> None:
+    """RFC §6.4: the hook's block joins the channel's notes, after them, under
+    their one header, and the compaction keeps it whole with the input."""
+
+    async def hook(gen_event: AIGenerationEvent) -> SyncPipelineResult:
+        messages = gen_event.ai_context.messages
+        if messages and str(messages[-1].content).startswith(_QUESTION):
+            gen_event.ai_context.messages = add_turn_note(messages, "It is 09:30 in Montreal.")
+        return SyncPipelineResult(allowed=True)
+
+    provider, _ = await _compacted_turn(streaming, history=[], hook=hook)
+
+    replay = provider.seen[_OVERFLOW_AT]
+    first = str(replay[0].content)
+    assert first.startswith(_QUESTION)
+    assert first.count(TURN_NOTES_HEADER) == 1
+    assert first.index("SHIPPED-7731") < first.index("It is 09:30 in Montreal.")
+    assert first.endswith("It is 09:30 in Montreal.")
 
 
 def _loop_shaped(result: str) -> list[AIMessage]:
