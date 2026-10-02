@@ -30,8 +30,9 @@ class PolarGridConfig(BaseModel):
             nearest edge that already serves the configured model
             (``routing_model``, polargrid-sdk 0.10.0) — convenient for
             dev, but pin a region in production when residency matters.
-        max_tokens: Maximum tokens in the response. ``None`` lets the
-            server pick its default (the API caps at 4096).
+        max_tokens: Maximum tokens in the response, within the API's 1 to
+            4096; more is sent as 4096, with a warning. ``None`` sends 4096:
+            the API's own default (150) cuts an answer mid-sentence.
         top_p: Nucleus sampling probability (0.0-1.0).
         thinking: Toggle qwen's reasoning via the ``enable_thinking``
             request flag (polargrid-sdk 0.8.5+). ``True`` turns reasoning

@@ -79,6 +79,7 @@ from roomkit.providers.polargrid import sdk_patch
 from roomkit.providers.polargrid.config import PolarGridConfig
 from roomkit.providers.polargrid.models import (
     CURATED_BY_ID,
+    MAX_TOKENS,
     MODELS,
     MODELS_BY_ID,
     REGIONS,
@@ -125,6 +126,7 @@ class PolarGridAIProvider(AIProvider):
         self._not_found_error = _pg.NotFoundError
         self._server_error = _pg.ServerError
         self._client: Any | None = None
+        self._warned_max_tokens = False
 
     @property
     def _provider_name(self) -> str:
@@ -293,6 +295,19 @@ class PolarGridAIProvider(AIProvider):
             return None
         return chat_tool_declarations(tools)
 
+    def _max_tokens(self, context: AIContext) -> int:
+        """The output cap a request carries: the turn's or the configured one,
+        within the API's range, else the API's maximum (:data:`MAX_TOKENS`)."""
+        asked = context.max_tokens or self._config.max_tokens
+        if asked is None:
+            return MAX_TOKENS
+        if asked > MAX_TOKENS and not self._warned_max_tokens:
+            self._warned_max_tokens = True
+            logger.warning(
+                "PolarGrid caps max_tokens at %d; %d asked, %d sent", MAX_TOKENS, asked, MAX_TOKENS
+            )
+        return min(asked, MAX_TOKENS)
+
     def _build_request(self, context: AIContext, *, stream: bool) -> dict[str, Any]:
         req: dict[str, Any] = {
             "model": self._config.model,
@@ -312,9 +327,7 @@ class PolarGridAIProvider(AIProvider):
             # the streaming/non-streaming paths split out as thinking. The
             # turn's switch outranks the configured one (RFC §6.7).
             req["enable_thinking"] = thinking
-        max_tokens = context.max_tokens or self._config.max_tokens
-        if max_tokens is not None:
-            req["max_tokens"] = max_tokens
+        req["max_tokens"] = self._max_tokens(context)
         if context.temperature is not None:
             req["temperature"] = context.temperature
         if self._config.top_p is not None:

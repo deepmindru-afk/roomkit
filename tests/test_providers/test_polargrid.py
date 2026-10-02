@@ -285,6 +285,34 @@ class TestPolarGridGenerate:
         assert request["messages"][1] == {"role": "user", "content": "Hi"}
 
     @pytest.mark.asyncio
+    async def test_a_request_without_a_cap_asks_for_the_apis_maximum(self) -> None:
+        # Left out, the SDK sends 150 and the server stops near 200 tokens,
+        # mid-sentence, under a "stop" finish.
+        provider, mod = _provider()
+        mod._client.chat_completion.return_value = _response_obj(content="ok")
+        sent = _serve(mod, [_stream_chunk(content="ok", finish_reason="stop")])
+
+        await provider.generate(_context(max_tokens=None))
+        _ = [e async for e in provider.generate_structured_stream(_context(max_tokens=None))]
+
+        assert mod._client.chat_completion.await_args.args[0]["max_tokens"] == 4096
+        assert sent[0]["max_tokens"] == 4096
+
+    @pytest.mark.asyncio
+    async def test_a_cap_above_the_apis_maximum_is_sent_as_the_maximum(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        provider, mod = _provider()
+        mod._client.chat_completion.return_value = _response_obj(content="ok")
+
+        with caplog.at_level(logging.WARNING, logger="roomkit.providers.polargrid"):
+            await provider.generate(_context(max_tokens=8192))
+            await provider.generate(_context(max_tokens=8192))
+
+        assert mod._client.chat_completion.await_args.args[0]["max_tokens"] == 4096
+        assert caplog.text.count("caps max_tokens at 4096") == 1
+
+    @pytest.mark.asyncio
     async def test_generate_passes_temperature_and_max_tokens(self) -> None:
         provider, mod = _provider()
         mod._client.chat_completion.return_value = _response_obj(content="ok")

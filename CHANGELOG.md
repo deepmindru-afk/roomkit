@@ -261,6 +261,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A PolarGrid answer is no longer cut short: with no `max_tokens` set, the
+  request carried none and polargrid-sdk sent 150 (the server, given none,
+  stops near 200), cutting an answer mid-sentence under a `stop` finish
+  (measured: 132 words of a 600-word answer). The provider now always sends a
+  cap, 4096 (the API's documented maximum) when none is set, and sends a
+  larger one as 4096 with one warning, where polargrid-sdk refused it and
+  failed the turn (RMK-389).
+
 - The speech models a chat provider's `list_models()` surfaces carry
   `transcription` (speech-to-text) or `speech` (text-to-speech) in
   `capabilities`, so a model picker can keep them out of a chat list: OpenAI
