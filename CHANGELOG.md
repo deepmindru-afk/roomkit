@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `FluxionsTTSProvider` and `FluxionsTTSConfig` (`roomkit[fluxions]`, RMK-373):
+  Vui hosted by fluxions.ai, beside the local `VuiTTSProvider`, with an API
+  key and no GPU. Each text is rendered on its own and streamed as 24 kHz
+  PCM; the speech API takes no conversation context, so the provider stays
+  at `TTSContextLevel.NONE`. `voice` takes a short id (`maeve`), resolved to
+  the id of the model Fluxions currently serves and resolved again once when
+  a render answers 404, or a full id. `list_voices()` lists the hosted voices
+  and the account's cloned ones. See `examples/voice_fluxions.py`.
+
 - `roomkit.providers.ai.model_tags`: the `transcription` and `speech`
   capability tags (`TRANSCRIPTION_CAPABILITY`, `SPEECH_CAPABILITY`), and
   `speech_tags` / `with_speech_tags`, which read them off a model id (RMK-389,

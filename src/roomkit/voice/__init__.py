@@ -501,6 +501,20 @@ def get_vui_voice() -> type:
     return VuiVoice
 
 
+def get_fluxions_tts_provider() -> type:
+    """Get FluxionsTTSProvider class for Vui hosted by fluxions.ai (requires httpx)."""
+    from roomkit.voice.tts.fluxions import FluxionsTTSProvider
+
+    return FluxionsTTSProvider
+
+
+def get_fluxions_tts_config() -> type:
+    """Get FluxionsTTSConfig class."""
+    from roomkit.voice.tts.fluxions import FluxionsTTSConfig
+
+    return FluxionsTTSConfig
+
+
 def get_pocket_tts_provider() -> type:
     """Get PocketTTSProvider class (requires pocket-tts)."""
     from roomkit.voice.tts.pocket import PocketTTSProvider
