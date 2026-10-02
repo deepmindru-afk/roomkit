@@ -108,6 +108,7 @@ class ResponseReader:
                     arguments=start.arguments,
                     status="failed",
                     error=error,
+                    outcome="cancelled",
                 ),
             )
             for start in self._open.values()

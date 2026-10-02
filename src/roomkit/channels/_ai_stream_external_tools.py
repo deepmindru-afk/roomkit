@@ -93,6 +93,7 @@ class _ExternalStreamTools:
             status="failed" if is_error else "completed",
             duration_ms=duration_ms,
             error=result if is_error else None,
+            outcome=_external_kind(bool(is_error)).value,
         )
         if self.room_id:
             await self.publish(

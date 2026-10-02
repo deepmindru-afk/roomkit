@@ -57,6 +57,7 @@ from roomkit.models.tool_call import (
     observed_call_event,
     tool_call_chain_fold,
 )
+from roomkit.tools._outcome import kept_in_tool_memory
 from roomkit.tools.external import BeforeToolDecision
 from roomkit.tools.result import before_tool_use_detail, hook_errors_detail, tool_call_verdict
 
@@ -859,6 +860,10 @@ class HelpersMixin:
                 content = ev.content
                 name = getattr(content, "tool_name", "")
                 if ev.type != EventType.TOOL_CALL_END or not name:
+                    continue
+                # The live memory's rule, read off the outcome the row
+                # states: a refusal or a call nothing served is not kept.
+                if not kept_in_tool_memory(getattr(content, "outcome", None)):
                     continue
                 calls.append(
                     {

@@ -133,6 +133,7 @@ from roomkit.models.enums import (
     HookExecution,
     HookTrigger,
     RoomStatus,
+    ToolCallOutcome,
     Visibility,
 )
 from roomkit.models.event import EventSource, RoomEvent, TextContent, ToolCallContent
@@ -514,6 +515,7 @@ __all__ = [
     "ToolCallCallback",
     "ToolCallObserver",
     "ToolCallContent",
+    "ToolCallOutcome",
     "ToolCallEvent",
     "ToolCallVerdict",
     "ToolHandler",

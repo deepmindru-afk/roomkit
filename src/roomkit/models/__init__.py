@@ -34,6 +34,7 @@ from roomkit.models.enums import (
     ParticipantStatus,
     RoomStatus,
     TaskStatus,
+    ToolCallOutcome,
     Visibility,
 )
 from roomkit.models.event import (
@@ -135,6 +136,7 @@ __all__ = [
     "TextContent",
     "ToolCallCallback",
     "ToolCallContent",
+    "ToolCallOutcome",
     "ToolCallEvent",
     "ToolCallVerdict",
     "VideoContent",

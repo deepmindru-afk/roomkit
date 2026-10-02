@@ -127,6 +127,7 @@ async def _unrun_call_ends(calls: list[Any]) -> AsyncGenerator[StreamDelta, None
             arguments=call.arguments,
             status="failed",
             error="cancelled",
+            outcome="cancelled",
         )
 
 
@@ -507,6 +508,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                 # flattens the way any text consumer of that result would.
                 error=result.as_text() if is_error else None,
                 structured_content=result.structured_content,
+                outcome=result.outcome,
             )
         if turn.room_id:
             await self._publish_tool_event(

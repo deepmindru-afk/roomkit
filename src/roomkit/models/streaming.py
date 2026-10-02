@@ -15,6 +15,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from roomkit.models.enums import ToolCallOutcome
+
 
 @dataclass(slots=True)
 class ToolCallStartMarker:
@@ -46,6 +48,8 @@ class ToolCallEndMarker:
     error: str | None = None
     # MCP structuredContent captured before result eviction (see AIToolResultPart).
     structured_content: dict[str, Any] | None = None
+    # How the call ended (see ToolCallContent.outcome).
+    outcome: ToolCallOutcome | None = None
 
 
 @dataclass(slots=True)

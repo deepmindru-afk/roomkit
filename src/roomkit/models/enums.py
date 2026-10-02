@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 from enum import StrEnum, unique
+from typing import Literal
+
+ToolCallOutcome = Literal["served", "refused", "failed", "blocked", "unserved", "cancelled"]
+"""How a tool call ended, as the channel determined it (RFC §6.4, §9.3)."""
 
 
 @unique

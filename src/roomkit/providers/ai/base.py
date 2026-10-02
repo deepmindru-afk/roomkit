@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field, SecretStr, field_validator
 
 from roomkit.models.channel import ChannelCapabilities
 from roomkit.models.context import RoomContext
-from roomkit.models.enums import ChannelMediaType
+from roomkit.models.enums import ChannelMediaType, ToolCallOutcome
 from roomkit.models.response_metadata import ResponseMetadata
 from roomkit.models.task import Observation, Task
 from roomkit.providers.ai.json_schema import check_portable_schema
@@ -100,6 +100,10 @@ class AIToolResultPart(BaseModel):
     # it rides the part so tool-call events can hand it to UI surfaces
     # (MCP Apps widgets), unevicted; the event bounds its binary payloads.
     structured_content: dict[str, Any] | None = None
+    # How the call ended: served, refused, failed, blocked, unserved or
+    # cancelled. Never rendered to providers; it rides the part to the tool
+    # row the room stores (``ToolCallContent.outcome``).
+    outcome: ToolCallOutcome | None = None
     # Tools this result makes callable when the provider holds them unseen
     # (``AITool.defer_loading``): a ``find_tools`` result naming them, an
     # ``activate_skill`` result opening them. Rendered only by a provider

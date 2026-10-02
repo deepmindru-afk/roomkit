@@ -14,6 +14,7 @@ from roomkit.models.enums import (
     DeleteType,
     EventStatus,
     EventType,
+    ToolCallOutcome,
     Visibility,
 )
 
@@ -169,7 +170,8 @@ class ToolCallContent(BaseModel):
     """Tool call content — used for both TOOL_CALL_START and TOOL_CALL_END events.
 
     At start: tool_name + arguments populated, status="pending".
-    At end: result + duration_ms populated, status="completed" or "failed".
+    At end: result + duration_ms populated, status="completed" or "failed",
+    and ``outcome``.
     """
 
     type: Literal["tool_call"] = "tool_call"
@@ -183,6 +185,10 @@ class ToolCallContent(BaseModel):
     # MCP CallToolResult.structuredContent, captured before large-result
     # eviction rewrote ``result`` — UI surfaces read their data from it.
     structured_content: dict[str, Any] | None = None
+    # How the call ended, on an end row: what ``status`` folds into
+    # completed/failed, stated (RFC §6.4). ``None`` on a row written without
+    # it, which a reader takes by its ``status``.
+    outcome: ToolCallOutcome | None = None
 
 
 EventContent = Annotated[

@@ -42,11 +42,11 @@ class ToolOutcome:
     result: ToolResult
     """What the model reads."""
     recorded: Any = None
-    """What the room's tool memory keeps, when it differs from :attr:`result`."""
+    """The tool's own answer, when it differs from :attr:`result` (an evicted
+    copy, a hook's reason): what the room's tool memory keeps, and what tells
+    one answer from another."""
     structured: dict[str, Any] | None = None
     """The call's structured copy (MCP ``structuredContent``); a failure keeps none."""
-    remember: bool = True
-    """Whether the room's tool memory keeps the call."""
     detail: str | None = None
     """What failed, for the log and the observers only, never the model (RFC §9.3)."""
 
@@ -56,8 +56,8 @@ class ToolOutcome:
         return self.kind is not OutcomeKind.SERVED
 
     @property
-    def kept(self) -> Any:
-        """What the room's tool memory keeps: the recorded answer, else the result."""
+    def answer(self) -> Any:
+        """The tool's own answer: the recorded one, else the result."""
         return self.recorded if self.recorded is not None else self.result
 
     def as_part(
@@ -71,7 +71,24 @@ class ToolOutcome:
             structured_content=self.structured,
             is_error=self.failed,
             references=list(references),
+            outcome=self.kind.value,
         )
+
+
+_IN_TOOL_MEMORY = frozenset({OutcomeKind.SERVED, OutcomeKind.FAILED, OutcomeKind.BLOCKED})
+
+
+def kept_in_tool_memory(outcome: str | None) -> bool:
+    """Whether the room's tool memory keeps a call that ended *outcome*.
+
+    The answers the tool gave: served, failed, or withheld by a hook, whose
+    reason the model read. Not a refusal, which stands for no answer and
+    would replace an earlier identical call's real one, nor a call nothing
+    served or one cancelled. One rule for the live memory and for the one
+    rebuilt from the stored rows (RFC §6.4); a row stored without an outcome
+    ended served or failed, by its status, and is kept.
+    """
+    return outcome is None or outcome in _IN_TOOL_MEMORY
 
 
 def read_outcome(reading: VerdictReading) -> OutcomeKind:

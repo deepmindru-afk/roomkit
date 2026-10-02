@@ -61,7 +61,7 @@ from roomkit.providers.ai.tool_calls import cut_call_error
 from roomkit.sandbox.tools import SANDBOX_TOOL_PREFIX, TOOL_SANDBOX_BASH
 from roomkit.telemetry.base import SpanKind
 from roomkit.telemetry.redaction import redact
-from roomkit.tools._outcome import OutcomeKind, ToolOutcome, read_outcome
+from roomkit.tools._outcome import OutcomeKind, ToolOutcome, kept_in_tool_memory, read_outcome
 from roomkit.tools.context import ToolCallContext, _current_tool_call
 from roomkit.tools.result import (
     GateRefusal,
@@ -639,9 +639,9 @@ class AIToolsMixin:
             scope.executed_arguments[tc.id] = dict(arguments)
         outcome = await self._judged_call(tc, arguments, scope)
         self._settle_activation(tc.id, served=not outcome.failed)
-        if outcome.remember:
-            self._remember_call(scope.room_id, tc.name, call_arguments, outcome.kept)
         references = [] if outcome.failed else self._reference_shown(self._get_loop_ctx())
+        if kept_in_tool_memory(outcome.kind):
+            self._remember_call(scope.room_id, tc.name, call_arguments, outcome.answer)
         return self._model_part(tc, outcome, references=references)
 
     async def _judged_call(
@@ -693,7 +693,6 @@ class AIToolsMixin:
                 OutcomeKind.REFUSED,
                 body,
                 recorded=exc.message,
-                remember=not isinstance(exc, ChannelRefusalError),
             )
         logger.warning("Tool %s raised %s: %s", tc.name, type(exc).__name__, exc)
         # The class, never the message (RFC §9.3): it goes to the log above
@@ -717,7 +716,7 @@ class AIToolsMixin:
         # repeat look new, and so would an evicted copy, whose placeholder id
         # is unique per call.
         if isinstance(outcome.result, str):
-            hashed = outcome.kept if isinstance(outcome.kept, str) else outcome.result
+            hashed = outcome.answer if isinstance(outcome.answer, str) else outcome.result
             noted = self._repeated_result_note(tc.name, outcome.result, outcome=hashed)
             outcome = replace(outcome, result=noted)
         return outcome.as_part(tc.id, tc.name, references=references)
@@ -1074,20 +1073,20 @@ class AIToolsMixin:
         return render_list_payload(catalogue, category, exclude_names=TOOL_SEARCH_INFRA_TOOL_NAMES)
 
     def _remember_call(
-        self, room_id: str | None, name: str, call_arguments: dict[str, Any], outcome: Any
+        self, room_id: str | None, name: str, call_arguments: dict[str, Any], result: Any
     ) -> None:
-        """Remember a call (its final result, success or error) so later turns
-        show "tools you've already used" and re-reveal it under Tool Search.
+        """Remember a call (the tool's own answer, success or error, never the
+        eviction placeholder an oversized one became for the model) so later
+        turns show "tools you've already used" and re-reveal it under Tool
+        Search. Which calls are kept is :func:`kept_in_tool_memory`'s.
 
         With the model's own arguments, never a BEFORE_TOOL_USE rewrite: the
         digest goes back into the next turn's prompt, and a hook that
         de-tokenises (``<EMAIL_1>`` to the real address) would put there the
-        very value it kept from the model. Not for a refusal the channel
-        decided, nor a call nothing served: neither is the tool's answer, and
-        either would stand in for an earlier, identical call's real result.
-        Infra/discovery tools are filtered inside ``record()``.
+        very value it kept from the model. Infra/discovery tools are filtered
+        inside ``record()``.
         """
-        self._tool_usage.record(room_id, name, call_arguments, outcome)
+        self._tool_usage.record(room_id, name, call_arguments, result)
 
     async def _apply_tool_call_hook(
         self,
@@ -1129,7 +1128,7 @@ class AIToolsMixin:
             body = unserved_tool_error(tc.name)
             detail = verdict.error_detail if verdict is not None else None
             await self._fire_tool_refusal(tc, arguments, body, room_id, detail=detail)
-            return ToolOutcome(kind, body, remember=False)
+            return ToolOutcome(kind, body)
         # The memory keeps the answer itself, before eviction swaps a placeholder in.
         recorded = reading.result if reading.replaced else result
         return ToolOutcome(kind, reading.result, recorded=recorded, structured=structured)

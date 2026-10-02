@@ -318,6 +318,7 @@ class SegmentWriter:
                 duration_ms=marker.duration_ms,
                 error=marker.error,
                 structured_content=structured,
+                outcome=marker.outcome,
             ),
         )
 

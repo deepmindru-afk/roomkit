@@ -395,6 +395,7 @@ class ACPEventsMixin:
                     duration_ms=duration_ms,
                     error=error,
                     structured_content=structured,
+                    outcome="failed" if marker_status == "failed" else "served",
                 )
             )
         if room_id is not None:
