@@ -78,10 +78,10 @@ from roomkit.providers.ai.tool_declaration import chat_tool_declarations
 from roomkit.providers.polargrid import sdk_patch
 from roomkit.providers.polargrid.config import PolarGridConfig
 from roomkit.providers.polargrid.models import (
+    CURATED_BY_ID,
     MODELS,
     MODELS_BY_ID,
     REGIONS,
-    VOICE_MODELS,
     PolarGridRegion,
 )
 from roomkit.providers.utils import _aclose_stream, http_timeout
@@ -175,14 +175,14 @@ class PolarGridAIProvider(AIProvider):
         # Public and pilot models alike: a pilot edge lists qwen-3.6-35b-a3b,
         # and its display name and vision flag should backfill there too. The
         # speech models an edge lists get their tags the same way.
-        return {**MODELS_BY_ID, **{model.id: model for model in VOICE_MODELS}}
+        return CURATED_BY_ID
 
     async def list_models(self) -> list[ModelInfo]:
         """Models loaded on the connected edge, via the SDK's ``list_models``.
 
         Returns whatever the edge reports (chat + STT/TTS), so the result is
-        region-specific — ``dfw-02`` carries no STT and no ``kokoro-82m``, a
-        customer-pilot edge lists ``qwen-3.6-35b-a3b``. The edge reports no
+        region-specific: a customer-pilot edge lists ``qwen-3.6-35b-a3b``.
+        The edge reports no
         model type, so the curated catalog backfills display names, vision
         and capabilities: a chat model's, and ``transcription`` or ``speech``
         on a speech model (:data:`~roomkit.providers.polargrid.models.VOICE_MODELS`).
@@ -200,12 +200,9 @@ class PolarGridAIProvider(AIProvider):
 
     @staticmethod
     def _parse_model(model: Any) -> ModelInfo:
-        """Map one SDK ``ModelInfo`` to a roomkit :class:`ModelInfo`."""
-        pg_type = getattr(model, "pg_model_type", None)
-        return ModelInfo(
-            id=str(getattr(model, "id", "")),
-            capabilities=[pg_type] if pg_type else [],
-        )
+        """Map one SDK ``ModelInfo`` to a roomkit :class:`ModelInfo`: its id
+        alone, an edge sending no ``pg_*`` field (measured 2026-10-02)."""
+        return ModelInfo(id=str(getattr(model, "id", "")))
 
     @classmethod
     def available_regions(cls) -> list[PolarGridRegion]:
@@ -352,10 +349,12 @@ class PolarGridAIProvider(AIProvider):
 
     def _status_for(self, exc: BaseException) -> int | None:
         """The HTTP status an SDK exception stands for: the one it carries,
-        else the one the SDK built its class from (a 403 is read as a 401,
-        the SDK folding both into ``AuthenticationError``)."""
+        else, for one the server answered (it carries the request id), the
+        one the SDK built its class from (a 403 is read as a 401, the SDK
+        folding both into ``AuthenticationError``). A request the SDK refused
+        itself never reached the server and has none."""
         status = getattr(exc, "status_code", None)
-        if status is not None:
+        if status is not None or not getattr(exc, "request_id", None):
             return status
         status_map: tuple[tuple[type[BaseException], int], ...] = (
             (self._auth_error, 401),

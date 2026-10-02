@@ -7,10 +7,11 @@ model-availability guide (``/guides/model-availability``) and its regions
 guide (``/guides/regions``), cross-checked live against the autorouter, which
 answers ``/v1/route?model=<id>`` with 404 when no edge serves the id, and a
 sweep of every edge's ``/health``. Only the chat / LLM models usable through
-this provider's ``generate()`` are listed; the live
+this provider's ``generate()`` are advertised (:data:`MODELS`); the live
 ``PolarGridAIProvider.list_models()`` queries the connected edge and also
 surfaces the STT / TTS models (``whisper-large-v3-turbo``,
-``cohere-transcribe-03-2026``, ``kokoro-82m``, ``tada-3b-ml``).
+``cohere-transcribe-03-2026``, ``kokoro-82m``, ``tada-3b-ml``), which
+:data:`VOICE_MODELS` tags.
 
 The public LLM lineup is one model:
 
@@ -218,3 +219,10 @@ VOICE_MODELS: list[ModelInfo] = [
 on 2026-10-02 (yul-01): the first two transcribe, the last two synthesize.
 ``generate()`` serves none of them, so they stay out of :data:`MODELS`;
 ``list_models()`` tags them, so a caller tells them from a chat model."""
+
+CURATED_BY_ID: dict[str, ModelInfo] = {
+    **MODELS_BY_ID,
+    **{model.id: model for model in VOICE_MODELS},
+}
+"""Every id the provider knows, chat and speech, for ``list_models()`` to
+backfill what the edge leaves blank."""

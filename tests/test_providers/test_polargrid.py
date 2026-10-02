@@ -371,8 +371,7 @@ class TestPolarGridGenerate:
     @pytest.mark.asyncio
     async def test_generate_tool_call_malformed_args_preserved(self) -> None:
         provider, mod = _provider()
-        call = {"id": "call_1", "type": "function"}
-        call["function"] = {"name": "t", "arguments": "{not json"}
+        call = {"id": "call_1", "type": "function", "function": {"name": "t", "arguments": "{x"}}
         _respond(
             mod,
             _completion(
@@ -382,7 +381,7 @@ class TestPolarGridGenerate:
 
         resp = await provider.generate(_context())
 
-        assert resp.tool_calls[0].arguments == {"raw": "{not json"}
+        assert resp.tool_calls[0].arguments == {"raw": "{x"}
 
     @pytest.mark.asyncio
     async def test_generate_empty_choices_returns_empty_content(self) -> None:
@@ -903,16 +902,6 @@ class TestPolarGridModels:
         assert by_id["cohere-transcribe-03-2026"].capabilities == ["transcription"]
         assert by_id["mystery-1b"].capabilities == []
 
-    @pytest.mark.asyncio
-    async def test_list_models_wraps_sdk_error(self) -> None:
-        provider, mod = _provider()
-        mod._client.list_models.side_effect = polargrid.ServerError("down", 503)
-
-        with pytest.raises(ProviderError) as exc:
-            await provider.list_models()
-
-        assert exc.value.retryable is True
-
     def test_available_regions_catalog(self) -> None:
         provider, _ = _provider()
         regions = provider.available_regions()
@@ -967,66 +956,69 @@ class TestPolarGridModels:
 # ---------------------------------------------------------------------------
 
 
+async def _read_all(stream: Any) -> None:
+    _ = [event async for event in stream]
+
+
+# Each path that reaches the server: how to call it, and where its client fails.
+_CALLS: dict[str, Any] = {
+    "generate": lambda provider: provider.generate(_context()),
+    "stream": lambda provider: _read_all(provider.generate_structured_stream(_context())),
+    "list_models": lambda provider: provider.list_models(),
+}
+
+
+def _failing_stream(error: Exception) -> Any:
+    async def stream_post(endpoint: str, body: dict[str, Any]) -> Any:
+        raise error
+        yield  # an async generator, as the SDK's is
+
+    return stream_post
+
+
+_FAILURES: dict[str, Any] = {
+    "generate": lambda client, error: setattr(client.chat_completion, "side_effect", error),
+    "stream": lambda client, error: setattr(client, "_stream_post", _failing_stream(error)),
+    "list_models": lambda client, error: setattr(client.list_models, "side_effect", error),
+}
+
+
+async def _fail(provider: Any, mod: MagicMock, path: str, error: Exception) -> ProviderError:
+    """The error *path* surfaces when its client raises *error*."""
+    _FAILURES[path](mod._client, error)
+    with pytest.raises(ProviderError) as exc:
+        await _CALLS[path](provider)
+    return exc.value
+
+
 class TestPolarGridErrors:
     @pytest.mark.asyncio
-    async def test_auth_error_not_retryable(self) -> None:
-        provider, mod = _provider()
-        mod._client.chat_completion.side_effect = polargrid.AuthenticationError("bad key")
-
-        with pytest.raises(ProviderError) as exc:
-            await provider.generate(_context())
-
-        assert exc.value.retryable is False
-        assert exc.value.status_code == 401
-        assert exc.value.provider == "polargrid"
-
-    @pytest.mark.asyncio
-    async def test_validation_error_not_retryable(self) -> None:
-        provider, mod = _provider()
-        mod._client.chat_completion.side_effect = polargrid.ValidationError("bad input")
-
-        with pytest.raises(ProviderError) as exc:
-            await provider.generate(_context())
-
-        assert exc.value.retryable is False
-
-    @pytest.mark.asyncio
+    @pytest.mark.parametrize("path", ["generate", "stream", "list_models"])
     @pytest.mark.parametrize(
         ("status", "retryable"),
         [(401, False), (402, False), (400, False), (404, False), (429, True), (503, True)],
     )
-    async def test_an_http_error_keeps_its_status(self, status: int, retryable: bool) -> None:
-        """Each error as the SDK builds it from the server's status."""
+    async def test_an_http_error_keeps_its_status(
+        self, path: str, status: int, retryable: bool
+    ) -> None:
+        """Each error as the SDK builds it from the server's status, on every
+        path that reaches the server."""
         provider, mod = _provider()
-        mod._client.chat_completion.side_effect = polargrid.create_error_from_response(
-            status, None, "refused", None, "req_1"
-        )
+        error = polargrid.create_error_from_response(status, None, "refused", None, "req_1")
 
-        with pytest.raises(ProviderError) as exc:
-            await provider.generate(_context())
+        failed = await _fail(provider, mod, path, error)
 
-        assert (exc.value.status_code, exc.value.retryable) == (status, retryable)
+        assert (failed.status_code, failed.retryable) == (status, retryable)
+        assert failed.provider == "polargrid"
 
     @pytest.mark.asyncio
-    async def test_rate_limit_error_retryable(self) -> None:
+    async def test_a_request_the_sdk_refused_itself_has_no_status(self) -> None:
         provider, mod = _provider()
-        mod._client.chat_completion.side_effect = polargrid.RateLimitError("slow down")
+        refused = polargrid.ValidationError("max_tokens must be at most 4096")
 
-        with pytest.raises(ProviderError) as exc:
-            await provider.generate(_context())
+        failed = await _fail(provider, mod, "generate", refused)
 
-        assert exc.value.retryable is True
-        assert exc.value.status_code == 429
-
-    @pytest.mark.asyncio
-    async def test_server_error_retryable(self) -> None:
-        provider, mod = _provider()
-        mod._client.chat_completion.side_effect = polargrid.ServerError("oops", 503)
-
-        with pytest.raises(ProviderError) as exc:
-            await provider.generate(_context())
-
-        assert exc.value.retryable is True
+        assert (failed.status_code, failed.retryable) == (None, False)
 
     @pytest.mark.asyncio
     async def test_unknown_error_retryable(self) -> None:
