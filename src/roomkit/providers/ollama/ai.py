@@ -240,7 +240,7 @@ class OllamaAIProvider(AIProvider):
                 elif isinstance(part, AIImagePart):
                     images.append(_ollama_image_payload(part, provider=self._provider_name))
                 elif isinstance(part, AIThinkingPart):
-                    thinking_text = part.thinking
+                    thinking_text += part.thinking
                 elif isinstance(part, AIToolCallPart):
                     tool_calls.append(
                         {
@@ -444,6 +444,7 @@ class OllamaAIProvider(AIProvider):
         finish_reason: str | None = None
         usage: dict[str, int] = {}
         accumulated_tool_calls: list[StreamToolCall] = []
+        ids = CallIds()
 
         try:
             stream = await self._client.chat(**kwargs)
@@ -467,7 +468,7 @@ class OllamaAIProvider(AIProvider):
                 # arguments across chunks the way OpenAI does). Collect
                 # them but defer the yield until the run finishes so
                 # the consumer sees text-then-tools in the natural order.
-                for tc in self._extract_tool_calls(message):
+                for tc in self._extract_tool_calls(message, ids):
                     accumulated_tool_calls.append(
                         StreamToolCall(id=tc.id, name=tc.name, arguments=tc.arguments)
                     )
@@ -511,13 +512,14 @@ class OllamaAIProvider(AIProvider):
             usage["output_tokens"] = int(completion)
         return usage
 
-    def _extract_tool_calls(self, message: Any) -> list[AIToolCall]:
+    def _extract_tool_calls(self, message: Any, ids: CallIds | None = None) -> list[AIToolCall]:
+        """The calls a message carries. Ollama doesn't issue stable tool-call
+        ids: one is minted, unique across turns, for the consumer to pair calls
+        with results by; it is never echoed back to Ollama (its API matches
+        tool results by role+name, not by id). A stream hands every chunk the
+        response's one *ids*, so no two calls of the response share an id."""
         raw_calls = self._get_attr(message, "tool_calls", None) or []
-        # Ollama doesn't issue stable tool-call ids: one is minted, unique
-        # across turns, for the consumer to pair calls with results by. It is
-        # never echoed back to Ollama (its API matches tool results by
-        # role+name, not by id).
-        ids = CallIds()
+        ids = ids if ids is not None else CallIds()
         result: list[AIToolCall] = []
         for tc in raw_calls:
             func = self._get_attr(tc, "function", None)

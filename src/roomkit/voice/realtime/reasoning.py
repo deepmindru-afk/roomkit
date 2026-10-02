@@ -32,7 +32,7 @@ from roomkit.providers.ai.base import (
     AIToolCall,
     AIToolCallPart,
 )
-from roomkit.providers.ai.tool_calls import cut_call_error
+from roomkit.providers.ai.tool_calls import partial_call_error
 from roomkit.tools._outcome import OutcomeKind, ToolOutcome
 from roomkit.tools.result import tool_failure
 
@@ -288,10 +288,11 @@ class AIProviderReasoningBackend(ReasoningBackend):
         results: list[Any] = []
         for tc in calls:
             if tc.partial:
-                # Cut before its arguments were complete: it never runs (RFC §6.4).
-                done = ToolCallResult(json.dumps(cut_call_error(tc.name)), is_error=True)
-            else:
-                done = await self._execute(request, tc.name, tc.arguments)
+                # Its arguments do not read: it never runs (RFC §6.4).
+                error = json.dumps(partial_call_error(tc.name, garbled=tc.garbled))
+                results.append(ToolOutcome(OutcomeKind.REFUSED, error).as_part(tc.id, tc.name))
+                continue
+            done = await self._execute(request, tc.name, tc.arguments)
             kind = OutcomeKind.FAILED if done.is_error else OutcomeKind.SERVED
             results.append(ToolOutcome(kind, done.text).as_part(tc.id, tc.name))
         history.append(AIMessage(role="tool", content=results))

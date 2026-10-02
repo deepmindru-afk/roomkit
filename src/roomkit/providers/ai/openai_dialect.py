@@ -22,11 +22,11 @@ from roomkit.providers.ai.base import (
     StreamToolCallDelta,
 )
 from roomkit.providers.ai.tool_calls import (
-    CallIds,
     arguments_cut,
-    call_cut,
+    call_garbled,
     minted_call_id,
     tool_arguments,
+    unreadable_arguments,
 )
 
 _THINK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
@@ -178,13 +178,14 @@ class ToolCallSlots:
     another call: a server that sends each call whole may tag every one with
     index 0 (Mistral's SDK defaults it), and folding them together would run
     one call made of two. Each slot holds its call's id from the start, the
-    server's or a minted one, so the composition events carry the id the call
-    ends with (RFC §6.4).
+    server's or a minted one, and keeps it once a composition event named the
+    call by it, so the events carry the id the call ends with (RFC §6.4).
     """
 
     def __init__(self) -> None:
         self._slots: list[dict[str, str]] = []
         self._by_index: dict[int, int] = {}
+        self._taken: set[str] = set()
 
     def fold(
         self, index: int | None, call_id: str | None, name: str | None, fragment: str
@@ -193,40 +194,63 @@ class ToolCallSlots:
         key = index if index is not None else 0
         position = self._by_index.get(key)
         if position is None or self._starts_another_call(position, call_id, name, fragment):
-            self._slots.append(
-                {"id": minted_call_id(name or "tool"), "minted": "1", "name": "", "arguments": ""}
-            )
+            self._slots.append(self._new_slot(name))
             position = self._by_index[key] = len(self._slots) - 1
         slot = self._slots[position]
-        if call_id and slot["minted"]:
-            slot["id"], slot["minted"] = call_id, ""
-        return fold_tool_call_fragment(slot, position, name, fragment)
+        self._adopt_server_id(slot, call_id)
+        delta = fold_tool_call_fragment(slot, position, name, fragment)
+        if delta is not None:
+            slot["announced"] = "1"
+        return delta
+
+    def _new_slot(self, name: str | None) -> dict[str, str]:
+        call_id = minted_call_id(name or "tool")
+        self._taken.add(call_id)
+        return {"id": call_id, "minted": "1", "announced": "", "name": "", "arguments": ""}
+
+    def _adopt_server_id(self, slot: dict[str, str], call_id: str | None) -> None:
+        """Give a call the server's id in place of its minted one, unless an
+        event already named the call by the minted one or another call of the
+        response holds the server's."""
+        if not call_id or not slot["minted"] or slot["announced"] or call_id in self._taken:
+            return
+        self._taken.discard(slot["id"])
+        self._taken.add(call_id)
+        slot["id"], slot["minted"] = call_id, ""
 
     def _starts_another_call(
         self, position: int, call_id: str | None, name: str | None, fragment: str
     ) -> bool:
         """Whether a fragment on an occupied index is the start of another call.
 
-        Another id says so. Without ids, the dialect names a call once, on its
-        first fragment: a named fragment bringing arguments while the held
-        call's arguments already form whole JSON is a new call.
+        Another server id says so. Without one, only a name can: another name
+        once the held call is whole (no arguments, or complete JSON), or the
+        same name bringing arguments of its own after whole ones, a second
+        call to the same tool. A server may repeat a call's name on every
+        fragment, so the same name with nothing or blanks starts nothing.
         """
         slot = self._slots[position]
         if call_id and not slot["minted"] and call_id != slot["id"]:
             return True
+        if not name or not slot["name"]:
+            return False
         held = slot["arguments"]
-        return bool(name and fragment and held.strip() and not arguments_cut(held))
+        whole = not arguments_cut(held)
+        if name != slot["name"]:
+            return whole
+        return bool(fragment.strip()) and bool(held.strip()) and whole
 
     def calls(self, finish_reason: str | None) -> list[StreamToolCall]:
         """The complete calls, each with its own id and its arguments as a
-        mapping; one whose arguments the response cut short is partial."""
-        ids = CallIds()
+        mapping; one whose arguments do not read is partial, and cut when the
+        response was cut short over them."""
         return [
             StreamToolCall(
-                id=ids(slot["id"], slot["name"]),
+                id=slot["id"],
                 name=slot["name"],
                 arguments=tool_arguments(slot["arguments"]),
-                partial=call_cut(slot["arguments"], finish_reason),
+                partial=unreadable_arguments(slot["arguments"]),
+                garbled=call_garbled(slot["arguments"], finish_reason),
             )
             for slot in self._slots
         ]

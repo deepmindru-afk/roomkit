@@ -50,7 +50,12 @@ from roomkit.providers.ai.response_schema import (
     checked_stream,
     schema_for_generate,
 )
-from roomkit.providers.ai.tool_calls import CallIds, call_cut, tool_arguments
+from roomkit.providers.ai.tool_calls import (
+    CallIds,
+    call_garbled,
+    tool_arguments,
+    unreadable_arguments,
+)
 from roomkit.providers.ai.tool_declaration import ToolNameRule, chat_tool_declarations
 from roomkit.providers.openai.config import OpenAIConfig
 from roomkit.providers.openai.models import MODELS
@@ -427,7 +432,8 @@ class OpenAIAIProvider(AIProvider):
                         id=ids(tc.id, tc.function.name),
                         name=tc.function.name,
                         arguments=tool_arguments(raw),
-                        partial=call_cut(raw, finish_reason),
+                        partial=unreadable_arguments(raw),
+                        garbled=call_garbled(raw, finish_reason),
                     )
                 )
 

@@ -57,7 +57,7 @@ from roomkit.providers.ai.base import (
     AITool,
     AIToolResultPart,
 )
-from roomkit.providers.ai.tool_calls import cut_call_error
+from roomkit.providers.ai.tool_calls import partial_call_error
 from roomkit.sandbox.tools import SANDBOX_TOOL_PREFIX, TOOL_SANDBOX_BASH
 from roomkit.telemetry.base import SpanKind
 from roomkit.telemetry.redaction import redact
@@ -205,10 +205,16 @@ def _tool_name(tool: AITool) -> str:
     return tool.name
 
 
-def _cut_call_error(tc: Any) -> dict[str, Any]:
-    """What the model reads for a call cut before its arguments were complete."""
-    logger.warning("Provider cut tool call %s (%s) before its arguments ended", tc.name, tc.id)
-    return cut_call_error(tc.name)
+def _partial_call_error(tc: Any) -> dict[str, Any]:
+    """What the model reads for a call whose arguments do not read."""
+    garbled = getattr(tc, "garbled", False)
+    logger.warning(
+        "Provider %s tool call %s (%s): it does not run",
+        "sent unreadable arguments for" if garbled else "cut",
+        tc.name,
+        tc.id,
+    )
+    return partial_call_error(tc.name, garbled=garbled)
 
 
 class AIToolsMixin:
@@ -521,9 +527,9 @@ class AIToolsMixin:
         self, tc: Any, declared_tools: list[AITool] | None
     ) -> tuple[dict[str, Any] | None, GateRefusal | None]:
         """The schema the call is checked against, or why the call cannot run
-        at all: cut short, withdrawn for the turn, or not declared."""
+        at all: its arguments unreadable, withdrawn for the turn, or not declared."""
         if getattr(tc, "partial", False):
-            return None, _refused_with(_cut_call_error(tc))
+            return None, _refused_with(_partial_call_error(tc))
         # A tool BEFORE_AI_GENERATION withdrew is gone for the turn, the
         # channel's own included: no exemption below may bring it back.
         if tc.name in self._get_loop_ctx().withdrawn_tools:

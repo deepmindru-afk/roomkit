@@ -23,6 +23,7 @@ from roomkit.providers.ai.base import (
     StreamToolCall,
     StreamToolCallDelta,
     is_context_overflow_message,
+    tool_call_of,
 )
 from roomkit.providers.ai.chat_request import OPENAI_CHAT, ChatDialect, chat_messages
 from roomkit.providers.ai.image_parts import (
@@ -36,9 +37,13 @@ from roomkit.providers.ai.response_schema import ResponseSchemaError
 from roomkit.providers.ai.tool_calls import (
     CallIds,
     call_cut,
+    call_garbled,
     cut_call_error,
     is_truncation,
+    partial_call_error,
     tool_arguments,
+    unreadable_arguments,
+    unreadable_call_error,
 )
 from roomkit.providers.ai.tool_declaration import (
     ToolNameRule,
@@ -75,6 +80,7 @@ __all__ = [
     "StreamToolCallDelta",
     "ToolNameRule",
     "call_cut",
+    "call_garbled",
     "chat_messages",
     "chat_tool_declarations",
     "check_portable_schema",
@@ -85,6 +91,10 @@ __all__ = [
     "image_part_uri",
     "is_context_overflow_message",
     "is_truncation",
+    "partial_call_error",
     "schema_mismatch",
     "tool_arguments",
+    "tool_call_of",
+    "unreadable_arguments",
+    "unreadable_call_error",
 ]

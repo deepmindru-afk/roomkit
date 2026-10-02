@@ -26,6 +26,7 @@ from roomkit.providers.ai.base import (
     StreamTextDelta,
     StreamThinkingDelta,
     StreamToolCall,
+    tool_call_of,
 )
 from roomkit.providers.ai.response_schema import checked_stream, schema_for_generate
 from roomkit.providers.gemini.config import GeminiConfig
@@ -105,19 +106,28 @@ def _usage_from_metadata(meta: Any) -> dict[str, int]:
     return usage
 
 
-def _call_key(fc: Any, name: str, args: dict[str, Any], in_chunk: dict[str, int]) -> str:
+def _call_key(
+    fc: Any,
+    name: str,
+    args: dict[str, Any],
+    in_chunk: dict[str, int],
+    calls: dict[str, dict[str, Any]],
+) -> str:
     """Which call of the response a function-call part is.
 
     Gemini can re-emit a call in a later chunk (the first carrying its
     thought_signature), and a re-emission must fold into it; but two
-    identical calls in one chunk ("roll two dice") are two calls. The call's
-    own id identifies it when Gemini gives one; otherwise its name and
-    arguments do, counted within the chunk, so a later chunk's re-emission
-    lands on the first occurrence.
+    identical calls in one chunk ("roll two dice") are two calls. A call's
+    own id identifies it when an earlier part carried the same; otherwise its
+    name and arguments do, counted within the chunk, so a later chunk's
+    re-emission lands on the first occurrence whether either copy carries an
+    id or not. Two copies carrying different ids are two calls (RFC §6.4).
     """
     call_id = getattr(fc, "id", None)
     if call_id:
-        return f"id::{call_id}"
+        for key, call in calls.items():
+            if call["server_id"] == call_id:
+                return key
     try:
         fingerprint = json.dumps(args, sort_keys=True, default=str)
     except (TypeError, ValueError):
@@ -125,7 +135,11 @@ def _call_key(fc: Any, name: str, args: dict[str, Any], in_chunk: dict[str, int]
     base = f"{name}::{fingerprint}"
     occurrence = in_chunk.get(base, 0)
     in_chunk[base] = occurrence + 1
-    return f"{base}#{occurrence}"
+    key = f"{base}#{occurrence}"
+    held = calls.get(key)
+    if call_id and held is not None and held["server_id"] not in (None, call_id):
+        return f"{key}@{call_id}"
+    return key
 
 
 class GeminiAIProvider(AIProvider):
@@ -340,18 +354,21 @@ class GeminiAIProvider(AIProvider):
                             if isinstance(raw_sig, bytes)
                             else raw_sig
                         )
-                        key = _call_key(fc, fc_name, fc_args, in_chunk)
+                        key = _call_key(fc, fc_name, fc_args, in_chunk, fcalls)
                         if key not in fcalls:
                             fcalls[key] = {
                                 "id": f"call_{uuid4().hex[:12]}",
+                                "server_id": getattr(fc, "id", None) or None,
                                 "name": fc_name,
                                 "arguments": fc_args,
                                 "signature": sig,
                             }
                             fcall_order.append(key)
-                        elif fcalls[key]["signature"] is None and sig is not None:
-                            # Re-emission carried the signature the first did not.
-                            fcalls[key]["signature"] = sig
+                        else:
+                            # A re-emission keeps what either copy carries.
+                            held = fcalls[key]
+                            held["signature"] = held["signature"] or sig
+                            held["server_id"] = held["server_id"] or getattr(fc, "id", None)
 
             if fcall_order:
                 logger.debug(
@@ -415,15 +432,7 @@ class GeminiAIProvider(AIProvider):
             elif isinstance(event, StreamTextDelta):
                 text_parts.append(event.text)
             elif isinstance(event, StreamToolCall):
-                tool_calls.append(
-                    AIToolCall(
-                        id=event.id,
-                        name=event.name,
-                        arguments=event.arguments,
-                        metadata=event.metadata,
-                        partial=event.partial,
-                    )
-                )
+                tool_calls.append(tool_call_of(event))
             elif isinstance(event, StreamDone):
                 done_event = event
 

@@ -68,7 +68,12 @@ from roomkit.providers.ai.response_schema import (
     checked_stream,
     schema_for_generate,
 )
-from roomkit.providers.ai.tool_calls import CallIds, call_cut, tool_arguments
+from roomkit.providers.ai.tool_calls import (
+    CallIds,
+    call_garbled,
+    tool_arguments,
+    unreadable_arguments,
+)
 from roomkit.providers.ai.tool_declaration import chat_tool_declarations
 from roomkit.providers.polargrid.config import PolarGridConfig
 from roomkit.providers.polargrid.models import (
@@ -531,7 +536,8 @@ class PolarGridAIProvider(AIProvider):
                     id=ids(getattr(tc, "id", None), name),
                     name=name,
                     arguments=tool_arguments(raw),
-                    partial=call_cut(raw, finish_reason),
+                    partial=unreadable_arguments(raw),
+                    garbled=call_garbled(raw, finish_reason),
                 )
             )
         return result

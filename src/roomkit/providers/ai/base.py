@@ -80,8 +80,13 @@ class AIToolCall(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
     partial: bool = False
-    """The output cap cut the call before its arguments were complete; the
-    tool loop does not run it and tells the model why (RFC §6.4)."""
+    """The call's arguments do not read as an object: the tool loop does not
+    run it and tells the model why (RFC §6.4)."""
+    garbled: bool = False
+    """The model wrote this ``partial`` call's arguments unreadable: the
+    response was not cut short over them. A partial call that is not garbled
+    was cut (the output cap, a content filter, a stream that ended without a
+    stop reason), and the model reads which (RFC §6.4)."""
 
 
 class AIToolCallPart(BaseModel):
@@ -468,7 +473,9 @@ class StreamToolCall(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
     partial: bool = False
-    """As :attr:`AIToolCall.partial`: the output cap cut the call's arguments."""
+    """As :attr:`AIToolCall.partial`: the call's arguments do not read."""
+    garbled: bool = False
+    """As :attr:`AIToolCall.garbled`: written unreadable, not cut."""
 
 
 class StreamToolCallDelta(BaseModel):
@@ -509,6 +516,18 @@ StreamEvent = (
 )
 
 
+def tool_call_of(event: StreamToolCall) -> AIToolCall:
+    """The tool call a streamed one is, every field it carries kept."""
+    return AIToolCall(
+        id=event.id,
+        name=event.name,
+        arguments=event.arguments,
+        metadata=event.metadata,
+        partial=event.partial,
+        garbled=event.garbled,
+    )
+
+
 def response_stream_events(
     response: AIResponse,
     call_deltas: Callable[[AIToolCall], Iterable[StreamToolCallDelta]] | None = None,
@@ -536,6 +555,7 @@ def response_stream_events(
             arguments=call.arguments,
             metadata=call.metadata,
             partial=call.partial,
+            garbled=call.garbled,
         )
     yield StreamDone(
         finish_reason=response.finish_reason,

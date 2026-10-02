@@ -90,6 +90,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`[A-Za-z0-9_-]{1,128}`), Gemini (a dot and a colon accepted, a leading
   digit not) and Mistral (a dot accepted, a colon not); a server behind a
   `base_url` decides its names.
+- **BREAKING — a tool call whose arguments do not read as an object never
+  runs** (RMK-309, RFC §6.4), on every provider and whatever stop reason the
+  response gave: invalid JSON, an array or a scalar marks the call
+  `partial`, where only a call the output cap or a content filter cut was,
+  and a tool whose schema required nothing ran with `{"raw": …}`. The model
+  reads why: cut (the response was cut short, a stream that stopped without
+  a stop reason included) or written unreadable, which a provider marks with
+  the new `AIToolCall.garbled` / `StreamToolCall.garbled`; `partial` alone
+  still reads as cut. `unreadable_arguments`, `call_garbled`,
+  `partial_call_error` and `tool_call_of` join the helpers of
+  `roomkit.providers.ai`.
 - `declared_parameters`, `chat_tool_declarations` and `ToolNameRule`, in
   `roomkit.providers.ai`: the declaration every provider builds from (RMK-309).
 - OpenAI and its derivatives, Mistral and PolarGrid render a conversation
@@ -225,6 +236,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   provider and realtime session (RMK-309): Anthropic refused the empty map it
   was sent with a 400, and Mistral and Anthropic refuse a declaration without
   a schema.
+- Streamed tool calls stay apart and keep their id (RMK-309, RMK-301): a call
+  without arguments followed by another on the same index lost the first, a
+  name-only first fragment merged two calls under `raw`, and a name repeated
+  on every fragment followed by blanks made a phantom call; a composition
+  event named a call by an id it did not end with when two calls shared a
+  server id or the id came after the first fragment. Gemini folds a call
+  re-emitted in a later chunk whichever copy carries an id, where one with
+  and one without ran twice. Anthropic hands two blocks under one server id
+  their own ids and runs both, where the second was dropped; Ollama mints
+  ids once per response and replays every reasoning part of a message.
 
 - A Vui preset voice is prefilled with its speaker token and its baked
   conditioning bias, as Vui's own server renders it (RMK-197): the bias was

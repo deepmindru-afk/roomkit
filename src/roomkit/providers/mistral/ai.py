@@ -21,6 +21,7 @@ from roomkit.providers.ai.base import (
     StreamTextDelta,
     StreamThinkingDelta,
     StreamToolCall,
+    tool_call_of,
 )
 from roomkit.providers.ai.chat_request import ChatDialect, chat_messages
 from roomkit.providers.ai.openai_dialect import (
@@ -338,14 +339,7 @@ class MistralAIProvider(AIProvider):
             elif isinstance(event, StreamTextDelta):
                 text_parts.append(event.text)
             elif isinstance(event, StreamToolCall):
-                tool_calls.append(
-                    AIToolCall(
-                        id=event.id,
-                        name=event.name,
-                        arguments=event.arguments,
-                        partial=event.partial,
-                    )
-                )
+                tool_calls.append(tool_call_of(event))
             elif isinstance(event, StreamDone):
                 done_event = event
 

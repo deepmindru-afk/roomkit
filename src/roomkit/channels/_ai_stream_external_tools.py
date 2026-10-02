@@ -17,7 +17,7 @@ from roomkit.models.enums import ChannelType
 from roomkit.models.streaming import StreamDelta, ToolCallEndMarker, ToolCallStartMarker
 from roomkit.models.tool_call import ToolCallEvent, ToolCallObserver
 from roomkit.providers.ai.base import StreamToolCall
-from roomkit.providers.ai.tool_calls import cut_call_error
+from roomkit.providers.ai.tool_calls import partial_call_error
 from roomkit.realtime.base import EphemeralEventType
 from roomkit.tools._outcome import OutcomeKind, ToolOutcome
 from roomkit.tools.external import ExternalToolHandler
@@ -121,7 +121,8 @@ class _ExternalStreamTools:
         refuse, rewrite or serve.
         """
         if call.partial:
-            return arguments, json.dumps(cut_call_error(call.name)), OutcomeKind.REFUSED
+            error = partial_call_error(call.name, garbled=call.garbled)
+            return arguments, json.dumps(error), OutcomeKind.REFUSED
         decision = await handler.process_tool_call(
             call.name, arguments, tool_call_id=call.id, room_id=self.room_id
         )

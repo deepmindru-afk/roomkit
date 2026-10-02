@@ -27,9 +27,15 @@ from roomkit.providers.ai.base import (
     StreamToolCall,
     StreamToolCallDelta,
     request_api_key,
+    tool_call_of,
 )
 from roomkit.providers.ai.response_schema import checked_stream, schema_for_generate
-from roomkit.providers.ai.tool_calls import arguments_cut, is_truncation, tool_arguments
+from roomkit.providers.ai.tool_calls import (
+    CallIds,
+    is_truncation,
+    tool_arguments,
+    unreadable_arguments,
+)
 from roomkit.providers.anthropic.config import AnthropicConfig
 from roomkit.providers.anthropic.models import MODELS
 from roomkit.providers.anthropic.request import build_kwargs
@@ -283,7 +289,8 @@ class AnthropicAIProvider(AIProvider):
         try:
             # Track in-progress tool_use blocks for real-time streaming
             _tool_blocks: dict[int, dict[str, Any]] = {}  # index → {id, name, input_json}
-            _yielded_tool_ids: set[str] = set()
+            _yielded_tool_ids: set[str] = set()  # the server's ids
+            ids = CallIds()
 
             async with client.messages.stream(**kwargs) as stream:
                 async for event in stream:
@@ -294,7 +301,8 @@ class AnthropicAIProvider(AIProvider):
                         cb = event.content_block
                         if hasattr(cb, "type") and cb.type == "tool_use":
                             _tool_blocks[event.index] = {
-                                "id": cb.id,
+                                "id": ids(cb.id, cb.name),
+                                "server_id": cb.id,
                                 "name": cb.name,
                                 "input_json": "",
                             }
@@ -302,7 +310,7 @@ class AnthropicAIProvider(AIProvider):
                             # byte: emit it at once so a host can say what is
                             # being composed for the whole composition.
                             yield StreamToolCallDelta(
-                                id=cb.id,
+                                id=_tool_blocks[event.index]["id"],
                                 name=cb.name,
                                 index=event.index,
                                 arguments_delta="",
@@ -345,16 +353,17 @@ class AnthropicAIProvider(AIProvider):
                         idx = event.index
                         if idx in _tool_blocks:
                             tb = _tool_blocks.pop(idx)
-                            if tb["id"] not in _yielded_tool_ids:
-                                _yielded_tool_ids.add(tb["id"])
-                                # A complete tool_use always parses: one that
-                                # does not was cut by max_tokens (RFC §6.4).
-                                yield StreamToolCall(
-                                    id=tb["id"],
-                                    name=tb["name"],
-                                    arguments=tool_arguments(tb["input_json"]),
-                                    partial=arguments_cut(tb["input_json"]),
-                                )
+                            # Every closed block is a call of its own, even
+                            # under a server id another one carried (RFC §6.4).
+                            _yielded_tool_ids.add(tb["server_id"])
+                            # A complete tool_use always parses: one that
+                            # does not was cut by max_tokens (RFC §6.4).
+                            yield StreamToolCall(
+                                id=tb["id"],
+                                name=tb["name"],
+                                arguments=tool_arguments(tb["input_json"]),
+                                partial=unreadable_arguments(tb["input_json"]),
+                            )
 
                 final = await stream.get_final_message()
 
@@ -363,7 +372,7 @@ class AnthropicAIProvider(AIProvider):
             for block in final.content:
                 if block.type == "tool_use" and block.id not in _yielded_tool_ids:
                     yield StreamToolCall(
-                        id=block.id,
+                        id=ids(block.id, block.name),
                         name=block.name,
                         arguments=tool_arguments(block.input),
                         partial=is_truncation(final.stop_reason),
@@ -418,14 +427,7 @@ class AnthropicAIProvider(AIProvider):
             elif isinstance(event, StreamTextDelta):
                 text_parts.append(event.text)
             elif isinstance(event, StreamToolCall):
-                tool_calls.append(
-                    AIToolCall(
-                        id=event.id,
-                        name=event.name,
-                        arguments=event.arguments,
-                        partial=event.partial,
-                    )
-                )
+                tool_calls.append(tool_call_of(event))
             elif isinstance(event, StreamDone):
                 done_event = event
 

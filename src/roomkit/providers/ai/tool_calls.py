@@ -2,9 +2,9 @@
 
 Each provider reads its own wire, but the loop must receive one thing for one
 call (RFC §6.4): a mapping of arguments and never an error, an id no other
-call of the response carries, and a mark on a call the output cap cut before
-its arguments were complete. The rules live here once, so a provider cannot
-drift from the others by reading its wire its own way.
+call of the response carries, and a mark on a call whose arguments do not
+read, which never runs. The rules live here once, so a provider cannot drift
+from the others by reading its wire its own way.
 """
 
 from __future__ import annotations
@@ -60,30 +60,41 @@ def tool_arguments(raw: Any) -> dict[str, Any]:
     A mapping passes through. No arguments (nothing, blank text, JSON
     ``null``) are ``{}``. Text that parses to a JSON object is that object;
     anything else (invalid JSON, an array, a fragment the output cap cut) is
-    kept whole under ``raw``.
+    kept whole under ``raw``, and the call is ``partial``
+    (:func:`unreadable_arguments`).
     """
+    read = _read_arguments(raw)
+    return {"raw": raw} if read is None else read
+
+
+def unreadable_arguments(raw: Any) -> bool:
+    """Whether a call's arguments do not read as an object, which makes the
+    call ``partial``: it never runs, whatever the provider and whatever stop
+    reason the response gave (RFC §6.4)."""
+    return _read_arguments(raw) is None
+
+
+def _read_arguments(raw: Any) -> dict[str, Any] | None:
+    """A call's arguments as a mapping, or ``None`` when they do not read as one."""
     if isinstance(raw, dict):
         return raw
     if raw is None or (isinstance(raw, str) and not raw.strip()):
         return {}
     if not isinstance(raw, str):
-        return {"raw": raw}
+        return None
     try:
         parsed = json.loads(raw)
     except (ValueError, RecursionError):
-        return {"raw": raw}
+        return None
     if parsed is None:
         return {}
-    return parsed if isinstance(parsed, dict) else {"raw": raw}
+    return parsed if isinstance(parsed, dict) else None
 
 
 def arguments_cut(raw: Any) -> bool:
-    """Whether argument text is not valid JSON.
-
-    In a response cut short, what the cut left of a call (see
-    :func:`call_cut`); complete JSON that is not an object (an array) is
-    whole, however unusable.
-    """
+    """Whether argument text is not valid JSON: what a cut leaves of a call
+    still being written. Complete JSON that is not an object (an array) is
+    whole, however unusable."""
     if not isinstance(raw, str) or not raw.strip():
         return False
     try:
@@ -94,25 +105,49 @@ def arguments_cut(raw: Any) -> bool:
 
 
 def call_cut(raw: Any, finish_reason: str | None) -> bool:
-    """Whether a call's arguments were cut before they were complete.
-
-    The response ended on something that stops a call mid-arguments (the
-    output cap, a content filter) and the call's argument text is not valid
-    JSON. A call marked so is ``partial`` and never runs (RFC §6.4).
-    """
-    if finish_reason is None or finish_reason.lower() not in _CALL_CUTTING_FINISH_REASONS:
+    """Whether the response was cut short over a call's arguments: they do not
+    read, and the response ended on something that stops a call mid-arguments
+    (the output cap, a content filter) or on nothing at all, a stream that
+    stopped without a stop reason. The call is ``partial`` and ``cut``."""
+    if finish_reason is not None and finish_reason.lower() not in _CALL_CUTTING_FINISH_REASONS:
         return False
-    return arguments_cut(raw)
+    return unreadable_arguments(raw)
+
+
+def call_garbled(raw: Any, finish_reason: str | None) -> bool:
+    """Whether the model wrote a call's arguments unreadable: they do not
+    read, and the response ended on its own, not cut short over them
+    (:func:`call_cut`). The call is ``partial`` and ``garbled``."""
+    return unreadable_arguments(raw) and not call_cut(raw, finish_reason)
+
+
+def partial_call_error(name: str, *, garbled: bool) -> dict[str, Any]:
+    """What the model reads for a ``partial`` call: nothing ran, and why."""
+    return unreadable_call_error(name) if garbled else cut_call_error(name)
 
 
 def cut_call_error(name: str) -> dict[str, Any]:
-    """What the model reads for a ``partial`` call: it was cut, nothing ran."""
+    """What the model reads for a call the response cut: nothing ran."""
     return {
         "error": "Tool call cut off",
         "tool": name,
         "hint": (
             "This call was cut off before its arguments were complete, so it did "
             "not run. Call it again, with shorter arguments if you can."
+        ),
+    }
+
+
+def unreadable_call_error(name: str) -> dict[str, Any]:
+    """What the model reads for a call written with unreadable arguments:
+    nothing ran."""
+    return {
+        "error": "Tool call arguments unreadable",
+        "tool": name,
+        "hint": (
+            "This call's arguments are not a JSON object, so it did not run. Call "
+            "it again with arguments that are a valid JSON object matching the "
+            "tool's parameters."
         ),
     }
 
