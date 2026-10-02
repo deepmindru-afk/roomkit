@@ -15,8 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   PCM; the speech API takes no conversation context, so the provider stays
   at `TTSContextLevel.NONE`. `voice` takes a short id (`maeve`), resolved to
   the id of the model Fluxions currently serves and resolved again once when
-  a render answers 404, or a full id. `list_voices()` lists the hosted voices
-  and the account's cloned ones. See `examples/voice_fluxions.py`.
+  a render answers 404, or a full id. `list_voices()` lists the hosted voices,
+  then the account's cloned voices (`GET /vui/v1/voices/mine`). See
+  `examples/voice_fluxions.py`.
 
 - `roomkit.providers.ai.model_tags`: the `transcription` and `speech`
   capability tags (`TRANSCRIPTION_CAPABILITY`, `SPEECH_CAPABILITY`), and

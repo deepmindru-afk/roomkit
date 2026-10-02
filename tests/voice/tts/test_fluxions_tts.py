@@ -24,22 +24,29 @@ def _voice(short: str, full: str, **extra: object) -> dict[str, object]:
 class _Chunks(httpx.AsyncByteStream):
     def __init__(self, chunks: list[bytes]) -> None:
         self._chunks = chunks
+        self.closed = False
 
     async def __aiter__(self) -> AsyncIterator[bytes]:
         for chunk in self._chunks:
             yield chunk
 
+    async def aclose(self) -> None:
+        self.closed = True
+
 
 class FakeFluxions:
-    """Serves ``/vui/voices`` from ``catalogs`` (one per listing) and renders ``audio``."""
+    """Serves the voice lists (``catalogs``, one per listing, then ``mine``) and renders."""
 
     def __init__(
         self,
         catalogs: list[list[dict[str, object]]],
         audio: list[bytes] | None = None,
         render_status: Callable[[str], int] = lambda voice: 200,
+        mine: list[dict[str, object]] | None = None,
     ) -> None:
         self.catalogs = catalogs
+        self.mine = mine or []
+        self.streams: list[_Chunks] = []
         self.audio = audio if audio is not None else [b"\x01\x00\x02\x00"]
         self.render_status = render_status
         self.listings = 0
@@ -50,12 +57,15 @@ class FakeFluxions:
             catalog = self.catalogs[min(self.listings, len(self.catalogs) - 1)]
             self.listings += 1
             return httpx.Response(200, json={"voices": catalog})
+        if request.url.path == "/vui/v1/voices/mine":
+            return httpx.Response(200, json={"voices": self.mine})
         self.renders.append(request)
         voice = json.loads(request.content)["voice"]
         status = self.render_status(voice)
         if status != 200:
             return httpx.Response(status, json={"detail": f"render failed: {voice}"})
-        return httpx.Response(200, stream=_Chunks(self.audio))
+        self.streams.append(_Chunks(self.audio))
+        return httpx.Response(200, stream=self.streams[-1])
 
 
 def _provider(fake: FakeFluxions, **config: object) -> FluxionsTTSProvider:
@@ -98,6 +108,16 @@ class TestRender:
         assert all(len(c.data) % 2 == 0 for c in chunks)
         assert all(c.sample_rate == SAMPLE_RATE for c in chunks)
         assert chunks[-1].is_final and chunks[-1].data == b""
+
+    async def test_closing_the_stream_closes_the_render(self) -> None:
+        """A barge-in closes the stream: the HTTP response goes with it."""
+        fake = FakeFluxions([[_voice("maeve", "maeve.h1")]], audio=[b"\x00\x00"] * 50)
+        stream = _provider(fake).synthesize_stream("Hi.")
+
+        await anext(stream)
+        await stream.aclose()
+
+        assert fake.streams[0].closed
 
     async def test_a_voice_the_list_does_not_carry_is_passed_as_given(self) -> None:
         fake = FakeFluxions([[_voice("maeve", "maeve.h1")]])
@@ -175,11 +195,43 @@ class TestVoices:
 
         voices = await _provider(fake).list_voices()
 
-        assert [(v.id, v.gender, v.accent, v.description) for v in voices] == [
-            ("maeve", "female", "Irish", None),
-            ("harry", None, None, "calm"),
+        assert [(v.id, v.gender, v.accent, v.attributes) for v in voices] == [
+            ("maeve", "female", "Irish", {}),
+            ("harry", None, None, {"style": "calm"}),
         ]
         assert [v.id for v in await _provider(fake).list_voices(gender="female")] == ["maeve"]
+
+    async def test_the_accounts_cloned_voices_are_listed_and_rendered(self) -> None:
+        fake = FakeFluxions(
+            [[_voice("maeve", "maeve.h1")]], mine=[{"voice_id": "u-42", "name": "Me"}]
+        )
+        provider = _provider(fake)
+
+        assert [(v.id, v.name) for v in await provider.list_voices()] == [
+            ("maeve", "Maeve"),
+            ("u-42", "Me"),
+        ]
+        await _pcm(provider, voice="u-42")
+        assert json.loads(fake.renders[0].content)["voice"] == "u-42"
+
+    async def test_a_list_without_short_ids_still_lists_and_renders(self) -> None:
+        """The documented shape carries ``voice_id`` alone."""
+        fake = FakeFluxions([[{"voice_id": "maeve.h1", "preview_text": "Hello."}]])
+        provider = _provider(fake, voice="maeve.h1")
+
+        assert [v.id for v in await provider.list_voices()] == ["maeve.h1"]
+        await _pcm(provider)
+        assert json.loads(fake.renders[0].content)["voice"] == "maeve.h1"
+
+    async def test_warmup_warns_about_a_voice_fluxions_does_not_list(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        fake = FakeFluxions([[_voice("maeve", "maeve.h1")]])
+
+        with caplog.at_level("WARNING", logger="roomkit.voice.tts.fluxions"):
+            await _provider(fake, voice="nobody").warmup()
+
+        assert "nobody" in caplog.text
 
 
 class TestProvider:
@@ -192,6 +244,16 @@ class TestProvider:
 
     def test_the_key_stays_out_of_the_config_repr(self) -> None:
         assert "fx-key" not in repr(FluxionsTTSConfig(api_key="fx-key"))
+
+    async def test_the_client_carries_the_key_and_the_api_root(self) -> None:
+        provider = FluxionsTTSProvider(FluxionsTTSConfig(api_key="fx-key", timeout=42.0))
+
+        client = provider._get_client()
+
+        assert client.headers["Authorization"] == "fx-key"
+        assert str(client.base_url) == "https://api.fluxions.ai"
+        assert (client.timeout.read, client.timeout.connect) == (42.0, 5.0)
+        await provider.close()
 
     async def test_close_releases_the_client(self) -> None:
         fake = FakeFluxions([[_voice("maeve", "maeve.h1")]])

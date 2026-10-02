@@ -90,8 +90,15 @@ class FluxionsTTSProvider(TTSProvider):
         return self._client
 
     async def warmup(self) -> None:
-        """Fetch the voice list, which resolves the configured voice."""
-        await self._voice_id(self._config.voice)
+        """Fetch the voice lists and resolve the configured voice.
+
+        It renders nothing: after an idle period, the first render can still
+        wait for Fluxions to start a worker (up to about 30 s).
+        """
+        if await self._entry(self._config.voice) is None:
+            logger.warning(
+                "Fluxions lists no voice %r: renders pass it as given", self._config.voice
+            )
 
     async def list_voices(
         self,
@@ -100,17 +107,19 @@ class FluxionsTTSProvider(TTSProvider):
         gender: str | None = None,
         query: str | None = None,
     ) -> list[VoiceInfo]:
-        """The voices Fluxions serves, the account's cloned voices included.
+        """The voices Fluxions hosts, then the account's cloned voices.
 
-        Each ``id`` is the voice's short id, which ``voice`` accepts.
+        Each ``id`` is one ``voice`` accepts: a hosted voice's short id, a
+        cloned voice's id.
         """
         voices = [
             VoiceInfo(
-                id=v["id"],
-                name=v.get("name") or v["id"],
+                id=v.get("id") or v["voice_id"],
+                name=v.get("name") or v.get("id") or v["voice_id"],
                 gender=v.get("gender"),
                 accent=v.get("accent"),
-                description=v.get("description") or v.get("style"),
+                description=v.get("description"),
+                attributes={"style": v["style"]} if v.get("style") else {},
             )
             for v in await self._voices()
             if not v.get("hidden")
@@ -118,18 +127,29 @@ class FluxionsTTSProvider(TTSProvider):
         return filter_voices(voices, language=language, gender=gender, query=query)
 
     async def _voices(self, *, refresh: bool = False) -> list[dict[str, Any]]:
+        """The hosted voices, then the account's cloned ones not already among them."""
         if self._catalog is None or refresh:
-            response = await self._get_client().get("/vui/voices")
-            response.raise_for_status()
-            self._catalog = response.json()["voices"]
+            client = self._get_client()
+            hosted_response = await client.get("/vui/voices")
+            hosted_response.raise_for_status()
+            mine_response = await client.get("/vui/v1/voices/mine")
+            mine_response.raise_for_status()
+            hosted = hosted_response.json()["voices"]
+            listed = {v["voice_id"] for v in hosted}
+            mine = [v for v in mine_response.json()["voices"] if v["voice_id"] not in listed]
+            self._catalog = hosted + mine
         return self._catalog
+
+    async def _entry(self, voice: str, *, refresh: bool = False) -> dict[str, Any] | None:
+        for entry in await self._voices(refresh=refresh):
+            if voice in (entry.get("id"), entry["voice_id"]):
+                return entry
+        return None
 
     async def _voice_id(self, voice: str, *, refresh: bool = False) -> str:
         """The id a render takes for *voice*: its short id resolves to the current model's."""
-        for entry in await self._voices(refresh=refresh):
-            if voice in (entry["id"], entry["voice_id"]):
-                return str(entry["voice_id"])
-        return voice  # an id the list does not carry is passed as given
+        entry = await self._entry(voice, refresh=refresh)
+        return str(entry["voice_id"]) if entry else voice  # an unlisted id is passed as given
 
     def _body(self, text: str, voice_id: str) -> dict[str, object]:
         body: dict[str, object] = {"voice": voice_id, "input": text, "response_format": "pcm"}
