@@ -2,9 +2,10 @@
 
 The driver keeps the SDK's client and replaces only its HTTP layer, which
 answers the script as PolarGrid's server writes it. The SDK itself then checks
-each request and builds every object the provider reads: its
-``ChatCompletionResponse``, and a ``ChatCompletionChunk`` per streamed line.
-``requests`` holds the bodies the SDK would post.
+each request and builds the objects the provider reads: its
+``ChatCompletionResponse``, and a ``ChatCompletionChunk`` per streamed line; a
+stream's usage, which the SDK cannot carry, comes through the provider's SDK
+patch. ``requests`` holds the bodies posted.
 """
 
 from __future__ import annotations

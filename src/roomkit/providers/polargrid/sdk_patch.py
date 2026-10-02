@@ -2,8 +2,8 @@
 
 polargrid-sdk can neither ask for a streamed chat's usage nor read it: its
 ``ChatCompletionRequest`` has no ``stream_options`` and its
-``ChatCompletionChunk`` no ``usage`` (measured on 0.10.0), so every streamed
-turn reported no tokens. PolarGrid's server sends the usage on the stream's
+``ChatCompletionChunk`` no ``usage`` (measured on 0.10.0), so a turn streamed
+through the SDK reports no tokens. PolarGrid's server sends the usage on the stream's
 last chunk when ``stream_options.include_usage`` is set (measured on
 2026-10-02, edge yul-01, qwen-3.8-27b), and PolarGrid does not plan to change
 its SDK (2026-10-02).
@@ -12,19 +12,24 @@ its SDK (2026-10-02).
 with the usage asked for and read: the SDK still checks the request, builds
 its body, authenticates and parses every chunk, through its private
 ``_build_chat_completion_body`` and ``_stream_post``. Remove this module and
-call ``client.chat_completion_stream`` again if a release can ask for the
-usage and carries it on a chunk: ``test_the_sdk_still_has_no_streamed_usage``
-in ``tests/test_providers/test_polargrid_sdk_patch.py`` fails on that release.
+call ``client.chat_completion_stream`` again when
+``test_the_sdk_still_cannot_stream_its_usage`` in
+``tests/test_providers/test_polargrid_sdk_patch.py`` fails: the SDK then asks
+for the usage and hands it over itself. ``pyproject.toml`` caps polargrid-sdk
+below its next minor version, since the patch calls the SDK's private methods.
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from types import ModuleType
 from typing import Any
 
 from pydantic import ValidationError as PydanticValidationError
+
+logger = logging.getLogger("roomkit.providers.polargrid")
 
 
 @dataclass(frozen=True)
@@ -37,22 +42,30 @@ class UsageChunk:
 
 def _chunk(sdk: ModuleType, raw: dict[str, Any]) -> Any | None:
     """*raw* as the SDK's ``ChatCompletionChunk``, or ``None`` for a line its
-    type does not hold, which the SDK skips."""
+    type does not hold, which the SDK skips (the closing ``pg_metadata`` line
+    among them)."""
     try:
         return sdk.ChatCompletionChunk(**raw)
     except PydanticValidationError:
+        logger.debug("PolarGrid stream line skipped: %s", raw)
+        return None
+
+
+def _usage(sdk: ModuleType, raw: dict[str, Any]) -> UsageChunk | None:
+    """The usage *raw* carries, or ``None``: usage is a report, and one the
+    SDK's ``TokenUsage`` cannot read must not fail a turn already streamed."""
+    try:
+        return UsageChunk(usage=sdk.TokenUsage(**raw["usage"]))
+    except (PydanticValidationError, TypeError):
+        logger.warning("PolarGrid usage line unreadable, usage dropped: %s", raw["usage"])
         return None
 
 
 def _request(sdk: ModuleType, request: dict[str, Any]) -> Any:
-    """*request* as the SDK's ``ChatCompletionRequest``, refused as it refuses one."""
-    fields = dict(request)
-    fields["messages"] = [
-        sdk.Message(**message) if isinstance(message, dict) else message
-        for message in fields.get("messages") or []
-    ]
+    """*request* as the SDK's ``ChatCompletionRequest``, refused as it refuses
+    one: its messages too are read inside the model."""
     try:
-        return sdk.ChatCompletionRequest(**fields)
+        return sdk.ChatCompletionRequest(**request)
     except PydanticValidationError as exc:
         raise sdk.ValidationError(str(exc)) from exc
 
@@ -72,5 +85,6 @@ async def chat_completion_stream(
         chunk = _chunk(sdk, raw)
         if chunk is not None:
             yield chunk
-        if raw.get("usage"):
-            yield UsageChunk(usage=sdk.TokenUsage(**raw["usage"]))
+        usage = _usage(sdk, raw) if raw.get("usage") else None
+        if usage is not None:
+            yield usage

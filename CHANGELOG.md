@@ -86,6 +86,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The `ollama` extra is capped below 0.7 and the `polargrid` extra below
+  polargrid-sdk 0.11: RoomKit patches both SDKs through private methods until
+  they are fixed upstream (`providers/ollama/sdk_patch.py`,
+  `providers/polargrid/sdk_patch.py`), so a minor release is taken only once
+  the conformance suite has run on it (RMK-383, RMK-384).
+
 - **BREAKING — a tool name no provider accepts is refused when the tool is
   defined** (RMK-309, RFC §6.7): `AITool` raises on an empty name or one with
   a character other than a letter, a digit, `_`, `.`, `:` or `-`, which every

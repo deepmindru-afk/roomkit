@@ -467,8 +467,8 @@ class PolarGridAIProvider(AIProvider):
         tool_call_slots = ToolCallSlots()
         parser = ThinkTagParser()
 
+        stream = sdk_patch.chat_completion_stream(self._sdk, client, request)
         try:
-            stream = sdk_patch.chat_completion_stream(self._sdk, client, request)
             async for chunk in stream:
                 # The usage comes last, as a chunk with no choices.
                 chunk_usage = self._extract_usage(chunk)
@@ -518,6 +518,9 @@ class PolarGridAIProvider(AIProvider):
             raise
         except Exception as exc:
             raise self._wrap_error(exc) from exc
+        finally:
+            # A turn closed early releases the HTTP stream now, not at GC.
+            await _aclose_stream(stream)
 
     # -- Helpers ------------------------------------------------------------
 
