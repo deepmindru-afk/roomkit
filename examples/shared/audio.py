@@ -245,7 +245,8 @@ def build_interruption(*, default: str = "semantic") -> InterruptionConfig:
     """Build the barge-in policy based on the ``INTERRUPTION`` env var.
 
     Env: ``INTERRUPTION=semantic|confirmed|immediate|disabled`` (default from
-    *default*).
+    *default*); ``INTERRUPTION_WAIT_MS`` for how long ``semantic`` waits for
+    the first words (default 2000).
 
     * ``semantic`` — the bot keeps talking through an acknowledgement
       ("okay", "mm-hmm", "d'accord") and stops for anything else, judged on
@@ -258,8 +259,15 @@ def build_interruption(*, default: str = "semantic") -> InterruptionConfig:
     """
     strategy = InterruptionStrategy(os.environ.get("INTERRUPTION", default).lower())
     detector = PhraseBackchannelDetector() if strategy == InterruptionStrategy.SEMANTIC else None
-    logger.info("Barge-in: %s", strategy.value)
-    return InterruptionConfig(strategy=strategy, backchannel_detector=detector)
+    # How long SEMANTIC waits for the first words before judging on duration.
+    # A streaming transducer gives a short word ("okay", "no") 1-1.5 s after it
+    # starts, or only at the end (Nemotron, measured): speech that ends sooner
+    # is judged on its final words instead.
+    wait_ms = int(os.environ.get("INTERRUPTION_WAIT_MS", "2000"))
+    logger.info("Barge-in: %s (words awaited up to %d ms)", strategy.value, wait_ms)
+    return InterruptionConfig(
+        strategy=strategy, backchannel_detector=detector, transcript_wait_ms=wait_ms
+    )
 
 
 def build_turn_detector(*, default: str = "0") -> object | None:

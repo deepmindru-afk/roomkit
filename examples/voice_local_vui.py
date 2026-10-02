@@ -78,6 +78,9 @@ Environment variables:
     --- Barge-in ---
     INTERRUPTION        semantic | confirmed | immediate | disabled (default: semantic:
                         an acknowledgement like "okay" does not stop the voice)
+    INTERRUPTION_WAIT_MS
+                        How long semantic waits for the first words before
+                        judging on duration (default: 2000)
 
     --- Debugging ---
     VOICE_DEBUG         1 to log turn-taking decisions (speech start/end,
