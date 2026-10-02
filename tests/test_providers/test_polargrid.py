@@ -874,6 +874,7 @@ class TestPolarGridModels:
             "whisper-large-v3-turbo",
             "tada-3b-ml",
             "cohere-transcribe-03-2026",
+            "whisper-small",
             "mystery-1b",
         ]
         data = [
@@ -900,6 +901,8 @@ class TestPolarGridModels:
         assert by_id["tada-3b-ml"].capabilities == ["speech"]
         assert by_id["whisper-large-v3-turbo"].capabilities == ["transcription"]
         assert by_id["cohere-transcribe-03-2026"].capabilities == ["transcription"]
+        # An id the catalog does not know is read by its name.
+        assert by_id["whisper-small"].capabilities == ["transcription"]
         assert by_id["mystery-1b"].capabilities == []
 
     def test_available_regions_catalog(self) -> None:

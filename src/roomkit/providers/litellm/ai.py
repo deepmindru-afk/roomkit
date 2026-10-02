@@ -6,6 +6,7 @@ from datetime import date
 from typing import Any, ClassVar
 
 from roomkit.providers.ai.base import AIContext, ModelInfo, ModelPricing
+from roomkit.providers.ai.model_tags import SPEECH_CAPABILITY, TRANSCRIPTION_CAPABILITY
 from roomkit.providers.ai.reasoning import thinking_switch, turn_setting
 from roomkit.providers.litellm.config import LiteLLMConfig
 from roomkit.providers.openai.ai import OpenAIAIProvider
@@ -21,6 +22,14 @@ def _rate_per_million(value: object) -> float | None:
     if isinstance(value, bool) or not isinstance(value, int | float):
         return None
     return value * 1_000_000
+
+
+# LiteLLM's cost-map ``mode`` of a speech model (``whisper-1`` is
+# ``audio_transcription``, ``tts-1`` ``audio_speech``).
+_MODE_TAGS: dict[Any, list[str]] = {
+    "audio_transcription": [TRANSCRIPTION_CAPABILITY],
+    "audio_speech": [SPEECH_CAPABILITY],
+}
 
 
 class LiteLLMAIProvider(OpenAIAIProvider):
@@ -134,7 +143,7 @@ class LiteLLMAIProvider(OpenAIAIProvider):
             models[name] = (
                 parsed if previous is None else self._merge_deployments(previous, parsed)
             )
-        return list(models.values())
+        return self._listing(list(models.values()))
 
     @staticmethod
     def _merge_deployments(a: ModelInfo, b: ModelInfo) -> ModelInfo:
@@ -168,6 +177,7 @@ class LiteLLMAIProvider(OpenAIAIProvider):
             id=a.id,
             context_window=window,
             supports_vision=vision,
+            capabilities=a.capabilities if a.capabilities == b.capabilities else [],
             pricing=a.pricing if a.pricing == b.pricing else None,
         )
 
@@ -192,11 +202,13 @@ class LiteLLMAIProvider(OpenAIAIProvider):
 
         Fields absent from the proxy's cost map stay ``None`` ("unknown") —
         an operator-defined alias the map has never heard of reports nothing,
-        and inventing a window or a price for it would be worse.
+        and inventing a window or a price for it would be worse. Its ``mode``
+        tags a speech model, whatever alias the operator gave it.
         """
         window = info.get("max_input_tokens")
         return ModelInfo(
             id=name,
+            capabilities=list(_MODE_TAGS.get(info.get("mode"), [])),
             context_window=window if isinstance(window, int) else None,
             supports_vision=(
                 info["supports_vision"] if isinstance(info.get("supports_vision"), bool) else None

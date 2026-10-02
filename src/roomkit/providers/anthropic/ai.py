@@ -230,7 +230,7 @@ class AnthropicAIProvider(AIProvider):
         live = [
             ModelInfo(id=m.id, display_name=getattr(m, "display_name", None)) for m in page.data
         ]
-        return self._merge_curated(live)
+        return self._listing(live)
 
     @property
     def supports_response_schema(self) -> bool:

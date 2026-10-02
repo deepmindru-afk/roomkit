@@ -36,6 +36,12 @@ from roomkit.providers.ai.image_parts import (
 )
 from roomkit.providers.ai.json_schema import check_portable_schema, schema_mismatch
 from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.providers.ai.model_tags import (
+    SPEECH_CAPABILITY,
+    TRANSCRIPTION_CAPABILITY,
+    speech_tags,
+    with_speech_tags,
+)
 from roomkit.providers.ai.response_schema import ResponseSchemaError
 from roomkit.providers.ai.round_parts import RoundTranscript, round_parts
 from roomkit.providers.ai.thinking_blocks import ThinkingBlocks
@@ -57,6 +63,8 @@ from roomkit.providers.ai.tool_declaration import (
 )
 
 __all__ = [
+    "SPEECH_CAPABILITY",
+    "TRANSCRIPTION_CAPABILITY",
     "API_KEY_METADATA_KEY",
     "AIContext",
     "AIImagePart",
@@ -102,10 +110,12 @@ __all__ = [
     "round_parts",
     "schema_mismatch",
     "some_vendor_accepts_tool_name",
+    "speech_tags",
     "stream_call_of",
     "thinking_parts_of",
     "tool_arguments",
     "tool_call_of",
     "unreadable_arguments",
     "unreadable_call_error",
+    "with_speech_tags",
 ]

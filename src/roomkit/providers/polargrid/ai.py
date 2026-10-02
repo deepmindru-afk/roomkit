@@ -56,7 +56,6 @@ from roomkit.providers.ai.base import (
     StreamToolCallDelta,
 )
 from roomkit.providers.ai.chat_request import ChatDialect, chat_messages
-from roomkit.providers.ai.model_tags import with_speech_tags
 from roomkit.providers.ai.openai_dialect import (
     ThinkTagParser,
     ToolCallSlots,
@@ -174,8 +173,8 @@ class PolarGridAIProvider(AIProvider):
     @classmethod
     def _curated_index(cls) -> dict[str, ModelInfo]:
         # Public and pilot models alike: a pilot edge lists qwen-3.6-35b-a3b,
-        # and its display name and vision flag should backfill there too. The
-        # speech models an edge lists get their tags the same way.
+        # and its display name and vision flag should backfill there too; the
+        # speech models an edge lists, their display names.
         return CURATED_BY_ID
 
     async def list_models(self) -> list[ModelInfo]:
@@ -187,8 +186,7 @@ class PolarGridAIProvider(AIProvider):
         model type, so the curated catalog backfills display names, vision
         and capabilities: a chat model's, and ``transcription`` or ``speech``
         on a speech model (:data:`~roomkit.providers.polargrid.models.VOICE_MODELS`,
-        then :func:`~roomkit.providers.ai.model_tags.with_speech_tags` for an
-        id the catalog does not know).
+        then the speech tag its name gives an id the catalog does not know).
         """
         client = await self._ensure_client()
         try:
@@ -199,15 +197,15 @@ class PolarGridAIProvider(AIProvider):
             raise self._wrap_error(exc) from exc
         data = getattr(response, "data", None) or []
         live = [self._parse_model(m) for m in data]
-        return with_speech_tags(self._merge_curated(live))
+        return self._listing(live)
 
-    @staticmethod
-    def _parse_model(model: Any) -> ModelInfo:
+    @classmethod
+    def _parse_model(cls, model: Any) -> ModelInfo:
         """Map one SDK ``ModelInfo`` to a roomkit :class:`ModelInfo`: its id,
         with the capability tags the catalog knows for it, an edge sending no
         ``pg_*`` field (measured 2026-10-02)."""
         model_id = str(getattr(model, "id", ""))
-        known = CURATED_BY_ID.get(model_id)
+        known = cls._curated_index().get(model_id)
         return ModelInfo(id=model_id, capabilities=list(known.capabilities) if known else [])
 
     @classmethod

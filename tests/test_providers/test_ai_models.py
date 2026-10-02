@@ -311,6 +311,24 @@ def test_merge_curated_prefers_live_values() -> None:
     assert merged.context_window == 200
 
 
+def test_a_listing_ends_backfilled_and_speech_tagged() -> None:
+    class _Cat(AIProvider):
+        @property
+        def model_name(self) -> str:
+            return "c"
+
+        async def generate(self, context: AIContext) -> AIResponse:
+            return AIResponse(content="")
+
+        @classmethod
+        def available_models(cls) -> list[ModelInfo]:
+            return [ModelInfo(id="a", display_name="A", capabilities=["chat_tools_refused"])]
+
+    listed = _Cat._listing([ModelInfo(id="a"), ModelInfo(id="tts-1")])
+
+    assert [(m.display_name, m.capabilities) for m in listed] == [("A", []), (None, ["speech"])]
+
+
 def test_merge_curated_keeps_a_catalogs_flags_out_of_a_listing() -> None:
     class _Cat(AIProvider):
         @property
@@ -472,6 +490,7 @@ async def test_openai_list_models_maps_and_merges() -> None:
                 return_value=SimpleNamespace(
                     data=[
                         SimpleNamespace(id="gpt-4o"),
+                        SimpleNamespace(id="gpt-6-luna"),
                         SimpleNamespace(id="text-embedding-3"),
                         SimpleNamespace(id="whisper-1"),
                         SimpleNamespace(id="gpt-4o-mini-tts"),
@@ -486,8 +505,9 @@ async def test_openai_list_models_maps_and_merges() -> None:
     assert models["gpt-4o"].supports_vision is True
     # Unknown id from the raw endpoint: passes through with id only.
     assert models["text-embedding-3"].display_name is None
-    # A catalog flag stays out; a speech model is tagged by what it is.
-    assert models["gpt-4o"].capabilities == []
+    # A catalog flag (gpt-6-luna's tools_reasoning_none) stays out; a speech
+    # model is tagged by what it is.
+    assert models["gpt-6-luna"].capabilities == []
     assert models["whisper-1"].capabilities == ["transcription"]
     assert models["gpt-4o-mini-tts"].capabilities == ["speech"]
 

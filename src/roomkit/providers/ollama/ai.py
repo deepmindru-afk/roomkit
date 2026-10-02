@@ -180,7 +180,7 @@ class OllamaAIProvider(AIProvider):
             ModelInfo(id=name, capabilities=caps)
             for name, caps in zip(names, caps_per_model, strict=True)
         ]
-        return self._merge_curated(live)
+        return self._listing(live)
 
     # -- Message + tool conversion ------------------------------------------
 

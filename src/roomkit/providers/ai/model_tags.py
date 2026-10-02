@@ -12,8 +12,10 @@ stays untagged.
 from __future__ import annotations
 
 import re
+from typing import TYPE_CHECKING
 
-from roomkit.providers.ai.base import ModelInfo
+if TYPE_CHECKING:  # base.py imports this module
+    from roomkit.providers.ai.base import ModelInfo
 
 TRANSCRIPTION_CAPABILITY = "transcription"
 """``ModelInfo.capabilities`` tag of a speech-to-text model."""
@@ -37,8 +39,8 @@ def speech_tags(model_id: str) -> list[str]:
 def with_speech_tags(models: list[ModelInfo]) -> list[ModelInfo]:
     """*models*, each one the listing left untagged given its speech tag."""
     return [
-        model.model_copy(update={"capabilities": speech_tags(model.id)})
-        if not model.capabilities and speech_tags(model.id)
+        model.model_copy(update={"capabilities": tags})
+        if not model.capabilities and (tags := speech_tags(model.id))
         else model
         for model in models
     ]

@@ -269,6 +269,34 @@ class TestLiteLLMMetadata:
         assert models["claude-sonnet"].supports_vision is True
         assert models["gpt-5.5"].context_window == 400_000
 
+    async def test_list_models_tags_a_speech_model_by_its_mode_or_its_name(self) -> None:
+        # The cost map's mode tags an operator's alias; a group keeps a tag
+        # its deployments agree on; an alias without a mode is read by name.
+        from roomkit.providers.litellm.ai import LiteLLMAIProvider
+
+        provider = LiteLLMAIProvider.__new__(LiteLLMAIProvider)
+        provider._fetch_model_info = AsyncMock(  # type: ignore[method-assign]
+            return_value=[
+                {"model_name": "stt", "model_info": {"mode": "audio_transcription"}},
+                {"model_name": "voice", "model_info": {"mode": "audio_speech"}},
+                {"model_name": "voice", "model_info": {"mode": "audio_speech"}},
+                {"model_name": "mixed", "model_info": {"mode": "audio_speech"}},
+                {"model_name": "mixed", "model_info": {"mode": "chat"}},
+                {"model_name": "my-whisper", "model_info": {}},
+                {"model_name": "assistant", "model_info": {"mode": "chat"}},
+            ]
+        )
+
+        tags = {m.id: m.capabilities for m in await provider.list_models()}
+
+        assert tags == {
+            "stt": ["transcription"],
+            "voice": ["speech"],
+            "mixed": [],
+            "my-whisper": ["transcription"],
+            "assistant": [],
+        }
+
     async def test_load_balanced_group_promises_only_what_every_deployment_delivers(self) -> None:
         # The router may hand a request to any deployment in the group and the
         # payload order is just routing config — so the merged entry must not

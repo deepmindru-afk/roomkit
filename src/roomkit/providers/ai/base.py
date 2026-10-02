@@ -17,6 +17,7 @@ from roomkit.models.enums import ChannelMediaType, ToolCallOutcome
 from roomkit.models.response_metadata import ResponseMetadata
 from roomkit.models.task import Observation, Task
 from roomkit.providers.ai.json_schema import check_portable_schema
+from roomkit.providers.ai.model_tags import with_speech_tags
 
 if TYPE_CHECKING:
     from roomkit.telemetry.base import TelemetryProvider
@@ -895,6 +896,12 @@ class AIProvider(ABC):
         public edge but live on the edge a pilot customer is pinned to.
         """
         return {m.id: m for m in cls.available_models()}
+
+    @classmethod
+    def _listing(cls, live: list[ModelInfo]) -> list[ModelInfo]:
+        """*live* as every ``list_models()`` returns it: backfilled from the
+        curated catalog, its speech models tagged."""
+        return with_speech_tags(cls._merge_curated(live))
 
     @classmethod
     def _merge_curated(cls, live: list[ModelInfo]) -> list[ModelInfo]:

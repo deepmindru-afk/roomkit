@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `roomkit.providers.ai.model_tags`: the `transcription` and `speech`
+  capability tags (`TRANSCRIPTION_CAPABILITY`, `SPEECH_CAPABILITY`), and
+  `speech_tags` / `with_speech_tags`, which read them off a model id (RMK-389,
+  RFC §6.7 model listings).
+
 - `AIResponse.thinking_parts`, `AIThinkingPart.redacted`, and
   `StreamThinkingDelta.block` / `.redacted` carry a provider's reasoning
   blocks (RMK-377, RFC §6.4); `thinking_parts_of`, `ThinkingBlocks`,
@@ -264,9 +269,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `voxtral-*-tts-*`) by their names (`roomkit.providers.ai.model_tags`), and
   PolarGrid from its catalog, whose edge reports no model type: its chat
   models carry their capability tags too, its speech models (`kokoro-82m`,
-  `tada-3b-ml` among them) theirs (RMK-389). A curated catalog's
-  `capabilities`, mostly internal routing flags, stay out of every other
-  listing.
+  `tada-3b-ml` among them) theirs, and LiteLLM from its cost map's `mode`,
+  whatever alias the operator gave the model (RMK-389). A curated catalog's
+  `capabilities`, mostly internal routing flags, stay out of a live listing:
+  every `list_models()` ends through one `AIProvider._listing`.
 
 - PolarGrid errors keep their HTTP status on `ProviderError.status_code`
   (401, 402, 400, 404, 429, 5xx) from the SDK class each is built from, where

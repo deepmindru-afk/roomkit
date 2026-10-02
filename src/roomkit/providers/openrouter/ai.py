@@ -156,7 +156,7 @@ class OpenRouterAIProvider(OpenAIAIProvider):
         """
         data = await self._fetch_models_json()
         live = [self._parse_model(item) for item in data]
-        return self._merge_curated(live)
+        return self._listing(live)
 
     async def _fetch_models_json(self) -> list[dict[str, Any]]:
         """GET the raw ``/models`` payload and return its ``data`` array."""
