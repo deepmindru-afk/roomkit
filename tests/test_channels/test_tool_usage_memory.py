@@ -591,6 +591,7 @@ class TestToolUsageInContext:
                 "name": "SpotifyPlayback",
                 "arguments": {"action": "skip", "account": "<ACCOUNT_1>"},
                 "result": "Skipped.",
+                "outcome": None,
             }
         ]
         # And the channel-side seam consumes it: the memory rebuilds.

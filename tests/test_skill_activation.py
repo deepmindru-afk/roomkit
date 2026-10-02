@@ -22,8 +22,15 @@ def _registry(tmp_path: Path, *names: str) -> SkillRegistry:
     return registry
 
 
-def _call(name: str, result: str = '{"ok": true}') -> dict[str, object]:
-    return {"name": "activate_skill", "arguments": {"name": name}, "result": result}
+def _call(
+    name: str, result: str = '{"ok": true}', outcome: str | None = "served"
+) -> dict[str, object]:
+    return {
+        "name": "activate_skill",
+        "arguments": {"name": name},
+        "result": result,
+        "outcome": outcome,
+    }
 
 
 class TestActivate:
@@ -134,11 +141,15 @@ class TestHydration:
                 _call("alpha"),
                 _call("beta", result=json.dumps({"error": "Skill 'beta' not found"})),
                 _call("gamma", result="Result too large (9000 tokens). Full output saved"),
+                _call("delta", outcome="blocked"),
+                _call("epsilon", outcome="failed"),
+                _call("zeta", outcome=None),
                 {"name": "find_tools", "arguments": {"query": "alpha"}, "result": "{}"},
             ],
         )
-        # Only the call that actually put rules in front of the model counts.
-        assert mem.active_names("r1") == {"alpha"}
+        # Only the calls that actually put rules in front of the model count,
+        # a row stored before outcomes were recorded read by its body.
+        assert mem.active_names("r1") == {"alpha", "zeta"}
 
     def test_seeded_skill_answers_as_already_active(self) -> None:
         mem = SkillActivationMemory()

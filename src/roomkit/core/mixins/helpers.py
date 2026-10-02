@@ -49,6 +49,7 @@ from roomkit.models.framework_event import FrameworkEvent
 from roomkit.models.identity import Identity, IdentityHookResult, IdentityResult
 from roomkit.models.participant import Participant
 from roomkit.models.plan_event import PlanUpdatedEvent
+from roomkit.models.store_filter import EventFilter
 from roomkit.models.task import Observation, Task
 from roomkit.models.thinking_event import ThinkingEvent
 from roomkit.models.tool_call import (
@@ -111,6 +112,37 @@ IdentityHookFn = Callable[
     [RoomEvent, RoomContext, IdentityResult],
     Coroutine[Any, Any, IdentityHookResult | None],
 ]
+
+
+def _remembered_calls(events: list[RoomEvent]) -> list[dict[str, Any]]:
+    """The calls a tool memory keeps, read off a room's stored tool rows."""
+    # The arguments the model sent, from the call's start: the end carries the
+    # ones that ran, which a BEFORE_TOOL_USE hook may have de-tokenised, and
+    # the digest goes back into the model's prompt.
+    requested = {
+        getattr(ev.content, "tool_id", ""): getattr(ev.content, "arguments", {}) or {}
+        for ev in events
+        if ev.type == EventType.TOOL_CALL_START
+    }
+    calls: list[dict[str, Any]] = []
+    for ev in events:
+        content = ev.content
+        name = getattr(content, "tool_name", "")
+        if ev.type != EventType.TOOL_CALL_END or not name:
+            continue
+        # The live memory's rule, read off the outcome the row states: a
+        # refusal or a call nothing served is not kept.
+        if not kept_in_tool_memory(getattr(content, "outcome", None)):
+            continue
+        calls.append(
+            {
+                "name": name,
+                "arguments": requested.get(getattr(content, "tool_id", ""), {}),
+                "result": getattr(content, "result", "") or "",
+                "outcome": getattr(content, "outcome", None),
+            }
+        )
+    return calls
 
 
 def _before_tool_decision(name: str, hook_result: Any) -> BeforeToolDecision:
@@ -829,9 +861,6 @@ class HelpersMixin:
         restart, cache expiry) while conversations outlive it. Called at most
         once per room per process (the channel marks the room hydrated).
         """
-        from roomkit.models.enums import EventType
-        from roomkit.models.store_filter import EventFilter
-
         kit_ref = self
         # Enough to refill both windows (digest 8 + reveal 12) after the
         # infra-tool rows are filtered out by ToolUsageMemory.record().
@@ -847,32 +876,7 @@ class HelpersMixin:
                     limit=limit * 2,  # a start and an end per call
                     newest_first=True,  # most recent N, returned ascending
                 )
-            # The arguments the model sent, from the call's start: the end
-            # carries the ones that ran, which a BEFORE_TOOL_USE hook may have
-            # de-tokenised, and the digest goes back into the model's prompt.
-            requested = {
-                getattr(ev.content, "tool_id", ""): getattr(ev.content, "arguments", {}) or {}
-                for ev in events
-                if ev.type == EventType.TOOL_CALL_START
-            }
-            calls: list[dict[str, Any]] = []
-            for ev in events:
-                content = ev.content
-                name = getattr(content, "tool_name", "")
-                if ev.type != EventType.TOOL_CALL_END or not name:
-                    continue
-                # The live memory's rule, read off the outcome the row
-                # states: a refusal or a call nothing served is not kept.
-                if not kept_in_tool_memory(getattr(content, "outcome", None)):
-                    continue
-                calls.append(
-                    {
-                        "name": name,
-                        "arguments": requested.get(getattr(content, "tool_id", ""), {}),
-                        "result": getattr(content, "result", "") or "",
-                    }
-                )
-            return calls
+            return _remembered_calls(events)
 
         return _load
 

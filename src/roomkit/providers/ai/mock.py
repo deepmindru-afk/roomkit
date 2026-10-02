@@ -137,8 +137,18 @@ class MockAIProvider(AIProvider):
             if isinstance(event, StreamTextDelta):
                 yield event.text
 
-    async def generate_structured_stream(self, context: AIContext) -> AsyncIterator[StreamEvent]:
-        """Yield the scripted response as events, the way a real provider does:
+    def generate_structured_stream(self, context: AIContext) -> AsyncIterator[StreamEvent]:
+        """Yield the scripted response as events.
+
+        A mock that does not stream is read the way every such provider is,
+        through the default adapter over ``generate()``.
+        """
+        if not self._streaming:
+            return super().generate_structured_stream(context)
+        return self._stream(context)
+
+    async def _stream(self, context: AIContext) -> AsyncIterator[StreamEvent]:
+        """The scripted response streamed the way a real provider streams it:
         text first, then a response schema's check before the done event."""
         schema_for_generate(
             context,

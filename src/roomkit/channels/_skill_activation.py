@@ -31,10 +31,12 @@ from __future__ import annotations
 
 import json
 from collections import OrderedDict
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._skill_constants import TOOL_ACTIVATE_SKILL
+from roomkit.tools._outcome import OutcomeKind
 
 if TYPE_CHECKING:
     from roomkit.skills.registry import SkillRegistry
@@ -119,13 +121,14 @@ class SkillActivationMemory:
         """Seed the room from persisted tool-call history (oldest → newest).
 
         Reads the same ``TOOL_CALL_END`` rows the tool-usage digest hydrates from,
-        keeping the ``activate_skill`` calls that SUCCEEDED. A call that errored
-        (unknown or unavailable skill) never put rules in front of the model, so
-        replaying it as an activation would inject a body the model never asked
-        for. Anything whose result isn't a readable JSON object — an old evicted
-        placeholder, a hook override — is skipped for the same reason: an
-        activation we cannot confirm is one the model re-does once, which costs a
-        body and never lies.
+        keeping the ``activate_skill`` calls that SUCCEEDED: served, as the row's
+        outcome states (RFC §6.4), and answered with the skill. A call a hook
+        withheld, or one that errored (unknown or unavailable skill), never put
+        rules in front of the model, so replaying it as an activation would
+        inject a body the model never asked for. Anything whose result isn't a
+        readable JSON object — an old evicted placeholder, a hook override — is
+        skipped for the same reason: an activation we cannot confirm is one the
+        model re-does once, which costs a body and never lies.
         """
         if not room_id:
             return
@@ -135,7 +138,7 @@ class SkillActivationMemory:
             if call.get("name") != TOOL_ACTIVATE_SKILL:
                 continue
             name = (call.get("arguments") or {}).get("name", "")
-            if name and _succeeded(call.get("result")):
+            if name and _succeeded(call):
                 self.activate(room_id, name)
 
     def render_prompt(self, room_id: str | None, skills: SkillRegistry) -> str | None:
@@ -161,8 +164,15 @@ class SkillActivationMemory:
         return f"{_PROMPT_HEADING}\n\n" + "\n\n".join(sections)
 
 
-def _succeeded(result: Any) -> bool:
-    """Whether a persisted ``activate_skill`` result reads as a successful call."""
+def _succeeded(call: Mapping[str, Any]) -> bool:
+    """Whether a persisted ``activate_skill`` call reads as a successful one.
+
+    A row stored before outcomes were recorded carries none: its body alone
+    tells.
+    """
+    if call.get("outcome") not in (None, OutcomeKind.SERVED):
+        return False
+    result = call.get("result")
     if not isinstance(result, str):
         return False
     try:
