@@ -23,7 +23,8 @@ import contextlib
 import logging
 import math
 import threading
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -94,6 +95,12 @@ class VuiTTSProvider(TTSProvider):
             raise ValueError("VuiTTSConfig.voices needs at least one voice")
         self._cache: _VuiRow | None = None
         self._conversation: VuiConversation | None = None
+        # Every vui-tts call runs on one thread, started with the engine and
+        # stopped with it (RMK-371). Vui's codec keeps torch.inference_mode()
+        # entered between calls, a thread-local state that must reach neither
+        # the event loop nor the shared default executor, where an engine built
+        # later fails on its first reply.
+        self._thread: ThreadPoolExecutor | None = None
         self._lock = asyncio.Lock()
 
     @property
@@ -109,18 +116,36 @@ class VuiTTSProvider(TTSProvider):
         return TTSContextLevel.AUDIO
 
     def release_context(self, context_id: str) -> None:
+        """Empty the cache of *context_id*'s dialogue, on the Vui thread, after any reply."""
+        if self._thread is not None and self._conversation is not None:
+            self._thread.submit(self._release, context_id).add_done_callback(_log_failure)
+
+    def _release(self, context_id: str) -> None:
         if self._conversation is not None:
             self._conversation.release(context_id)
 
     async def warmup(self) -> None:
         """Load the model, the codec and every voice prompt."""
-        await asyncio.to_thread(self._load)
+        async with self._lock:
+            await self._on_vui_thread(self._load)
+
+    async def _on_vui_thread(self, call: Callable[[], VuiConversation]) -> VuiConversation:
+        if self._thread is None:
+            self._thread = ThreadPoolExecutor(max_workers=1, thread_name_prefix="roomkit-vui")
+        return await asyncio.get_running_loop().run_in_executor(self._thread, call)
 
     def _load(self) -> VuiConversation:
         if self._conversation is None:
             self._cache = _VuiRow(self._config)
             self._conversation = VuiConversation(self._cache)
         return self._conversation
+
+    def _unload(self) -> None:
+        """Close the row and drop every Vui object, on the thread that made them."""
+        if self._cache is not None:
+            self._cache.close()
+        self._cache = None
+        self._conversation = None
 
     def _voice_name(self, voice: str | None) -> str:
         name = voice or self.default_voice
@@ -134,12 +159,13 @@ class VuiTTSProvider(TTSProvider):
         """Speak *text* as the next turn of *context*'s conversation."""
         name = self._voice_name(voice)
         async with self._lock:
-            conversation = await asyncio.to_thread(self._load)
+            conversation = await self._on_vui_thread(self._load)
             cancel = threading.Event()
             frames = conversation.speak(context, name, text, cancel)
             # aclosing: a barge-in closing this stream must stop the GPU thread
             # before the lock is released, not whenever the iterator is collected.
-            async with contextlib.aclosing(iterate_in_thread(frames, cancel)) as pcms:
+            pcms = iterate_in_thread(frames, cancel, executor=self._thread)
+            async with contextlib.aclosing(pcms):
                 async for pcm in pcms:
                     yield AudioChunk(data=pcm, sample_rate=SAMPLE_RATE)
         yield AudioChunk(data=b"", sample_rate=SAMPLE_RATE, is_final=True)
@@ -163,10 +189,11 @@ class VuiTTSProvider(TTSProvider):
 
     async def close(self) -> None:
         async with self._lock:
-            if self._cache is not None:
-                self._cache.close()
-            self._cache = None
-            self._conversation = None
+            thread, self._thread = self._thread, None
+            if thread is None:
+                return
+            await asyncio.get_running_loop().run_in_executor(thread, self._unload)
+            await asyncio.to_thread(thread.shutdown)  # joins the idle Vui thread
 
 
 class _VuiRow:
@@ -284,7 +311,14 @@ class _VuiRow:
         return codes[0, : self._engine.Q].T.long()
 
     def close(self) -> None:
+        # reset() closes the codec's inference_mode guard on this thread (RMK-371).
+        self._row.reset()
         self._row.close()
+
+
+def _log_failure(future: Future[None]) -> None:
+    if not future.cancelled() and (exc := future.exception()) is not None:
+        logger.error("Vui context release failed", exc_info=exc)
 
 
 @dataclass

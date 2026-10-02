@@ -5,13 +5,17 @@ from __future__ import annotations
 import asyncio
 import threading
 from collections.abc import AsyncGenerator, Generator
+from concurrent.futures import Executor
 from typing import Any
 
 
 async def iterate_in_thread(
-    frames: Generator[bytes, None, None], cancel: threading.Event
+    frames: Generator[bytes, None, None],
+    cancel: threading.Event,
+    *,
+    executor: Executor | None = None,
 ) -> AsyncGenerator[bytes, None]:
-    """Drive a blocking generator from a worker thread.
+    """Drive a blocking generator from a worker thread of *executor* (the loop's default).
 
     Closing this iterator (a barge-in) sets *cancel* and waits for the thread
     to stop, even if the waiting task is cancelled again meanwhile, so a lock
@@ -33,7 +37,7 @@ async def iterate_in_thread(
             frames.close()
             loop.call_soon_threadsafe(queue.put_nowait, done)
 
-    worker = loop.run_in_executor(None, run)
+    worker = loop.run_in_executor(executor, run)
     try:
         while (item := await queue.get()) is not done:
             if isinstance(item, BaseException):

@@ -31,21 +31,31 @@ class _SlowRow:
         self.offset = 0
         self.stopped_at: int | None = None
         self.closed = False
+        self.threads: list[tuple[str, threading.Thread]] = []  # (call, thread it ran on)
+        self._ran("load")
         _SlowRow.instances.append(self)
 
+    def _ran(self, call: str) -> None:
+        self.threads.append((call, threading.current_thread()))
+
     def reset(self) -> None:
+        self._ran("reset")
         self.offset = 0
 
     def restart(self, voice: str) -> None:
+        self._ran("restart")
         self.offset = 100
 
     def truncate(self, offset: int) -> None:
+        self._ran("truncate")
         self.offset = offset
 
     def add_user(self, text: str, audio: AudioFrame | None) -> None:
+        self._ran("add_user")
         self.offset += 5
 
     def generate(self, text: str, cancel: threading.Event) -> Iterator[bytes]:
+        self._ran("generate")
         for i in range(20):
             if cancel.is_set():
                 self.stopped_at = i
@@ -55,6 +65,7 @@ class _SlowRow:
             yield b"\x01\x00" * 1920
 
     def close(self) -> None:
+        self._ran("close")
         self.closed = True
 
 
@@ -116,6 +127,43 @@ async def test_a_second_cancel_while_waiting_keeps_the_lock_until_the_thread_sto
     [row] = _SlowRow.instances
     assert row.stopped_at is not None  # the thread had stopped before the task ended
     assert not provider._lock.locked()
+
+
+class TestVuiThread:
+    """Every vui-tts call runs on one thread of its own, per loaded engine (RMK-371)."""
+
+    async def test_every_call_runs_on_the_providers_own_thread(
+        self, provider: VuiTTSProvider
+    ) -> None:
+        await provider.warmup()
+        async for _ in provider.synthesize_stream("hi", context=_context()):
+            pass
+        provider.release_context("s1")
+        await provider.close()
+
+        calls = _SlowRow.instances[0].threads
+        assert [call for call, _ in calls] == ["load", "restart", "generate", "reset", "close"]
+        [thread] = {thread for _, thread in calls}
+        assert thread.name.startswith("roomkit-vui")
+        assert thread is not threading.main_thread()
+        assert not thread.is_alive()  # stopped with the engine
+
+    async def test_a_reloaded_engine_starts_on_a_fresh_thread(
+        self, provider: VuiTTSProvider
+    ) -> None:
+        await provider.warmup()
+        await provider.close()
+        await provider.warmup()
+
+        first, second = (row.threads[0][1] for row in _SlowRow.instances)
+        assert second is not first
+        assert second.is_alive()
+        await provider.close()
+
+    def test_a_release_before_any_load_does_nothing(self, provider: VuiTTSProvider) -> None:
+        provider.release_context("s1")
+
+        assert _SlowRow.instances == []
 
 
 async def test_an_unknown_voice_is_refused(provider: VuiTTSProvider) -> None:

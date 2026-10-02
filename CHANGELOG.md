@@ -261,6 +261,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `VuiTTSProvider` runs every `vui-tts` call on a thread of its own,
+  started with the engine and stopped by `close()` (RMK-371). Vui's codec
+  keeps `torch.inference_mode()` entered between calls, and calling it from
+  the shared default executor left that executor's threads in inference
+  mode: an engine built later in one of them failed on its first reply
+  (`Inplace update to inference tensor outside InferenceMode`), and any
+  torch code run there made inference tensors. `close()` resets the row
+  first, which closes the codec's guard on that thread, and
+  `release_context()` empties the cache there too, after any reply in
+  progress.
+
 - A PolarGrid answer is no longer cut short: with no `max_tokens` set, the
   request carried none and polargrid-sdk sent 150 (the server, given none,
   stops near 200), cutting an answer mid-sentence under a `stop` finish
