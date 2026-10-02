@@ -33,6 +33,7 @@ from roomkit.providers.ai.thinking_blocks import ThinkingBlocks
 from roomkit.providers.anthropic.config import AnthropicConfig
 from roomkit.providers.anthropic.models import MODELS
 from roomkit.providers.anthropic.request import build_kwargs
+from roomkit.providers.anthropic.stream_events import done_event, is_first_output, stream_events
 from roomkit.providers.anthropic.tool_blocks import ToolUseBlocks
 from roomkit.providers.utils import _aclose_stream
 
@@ -286,68 +287,16 @@ class AnthropicAIProvider(AIProvider):
 
             async with client.messages.stream(**kwargs) as stream:
                 async for event in stream:
-                    if not hasattr(event, "type"):
-                        continue
-
-                    if event.type == "content_block_start":
-                        cb = event.content_block
-                        if hasattr(cb, "type") and cb.type == "tool_use":
-                            yield blocks.open(event.index, cb)
-                        elif getattr(cb, "type", None) == "redacted_thinking":
-                            # Replayed as received, its opaque data and all.
-                            yield StreamThinkingDelta(
-                                thinking="", redacted=cb.data, block=event.index
-                            )
-
-                    elif event.type == "content_block_delta" and hasattr(event.delta, "type"):
-                        delta = event.delta
-                        if delta.type == "thinking_delta":
-                            if first_token:
-                                self._record_ttfb(t0)
-                                first_token = False
-                            yield StreamThinkingDelta(thinking=delta.thinking, block=event.index)
-                        elif delta.type == "signature_delta":
-                            # The thinking block's opaque signature arrives as
-                            # its own delta after the text. Surface it, with
-                            # the block it signs, so each block is echoed back
-                            # with its own (RFC §6.4).
-                            yield StreamThinkingDelta(
-                                thinking="", signature=delta.signature, block=event.index
-                            )
-                        elif delta.type == "text_delta":
-                            if first_token:
-                                self._record_ttfb(t0)
-                                first_token = False
-                            yield StreamTextDelta(text=delta.text)
-                        elif delta.type == "input_json_delta":
-                            composed = blocks.add(event.index, delta.partial_json)
-                            if composed is not None:
-                                yield composed
-
-                    elif event.type == "content_block_stop":
-                        call = blocks.close(event.index)
-                        if call is not None:
-                            yield call
-
+                    for out in stream_events(event, blocks):
+                        if first_token and is_first_output(out):
+                            self._record_ttfb(t0)
+                            first_token = False
+                        yield out
                 final = await stream.get_final_message()
 
             for call in blocks.remaining(final):
                 yield call
-
-            usage: dict[str, int] = {
-                "input_tokens": final.usage.input_tokens,
-                "output_tokens": final.usage.output_tokens,
-            }
-            if hasattr(final.usage, "cache_creation_input_tokens"):
-                usage["cache_creation_input_tokens"] = final.usage.cache_creation_input_tokens or 0
-            if hasattr(final.usage, "cache_read_input_tokens"):
-                usage["cache_read_input_tokens"] = final.usage.cache_read_input_tokens or 0
-
-            yield StreamDone(
-                finish_reason=final.stop_reason,
-                usage=usage,
-                metadata={"model": final.model},
-            )
+            yield done_event(final)
         except self._api_status_error as exc:
             # Anthropic adds 529 "overloaded" to the shared retryable set.
             retryable = exc.status_code in RETRYABLE_STATUS_CODES or exc.status_code == 529
@@ -385,13 +334,11 @@ class AnthropicAIProvider(AIProvider):
                 done_event = event
 
         finish_reason = done_event.finish_reason if done_event else None
-        parts = thinking.parts()
-        signatures = [part.signature for part in parts if part.signature]
         return AIResponse(
             content="".join(text_parts),
-            thinking="".join(part.thinking for part in parts) or None,
-            thinking_signature=signatures[-1] if signatures else None,
-            thinking_parts=parts,
+            thinking=thinking.text if thinking.seen else None,
+            thinking_signature=thinking.last_signature,
+            thinking_parts=thinking.parts() if thinking.keyed else None,
             finish_reason=finish_reason,
             usage=done_event.usage if done_event else {},
             metadata=done_event.metadata if done_event else {},

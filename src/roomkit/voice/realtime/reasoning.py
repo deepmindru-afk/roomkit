@@ -26,12 +26,11 @@ from roomkit.providers.ai.base import (
     AIContext,
     AIMessage,
     AIResponse,
-    AITextPart,
     AITool,
     AIToolCall,
-    AIToolCallPart,
     thinking_parts_of,
 )
+from roomkit.providers.ai.round_parts import round_parts
 from roomkit.providers.ai.tool_calls import partial_call_error
 from roomkit.tools._outcome import OutcomeKind, ToolOutcome
 from roomkit.tools.result import tool_failure
@@ -267,14 +266,9 @@ class AIProviderReasoningBackend(ReasoningBackend):
     def _record_tool_round(history: list[AIMessage], response: AIResponse) -> str:
         """Append the assistant's tool-calling turn to the history; return its text."""
         text = (response.content or "").strip()
-        # Each reasoning block back with its own signature (RFC §6.4).
-        parts: list[Any] = list(thinking_parts_of(response))
-        if text:
-            parts.append(AITextPart(text=text))
-        parts.extend(
-            AIToolCallPart(id=tc.id, name=tc.name, arguments=tc.arguments, metadata=tc.metadata)
-            for tc in response.tool_calls
-        )
+        # Each reasoning block back with its own signature; a response does not
+        # say where its blocks came, so they go first (RFC §6.4).
+        parts = round_parts(thinking_parts_of(response), text, response.tool_calls)
         history.append(AIMessage(role="assistant", content=parts))
         return text
 

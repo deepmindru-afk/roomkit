@@ -193,7 +193,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
         self,
         coalescer: _ThinkingCoalescer,
         room_id: str,
-        thinking_parts: list[str],
+        thinking_chunks: list[str],
         round_idx: int,
         *,
         published: int,
@@ -216,7 +216,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
 
         A round can open several windows (reason, answer, reason again), and
         each ``THINKING_END`` must carry its own block. ``published`` is how
-        many of ``thinking_parts`` earlier windows already sent; the caller
+        many of ``thinking_chunks`` earlier windows already sent; the caller
         keeps the returned value and hands it back at the next close. The list
         itself is never truncated — the tool loop replays it whole into the
         assistant message it sends back to the model.
@@ -225,10 +225,10 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
         await self._publish_thinking_event(
             EphemeralEventType.THINKING_END,
             room_id,
-            "".join(thinking_parts[published:]),
+            "".join(thinking_chunks[published:]),
             round_idx,
         )
-        return len(thinking_parts)
+        return len(thinking_chunks)
 
     def _new_tool_call_coalescer(
         self, room_id: str | None, round_idx: int
@@ -388,7 +388,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
         context.messages.append(
             AIMessage(
                 role="assistant",
-                content=state.assistant_parts([*state.provider_calls, *calls]),
+                content=state.transcript.parts([*state.provider_calls, *calls]),
             )
         )
         for call in calls:

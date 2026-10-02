@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `AIResponse.thinking_parts`, `AIThinkingPart.redacted`, and
+  `StreamThinkingDelta.block` / `.redacted` carry a provider's reasoning
+  blocks (RMK-377, RFC §6.4); `thinking_parts_of`, `ThinkingBlocks`,
+  `RoundTranscript` and `round_parts` in `roomkit.providers.ai` read and
+  assemble them.
+
 - `ACPSessionInvalidatedError`: a transport may authorize one reconstruction
   of a room session after a pre-execution refusal. The same turn lock spans
   the refusal, normal session opening and recomposed visible catch-up. Partial
@@ -246,15 +252,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Anthropic's reasoning goes back to it block by block (RMK-377, RFC §6.4): each
   thinking block of a response keeps its own signature and its place relative to
-  the round's text and calls, and a `redacted_thinking` block is kept and replayed
-  as its opaque data, where the blocks of a response were merged into one under
-  the last signature (Anthropic refuses a round whose blocks changed) and a
-  redacted block was dropped. `AIResponse.thinking_parts`,
-  `AIThinkingPart.redacted`, `StreamThinkingDelta.block` and
-  `StreamThinkingDelta.redacted` carry the blocks; `thinking_parts_of` reads them
-  off a response. A provider without blocks keeps one per round. The realtime
-  reasoning backend replays a round's blocks too, a signature without text
-  included.
+  the round's calls and stretches of text, and a `redacted_thinking` block is
+  kept and replayed as its opaque data, where the blocks of a response were
+  merged into one under the last signature (Anthropic refuses a round whose
+  blocks changed in number) and a redacted block was dropped. A block the
+  response cut before its signature is not replayed, since Anthropic refuses an
+  unsigned block. A provider without blocks keeps one per round. The realtime
+  reasoning backend replays a round's blocks too, first, a signature without
+  text included.
 
 - `OpenAIAIProvider` refuses, before the request, a model OpenAI's Chat
   Completions refuses (RMK-309, RFC §6.7): GPT-6 Astra and GPT-6.1 Sol with

@@ -37,6 +37,7 @@ from roomkit.providers.ai.image_parts import (
 from roomkit.providers.ai.json_schema import check_portable_schema, schema_mismatch
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.providers.ai.response_schema import ResponseSchemaError
+from roomkit.providers.ai.round_parts import RoundTranscript, round_parts
 from roomkit.providers.ai.thinking_blocks import ThinkingBlocks
 from roomkit.providers.ai.tool_calls import (
     CallIds,
@@ -76,6 +77,7 @@ __all__ = [
     "OPENAI_CHAT",
     "ProviderError",
     "ResponseSchemaError",
+    "RoundTranscript",
     "StreamDone",
     "StreamEvent",
     "StreamTextDelta",
@@ -97,6 +99,7 @@ __all__ = [
     "is_context_overflow_message",
     "is_truncation",
     "partial_call_error",
+    "round_parts",
     "schema_mismatch",
     "some_vendor_accepts_tool_name",
     "stream_call_of",

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from contextlib import aclosing
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -13,10 +13,6 @@ from roomkit.channels._ai_resilience import _StreamRetryBoundary
 from roomkit.channels._ai_stream_external_tools import _ExternalStreamTools
 from roomkit.models.streaming import StreamDelta, ThinkingDeltaMarker, ToolCallEndMarker
 from roomkit.providers.ai.base import (
-    AITextPart,
-    AIThinkingPart,
-    AIToolCall,
-    AIToolCallPart,
     AIToolResultPart,
     StreamDone,
     StreamEvent,
@@ -25,7 +21,7 @@ from roomkit.providers.ai.base import (
     StreamToolCall,
     StreamToolCallDelta,
 )
-from roomkit.providers.ai.thinking_blocks import ThinkingBlocks
+from roomkit.providers.ai.round_parts import RoundTranscript
 from roomkit.providers.utils import _aclose_stream
 from roomkit.realtime.base import EphemeralEventType
 from roomkit.tools._outcome import OutcomeKind, ToolOutcome
@@ -36,11 +32,12 @@ from roomkit.tools.result import as_tool_result
 class _StreamRoundState:
     """A generation's raw transcript and the fragments actually delivered."""
 
-    thinking_parts: list[str] = field(default_factory=list)
-    thinking_blocks: ThinkingBlocks = field(default_factory=ThinkingBlocks)
+    # The reasoning text as it streamed, for the live windows and the turn's
+    # report; the blocks a round replays live in the transcript.
+    thinking_chunks: list[str] = field(default_factory=list)
     thinking_started: bool = False
     thinking_published: int = 0
-    text_parts: list[str] = field(default_factory=list)
+    transcript: RoundTranscript = field(default_factory=RoundTranscript)
     reported: list[str] = field(default_factory=list)
     # The calls the loop serves; the provider's own are reported inline, then
     # replayed with their results beside the loop's (RFC §9.3).
@@ -49,35 +46,14 @@ class _StreamRoundState:
     provider_results: list[AIToolResultPart] = field(default_factory=list)
     finish_reason: str | None = None
     cancelled: bool = False
-    # What the round said, in the order it came: ("thinking", block),
-    # ("text", None) at its first text, ("call", call id).
-    layout: list[tuple[str, Any]] = field(default_factory=list)
 
     @property
     def text(self) -> str:
-        return "".join(self.text_parts)
+        return self.transcript.text
 
     @property
     def thinking(self) -> str:
-        return "".join(self.thinking_parts)
-
-    def assistant_parts(
-        self, calls: Sequence[StreamToolCall | AIToolCall]
-    ) -> list[AITextPart | AIThinkingPart | AIToolCallPart]:
-        """The round as the next one replays it: reasoning, text and *calls*.
-
-        Reasoning a vendor sent in blocks goes back block by block, each where
-        it came relative to the text and the calls (RFC §6.4). A single block
-        goes first, then the text, then the calls.
-        """
-        if not self.thinking_blocks.keyed:
-            parts: list[AITextPart | AIThinkingPart | AIToolCallPart] = list(
-                self.thinking_blocks.parts()
-            )
-            if self.text:
-                parts.append(AITextPart(text=self.text))
-            return parts + [_call_part(call) for call in calls]
-        return _in_order(self.layout, self.thinking_blocks, self.text, calls)
+        return "".join(self.thinking_chunks)
 
 
 class _PrefixDeduplicator:
@@ -128,7 +104,7 @@ class _ThinkingWindowCloser(Protocol):
         self,
         coalescer: _ThinkingCoalescer,
         room_id: str,
-        thinking_parts: list[str],
+        thinking_chunks: list[str],
         round_idx: int,
         *,
         published: int,
@@ -164,22 +140,21 @@ class _StreamRound:
 
     async def _end_thinking(self) -> None:
         state = self.state
-        if not (state.thinking_started and state.thinking_parts and self.room_id):
+        if not (state.thinking_started and state.thinking_chunks and self.room_id):
             return
         # Disarm before awaiting a publish: cleanup can itself be cancelled.
         state.thinking_started = False
         state.thinking_published = await self.close_thinking(
             self.thinking_coalescer,
             self.room_id,
-            state.thinking_parts,
+            state.thinking_chunks,
             self.index,
             published=state.thinking_published,
         )
 
     async def _add_thinking(self, event: StreamThinkingDelta) -> None:
         state = self.state
-        if state.thinking_blocks.add(event):
-            state.layout.append(("thinking", event.block))
+        state.transcript.add_thinking(event)
         if not event.thinking:
             return
         if not state.thinking_started and self.room_id:
@@ -187,8 +162,16 @@ class _StreamRound:
             await self.publish_thinking(
                 EphemeralEventType.THINKING_START, self.room_id, "", self.index
             )
-        state.thinking_parts.append(event.thinking)
+        state.thinking_chunks.append(event.thinking)
         await self.thinking_coalescer.add(event.thinking)
+
+    async def _add_text(self, event: StreamTextDelta) -> list[str]:
+        """Record a text delta; the text it releases for delivery."""
+        await self._end_thinking()
+        self.state.transcript.add_text(event.text)
+        released = list(self._dedup.add(event.text))
+        self.state.reported.extend(released)
+        return released
 
     async def close(self) -> None:
         """Close only opened windows, including when another close is cancelled."""
@@ -201,7 +184,7 @@ class _StreamRound:
     async def _take_call(self, call: StreamToolCall) -> AsyncGenerator[StreamDelta, None]:
         """Keep a call for the loop to serve, or report the provider's own
         inline and keep it with its result for the next round's transcript."""
-        self.state.layout.append(("call", call.id))
+        self.state.transcript.add_call(call.id)
         external = self.external_tools
         if external is None or not external.takes(call):
             self.state.tool_calls.append(call)
@@ -235,12 +218,7 @@ class _StreamRound:
                     if event.thinking:
                         yield ThinkingDeltaMarker(thinking=event.thinking)
                 elif isinstance(event, StreamTextDelta):
-                    await self._end_thinking()
-                    if not state.text_parts:
-                        state.layout.append(("text", None))
-                    state.text_parts.append(event.text)
-                    for text in self._dedup.add(event.text):
-                        state.reported.append(text)
+                    for text in await self._add_text(event):
                         yield text
                 elif isinstance(event, StreamToolCallDelta):
                     await self._end_thinking()
@@ -266,32 +244,6 @@ class _StreamRound:
                 await _aclose_stream(source)
             finally:
                 await self.close()
-
-
-def _call_part(call: StreamToolCall | AIToolCall) -> AIToolCallPart:
-    return AIToolCallPart(
-        id=call.id, name=call.name, arguments=call.arguments, metadata=call.metadata
-    )
-
-
-def _in_order(
-    layout: list[tuple[str, Any]],
-    blocks: ThinkingBlocks,
-    text: str,
-    calls: Sequence[StreamToolCall | AIToolCall],
-) -> list[AITextPart | AIThinkingPart | AIToolCallPart]:
-    """A round's parts in the order they came; a call the layout never saw
-    (none today) goes last rather than be lost."""
-    pending = {call.id: call for call in calls}
-    parts: list[AITextPart | AIThinkingPart | AIToolCallPart] = []
-    for kind, key in layout:
-        if kind == "thinking" and (part := blocks.part(key)) is not None:
-            parts.append(part)
-        elif kind == "text" and text:
-            parts.append(AITextPart(text=text))
-        elif kind == "call" and key in pending:
-            parts.append(_call_part(pending.pop(key)))
-    return parts + [_call_part(call) for call in pending.values()]
 
 
 def provider_result(call: StreamToolCall, end: ToolCallEndMarker) -> AIToolResultPart:

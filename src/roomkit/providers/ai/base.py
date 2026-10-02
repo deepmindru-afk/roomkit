@@ -448,11 +448,12 @@ class AIResponse(BaseModel):
     content: str
     thinking: str | None = None
     thinking_signature: str | None = None
-    thinking_parts: list[AIThinkingPart] = Field(default_factory=list)
-    """The reasoning blocks in the order the vendor sent them, each with its
-    signature or redacted data (RFC §6.4). When set, they are what a tool
-    round replays; ``thinking`` and ``thinking_signature`` remain their
-    joined text and last signature."""
+    thinking_parts: list[AIThinkingPart] | None = None
+    """The reasoning blocks to replay, in the order the vendor sent them, each
+    with its signature or redacted data (RFC §6.4); ``None`` for a provider
+    whose reasoning has no blocks. A block the response cut before its
+    signature is not among them. ``thinking`` stays all the reasoning text,
+    ``thinking_signature`` the last signature."""
     finish_reason: str | None = None
     usage: dict[str, int] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -543,7 +544,7 @@ StreamEvent = (
 def thinking_parts_of(response: AIResponse) -> list[AIThinkingPart]:
     """A response's reasoning blocks: its ``thinking_parts``, or for a
     provider that reports one block its ``thinking`` with its signature."""
-    if response.thinking_parts:
+    if response.thinking_parts is not None:
         return list(response.thinking_parts)
     if response.thinking or response.thinking_signature:
         return [
@@ -582,8 +583,9 @@ def response_stream_events(
 ) -> Iterator[StreamEvent]:
     """A whole response as the events a stream of it carries (RFC §6.4).
 
-    Everything ``generate()`` returned reaches the tool loop: the thinking
-    with its signature (a signature alone too), the text, each call with its
+    Everything ``generate()`` returned reaches the tool loop: each thinking
+    block with its signature or redacted data (a signature alone too), the
+    text, each call with its
     metadata (a thought signature among them), then the done event's finish
     reason, usage and metadata. *call_deltas* gives the argument fragments a
     stream announces ahead of each call, when there are any.
@@ -593,7 +595,7 @@ def response_stream_events(
             thinking=part.thinking,
             signature=part.signature,
             redacted=part.redacted,
-            block=block if response.thinking_parts else None,
+            block=block if response.thinking_parts is not None else None,
         )
     if response.content:
         yield StreamTextDelta(text=response.content)

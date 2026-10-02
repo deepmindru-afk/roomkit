@@ -14,6 +14,8 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
+import pytest
+
 from roomkit.channels.ai import AIChannel
 from roomkit.providers.ai.base import (
     AIContext,
@@ -23,6 +25,7 @@ from roomkit.providers.ai.base import (
     AITextPart,
     AIThinkingPart,
     AITool,
+    AIToolCall,
     AIToolCallPart,
     StreamDone,
     StreamEvent,
@@ -31,6 +34,8 @@ from roomkit.providers.ai.base import (
     StreamToolCall,
     response_stream_events,
 )
+from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.providers.ai.round_parts import RoundTranscript
 from roomkit.providers.ai.thinking_blocks import ThinkingBlocks
 from roomkit.providers.anthropic.ai import AnthropicAIProvider
 from roomkit.providers.anthropic.config import AnthropicConfig
@@ -63,6 +68,15 @@ class TestThinkingBlocks:
             AIThinkingPart(thinking="", redacted="RRR"),
             AIThinkingPart(thinking="second", signature="S3"),
         ]
+
+    def test_a_named_block_cut_before_its_signature_is_not_replayed(self) -> None:
+        blocks = ThinkingBlocks()
+        for delta in (_delta(0, "kept"), _delta(0, signature="S0"), _delta(2, "cut")):
+            blocks.add(delta)
+
+        assert blocks.parts() == [AIThinkingPart(thinking="kept", signature="S0")]
+        assert blocks.text == "keptcut"
+        assert blocks.last_signature == "S0"
 
     def test_reasoning_without_blocks_is_one_block(self) -> None:
         blocks = ThinkingBlocks()
@@ -212,6 +226,14 @@ class _Scripted(AIProvider):
             yield event
 
 
+def _label(part: Any) -> str:
+    if isinstance(part, AIThinkingPart):
+        return f"thinking:{part.signature or part.redacted}"
+    if isinstance(part, AITextPart):
+        return f"text:{part.text}"
+    return f"call:{part.id}"
+
+
 _TOOLS = [
     AITool(name="get_weather", description="d"),
     AITool(name="get_time", description="d"),
@@ -258,6 +280,64 @@ class TestTheLoopReplaysTheRound:
             ("S3", None),
         ]
 
+    async def test_text_between_blocks_stays_where_it_came(self) -> None:
+        content = await _replayed_round(
+            [
+                _delta(0, "Weather first."),
+                _delta(0, signature="S0"),
+                StreamTextDelta(text="Looking it up."),
+                StreamToolCall(id="c1", name="get_weather", arguments={}),
+                _delta(2, "Now the time."),
+                _delta(2, signature="S2"),
+                StreamTextDelta(text="And the time."),
+                StreamToolCall(id="c2", name="get_time", arguments={}),
+                StreamDone(finish_reason="tool_use"),
+            ]
+        )
+
+        assert [_label(p) for p in content] == [
+            "thinking:S0",
+            "text:Looking it up.",
+            "call:c1",
+            "thinking:S2",
+            "text:And the time.",
+            "call:c2",
+        ]
+
+    async def test_a_call_the_provider_ran_keeps_its_place(self) -> None:
+        ran = StreamToolCall(id="b1", name="Bash", arguments={"cmd": "ls", "_result": "a.txt"})
+        content = await _replayed_round(
+            [
+                _delta(0, "List first."),
+                _delta(0, signature="S0"),
+                ran,
+                _delta(2, "Now the weather."),
+                _delta(2, signature="S2"),
+                StreamToolCall(id="c2", name="get_weather", arguments={}),
+                StreamDone(finish_reason="tool_use"),
+            ]
+        )
+
+        assert [_label(p) for p in content] == [
+            "thinking:S0",
+            "call:b1",
+            "thinking:S2",
+            "call:c2",
+        ]
+
+    async def test_a_block_cut_before_its_signature_is_not_replayed(self) -> None:
+        content = await _replayed_round(
+            [
+                _delta(0, "Weather first."),
+                _delta(0, signature="S0"),
+                StreamToolCall(id="c1", name="get_weather", arguments={}),
+                _delta(2, "Then the ti"),
+                StreamDone(finish_reason="max_tokens"),
+            ]
+        )
+
+        assert [_label(p) for p in content] == ["thinking:S0", "call:c1"]
+
     async def test_reasoning_without_blocks_goes_first_as_one(self) -> None:
         content = await _replayed_round(
             [
@@ -303,7 +383,48 @@ def test_the_reasoning_backend_replays_every_block() -> None:
 
     AIProviderReasoningBackend._record_tool_round(history, response)
 
-    assert [p for p in history[0].content if isinstance(p, AIThinkingPart)] == [
-        AIThinkingPart(thinking="a", signature="S0"),
-        AIThinkingPart(thinking="", redacted="RRR"),
+    assert [_label(p) for p in history[0].content] == ["thinking:S0", "thinking:RRR"]
+
+
+async def test_a_response_read_through_generate_replays_its_blocks_first(
+    streaming: bool,
+) -> None:
+    """A response does not say where its blocks came: they go first."""
+    provider = MockAIProvider(
+        streaming=streaming,
+        ai_responses=[
+            AIResponse(
+                content="Looking.",
+                finish_reason="tool_use",
+                thinking_parts=[
+                    AIThinkingPart(thinking="a", signature="S0"),
+                    AIThinkingPart(thinking="", redacted="RRR"),
+                ],
+                tool_calls=[AIToolCall(id="c1", name="get_weather", arguments={})],
+            ),
+            AIResponse(content="Done."),
+        ],
+    )
+    channel = AIChannel(
+        "ai1", provider=provider, tool_handler=AsyncMock(return_value="ok"), tool_search=False
+    )
+
+    await run_tool_loop(
+        channel, AIContext(messages=[AIMessage(role="user", content="go")], tools=_TOOLS)
+    )
+
+    replayed = next(m for m in provider.calls[1].messages if m.role == "assistant").content
+    assert [_label(p) for p in replayed] == [
+        "thinking:S0",
+        "thinking:RRR",
+        "text:Looking.",
+        "call:c1",
     ]
+
+
+def test_replaying_a_call_the_round_never_made_is_an_error() -> None:
+    transcript = RoundTranscript()
+    transcript.add_thinking(_delta(0, "a", signature="S0"))
+
+    with pytest.raises(RuntimeError, match="never made"):
+        transcript.parts([StreamToolCall(id="ghost", name="x", arguments={})])
