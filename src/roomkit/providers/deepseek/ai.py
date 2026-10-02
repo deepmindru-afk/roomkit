@@ -5,10 +5,18 @@ from __future__ import annotations
 from typing import Any, ClassVar
 
 from roomkit.providers.ai.base import AIContext, ModelInfo
+from roomkit.providers.ai.chat_request import ChatDialect
 from roomkit.providers.ai.reasoning import thinking_switch, turn_setting
 from roomkit.providers.deepseek.config import DeepSeekConfig
 from roomkit.providers.deepseek.models import MODELS
 from roomkit.providers.openai.ai import OpenAIAIProvider
+
+# Earlier reasoning goes back in ``reasoning_content``, on every round that
+# called tools: in thinking mode DeepSeek refuses (400) a round of the turn in
+# progress without it, absent or null, and takes an empty one (measured
+# 2026-10-02 on deepseek-v4-pro and -flash). A <think> block in the content
+# would be read as text the model said.
+DEEPSEEK_CHAT = ChatDialect(thinking_field="reasoning_content", round_thinking_required=True)
 
 
 class DeepSeekAIProvider(OpenAIAIProvider):
@@ -17,9 +25,10 @@ class DeepSeekAIProvider(OpenAIAIProvider):
     Subclasses :class:`~roomkit.providers.openai.ai.OpenAIAIProvider` —
     DeepSeek speaks the Chat Completions wire format verbatim, so message
     building, tool handling, response parsing, streaming, ``/v1/models``
-    discovery, and client construction are all inherited unchanged. Three
+    discovery, and client construction are all inherited unchanged. Four
     things are genuinely DeepSeek's own: which models exist, how a thinking
-    request is spelled, and how a cache hit is reported.
+    request is spelled, where earlier reasoning goes back, and how a cache hit
+    is reported.
 
     Example::
 
@@ -30,6 +39,7 @@ class DeepSeekAIProvider(OpenAIAIProvider):
 
     _config: DeepSeekConfig
     _install_extra: ClassVar[str] = "deepseek"
+    _chat_dialect: ClassVar[ChatDialect] = DEEPSEEK_CHAT
     # DeepSeek's JSON output is the free-form ``json_object`` mode, which
     # constrains nothing to a schema: a response schema is refused up front.
     _response_schema_default: ClassVar[bool] = False

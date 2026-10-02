@@ -9,7 +9,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from roomkit.providers.ai.base import AIContext, AIMessage, AITool, ModelInfo, ProviderError
+from roomkit.providers.ai.base import (
+    AIContext,
+    AIMessage,
+    AITextPart,
+    AIThinkingPart,
+    AITool,
+    AIToolCallPart,
+    ModelInfo,
+    ProviderError,
+)
+from roomkit.providers.ai.chat_request import chat_messages
+from roomkit.providers.deepseek.ai import DEEPSEEK_CHAT
 from roomkit.providers.deepseek.config import DeepSeekConfig
 
 
@@ -393,3 +404,31 @@ class TestResponseSchemaDefault:
     def test_off_unless_the_config_turns_it_on(self) -> None:
         assert _provider().supports_response_schema is False
         assert _provider(supports_response_schema=True).supports_response_schema is True
+
+
+class TestReasoningReplay:
+    """Earlier reasoning goes back in ``reasoning_content``: in thinking mode
+    DeepSeek refuses a tool round of the turn in progress without it, absent
+    or null, with a 400 (measured 2026-10-02)."""
+
+    _CALL = AIToolCallPart(id="c1", name="lookup", arguments={"q": "a"})
+
+    def _assistant(self, *parts: AITextPart | AIThinkingPart | AIToolCallPart) -> dict[str, Any]:
+        history = [
+            AIMessage(role="user", content="go"),
+            AIMessage(role="assistant", content=list(parts)),
+        ]
+        return chat_messages(history, None, DEEPSEEK_CHAT, provider="deepseek")[1]
+
+    def test_a_tool_round_carries_its_reasoning_in_the_field(self) -> None:
+        sent = self._assistant(
+            AIThinkingPart(thinking="why"), AITextPart(text="Looking."), self._CALL
+        )
+
+        assert (sent["reasoning_content"], sent["content"]) == ("why", "Looking.")
+
+    def test_a_tool_round_that_did_not_reason_carries_the_field_empty(self) -> None:
+        assert self._assistant(self._CALL)["reasoning_content"] == ""
+
+    def test_an_answer_that_did_not_reason_carries_no_field(self) -> None:
+        assert "reasoning_content" not in self._assistant(AITextPart(text="Done."))

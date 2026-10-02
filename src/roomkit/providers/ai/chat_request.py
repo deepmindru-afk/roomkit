@@ -39,6 +39,10 @@ class ChatDialect:
     flattens_text: bool = False
     """A message of text parts goes as one string, and an empty message is not
     sent; only one carrying an image goes as parts (PolarGrid)."""
+    round_thinking_required: bool = False
+    """Every round that called tools carries the thinking field, empty when the
+    round did not reason: DeepSeek in thinking mode refuses a round of the turn
+    in progress without its ``reasoning_content``."""
 
 
 OPENAI_CHAT = ChatDialect()
@@ -117,7 +121,9 @@ def _call_round(
             for call in calls
         ],
     }
-    return _with_thinking_field(rendered, message, dialect)
+    return _with_thinking_field(
+        rendered, message, dialect, required=dialect.round_thinking_required
+    )
 
 
 def _tool_messages(
@@ -196,13 +202,14 @@ def _inline_thinking(message: AIMessage, dialect: ChatDialect) -> bool:
 
 
 def _with_thinking_field(
-    rendered: dict[str, Any], message: AIMessage, dialect: ChatDialect
+    rendered: dict[str, Any], message: AIMessage, dialect: ChatDialect, *, required: bool = False
 ) -> dict[str, Any]:
-    """*rendered*, its reasoning in the dialect's field when it has one."""
+    """*rendered*, its reasoning in the dialect's field when it has one; a
+    *required* field goes even empty."""
     field = _thinking_field(message, dialect)
     if field is not None:
         thinking = _thinking(list(message.content))
-        if thinking:
+        if thinking or required:
             rendered[field] = thinking
     return rendered
 

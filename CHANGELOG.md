@@ -250,6 +250,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- DeepSeek receives a tool round's earlier reasoning in `reasoning_content`,
+  on every round that called tools and empty when the round did not reason,
+  where it went inline as a `<think>` block in the content (RMK-309, RFC
+  §6.4). In thinking mode DeepSeek refuses a round of the turn in progress
+  without that field (400): it recovers the reasoning of a call it issued
+  itself a moment ago, and refuses a call id it does not know. The inline copy
+  was also billed on top of the recovered one (measured on `deepseek-v4-pro`:
+  1,057 prompt tokens, 813 now).
+
 - Gemini receives a tool result whose call was refused, failed, blocked,
   served by nothing or cancelled under its function response's `error` key,
   where it went under `result` like a success (RMK-378, RFC §6.4).

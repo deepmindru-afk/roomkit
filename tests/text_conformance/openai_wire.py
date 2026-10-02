@@ -147,8 +147,10 @@ async def _iterate(chunks: list[Any]) -> AsyncIterator[Any]:
 
 def _assistant_items(message: dict[str, Any]) -> list[Item]:
     items: list[Item] = []
-    if message.get("reasoning"):
-        items.append(("field", message["reasoning"]))
+    # Cerebras's field, or DeepSeek's.
+    reasoning = message.get("reasoning") or message.get("reasoning_content")
+    if reasoning:
+        items.append(("field", reasoning))
     content = message.get("content")
     if isinstance(content, list):
         content = "".join(part.get("text", "") for part in content)
@@ -255,8 +257,9 @@ def wires() -> list[Driver]:
         ),
         OpenAIWire(
             DeepSeekAIProvider,
-            lambda: DeepSeekAIProvider(DeepSeekConfig(api_key="k", model="deepseek-chat")),
+            lambda: DeepSeekAIProvider(DeepSeekConfig(api_key="k", model="deepseek-v4-pro")),
             label="deepseek",
+            reasoning="field",
         ),
         OpenAIWire(
             LiteLLMAIProvider,
