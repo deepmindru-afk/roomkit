@@ -78,13 +78,39 @@ class _PartialsSTT(STTProvider):
         yield TranscriptionResult(text=self._partials[-1], is_final=True)
 
 
+class _FinalOnlySTT(STTProvider):
+    """Streaming STT that releases its words only once the audio ends, as a
+    transducer often does for a short word ("okay", "stop")."""
+
+    def __init__(self, final: str) -> None:
+        self._final = final
+
+    @property
+    def supports_streaming(self) -> bool:
+        return True
+
+    async def transcribe(self, audio: Any, *, language: str | None = None) -> TranscriptionResult:
+        return TranscriptionResult(text=self._final, is_final=True)
+
+    async def transcribe_stream(
+        self, audio_stream: AsyncIterator[AudioChunk], *, language: str | None = None
+    ) -> AsyncIterator[TranscriptionResult]:
+        async for _ in audio_stream:
+            pass
+        yield TranscriptionResult(text=self._final, is_final=True)
+
+
 class _BatchSTT(STTProvider):
     async def transcribe(self, audio: Any, *, language: str | None = None) -> TranscriptionResult:
         return TranscriptionResult(text="hello", is_final=True)
 
 
 async def _room(
-    stt: STTProvider, *, min_speech_ms: int = 300, detector: BackchannelDetector | None = None
+    stt: STTProvider,
+    *,
+    min_speech_ms: int = 300,
+    detector: BackchannelDetector | None = None,
+    transcript_wait_ms: int = 1000,
 ) -> tuple[RoomKit, VoiceChannel, VoiceSession, Any, dict[str, list[Any]]]:
     detector = detector or _KeywordDetector()
     backend = MockVoiceBackend()
@@ -97,6 +123,7 @@ async def _room(
             strategy=InterruptionStrategy.SEMANTIC,
             backchannel_detector=detector,
             min_speech_ms=min_speech_ms,
+            transcript_wait_ms=transcript_wait_ms,
         ),
     )
     kit = RoomKit(voice=backend)
@@ -288,3 +315,53 @@ async def test_phrase_detector_cuts_in_when_the_okay_becomes_a_question() -> Non
     assert session.id not in channel._playing_sessions  # noqa: SLF001
     assert [e.text for e in seen["transcription"]] == ["Okay, and do you remember"]
     await kit.close()
+
+
+class TestHeldSpeechEndingBeforeItsWords:
+    """A held segment that ends before its first word is judged on its final
+    transcript, not discarded unheard (RFC §12.3.13)."""
+
+    async def _speak_and_stop(self, final: str, *, bot_still_talking: bool = True) -> tuple:
+        kit, channel, session, _, seen = await _room(
+            _FinalOnlySTT(final), detector=PhraseBackchannelDetector(), transcript_wait_ms=2000
+        )
+        channel._on_pipeline_vad_event(session, _ONSET)  # noqa: SLF001
+        await asyncio.sleep(0.05)
+        if not bot_still_talking:
+            channel._playing_sessions.pop(session.id)  # noqa: SLF001
+        channel._on_pipeline_speech_end(session, b"\x11\x22" * 160)  # noqa: SLF001
+        await asyncio.sleep(0.2)
+        return kit, channel, session, seen
+
+    async def test_an_okay_lets_the_bot_talk_on(self) -> None:
+        kit, channel, session, seen = await self._speak_and_stop("Okay")
+
+        assert len(seen["backchannel"]) == 1
+        assert seen["barge_in"] == []
+        assert seen["transcription"] == []
+        assert session.id in channel._playing_sessions  # noqa: SLF001
+        await kit.close()
+
+    async def test_a_stop_cuts_the_bot_off_and_is_the_turn(self) -> None:
+        kit, channel, session, seen = await self._speak_and_stop("Stop")
+
+        assert len(seen["barge_in"]) == 1
+        assert [e.text for e in seen["transcription"]] == ["Stop"]
+        assert session.id not in channel._playing_sessions  # noqa: SLF001
+        await kit.close()
+
+    async def test_no_words_is_discarded(self) -> None:
+        kit, channel, session, seen = await self._speak_and_stop("")
+
+        assert seen["barge_in"] == []
+        assert seen["transcription"] == []
+        assert seen["backchannel"] == []
+        assert session.id in channel._playing_sessions  # noqa: SLF001
+        await kit.close()
+
+    async def test_words_after_the_bot_finished_are_a_plain_turn(self) -> None:
+        kit, channel, session, seen = await self._speak_and_stop("Stop", bot_still_talking=False)
+
+        assert seen["barge_in"] == []
+        assert [e.text for e in seen["transcription"]] == ["Stop"]
+        await kit.close()

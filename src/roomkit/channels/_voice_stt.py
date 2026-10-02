@@ -436,6 +436,21 @@ class VoiceSTTMixin:
         except RuntimeError:
             self._stt_streams.pop(session.id, None)
 
+    def _end_stt_stream(self, session_id: str) -> _STTStreamState | None:
+        """End a segment's STT stream: its last audio, then the end of input.
+
+        The state leaves the table now, so a SPEECH_START right after starts a
+        stream of its own; the caller collects the final transcript from it.
+        """
+        state = self._stt_streams.pop(session_id, None)
+        if state is not None:
+            self._flush_stt_buffer(state, session_id)
+            try:
+                state.queue.put_nowait(None)
+            except asyncio.QueueFull:
+                logger.warning("STT stream queue full on sentinel for %s", session_id)
+        return state
+
     def _cancel_stt_stream(self, session_id: str) -> None:
         """Cancel an active streaming STT session."""
         state = self._stt_streams.pop(session_id, None)
@@ -1169,6 +1184,67 @@ class VoiceSTTMixin:
     # -----------------------------------------------------------------
     # Speech-end processing (VAD mode)
     # -----------------------------------------------------------------
+
+    async def _judge_held_speech(
+        self,
+        session: VoiceSession,
+        audio: bytes,
+        room_id: str,
+        stream_state: _STTStreamState,
+        *,
+        speech_duration_ms: int,
+        speaker_claim: Future[SpeakerAttribution | None] | None = None,
+        dtmf_seen: bool = False,
+    ) -> None:
+        """Process a held segment that ended before its first word, if its final words are a turn.
+
+        SEMANTIC held it during playback for words that a streaming STT often
+        releases only at the end (RFC §12.3.13). No words, or a backchannel,
+        is discarded while the bot talks on; anything else cuts the bot off if
+        it still speaks and becomes the user's turn.
+        """
+        if stream_state.task is not None:
+            await _await_stream_end(stream_state.task, session.id)
+        words = stream_state.final_text or stream_state.partial_text or ""
+        if not await self._held_words_are_a_turn(session, room_id, words, speech_duration_ms):
+            logger.debug("Held speech of %s ended without a turn in it: discarded", session.id)
+            self._release_unheard_turn(session.id)
+            return
+        logger.info(
+            "Held speech judged on its final words %r (session %s)", redact(words), session.id
+        )
+        with self._state_lock:
+            playback = self._playing_sessions.get(session.id)
+        await self._fire_speech_start_hooks(session, room_id)
+        if playback is not None:
+            await self._handle_barge_in(session, playback, room_id)
+        await self._process_speech_end(
+            session,
+            audio,
+            room_id,
+            stream_state,
+            dtmf_seen=dtmf_seen,
+            speaker_claim=speaker_claim,
+        )
+
+    async def _held_words_are_a_turn(
+        self, session: VoiceSession, room_id: str, words: str, speech_duration_ms: int
+    ) -> bool:
+        """Whether a held segment's final *words* are the user's turn, a backchannel reported."""
+        if not words:
+            return False
+        with self._state_lock:
+            playback = self._playing_sessions.get(session.id)
+        if playback is None:
+            return True  # the bot finished meanwhile: plain speech is a turn
+        decision = self._interruption_handler.evaluate(
+            playback_position_ms=playback.played_ms,
+            speech_duration_ms=speech_duration_ms,
+            speech_text=words,
+        )
+        if decision.is_backchannel:
+            await self._fire_backchannel_hook(session, words, room_id)
+        return bool(decision.should_interrupt)
 
     async def _process_speech_end(
         self,

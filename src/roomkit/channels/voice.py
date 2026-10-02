@@ -629,10 +629,10 @@ class VoiceChannel(
         # unless the strategy is DISABLED, which queues it for after playback
         # (RFC §12.6) rather than throwing it away.
         with self._state_lock:
-            self._speech_started_at.pop(session.id, None)
+            onset = self._speech_started_at.pop(session.id, None)
             was_suppressed = session.id in self._suppressed_sessions
             self._suppressed_sessions.discard(session.id)
-            was_held = self._held_for_transcript.pop(session.id, None) is not None
+            held = self._held_for_transcript.pop(session.id, None)
             was_queueing = session.id in self._queueing_sessions
             self._queueing_sessions.discard(session.id)
             if was_queueing and audio:
@@ -652,9 +652,14 @@ class VoiceChannel(
         # The segment that just ended owns any DTMF heard since the last one.
         dtmf_seen = self._tts_context is not None and self._tts_context.take_dtmf(session.id)
         if was_suppressed:
-            if was_held:
-                # SEMANTIC transcribed it to classify it, and it did not cut
-                # in: the words go nowhere (RFC §12.6 step 5).
+            if held is False:
+                # SEMANTIC holds it for its words and none came before the
+                # speech ended: its final transcript decides (RFC §12.3.13).
+                self._settle_wordless_held_speech(session, audio, onset, speaker_claim, dtmf_seen)
+                return
+            if held:
+                # Classified as a backchannel: its words go nowhere (RFC §12.6
+                # step 5).
                 self._cancel_stt_stream(session.id)
             logger.debug("Suppressed echo speech end for %s", session.id)
             self._release_unheard_turn(session.id)
@@ -664,14 +669,7 @@ class VoiceChannel(
         # Without this, a new stream created by _start_stt_stream would
         # overwrite _stt_streams[session.id] before _process_speech_end
         # runs, causing it to grab the wrong (new) stream.
-        stream_state = self._stt_streams.pop(session.id, None)
-        if stream_state is not None:
-            # Flush remaining buffered frames before sending sentinel
-            self._flush_stt_buffer(stream_state, session.id)
-            try:
-                stream_state.queue.put_nowait(None)
-            except asyncio.QueueFull:
-                logger.warning("STT stream queue full on sentinel for %s", session.id)
+        stream_state = self._end_stt_stream(session.id)
 
         with self._state_lock:
             binding_info = self._session_bindings.get(session.id)
@@ -1654,6 +1652,35 @@ class VoiceChannel(
             # words are still classified, so "uh-huh... wait" can cut in.
             self._cancel_barge_in_confirmation(session.id)
             self._note_backchannel(session, text, room_id)
+
+    def _settle_wordless_held_speech(
+        self,
+        session: VoiceSession,
+        audio: bytes,
+        onset: float | None,
+        speaker_claim: Future[SpeakerAttribution | None] | None,
+        dtmf_seen: bool,
+    ) -> None:
+        """Have a held segment that ended before its first word judged on its final words."""
+        stream_state = self._end_stt_stream(session.id)
+        with self._state_lock:
+            binding_info = self._session_bindings.get(session.id)
+        if stream_state is None or not binding_info or not self._framework:
+            self._release_unheard_turn(session.id)
+            return
+        duration_ms = int((time.monotonic() - onset) * 1000) if onset is not None else 0
+        self._schedule(
+            self._judge_held_speech(
+                session,
+                audio,
+                binding_info[0],
+                stream_state,
+                speech_duration_ms=duration_ms,
+                speaker_claim=speaker_claim,
+                dtmf_seen=dtmf_seen,
+            ),
+            name=f"held_speech_end:{session.id}",
+        )
 
     def _note_backchannel(self, session: VoiceSession, text: str, room_id: str) -> None:
         """Fire ON_BACKCHANNEL, once per held segment."""

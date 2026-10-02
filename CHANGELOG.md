@@ -120,6 +120,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Under `SEMANTIC`, a segment held during playback that ends before its first
+  word is judged on its final transcript instead of being discarded unheard
+  (RMK-390, RFC §12.3.13). A streaming transducer often releases a short word
+  only once the speech is over (Nemotron: "okay" and "no" came only at the
+  final, measured): a lone "stop" was thrown away and the voice talked on.
+  Now no words or a backchannel is discarded while the voice talks on, and
+  anything else cuts it off, about the time the STT takes to finalize after
+  the speech ends, and becomes the user's turn. With that, a longer
+  `transcript_wait_ms` no longer swallows short interruptions; the examples
+  use 2 s (`INTERRUPTION_WAIT_MS`).
+
 - The `ollama` extra is capped below 0.7 and the `polargrid` extra below
   polargrid-sdk 0.11: RoomKit patches both SDKs through private methods until
   they are fixed upstream (`providers/ollama/sdk_patch.py`,
