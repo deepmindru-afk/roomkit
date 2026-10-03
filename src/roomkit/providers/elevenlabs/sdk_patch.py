@@ -25,6 +25,10 @@ in ``tests/test_providers/test_elevenlabs_sdk_patch.py`` fails: the SDK then
 hands such calls on itself. Undo with it, in ``providers/elevenlabs/realtime.py``,
 the ``sdk_patch.client_tools`` call (back to ``ClientTools(loop=…)``) and
 ``_route_unregistered`` with its ``functools.partial`` import.
+
+``pyproject.toml`` caps ``elevenlabs`` below the next minor, and the
+``providers`` extra installs it so the canaries run in CI: move the cap once
+they pass on the new minor.
 """
 
 from __future__ import annotations

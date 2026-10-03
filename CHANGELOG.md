@@ -525,6 +525,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stops answering an unregistered tool itself or starts answering a
   cancelled handler. On ElevenLabs, a channel that declares no tools runs any
   name the agent calls through its `tool_handler`, as every provider does.
+  `elevenlabs` is capped below 2.70 and installed by the `providers` extra,
+  so the canaries run in CI.
 
 - A tool call is reported once, whatever cuts it (RMK-431, RFC §9.3):
   - A call whose outcome the model already read and whose report a cut
