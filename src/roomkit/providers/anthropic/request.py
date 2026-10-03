@@ -68,8 +68,11 @@ def format_content(
         elif isinstance(part, AIToolResultPart):
             parts.append(_tool_result_block(part))
             trailing.extend(_result_beside_references(part))
-        elif isinstance(part, AIThinkingPart):
+        elif isinstance(part, AIThinkingPart) and (part.signature or part.redacted is not None):
             parts.append(_thinking_block(part))
+        # A reasoning block without a signature is another vendor's (Anthropic
+        # signs each one it sends, RFC §6.4): Anthropic refuses it, thinking
+        # on or off, and takes the round without it (measured 2026-10-03).
     return parts + trailing
 
 

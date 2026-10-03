@@ -362,6 +362,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A provider request takes the same shape on every provider (RMK-398, RFC
+  §6.4, §6.7):
+  - An Anthropic call the response cut over runs when its streamed arguments
+    read (nothing, `null`, a whole object), as on every other provider; it
+    stays partial when its arguments do not read, or when only the SDK's
+    parse is known, which reads a cut fragment as a whole object.
+  - A `fallback_provider` receives the primary's rounds in a form its vendor
+    takes: a reasoning block without a signature (DeepSeek, Qwen, vLLM) no
+    longer goes to Anthropic, which answered 400
+    (`thinking.signature: Field required`), and a round none of whose calls
+    carries a thought signature goes to a Gemini 3 model as text, where
+    Gemini answered 400 (`Function call is missing a thought_signature`).
+    Both measured on the vendors' APIs.
+  - A tool schema whose root has no `type` is declared an object on every
+    provider: Anthropic and OpenAI refused it with a 400.
+
 - `GrokTTSProvider` with `codec="wav"` and `GradiumTTSProvider` with
   `output_format="wav"` no longer click at the start of every sentence they
   stream (RMK-413). Both servers open a streamed WAV with its 44-byte RIFF

@@ -17,14 +17,19 @@ from roomkit.providers.ai.base import AITool, ProviderError
 
 
 def declared_parameters(parameters: Mapping[str, Any] | None) -> dict[str, Any]:
-    """The schema a tool is declared with: its own, or for a tool that takes
-    no parameters an object with none, which every vendor accepts.
+    """The schema a tool is declared with: its own, its root an object, or for
+    a tool that takes no parameters an object with none, which every vendor
+    accepts.
 
     An empty map is not one: Anthropic refuses it, and Anthropic and Mistral
-    refuse a declaration without a schema (measured 2026-10-02).
+    refuse a declaration without a schema (measured 2026-10-02). A root
+    without a type is an object's, said so for every vendor: Anthropic and
+    OpenAI refuse it untyped (measured 2026-10-03).
     """
     if not parameters:
         return {"type": "object", "properties": {}}
+    if parameters.get("type") is None:
+        return {**parameters, "type": "object"}
     return dict(parameters)
 
 

@@ -36,7 +36,7 @@ from roomkit.providers.gemini.errors import (
     reason_name,
     wrap_gemini_error,
 )
-from roomkit.providers.gemini.models import MODELS
+from roomkit.providers.gemini.models import MODELS, TAKES_LEVELS
 from roomkit.providers.gemini.request import (
     build_gen_config,
     format_messages,
@@ -261,6 +261,14 @@ class GeminiAIProvider(AIProvider):
         capabilities = entry.capabilities if entry is not None else []
         return build_gen_config(self._types, self._config, context, capabilities)
 
+    def _calls_need_signatures(self) -> bool:
+        """Whether the model refuses a function call without its thought
+        signature: a Gemini 3 model, the one family that takes thinking
+        levels (measured 2026-10-03 on ``gemini-3.8-flash``)."""
+        entry = self.catalog_entry()
+        capabilities = entry.capabilities if entry is not None else []
+        return TAKES_LEVELS in capabilities or self._config.thinking_level is not None
+
     @property
     def supports_response_schema(self) -> bool:
         """Controlled generation, through ``response_json_schema``."""
@@ -299,7 +307,9 @@ class GeminiAIProvider(AIProvider):
     async def _events(self, context: AIContext) -> AsyncIterator[StreamEvent]:
         """The streamed call itself, shared by :meth:`generate`."""
         gen_config = self._build_gen_config(context)
-        contents = format_messages(self._types, context.messages)
+        contents = format_messages(
+            self._types, context.messages, signed_calls=self._calls_need_signatures()
+        )
         # Before the try below, whose ``_wrap_error`` is for SDK exceptions and
         # would restate this one as an opaque provider failure.
         reject_model_turn_tail(contents)

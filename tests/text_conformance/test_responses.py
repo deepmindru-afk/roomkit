@@ -155,6 +155,22 @@ class TestCallsThatDoNotRun:
         [call] = answer.calls
         assert (call.partial, call.garbled) == (True, False)
 
+    @pytest.mark.parametrize(
+        "arguments", ["", "null", '{"q": "a"}'], ids=["none", "null", "whole"]
+    )
+    async def test_a_cut_call_whose_arguments_read_runs(
+        self, driver: Driver, mode: str, arguments: str
+    ) -> None:
+        """Partial only when the arguments do not read, whatever the provider
+        and whatever stop reason (RFC §6.4, RMK-398)."""
+        driver.require(ARGUMENT_TEXT)
+        script = Script(calls=(Call("lookup", arguments, id="c1", index=0),), finish="cut")
+
+        answer = await generation(driver, script, mode, tool_context(LOOKUP))
+
+        [call] = answer.calls
+        assert (call.partial, call.garbled) == (False, False)
+
     async def test_a_stream_that_stops_without_a_reason_cuts_its_call(
         self, driver: Driver
     ) -> None:

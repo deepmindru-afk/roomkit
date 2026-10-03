@@ -205,6 +205,24 @@ class TestAnthropic:
             {"type": "redacted_thinking", "data": "RRR"},
         ]
 
+    def test_another_vendors_unsigned_reasoning_is_left_out(self) -> None:
+        """A round a fallback receives from a provider whose reasoning carries
+        no signature: Anthropic refuses the block, takes the round without it
+        (RMK-398, measured 2026-10-03)."""
+        message = AIMessage(
+            role="assistant",
+            content=[
+                AIThinkingPart(thinking="I should look it up."),
+                AIToolCallPart(id="call_1", name="lookup", arguments={}),
+            ],
+        )
+
+        [rendered] = build_messages([message])
+
+        assert rendered["content"] == [
+            {"type": "tool_use", "id": "call_1", "name": "lookup", "input": {}},
+        ]
+
 
 class _Scripted(AIProvider):
     """Streams its first round as scripted, then answers."""

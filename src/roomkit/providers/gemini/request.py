@@ -15,6 +15,7 @@ provider rather than imported here: the SDK is an optional dependency that
 from __future__ import annotations
 
 import base64
+import json
 from collections.abc import Collection
 from typing import Any
 
@@ -59,13 +60,27 @@ def _round_signature(parts: list[Any]) -> bytes | None:
     return None
 
 
-def format_messages(types: Any, messages: list[AIMessage]) -> list[Any]:
-    """Convert AIMessage list to Gemini Content format."""
+def format_messages(
+    types: Any, messages: list[AIMessage], *, signed_calls: bool = False
+) -> list[Any]:
+    """Convert AIMessage list to Gemini Content format.
+
+    *signed_calls* says the model refuses a function call without its
+    thought signature (Gemini 3, measured 2026-10-03). A round none of whose
+    calls carries one is another vendor's, a round a fallback provider
+    received (RFC §6.4): it goes back as text, its calls and their results,
+    as the only form such a model takes for calls it did not make.
+    """
     contents = []
+    as_text: set[str] = set()
     for msg in messages:
         if isinstance(msg.content, list) and any(
             isinstance(p, AIToolCallPart) for p in msg.content
         ):
+            if signed_calls and _round_signature(msg.content) is None:
+                as_text |= {p.id for p in msg.content if isinstance(p, AIToolCallPart)}
+                contents.append(_text_content(types, "model", _round_as_text(msg.content)))
+                continue
             # Model message with function calls
             contents.append(
                 types.Content(role="model", parts=_model_call_parts(types, msg.content))
@@ -73,12 +88,42 @@ def format_messages(types: Any, messages: list[AIMessage]) -> list[Any]:
         elif isinstance(msg.content, list) and any(
             isinstance(p, AIToolResultPart) for p in msg.content
         ):
+            if any(
+                isinstance(p, AIToolResultPart) and p.tool_call_id in as_text for p in msg.content
+            ):
+                contents.append(_text_content(types, "user", _results_as_text(msg.content)))
+                continue
             contents.extend(_tool_result_contents(types, msg.content))
         else:
             role = "model" if msg.role == "assistant" else "user"
             parts = format_content(types, msg.content)
             contents.append(types.Content(role=role, parts=parts))
     return contents
+
+
+def _text_content(types: Any, role: str, text: str) -> Any:
+    return types.Content(role=role, parts=[types.Part.from_text(text=text)])
+
+
+def _round_as_text(content: list[Any]) -> str:
+    """Another vendor's round as the model reads it in text: what it said,
+    then each call it made. Its reasoning is that vendor's and stays out."""
+    lines = [p.text for p in content if isinstance(p, AITextPart) and p.text.strip()]
+    lines += [
+        f"I called {p.name}({json.dumps(p.arguments, ensure_ascii=False)})."
+        for p in content
+        if isinstance(p, AIToolCallPart)
+    ]
+    return "\n".join(lines)
+
+
+def _results_as_text(content: list[Any]) -> str:
+    """The results of another vendor's calls, as text."""
+    return "\n".join(
+        f"{p.name} {'failed' if p.is_error else 'returned'}: {p.as_text()}"
+        for p in content
+        if isinstance(p, AIToolResultPart)
+    )
 
 
 def _model_call_parts(types: Any, content: list[Any]) -> list[Any]:

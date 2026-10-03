@@ -3,6 +3,7 @@ its wire needs them (RFC §6.4, §6.7)."""
 
 from __future__ import annotations
 
+import base64
 from typing import Any
 
 import pytest
@@ -40,6 +41,21 @@ class TestDeclaration:
             "type": "object",
             "properties": {},
         }
+
+    async def test_a_root_without_a_type_is_declared_an_object(
+        self, driver: Driver, mode: str
+    ) -> None:
+        """Anthropic and OpenAI refuse an untyped root (RMK-398, measured)."""
+        untyped = AITool(
+            name="lookup_q",
+            description="d",
+            parameters={"properties": {"q": {"type": "string"}}, "required": ["q"]},
+        )
+        await generation(driver, Script(text="ok"), mode, tool_context(untyped))
+
+        declared = driver.declared(driver.requests[0])["lookup_q"]
+        assert declared["type"] == "object"
+        assert declared["properties"] == {"q": {"type": "string"}}
 
     async def test_a_schema_is_declared_as_given(self, driver: Driver) -> None:
         driver.require(SCHEMA_AS_GIVEN)
@@ -86,7 +102,10 @@ def _results(*parts: AIToolResultPart) -> AIMessage:
     return AIMessage(role="tool", content=list(parts))
 
 
-_CALL = AIToolCallPart(id="c1", name="lookup", arguments={"q": "a"})
+# A round the provider itself produced: Gemini 3 signs its calls, which the
+# other wires ignore.
+_SIGNED = {"thought_signature": base64.b64encode(b"S0").decode()}
+_CALL = AIToolCallPart(id="c1", name="lookup", arguments={"q": "a"}, metadata=_SIGNED)
 
 
 async def _replay(driver: Driver, *history: AIMessage) -> list[Any]:
@@ -98,7 +117,7 @@ async def _replay(driver: Driver, *history: AIMessage) -> list[Any]:
 class TestReplay:
     async def test_a_call_and_its_results_go_back_paired(self, driver: Driver) -> None:
         # Two tools, so a wire that pairs by name pairs something.
-        second = AIToolCallPart(id="c2", name="fetch", arguments={"q": "b"})
+        second = AIToolCallPart(id="c2", name="fetch", arguments={"q": "b"}, metadata=_SIGNED)
         items = await _replay(
             driver,
             _round(AITextPart(text="Looking."), _CALL, second),
@@ -148,6 +167,29 @@ class TestReplay:
             "dropped": [],
         }[driver.reasoning]
         assert reasoning == expected
+
+    async def test_another_vendors_round_goes_back_as_the_wire_takes_it(
+        self, driver: Driver
+    ) -> None:
+        """A round a fallback receives from the primary: reasoning without a
+        signature, a call without one. Anthropic refuses the block and Gemini 3
+        the call (RMK-398, measured 2026-10-03)."""
+        items = await _replay(
+            driver,
+            _round(
+                AIThinkingPart(thinking="why"),
+                AIToolCallPart(id="c1", name="lookup", arguments={"q": "a"}),
+            ),
+            _results(AIToolResultPart(tool_call_id="c1", name="lookup", result="found")),
+        )
+
+        kinds = {item[0] for item in items}
+        if driver.reasoning == "call_signature":
+            assert ("text", 'I called lookup({"q": "a"}).') in items
+            assert not kinds & {"call", "result", "signature"}
+        else:
+            assert {"call", "result"} <= kinds
+            assert "thinking" not in kinds or driver.reasoning != "blocks"
 
     async def test_a_redacted_block_goes_back_as_received(self, driver: Driver) -> None:
         driver.require(REDACTED_REASONING)

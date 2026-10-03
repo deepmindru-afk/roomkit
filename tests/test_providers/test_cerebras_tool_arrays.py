@@ -17,6 +17,7 @@ from roomkit.providers.ai.base import (
     StreamTextDelta,
     StreamToolCall,
 )
+from roomkit.providers.ai.tool_declaration import declared_parameters
 from roomkit.providers.openai.ai import OpenAIAIProvider
 from roomkit.tools.validation import validate_tool_arguments
 from tests.test_providers.test_cerebras import (
@@ -74,7 +75,8 @@ async def test_only_schema_declared_arrays_are_decoded(
 
     def handle(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
-        assert body["tools"][0]["function"]["parameters"] == tool.parameters
+        # Declared as given, a root without a type typed an object (RMK-398).
+        assert body["tools"][0]["function"]["parameters"] == declared_parameters(tool.parameters)
         call = {
             "id": "call-1",
             "type": "function",

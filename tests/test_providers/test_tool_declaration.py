@@ -56,6 +56,15 @@ class TestDeclaredParameters:
         schema = {"type": "object", "properties": {"q": {"type": "string"}}}
         assert declared_parameters(schema) == schema
 
+    @pytest.mark.parametrize(
+        "schema",
+        [{"properties": {"q": {"type": "string"}}}, {"type": None, "properties": {}}],
+        ids=["absent", "null"],
+    )
+    def test_a_root_without_a_type_is_an_objects(self, schema: dict[str, Any]) -> None:
+        """Anthropic and OpenAI refuse it untyped (RMK-398, measured)."""
+        assert declared_parameters(schema) == {**schema, "type": "object"}
+
     def test_the_chat_declaration_carries_it(self) -> None:
         [declaration] = chat_tool_declarations([AITool(name="now", description="d")])
         assert declaration == {
@@ -173,6 +182,16 @@ class TestRealtimeDeclarations:
     def test_deepgram_declares_a_tool_without_parameters_as_an_object(self) -> None:
         [function] = format_functions([{"name": "now", "description": "d", "parameters": {}}])
         assert function["parameters"] == NO_PARAMETERS
+
+    def test_a_realtime_root_without_a_type_is_an_objects(self) -> None:
+        untyped = {"properties": {"q": {"type": "string"}}}
+        [tool] = format_backend_tools(
+            [{"name": "find", "description": "d", "parameters": untyped}]
+        )
+        [function] = format_functions(
+            [{"name": "find", "description": "d", "parameters": untyped}]
+        )
+        assert tool["parameters"]["type"] == function["parameters"]["type"] == "object"
 
 
 class TestMCP:

@@ -70,9 +70,13 @@ class ToolUseBlocks:
         """The calls the stream did not close, read off the final message.
 
         A block the stream opened keeps the id its composition announced and
-        the arguments that streamed, not the SDK's parse of what arrived; it
-        is partial when the response was cut over it, or when its arguments do
-        not read.
+        the arguments that streamed, not the SDK's parse of what arrived. It
+        is partial when its arguments do not read, whatever the stop reason,
+        as on every provider (RFC §6.4): one the response cut over still runs
+        when what streamed reads (nothing, ``null``, a whole object). A block
+        known only by the SDK's parse is partial when the response cut over
+        it: that parse reads a fragment leniently (``{"path": "/a`` as
+        ``{"path": "/a"}``), so it cannot say the arguments are whole.
         """
         opened = {held["server_id"]: held for held in self._open.values()}
         cut = final.stop_reason is None or is_truncation(final.stop_reason)
@@ -88,7 +92,7 @@ class ToolUseBlocks:
                     id=held["id"] if held is not None else self._ids(block.id, block.name),
                     name=block.name,
                     arguments=tool_arguments(raw),
-                    partial=cut or unreadable,
+                    partial=unreadable or (cut and held is None),
                     garbled=unreadable and not cut,
                 )
             )
