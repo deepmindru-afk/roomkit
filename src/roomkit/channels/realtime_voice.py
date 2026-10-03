@@ -1813,14 +1813,6 @@ class RealtimeVoiceChannel(
             visible = self._skill_support.get_visible_tools(visible, session_id, pending_skill)
         return self._policy_filter(session_id, visible)
 
-    def _use_agent_policy(self, session: VoiceSession, policy: ToolPolicy | None) -> None:
-        """Make *policy* the one of the pipeline agent *session* now speaks as;
-        ``None`` when that agent has none (RFC §19.5)."""
-        if policy is None:
-            self._session_agent_policies.pop(session.id, None)
-        else:
-            self._session_agent_policies[session.id] = policy
-
     async def reconfigure_session(
         self,
         session: VoiceSession,

@@ -472,6 +472,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when the storage already encrypts every byte (an encrypted volume or
   bucket), on `MediaRecordingConfig` or `ConferenceRecordingConfig`.
 
+- **BREAKING — a realtime pipeline refuses an agent that carries skills**
+  (RMK-427, RFC §19.5): `ConversationPipeline.install(..., voice_channel_id=)`
+  on a `RealtimeVoiceChannel` raises `ValueError` before installing anything
+  when an agent has a non-empty `SkillRegistry`. A realtime session serves
+  the channel's skills only, so the agent's skill-gated tools ran without
+  their skill and its activation reached nothing. Migration: pass the skills
+  to `RealtimeVoiceChannel(..., skills=...)`.
+
 ### Fixed
 
 - A Loop whose producer's task failed says so (RMK-435, RFC §19.7.4,
@@ -493,10 +501,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   had `wire_money` declared and served on its session, the policy read on
   its text turns only. Its policy now holds beside the channel's, each
   resolved for the session's participant, on the declaration, the gate, Tool
-  Search and `current_tool_allowed_names()`, and a handoff applies the next
-  agent's. An agent that carries `skills` is refused at the install
-  (`ValueError`): a realtime session serves the channel's skills only, and
-  the agent's gated tools ran without their skill.
+  Search, `current_tool_allowed_names()` and the skills preamble's
+  `run_skill_script` promise. A handoff applies the next agent's policy on
+  every session of the room before any is reconfigured, read for the
+  participant's role, and the gate judges each call by the agent the room
+  talks to, the one that serves it. As on the agent's text turns, an
+  allow-list policy (`ToolPolicy(allow=["balance"])`) also hides
+  `handoff_conversation`: allow it for an agent that hands off.
 
 - Every realtime provider hands every tool call to the channel (RMK-440, RFC
   §12.4): a call to a tool the channel never declared on ElevenLabs (the

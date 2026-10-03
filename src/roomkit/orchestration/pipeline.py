@@ -14,7 +14,10 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, Field
 
 from roomkit.models.enums import EventType, HookExecution, HookTrigger
-from roomkit.orchestration._realtime_pipeline import RealtimePipeline
+from roomkit.orchestration._realtime_pipeline import (
+    RealtimePipeline,
+    refuse_agents_with_skills,
+)
 from roomkit.orchestration.handoff import HandoffHandler, build_handoff_tool, setup_handoff
 from roomkit.orchestration.router import ConversationRouter, RoutingConditions, RoutingRule
 
@@ -154,6 +157,16 @@ class ConversationPipeline:
         if greet_on_handoff and not voice_channel_id:
             raise ValueError("greet_on_handoff=True requires voice_channel_id")
 
+        # Detect speech-to-speech mode
+        is_realtime = False
+        if voice_channel_id:
+            from roomkit.channels.realtime_voice import RealtimeVoiceChannel
+
+            is_realtime = isinstance(kit.channels.get(voice_channel_id), RealtimeVoiceChannel)
+        if is_realtime:
+            # Refused before anything is installed.
+            refuse_agents_with_skills(agents, voice_channel_id)  # ty: ignore[invalid-argument-type]
+
         router = self.to_router()
 
         kit.hook(
@@ -161,13 +174,6 @@ class ConversationPipeline:
             execution=HookExecution.SYNC,
             priority=hook_priority,
         )(router.as_hook())
-
-        # Detect speech-to-speech mode
-        is_realtime = False
-        if voice_channel_id:
-            from roomkit.channels.realtime_voice import RealtimeVoiceChannel
-
-            is_realtime = isinstance(kit.channels.get(voice_channel_id), RealtimeVoiceChannel)
 
         handler = HandoffHandler(
             kit=kit,

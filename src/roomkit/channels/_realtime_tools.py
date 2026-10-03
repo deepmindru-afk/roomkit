@@ -235,7 +235,6 @@ class RealtimeToolsMixin:
     _session_catalogue: Any  # RealtimeToolGateMixin — cross-mixin
     _session_declared_tools: Any  # RealtimeToolGateMixin — cross-mixin
     _session_policy_check: Any  # RealtimeToolGateMixin — cross-mixin
-    _exempt_tool_names: Any  # RealtimeToolGateMixin — cross-mixin
 
     def _on_provider_tool_call(
         self,

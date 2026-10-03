@@ -14,7 +14,6 @@ import json
 import logging
 import threading
 from collections.abc import Callable, Container
-from functools import partial
 from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._ai_policy import policy_admits
@@ -47,6 +46,8 @@ class RealtimeToolGateMixin:
     _tool_policy: ToolPolicy | None
     _session_agent_policies: dict[str, ToolPolicy]
     _session_roles: dict[str, str | None]
+    _sessions: dict[str, VoiceSession]
+    _room_session_config: Any  # RealtimeVoiceChannel — cross-mixin
     _collisions: CollisionLog
     _registry: ChannelRegistry
     _tool_search_support: Any
@@ -193,11 +194,14 @@ class RealtimeToolGateMixin:
         return all(policy_admits(p, name, passes) for p in self._session_policies(session_id))
 
     def _session_policy_check(self, session_id: str) -> Callable[[str], bool] | None:
-        """:meth:`_session_admits` for one session, or ``None`` when no policy
-        applies to it."""
-        if not self._session_policies(session_id):
+        """:meth:`_session_admits` for one session as it stands now, or ``None``
+        when no policy applies to it: a call's toolset is the one it started
+        with, whatever a handoff or the session's end does during it."""
+        policies = self._session_policies(session_id)
+        if not policies:
             return None
-        return partial(self._session_admits, session_id)
+        passes = self._exempt_tool_names()
+        return lambda name: all(policy_admits(p, name, passes) for p in policies)
 
     def _policy_filter(self, session_id: str, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """The part of *tools* the session's policies admit.
@@ -214,6 +218,34 @@ class RealtimeToolGateMixin:
             if (search is not None and search.is_search_tool(str(t.get("name", ""))))
             or self._session_admits(session_id, str(t.get("name", "")))
         ]
+
+    async def _use_agent_policy(self, session: VoiceSession, policy: ToolPolicy | None) -> None:
+        """Make *policy* the one of the pipeline agent *session* now speaks as
+        (``None`` when that agent has none), with its participant's role read
+        for it (RFC §19.5). A session that ended keeps nothing."""
+        self._set_agent_policy(session, policy)
+        await self._refresh_session_role(session, session.room_id)
+
+    def _set_agent_policy(self, session: VoiceSession, policy: ToolPolicy | None) -> None:
+        """Record *policy* as the one of the agent *session* speaks as, while
+        the session lives."""
+        with self._state_lock:
+            if session.id not in self._sessions:
+                return
+            if policy is None:
+                self._session_agent_policies.pop(session.id, None)
+            else:
+                self._session_agent_policies[session.id] = policy
+
+    async def _refresh_session_policies(self, session: VoiceSession, room_id: str | None) -> None:
+        """Read again what a call is judged by: the agent the room talks to
+        now, the one that serves the call (RFC §19.5), and the participant's
+        role, so a role changed during the session holds from the next call
+        on (RFC §12.4)."""
+        if self._registry.session_source is not None:
+            config = await self._room_session_config(room_id or session.room_id)
+            self._set_agent_policy(session, config.tool_policy if config is not None else None)
+        await self._refresh_session_role(session, room_id)
 
     async def _refresh_session_role(self, session: VoiceSession, room_id: str | None) -> None:
         """Read the participant's role again, so a role changed during the
@@ -280,7 +312,7 @@ class RealtimeToolGateMixin:
         arguments, invalid = self._validated_realtime_arguments(name, arguments, params)
         if invalid is not None:
             return arguments, GateRefusal(invalid), None
-        await self._refresh_session_role(session, room_id)
+        await self._refresh_session_policies(session, room_id)
         exempt = self._exempt_tool_names() if channel_serves else frozenset()
         refusal = self._access_refusal(name, session.id, exempt)
         if refusal is not None:
@@ -320,8 +352,8 @@ class RealtimeToolGateMixin:
         return arguments, None
 
     def _access_refusal(self, name: str, session_id: str, exempt: Container[str]) -> str | None:
-        """Why the session may not call *name*: its tool policy, resolved for
-        its participant, then skill gating, as on the classic path."""
+        """Why the session may not call *name*: its tool policies, resolved
+        for its participant, then skill gating, as on the classic path."""
         if not self._session_admits(session_id, name, exempt):
             logger.warning("Realtime tool %s blocked by policy", name)
             return json.dumps({"error": policy_refusal(name)})

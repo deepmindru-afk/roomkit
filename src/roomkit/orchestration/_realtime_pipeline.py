@@ -63,7 +63,6 @@ class RealtimePipeline:
         greet_on_handoff: bool,
         greeting_prompt: str | None,
     ) -> None:
-        _refuse_agents_with_skills(agents, rtv)
         self._kit = kit
         self._rtv = rtv
         self._handler = handler
@@ -275,10 +274,13 @@ class RealtimePipeline:
         lang = self._handler.get_room_language(room, new_id)
         tools = self._session_tools(new_id)
         policy = self._agent_map[new_id]._tool_policy
+        sessions = rtv.get_room_sessions(room_id)
 
-        for session in rtv.get_room_sessions(room_id):
-            # The new agent's policy holds before its tools are declared.
-            rtv._use_agent_policy(session, policy)
+        # The new agent's policy holds on every session of the room before any
+        # declares its tools, each read for its participant's role.
+        for session in sessions:
+            await rtv._use_agent_policy(session, policy)
+        for session in sessions:
             await rtv.reconfigure_session(
                 session,
                 system_prompt=prompt,
@@ -323,13 +325,14 @@ def _channel_tool_names(rtv: RealtimeVoiceChannel) -> set[str]:
     return {name for t in rtv._tools or [] if (name := t.get("name"))}
 
 
-def _refuse_agents_with_skills(agents: list[Agent], rtv: RealtimeVoiceChannel) -> None:
+def refuse_agents_with_skills(agents: list[Agent], channel_id: str) -> None:
     """Refuse an agent that carries skills: a realtime session serves the
     channel's skills, never an agent's, so its gated tools would run without
     their skill and its activation would reach nothing (RFC §19.5)."""
-    if carried := [agent.channel_id for agent in agents if agent._skills is not None]:
+    carried = [a.channel_id for a in agents if a._skills is not None and a._skills.has_entries]
+    if carried:
         raise ValueError(
-            f"A realtime pipeline on channel {rtv.channel_id!r} serves the channel's skills "
+            f"A realtime pipeline on channel {channel_id!r} serves the channel's skills "
             f"only (RFC §19.5); agent(s) {', '.join(map(repr, carried))} carry skills of "
-            "their own"
+            f"their own: pass them to RealtimeVoiceChannel({channel_id!r}, skills=...)"
         )
