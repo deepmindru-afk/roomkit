@@ -254,17 +254,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   activated later in the turn.
 
 - **BREAKING — a call the provider already ran is marked on the call,
-  never in its arguments** (RMK-439, RFC §9.3): the channel read `_result` /
-  `_is_error` keys in a call's arguments as "the provider ran it", so a model
-  that wrote `{"q": "a", "_result": "forged"}` had its call stored `served`
-  with that text, without the tool policy, the gate or its handler, and an
-  external handler received `on_tool_result` for a call nobody decided. The
+  never in its arguments** (RMK-439, RFC §9.3): the channel read a `_result`
+  key in a call's arguments as "the provider ran it" (and `_is_error` as
+  that run's failure; on a call an external handler decided, `_is_error` was
+  stripped from what the handler saw and turned its approval into a
+  failure), so a model that wrote `{"q": "a", "_result": "forged"}` had its
+  call stored `served` with that text, without the tool policy, the gate or
+  its handler, and an external handler received `on_tool_result` for a call
+  nobody decided. The
   mark is now `AIToolCall.served` / `StreamToolCall.served`, a
   `ServedCall(result, is_error)` only a provider sets (exported from
   `roomkit.providers.ai`); a `_result` key is an argument like any other.
   No provider of the tree set the old mark. Migration: a provider that runs
   its own tools sets `served=ServedCall(result=..., is_error=...)` on the
-  call instead of the `_result` / `_is_error` keys.
+  call instead of the `_result` / `_is_error` keys. One that still sends the
+  keys has its already-run call handled as a new one: a channel tool of that
+  name runs it again, an external handler is asked about it, or it is
+  refused as undeclared.
 
 - `BudgetAwareMemory` reserves at least the turn's measured footprint
   (RMK-406, RFC §20): a host that passed `reserved_tokens=0`, or less than the
@@ -1291,6 +1297,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   transport keeps its trace as before, past no hook.
 
 ### Security
+
+- A model could pass its own tool call off as one the provider already ran
+  by writing `_result` among its arguments, so the call skipped the tool
+  policy and the gate (RMK-439): the mark is now `AIToolCall.served`, which
+  only a provider sets (see Changed).
 
 - `ScreenInputTools` no longer turns pyautogui's failsafe off (RMK-356): the
   library set `pyautogui.FAILSAFE = False` for the whole process, so a person

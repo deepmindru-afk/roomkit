@@ -10,6 +10,8 @@ call the provider ran. A provider that runs its own tools sets
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from roomkit.channels.ai import AIChannel
@@ -21,6 +23,7 @@ from roomkit.providers.ai.base import (
     tool_call_of,
 )
 from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.tools.external import ToolDecision
 from roomkit.tools.policy import ToolPolicy
 from tests.test_external_call_routing import LOOKUP, _calls, _Local, _Proxy, _Room
 
@@ -33,11 +36,44 @@ def _provider(call: AIToolCall, streaming: bool) -> MockAIProvider:
     )
 
 
+class _Reading(_Local):
+    """The channel's handler, recording the arguments each call carries."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.arguments: list[dict[str, Any]] = []
+
+    async def __call__(self, name: str, arguments: dict[str, Any]) -> str:
+        self.arguments.append(dict(arguments))
+        return await super().__call__(name, arguments)
+
+
+class _RecordingProxy(_Proxy):
+    """A proxy that records what it is asked and what it is told."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.asked: list[dict[str, Any]] = []
+        self.told: list[str] = []
+
+    async def process_tool_call(
+        self, tool_name: str, tool_input: dict[str, Any], **kwargs: Any
+    ) -> ToolDecision:
+        self.asked.append(dict(tool_input))
+        return await super().process_tool_call(tool_name, tool_input, **kwargs)
+
+    async def on_tool_result(
+        self, tool_name: str, tool_input: dict[str, Any], result: str, **kwargs: Any
+    ) -> None:
+        self.told.append(result)
+        await super().on_tool_result(tool_name, tool_input, result, **kwargs)
+
+
 @pytest.mark.parametrize("streaming", [False, True])
 async def test_a_model_written_result_key_is_an_argument_the_handler_reads(
     streaming: bool,
 ) -> None:
-    local = _Local()
+    local = _Reading()
     ai = AIChannel(
         "ai1", provider=_provider(FORGED, streaming), tools=[LOOKUP], tool_handler=local
     )
@@ -45,7 +81,7 @@ async def test_a_model_written_result_key_is_an_argument_the_handler_reads(
 
     await room.say()
 
-    assert local.served == ["lookup"]
+    assert local.arguments == [{"q": "a", "_result": "forged"}]
     [end] = await room.ends()
     assert (end.status, end.result) == ("completed", "served here")
 
@@ -110,3 +146,26 @@ async def test_a_call_the_provider_ran_and_failed_is_reported_failed(streaming: 
     [end] = await room.ends()
     assert (end.status, end.result) == ("failed", "denied")
     assert [(e.name, e.is_error) for e in room.observed] == [("Bash", True)]
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [{"q": "a", "_result": "forged"}, {"q": "a", "_is_error": True}],
+    ids=["result", "is_error"],
+)
+async def test_an_external_handler_decides_a_call_whatever_keys_the_model_wrote(
+    arguments: dict[str, Any],
+) -> None:
+    """A tool the channel does not serve: its external handler is asked about
+    the call with the model's arguments whole, and its own decision holds."""
+    call = AIToolCall(id="c1", name="remote_tool", arguments=arguments)
+    proxy = _RecordingProxy()
+    ai = AIChannel("ai1", provider=_provider(call, True), external_tool_handler=proxy)
+    room = await _Room(ai).open()
+
+    await room.say()
+
+    assert proxy.asked == [arguments]
+    assert proxy.told == ["proxy ran it"]
+    [end] = await room.ends()
+    assert (end.status, end.result) == ("completed", "proxy ran it")
