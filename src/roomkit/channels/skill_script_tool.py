@@ -22,8 +22,8 @@ class RunSkillScriptTool:
     """Runs a skill's script, as ``run_skill_script``, with *executor*.
 
     Satisfies :class:`roomkit.tools.Tool`: the schema every channel declares
-    and the handler every channel calls. A script outside its skill, an
-    unknown skill or no executor answers an error, as on any channel.
+    and the handler every channel calls. A script outside its skill or an
+    unknown skill answers an error, as on any channel.
     """
 
     name: ClassVar[str] = TOOL_RUN_SCRIPT

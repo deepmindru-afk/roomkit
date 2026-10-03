@@ -5,8 +5,9 @@ the subset it is allowed, and lets RoomKit size the history to what the window
 leaves. Shows:
 - SkillRegistry.add(): a skill built in memory, registered as a directory is
 - SkillRegistry.copy(): an agent's subset, each skill's path and marks kept
-- current_turn_footprint(): what the turn takes besides its history, measured
-  by the channel before it reads its memory; BudgetAwareMemory reserves it
+- current_turn_footprint(): what the turn takes besides its history, its input
+  and its reply budget, measured by the channel before it reads its memory;
+  BudgetAwareMemory reserves it
 - RunSkillScriptTool: run_skill_script as a Tool, for a realtime channel
   serving skills another agent holds
 
@@ -56,7 +57,13 @@ class FootprintLog(MemoryProvider):
     async def retrieve(
         self, room_id: str, current_event: RoomEvent, context: RoomContext, **kwargs: Any
     ) -> MemoryResult:
-        logger.info("turn footprint besides the history: %s tokens", current_turn_footprint())
+        footprint = current_turn_footprint()
+        if footprint is not None:
+            logger.info(
+                "turn footprint besides the history: %d input tokens, a %d-token reply",
+                footprint.input_tokens,
+                footprint.reply_tokens,
+            )
         return await self._inner.retrieve(room_id, current_event, context, **kwargs)
 
 

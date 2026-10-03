@@ -207,6 +207,7 @@ RoomKit exports **192 symbols** from `roomkit`. Providers and voice types import
 | Symbol | Description |
 |--------|-------------|
 | `MemoryProvider` | ABC for pluggable memory backends feeding AI context construction |
+| `TurnFootprint` | What a turn takes of the window besides its history, measured by the AI channel before its memory read (`input_tokens`, `reply_tokens`); read with `current_turn_footprint()` from `roomkit.memory` (RFC §20) |
 | `Skill` | Full skill definition including instructions body |
 | `SkillMetadata` | Lightweight metadata parsed from SKILL.md frontmatter |
 | `SkillRegistry` | Discovers, loads, and manages Agent Skills; tracks three visibility states — available, unlisted (`mark_unlisted`: activatable but out of the prompt manifest), unavailable (`mark_unavailable`: listed with a reason, not activatable); `add(skill)` registers one built in memory, `copy(names?, marks=True)` a subset with its paths and marks |

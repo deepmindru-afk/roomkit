@@ -71,6 +71,26 @@ _current_tool_call: contextvars.ContextVar[ToolCallContext | None] = contextvars
 )
 
 
+@dataclass(frozen=True)
+class TurnFootprint:
+    """What a turn takes of the context window besides its history (RFC §20).
+
+    Measured by the AI channel as round 0 will send it, before it reads its
+    memory. What a hook adds to the context afterwards is not in it.
+
+    Attributes:
+        input_tokens: The system prompt, the tools declared (Tool Search's
+            collapse and the re-read tool included) and the notes the channel
+            adds to the turn's input (the room's plan, the digest of the tools
+            already used, the speaker attribution).
+        reply_tokens: The reply budget the turn requests; 0 when the channel
+            sets none and the provider applies its own.
+    """
+
+    input_tokens: int
+    reply_tokens: int
+
+
 @dataclass
 class _ToolLoopContext:
     """Per-invocation state for a tool loop, scoped via contextvar."""
@@ -191,7 +211,7 @@ class _ToolLoopContext:
     # What the turn takes of the window besides its history, measured as the
     # channel will send it before it reads its memory (RFC §20); ``None``
     # until a context build measured it. See ``current_turn_footprint()``.
-    turn_footprint: int | None = None
+    turn_footprint: TurnFootprint | None = None
     # The tools the provider received, over every round of the turn, keyed by
     # name in first-declaration order (see ``AIResponseEvent.declared_tools``).
     # Round 0 is declared under the turn's context and later rounds under the
@@ -455,13 +475,14 @@ def current_tool_allowed_names() -> set[str] | None:
     }
 
 
-def current_turn_footprint() -> int | None:
+def current_turn_footprint() -> TurnFootprint | None:
     """What the turn takes of the context window besides its history (RFC §20).
 
-    The system prompt, the tools declared and the reply budget, measured by
-    the AI channel as it will send them, before it reads its memory: a memory
-    reading the room for a turn sizes the history to what the window leaves.
-    ``None`` outside a turn's context build, or before the channel measured it.
+    Measured by the AI channel before it reads its memory: a memory reading
+    the room for a turn sizes the history to what the window leaves. Readable
+    from that read on, through the turn's ``BEFORE_AI_GENERATION`` hooks.
+    ``None`` outside an AI channel's turn, before the channel measured it, and
+    in a tool handler, whose loop context is the call's own.
     """
     ctx = _current_loop_ctx.get()
     return ctx.turn_footprint if ctx is not None else None

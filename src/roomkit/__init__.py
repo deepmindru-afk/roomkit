@@ -117,7 +117,7 @@ from roomkit.delivery import (
     DeliveryItemStatus,
     InMemoryDeliveryBackend,
 )
-from roomkit.memory import MemoryProvider, MemoryResult
+from roomkit.memory import MemoryProvider, MemoryResult, TurnFootprint
 from roomkit.models.channel import ChannelBinding, ChannelCapabilities, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import (
@@ -468,6 +468,7 @@ __all__ = [
     # Memory
     "MemoryProvider",
     "MemoryResult",
+    "TurnFootprint",
     # Sandbox
     "SandboxExecutor",
     "SandboxResult",

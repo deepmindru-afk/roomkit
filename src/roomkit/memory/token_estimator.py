@@ -144,6 +144,7 @@ def history_budget(
     reserved_tokens: int = 0,
     messages: list[AIMessage] | None = None,
     current_event: RoomEvent | None = None,
+    reply_tokens: int = 0,
 ) -> int:
     """Tokens the conversation history may occupy, once the rest of the prompt is paid for.
 
@@ -160,6 +161,9 @@ def history_budget(
       default duplicates the ``0.15`` the provider constructors declare, and
       stays anyway: it shipped in the public signature (0.57.0), so dropping
       it is an API break, not a cleanup.
+    - ``reply_tokens`` is the reply budget the turn requests, when known
+      (:class:`~roomkit.tools.context.TurnFootprint`). The reply is reserved
+      once: the larger of the margin and this budget, never both.
     - ``reserved_tokens`` is the non-history part the caller knows about and the
       trimmer cannot see — system prompt and tool schemas. 0 declares "nothing
       besides what is passed here occupies the window".
@@ -171,7 +175,9 @@ def history_budget(
 
     What remains is the history's, and nothing else's.
     """
-    prompt_budget = int(max_context_tokens * (1 - safety_margin_ratio))
+    prompt_budget = min(
+        int(max_context_tokens * (1 - safety_margin_ratio)), max_context_tokens - reply_tokens
+    )
     injected = sum(estimate_message_tokens(m) for m in messages or ())
     current = estimate_event_tokens(current_event) if current_event is not None else 0
     return max(0, prompt_budget - reserved_tokens - injected - current)

@@ -6,6 +6,7 @@ from roomkit.tools.base import Tool
 from roomkit.tools.compose import compose_tool_handlers, extract_tools
 from roomkit.tools.context import (
     ToolCallContext,
+    TurnFootprint,
     current_response_metadata,
     current_tool_actor_id,
     current_tool_allowed_names,
@@ -29,6 +30,7 @@ __all__ = [
     "ToolCallContext",
     "ToolDecision",
     "ToolPolicy",
+    "TurnFootprint",
     "compose_tool_handlers",
     "current_response_metadata",
     "current_tool_actor_id",

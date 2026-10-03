@@ -38,6 +38,7 @@ from roomkit.providers.ai.base import (
 )
 from roomkit.sandbox.tools import SANDBOX_PREAMBLE as _SANDBOX_PREAMBLE
 from roomkit.sandbox.tools import SANDBOX_TOOL_PREFIX as _SANDBOX_TOOL_PREFIX
+from roomkit.tools.context import TurnFootprint
 
 if TYPE_CHECKING:
     from roomkit.channels._ai_callbacks import ToolUsageLoader
@@ -205,7 +206,6 @@ class AIContextMixin(_AIChannelContract):
         system_prompt = await self._add_channel_features(
             tools, system_prompt, event, binding, context, loop_ctx, standalone=standalone
         )
-        system_prompt = (system_prompt or "") + (self._prompt_identity(context) or "") or None
 
         # Store unfiltered tool list for re-application after skill activation
         self._stamp_toolset(loop_ctx, list(tools))
@@ -223,8 +223,9 @@ class AIContextMixin(_AIChannelContract):
         # may withdraw from (RFC §6.4).
         tools = self._reachable_tools(tools)
 
-        self._measure_turn(loop_ctx, system_prompt, settings.get("max_tokens"))
-        messages = await self._turn_conversation(event, context, loop_ctx, standalone)
+        own_notes = self._channel_notes(loop_ctx, standalone=standalone)
+        self._measure_turn(loop_ctx, system_prompt, own_notes, settings.get("max_tokens"))
+        messages = await self._turn_conversation(event, context, loop_ctx, standalone, own_notes)
         loop_ctx.turn_input = turn_input(messages)
 
         target_media, target_caps = self._target_capabilities(context)
@@ -289,16 +290,15 @@ class AIContextMixin(_AIChannelContract):
         context: RoomContext,
         loop_ctx: _ToolLoopContext,
         standalone: bool,
+        own_notes: list[str],
     ) -> list[AIMessage]:
         """The conversation the model reads this turn: the history this channel
-        sees, then the input carrying the turn's notes."""
+        sees, then the input carrying the turn's notes, the channel's own
+        (*own_notes*) after what the memory retrieved."""
         memory_result = await self._visible_memory(event, context, standalone)
         messages, attribute_speakers = self._turn_messages(event, context, memory_result, loop_ctx)
         notes = self._turn_notes(
-            loop_ctx,
-            standalone=standalone,
-            speakers=attribute_speakers,
-            retrieved=memory_result.notes,
+            own_notes, speakers=attribute_speakers, retrieved=memory_result.notes
         )
         messages = with_turn_notes(messages, notes)
         return messages
@@ -347,8 +347,8 @@ class AIContextMixin(_AIChannelContract):
         standalone: bool,
     ) -> str | None:
         """The turn's system prompt with what the channel's own features add to
-        it: skills, sandbox, planner, Tool Search and the large-result re-read,
-        in that order. Their tools join *tools* in place.
+        it: skills, sandbox, planner, Tool Search, the large-result re-read and
+        the channel's identity, in that order. Their tools join *tools* in place.
 
         What changes from turn to turn is not here but in ``_turn_notes``: the
         system prompt stays the same between turns (RFC §6.4).
@@ -384,7 +384,7 @@ class AIContextMixin(_AIChannelContract):
         # first one either way (``_prepare_round_context``, RFC §6.4).
         if self._eviction.has_evicted:
             tools.append(ToolEviction.tool_definition())
-        return system_prompt
+        return (system_prompt or "") + (self._prompt_identity(context) or "") or None
 
     def _turn_messages(
         self,
@@ -468,28 +468,25 @@ class AIContextMixin(_AIChannelContract):
             loop_ctx.response_metadata["instruction"] = instruction_fingerprint(instruction)
         return current_content, current_speaker
 
-    def _turn_notes(
-        self,
-        loop_ctx: _ToolLoopContext,
-        *,
-        standalone: bool,
-        speakers: bool,
-        retrieved: list[str],
-    ) -> str | None:
+    @staticmethod
+    def _turn_notes(own: list[str], *, speakers: bool, retrieved: list[str]) -> str | None:
         """What changes from one turn to the next, as the notes the turn's
         input carries (RFC §6.4): how speakers are named when several speak,
-        what the memory retrieved for this turn, the room's plan, and the
-        tools already used here.
-
-        A standalone turn reads none of the room's working memories (RFC
-        §10.1.1). Each is read under the tool loop's room, as its writer keys
-        it.
-        """
+        what the memory retrieved for this turn, then the channel's *own*."""
         blocks = [_SPEAKER_ATTRIBUTION_NOTE] if speakers else []
-        blocks.extend(retrieved)
+        return turn_notes([*blocks, *retrieved, *own])
+
+    def _channel_notes(self, loop_ctx: _ToolLoopContext, *, standalone: bool) -> list[str]:
+        """The notes the channel adds to the turn's input from the room's
+        working memories: the room's plan and the tools already used here.
+
+        A standalone turn reads none of them (RFC §10.1.1). Each is read under
+        the tool loop's room, as its writer keys it.
+        """
         room_id = loop_ctx.room_id
         if standalone or room_id is None:
-            return turn_notes(blocks)
+            return []
+        blocks: list[str] = []
         plan = self._planner.plan_for(room_id) if self._planner is not None else None
         if plan:
             blocks.append(TaskPlanner.format_plan_prompt(plan))
@@ -500,7 +497,7 @@ class AIContextMixin(_AIChannelContract):
         digest = self._tool_usage.render_digest(room_id)
         if digest:
             blocks.append(digest)
-        return turn_notes(blocks)
+        return blocks
 
     def _add_skills(
         self,
@@ -678,19 +675,26 @@ class AIContextMixin(_AIChannelContract):
         return None
 
     def _measure_turn(
-        self, loop_ctx: _ToolLoopContext, system_prompt: str | None, max_tokens: int | None
+        self,
+        loop_ctx: _ToolLoopContext,
+        system_prompt: str | None,
+        own_notes: list[str],
+        max_tokens: int | None,
     ) -> None:
         """Measure what the turn takes of the window besides its history, as
         round 0 will send it, before the memory reads the room (RFC §20): the
         system prompt, the tools declared (Tool Search's collapse and the
-        re-read tool included) and the reply budget."""
+        re-read tool included), the channel's notes with room for the speaker
+        attribution the history may call for, and the reply budget."""
         declared = self._eviction.with_reread_tool(
             self._apply_tool_filters(list(loop_ctx.all_context_tools or []))
         )
-        loop_ctx.turn_footprint = (
-            estimate_tokens(system_prompt or "")
+        notes = turn_notes([_SPEAKER_ATTRIBUTION_NOTE, *own_notes]) or ""
+        loop_ctx.turn_footprint = TurnFootprint(
+            input_tokens=estimate_tokens(system_prompt or "")
             + sum(estimate_tool_tokens(tool) for tool in declared)
-            + (max_tokens or 0)
+            + estimate_tokens(notes),
+            reply_tokens=max_tokens or 0,
         )
 
     def _stamp_toolset(self, loop_ctx: _ToolLoopContext, tools: list[AITool]) -> None:

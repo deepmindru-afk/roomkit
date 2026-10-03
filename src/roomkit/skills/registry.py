@@ -144,7 +144,9 @@ class SkillRegistry:
         self._commit(skill_path, metadata)
         return metadata
 
-    def _commit(self, skill_path: Path, metadata: SkillMetadata) -> None:
+    def _commit(
+        self, skill_path: Path, metadata: SkillMetadata, *, log_level: int = logging.INFO
+    ) -> None:
         """Record a parsed skill, replacing any earlier one of the same name."""
         self._metadata[metadata.name] = metadata
         self._paths[metadata.name] = skill_path
@@ -153,16 +155,17 @@ class SkillRegistry:
         # Registering makes the skill usable again — drop any stale mark
         self._unavailable.pop(metadata.name, None)
         self._unlisted.discard(metadata.name)
-        logger.info("Registered skill: %s", metadata.name)
+        logger.log(log_level, "Registered skill: %s", metadata.name)
 
     def add(self, skill: Skill) -> None:
         """Register a skill built in memory (a store, a marketplace), replacing
         any earlier one of the same name (RFC §24.3).
 
         Its ``path`` is where its scripts and references are read from. Adding
-        it clears its marks, as registering a directory does.
+        it clears its marks, as registering a directory does. Logged at debug:
+        a store adds its whole catalogue at once, and says so itself.
         """
-        self._commit(skill.path, skill.metadata)
+        self._commit(skill.path, skill.metadata, log_level=logging.DEBUG)
         self._skills[skill.metadata.name] = skill
 
     def copy(self, names: Iterable[str] | None = None, *, marks: bool = True) -> SkillRegistry:
@@ -172,7 +175,8 @@ class SkillRegistry:
         loaded included: each name keeps its path and, once loaded, its skill.
         With *marks*, the copy keeps the source's unlisted marks and the
         unavailable reasons of the names it copies; without, every skill it
-        copies is available and listed (a hand-picked set, say).
+        copies is available and listed (a hand-picked set, say), and a name
+        the source marks unavailable is not copied at all.
         """
         wanted = set(self._metadata) | set(self._unavailable) if names is None else set(names)
         copied = SkillRegistry()

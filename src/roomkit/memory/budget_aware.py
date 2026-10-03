@@ -25,9 +25,13 @@ class BudgetAwareMemory(_MemoryWrapper):
 
     The history's budget is what is left of the window once everything else in
     it is paid for — see :func:`roomkit.memory.token_estimator.history_budget`,
-    which owns the arithmetic. ``reserved_tokens`` is the caller's declaration
-    of the non-history prompt it built (system prompt, tool schemas); the
-    injected ``messages`` and the current turn this wrapper passes through are
+    which owns the arithmetic. Read for an AI channel's turn, the rest of the
+    turn is what the channel measured (:func:`current_turn_footprint`, RFC
+    §20): its input is reserved, and its reply budget when larger than the
+    safety margin. ``reserved_tokens`` is a floor on that input (system prompt,
+    tool schemas, the channel's notes), for a caller that knows a part the
+    channel cannot; it is not added to the measure. The injected ``messages``,
+    the memory's notes and the current turn this wrapper passes through are
     measured here. A current turn that alone exceeds a known window raises a
     non-retryable ``ProviderError(context_overflow=True)`` before retrieval or
     generation: trimming history cannot make that message fit.
@@ -51,9 +55,8 @@ class BudgetAwareMemory(_MemoryWrapper):
         self._max_context_tokens = max_context_tokens
         self._safety_margin_ratio = safety_margin_ratio
         self._min_events = min_events
-        # System prompt + tool schemas: part of the same window. The AI channel
-        # measures them per turn (``current_turn_footprint()``, RFC §20); a
-        # caller's reserve adds to that measure, never takes from it.
+        # A floor on the turn's measured input (``current_turn_footprint()``,
+        # RFC §20): the larger of the two is reserved, never their sum.
         self._reserved_tokens = reserved_tokens
 
     @property
@@ -79,14 +82,17 @@ class BudgetAwareMemory(_MemoryWrapper):
         inner_result = await self._inner.retrieve(
             room_id, current_event, context, channel_id=channel_id
         )
+        footprint = current_turn_footprint()
+        measured = footprint.input_tokens if footprint is not None else 0
         budget = history_budget(
             max_context_tokens=self._max_context_tokens,
-            # The turn's notes ride its input: they occupy the window, untrimmable.
-            reserved_tokens=max(self._reserved_tokens, current_turn_footprint() or 0)
+            # The memory's notes ride the turn's input: they occupy the window, untrimmable.
+            reserved_tokens=max(self._reserved_tokens, measured)
             + estimate_notes_tokens(inner_result.notes),
             messages=inner_result.messages,
             safety_margin_ratio=self._safety_margin_ratio,
             current_event=current_event,
+            reply_tokens=footprint.reply_tokens if footprint is not None else 0,
         )
         trimmed_events = self._trim_events_to_budget(inner_result.events, budget)
         return replace(inner_result, events=trimmed_events)

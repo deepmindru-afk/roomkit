@@ -15,11 +15,10 @@ from roomkit.memory.token_estimator import (
     extract_event_text,
     history_budget,
 )
-from roomkit.tools.context import current_turn_footprint
+from roomkit.tools.context import TurnFootprint, current_turn_footprint
 
 __all__ = [
     "BudgetAwareMemory",
-    "current_turn_footprint",
     "CompactingMemory",
     "MemoryProvider",
     "MemoryResult",
@@ -27,6 +26,8 @@ __all__ = [
     "RetrievalMemory",
     "SlidingWindowMemory",
     "SummarizingMemory",
+    "TurnFootprint",
+    "current_turn_footprint",
     "estimate_context_tokens",
     "estimate_event_tokens",
     "estimate_notes_tokens",

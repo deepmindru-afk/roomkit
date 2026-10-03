@@ -11,13 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The turn's footprint (RMK-406, RFC §20): before it reads its memory, an AI
   channel measures what the turn takes of the window besides its history, as
-  the first round sends it (the system prompt with an `Agent`'s identity, the
-  tools declared under Tool Search and the tool policy, the reply budget),
-  readable for the turn as `current_turn_footprint()` (`roomkit.memory`,
-  `roomkit.tools`). `BudgetAwareMemory` reserves the larger of its
-  `reserved_tokens` and that measure. An `Agent`'s identity block is written
-  into the prompt before the measure (`_prompt_identity`), not appended after
-  the build.
+  the first round sends it, readable for the turn as `current_turn_footprint()`,
+  a `TurnFootprint` (`roomkit`, `roomkit.memory`, `roomkit.tools`):
+  `input_tokens` (the system prompt with an `Agent`'s identity, the tools
+  declared under Tool Search and the tool policy, the channel's own notes: the
+  room's plan, the digest of the tools already used, the speaker attribution)
+  and `reply_tokens` (the turn's `max_tokens`, 0 when the provider applies its
+  own). What a `BEFORE_AI_GENERATION` hook adds afterwards is not measured.
+  `history_budget()` takes `reply_tokens=` and reserves the larger of its
+  margin and that budget.
 
 - `RunSkillScriptTool(skills, executor)` (RMK-406, RFC §24): `run_skill_script`
   as a `Tool`, for a realtime channel running the scripts of skills another
@@ -272,10 +274,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   name runs it again, an external handler is asked about it, or it is
   refused as undeclared.
 
-- `BudgetAwareMemory` reserves at least the turn's measured footprint
-  (RMK-406, RFC §20): a host that passed `reserved_tokens=0`, or less than the
-  turn takes, now has its history trimmed to what the window really leaves, so
-  a turn no longer overflows it.
+- `BudgetAwareMemory` reserves the turn's measured footprint (RMK-406, RFC
+  §20): the larger of `reserved_tokens` and the measured input, which a host's
+  reserve floors and does not add to, and for the reply the larger of the
+  safety margin and the turn's `max_tokens`, never both. A host that passed
+  `reserved_tokens=0`, or only its system prompt, now has its history trimmed
+  to what the declared tools, the channel's notes and a reply budget larger
+  than the margin leave. `CompactingMemory` and `SummarizingMemory` do not
+  read the footprint.
 
 - **BREAKING — a delegated task cancelled from outside ends `cancelled`,
   through `ON_TASK_COMPLETED` and its callback, inline or in the
