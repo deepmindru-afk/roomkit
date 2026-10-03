@@ -46,6 +46,9 @@ class RealtimeToolCall:
     task: asyncio.Task[Any] | None = field(default=None, repr=False)
     delivered: bool = False
     reported: bool = False
+    read: str | None = None
+    """What the model read of the call, when its result went out before its
+    report (Tool Search): a report an ending cuts still owes it (RFC §9.3)."""
 
     @classmethod
     def from_provider(

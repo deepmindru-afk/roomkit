@@ -14,7 +14,6 @@ pre-execution gate as any realtime tool call.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import threading
 from functools import partial
@@ -399,9 +398,15 @@ class RealtimeDelegationMixin:
         bound; the one difference is where the outcome goes — back to the
         backend model, with whether it failed, not to the provider (RFC §12.4.1).
         """
-        if session.state == VoiceSessionState.ENDED:
-            return ToolCallResult(json.dumps({"error": "The session has ended."}), is_error=True)
-        call = RealtimeToolCall(session, f"{delegation_id}:{uuid4().hex[:8]}", name, arguments)
+        # The session's room, which a session already ended no longer maps:
+        # its call is reported there all the same (RFC §9.3).
+        call = RealtimeToolCall(
+            session,
+            f"{delegation_id}:{uuid4().hex[:8]}",
+            name,
+            arguments,
+            room_id=session.room_id or None,
+        )
         # The delegation's task serves the call: a call that ends its own
         # session is then not taken for one the session's end interrupted.
         call.task = asyncio.current_task()

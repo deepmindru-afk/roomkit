@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 from dataclasses import dataclass, field
+from functools import partial
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -197,6 +198,10 @@ class _ToolLoopContext:
     # The announced calls the channel's external handler decides: one cut
     # before its report is reported through that handler (RFC §9.3).
     external_calls: set[str] = field(default_factory=set)
+    # The announced calls whose outcome the model already read (a call the
+    # provider ran, or one an external handler decided), each with its
+    # report: one cut before its observers heard it owes them that outcome.
+    known_outcomes: dict[str, Any] = field(default_factory=dict)
     # Whether the turn's tool policy, resolved for its actor, admits a name;
     # ``None`` when no policy applies. Read by ``current_tool_allowed_names()``
     # (RFC §21.4): the gate refuses what it denies, so it is not callable.
@@ -387,6 +392,15 @@ def _current_turn_chain_depth() -> int:
     """
     ctx = _current_loop_ctx.get()
     return ctx.chain_depth if ctx is not None else 0
+
+
+def turn_report_claim(call_id: str) -> Callable[[], bool] | None:
+    """The claim on call *call_id*'s one report in the turn running now, or
+    ``None`` when that turn did not announce it (RFC §9.3)."""
+    ctx = _current_loop_ctx.get()
+    if ctx is None or call_id not in ctx.announced_calls:
+        return None
+    return partial(ctx.claim_report, call_id)
 
 
 def current_tool_allowed_names() -> set[str] | None:

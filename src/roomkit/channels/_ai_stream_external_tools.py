@@ -7,7 +7,6 @@ is the channel's own, served by the loop (RFC §9.3, who serves a call).
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import time
@@ -78,9 +77,8 @@ class _ExternalStreamTools:
         # outcome is reported at once, before anything can cut the call. Only a
         # still-pending call can be denied or rewritten before acting.
         pending = not already_executed and self.handler is not None
-        if pending:
-            self._announce(call, arguments)
-        else:
+        self._announce(call, arguments, pending=pending)
+        if not pending:
             await self._report(call, arguments, result, kind is not OutcomeKind.SERVED)
         yield ToolCallStartMarker(tool_name=call.name, tool_id=call.id, arguments=arguments)
         await self._publish_start(call, arguments, round_idx)
@@ -121,12 +119,13 @@ class _ExternalStreamTools:
                 duration_ms=duration_ms,
             )
 
-    def _announce(self, call: StreamToolCall, arguments: dict[str, Any]) -> None:
-        """Put a pending call in the turn's registry before its start goes out:
-        whatever cuts it from there (an approval still pending, a transport
-        that stops reading), the turn's end reports it, through the handler."""
+    def _announce(self, call: StreamToolCall, arguments: dict[str, Any], *, pending: bool) -> None:
+        """Put *call* in the turn's registry before anything can cut it: the
+        turn's end reports it if nothing did, a *pending* one through the
+        handler that was to decide it (RFC §9.3)."""
         self.loop_ctx.announced_calls[call.id] = call.model_copy(update={"arguments": arguments})
-        self.loop_ctx.external_calls.add(call.id)
+        if pending:
+            self.loop_ctx.external_calls.add(call.id)
 
     async def _decide(
         self,
@@ -173,39 +172,35 @@ class _ExternalStreamTools:
     ) -> None:
         """Hand the call's outcome to its handler, or report it to ON_TOOL_CALL's
         observers when the provider ran it with no handler: an outcome the
-        model already read, so no hook may rewrite it (RFC §9.3)."""
-        if not self.loop_ctx.claim_report(call.id):
-            return
-        if self.handler is not None:
-            try:
-                await self.handler.on_tool_result(
-                    call.name,
-                    arguments,
-                    result,
-                    is_error=is_error,
-                    tool_call_id=call.id,
-                    room_id=self.room_id,
-                )
-            except asyncio.CancelledError:
-                # Cut while its report ran: a pending call is reported by the
-                # turn's end, cancelled, as a local call cut while judged is.
-                self.loop_ctx.reported_calls.discard(call.id)
-                raise
-            return
-        if self.report is None:
-            return
-        await self.report(
-            ToolCallEvent(
-                channel_id=self.channel_id,
-                channel_type=ChannelType.AI,
-                tool_call_id=call.id,
-                name=call.name,
-                arguments=arguments,
-                result=as_tool_result(result),
-                room_id=self.room_id,
-                is_error=is_error,
-            )
+        model already read, so no hook may rewrite it (RFC §9.3).
+
+        The report is claimed where the observers hear it, past the SYNC
+        chain: a cut before then leaves it owed, with this outcome, to the
+        turn's end. A handler that reports nothing has made the call's report.
+        """
+        event = ToolCallEvent(
+            channel_id=self.channel_id,
+            channel_type=ChannelType.AI,
+            tool_call_id=call.id,
+            name=call.name,
+            arguments=arguments,
+            result=as_tool_result(result),
+            room_id=self.room_id,
+            is_error=is_error,
         )
+        self.loop_ctx.known_outcomes[call.id] = event
+        if self.handler is not None:
+            await self.handler.on_tool_result(
+                call.name,
+                arguments,
+                result,
+                is_error=is_error,
+                tool_call_id=call.id,
+                room_id=self.room_id,
+            )
+        elif self.report is not None:
+            await self.report(event)
+        self.loop_ctx.claim_report(call.id)
 
 
 async def report_cut(

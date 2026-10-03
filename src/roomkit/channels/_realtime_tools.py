@@ -803,12 +803,17 @@ class RealtimeToolsMixin:
         return None
 
     async def _report_search_call(self, call: RealtimeToolCall, result: str) -> None:
-        """Report a delivered Tool Search call to every ON_TOOL_CALL hook."""
+        """Report a delivered Tool Search call to every ON_TOOL_CALL hook, its
+        report claimed where the observers hear it: an ending that cuts the
+        chain leaves it owed, with what the model read (RFC §9.3)."""
+        call.read = result
         framework = self._tool_framework(call)
-        if framework is None or not call.claim_report():
+        if framework is None:
             return
         try:
-            await framework._report_tool_call(self._tool_event(call, result), self.channel_id)
+            await framework._report_tool_call(
+                self._tool_event(call, result), self.channel_id, claim=call.claim_report
+            )
         except Exception:
             logger.debug(
                 "ON_TOOL_CALL report failed for tool-search tool %s", call.name, exc_info=True

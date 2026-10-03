@@ -633,16 +633,37 @@ class AIToolsMixin(_AIChannelContract):
     async def _report_unreported_calls(self, loop_ctx: _ToolLoopContext) -> None:
         """Report, cancelled, each call the turn announced and no report
         claimed: a stop, a cancellation or a transport that stopped reading cut
-        it before its result. Every channel reports such a call once (RFC §9.3),
-        a call its external handler was deciding through that handler."""
+        it before its result. Every channel reports such a call once (RFC §9.3):
+        one whose outcome the model already read with that outcome, one its
+        external handler was deciding through that handler."""
         handler = self._external_tool_handler
         for tc in loop_ctx.unreported_calls():
+            if (known := loop_ctx.known_outcomes.get(tc.id)) is not None:
+                await self._report_known_outcome(loop_ctx, known)
+                continue
             if handler is not None and tc.id in loop_ctx.external_calls:
-                loop_ctx.claim_report(tc.id)
+                # The report is claimed where the observers hear it; a handler
+                # that reports nothing has still made it.
                 await report_cut(handler, tc, loop_ctx.room_id)
+                loop_ctx.claim_report(tc.id)
                 continue
             body = cancelled_tool_error(tc.name, "The turn ended before its result.")
             await self._fire_tool_refusal(tc, tc.arguments, body, loop_ctx.room_id, cancelled=True)
+
+    async def _report_known_outcome(
+        self, loop_ctx: _ToolLoopContext, event: ToolCallEvent
+    ) -> None:
+        """Report a call whose outcome the model already read, its own report
+        cut before the observers heard it: to them alone, with that outcome
+        (RFC §9.3)."""
+        if self._tool_observer_hook is None or not loop_ctx.claim_report(event.tool_call_id):
+            return
+        try:
+            await self._tool_observer_hook(event)
+        except Exception:
+            logger.warning(
+                "ON_TOOL_CALL observation failed for tool %s", event.name, exc_info=True
+            )
 
     async def _raised_outcome(
         self, tc: Any, arguments: dict[str, Any], room_id: str | None, exc: Exception

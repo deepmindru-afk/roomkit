@@ -59,6 +59,7 @@ from roomkit.models.tool_call import (
     tool_call_chain_fold,
 )
 from roomkit.tools._outcome import kept_in_tool_memory
+from roomkit.tools.context import turn_report_claim
 from roomkit.tools.external import BeforeToolDecision
 from roomkit.tools.result import before_tool_use_detail, hook_errors_detail, tool_call_verdict
 
@@ -1001,11 +1002,18 @@ class HelpersMixin:
         kit_ref = self
 
         async def _callback(event: ToolCallEvent) -> None:
-            await kit_ref._report_tool_call(event, channel_id)
+            claim = turn_report_claim(event.tool_call_id)
+            await kit_ref._report_tool_call(event, channel_id, claim=claim)
 
         return _callback
 
-    async def _report_tool_call(self, event: ToolCallEvent, channel_id: str) -> None:
+    async def _report_tool_call(
+        self,
+        event: ToolCallEvent,
+        channel_id: str,
+        *,
+        claim: Callable[[], bool] | None = None,
+    ) -> None:
         """Fire ON_TOOL_CALL as a report on a call whose outcome the model already read.
 
         Every hook runs and nothing it returns is applied (RFC §9.3): the
@@ -1013,12 +1021,17 @@ class HelpersMixin:
         external handler or a provider ran, and for a result delivered before
         the hooks ran (a realtime Tool Search call). A call the turn cut never
         ran: its ASYNC observers alone hear of it, as of a local call cut.
+        *claim* claims the call's one report between the chain and the
+        observers, as :meth:`_judge_tool_call` does: a report cut while the
+        chain ran is still owed, and one the observers heard is made.
         """
         if not event.room_id:
             return
         if event.cancelled:
-            await self._observe_failed_tool_call(event, channel_id)
+            if claim is None or claim():
+                await self._observe_failed_tool_call(event, channel_id)
             return
+        context: RoomContext | None = None
         if self._hook_engine.has_hooks(HookTrigger.ON_TOOL_CALL):
             # The one runner of the chain, so each hook sees the call as the
             # previous one left it, whichever form its rewrite took; nothing it
@@ -1027,8 +1040,10 @@ class HelpersMixin:
             if chain is None:
                 return
             _, context = chain
-            if context is not None:
-                await self._observe_tool_call(event, context)
+        if claim is not None and not claim():
+            return
+        if context is not None:
+            await self._observe_tool_call(event, context)
         await self._emit_tool_call_event(event, channel_id)
 
     async def _hook_context(
@@ -1122,7 +1137,8 @@ class HelpersMixin:
 
     async def _observe_failed_tool_call(self, event: ToolCallEvent, channel_id: str) -> None:
         """Tell ON_TOOL_CALL's ASYNC observers a call failed, was refused or was
-        cancelled, and emit its ``tool_call`` framework event (RFC §9.3).
+        cancelled, or one whose report a cut left unmade, and emit its
+        ``tool_call`` framework event (RFC §9.3).
 
         The one report of such a call, for every channel: nothing that could
         serve the call reads it.

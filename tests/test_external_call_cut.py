@@ -209,7 +209,7 @@ async def test_a_call_the_provider_ran_keeps_its_outcome_when_cut(with_handler: 
     await kit.close()
 
 
-async def test_a_call_cut_while_its_report_runs_is_reported_once_cancelled() -> None:
+async def test_a_call_cut_while_its_report_runs_is_reported_once_with_its_outcome() -> None:
     held = asyncio.Event()
     handler = _Handler()
     kit = await _room(_channel(handler, [_call("Bash"), AIResponse(content="done")]))
@@ -230,7 +230,63 @@ async def test_a_call_cut_while_its_report_runs_is_reported_once_cancelled() -> 
     await _until(lambda: bool(observed))
     await asyncio.sleep(0.05)
 
-    assert [(e.name, e.cancelled) for e in observed] == [("Bash", True)]
+    # The model already read the call's outcome: the observers hear that one.
+    assert [(e.name, e.is_error, e.cancelled) for e in observed] == [("Bash", False, False)]
+    await kit.close()
+
+
+@pytest.mark.parametrize("with_handler", [True, False], ids=["handler", "no-handler"])
+async def test_a_call_the_provider_ran_cut_while_reported_keeps_its_outcome(
+    with_handler: bool,
+) -> None:
+    held = asyncio.Event()
+    handler = _Handler()
+    ran = _call("Bash", cmd="rm -rf build", _result="removed")
+    channel = AIChannel(
+        "ai1",
+        provider=MockAIProvider(ai_responses=[ran, AIResponse(content="done")], streaming=True),
+        external_tool_handler=handler if with_handler else None,
+    )
+    kit = await _room(channel)
+    observed: list[ToolCallEvent] = []
+
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="hold")
+    async def hold(event: ToolCallEvent, ctx: Any) -> HookResult:
+        held.set()
+        await asyncio.sleep(30)
+        return HookResult.allow()
+
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    async def audit(event: ToolCallEvent, ctx: Any) -> None:
+        observed.append(event)
+
+    await _cut_while(kit, held)
+    await _until(lambda: bool(observed))
+    await asyncio.sleep(0.05)
+
+    assert [(e.name, e.is_error, e.cancelled, str(e.result)) for e in observed] == [
+        ("Bash", False, False, "removed")
+    ]
+    await kit.close()
+
+
+async def test_a_call_cut_while_its_observers_run_is_reported_once() -> None:
+    observing = asyncio.Event()
+    handler = _Handler()
+    kit = await _room(_channel(handler, [_call("Bash"), AIResponse(content="done")]))
+    observed: list[ToolCallEvent] = []
+
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    async def audit(event: ToolCallEvent, ctx: Any) -> None:
+        observed.append(event)
+        observing.set()
+        # Still observing when the turn is cancelled.
+        await asyncio.sleep(1)
+
+    await _cut_while(kit, observing)
+    await asyncio.sleep(0.2)
+
+    assert [(e.name, e.cancelled) for e in observed] == [("Bash", False)]
     await kit.close()
 
 
