@@ -387,10 +387,10 @@ class AIChannel(
         self._before_generation_hook = None
         self._thinking_hook = None
         self._plan_updated_hook = None
-        # Tool-usage hydration loader: fetches a room's persisted
-        # TOOL_CALL_END history so ToolUsageMemory survives channel-object
-        # lifetimes (restarts, cache expiry) — the in-memory store dies with
-        # the object while conversations outlive it.
+        # Tool-usage hydration loader: fetches this channel's persisted tool
+        # rows in a room so ToolUsageMemory survives channel-object lifetimes
+        # (restarts, cache expiry) — the in-memory store dies with the object
+        # while conversations outlive it.
         self._tool_usage_loader = None
 
     @property

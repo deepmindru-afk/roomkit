@@ -128,19 +128,21 @@ def _remembered_calls(events: list[RoomEvent]) -> list[dict[str, Any]]:
     # The arguments the model sent, from the call's start: the end carries the
     # ones that ran, which a BEFORE_TOOL_USE hook may have de-tokenised, and
     # the digest goes back into the model's prompt. An end pairs with the
-    # latest start of its id before it: a provider may reuse an id from one
-    # turn to the next.
-    requested: dict[str, dict[str, Any]] = {}
+    # start of the same call in the same turn (its response's correlation
+    # id): a provider may reuse an id from one turn to the next, and two turns
+    # of a room may run at once.
+    requested: dict[tuple[str | None, str], dict[str, Any]] = {}
     calls: list[dict[str, Any]] = []
     for ev in events:
         content = ev.content
-        tool_id = getattr(content, "tool_id", "")
+        call = (ev.correlation_id, getattr(content, "tool_id", ""))
         if ev.type == EventType.TOOL_CALL_START:
-            requested[tool_id] = getattr(content, "arguments", {}) or {}
+            requested[call] = getattr(content, "arguments", {}) or {}
             continue
         name = getattr(content, "tool_name", "")
         if ev.type != EventType.TOOL_CALL_END or not name:
             continue
+        arguments = requested.pop(call, {})
         # The live memory's rule, read off the outcome the row states: a
         # refusal or a call nothing served is not kept.
         if not kept_in_tool_memory(getattr(content, "outcome", None)):
@@ -148,7 +150,7 @@ def _remembered_calls(events: list[RoomEvent]) -> list[dict[str, Any]]:
         calls.append(
             {
                 "name": name,
-                "arguments": requested.pop(tool_id, {}),
+                "arguments": arguments,
                 "result": getattr(content, "result", "") or "",
                 "outcome": getattr(content, "outcome", None),
             }

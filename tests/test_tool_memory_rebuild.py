@@ -139,3 +139,49 @@ async def test_a_call_id_repeated_across_turns_rebuilds_both_calls(streaming: bo
     assert "lookup(q='rome')" in digest
     assert digest == (ai._tool_usage.render_digest("r1") or "")
     await kit.close()
+
+
+@pytest.mark.parametrize("streaming", [True, False])
+async def test_two_turns_at_once_reusing_a_call_id_rebuild_each_call(streaming: bool) -> None:
+    """The ends of two concurrent turns interleave: each pairs with its own
+    turn's start, read by the response's correlation id."""
+
+    async def slow_lookup(name: str, arguments: dict[str, Any]) -> str:
+        await asyncio.sleep(0.2)
+        return f"result:{arguments.get('q')}"
+
+    provider = MockAIProvider(
+        streaming=streaming,
+        ai_responses=[
+            _call("c1", "lookup", {"q": "paris"}),
+            _call("c1", "lookup", {"q": "rome"}),
+            AIResponse(content="done A."),
+            AIResponse(content="done B."),
+        ],
+    )
+    ai = AIChannel(
+        "ai1", provider=provider, tools=[LOOKUP], tool_handler=slow_lookup, tool_search=False
+    )
+    kit = RoomKit()
+    kit.register_channel(SimpleChannel("sms1"))
+    kit.register_channel(ai)
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "sms1")
+    await kit.attach_channel("r1", "ai1", category=ChannelCategory.INTELLIGENCE)
+    await asyncio.gather(
+        kit.process_inbound(
+            InboundMessage(channel_id="sms1", sender_id="u", content=TextContent(body="paris"))
+        ),
+        kit.process_inbound(
+            InboundMessage(channel_id="sms1", sender_id="u2", content=TextContent(body="rome"))
+        ),
+    )
+    await asyncio.sleep(0.3)
+
+    calls = await kit._build_tool_usage_loader("ai1")("r1")
+
+    assert sorted((c["arguments"].get("q"), c["result"]) for c in calls) == [
+        ("paris", "result:paris"),
+        ("rome", "result:rome"),
+    ]
+    await kit.close()
