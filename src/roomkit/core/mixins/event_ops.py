@@ -1,10 +1,11 @@
-"""EventOpsMixin — direct, host-owned mutation of persisted events (RFC §10.3)."""
+"""EventOpsMixin — direct, host-owned writes to persisted events (RFC §10.3, §10.5)."""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from roomkit.core.mixins.helpers import HelpersMixin
+from roomkit.core.exceptions import RoomClosedError
+from roomkit.core.mixins.helpers import HelpersMixin, _refuses_writes
 from roomkit.models.enums import HookTrigger
 from roomkit.models.event import EventContent, EventSource, RoomEvent
 
@@ -22,6 +23,9 @@ class EventOpsHost(Protocol):
         _store: Conversation store holding the events.
         _hook_engine: Hook engine for the mutation triggers.
         _lock_manager: Per-room lock for serialised mutation.
+
+    Methods:
+        get_room: From :class:`RoomLifecycleMixin`.
     """
 
     _store: ConversationStore
@@ -45,6 +49,34 @@ class EventOpsMixin(HelpersMixin):
     _store: ConversationStore
     _hook_engine: HookEngine
     _lock_manager: RoomLockManager
+    get_room: Any  # see EventOpsHost / RoomLifecycleMixin
+
+    async def commit_event(
+        self, room_id: str, event: RoomEvent, *, organization_id: str | None = None
+    ) -> RoomEvent:
+        """Commit a record no member receives to the room's timeline (RFC §10.5).
+
+        For a trace, a display snapshot, the copy a branched conversation starts
+        from. The record takes the room's next index, which its delivery lane
+        counts as delivered at once, so the room's next event never waits on
+        it; no delivery set, no hook and no broadcast follow. It is stored as
+        given, whatever the persistence policy, and the source write rule
+        (RFC §7.5 rule 2) does not apply to it. An event the members must
+        receive goes through :meth:`send_event`.
+
+        The room is read under its lock, which a hook already holding it
+        re-enters, scoped to *organization_id* (RFC §17.2).
+
+        Raises:
+            RoomNotFoundError: the room is missing, or another organization's.
+            RoomClosedError: the room's status refuses new events (RFC §5.1);
+                nothing is written.
+        """
+        async with self._lock_manager.locked(room_id):
+            room = await self.get_room(room_id, organization_id=organization_id)
+            if _refuses_writes(room):
+                raise RoomClosedError(f"Room {room_id} does not accept new events")
+            return await self._commit_indexed(room_id, event)
 
     async def update_event(
         self,

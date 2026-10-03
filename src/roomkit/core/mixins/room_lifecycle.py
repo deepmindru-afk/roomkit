@@ -52,6 +52,8 @@ class RoomLifecycleHost(Protocol):
     Cross-mixin methods (provided by other mixins in the MRO):
         register_channel: From :class:`ChannelOpsMixin`.
         attach_channel: From :class:`ChannelOpsMixin`.
+        _fire_recording_started: From :class:`RoomRecordingMixin`.
+        _stop_room_recordings: From :class:`RoomRecordingMixin`.
     """
 
     _store: ConversationStore
@@ -78,6 +80,8 @@ class RoomLifecycleMixin(HelpersMixin):
     # Cross-mixin methods — attribute annotations avoid MRO shadowing
     register_channel: Any  # see RoomLifecycleHost
     attach_channel: Any  # see RoomLifecycleHost
+    _fire_recording_started: Any  # see RoomLifecycleHost
+    _stop_room_recordings: Any  # see RoomLifecycleHost
 
     async def create_room(
         self,
@@ -179,27 +183,6 @@ class RoomLifecycleMixin(HelpersMixin):
             await self._fire_recording_started(room.id, handle.id)
         return stored
 
-    async def _fire_recording_started(self, room_id: str, recording_id: str) -> None:
-        """Announce a room-level recording (ON_RECORDING_STARTED, RFC §17.6)."""
-        from roomkit.voice.events import RecordingStartedEvent
-
-        try:
-            context = await self._build_context(room_id)
-            await self._hook_engine.run_async_hooks(
-                room_id,
-                HookTrigger.ON_RECORDING_STARTED,
-                RecordingStartedEvent(id=recording_id, room_id=room_id),
-                context,
-                skip_event_filter=True,
-            )
-            await self._emit_framework_event(
-                "recording_started",
-                room_id=room_id,
-                data={"id": recording_id, "scope": "room"},
-            )
-        except Exception:
-            logger.exception("Error announcing room recording %s", recording_id)
-
     async def get_room(self, room_id: str, *, organization_id: str | None = None) -> Room:
         """Get a room by ID. Raises RoomNotFoundError if missing.
 
@@ -230,7 +213,7 @@ class RoomLifecycleMixin(HelpersMixin):
             room = await self.get_room(room_id, organization_id=organization_id)
             # Stop room-level media recorders before closing, once the scoped
             # read has found the room: a refused call stops nothing (§12.11).
-            self._room_recorder_mgr.stop_room(room_id)
+            await self._stop_room_recordings(room_id)
             room = room.model_copy(
                 update={"status": RoomStatus.CLOSED, "closed_at": datetime.now(UTC)}
             )
@@ -261,7 +244,7 @@ class RoomLifecycleMixin(HelpersMixin):
         """
         async with self._lock_manager.locked(room_id):
             room = await self.get_room(room_id, organization_id=organization_id)
-            self._room_recorder_mgr.stop_room(room_id)
+            await self._stop_room_recordings(room_id)
             if room.status == RoomStatus.ARCHIVED:
                 return room
             room = room.model_copy(

@@ -350,12 +350,13 @@ class RecordingStartedEvent:
 
 @dataclass(frozen=True)
 class RecordingStoppedEvent:
-    """Audio recording has stopped for a session."""
+    """Recording has stopped, its result available (RFC §12.11, §17.6)."""
 
-    session: VoiceSession
-    """The voice session that was being recorded."""
+    session: VoiceSession | None = None
+    """The voice session that was being recorded, or ``None`` for a room-level
+    recording, which records a room rather than one participant's session."""
 
-    id: str
+    id: str = ""
     """Unique identifier for this recording."""
 
     urls: tuple[str, ...] = ()
@@ -363,6 +364,10 @@ class RecordingStoppedEvent:
 
     duration_seconds: float = 0.0
     """Duration of the recording in seconds."""
+
+    room_id: str = ""
+    """The room that was being recorded. Always set; the session carries it
+    too when there is one."""
 
     timestamp: datetime = field(default_factory=_utcnow)
     """When the recording stopped."""

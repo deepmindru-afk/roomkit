@@ -950,3 +950,20 @@ async def test_binding_policy_migration_preserves_old_rows(store) -> None:
     )
     await store.update_binding(changed)
     assert await store.get_binding("r1", "sms") == changed
+
+
+class TestEventFromRow:
+    """A row the host reads with a query of its own maps as the store maps it."""
+
+    async def test_a_raw_row_is_the_event_get_event_reads(self, store) -> None:
+        from roomkit.store.postgres import PostgresStore
+
+        await store.create_room(Room(id="r1"))
+        committed = await store.commit_event("r1", _make_event(body="from a page"))
+        async with store._pool.acquire() as conn:
+            # A host's page query: every column of events, plus one of its own.
+            row = await conn.fetchrow(
+                "SELECT events.*, 'page-1' AS page FROM events WHERE id = $1", committed.id
+            )
+
+        assert PostgresStore.event_from_row(row) == await store.get_event(committed.id)

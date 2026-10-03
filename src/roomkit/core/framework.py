@@ -63,6 +63,7 @@ from roomkit.core.mixins import (
     RecordingMixin,
     RegenerateMixin,
     RoomLifecycleMixin,
+    RoomRecordingMixin,
     SourceOpsMixin,
     VoiceOpsMixin,
 )
@@ -126,6 +127,7 @@ class RoomKit(
     MembershipMixin,
     VoiceOpsMixin,
     RecordingMixin,
+    RoomRecordingMixin,
     GreetingMixin,
     DelegationMixin,
     DeliverMixin,
@@ -505,8 +507,8 @@ class RoomKit(
         if self._closed:
             return
         self._closed = True
-        # Stop room-level media recorders before channels close
-        self._room_recorder_mgr.close()
+        # Stop room-level media recorders before channels close (RFC §12.11)
+        await self._close_room_recorders()
         # Clear stale greeting gates
         for room_id in list(self._greeting_gates):
             self._force_clear_greeting_gate(room_id)

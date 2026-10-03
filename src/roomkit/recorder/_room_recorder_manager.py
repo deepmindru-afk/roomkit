@@ -134,16 +134,28 @@ class RoomRecorderManager:
         """Check if a room has active recorders."""
         return room_id in self._registry
 
-    def close(self) -> None:
-        """Stop all rooms and close all recorders, each failure logged on its own."""
+    def handles(self, room_id: str) -> list[MediaRecordingHandle]:
+        """The handles of the recordings *room_id* runs, in the order they started."""
+        return [handle for _binding, handle in self._registry.get(room_id, [])]
+
+    def close(self) -> dict[str, list[MediaRecordingResult]]:
+        """Stop all rooms and close all recorders, each failure logged on its own.
+
+        Returns the results of the recordings that stopped, by room, for the
+        caller to announce.
+        """
+        stopped: dict[str, list[MediaRecordingResult]] = {}
         seen_recorders: set[int] = set()
         for room_id in list(self._registry):
             for binding, handle in self._registry.pop(room_id, []):
-                _stop_quietly(binding, handle)
+                result = _stop_quietly(binding, handle)
+                if result is not None:
+                    stopped.setdefault(room_id, []).append(result)
                 recorder_id = id(binding.recorder)
                 if recorder_id not in seen_recorders:
                     seen_recorders.add(recorder_id)
                     _close_quietly(binding)
+        return stopped
 
 
 def _stop_quietly(
@@ -169,3 +181,26 @@ def _close_quietly(binding: RoomRecorderBinding) -> None:
         binding.recorder.close()
     except Exception:
         logger.exception("Failed to close room recorder %s", binding.recorder.name)
+
+
+class RoomRecordingFeed:
+    """Hands one track's media to a room's recordings (RFC §12.11).
+
+    What :meth:`RoomKit.add_room_recording_track` returns to a caller that
+    feeds a room recording from a source the framework does not wire itself:
+    the track was declared to every recording of the room, and the media goes
+    through the framework, never through a recorder the caller holds.
+    """
+
+    def __init__(self, manager: RoomRecorderManager, room_id: str, track: RecordingTrack) -> None:
+        self._manager = manager
+        self._room_id = room_id
+        self.track = track
+
+    def feed(self, data: bytes, timestamp_ms: float | None = None) -> None:
+        """Hand *data*, in the format the track declares, to the room's recordings."""
+        self._manager.on_data(self._room_id, self.track, data, timestamp_ms)
+
+    def close(self) -> None:
+        """End the track: each recording flushes what it holds of it."""
+        self._manager.on_track_removed(self._room_id, self.track)

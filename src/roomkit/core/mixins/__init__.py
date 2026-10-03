@@ -19,6 +19,7 @@ from roomkit.core.mixins.realtime_ops import RealtimeOpsMixin
 from roomkit.core.mixins.recording import RecordingMixin
 from roomkit.core.mixins.regenerate import RegenerateMixin
 from roomkit.core.mixins.room_lifecycle import RoomLifecycleMixin
+from roomkit.core.mixins.room_recording import RoomRecordingMixin
 from roomkit.core.mixins.source_ops import SourceOpsMixin
 from roomkit.core.mixins.voice_ops import VoiceOpsMixin
 
@@ -40,6 +41,7 @@ __all__ = [
     "MembershipMixin",
     "RealtimeOpsMixin",
     "RecordingMixin",
+    "RoomRecordingMixin",
     "RegenerateMixin",
     "RoomLifecycleMixin",
     "SourceOpsMixin",

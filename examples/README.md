@@ -99,6 +99,7 @@ CONSOLE=1 uv run python examples/<example>.py
 | `sip_send_video.py` | SIP video | SIP send video test pattern |
 | `pyav_video_recorder.py` | Recording | PyAV H.264 webcam recorder to MP4 |
 | `room_media_recorder.py` | Recording | Room-level media recording: mic + webcam to MP4 |
+| `room_recording_on_demand.py` | Recording | Start, feed and stop a recording on an existing room, each start and stop announced, and a trace committed outside the pipeline (mock recorder, no dependency) |
 | `conference_recording_result.py` | Recording | Conference recording: finding where each track's file was written |
 | `conference_quickstart.py` | Conference | End-to-end conference on the mock backend: mint, lanes, attributed transcriptions |
 | `conference_livekit.py` | Conference | A real conference on a LiveKit SFU: two humans, one bot, resume mode |

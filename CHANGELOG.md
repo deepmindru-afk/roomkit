@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `RoomKit.commit_event(room_id, event, *, organization_id=None)`
+  (RMK-405, RFC §10.5): commit a record no member receives (a trace, a
+  display snapshot, a copy a branched conversation starts from) outside the
+  pipeline. The room is read under its lock, scoped to the tenant; a room
+  that refuses events raises `RoomClosedError` and nothing is written; the
+  record takes the next index, which the room's delivery lane counts as
+  delivered at once, so the next event never waits on it. No hook, no
+  broadcast, stored as given (§7.5 rule 2 does not apply).
+
+- `PostgresStore.event_from_row(row)` (RMK-405): the `RoomEvent` a row of the
+  `events` table stores, for a host that reads events with a query of its
+  own; columns beyond the table's are ignored.
+
+- A room's recordings started, fed and stopped by the host (RMK-405, RFC
+  §12.11): `start_room_recording(room_id, recorders, *, organization_id=None)`
+  starts recorders on an existing room, all or nothing, under its lock, each
+  announced (`ON_RECORDING_STARTED`) before it returns, so a recording resumed
+  after a restart announces its consent point again;
+  `room_recordings(room_id)` lists the running handles;
+  `add_room_recording_track(room_id, track)` declares a track and returns a
+  `RoomRecordingFeed` its media goes through; `stop_room_recording(room_id, *,
+  organization_id=None)` returns the results. Example:
+  `examples/room_recording_on_demand.py`.
+
 - `steer(directive, *, loop_id=None, room_id=None)` addresses a room and
   returns how many loops it reached (RMK-407, RFC §21.3). One channel object
   serves every room it is bound to: addressed to a room, a `Cancel` reaches
@@ -193,6 +217,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cannot encrypt is deleted rather than left in the clear.
 
 ### Changed
+
+- A room recording's end is announced (RMK-405, RFC §12.11):
+  `ON_RECORDING_STOPPED` and the `recording_stopped` framework event fire for
+  each room recording that stops, on an explicit stop, `close_room`,
+  `archive_room` and `kit.close()`, as a session's and a conference track's
+  do. `RecordingStoppedEvent.session` is optional (`None` for a room
+  recording, as on `RecordingStartedEvent`) and the event carries `room_id`.
 
 - A call served outside the channel (RMK-419, RFC §9.3):
   - An `ExternalToolHandler` subclass no longer hears an ACP call the turn

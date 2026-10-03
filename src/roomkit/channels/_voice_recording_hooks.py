@@ -135,6 +135,7 @@ class VoiceRecordingHooksMixin:
                     id=result.id,
                     urls=tuple(result.urls),
                     duration_seconds=result.duration_seconds,
+                    room_id=room_id,
                 )
                 await self._framework.hook_engine.run_async_hooks(
                     room_id,

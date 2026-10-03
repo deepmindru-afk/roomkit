@@ -171,6 +171,17 @@ class PostgresStore(ConversationStore):
         self._pool = pool
         self._owns_pool = pool is None
 
+    @staticmethod
+    def event_from_row(row: Any) -> RoomEvent:
+        """The :class:`RoomEvent` a row of the ``events`` table stores.
+
+        For a host that reads events with a query of its own (a page filtered
+        by a rule the store does not know) and reads them as the store would.
+        The row carries every column of ``events``; columns beyond them, an
+        alias or a joined value, are ignored.
+        """
+        return _row_to_event(row)
+
     async def get_voice_delivery(self, room_id: str, key_hash: str) -> VoiceDeliveryRecord | None:
         async with self._acquire() as conn:
             row = await conn.fetchrow(
