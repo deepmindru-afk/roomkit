@@ -6,8 +6,8 @@ does not execute those tools, but an ``ExternalToolHandler`` still decides
 whether each call may run and reports how it went:
 
     agent proposes a call
-      -> handler.process_tool_call()   BEFORE_TOOL_USE hooks (block, rewrite),
-                                        then the ToolPolicy (allow, deny, ask)
+      -> handler.process_tool_call()   the ToolPolicy (allow, deny, ask), then
+                                        BEFORE_TOOL_USE hooks (block, rewrite)
       -> ToolDecision to the agent     refused, or run with these arguments
       -> the agent runs the tool
       -> handler.on_tool_result()      ON_TOOL_CALL hooks, with is_error
@@ -17,7 +17,7 @@ the part ``ACPChannel`` plays for a real agent: it asks the handler before each
 call and reports each result. Each line of output is printed by the part that
 acted: a hook, the reviewer, or the agent reading the handler's decision.
 
-The handler is ``PolicyExternalToolHandler`` (hooks, then allow/deny) with a
+The handler is ``PolicyExternalToolHandler`` (allow/deny, then hooks) with a
 third answer added, "ask", for tools a reviewer approves call by call. The
 reviewer is scripted; a real one is a terminal prompt (``acp_claude_code.py``)
 or a UI. ``ACPChannel`` refuses a call whose arguments a hook rewrote, because
@@ -76,8 +76,9 @@ def _show(arguments: dict[str, Any]) -> str:
 class ReviewedPolicyHandler(PolicyExternalToolHandler):
     """``PolicyExternalToolHandler`` with a third answer: ask a reviewer.
 
-    The base class fires the BEFORE_TOOL_USE hooks, applies the policy, and
-    forwards each result to ON_TOOL_CALL with its ``is_error``. This subclass
+    The base class applies the policy, fires the BEFORE_TOOL_USE hooks for
+    what it admits, and forwards each result to ON_TOOL_CALL with its
+    ``is_error``. This subclass
     adds one step: a call to a tool in ``ask`` that got that far still waits
     for the reviewer.
     """

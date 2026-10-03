@@ -229,11 +229,13 @@ async def finish_tool_call(
     The delivery precedes the report: the provider holds a turn open on the
     result, and an observer must not stand in front of it.
     """
-    outcome = replace(outcome, result=host._bound_call_result(call, result_text(outcome.result)))
-    await deliver_once(call, door, outcome)
+    bounded = replace(outcome, result=host._bound_call_result(call, result_text(outcome.result)))
+    await deliver_once(call, door, bounded)
     if outcome.failed:
+        # The bound is the model's copy: a refusal's observers receive its raw
+        # message (RFC §21.5).
         await report_failed_call(host, call, outcome)
-    return outcome
+    return bounded
 
 
 async def deliver_once(call: RealtimeToolCall, door: ToolCallDoor, outcome: ToolOutcome) -> bool:

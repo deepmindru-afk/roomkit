@@ -70,12 +70,13 @@ class _Sandbox(SandboxExecutor):
         return [{"name": "sandbox_bash", "description": "Run a command.", "parameters": _STRICT}]
 
 
+@pytest.mark.parametrize("streaming", [True, False])
 @pytest.mark.parametrize("name", ["crm_strict", "sandbox_bash"])
-async def test_a_hidden_tool_is_validated_whoever_serves_it(name: str) -> None:
+async def test_a_hidden_tool_is_validated_whoever_serves_it(name: str, streaming: bool) -> None:
     sandbox = _Sandbox()
     strict = AITool(name="crm_strict", description="Strict.", parameters=_STRICT)
     channel = _orchestrated(
-        False, [*CRM, strict], _calling(name, cmd=42), tool_search=True, sandbox=sandbox
+        streaming, [*CRM, strict], _calling(name, cmd=42), tool_search=True, sandbox=sandbox
     )
 
     first = await _turn(channel, "r1")
@@ -85,7 +86,10 @@ async def test_a_hidden_tool_is_validated_whoever_serves_it(name: str) -> None:
     assert sandbox.ran == []
 
 
-async def test_a_hidden_human_input_tool_is_validated_before_a_person_is_asked() -> None:
+@pytest.mark.parametrize("streaming", [True, False])
+async def test_a_hidden_human_input_tool_is_validated_before_a_person_is_asked(
+    streaming: bool,
+) -> None:
     asked: list[dict[str, Any]] = []
 
     class _Spy(HumanInputHandler):
@@ -108,7 +112,7 @@ async def test_a_hidden_human_input_tool_is_validated_before_a_person_is_asked()
         tool_names={"AskUserQuestion"}, tool_definitions=[ask], handler=_Spy()
     )
     channel = _orchestrated(
-        False,
+        streaming,
         CRM,
         _calling("AskUserQuestion", bogus=1),
         tool_search=True,
@@ -124,20 +128,30 @@ async def test_a_hidden_human_input_tool_is_validated_before_a_person_is_asked()
 # -- A refusal is bounded as a result ----------------------------------------
 
 
-async def test_a_gate_refusal_is_bounded_as_a_result() -> None:
-    reason = "Denied by compliance: " + "policy clause. " * 20_000
+_REASON = "Denied by compliance: " + "policy clause. " * 20_000
+
+
+@pytest.mark.parametrize("streaming", [True, False])
+@pytest.mark.parametrize("name", ["lookup", "activate_skill"])
+async def test_a_gate_refusal_is_bounded_and_observed_whole(
+    tmp_path: Path, name: str, streaming: bool
+) -> None:
+    """The model reads a bounded copy, even of an ``activate_skill`` refusal
+    (only a skill's served instructions are exempt); the observers receive
+    the raw message (RFC §21.5)."""
     provider = MockAIProvider(
+        streaming=streaming,
         ai_responses=[
             AIResponse(
                 content="",
                 finish_reason="tool_calls",
-                tool_calls=[AIToolCall(id="c1", name="lookup", arguments={})],
+                tool_calls=[AIToolCall(id="c1", name=name, arguments={"name": "s1"})],
             ),
             AIResponse(content="done", finish_reason="stop"),
         ],
     )
 
-    async def lookup(name: str, arguments: dict[str, Any]) -> str:
+    async def lookup(tool: str, arguments: dict[str, Any]) -> str:
         return "ok"
 
     kit = RoomKit()
@@ -148,23 +162,67 @@ async def test_a_gate_refusal_is_bounded_as_a_result() -> None:
             provider=provider,
             tool_handler=lookup,
             tools=[AITool(name="lookup", description="Look up")],
+            skills=_registry(tmp_path),
         )
     )
     await kit.create_room(room_id="r1")
     await kit.attach_channel("r1", "sms1")
     await kit.attach_channel("r1", "ai1", category=ChannelCategory.INTELLIGENCE)
+    observed: list[str] = []
 
     @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="deny")
     async def deny(event: ToolCallEvent, ctx: Any) -> HookResult:
-        return HookResult.block(reason)
+        return HookResult.block(_REASON)
+
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="observe")
+    async def observe(event: ToolCallEvent, ctx: Any) -> None:
+        observed.append(str(event.result))
 
     await kit.process_inbound(
         InboundMessage(channel_id="sms1", sender_id="u1", content=TextContent(body="go"))
     )
+    await asyncio.sleep(0.05)
 
     part = next(m for m in provider.calls[-1].messages if m.role == "tool").content[0]
     assert part.is_error
     assert len(str(part.result)) < 20_000
+    assert len(observed) == 1
+    assert _REASON in observed[0]
+    await kit.close()
+
+
+async def test_a_realtime_refusal_is_bounded_for_the_model_and_observed_whole() -> None:
+    async def lookup(name: str, arguments: dict[str, Any]) -> str:
+        return "ok"
+
+    provider = MockRealtimeProvider()
+    channel = RealtimeVoiceChannel(
+        "rt",
+        provider=provider,
+        transport=MockRealtimeTransport(),
+        tool_handler=lookup,
+        tools=[{"name": "lookup", "description": "Look up", "parameters": {"type": "object"}}],
+    )
+    kit = RoomKit()
+    kit.register_channel(channel)
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "rt")
+    observed: list[str] = []
+
+    @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="deny")
+    async def deny(event: ToolCallEvent, ctx: Any) -> HookResult:
+        return HookResult.block(_REASON)
+
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="observe")
+    async def observe(event: ToolCallEvent, ctx: Any) -> None:
+        observed.append(str(event.result))
+
+    session = await channel.start_session("r1", "u1", "ws")
+    await provider.simulate_tool_call(session, "c1", "lookup", {})
+    await until(lambda: bool(provider.tool_results) and bool(observed))
+
+    assert len(provider.tool_results[0][2]) < 20_000
+    assert _REASON in observed[0]
     await kit.close()
 
 
@@ -239,6 +297,8 @@ def _watch(kit: RoomKit, replace_with: Any = ...) -> tuple[list[Any], list[Any]]
         chain.append(event.structured_content)
         if replace_with is ...:
             return HookResult.allow()
+        if replace_with == "block":
+            return HookResult.block("withheld")
         return HookResult(action="allow", metadata={"structured_content": replace_with})
 
     @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="observe")
@@ -248,7 +308,7 @@ def _watch(kit: RoomKit, replace_with: Any = ...) -> tuple[list[Any], list[Any]]
     return chain, observed
 
 
-@pytest.mark.parametrize("replace_with", [..., {"contact": "J. D."}, None])
+@pytest.mark.parametrize("replace_with", [..., {"contact": "J. D."}, None, "block"])
 async def test_a_realtime_hook_sees_and_may_replace_the_structured_copy(replace_with: Any) -> None:
     async def lookup(name: str, arguments: dict[str, Any]) -> str:
         return _publish_copy()
@@ -272,7 +332,13 @@ async def test_a_realtime_hook_sees_and_may_replace_the_structured_copy(replace_
     await until(lambda: bool(observed))
 
     assert chain == [_COPY]
-    assert observed == [_COPY if replace_with is ... else replace_with]
+    if replace_with is ...:
+        expected = _COPY
+    elif replace_with == "block":
+        expected = None  # a BLOCK withholds the result and drops the copy
+    else:
+        expected = replace_with
+    assert observed == [expected]
     await kit.close()
 
 

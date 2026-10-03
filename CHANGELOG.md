@@ -120,6 +120,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `PolicyExternalToolHandler` applies its policy before `BEFORE_TOOL_USE`
+  (RMK-394, RFC §21.1): an approval or audit hook is no longer called for a
+  tool the policy denies. The refusal reads as every gate's
+  (`Tool 'X' is not permitted by the agent's tool policy.`, `policy_refusal`,
+  now in `roomkit.tools.policy`), where it said "denied by policy".
+
 - Under `SEMANTIC`, a segment held during playback that ends before its first
   word is judged on its final transcript instead of being discarded unheard
   (RMK-390, RFC §12.3.13). A streaming transducer often releases a short word
@@ -335,14 +341,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     by the gate, in its own words.
   - An AI channel bounds a gate's refusal (a `BEFORE_TOOL_USE` block's reason,
     a validation error) as it bounds a result: a 300 KB reason reached the
-    model whole.
+    model whole. An `activate_skill` call is exempt only for the instructions
+    it served: its refusal, its block or a hook's replacement is bounded, as on
+    a realtime session. A realtime or conference refusal's observers receive
+    the raw message, as on an AI channel, where they received the model's
+    bounded copy.
   - A realtime session serves its skill tools (`run_skill_script`,
     `read_skill_reference`) inside the tool call context, as a handler:
     `current_tool_call()` and `current_tool_room_id()` answered `None`.
-  - `PolicyExternalToolHandler` applies its policy before `BEFORE_TOOL_USE`,
-    so an approval hook is never asked about a tool the policy denies, and
-    refuses with the text every gate gives (`policy_refusal`, now in
-    `roomkit.tools.policy`), where it said "denied by policy".
   - A realtime or conference handler's structured copy
     (`current_tool_call().structured_content`) reaches `ON_TOOL_CALL`: a SYNC
     hook sees it and may replace or clear it, and the observers receive what

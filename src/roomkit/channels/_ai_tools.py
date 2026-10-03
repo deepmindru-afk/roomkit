@@ -242,9 +242,8 @@ class AIToolsMixin(_AIChannelContract):
         and human-input tools it can hide, so they are recovered and validated
         as a host tool is; one the policy or a skill keeps from the turn is
         left to the gate, which refuses it in its own words. A loop built
-        without context
-        (``all_context_tools`` is ``None``) has no declaration to hold the
-        call to.
+        without context (``all_context_tools`` is ``None``) has no
+        declaration to hold the call to.
         """
         params = self._tool_parameters(name, declared_tools)
         loop_ctx = self._get_loop_ctx()
@@ -604,7 +603,10 @@ class AIToolsMixin(_AIChannelContract):
             result = await self._serve_call(scope.handler, tc.name, arguments, _tc_ctx)
             _log_answer(tc.name, result, started)
             hook = await self._apply_tool_call_hook(tc, arguments, result, _tc_ctx, scope.room_id)
-            judged = replace(hook, result=self._bound_tool_result(tc.name, hook.result, tc.id))
+            # The call's own answer, neither replaced nor withheld by a hook.
+            served = hook.kind is OutcomeKind.SERVED and hook.recorded is result
+            bounded = self._bound_tool_result(tc.name, hook.result, tc.id, served=served)
+            judged = replace(hook, result=bounded)
             telemetry.end_span(tool_span_id)
             return judged
         except asyncio.CancelledError:
@@ -1143,17 +1145,21 @@ class AIToolsMixin(_AIChannelContract):
             return AIToolResultPart(tool_call_id=tool_call_id, name=name, result=result).as_text()
         return result
 
-    def _bound_tool_result(self, name: str, result: ToolResult, tool_call_id: str) -> ToolResult:
+    def _bound_tool_result(
+        self, name: str, result: ToolResult, tool_call_id: str, *, served: bool = False
+    ) -> ToolResult:
         """The copy of a tool's outcome the model reads, evicted when oversized.
 
         Every outcome goes through it (a result, a hook's override, a refusal,
         an error): whichever path a 500 KB body takes, it must not reach the
         provider whole, save a result the model reads whole (``kept_whole``:
         a skill's instructions, which a 20 KB skill would otherwise see
-        evicted). References are data and still evict.
+        evicted), and only as *served* by the call itself: a refusal, a block
+        or a hook's replacement is bounded (RFC §21.5). References are data
+        and still evict.
         """
         result = self._shape_for_model(name, result, tool_call_id)
-        if kept_whole(name):
+        if served and kept_whole(name):
             return result
         return self._maybe_truncate_result(result, tool_call_id)
 
