@@ -672,13 +672,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The caller reads how each agent's turn ended, even one that wrote no
   message (RMK-437, RFC §6.4, §6.7): `InboundResult.response_metadata` now
-  carries `turns[channel_id]` (`loop_end_reason`, `ai_usage`) for every
-  replying channel, an ACP agent's entry its stop reason (`completed` for
-  `end_turn`); an AI turn cut before writing any message told its caller
-  nothing, and the per-channel key keeps two agents from overwriting each
-  other's end. An ACP turn's `ON_AI_RESPONSE` now carries its stop reason as
-  `loop_end_reason` (it was always `None`); the field's type widens to
-  `str` to hold ACP's reasons.
+  carries `turns[channel_id]` (`loop_end_reason`, and `ai_usage` when the
+  record has one) for every channel that replied to the caller's event,
+  streamed or buffered (a Supervisor's cut pass included); an ACP agent's
+  entry is its stop reason, `completed` once its prompt returned on
+  `end_turn`, `interrupted` when it never returned or failed after, and an
+  ACP turn never prompted has none. An AI turn cut before writing any message
+  told its caller nothing, and the per-channel key keeps two agents from
+  overwriting each other's end; an answer to an answer has no entry. `turns`
+  is RoomKit's key: a value a hook or tool writes there is not carried to the
+  caller. The ACP record gains `prompt_returned`; a record naming both a stop
+  reason and `interrupted` reads as its stop reason. An ACP turn's
+  `ON_AI_RESPONSE` now carries its stop reason as `loop_end_reason` (it was
+  always `None`); the field's type widens to `str` to hold ACP's reasons.
 
 - A Supervisor whose task-formulation pass stopped short of its answer
   answers the user (RMK-436, RFC §19.7.3): with `auto_delegate` and

@@ -15,6 +15,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, NamedTuple, Protocol, runtime_checkable
 from uuid import uuid4
 
+from roomkit.core.event_router import stream_record
 from roomkit.core.exceptions import TaskCutShortError, TaskTurnFailedError, TurnCutShortError
 from roomkit.core.lanes import DeliveryCascade
 from roomkit.core.mixins._response_reader import ResponseReader
@@ -126,7 +127,7 @@ async def persist_tool_calls(
         answer = await _drain_turn(writer, sr)
     finally:
         await kit._finish_cascade(cascade, room_id, caller_logs=True)
-    record = dict(_stream_record(sr))
+    record = dict(stream_record(sr))
     reason = _turn_end(record, writer.persisted)
     if reason not in (None, "completed"):
         _tasks_logger.warning(
@@ -167,9 +168,9 @@ async def _persist_child_stream(
     try:
         answer = await _drain_turn(writer, sr)
     except Exception as exc:
-        end = _turn_end(_stream_record(sr), writer.persisted)
+        end = _turn_end(stream_record(sr), writer.persisted)
         raise _turn_failure(exc, _last_text(writer.persisted), end)  # noqa: B904
-    if (cut := _cut_short(answer, _turn_end(_stream_record(sr), writer.persisted))) is not None:
+    if (cut := _cut_short(answer, _turn_end(stream_record(sr), writer.persisted))) is not None:
         raise cut
     return answer
 
@@ -332,7 +333,7 @@ def _responder_records(result: BroadcastResult) -> dict[str, Mapping[str, Any]]:
     records: dict[str, Mapping[str, Any]] = {
         cid: out.response_metadata for cid, out in result.outputs.items() if out.responded
     }
-    records.update((sr.source_channel_id, _stream_record(sr)) for sr in result.streaming_responses)
+    records.update((sr.source_channel_id, stream_record(sr)) for sr in result.streaming_responses)
     return records
 
 
@@ -396,12 +397,6 @@ def _turn_end(record: Mapping[str, Any], rows: list[RoomEvent]) -> str | None:
         ),
         None,
     )
-
-
-def _stream_record(sr: StreamingResponse) -> Mapping[str, Any]:
-    """A stream's record: its turn's response metadata (where an ACP agent
-    writes its outcome) with how its loop ended, once read."""
-    return {**sr.response_metadata, **(sr.turn_record or {})}
 
 
 def _last_answer(rows: list[RoomEvent], channel_id: str) -> RoomEvent | None:

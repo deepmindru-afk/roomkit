@@ -166,6 +166,12 @@ class StreamingResponse:
     chained: bool = False
 
 
+def stream_record(sr: StreamingResponse) -> dict[str, Any]:
+    """A stream's turn record: its response metadata (where an ACP agent
+    writes its outcome) with how its loop ended, once read (RFC §6.4)."""
+    return {**sr.response_metadata, **(sr.turn_record or {})}
+
+
 @dataclass
 class BroadcastResult:
     """Result of broadcasting an event to channels."""

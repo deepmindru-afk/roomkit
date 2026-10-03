@@ -132,7 +132,8 @@ class ACPTurnMixin:
                     session_id = rebuilt
                     # A new turn owns its outcome; keep the first failure marked
                     # until opening succeeds, then let the retry write its own.
-                    metadata["acp"].pop("interrupted", None)
+                    for key in ("interrupted", "stop_reason", "prompt_returned"):
+                        metadata["acp"].pop(key, None)
             finally:
                 if standalone:
                     await self._close_turn_session(room_id, session_id, connection)
@@ -341,8 +342,11 @@ class ACPTurnMixin:
         persisted for this turn carry it: a caller with nobody watching (a
         scheduled run) has to tell an answer from a turn that stopped early,
         and the text alone cannot say which it is. Only an outcome that is
-        *not* a clean end is written, the way an interrupted segment is
-        marked ``cancelled`` and a finished one is marked by nothing.
+        *not* a clean end is written as such (``stop_reason``,
+        ``interrupted``), the way an interrupted segment is marked
+        ``cancelled`` and a finished one is marked by nothing;
+        ``prompt_returned`` says the prompt ran to its end, which a turn never
+        prompted cannot say (RFC §6.4).
         """
         acp_meta = metadata["acp"]
         try:
@@ -351,6 +355,9 @@ class ACPTurnMixin:
                 prompt,
                 **{"roomkit.live/eventId": event_id},
             )
+            # The evidence the turn ran to its end: a turn never prompted (a
+            # transport that read nothing) names no end (RFC §6.4).
+            acp_meta["prompt_returned"] = True
             # A standalone turn told the room's session nothing: its cursor stays.
             if seen_index is not None:
                 self._prompted_index[room_id] = max(

@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from roomkit.models.enums import EventType, Visibility
 from roomkit.models.event import EventContent, RoomEvent
-from roomkit.models.response_metadata import ResponseMetadata
+from roomkit.models.response_metadata import ResponseMetadata, merge_caller_record
 
 if TYPE_CHECKING:
 
@@ -290,7 +290,7 @@ class InboundResult(BaseModel):
         self.delivery_results = cascade.delivery_results
         if not self.duplicate:
             self.unavailable_targets = list(cascade.unavailable_targets)
-        self.response_metadata.update(cascade.response_metadata)
+        merge_caller_record(self.response_metadata, cascade.response_metadata)
         self.response_events = list(cascade.response_events)
         if self.error is None:
             self.error = cascade.error

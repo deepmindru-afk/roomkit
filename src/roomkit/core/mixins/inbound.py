@@ -18,6 +18,7 @@ from roomkit.models.enums import (
     HookTrigger,
     Visibility,
 )
+from roomkit.models.response_metadata import merge_caller_record
 
 if TYPE_CHECKING:
     from roomkit.channels.base import Channel
@@ -469,7 +470,7 @@ class InboundMixin(HelpersMixin):
         result.report_cascade(cascade)
         if stream_error is not None and result.error is None:
             result.error = stream_error
-        result.response_metadata.update(record)
+        merge_caller_record(result.response_metadata, record)
 
         await self._connect_session_if_ready(message, channel, room_id, result)
         return result

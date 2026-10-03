@@ -27,7 +27,13 @@ from roomkit.core.mixins.inbound_locked import _Blocked, _Ready
 from roomkit.models.delivery import DeliveryError, DeliveryResult
 from roomkit.models.enums import ChannelCategory, EventStatus, EventType, HookTrigger
 from roomkit.models.event import EventSource, RoomEvent
-from roomkit.models.response_metadata import ResponseMetadata
+from roomkit.models.response_metadata import (
+    ResponseMetadata,
+    add_turn_entry,
+    merge_caller_record,
+    merge_channel_record,
+    turn_summary,
+)
 from roomkit.telemetry.base import SpanKind
 from roomkit.telemetry.context import get_current_span, restored_span
 
@@ -39,7 +45,7 @@ if TYPE_CHECKING:
     from roomkit.core.hooks import HookEngine, SyncPipelineResult
     from roomkit.core.lanes import DeliveryCascade, DeliveryPlan, RoomLaneRegistry
     from roomkit.core.locks import RoomLockManager
-    from roomkit.models.channel import ChannelBinding
+    from roomkit.models.channel import ChannelBinding, ChannelOutput
     from roomkit.models.context import RoomContext
     from roomkit.models.hook import InjectedEvent
     from roomkit.store.base import ConversationStore
@@ -507,7 +513,7 @@ class LaneExecutionMixin(HelpersMixin):
                     logger.exception("Detached stream consumption failed for room %s", room_id)
                     cascade.record_error(exc)
                 else:
-                    cascade.response_metadata.update(record)
+                    merge_caller_record(cascade.response_metadata, record)
                     if stream_error is not None:
                         cascade.record_error(stream_error)
 
@@ -733,9 +739,9 @@ class LaneExecutionMixin(HelpersMixin):
             # returns, so its record is final now. Streaming records stay live
             # until their generators are consumed outside the lane and are merged
             # there instead — copying them here would freeze late tool writes.
-            for output in result.outputs.values():
+            for channel_id, output in result.outputs.items():
                 if output.response_stream is None:
-                    cascade.response_metadata.update(output.response_metadata)
+                    _record_buffered_reply(cascade, channel_id, output, root=plan.emit_processed)
 
         # A stream any pass started is read by the caller (RFC §8.3); one a
         # reentry pass or a streamed segment's delivery started answers an
@@ -1020,3 +1026,22 @@ class LaneExecutionMixin(HelpersMixin):
             await self._lane_injected_events(
                 sync_result.injected_events, room_id, context, cascade
             )
+
+
+def _record_buffered_reply(
+    cascade: DeliveryCascade, channel_id: str, output: ChannelOutput, *, root: bool
+) -> None:
+    """Merge a buffered reply's record into the caller's, final once the
+    channel returned. A reply to the caller's own event (*root*), not to an
+    answer, puts its end under its channel in ``turns``, read off its record
+    or else its last message (RFC §6.4)."""
+    merge_channel_record(cascade.response_metadata, output.response_metadata)
+    if not root:
+        return
+    messages = [
+        event.metadata or {}
+        for event in reversed(output.response_events)
+        if event.type == EventType.MESSAGE
+    ]
+    entry = turn_summary(output.response_metadata, *messages)
+    add_turn_entry(cascade.response_metadata, channel_id, entry)

@@ -93,16 +93,68 @@ class ResponseMetadata(MutableMapping[str, Any]):
         )
 
 
+TURNS_KEY = "turns"
+"""The caller's record key under which each replying channel's turn end is
+kept (RFC §6.4). RoomKit's own: a channel's record never carries it there."""
+
+
 def recorded_turn_end(record: Mapping[str, Any]) -> str | None:
     """How a turn ended, as its record names it (RFC §6.4): an AI channel's
-    ``loop_end_reason``; an ACP agent's stop reason, ``completed`` for a clean
-    ``end_turn``, ``interrupted`` when its prompt never returned. ``None`` when
-    the record names no end."""
+    ``loop_end_reason``; an ACP agent's stop reason when it named one other
+    than ``end_turn``, else ``interrupted`` when its prompt never returned or
+    failed after, else ``completed`` once its prompt returned. ``None`` when
+    the record names no end: an ACP turn never prompted names none."""
     if (reason := record.get("loop_end_reason")) is not None:
         return reason
     acp = record.get("acp")
     if not isinstance(acp, Mapping):
         return None
+    if reason := acp.get("stop_reason"):
+        return reason
     if acp.get("interrupted"):
         return "interrupted"
-    return acp.get("stop_reason") or "completed"
+    return "completed" if acp.get("prompt_returned") else None
+
+
+def turn_summary(*records: Mapping[str, Any]) -> dict[str, Any] | None:
+    """One channel's entry in the caller's ``turns`` (RFC §6.4): the end the
+    first of *records* naming one names, with that record's ``ai_usage``;
+    ``None`` when none names an end."""
+    for record in records:
+        if (end := recorded_turn_end(record)) is None:
+            continue
+        entry: dict[str, Any] = {"loop_end_reason": end}
+        if (usage := record.get("ai_usage")) is not None:
+            entry["ai_usage"] = usage
+        return entry
+    return None
+
+
+def merge_channel_record(into: MutableMapping[str, Any], record: Mapping[str, Any]) -> None:
+    """Merge a replying channel's record into the caller's: every key as the
+    channel, its hooks and tools wrote it, but ``turns``, which RoomKit keeps
+    there itself (RFC §6.4)."""
+    into.update({key: value for key, value in record.items() if key != TURNS_KEY})
+
+
+def add_turn_entry(
+    into: MutableMapping[str, Any], channel_id: str, entry: Mapping[str, Any] | None
+) -> None:
+    """Put *channel_id*'s turn *entry* under the caller's ``turns``, beside
+    the other channels' (RFC §6.4)."""
+    if entry is not None:
+        into[TURNS_KEY] = {**_turn_entries(into), channel_id: dict(entry)}
+
+
+def merge_caller_record(into: MutableMapping[str, Any], record: Mapping[str, Any]) -> None:
+    """Merge one caller record into another: every key, and ``turns`` entry
+    by entry, so one channel's end never replaces another's (RFC §6.4)."""
+    turns = {**_turn_entries(into), **_turn_entries(record)}
+    into.update(record)
+    if turns:
+        into[TURNS_KEY] = turns
+
+
+def _turn_entries(record: Mapping[str, Any]) -> dict[str, Any]:
+    entries = record.get(TURNS_KEY)
+    return dict(entries) if isinstance(entries, Mapping) else {}
