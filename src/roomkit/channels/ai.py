@@ -87,6 +87,7 @@ from roomkit.tools.policy import ToolPolicy
 from roomkit.tools.timeout import ToolTimeouts
 
 if TYPE_CHECKING:
+    from roomkit.channels._ai_callbacks import AfterToolRoundHook
     from roomkit.models.tool_call import ToolCallCallback, ToolCallObserver
     from roomkit.sandbox.executor import SandboxExecutor
     from roomkit.skills.executor import ScriptExecutor
@@ -385,6 +386,8 @@ class AIChannel(
         self._before_tool_call_hook = None
         self._after_response_hook = None
         self._before_generation_hook = None
+        # AFTER_TOOL_ROUND, between two rounds of the tool loop (RFC §6.4).
+        self._after_tool_round_hook: AfterToolRoundHook | None = None
         self._thinking_hook = None
         self._plan_updated_hook = None
         # Tool-usage hydration loader: fetches this channel's persisted tool

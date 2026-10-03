@@ -264,6 +264,8 @@ class HookTrigger(StrEnum):
     # Tool execution (unified across channels)
     BEFORE_TOOL_USE = "before_tool_use"
     ON_TOOL_CALL = "on_tool_call"
+    # Between two rounds of an AI channel's tool loop (can withdraw tools)
+    AFTER_TOOL_ROUND = "after_tool_round"
     ON_REALTIME_TEXT_INJECTED = "on_realtime_text_injected"
     ON_REALTIME_DELEGATION = "on_realtime_delegation"
     # Human-in-the-loop (tool paused, waiting for user input)

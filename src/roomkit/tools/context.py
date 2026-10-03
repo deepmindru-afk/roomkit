@@ -411,8 +411,10 @@ def current_response_metadata() -> ResponseMetadata | None:
     The one mapping RoomKit merges into every MESSAGE event the turn produces
     (see :mod:`roomkit.models.response_metadata`): a memory provider writing it
     during context build, a ``BEFORE_AI_GENERATION`` hook writing
-    ``event.ai_context.response_metadata`` and a tool handler writing here all
-    reach the same object. A tool handler is the case this exists for — the
+    ``event.ai_context.response_metadata``, and a tool handler or a
+    ``BEFORE_TOOL_USE`` hook writing here (the hook runs under the call's turn)
+    all reach the same object, the one ``InboundResult.response_metadata``
+    hands the caller, the turn answered or failed. A tool handler is the case this exists for — the
     ``ToolHandler`` protocol hands it nothing but ``(name, arguments)``, and a
     document it read is a fact about the turn, not about the tool's string
     result.

@@ -100,6 +100,7 @@ def _source_block_reason(binding: ChannelBinding | None) -> str | None:
 
 if TYPE_CHECKING:
     from roomkit.channels._ai_callbacks import (
+        AfterToolRoundHook,
         BeforeGenerationHook,
         ThinkingHook,
         ToolUsageLoader,
@@ -109,7 +110,12 @@ if TYPE_CHECKING:
     from roomkit.core.hooks import HookEngine, IdentityHookRegistration
     from roomkit.models.channel import ChannelBinding
     from roomkit.models.room import Room
-    from roomkit.models.tool_call import AfterResponseCallback, ToolCallCallback, ToolCallObserver
+    from roomkit.models.tool_call import (
+        AfterResponseCallback,
+        ToolCallCallback,
+        ToolCallObserver,
+        ToolRoundEvent,
+    )
     from roomkit.store.base import ConversationStore
     from roomkit.tools.external import BeforeToolCallback
 
@@ -1344,6 +1350,28 @@ class HelpersMixin:
                     "latency_ms": event.latency_ms,
                     "streaming": event.streaming,
                 },
+            )
+
+        return _callback
+
+    def _build_after_tool_round_hook(self, channel_id: str) -> AfterToolRoundHook:
+        """AFTER_TOOL_ROUND for an AIChannel: the room's SYNC hooks on a round
+        its loop ran, between that round and the next (RFC §6.4).
+
+        The hooks act on the event (withdrawals, messages); their verdict
+        changes nothing, the round having run.
+        """
+        kit_ref = self
+
+        async def _callback(event: ToolRoundEvent) -> None:
+            trigger = HookTrigger.AFTER_TOOL_ROUND
+            if not event.room_id or not kit_ref._hook_engine.has_hooks(trigger):
+                return
+            context = await kit_ref._hook_context(event.room_id, trigger)
+            if context is None:
+                return
+            await kit_ref._hook_engine.run_sync_hooks(
+                event.room_id, trigger, event, context, skip_event_filter=True
             )
 
         return _callback

@@ -680,6 +680,7 @@ class TestToolCalls:
 
         @kit.hook(HookTrigger.BEFORE_TOOL_USE)
         async def allow(event: Any, ctx: RoomContext) -> HookResult:
+            seen["hook_record"] = current_response_metadata()
             return HookResult.allow()
 
         room = await kit.create_room(metadata={"tenant": "acme"})
@@ -691,7 +692,7 @@ class TestToolCalls:
 
         call = seen.pop("call")
         assert (call.tool_call_id, call.channel_id) == ("call-gate", "rt-gate")
-        assert seen == {"tenant": "acme", "record": None, "names": None}
+        assert seen == {"tenant": "acme", "record": None, "names": None, "hook_record": None}
 
     async def test_realtime_loop_context_branches(self) -> None:
         """The ways the Room is resolved: the gate's when one was built, None

@@ -32,7 +32,7 @@ from roomkit.models.streaming import (
     ToolCallEndMarker,
     ToolCallStartMarker,
 )
-from roomkit.models.tool_call import AIResponseEvent, response_transcript
+from roomkit.models.tool_call import AIResponseEvent, ToolRoundEvent, response_transcript
 from roomkit.providers.ai.base import (
     AIContext,
     AIMessage,
@@ -46,7 +46,7 @@ from roomkit.telemetry.context import get_current_span
 from roomkit.tools.context import _current_loop_ctx, _ToolLoopContext
 
 if TYPE_CHECKING:
-    from roomkit.channels._ai_callbacks import BeforeGenerationHook
+    from roomkit.channels._ai_callbacks import AfterToolRoundHook, BeforeGenerationHook
     from roomkit.models.channel import ChannelBinding
     from roomkit.models.context import RoomContext
     from roomkit.models.tool_call import AfterResponseCallback, ToolCallObserver
@@ -83,6 +83,11 @@ class _StreamTurnState:
     # The provider error that interrupted the turn after a round (reason
     # ``error``): the turn reaches its end on it, then it is raised (RFC §6.4).
     error: Exception | None = None
+
+    def count_round(self, calls: list[Any]) -> None:
+        """Count one round of the channel's calls toward the turn's span."""
+        self.tool_calls_count += len(calls)
+        self.tool_rounds_count += 1
 
     def end(self, reason: LoopEndReason, rounds: int) -> LoopEndMarker:
         """End the loop on *reason*: the marker the consumer reads it from."""
@@ -188,6 +193,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
     _active_loops: dict[str, _ToolLoopContext]
     _after_response_hook: AfterResponseCallback | None
     _before_generation_hook: BeforeGenerationHook | None
+    _after_tool_round_hook: AfterToolRoundHook | None
     _tool_report_hook: ToolCallObserver | None
     _external_tool_handler: ExternalToolHandler | None
     channel_id: str
@@ -442,8 +448,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
             parent_span_id=turn.span_id,
             answered=answered,
         )
-        turn.tool_calls_count += len(calls)
-        turn.tool_rounds_count += 1
+        turn.count_round(calls)
         for call, result in zip(calls, results, strict=False):
             value = result.result
             is_error = result.is_error
@@ -468,6 +473,35 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                 index,
                 duration_ms=duration_ms,
             )
+        await self._after_tool_round(context, calls, results, answered, turn, index)
+
+    async def _after_tool_round(
+        self,
+        context: AIContext,
+        calls: list[Any],
+        results: list[AIToolResultPart],
+        answered: list[AIToolResultPart],
+        turn: _StreamTurnState,
+        index: int,
+    ) -> None:
+        """Hand the round the channel just ran to AFTER_TOOL_ROUND and apply
+        what its hooks asked: withdrawals for the rest of the turn, messages
+        the next round reads after the results (RFC §6.4)."""
+        hook = self._after_tool_round_hook
+        if hook is None:
+            return
+        event = ToolRoundEvent(
+            channel_id=self.channel_id,
+            room_id=turn.room_id,
+            round_index=index,
+            calls=list(calls),
+            results=list(results),
+            answered=list(answered),
+        )
+        await hook(event)
+        if event.withdrawn:
+            turn.loop_ctx.withdraw(event.withdrawn)
+        context.messages.extend(AIMessage(role="user", content=text) for text in event.messages)
 
     async def _stream_generation(
         self, round_: _StreamRound, context: AIContext, turn: _StreamTurnState, index: int

@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `AFTER_TOOL_ROUND` (RMK-409, RFC §6.4, §9.2): a SYNC hook between two rounds
+  of an AI channel's tool loop. It fires after each round the channel ran
+  calls in, with a `ToolRoundEvent` carrying the round whole (its calls, the
+  channel's results and the ones the provider served), so a rule about the
+  round's concurrent calls (one success among failures, say) has the round to
+  read. `event.withdraw(*names)` takes tools out of the rest of the turn with
+  every guarantee of a `BEFORE_AI_GENERATION` withdrawal (never declared
+  again, refused if called, the channel's own tools included, never handed to
+  an external handler); `event.add_message(text)` is what the next round reads
+  after the results. A BLOCK changes nothing, the round having run. A
+  `BEFORE_TOOL_USE` hook writing `current_response_metadata()` reaches
+  `InboundResult.response_metadata`, the turn answered or failed: the way to
+  count the calls a turn started. Example: `examples/hook_after_tool_round.py`.
+
 - `SkillRegistry.has_entries` (RMK-397): whether a registry has anything to
   tell the model, a skill it can activate or one marked unavailable; the text
   turn and the realtime session decide on it alike.

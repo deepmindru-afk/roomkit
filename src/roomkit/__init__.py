@@ -162,6 +162,7 @@ from roomkit.models.tool_call import (
     ToolCallEvent,
     ToolCallObserver,
     ToolCallVerdict,
+    ToolRoundEvent,
     response_transcript,
 )
 from roomkit.models.voice_delivery import VoiceDeliveryRecord
@@ -527,6 +528,7 @@ __all__ = [
     "ToolCallOutcome",
     "ToolCallEvent",
     "ToolCallVerdict",
+    "ToolRoundEvent",
     "ToolHandler",
     "VideoDetectionEvent",
     # Video pipeline filters

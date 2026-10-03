@@ -32,7 +32,7 @@ from roomkit.models.hook import HookResult
 from roomkit.models.response_metadata import ResponseMetadata
 from roomkit.models.room import Room
 from roomkit.models.tool_call import AIGenerationEvent
-from roomkit.providers.ai.base import AIContext, AIResponse, AIToolCall
+from roomkit.providers.ai.base import AIContext, AIResponse, AIToolCall, ProviderError
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.tools import current_response_metadata
 from tests.conftest import make_event
@@ -382,3 +382,53 @@ class TestLiveRecord:
 
         assert run.metadata["rag_sources"] == _SOURCES
         assert run.metadata["cited"] == [{"tool": "read_page", "page": 3}]
+
+
+class _FailsAfterTheCall(MockAIProvider):
+    """The model calls ``read_page``, then fails on the round after it."""
+
+    async def generate(self, context: AIContext) -> AIResponse:
+        if self.calls:
+            raise ProviderError("upstream down", provider="mock")
+        return await super().generate(context)
+
+
+@pytest.mark.parametrize("fails", [False, True])
+async def test_a_before_tool_use_write_reaches_the_inbound_result(
+    streaming: bool, fails: bool
+) -> None:
+    """A BEFORE_TOOL_USE hook runs under the call's turn: what it writes through
+    ``current_response_metadata()`` is the record the caller reads, the turn
+    answered or failed (RFC §6.7), so a host counts the calls a turn started."""
+    from roomkit.channels import SMSChannel
+    from roomkit.providers.sms.mock import MockSMSProvider
+
+    provider_cls = _FailsAfterTheCall if fails else MockAIProvider
+    kit = RoomKit()
+    ai = AIChannel(
+        "ai1",
+        provider=provider_cls(ai_responses=list(_TOOL_ROUNDS), streaming=streaming),
+        tool_handler=_citing_handler,
+    )
+    kit.register_channel(ai)
+    kit.register_channel(SMSChannel("sms1", provider=MockSMSProvider()))
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel(
+        "r1", "ai1", category=ChannelCategory.INTELLIGENCE, metadata=_TOOLS_BINDING_META
+    )
+    await kit.attach_channel("r1", "sms1")
+
+    @kit.hook(HookTrigger.BEFORE_TOOL_USE)
+    async def count(event: Any, ctx: Any) -> HookResult:
+        record = current_response_metadata()
+        if record is not None:
+            record["calls_started"] = record.get("calls_started", 0) + 1
+        return HookResult.allow()
+
+    result = await kit.process_inbound(
+        InboundMessage(channel_id="sms1", sender_id="user1", content=TextContent(body="Read 3"))
+    )
+
+    assert (result.error is not None) is fails
+    assert result.response_metadata["calls_started"] == 1
+    await kit.close()

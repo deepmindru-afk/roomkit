@@ -12,7 +12,7 @@ from roomkit.models.enums import ChannelType
 from roomkit.models.streaming import LoopEndReason
 
 if TYPE_CHECKING:
-    from roomkit.providers.ai.base import AIContext, AITool
+    from roomkit.providers.ai.base import AIContext, AITool, AIToolCall, AIToolResultPart
     from roomkit.voice.base import VoiceSession
 
 logger = logging.getLogger("roomkit.hooks")
@@ -454,6 +454,51 @@ class AIGenerationEvent:
 
     timestamp: datetime = field(default_factory=_utcnow)
     """When the generation was initiated."""
+
+
+@dataclass
+class ToolRoundEvent:
+    """Emitted through AFTER_TOOL_ROUND between two rounds of an AI channel's
+    tool loop, once the channel ran a round's calls (RFC §6.4).
+
+    The round has run: a hook reads it whole (its calls run concurrently, so a
+    rule about them is a rule about the round) and acts on the rest of the
+    turn through :meth:`withdraw` and :meth:`add_message`.
+    """
+
+    channel_id: str
+    """ID of the AI channel whose loop ran the round."""
+
+    room_id: str | None
+    """Room the turn runs in."""
+
+    round_index: int
+    """Index of the round in the turn, from 0."""
+
+    calls: list[AIToolCall]
+    """The calls the channel ran, in the order the model made them."""
+
+    results: list[AIToolResultPart]
+    """The channel's result of each call, in the same order."""
+
+    answered: list[AIToolResultPart] = field(default_factory=list)
+    """The results of the round's calls the provider served itself."""
+
+    withdrawn: set[str] = field(default_factory=set)
+    """Names withdrawn for the rest of the turn (see :meth:`withdraw`)."""
+
+    messages: list[str] = field(default_factory=list)
+    """Texts the next round reads after this round's results (see :meth:`add_message`)."""
+
+    def withdraw(self, *names: str) -> None:
+        """Take *names* out of the rest of the turn, with every guarantee of a
+        withdrawal by BEFORE_AI_GENERATION: never declared again, a call naming
+        one refused (a tool the channel provides itself included)."""
+        self.withdrawn.update(names)
+
+    def add_message(self, text: str) -> None:
+        """Have the next round read *text*, as a user message after the results."""
+        self.messages.append(text)
 
 
 # Callback type for BEFORE_AI_GENERATION hook (sync, can block/modify).

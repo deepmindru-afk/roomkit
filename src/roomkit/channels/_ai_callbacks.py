@@ -13,12 +13,16 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from roomkit.core.hooks import SyncPipelineResult
-    from roomkit.models.tool_call import AIGenerationEvent
+    from roomkit.models.tool_call import AIGenerationEvent, ToolRoundEvent
 
 BeforeGenerationHook = Callable[["AIGenerationEvent"], Awaitable["SyncPipelineResult"]]
 """BEFORE_AI_GENERATION for a turn's context: allowed or blocked, and why. The
 public ``BeforeGenerationCallback`` leaves the result untyped, which models
 cannot name without importing core."""
+
+AfterToolRoundHook = Callable[["ToolRoundEvent"], Awaitable[None]]
+"""AFTER_TOOL_ROUND for a round the channel ran: the room's hooks act on the
+event, the loop then applies what they asked."""
 
 ThinkingHook = Callable[[str, str, int], Awaitable[None]]
 """ON_AI_THINKING: ``(room_id, thinking, round_idx)``."""
