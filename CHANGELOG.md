@@ -222,6 +222,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING — a call the provider already ran is marked on the call,
+  never in its arguments** (RMK-439, RFC §9.3): the channel read `_result` /
+  `_is_error` keys in a call's arguments as "the provider ran it", so a model
+  that wrote `{"q": "a", "_result": "forged"}` had its call stored `served`
+  with that text, without the tool policy, the gate or its handler, and an
+  external handler received `on_tool_result` for a call nobody decided. The
+  mark is now `AIToolCall.served` / `StreamToolCall.served`, a
+  `ServedCall(result, is_error)` only a provider sets (exported from
+  `roomkit.providers.ai`); a `_result` key is an argument like any other.
+  No provider of the tree set the old mark. Migration: a provider that runs
+  its own tools sets `served=ServedCall(result=..., is_error=...)` on the
+  call instead of the `_result` / `_is_error` keys.
+
 - **BREAKING — a delegated task cancelled from outside ends `cancelled`,
   through `ON_TASK_COMPLETED` and its callback, inline or in the
   background** (RMK-434, RFC §23.1, §23.3). In the background

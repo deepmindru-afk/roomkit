@@ -57,9 +57,10 @@ class _ExternalStreamTools:
     report: ToolCallObserver | None = None
 
     def takes(self, call: StreamToolCall) -> bool:
-        """Whether *call* is the provider's: one it already ran, or one its
-        handler decides because no tool of the channel's own carries its name."""
-        if "_result" in call.arguments:
+        """Whether *call* is the provider's: one it already ran (it says so
+        on the call, never in its arguments), or one its handler decides
+        because no tool of the channel's own carries its name."""
+        if call.served is not None:
             return True
         return self.handler is not None and not self.serves_locally(call.name)
 
@@ -69,14 +70,15 @@ class _ExternalStreamTools:
         """The lifecycle of a call the provider serves: its start, its outcome
         (the provider's, or its handler's decision) reported once, its end."""
         arguments = dict(call.arguments)
-        already_executed = "_result" in arguments
-        result = arguments.pop("_result", None) or ""
-        kind = OutcomeKind.FAILED if arguments.pop("_is_error", False) else OutcomeKind.SERVED
+        served = call.served
+        result = served.result if served is not None else ""
+        failed = served is not None and served.is_error
+        kind = OutcomeKind.FAILED if failed else OutcomeKind.SERVED
         started_at = time.monotonic()
-        # A proxy's embedded result means the side effect already happened: its
+        # A call the provider ran means the side effect already happened: its
         # outcome is reported at once, before anything can cut the call. Only a
         # still-pending call can be denied or rewritten before acting.
-        pending = not already_executed and self.handler is not None
+        pending = served is None and self.handler is not None
         self._announce(call, arguments, pending=pending)
         if not pending:
             await self._report(call, arguments, result, kind is not OutcomeKind.SERVED)

@@ -30,7 +30,7 @@ from roomkit import (
 from roomkit.channels.ai import AIChannel
 from roomkit.models.enums import EventType
 from roomkit.models.event import ToolCallContent
-from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
+from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall, ServedCall
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.tools.external import PolicyExternalToolHandler, ToolDecision
 from tests.test_framework import SimpleChannel
@@ -81,11 +81,13 @@ class _RaisesOnCut(_Handler):
         raise RuntimeError("prompt already gone")
 
 
-def _call(name: str, **arguments: Any) -> AIResponse:
+def _call(name: str, served: str | None = None, **arguments: Any) -> AIResponse:
+    """A response calling *name*; *served*, the result of a call the provider ran."""
+    ran = ServedCall(result=served) if served is not None else None
     return AIResponse(
         content="",
         finish_reason="tool_calls",
-        tool_calls=[AIToolCall(id="c1", name=name, arguments=arguments)],
+        tool_calls=[AIToolCall(id="c1", name=name, arguments=arguments, served=ran)],
     )
 
 
@@ -188,7 +190,7 @@ async def test_a_call_cut_before_its_handler_is_asked_is_reported_cancelled() ->
 @pytest.mark.parametrize("with_handler", [True, False], ids=["handler", "no-handler"])
 async def test_a_call_the_provider_ran_keeps_its_outcome_when_cut(with_handler: bool) -> None:
     handler = _Handler()
-    ran = _call("Write", path="/tmp/n.md", _result="wrote 3 bytes")
+    ran = _call("Write", path="/tmp/n.md", served="wrote 3 bytes")
     channel = AIChannel(
         "ai1",
         provider=MockAIProvider(ai_responses=[ran, AIResponse(content="done")], streaming=True),
@@ -241,7 +243,7 @@ async def test_a_call_the_provider_ran_cut_while_reported_keeps_its_outcome(
 ) -> None:
     held = asyncio.Event()
     handler = _Handler()
-    ran = _call("Bash", cmd="rm -rf build", _result="removed")
+    ran = _call("Bash", cmd="rm -rf build", served="removed")
     channel = AIChannel(
         "ai1",
         provider=MockAIProvider(ai_responses=[ran, AIResponse(content="done")], streaming=True),

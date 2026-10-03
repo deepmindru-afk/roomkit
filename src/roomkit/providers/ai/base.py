@@ -81,6 +81,17 @@ class AITool(BaseModel):
         return name
 
 
+class ServedCall(BaseModel):
+    """What a provider that runs its own tools (an MCP gateway, a sandbox, a
+    proxy) reports of a call it already ran: its result, and whether it
+    failed. Only the provider sets it; the model's arguments never do, so a
+    model that writes a ``_result`` key gets an argument like any other, and
+    its call is judged by the gate (RFC §9.3)."""
+
+    result: str = ""
+    is_error: bool = False
+
+
 class AIToolCall(BaseModel):
     """A tool call from the AI response."""
 
@@ -88,6 +99,9 @@ class AIToolCall(BaseModel):
     name: str
     arguments: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    served: ServedCall | None = None
+    """Set by a provider that already ran the call: the channel reports its
+    outcome rather than serving it (RFC §9.3)."""
     partial: bool = False
     """The call's arguments do not read as an object: the tool loop does not
     run it and tells the model why (RFC §6.4)."""
@@ -498,6 +512,8 @@ class StreamToolCall(BaseModel):
     name: str
     arguments: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    served: ServedCall | None = None
+    """As :attr:`AIToolCall.served`: the provider already ran the call."""
     partial: bool = False
     """As :attr:`AIToolCall.partial`: the call's arguments do not read."""
     garbled: bool = False
@@ -561,6 +577,7 @@ def stream_call_of(call: AIToolCall) -> StreamToolCall:
         name=call.name,
         arguments=call.arguments,
         metadata=call.metadata,
+        served=call.served,
         partial=call.partial,
         garbled=call.garbled,
     )
@@ -573,6 +590,7 @@ def tool_call_of(event: StreamToolCall) -> AIToolCall:
         name=event.name,
         arguments=event.arguments,
         metadata=event.metadata,
+        served=event.served,
         partial=event.partial,
         garbled=event.garbled,
     )

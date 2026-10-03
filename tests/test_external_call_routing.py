@@ -24,7 +24,7 @@ from roomkit.models.enums import (
 from roomkit.models.event import TextContent, ToolCallContent
 from roomkit.models.hook import HookResult
 from roomkit.models.tool_call import ToolCallEvent
-from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall, AIToolCallPart
+from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall, AIToolCallPart, ServedCall
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.tools.external import ExternalToolHandler, ToolDecision
 from tests.test_framework import SimpleChannel
@@ -110,7 +110,9 @@ class _Room:
 async def test_a_call_the_provider_ran_is_reported_beside_local_tools(streaming: bool) -> None:
     """The provider's result rides the call; a local tool beside it does
     not make it the channel's to dispatch."""
-    ran = AIToolCall(id="b1", name="Bash", arguments={"cmd": "ls", "_result": "a.txt"})
+    ran = AIToolCall(
+        id="b1", name="Bash", arguments={"cmd": "ls"}, served=ServedCall(result="a.txt")
+    )
     proxy, local = _Proxy(), _Local()
     provider = MockAIProvider(ai_responses=[_calls(ran)], streaming=streaming)
     ai = AIChannel(
@@ -132,7 +134,9 @@ async def test_a_call_the_provider_ran_reaches_the_observers_without_a_handler(
 ) -> None:
     """With no external handler, the provider's own call still gets its
     rows and its report, whatever the provider streams."""
-    ran = AIToolCall(id="b1", name="Bash", arguments={"cmd": "ls", "_result": "a.txt"})
+    ran = AIToolCall(
+        id="b1", name="Bash", arguments={"cmd": "ls"}, served=ServedCall(result="a.txt")
+    )
     provider = MockAIProvider(ai_responses=[_calls(ran)], streaming=streaming)
     room = await _Room(AIChannel("ai1", provider=provider)).open()
 

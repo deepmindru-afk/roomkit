@@ -17,7 +17,7 @@ import pytest
 
 from roomkit.channels.ai import AIChannel
 from roomkit.models.streaming import LoopEndMarker
-from roomkit.providers.ai.base import AIContext, AIMessage, AIResponse, AIToolCall
+from roomkit.providers.ai.base import AIContext, AIMessage, AIResponse, AIToolCall, ServedCall
 from roomkit.providers.ai.mock import MockAIProvider
 
 
@@ -170,7 +170,7 @@ async def test_provider_owned_tool_calls_still_end_with_a_marker() -> None:
     provider_run = AIResponse(
         content="",
         finish_reason="tool_calls",
-        tool_calls=[AIToolCall(id="b1", name="Bash", arguments={"_result": "a.txt"})],
+        tool_calls=[AIToolCall(id="b1", name="Bash", served=ServedCall(result="a.txt"))],
     )
     ch = AIChannel("ai1", provider=MockAIProvider(ai_responses=[provider_run], streaming=True))
 

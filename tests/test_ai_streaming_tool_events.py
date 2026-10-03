@@ -34,6 +34,7 @@ from roomkit.providers.ai.base import (
     AITool,
     AIToolCall,
     ProviderError,
+    ServedCall,
     StreamDone,
     StreamTextDelta,
     StreamThinkingDelta,
@@ -237,7 +238,8 @@ async def test_external_handler_streaming_publishes_tool_events() -> None:
                     AIToolCall(
                         id="tc1",
                         name="Bash",
-                        arguments={"cmd": "ls", "_result": "file.txt"},
+                        arguments={"cmd": "ls"},
+                        served=ServedCall(result="file.txt"),
                     )
                 ],
             ),
@@ -313,7 +315,8 @@ async def test_provider_executed_tool_never_fires_retroactive_before_hook() -> N
                     AIToolCall(
                         id="tc1",
                         name="Write",
-                        arguments={"path": "/tmp/out", "_result": "written"},
+                        arguments={"path": "/tmp/out"},
+                        served=ServedCall(result="written"),
                     )
                 ],
             )
@@ -359,7 +362,8 @@ async def test_a_provider_run_call_is_reported_as_the_provider_ran_it(decision: 
                     AIToolCall(
                         id="tc1",
                         name="Write",
-                        arguments={"path": "/tmp/out", "_result": "written"},
+                        arguments={"path": "/tmp/out"},
+                        served=ServedCall(result="written"),
                     )
                 ],
             )

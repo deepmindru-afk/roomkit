@@ -38,7 +38,14 @@ from roomkit.models.steering import Cancel
 from roomkit.models.streaming import ToolCallStartMarker
 from roomkit.orchestration.pipeline import ConversationPipeline, PipelineStage
 from roomkit.orchestration.state import ConversationState, set_conversation_state
-from roomkit.providers.ai.base import AIContext, AIMessage, AIResponse, AITool, AIToolCall
+from roomkit.providers.ai.base import (
+    AIContext,
+    AIMessage,
+    AIResponse,
+    AITool,
+    AIToolCall,
+    ServedCall,
+)
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.skills.registry import SkillRegistry
 from roomkit.tools.context import _ToolLoopContext
@@ -70,11 +77,13 @@ def _observe(kit: RoomKit) -> list[ToolCallEvent]:
     return seen
 
 
-def _call(name: str, **arguments: Any) -> AIResponse:
+def _call(name: str, served: str | None = None, **arguments: Any) -> AIResponse:
+    """A response calling *name*; *served*, the result of a call the provider ran."""
+    ran = ServedCall(result=served) if served is not None else None
     return AIResponse(
         content="",
         finish_reason="tool_calls",
-        tool_calls=[AIToolCall(id="c1", name=name, arguments=arguments)],
+        tool_calls=[AIToolCall(id="c1", name=name, arguments=arguments, served=ran)],
     )
 
 
@@ -231,7 +240,7 @@ async def test_an_acp_call_whose_permission_was_refused_is_refused(tmp_path: Pat
 
 @pytest.mark.parametrize("form", ["modify", "metadata"])
 async def test_a_report_chain_shows_the_next_hook_each_rewrite(form: str) -> None:
-    provider_run = _call("Read", _result="secret")
+    provider_run = _call("Read", served="secret")
     kit = RoomKit()
     kit.register_channel(SimpleChannel("sms"))
     kit.register_channel(

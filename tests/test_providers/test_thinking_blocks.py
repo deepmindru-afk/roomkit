@@ -27,6 +27,7 @@ from roomkit.providers.ai.base import (
     AITool,
     AIToolCall,
     AIToolCallPart,
+    ServedCall,
     StreamDone,
     StreamEvent,
     StreamTextDelta,
@@ -327,7 +328,9 @@ class TestTheLoopReplaysTheRound:
         ]
 
     async def test_a_call_the_provider_ran_keeps_its_place(self) -> None:
-        ran = StreamToolCall(id="b1", name="Bash", arguments={"cmd": "ls", "_result": "a.txt"})
+        ran = StreamToolCall(
+            id="b1", name="Bash", arguments={"cmd": "ls"}, served=ServedCall(result="a.txt")
+        )
         content = await _replayed_round(
             [
                 _delta(0, "List first."),
