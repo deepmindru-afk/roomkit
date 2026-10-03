@@ -9,6 +9,7 @@ the handler's whole result, whose rewrite is what gets stored (RMK-260).
 from __future__ import annotations
 
 import json
+from typing import Any
 from unittest.mock import AsyncMock
 
 from roomkit.channels._tool_eviction import is_eviction_placeholder
@@ -90,7 +91,7 @@ async def test_the_hook_sees_the_whole_result_and_the_store_keeps_its_rewrite(
     ch, provider = _channel(AsyncMock(return_value=body))
     seen: list[ToolCallEvent] = []
 
-    async def redact(event: ToolCallEvent) -> str:
+    async def redact(event: ToolCallEvent, **_: Any) -> str:
         seen.append(event)
         return str(event.result).replace("Jane Doe, jane@example.com", "[PERSON_1], [EMAIL_1]")
 
@@ -116,7 +117,7 @@ async def test_an_oversized_override_is_evicted_and_the_hook_input_is_unchanged(
     ch, provider = _channel(AsyncMock(return_value="small result"))
     seen: list[ToolCallEvent] = []
 
-    async def rewrite(event: ToolCallEvent) -> str:
+    async def rewrite(event: ToolCallEvent, **_: Any) -> str:
         seen.append(event)
         return _HUGE
 
@@ -141,7 +142,7 @@ async def test_an_oversized_part_list_override_keeps_its_images(streaming: bool)
     ch, provider = _channel(AsyncMock(return_value="small result"), vision=True)
     image = AIImagePart(url="data:image/png;base64,AAAA", mime_type="image/png")
 
-    async def rewrite(event: ToolCallEvent) -> list[AITextPart | AIImagePart]:
+    async def rewrite(event: ToolCallEvent, **_: Any) -> list[AITextPart | AIImagePart]:
         return [AITextPart(text=_HUGE), image]
 
     ch._tool_call_hook = rewrite

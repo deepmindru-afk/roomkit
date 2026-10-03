@@ -152,7 +152,7 @@ async def test_a_blocked_activation_opens_no_gate(tmp_path: Path, streaming: boo
         skills=_payments_skill(tmp_path),
     )
 
-    async def refuse_activation(event: ToolCallEvent) -> ToolCallVerdict | None:
+    async def refuse_activation(event: ToolCallEvent, **_: Any) -> ToolCallVerdict | None:
         if event.name == "activate_skill":
             return ToolCallVerdict(result="skill not allowed for this user", blocked=True)
         return None

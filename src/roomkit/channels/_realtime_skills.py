@@ -50,6 +50,29 @@ receive the full body in the activation result and must preserve that context.
 """
 
 
+class RequiredToolsCheck:
+    """Whether an activating skill's required tools are in the session's
+    catalogue, read when asked: after the activation's hooks ran, before
+    anyone is told (RFC §9.3)."""
+
+    def __init__(
+        self, support: Any, skill: Skill | None, catalogue: Callable[[], list[dict[str, Any]]]
+    ) -> None:
+        self._support = support
+        self._skill = skill
+        self._catalogue = catalogue
+        self.missing: list[str] | None = None
+        """The required tools the catalogue lacked, once checked."""
+
+    def held(self) -> bool:
+        """Check the catalogue now: whether every required tool is in it."""
+        skill = self._skill
+        self.missing = (
+            self._support.missing_required_tools(skill, self._catalogue()) if skill else []
+        )
+        return not self.missing
+
+
 class RealtimeSkillSupport:
     """Skill delivery and gates scoped to one live conversation.
 
@@ -341,7 +364,10 @@ class RealtimeSkillSupport:
 
     async def _handle_activate_skill(self, arguments: dict[str, Any], session_id: str) -> str:
         """Prepare a result; the channel owns delivery and activation commit."""
-        result, _ = await self.prepare_activation(arguments, session_id, [])
+        try:
+            result, _ = await self.prepare_activation(arguments, session_id, [])
+        except ToolRefusedError as refusal:
+            return refusal.message
         return result
 
     async def _handle_read_reference(self, arguments: dict[str, Any]) -> str:

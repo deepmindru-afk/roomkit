@@ -453,7 +453,7 @@ class ACPEventsMixin:
         elif self._tool_report_hook is not None:
             # No handler to report it: ON_TOOL_CALL still hears of every call,
             # as of a call an AI provider ran itself (RFC §9.3).
-            await self._report_tool_call(room_id, tool, end)
+            await self._report_agent_call(room_id, tool, end)
 
     async def _publish_tool_end(self, room_id: str, tool: _ToolState, end: _ToolEnd) -> None:
         await self._publish(
@@ -473,7 +473,7 @@ class ACPEventsMixin:
             },
         )
 
-    async def _report_tool_call(
+    async def _report_agent_call(
         self, room_id: str | None, tool: _ToolState, end: _ToolEnd
     ) -> None:
         """Report a call the agent ran to ON_TOOL_CALL, through the kit."""
@@ -556,9 +556,10 @@ class ACPEventsMixin:
                     approved = False
             except Exception:
                 logger.exception("ACP external permission handler failed")
-        if not approved and tool is not None:
-            # The call's end then reads as refused, not as a tool that failed.
-            tool.refused = True
+        if tool is not None:
+            # The last decision stands: a refused call's end reads as refused,
+            # not as a tool that failed; one approved later can fail on its own.
+            tool.refused = not approved
 
         preferred = (
             ("allow_once", "allow_always") if approved else ("reject_once", "reject_always")

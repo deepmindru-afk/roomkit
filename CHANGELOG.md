@@ -333,10 +333,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Every outcome of a tool call reaches `ON_TOOL_CALL` as the model read it,
   on every door (RMK-395, RFC §9.3):
-  - An AI channel reports a call a stop or the turn's cancellation cut (one
-    announced that never ran, one whose handler was running) with
-    `cancelled=True`, as a realtime session does. It was stored `cancelled`
-    and never reported.
+  - An AI channel reports, once and with `cancelled=True`, every call its
+    turn announced and nothing else reported, whatever cut it: a stop while
+    the calls were announced, a transport that stopped reading (a voice
+    barge-in), the turn cancelled in the gate, in the handler or while
+    `ON_TOOL_CALL` judged the call. It was stored `cancelled` and never
+    reported. Each call's one report is claimed, as a realtime call's is: the
+    loop's own reports and the `ON_TOOL_CALL` judgement claim it (the
+    framework's judge callback now takes `claim=`), and the turn's end reports
+    the calls left.
   - An ACP channel reports every call its agent ran, with or without an
     external handler, through the same report as a call an AI provider ran
     itself. Without a handler, none was reported.
@@ -349,7 +354,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - A realtime `activate_skill` missing a required tool, at activation or
     once the hooks ran (a handoff changed the catalogue meanwhile), is
     refused for the model and the observers alike: the observers read it
-    served while the model read the refusal.
+    served while the model read the refusal. The second check is made once,
+    after the hooks and before the observers; a handoff landing after it no
+    longer withdraws the activation under the configuration lock, and the
+    skill's calls to a tool the handoff removed are refused as undeclared.
+  - A permission RoomKit refused and then approved for the same ACP call no
+    longer stores the call `refused` when it fails on its own, and the
+    `tool_call` framework event of a reported call carries `is_error` and
+    `cancelled` on every path, a report included.
   - A realtime pipeline reads an agent's handler answer through
     `declined_answer`: `{"error": "Unknown tool: ..."}` is a call nothing
     served, not a result.

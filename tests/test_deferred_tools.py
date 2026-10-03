@@ -341,7 +341,7 @@ async def test_a_blocked_activation_references_nothing(streaming: bool) -> None:
     )
     ch = AIChannel("ai1", provider=provider, tool_handler=_served, skills=registry)
 
-    async def block(event: Any) -> ToolCallVerdict:
+    async def block(event: Any, **_: Any) -> ToolCallVerdict:
         return ToolCallVerdict(result='{"error": "no"}', blocked=True)
 
     ch._tool_call_hook = block

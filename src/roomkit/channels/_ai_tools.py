@@ -8,6 +8,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass, replace
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._sandbox_handlers import handle_sandbox_command
@@ -328,7 +329,7 @@ class AIToolsMixin(_AIChannelContract):
         must not turn a refusal into a crash either: the refusal is already on
         its way to the model.
         """
-        if self._tool_observer_hook is None:
+        if self._tool_observer_hook is None or not self._get_loop_ctx().claim_report(tc.id):
             return
         event = ToolCallEvent(
             channel_id=self.channel_id,
@@ -595,7 +596,6 @@ class AIToolsMixin(_AIChannelContract):
             parent_id=scope.parent_span_id,
             attributes={"tool.name": tc.name, "tool.id": tc.id},
         )
-        judging = False
         try:
             # Set contextvar so HumanInputToolHandler can read
             # room_id / tool_call_id / channel_id without protocol changes.
@@ -607,7 +607,6 @@ class AIToolsMixin(_AIChannelContract):
             started = time.monotonic()
             result = await self._serve_call(scope.handler, tc.name, arguments, _tc_ctx)
             _log_answer(tc.name, result, started)
-            judging = True
             hook = await self._apply_tool_call_hook(tc, arguments, result, _tc_ctx, scope.room_id)
             # The call's own answer, neither replaced nor withheld by a hook.
             served = hook.kind is OutcomeKind.SERVED and hook.recorded is result
@@ -616,27 +615,20 @@ class AIToolsMixin(_AIChannelContract):
             telemetry.end_span(tool_span_id)
             return judged
         except asyncio.CancelledError:
+            # Reported, if no report was made, when the turn ends.
             telemetry.end_span(tool_span_id, status="cancelled")
-            if not judging:
-                # Interrupted before ON_TOOL_CALL judged it: reported once.
-                await asyncio.shield(self._report_cancelled(tc, arguments, scope.room_id))
             raise
         except Exception as exc:
             telemetry.end_span(tool_span_id, status="error", error_message=str(exc))
             return await self._raised_outcome(tc, arguments, scope.room_id, exc)
 
-    async def _report_cancelled(
-        self, tc: Any, arguments: dict[str, Any], room_id: str | None, *, before_run: bool = False
-    ) -> None:
-        """Tell ON_TOOL_CALL's observers a stop or the turn's cancellation
-        interrupted *tc*, as every channel reports it (RFC §9.3)."""
-        hint = (
-            "The turn was stopped before the call ran."
-            if before_run
-            else "The turn was cancelled before its result."
-        )
-        body = cancelled_tool_error(tc.name, hint)
-        await self._fire_tool_refusal(tc, arguments, body, room_id, cancelled=True)
+    async def _report_unreported_calls(self, loop_ctx: _ToolLoopContext) -> None:
+        """Report, cancelled, each call the turn announced and no report
+        claimed: a stop, a cancellation or a transport that stopped reading cut
+        it before its result. Every channel reports such a call once (RFC §9.3)."""
+        for tc in loop_ctx.unreported_calls():
+            body = cancelled_tool_error(tc.name, "The turn ended before its result.")
+            await self._fire_tool_refusal(tc, tc.arguments, body, loop_ctx.room_id, cancelled=True)
 
     async def _raised_outcome(
         self, tc: Any, arguments: dict[str, Any], room_id: str | None, exc: Exception
@@ -1079,6 +1071,11 @@ class AIToolsMixin(_AIChannelContract):
         verdict = await self._tool_call_verdict(tc, arguments, shaped, structured, room_id)
         reading = read_tool_call_verdict(tc.name, verdict, shaped)
         kind = read_outcome(reading)
+        if kind is not OutcomeKind.UNSERVED:
+            # Judged, so reported by the chain's observers: claimed, if the
+            # chain did not claim it itself, so the turn's end reports it no
+            # second time.
+            self._get_loop_ctx().claim_report(tc.id)
         if kind is OutcomeKind.BLOCKED:
             # The memory keeps the hook's reason, before eviction swaps a placeholder in.
             return ToolOutcome(kind, reading.result, recorded=reading.result)
@@ -1104,6 +1101,8 @@ class AIToolsMixin(_AIChannelContract):
         """ON_TOOL_CALL's SYNC chain on one call's outcome, as a verdict."""
         if self._tool_call_hook is None:
             return None
+        # The call's one report, claimed between the chain and its observers.
+        claim = partial(self._get_loop_ctx().claim_report, tc.id)
         verdict = await self._tool_call_hook(
             ToolCallEvent(
                 channel_id=self.channel_id,
@@ -1114,7 +1113,8 @@ class AIToolsMixin(_AIChannelContract):
                 result=result,
                 room_id=room_id,
                 structured_content=structured,
-            )
+            ),
+            claim=claim,
         )
         if verdict is None or isinstance(verdict, ToolCallVerdict):
             return verdict

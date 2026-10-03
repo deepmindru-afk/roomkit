@@ -913,8 +913,10 @@ class HelpersMixin:
         """
         kit_ref = self
 
-        async def _callback(event: ToolCallEvent) -> ToolCallVerdict | None:
-            return await kit_ref._judge_tool_call(event, channel_id)
+        async def _callback(
+            event: ToolCallEvent, *, claim: Callable[[], bool] | None = None
+        ) -> ToolCallVerdict | None:
+            return await kit_ref._judge_tool_call(event, channel_id, claim=claim)
 
         return _callback
 
@@ -1050,15 +1052,19 @@ class HelpersMixin:
         )
 
     async def _emit_tool_call_event(self, event: ToolCallEvent, channel_id: str) -> None:
+        """The ``tool_call`` framework event of one reported call, its failure
+        and cancellation markers included, whichever path reported it."""
+        data: dict[str, Any] = {
+            "tool_name": event.name,
+            "tool_call_id": event.tool_call_id,
+            "channel_type": str(event.channel_type),
+        }
+        if event.is_error:
+            data["is_error"] = True
+        if event.cancelled:
+            data["cancelled"] = True
         await self._emit_framework_event(
-            "tool_call",
-            room_id=event.room_id,
-            channel_id=channel_id,
-            data={
-                "tool_name": event.name,
-                "tool_call_id": event.tool_call_id,
-                "channel_type": str(event.channel_type),
-            },
+            "tool_call", room_id=event.room_id, channel_id=channel_id, data=data
         )
 
     async def _report_unreachable_tool_call(
@@ -1125,17 +1131,7 @@ class HelpersMixin:
                 skip_event_filter=True,
             )
 
-        data: dict[str, Any] = {
-            "tool_name": event.name,
-            "tool_call_id": event.tool_call_id,
-            "channel_type": str(event.channel_type),
-            "is_error": True,
-        }
-        if event.cancelled:
-            data["cancelled"] = True
-        await self._emit_framework_event(
-            "tool_call", room_id=event.room_id, channel_id=channel_id, data=data
-        )
+        await self._emit_tool_call_event(replace(event, is_error=True), channel_id)
 
     def _build_thinking_hook(self, channel_id: str) -> ThinkingHook:
         """Build an ON_AI_THINKING callback closure for an AIChannel.

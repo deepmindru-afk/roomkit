@@ -110,7 +110,7 @@ async def test_cancelling_tool_turn_closes_span(streaming: bool, phase: str) -> 
             await pause()
         return "done"
 
-    async def result_hook(event: ToolCallEvent) -> None:
+    async def result_hook(event: ToolCallEvent, **_: Any) -> None:
         await pause()
 
     provider = MockAIProvider(

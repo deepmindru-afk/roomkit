@@ -186,6 +186,27 @@ class _ToolLoopContext:
     # ``response_metadata``: whichever context recorded a round, the emission
     # reads the whole turn.
     declared_tools: dict[str, DeclaredTool] = field(default_factory=dict)
+    # The local calls the loop announced (their id to the call), and those
+    # whose one ON_TOOL_CALL report was made: a call announced and never
+    # reported, whatever cut it (a stop, a cancellation, a transport that
+    # stopped reading), is reported cancelled when the loop ends (RFC §9.3).
+    announced_calls: dict[str, Any] = field(default_factory=dict)
+    reported_calls: set[str] = field(default_factory=set)
+
+    def claim_report(self, call_id: str) -> bool:
+        """Claim the one report of call *call_id*: ``False`` when it was made."""
+        if call_id in self.reported_calls:
+            return False
+        self.reported_calls.add(call_id)
+        return True
+
+    def unreported_calls(self) -> list[Any]:
+        """The announced calls no report claimed yet, in announcement order."""
+        return [
+            call
+            for call_id, call in self.announced_calls.items()
+            if call_id not in self.reported_calls
+        ]
 
     @classmethod
     def for_loop(

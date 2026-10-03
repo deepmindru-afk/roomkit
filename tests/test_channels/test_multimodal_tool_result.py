@@ -160,7 +160,7 @@ async def test_the_hook_sees_the_text_a_text_only_model_reads(streaming: bool) -
     ch = AIChannel("ai1", provider=provider, tool_handler=_handler)
     seen: list[object] = []
 
-    async def observe(event: object) -> None:
+    async def observe(event: object, **_: object) -> None:
         seen.append(event.result)  # type: ignore[attr-defined]
         return None
 

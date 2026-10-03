@@ -15,6 +15,7 @@ from typing import Any
 import acp
 import pytest
 from acp import PromptResponse
+from acp.schema import PermissionOption
 
 from roomkit import (
     ChannelCategory,
@@ -29,7 +30,10 @@ from roomkit import (
 from roomkit.channels.agent import Agent
 from roomkit.channels.ai import AIChannel
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
-from roomkit.models.event import ToolCallContent
+from roomkit.models.channel import ChannelBinding, ChannelOutput
+from roomkit.models.context import RoomContext
+from roomkit.models.enums import EventType
+from roomkit.models.event import RoomEvent, ToolCallContent
 from roomkit.models.steering import Cancel
 from roomkit.models.streaming import ToolCallStartMarker
 from roomkit.orchestration.pipeline import ConversationPipeline, PipelineStage
@@ -38,12 +42,22 @@ from roomkit.providers.ai.base import AIContext, AIMessage, AIResponse, AITool, 
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.skills.registry import SkillRegistry
 from roomkit.tools.context import _ToolLoopContext
+from roomkit.tools.external import PolicyExternalToolHandler
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
-from tests.conference.test_conference_realtime import until
 from tests.test_channels.test_acp import _channel, _RecordingToolHandler
 from tests.test_framework import SimpleChannel
 
 LOOKUP = AITool(name="lookup", description="Look up", parameters={"type": "object"})
+
+
+async def until(predicate: Any, timeout: float = 5.0) -> None:
+    """Wait until *predicate* holds."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while not predicate():
+        if loop.time() > deadline:
+            raise AssertionError("condition not reached in time")
+        await asyncio.sleep(0.01)
 
 
 def _observe(kit: RoomKit) -> list[ToolCallEvent]:
@@ -339,4 +353,165 @@ async def test_a_pipeline_agent_declining_a_call_is_unserved() -> None:
 
     assert json.loads(provider.tool_results[0][2]) == {"error": "No handler for tool lookup"}
     assert [e.is_error for e in seen] == [True]
+    await kit.close()
+
+
+# -- Every other way a text call is cut reports it once, cancelled ------------
+
+
+class _StopAtToolStart(SimpleChannel):
+    """A streaming transport that stops reading once a call starts (barge-in)."""
+
+    @property
+    def supports_streaming_delivery(self) -> bool:
+        return True
+
+    async def deliver_stream(
+        self, stream: Any, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        async for item in stream:
+            if isinstance(item, RoomEvent) and item.type == EventType.TOOL_CALL_START:
+                return ChannelOutput.empty()
+        return ChannelOutput.empty()
+
+
+async def test_a_transport_that_stops_reading_reports_the_announced_call_cancelled() -> None:
+    ran: list[str] = []
+
+    async def lookup(name: str, arguments: dict[str, Any]) -> str:
+        ran.append(name)
+        return "ok"
+
+    kit = RoomKit()
+    kit.register_channel(SimpleChannel("sms1"))
+    kit.register_channel(_StopAtToolStart("screen"))
+    kit.register_channel(
+        AIChannel(
+            "ai1",
+            provider=MockAIProvider(
+                ai_responses=[_call("lookup"), AIResponse(content="done")], streaming=True
+            ),
+            tool_handler=lookup,
+            tools=[LOOKUP],
+        )
+    )
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "sms1")
+    await kit.attach_channel("r1", "screen")
+    await kit.attach_channel("r1", "ai1", category=ChannelCategory.INTELLIGENCE)
+    seen = _observe(kit)
+
+    await kit.process_inbound(
+        InboundMessage(channel_id="sms1", sender_id="u1", content=TextContent(body="go"))
+    )
+    await until(lambda: bool(seen))
+    await asyncio.sleep(0.05)
+
+    assert ran == []
+    assert [(e.name, e.is_error, e.cancelled) for e in seen] == [("lookup", True, True)]
+    assert ("tool_call_end", "cancelled") in await _tool_rows(kit, "r1")
+    await kit.close()
+
+
+async def _cancelled_inside(trigger: HookTrigger) -> list[ToolCallEvent]:
+    """A turn cancelled while a SYNC *trigger* hook holds the call."""
+    held = asyncio.Event()
+
+    async def lookup(name: str, arguments: dict[str, Any]) -> str:
+        return "ok"
+
+    kit = RoomKit()
+    kit.register_channel(SimpleChannel("sms1"))
+    kit.register_channel(
+        AIChannel(
+            "ai1",
+            provider=MockAIProvider(ai_responses=[_call("lookup"), AIResponse(content="done")]),
+            tool_handler=lookup,
+            tools=[LOOKUP],
+        )
+    )
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "sms1")
+    await kit.attach_channel("r1", "ai1", category=ChannelCategory.INTELLIGENCE)
+
+    @kit.hook(trigger, execution=HookExecution.SYNC, name="hold")
+    async def hold(event: ToolCallEvent, ctx: Any) -> HookResult:
+        held.set()
+        await asyncio.sleep(30)
+        return HookResult.allow()
+
+    seen = _observe(kit)
+    turn = asyncio.create_task(
+        kit.process_inbound(
+            InboundMessage(channel_id="sms1", sender_id="u1", content=TextContent(body="go"))
+        )
+    )
+    await asyncio.wait_for(held.wait(), 5)
+    turn.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await turn
+    await until(lambda: bool(seen))
+    await asyncio.sleep(0.05)
+    await kit.close()
+    return seen
+
+
+@pytest.mark.parametrize("trigger", [HookTrigger.BEFORE_TOOL_USE, HookTrigger.ON_TOOL_CALL])
+async def test_a_turn_cancelled_in_the_gate_or_the_judging_reports_the_call_once(
+    trigger: HookTrigger,
+) -> None:
+    seen = await _cancelled_inside(trigger)
+
+    assert [(e.name, e.is_error, e.cancelled) for e in seen] == [("lookup", True, True)]
+
+
+async def test_an_acp_call_the_turn_ended_under_is_reported_once_with_a_handler(
+    tmp_path: Path,
+) -> None:
+    kit, seen = await _acp_room(
+        tmp_path, handler=PolicyExternalToolHandler(), prompt=_start_then_stop
+    )
+
+    assert ("tool_call_end", "cancelled") in await _tool_rows(kit, "room-1")
+    assert len(seen) == 1
+    await kit.close()
+
+
+async def test_an_acp_call_refused_then_approved_fails_on_its_own(tmp_path: Path) -> None:
+    """The last permission decision stands: an approval clears a refusal."""
+
+    class _ThenApproves(_RecordingToolHandler):
+        async def process_tool_call(self, *args: Any, **kwargs: Any) -> Any:
+            decision = await super().process_tool_call(*args, **kwargs)
+            self.approved = True
+            return decision
+
+    async def refused_then_approved(
+        connection: Any, session_id: str, prompt: list[Any], **kw: Any
+    ) -> Any:
+        await connection.client.session_update(
+            session_id,
+            acp.start_tool_call(
+                "tool-1", "Write", kind="edit", status="pending", raw_input={"path": "/tmp/n.md"}
+            ),
+        )
+        options = [
+            PermissionOption(option_id="allow-once", name="Allow once", kind="allow_once"),
+            PermissionOption(option_id="reject-once", name="Reject once", kind="reject_once"),
+        ]
+        for _ in range(2):
+            await connection.client.request_permission(
+                session_id, acp.update_tool_call("tool-1", title="Write"), options
+            )
+        await connection.client.session_update(
+            session_id,
+            acp.update_tool_call("tool-1", status="failed", raw_output={"error": "disk full"}),
+        )
+        return PromptResponse(stop_reason="end_turn")
+
+    kit, _ = await _acp_room(
+        tmp_path, handler=_ThenApproves(approved=False), prompt=refused_then_approved
+    )
+
+    assert ("tool_call_end", "failed") in await _tool_rows(kit, "room-1")
     await kit.close()

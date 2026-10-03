@@ -19,6 +19,7 @@ from roomkit.channels._realtime_context import (
     serving_call,
     spare_own_orphaned_call,
 )
+from roomkit.channels._realtime_skills import RequiredToolsCheck
 from roomkit.channels._realtime_tool_calls import RealtimeToolCall, ToolCallBook
 from roomkit.channels._realtime_tool_executor import (
     ABANDONED_BY_PROVIDER,
@@ -629,44 +630,58 @@ class RealtimeToolsMixin:
             result, skill = await support.prepare_activation(call.arguments, session.id, tools)
         except ToolRefusedError as refusal:
             return ToolOutcome(OutcomeKind.REFUSED, refusal.message)
-        # The catalogue may change while the hooks run (a handoff): the skill's
-        # tools are checked again once they ran, before anyone is told, so the
-        # observers read what the model reads.
-        missing: list[str] | None = None
-
-        def required_tools_held() -> bool:
-            nonlocal missing
-            current = self._session_base_tools(session.id)
-            missing = support.missing_required_tools(skill, current) if skill else []
-            return not missing
-
-        outcome = await judge_tool_call(
-            self,
-            call,
-            ToolOutcome(OutcomeKind.SERVED, result),
-            carrying,
-            admit=required_tools_held,
-        )
-        if missing is None:  # no framework judged the call
-            required_tools_held()
-        if missing and outcome.kind is OutcomeKind.SERVED:
-            outcome = ToolOutcome(OutcomeKind.REFUSED, support.missing_tools_error(missing))
-            skill = None
+        outcome, skill = await self._judge_activation(call, carrying, result, skill)
         # Provider updates (discovery, handoff, activation) are serialised on
         # this lock.
         async with lock:
             if session.state == VoiceSessionState.ENDED:
                 return _session_ended()
-            # An activated skill's instructions go out whole (RFC §21.5); a
-            # refusal, a block or a hook's replacement is bounded.
-            if not (outcome.kind is OutcomeKind.SERVED and outcome.result == result):
-                text = result_text(outcome.result)
-                outcome = replace(outcome, result=self._bound_call_result(call, text))
-            # The call ID belongs to the current connection. Deliver before
-            # native reconfiguration can replace that connection.
-            delivered = await deliver_once(call, door, outcome)
-            if delivered and skill is not None and outcome.kind is OutcomeKind.SERVED:
-                await self._open_skill_gates(session, skill)
+            return await self._deliver_activation(call, door, outcome, result, skill)
+
+    async def _judge_activation(
+        self, call: RealtimeToolCall, carrying: RoomContext | None, result: str, skill: Any
+    ) -> tuple[ToolOutcome, Any]:
+        """The activation as ON_TOOL_CALL judged it, and the skill it opens.
+
+        A tool the skill requires may leave the catalogue while the hooks run
+        (a handoff): that is checked once, after the hooks and before anyone is
+        told, so the observers read what the model reads (RFC §9.3). A handoff
+        landing after that does not withdraw the activation; the skill's calls
+        to a tool it removed are then refused as undeclared.
+        """
+        support = self._skill_support
+        check = RequiredToolsCheck(
+            support, skill, lambda: self._session_base_tools(call.session.id)
+        )
+        served = ToolOutcome(OutcomeKind.SERVED, result)
+        outcome = await judge_tool_call(self, call, served, carrying, admit=check.held)
+        if check.missing is None:  # no framework judged the call
+            check.held()
+        if check.missing and outcome.kind is OutcomeKind.SERVED:
+            return ToolOutcome(
+                OutcomeKind.REFUSED, support.missing_tools_error(check.missing)
+            ), None
+        return outcome, skill
+
+    async def _deliver_activation(
+        self,
+        call: RealtimeToolCall,
+        door: ToolCallDoor,
+        outcome: ToolOutcome,
+        result: str,
+        skill: Any,
+    ) -> ToolOutcome:
+        """Deliver the judged activation, then open its gates when it was served."""
+        # An activated skill's instructions go out whole (RFC §21.5); a
+        # refusal, a block or a hook's replacement is bounded.
+        if not (outcome.kind is OutcomeKind.SERVED and outcome.result == result):
+            text = result_text(outcome.result)
+            outcome = replace(outcome, result=self._bound_call_result(call, text))
+        # The call ID belongs to the current connection. Deliver before
+        # native reconfiguration can replace that connection.
+        delivered = await deliver_once(call, door, outcome)
+        if delivered and skill is not None and outcome.kind is OutcomeKind.SERVED:
+            await self._open_skill_gates(call.session, skill)
         return outcome
 
     async def _open_skill_gates(self, session: VoiceSession, skill: Any) -> None:

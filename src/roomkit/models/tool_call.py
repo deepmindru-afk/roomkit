@@ -239,7 +239,9 @@ def observed_call_event(hook_result: Any, event: ToolCallEvent, read: Any) -> To
 # Callback type injected into AIChannel by the framework: the hooks' verdict,
 # a bare result (str or content parts) to override, or None to keep the
 # original.
-ToolCallCallback = Callable[[ToolCallEvent], Awaitable[ToolCallVerdict | str | list[Any] | None]]
+ToolCallCallback = Callable[..., Awaitable[ToolCallVerdict | str | list[Any] | None]]
+"""``(event, *, claim=None)``: *claim* claims the call's one report between
+the chain and its observers (RFC §9.3)."""
 
 
 # Callback type injected into AIChannel by the framework for a call that failed

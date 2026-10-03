@@ -3,9 +3,10 @@ streams and whether it carries tools (RFC §6.4)."""
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Coroutine
 from contextlib import aclosing, asynccontextmanager
 from dataclasses import dataclass, field
 from functools import partial
@@ -136,6 +137,18 @@ async def _unrun_call_ends(calls: list[Any]) -> AsyncGenerator[StreamDelta, None
             error="cancelled",
             outcome="cancelled",
         )
+
+
+_REPORTS_IN_FLIGHT: set[asyncio.Task[None]] = set()
+"""Reports a cancelled turn shields: held here so none is collected mid-run."""
+
+
+async def _shielded(report: Coroutine[Any, Any, None]) -> None:
+    """Run *report* to its end even if the turn is cancelled again meanwhile."""
+    task = asyncio.ensure_future(report)
+    _REPORTS_IN_FLIGHT.add(task)
+    task.add_done_callback(_REPORTS_IN_FLIGHT.discard)
+    await asyncio.shield(task)
 
 
 async def _answered_or_raise(
@@ -331,6 +344,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
         finally:
             # Finalization may itself be cancelled while publishing a hook.
             self._active_loops.pop(loop_ctx.loop_id, None)
+            await _shielded(self._report_unreported_calls(loop_ctx))
             _current_loop_ctx.set(enclosing_ctx)
 
     async def _end_raised_turn(self, turn: _StreamTurnState, exc: BaseException) -> None:
@@ -391,21 +405,18 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                 content=state.transcript.parts([*state.provider_calls, *calls]),
             )
         )
+        # Announced before the first start goes out: whatever cuts the round
+        # from here on, the turn's end reports each call no report claimed.
+        turn.loop_ctx.announced_calls.update((call.id, call) for call in calls)
         for call in calls:
             yield ToolCallStartMarker(
                 tool_name=call.name, tool_id=call.id, arguments=call.arguments
             )
         # A stop that came while the calls were announced: none of them runs,
         # and the loop ends cancelled at its next check (RFC §21.3).
-        stopped = turn.loop_ctx.cancel_event.is_set()
-        if stopped:
-            for call in calls:
-                await self._report_cancelled(
-                    call, call.arguments, turn.loop_ctx.room_id, before_run=True
-                )
         ends = (
             _unrun_call_ends(calls)
-            if stopped
+            if turn.loop_ctx.cancel_event.is_set()
             else self._run_announced_calls(context, calls, turn, index, state.provider_results)
         )
         async with aclosing(ends) as deltas:
