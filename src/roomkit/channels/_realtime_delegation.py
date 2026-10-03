@@ -28,6 +28,7 @@ from roomkit.channels._realtime_tool_executor import (
     run_tool_call,
 )
 from roomkit.core._failure_log import log_failure
+from roomkit.core._fallback import FALLBACK_FAILED
 from roomkit.core.task_utils import shielded
 from roomkit.models.enums import HookTrigger
 from roomkit.telemetry.base import SpanKind
@@ -52,7 +53,6 @@ logger = logging.getLogger("roomkit.channels.realtime_voice")
 #: Spoken to the model when its delegation cannot be served (RFC §12.4.1).
 FALLBACK_NO_BACKEND = "No backend is available to handle delegated work in this session."
 FALLBACK_NO_OUTPUT = "The delegated work finished without an answer."
-FALLBACK_FAILED = "The delegated work could not be completed."
 FALLBACK_TIMEOUT = "The delegated work took too long and was abandoned."
 
 

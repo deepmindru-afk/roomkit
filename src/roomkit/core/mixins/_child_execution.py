@@ -82,9 +82,9 @@ class _ToolRowsOnly:
 
 async def persist_tool_calls(
     kit: RoomKit, room_id: str, sr: StreamingResponse, context: RoomContext
-) -> str:
+) -> tuple[str, str | None]:
     """Store a turn's tool calls in *room_id* as any streamed turn's, its text
-    kept out of the room; the turn's answer.
+    kept out of the room; the turn's answer, and how the turn ended.
 
     The rows cross the room's gate and ride its lane (``BEFORE_BROADCAST``,
     the source's right to write, the delivery's visibility), one deeper than
@@ -116,15 +116,16 @@ async def persist_tool_calls(
         answer = await _drain_turn(writer, sr)
     finally:
         await kit._finish_cascade(cascade, room_id, caller_logs=True)
-    if (reason := _turn_end(_stream_record(sr), writer.persisted)) not in (None, "completed"):
+    reason = _turn_end(_stream_record(sr), writer.persisted)
+    if reason not in (None, "completed"):
         _tasks_logger.warning(
             "Turn of %s in room %s ended %s: no answer to hand on",
             sr.source_channel_id,
             room_id,
             reason,
         )
-        return ""
-    return answer
+        return "", reason
+    return answer, reason
 
 
 async def _persist_child_stream(

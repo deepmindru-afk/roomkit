@@ -597,6 +597,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A Supervisor whose task-formulation pass was cut short answers the user
+  (RMK-436, RFC §19.7.3): with `auto_delegate`, a pass 1 its round cap,
+  deadline or budget cut ran no worker, as it should, but the user's message
+  got no answer at all, the end readable only on `ON_AI_RESPONSE` and in a
+  log. The supervisor now answers with the fallback a reasoning backend
+  speaks ("The delegated work could not be completed."), stored and
+  delivered with `metadata["loop_end_reason"]`. A pass whose provider failed
+  after a round no longer logs the error as a WARNING of its own: it is
+  logged once, as a room turn's error the caller receives.
+
 - A delegated turn that failed after it began keeps its end on the task
   (RMK-433, RFC §6.4, §23.3 step 6): a worker whose provider errored after a
   round, or an ACP worker whose prompt raised, failed its task with

@@ -9,13 +9,17 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from roomkit.core._failure_log import log_failure
+from roomkit.core._fallback import FALLBACK_FAILED
 from roomkit.core.event_router import StreamingResponse
 from roomkit.core.mixins._child_execution import persist_tool_calls
 from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import ChannelType as _ChannelType
+from roomkit.models.enums import EventType
 from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.orchestration.status_bus import StatusLevel
 from roomkit.orchestration.strategies.supervisor._common import (
@@ -219,7 +223,7 @@ async def _formulate_task(
     binding: ChannelBinding,
     context: RoomContext,
     instruction: str | None,
-) -> tuple[ChannelOutput, str]:
+) -> _Pass1:
     """Pass 1: the supervisor turns the request into a task for its workers.
 
     The task-formulation instruction rides this call only, on a copy of the
@@ -236,8 +240,17 @@ async def _formulate_task(
         update={"metadata": {**binding.metadata, "system_prompt": prompt}}
     )
     pass1_output = await original_on_event(event, pass1_binding, context)
-    task = await _pass1_task(kit, room_id, supervisor, event, pass1_output, context)
-    return pass1_output, task
+    return await _pass1_task(kit, room_id, supervisor, event, pass1_output, context)
+
+
+@dataclass
+class _Pass1:
+    """What the task-formulation pass gave: its output, the task it hands
+    the workers, and how its turn ended."""
+
+    output: ChannelOutput
+    task: str = ""
+    end: str | None = None
 
 
 async def _pass1_task(
@@ -247,11 +260,12 @@ async def _pass1_task(
     event: RoomEvent,
     output: ChannelOutput,
     context: RoomContext,
-) -> str:
+) -> _Pass1:
     """The task pass 1 hands on: its final answer, as every streamed turn is
-    read, its tool calls stored in the room as any turn's (RFC §19.7.3)."""
+    read, its tool calls stored in the room as any turn's (RFC §19.7.3). A
+    pass that failed hands its error to the turn's caller, who logs it."""
     if output.error is not None or output.response_stream is None:
-        return await _extract_output_text(output)
+        return _Pass1(output, await _extract_output_text(output))
     stream = StreamingResponse(
         stream=output.response_stream,
         source_channel_id=supervisor.channel_id,
@@ -259,7 +273,33 @@ async def _pass1_task(
         trigger_event=event,
         response_metadata=output.response_metadata,
     )
-    return await persist_tool_calls(kit, room_id, stream, context)
+    try:
+        task, end = await persist_tool_calls(kit, room_id, stream, context)
+    except Exception as exc:
+        # Logged once, as a room turn's: the caller receives the error.
+        log_failure(
+            logger, exc, f"Pass 1 of {supervisor.channel_id} in room {room_id}", caller_logs=True
+        )
+        return _Pass1(output.model_copy(update={"error": exc}))
+    return _Pass1(output, task, end)
+
+
+def _pass1_answer(supervisor: Agent, event: RoomEvent, pass1: _Pass1) -> ChannelOutput:
+    """What the room reads of a pass that handed on no task: the supervisor's
+    fallback when the pass was cut short, so the message it answered gets an
+    answer (RFC §19.7.3); else the pass's own output, its error included."""
+    if pass1.end in (None, "completed"):
+        return pass1.output
+    fallback = RoomEvent(
+        room_id=event.room_id,
+        type=EventType.MESSAGE,
+        source=EventSource(channel_id=supervisor.channel_id, channel_type=_ChannelType.AI),
+        content=TextContent(body=FALLBACK_FAILED),
+        chain_depth=event.chain_depth + 1,
+        parent_event_id=event.parent_event_id,
+        metadata={"loop_end_reason": pass1.end},
+    )
+    return ChannelOutput(responded=True, response_events=[fallback])
 
 
 async def _two_pass_delegate(
@@ -280,14 +320,15 @@ async def _two_pass_delegate(
 ) -> ChannelOutput:
     """Two-pass: supervisor formulates task → workers run (validated between
     steps by the supervisor in sequential mode) → supervisor presents."""
-    pass1_output, refined_task = await _formulate_task(
+    pass1 = await _formulate_task(
         kit, room_id, supervisor, original_on_event, event, binding, context, instruction
     )
+    refined_task = pass1.task
 
     logger.debug("Pass 1 refined task: %s", refined_task[:200] if refined_task else "(empty)")
 
     if not refined_task:
-        return pass1_output
+        return _pass1_answer(supervisor, event, pass1)
 
     # Run workers with the refined task — supervised between steps in sequential.
     worker_results = await _run_workers(
