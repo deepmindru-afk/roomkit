@@ -164,12 +164,22 @@ class VuiConversation:
                     yield pcm
             finally:
                 self._audio += len(generation.frame_offsets)
+            self._warn_if_cut_short(len(generation.frame_offsets), cancel)
         finally:
             with self._state:
                 self._speaking = False
                 released, self._release_after = self._release_after, set()
             for context_id in released:
                 self.release(context_id)
+
+    def _warn_if_cut_short(self, frames: int, cancel: threading.Event) -> None:
+        """A reply that ran to the longest a reply may be was cut there, mid-text."""
+        if frames >= self._cache.reply_positions and not cancel.is_set():
+            logger.warning(
+                "Vui reply stopped at its longest (%.0f s), before the end of its text: "
+                "raise VuiTTSConfig.max_secs",
+                frames * FRAME_MS / 1000,
+            )
 
     def release(self, context_id: str) -> None:
         """Drop *context_id* from the cache: its dialogue, user audio included.

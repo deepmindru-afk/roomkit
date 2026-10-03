@@ -35,6 +35,7 @@ class _SlowRow:
         self.fail_close = False
         self.reset_gate: threading.Event | None = None  # reset() waits on it when set
         self.threads: list[tuple[str, threading.Thread]] = []  # (call, thread it ran on)
+        self.texts: list[str] = []  # what each reply was asked to say
         self._ran("load")
         _SlowRow.instances.append(self)
 
@@ -61,6 +62,7 @@ class _SlowRow:
 
     def generate(self, text: str, cancel: threading.Event) -> Iterator[bytes]:
         self._ran("generate")
+        self.texts.append(text)
         for i in range(20):
             if cancel.is_set():
                 self.stopped_at = i
@@ -205,6 +207,53 @@ class TestVuiThread:
         provider.release_context("s1")
 
         assert _SlowRow.instances == []
+
+
+async def test_a_reply_reaches_vui_as_prose(provider: VuiTTSProvider) -> None:
+    # Vui invents syllables at a line break (RMK-400).
+    poem = "Roses are red,\nViolets are blue\n\nSugar is sweet"
+    async for _ in provider.synthesize_stream(poem, context=_context()):
+        pass
+
+    assert _SlowRow.instances[0].texts == ["Roses are red, Violets are blue. Sugar is sweet."]
+
+
+class TestAsProse:
+    """The text Vui is given: no line breaks, no trailing clause mark (RMK-400)."""
+
+    def test_the_session_poem_reads_as_running_sentences(self) -> None:
+        poem = (
+            "Here's a little poem about Quebec: \n\n"
+            "Beneath the snow-draped peaks of Quebec,  \n"
+            "Where rivers hum and stories creep,  \n"
+            "The old stone buildings stand in grace.  \n\n"
+            "Hope you like it!"
+        )
+        assert vui_module._as_prose(poem) == (  # noqa: SLF001
+            "Here's a little poem about Quebec: Beneath the snow-draped peaks of Quebec, "
+            "Where rivers hum and stories creep, The old stone buildings stand in grace. "
+            "Hope you like it!"
+        )
+
+    def test_a_line_without_punctuation_takes_a_comma_or_ends_its_paragraph(self) -> None:
+        text = "First line\nsecond line\n\nNew paragraph"
+        assert vui_module._as_prose(text) == (  # noqa: SLF001
+            "First line, second line. New paragraph."
+        )
+
+    def test_a_text_ending_on_a_comma_ends_on_a_full_stop(self) -> None:
+        # Ending on a comma, Vui ran on in 3 takes of 3.
+        assert vui_module._as_prose("the weather in Montreal today,") == (  # noqa: SLF001
+            "the weather in Montreal today."
+        )
+
+    def test_one_sentence_is_left_as_it_is(self) -> None:
+        text = "Glad to hear that! [laugh] What have you been up to lately?"
+        assert vui_module._as_prose(text) == text  # noqa: SLF001
+
+    def test_nothing_to_say_stays_nothing(self) -> None:
+        assert vui_module._as_prose("") == ""  # noqa: SLF001
+        assert vui_module._as_prose(" \n — \n") == ""  # noqa: SLF001
 
 
 async def test_an_unknown_voice_is_refused(provider: VuiTTSProvider) -> None:

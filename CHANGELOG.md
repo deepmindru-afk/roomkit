@@ -331,6 +331,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `VuiTTSProvider` speaks a reply written on several lines without inventing
+  syllables at each line break, and no longer cuts a reply at 30 s (RMK-400).
+  A poem the LLM wrote one verse per line came out of the local Vui with
+  garbled syllables at line ends ("peaks of Quebec *could be*", "*Pazak*
+  with French songs"): 15 to 18 % of its words wrong over two takes. The
+  provider now joins a reply's lines into running sentences, a line without
+  closing punctuation taking a comma or a full stop, and a reply ending on a
+  comma ends on a full stop, after which Vui ran on in 3 takes of 3: the
+  same poem comes out at 4 to 5 %. `VuiTTSConfig.max_secs` goes from 30 to
+  60 s, since the poem needed 42 s and was cut mid-verse at 30.0 s, and a
+  reply that reaches it logs a warning instead of ending silently.
+
 - A provider error that fails a turn before any round is logged once again
   (RMK-403). Since the single tool loop (RMK-308) the AI channel logged it and
   the stream's consumer logged it too: two WARNING lines for one incident with

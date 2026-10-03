@@ -22,6 +22,7 @@ import contextlib
 import functools
 import logging
 import math
+import re
 import threading
 from collections.abc import AsyncIterator, Callable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -47,6 +48,34 @@ PRESET_VOICES = ("maeve", "abraham", "rhian", "harry")
 # The tags Vui renders as sounds, as its prompting guide lists them
 # (``docs/prompting.md``); any other bracketed word is read or garbled.
 VUI_TAGS = ("breath", "laugh", "sigh", "gasp", "cough", "hesitate")
+
+_SENTENCE_END = ".!?…"
+_CLAUSE_END = ",;:—–"
+
+
+def _as_prose(text: str) -> str:
+    """*text* with its lines joined into running sentences, the only text Vui reads cleanly.
+
+    Vui invents syllables at a line break and after a text that ends on a
+    comma (measured on a 12-line poem: 15 % of the words wrong with its line
+    breaks, 4 % joined; a text ending on a comma ran on in 3 takes of 3, one
+    ending bare or on a full stop in none). A line without closing
+    punctuation takes a comma, or a full stop at the end of its paragraph; a
+    text ending on a clause mark ends on a full stop instead. The hosted Vui
+    of fluxions.ai read the same poem cleanly with its line breaks.
+    """
+    lines: list[str] = []
+    for paragraph in re.split(r"\n\s*\n", text):
+        rows = [" ".join(row.split()) for row in paragraph.splitlines() if row.strip()]
+        for i, row in enumerate(rows):
+            if row[-1] not in _SENTENCE_END + _CLAUSE_END:
+                row += "." if i == len(rows) - 1 else ","
+            lines.append(row)
+    prose = " ".join(lines)
+    if prose and prose[-1] in _CLAUSE_END:
+        prose = prose[:-1].rstrip()
+        prose = prose + "." if prose else ""
+    return prose
 
 
 @dataclass(frozen=True)
@@ -80,13 +109,15 @@ class VuiTTSConfig:
         voices: Named voices; the first one is the default.
         checkpoint: Vui checkpoint name or local path.
         temperature: Sampling temperature.
-        max_secs: Longest reply, in seconds; a longer text is cut off there.
+        max_secs: Longest reply, in seconds; a longer text is cut off there,
+            with a warning. A minute holds most spoken replies, a short poem
+            included.
     """
 
     voices: dict[str, VuiVoice] = field(default_factory=lambda: {"maeve": VuiVoice("maeve")})
     checkpoint: str = "vui-nano-1.1"
     temperature: float = 0.7
-    max_secs: float = 30.0
+    max_secs: float = 60.0
 
 
 class VuiTTSProvider(TTSProvider):
@@ -172,7 +203,7 @@ class VuiTTSProvider(TTSProvider):
         async with self._lock:
             conversation = await self._on_vui_thread(self._load)
             cancel = threading.Event()
-            frames = conversation.speak(context, name, text, cancel)
+            frames = conversation.speak(context, name, _as_prose(text), cancel)
             # aclosing: a barge-in closing this stream must stop the GPU thread
             # before the lock is released, not whenever the iterator is collected.
             pcms = iterate_in_thread(frames, cancel, executor=self._vui_thread())

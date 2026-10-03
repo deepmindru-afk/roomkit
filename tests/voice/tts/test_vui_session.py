@@ -386,3 +386,41 @@ class TestCancel:
 
         # frames 2..4 share one offset, which the cancelled stream never passed
         assert ("truncate", 105 + 3 + 2) in cache.log
+
+
+class TestCutShort:
+    """A reply that ran to ``max_secs`` stopped mid-text: the log says so (RMK-400)."""
+
+    def test_a_reply_that_runs_to_the_cap_is_reported(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # The poem of RMK-400: 375 frames, 30.0 s, cut at "And children laugh in the".
+        cache = FakeCache(frames_per_reply=10)
+        with caplog.at_level("WARNING", logger="roomkit.voice.tts.vui"):
+            _speak(VuiConversation(cache), _ctx(_user("u1"), next_turn_id="a1"), "a long poem")
+
+        assert "raise VuiTTSConfig.max_secs" in caplog.text
+
+    def test_a_reply_that_ends_before_the_cap_is_not(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        cache = FakeCache(frames_per_reply=10)
+        cache.reply_positions = 11
+        with caplog.at_level("WARNING", logger="roomkit.voice.tts.vui"):
+            _speak(VuiConversation(cache), _ctx(_user("u1"), next_turn_id="a1"))
+
+        assert "max_secs" not in caplog.text
+
+    def test_a_cancelled_reply_is_not(self, caplog: pytest.LogCaptureFixture) -> None:
+        cache = FakeCache(frames_per_reply=10)
+        cancel = threading.Event()
+        frames = VuiConversation(cache).speak(
+            _ctx(_user("u1"), next_turn_id="a1"), "maeve", "long", cancel
+        )
+        with caplog.at_level("WARNING", logger="roomkit.voice.tts.vui"):
+            for _ in range(10):
+                next(frames)
+            cancel.set()
+            assert list(frames) == []
+
+        assert "max_secs" not in caplog.text
