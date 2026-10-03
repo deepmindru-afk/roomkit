@@ -11,11 +11,17 @@ cannot add a second outcome to the same call.
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from roomkit.providers.ai.tool_calls import unreadable_call_error
+
 if TYPE_CHECKING:
     from roomkit.voice.base import VoiceSession
+
+logger = logging.getLogger("roomkit.channels.realtime_tools")
 
 
 @dataclass(eq=False)
@@ -30,13 +36,35 @@ class RealtimeToolCall:
     room_id: str | None = None
     """The room the session served when the call ran."""
     unreadable: str | None = None
-    """Why the call cannot be read (an unreadable ``call_tool`` transport):
-    the gate refuses it before any other check."""
+    """What the model reads when the call cannot be read (its arguments, or a
+    ``call_tool`` transport's, are not an object): refused before the gate."""
     mutes: bool = False
     """The call holds the session's input muted while it runs."""
     task: asyncio.Task[Any] | None = field(default=None, repr=False)
     delivered: bool = False
     reported: bool = False
+
+    @classmethod
+    def from_provider(
+        cls,
+        session: VoiceSession,
+        call_id: str,
+        name: str,
+        arguments: dict[str, Any] | str,
+        **fields: Any,
+    ) -> RealtimeToolCall:
+        """The call a provider handed ``on_tool_call``: arguments that came as
+        the model's text did not read as an object, and the call is
+        unreadable, kept under ``raw`` for its reports (RFC §6.4, §12.4)."""
+        if isinstance(arguments, dict):
+            return cls(session, call_id, name, arguments, **fields)
+        logger.warning(
+            "Provider sent unreadable arguments for tool call %s (%s): it does not run",
+            name,
+            call_id,
+        )
+        refusal = json.dumps(unreadable_call_error(name))
+        return cls(session, call_id, name, {"raw": arguments}, unreadable=refusal, **fields)
 
     def claim_report(self) -> bool:
         """Claim the call's one report: False when it was already made."""

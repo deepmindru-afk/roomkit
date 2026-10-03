@@ -29,8 +29,9 @@ RealtimeTranscriptionCallback = Callable[[VoiceSession, str, str, bool], Any]
 """(session, text, role, is_final)"""
 RealtimeSpeechStartCallback = Callable[[VoiceSession], Any]
 RealtimeSpeechEndCallback = Callable[[VoiceSession], Any]
-RealtimeToolCallCallback = Callable[[VoiceSession, str, str, dict[str, Any]], Any]
-"""(session, call_id, name, arguments)"""
+RealtimeToolCallCallback = Callable[[VoiceSession, str, str, dict[str, Any] | str], Any]
+"""(session, call_id, name, arguments): the arguments as a mapping, or the text
+the model wrote when they do not read as one, a call the channel refuses (RFC §12.4)"""
 RealtimeToolCallCancelledCallback = Callable[[VoiceSession, list[str]], Any]
 """(session, call_ids) — the model will not read these calls' results"""
 RealtimeResponseStartCallback = Callable[[VoiceSession], Any]
@@ -595,7 +596,16 @@ class RealtimeVoiceProvider(ABC):
         self._speech_end_callbacks.append(callback)
 
     def on_tool_call(self, callback: RealtimeToolCallCallback) -> None:
-        """Register callback for tool/function calls from the AI."""
+        """Register callback for tool/function calls from the AI.
+
+        Called as ``(session, call_id, name, arguments)``. ``arguments`` is the
+        call's arguments as a mapping, or the text the model wrote when they
+        do not read as one (invalid JSON, an array, a fragment): read the
+        wire's arguments with
+        :func:`~roomkit.providers.ai.tool_calls.readable_arguments`. The
+        channel refuses a call that arrives as text, so it never runs on a
+        mapping that only passes for arguments (RFC §12.4).
+        """
         self._tool_call_callbacks.append(callback)
 
     def on_tool_call_cancelled(self, callback: RealtimeToolCallCancelledCallback) -> None:

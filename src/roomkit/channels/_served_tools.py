@@ -4,7 +4,8 @@ A channel serves some tools itself (skill activation, Tool Search, the eviction
 re-read, sandbox commands). A tool of the host under one of those names would
 be declared with the host's schema and served by the channel, so it is refused
 when given at construction and not declared when it arrives later. And no name
-is declared twice: a provider rejects a duplicate name.
+is declared twice: a provider rejects a duplicate name; nor one no vendor
+accepts, refused at definition as ``AITool`` refuses it (RFC §6.7).
 
 Shared by every channel kind whatever the shape of its tool definitions (an
 ``AITool``, a realtime tool dict).
@@ -17,6 +18,7 @@ from collections.abc import Callable, Container, Iterable, Sized
 from typing import TYPE_CHECKING
 
 from roomkit.channels._tool_search_constants import TOOL_SEARCH_INFRA_TOOL_NAMES
+from roomkit.providers.ai.base import some_vendor_accepts_tool_name
 
 if TYPE_CHECKING:
     from roomkit.voice.realtime.provider import RealtimeVoiceProvider
@@ -36,6 +38,18 @@ def refuse_served_names(
             f"Tool {name!r} is a tool channel {channel_id!r} serves itself: "
             f"rename it{hint} (RFC §21.1)"
         )
+
+
+def refuse_unnamable(names: Iterable[str | None], channel_id: str) -> None:
+    """Refuse a host tool given under a name no vendor accepts, as ``AITool``
+    refuses it at definition (RFC §6.7); a tool without a name (a provider's
+    native tool) has none to check."""
+    for name in names:
+        if name is not None and not some_vendor_accepts_tool_name(name):
+            raise ValueError(
+                f"Tool {name!r} given to channel {channel_id!r} is accepted by no provider: "
+                "use letters, digits, '_', '.', ':' or '-' (RFC §6.7)"
+            )
 
 
 def refuse_given_twice(names: Iterable[str | None], channel_id: str) -> None:

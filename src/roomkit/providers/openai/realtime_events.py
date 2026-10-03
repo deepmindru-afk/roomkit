@@ -18,7 +18,7 @@ import logging
 from abc import abstractmethod
 from typing import Any
 
-from roomkit.providers.ai.tool_calls import tool_arguments
+from roomkit.providers.ai.tool_calls import readable_arguments
 from roomkit.providers.openai.response_calls import PendingResponse
 from roomkit.voice._g711 import _G711Codec
 from roomkit.voice.base import VoiceSession
@@ -253,8 +253,9 @@ class OpenAIRealtimeEventHandlersMixin(RealtimeVoiceProvider):
     async def _on_function_call_done(self, session: VoiceSession, event: dict[str, Any]) -> None:
         call_id = event.get("call_id", "")
         name = event.get("name", "")
-        # A mapping, never an error, as every provider hands a call (RFC §6.4).
-        arguments = tool_arguments(event.get("arguments"))
+        # A mapping, or the model's text when it does not read as one: the
+        # channel refuses that call (RFC §12.4).
+        arguments = readable_arguments(event.get("arguments"))
         pending = self._pending_responses.setdefault(session.id, PendingResponse())
         pending.call_ids.add(call_id)
         pending.had_calls = True

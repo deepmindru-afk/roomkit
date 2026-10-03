@@ -555,13 +555,14 @@ class TestDelegation:
         await provider.submit_tool_result(session, "nope", "{}")
         assert ws.types() == ["session.start"]
 
-    async def test_unparseable_arguments_arrive_raw(self, session: VoiceSession) -> None:
+    async def test_unparseable_arguments_arrive_as_text(self, session: VoiceSession) -> None:
+        """The model's text, which the channel refuses (RFC §12.4)."""
         provider = _provider(delegation=HostedReasoning(model="gpt-5.6-terra"))
         rec = _Recorder(provider)
         ws, _ = await _connect(provider, session)
         ws.push(_function_call("call_1", "get_weather", "not json"))
         await _settle()
-        assert rec.tools == [("call_1", "get_weather", {"raw": "not json"})]
+        assert rec.tools == [("call_1", "get_weather", "not json")]
 
     async def test_failed_backend_response_is_an_error(self, session: VoiceSession) -> None:
         provider = _provider(delegation=HostedReasoning(model="gpt-5.6-terra"))

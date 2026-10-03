@@ -150,6 +150,9 @@ async def run_tool_call(
 
 async def _decide(host: ToolCallHost, call: RealtimeToolCall, door: ToolCallDoor) -> ToolOutcome:
     """The gate, then the serving: *call*'s outcome before its delivery."""
+    if call.unreadable is not None:
+        # Nothing runs on arguments that do not read (RFC §6.4, §12.4).
+        return ToolOutcome(OutcomeKind.REFUSED, call.unreadable)
     denial, carrying = await host._authorize_call(call, door)
     if denial is not None:
         return ToolOutcome(OutcomeKind.REFUSED, denial.body, detail=denial.detail)

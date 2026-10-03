@@ -8,7 +8,12 @@ One scenario per provider, each on its own fake transport:
 - a failed call's result travels as an error where the protocol can say so;
 - the tasks a session lives on run in a context of their own;
 - a provider whose model calls no tool is declared none;
-- Gemini Live tells the model, once, that a call it could not parse did not run.
+- Gemini Live tells the model, once, that a call it could not parse did not run;
+- a call whose arguments do not read, which reaches the channel as the model's
+  text (``test_realtime_call_arguments``), is refused by the channel and by a
+  conference (RMK-375);
+- a tool name the endpoint refuses fails when the session's tools are declared,
+  and a name no vendor accepts when the tool is given (RMK-375).
 """
 
 from __future__ import annotations
@@ -25,22 +30,34 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import SecretStr
 
-from roomkit import ConferenceRealtimeConfig, RoomKit
+from roomkit import ConferenceChannel, ConferenceRealtimeConfig, RoomKit
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
+from roomkit.conference.mock import MockConferenceBackend
+from roomkit.models.enums import HookExecution, HookTrigger
+from roomkit.providers.ai.base import ProviderError
 from roomkit.providers.ai.tool_calls import MALFORMED_CALL_NUDGE
 from roomkit.providers.anam.config import AnamConfig
 from roomkit.providers.anam.realtime import AnamRealtimeProvider
 from roomkit.providers.deepgram.config import DeepgramAgentConfig
 from roomkit.providers.deepgram.realtime import DeepgramAgentProvider
+from roomkit.providers.deepgram.settings import build_think
 from roomkit.providers.elevenlabs.config import ElevenLabsRealtimeConfig
 from roomkit.providers.elevenlabs.realtime import ElevenLabsRealtimeProvider
 from roomkit.providers.openai.live_config import HostedReasoning
+from roomkit.providers.openai.live_events import format_backend_tools
 from roomkit.providers.openai.realtime import OpenAIRealtimeProvider
 from roomkit.providers.personaplex.realtime import PersonaPlexRealtimeProvider
+from roomkit.providers.xai.realtime import XAIRealtimeProvider
 from roomkit.voice.base import VoiceSession, VoiceSessionState
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
 from tests.conference.test_conference_realtime import ROOM, realtime_kit, until
-from tests.test_openai_live import TOOL, _FakeWS, _function_call, _provider, _started
+from tests.test_openai_live import (
+    TOOL,
+    _FakeWS,
+    _function_call,
+    _provider,
+    _started,
+)
 from tests.test_providers import test_gemini_realtime as gemini_tests
 from tests.test_providers.test_gemini_realtime import (
     _blocking_call_state,
@@ -474,3 +491,158 @@ async def test_gemini_tells_the_model_once_until_the_user_speaks_again() -> None
     )
     await provider._handle_server_response(session, malformed)
     assert provider.inject_text.await_count == 2
+
+
+# -- A call whose arguments do not read reaches the channel as the model's text -
+
+_CUT = '{"amount": 1000, "to": "acc'
+"""A call cut mid-arguments: text that reads as no object."""
+
+
+class _Observed:
+    """The ON_TOOL_CALL events the observers receive."""
+
+    def __init__(self, kit: RoomKit) -> None:
+        self.events: list[Any] = []
+
+        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC)
+        async def observe(event: Any, ctx: Any) -> None:
+            self.events.append(event)
+
+
+def _refused_unread(provider: _ErrorAware) -> None:
+    """The one result the provider got: the unreadable refusal, as an error."""
+    [(_session_id, call_id, result)] = provider.tool_results
+    body = json.loads(result)
+    assert body["error"] == "Tool call arguments unreadable"
+    assert body["tool"] == "transfer"
+    assert provider.errors == [call_id]
+
+
+async def test_the_channel_refuses_a_call_that_arrives_as_text() -> None:
+    ran: list[dict[str, Any]] = []
+
+    async def transfer(name: str, arguments: dict[str, Any]) -> str:
+        ran.append(arguments)
+        return "ok"
+
+    provider = _ErrorAware()
+    tools = [{"name": "transfer", "description": "d", "parameters": {"type": "object"}}]
+    channel = RealtimeVoiceChannel(
+        "rt",
+        provider=provider,
+        transport=MockRealtimeTransport(),
+        tools=tools,
+        tool_handler=transfer,
+    )
+    kit = RoomKit()
+    observed = _Observed(kit)
+    kit.register_channel(channel)
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "rt")
+    session = await channel.start_session("r1", "u1", "ws")
+
+    await provider.simulate_tool_call(session, "c1", "transfer", _CUT)
+    await until(lambda: bool(provider.tool_results) and bool(observed.events))
+
+    assert ran == []
+    _refused_unread(provider)
+    [event] = observed.events
+    assert event.is_error
+    assert event.arguments == {"raw": _CUT}
+    await kit.close()
+
+
+async def test_a_conference_refuses_a_call_that_arrives_as_text() -> None:
+    ran: list[dict[str, Any]] = []
+
+    async def handler(room_id: str, name: str, arguments: dict[str, Any]) -> str:
+        ran.append(arguments)
+        return "ok"
+
+    provider = _ErrorAware()
+    config = ConferenceRealtimeConfig(
+        provider=provider, tools=[{"name": "transfer"}], tool_handler=handler
+    )
+    kit, channel, _, _ = await realtime_kit(provider=provider, config=config)
+    observed = _Observed(kit)
+    session = await channel._realtime.ensure_session(ROOM)
+    assert session is not None
+
+    await provider.simulate_tool_call(session, "c1", "transfer", _CUT)
+    await until(lambda: bool(provider.tool_results) and bool(observed.events))
+
+    assert ran == []
+    _refused_unread(provider)
+    assert observed.events[0].is_error
+    await kit.close()
+
+
+# -- A tool name the endpoint refuses fails when the tools are declared -------
+
+_DOTTED = {"name": "crm.lookup", "description": "d", "parameters": {"type": "object"}}
+
+
+def _deepgram_think(tools: list[dict[str, Any]], **pc: Any) -> dict[str, Any]:
+    return build_think(
+        DeepgramAgentConfig(api_key=SecretStr("dg-key")),
+        system_prompt=None,
+        tools=tools,
+        temperature=None,
+        pc=pc,
+    )
+
+
+@pytest.mark.parametrize(
+    "declare",
+    [
+        lambda tools: OpenAIRealtimeProvider(api_key="sk")._format_session_tools(tools),
+        format_backend_tools,
+        _deepgram_think,
+    ],
+    ids=["openai-realtime", "gpt-live-hosted", "deepgram-open-ai-think"],
+)
+def test_a_name_the_endpoint_refuses_fails_at_declaration(
+    declare: Callable[[list[dict[str, Any]]], Any],
+) -> None:
+    with pytest.raises(ProviderError, match="crm.lookup"):
+        declare([_DOTTED])
+
+
+@pytest.mark.parametrize(
+    "declare",
+    [
+        lambda tools: OpenAIRealtimeProvider(
+            api_key="sk", base_url="wss://proxy.example/v1/realtime"
+        )._format_session_tools(tools),
+        lambda tools: XAIRealtimeProvider(api_key="xai")._format_session_tools(tools),
+        lambda tools: _deepgram_think(tools, think_provider="google"),
+        lambda tools: _deepgram_think(
+            tools, think_provider="open_ai", think_endpoint={"url": "https://llm.example"}
+        ),
+    ],
+    ids=["behind-base-url", "xai-accepts-any", "deepgram-google-think", "deepgram-custom-think"],
+)
+def test_an_endpoint_whose_rule_admits_the_name_or_is_unknown_declares_it(
+    declare: Callable[[list[dict[str, Any]]], Any],
+) -> None:
+    declare([_DOTTED])
+
+
+@pytest.mark.parametrize("name", ["look up", "", "café"])
+def test_a_name_no_vendor_accepts_is_refused_when_given(name: str) -> None:
+    tools = [{"name": name, "description": "d", "parameters": {"type": "object"}}]
+    with pytest.raises(ValueError, match="accepted by no provider"):
+        RealtimeVoiceChannel(
+            "rt", provider=MockRealtimeProvider(), transport=MockRealtimeTransport(), tools=tools
+        )
+    channel = RealtimeVoiceChannel(
+        "rt", provider=MockRealtimeProvider(), transport=MockRealtimeTransport()
+    )
+    with pytest.raises(ValueError, match="accepted by no provider"):
+        channel.configure(tools=tools)
+    realtime = ConferenceRealtimeConfig(
+        provider=MockRealtimeProvider(), tools=tools, tool_handler=AsyncMock()
+    )
+    with pytest.raises(ValueError, match="accepted by no provider"):
+        ConferenceChannel("conf", backend=MockConferenceBackend(), realtime=realtime)

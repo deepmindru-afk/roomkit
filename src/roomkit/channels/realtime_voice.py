@@ -39,6 +39,7 @@ from roomkit.channels._served_tools import (
     dict_tool_name,
     refuse_given_twice,
     refuse_served_names,
+    refuse_unnamable,
     warn_tools_uncallable,
 )
 from roomkit.channels._skill_constants import (
@@ -556,9 +557,11 @@ class RealtimeVoiceChannel(
                 tool_defs = tools
 
         # Host tools that collide with the channel's own (RFC §21.1), each
-        # reported once; a name given twice is refused.
+        # reported once; a name given twice, or one no vendor accepts, is refused.
         self._collisions = CollisionLog(self.channel_id)
-        refuse_given_twice((dict_tool_name(tool) for tool in tool_defs or []), self.channel_id)
+        names = [dict_tool_name(tool) for tool in tool_defs or []]
+        refuse_unnamable(names, self.channel_id)
+        refuse_given_twice(names, self.channel_id)
         self._tools = tool_defs
         warn_tools_uncallable(tool_defs, "tool(s)", self._provider, self.channel_id)
         # What the channel serves itself and what orchestration sets up on it,
@@ -838,10 +841,12 @@ class RealtimeVoiceChannel(
 
         Active sessions are not affected — use ``reconfigure_session``
         for those. A tool under a name the channel or orchestration serves,
-        or given twice, is refused (RFC §21.1).
+        or given twice, is refused (RFC §21.1), and so is a name no vendor
+        accepts (RFC §6.7).
         """
         if tools is not None:
             names = [dict_tool_name(tool) for tool in tools]
+            refuse_unnamable(names, self.channel_id)
             refuse_served_names(names, self._channel_tool_names(), self.channel_id)
             refuse_given_twice(names, self.channel_id)
             self._registry.refuse_host_names(names)

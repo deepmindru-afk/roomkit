@@ -137,6 +137,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `providers/polargrid/sdk_patch.py`), so a minor release is taken only once
   the conformance suite has run on it (RMK-383, RMK-384).
 
+- **BREAKING — a realtime call whose arguments do not read as an object
+  never runs, and a realtime endpoint's tool-name rule is checked when the
+  session's tools are declared** (RMK-375, RFC §6.4, §6.7, §12.4).
+  `on_tool_call` now receives the text the model wrote in place of the
+  mapping for such a call (`RealtimeToolCallCallback` takes
+  `dict[str, Any] | str`): OpenAI Realtime, xAI, GPT-Live and Deepgram read
+  the wire with the new `readable_arguments`, where they handed
+  `{"raw": …}` and the handler ran on it. The channel and a conference refuse
+  such a call before the gate, with the text the AI channel's tool loop
+  gives (`Tool call arguments unreadable`), and report it to the observers;
+  a conference ran it before. An application registered directly on a
+  provider's `on_tool_call` reads a `str` for such a call. A tool name the
+  endpoint refuses raises a `ProviderError` naming it when the session's
+  tools are declared, at connection or reconfiguration: OpenAI Realtime on
+  its own endpoint and GPT-Live's hosted backend check OpenAI's rule,
+  Deepgram its think provider's (`open_ai`, `anthropic`, `google`), xAI
+  none, since it accepts any name (measured 2026-10-03); GPT-Live's hosted
+  backend failed such a call later with "connection error: unknown", and
+  Deepgram's think stage with `THINK_REQUEST_FAILED`. A tool dict given to a
+  `RealtimeVoiceChannel` (at construction or `configure`) or a conference
+  under a name no vendor accepts is refused, as `AITool` refuses it.
 - **BREAKING — a tool name no provider accepts is refused when the tool is
   defined** (RMK-309, RFC §6.7): `AITool` raises on an empty name or one with
   a character other than a letter, a digit, `_`, `.`, `:` or `-`, which every
@@ -163,8 +184,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is true accordingly for a response without a stop reason and for
   complete JSON that is not an object. The realtime reasoning backend
   records such a call `refused`, as the tool loop does, where it recorded it
-  `failed`. A speech-to-speech provider does not mark such calls yet
-  (RMK-375). `unreadable_arguments`, `call_garbled`, `partial_call_error`,
+  `failed`. A speech-to-speech provider hands such a call to the channel as
+  text since RMK-375. `unreadable_arguments`, `call_garbled`, `partial_call_error`,
   `unreadable_call_error`, `tool_call_of` and `stream_call_of` join the
   helpers of `roomkit.providers.ai`.
 - `declared_parameters`, `chat_tool_declarations` and `ToolNameRule`, in

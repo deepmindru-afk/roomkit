@@ -290,7 +290,7 @@ class TestOpenAIRealtimeProvider:
         """Function tools default to ``type: function``; non-function native
         tools (xAI ``web_search``) pass through unchanged."""
         mod = _load_provider()
-        result = mod.OpenAIRealtimeProvider._format_session_tools(
+        result = mod.OpenAIRealtimeProvider(api_key="sk-test")._format_session_tools(
             [
                 {"name": "fn", "tags": ["x"]},
                 {"type": "web_search", "max_results": 5},
@@ -962,8 +962,9 @@ class TestOpenAIRealtimeProvider:
                 "arguments": "not-json",
             },
         )
+        # The model's text, which the channel refuses (RFC §12.4).
         assert len(tool_calls) == 1
-        assert tool_calls[0][2] == {"raw": "not-json"}
+        assert tool_calls[0][2] == "not-json"
 
     async def test_handle_response_created(self):
         mod = _load_provider()

@@ -10,6 +10,8 @@ from typing import Any
 from pydantic import SecretStr
 
 from roomkit.providers.ai.base import ModelInfo
+from roomkit.providers.ai.tool_declaration import ToolNameRule
+from roomkit.providers.openai.ai import OPENAI_TOOL_NAMES
 from roomkit.providers.openai.realtime_base import OpenAIRealtimeBase
 from roomkit.providers.openai.voices import VOICES as _VOICES
 from roomkit.voice.base import VoiceSession
@@ -112,6 +114,12 @@ class OpenAIRealtimeProvider(OpenAIRealtimeBase):
 
     def _connect_url(self) -> str:
         return f"{self._base_url}?model={self._model}"
+
+    @property
+    def _tool_name_rule(self) -> ToolNameRule | None:
+        """OpenAI's rule on OpenAI's own endpoint (measured on
+        ``gpt-realtime-2.1``: the text API's), none behind ``base_url``."""
+        return OPENAI_TOOL_NAMES if self._base_url == _DEFAULT_BASE_URL else None
 
     def _auth_headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._api_key.get_secret_value()}"}

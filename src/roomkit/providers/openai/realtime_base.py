@@ -19,7 +19,7 @@ from abc import abstractmethod
 from typing import Any
 
 from roomkit.core.task_utils import cancel_and_wait
-from roomkit.providers.ai.tool_declaration import declared_parameters
+from roomkit.providers.ai.tool_declaration import ToolNameRule, declared_parameters
 from roomkit.providers.openai.realtime_events import (
     OpenAIRealtimeEventHandlersMixin,
     _OutputAudioState,
@@ -86,9 +86,15 @@ class OpenAIRealtimeBase(OpenAIRealtimeEventHandlersMixin):
     def is_responding(self, session_id: str) -> bool:
         return session_id in self._responding
 
-    @staticmethod
-    def _format_session_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Project tool dicts to the realtime ``session.tools`` shape.
+    @property
+    def _tool_name_rule(self) -> ToolNameRule | None:
+        """The tool names this endpoint accepts, checked when the session's
+        tools are declared; ``None`` where the server decides (RFC §6.7)."""
+        return None
+
+    def _format_session_tools(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Project tool dicts to the realtime ``session.tools`` shape, their
+        names checked against the endpoint's rule (RFC §6.7).
 
         A function tool is reduced to the fields the API accepts
         (``type``/``name``/``description``/``parameters``), defaulting
@@ -98,11 +104,14 @@ class OpenAIRealtimeBase(OpenAIRealtimeEventHandlersMixin):
         dropped here. Native tools (xAI ``web_search``/``x_search``) carry
         a non-function ``type`` and pass through unchanged.
         """
+        rule = self._tool_name_rule
         formatted: list[dict[str, Any]] = []
         for t in tools:
             if t.get("type", "function") != "function":
                 formatted.append(dict(t))
                 continue
+            if rule is not None:
+                rule.check([t.get("name", "")])
             tool = {"type": "function"}
             for field in ("name", "description"):
                 if field in t:

@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
 
+from roomkit.providers.ai.tool_calls import readable_arguments
 from roomkit.voice.backends.base import (
     AudioReceivedCallback,
     TransportDisconnectCallback,
@@ -265,10 +266,16 @@ class MockRealtimeProvider(RealtimeVoiceProvider):
         session: VoiceSession,
         call_id: str,
         name: str,
-        arguments: dict[str, Any] | None = None,
+        arguments: dict[str, Any] | str | None = None,
     ) -> None:
-        """Simulate a tool call from the provider."""
-        args = arguments or {}
+        """Simulate a tool call from the provider.
+
+        *arguments* are read as a real provider reads the wire's
+        (:func:`~roomkit.providers.ai.tool_calls.readable_arguments`): text
+        that reads as an object becomes that mapping, and text that does not
+        reaches the callbacks as text, an unreadable call.
+        """
+        args = readable_arguments(arguments)
         for cb in self._tool_call_callbacks:
             result = cb(session, call_id, name, args)
             if hasattr(result, "__await__"):

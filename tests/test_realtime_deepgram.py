@@ -739,10 +739,10 @@ class TestInboundDispatch:
 
         await provider.disconnect(session)
 
-    async def test_unparseable_arguments_are_kept_under_raw(
+    async def test_unparseable_arguments_arrive_as_text(
         self, provider: DeepgramAgentProvider, session: VoiceSession
     ) -> None:
-        """Read as every provider reads a call's arguments (RFC §6.4)."""
+        """The model's text, which the channel refuses (RFC §6.4, §12.4)."""
         tool_call = _Recorder()
         provider.on_tool_call(tool_call)
         ws = await _connect(provider, session)
@@ -756,7 +756,7 @@ class TestInboundDispatch:
             )
         )
 
-        assert await tool_call.wait() == (session, "fc_2", "boom", {"raw": "not-json"})
+        assert await tool_call.wait() == (session, "fc_2", "boom", "not-json")
         await provider.disconnect(session)
 
     async def test_malformed_and_duplicate_function_ids_are_ignored(

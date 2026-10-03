@@ -233,7 +233,7 @@ class RealtimeToolsMixin:
         session: VoiceSession,
         call_id: str,
         name: str,
-        arguments: dict[str, Any],
+        arguments: dict[str, Any] | str,
     ) -> Any:
         """Handle tool call from provider."""
         try:
@@ -242,7 +242,9 @@ class RealtimeToolsMixin:
             return
         if session.state == VoiceSessionState.ENDED:
             return
-        call = RealtimeToolCall(session, call_id, name, arguments, mutes=self._mute_on_tool_call)
+        call = RealtimeToolCall.from_provider(
+            session, call_id, name, arguments, mutes=self._mute_on_tool_call
+        )
         if not self._open_tool_call(call):
             self._track_task(
                 loop,
@@ -372,7 +374,8 @@ class RealtimeToolsMixin:
             return
         # Unwrapped first, so the books, the span and every report name the
         # tool a fixed-declaration call_tool carries, not the transport.
-        call.unreadable = self._unwrap_call_tool(call)
+        if call.unreadable is None:
+            call.unreadable = self._unwrap_call_tool(call)
         await self._after_earlier_transcriptions(session)
         if session.state == VoiceSessionState.ENDED:
             return
@@ -437,8 +440,8 @@ class RealtimeToolsMixin:
 
     def _unwrap_call_tool(self, call: RealtimeToolCall) -> str | None:
         """Unwrap the tool a fixed-declaration ``call_tool`` carries into *call*,
-        so its books and its reports name that tool; why the transport is
-        unreadable, if it is."""
+        so its books and its reports name that tool; what the model reads when
+        the transport is unreadable, if it is."""
         support = self._tool_search_support
         session = call.session
         if not (
@@ -451,7 +454,7 @@ class RealtimeToolsMixin:
         call.name, call.arguments, transport_error = support.unwrap_call(
             call.arguments, session.id
         )
-        return transport_error
+        return None if transport_error is None else json.dumps({"error": transport_error})
 
     # -- ToolCallHost: the steps the executor serves a call with -------------
 
@@ -474,10 +477,7 @@ class RealtimeToolsMixin:
     async def _authorize_call(
         self, call: RealtimeToolCall, door: ToolCallDoor
     ) -> tuple[GateRefusal | None, RoomContext | None]:
-        """The pre-execution gate (RFC §12.4); a call that cannot be read is
-        refused before any check."""
-        if call.unreadable is not None:
-            return GateRefusal(json.dumps({"error": call.unreadable})), None
+        """The pre-execution gate (RFC §12.4)."""
         call.arguments, denial, context = await self._authorize_realtime_tool(
             call.name,
             call.arguments,

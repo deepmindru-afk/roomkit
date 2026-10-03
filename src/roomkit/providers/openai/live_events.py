@@ -19,6 +19,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
 from roomkit.providers.ai.tool_declaration import declared_parameters
+from roomkit.providers.openai.ai import OPENAI_TOOL_NAMES
 
 logger = logging.getLogger("roomkit.providers.openai.live")
 
@@ -153,12 +154,18 @@ def format_backend_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ``type: function``; keys the caller uses elsewhere (``tags`` for Tool
     Search, ``strict`` which the Live session schema rejects) are dropped.
     Hosted tools carrying a non-function ``type`` pass through unchanged.
+
+    The hosted backend is an OpenAI Responses model, so a function's name is
+    checked against OpenAI's rule here: the session accepts any name, and the
+    delegation then fails opaquely once the model reaches for the tool
+    (measured on ``gpt-live-1``, RFC §6.7).
     """
     formatted: list[dict[str, Any]] = []
     for tool in tools:
         if tool.get("type", "function") != "function":
             formatted.append(dict(tool))
             continue
+        OPENAI_TOOL_NAMES.check([tool.get("name", "")])
         shaped: dict[str, Any] = {"type": "function"}
         for key in ("name", "description"):
             if key in tool:

@@ -526,12 +526,14 @@ class ConferenceRealtime:
             )
 
     async def _on_tool_call(
-        self, session: VoiceSession, call_id: str, name: str, arguments: dict[str, Any]
+        self, session: VoiceSession, call_id: str, name: str, arguments: dict[str, Any] | str
     ) -> None:
         room = self._guarded(session)
         if room is None:
             return
-        call = RealtimeToolCall(session, call_id, name, arguments, room_id=session.room_id)
+        call = RealtimeToolCall.from_provider(
+            session, call_id, name, arguments, room_id=session.room_id
+        )
         if not self._tool_calls.open(call):
             room.spawn(refuse_duplicate_call(self, call))
             return

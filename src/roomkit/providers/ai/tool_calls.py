@@ -72,6 +72,17 @@ def tool_arguments(raw: Any) -> dict[str, Any]:
     return {"raw": raw} if read is None else read
 
 
+def readable_arguments(raw: Any) -> dict[str, Any] | str:
+    """A call's arguments as a mapping, or the text the model wrote when they
+    do not read as one: how a realtime provider hands a call to
+    ``on_tool_call``, so the channel refuses it rather than run a tool on a
+    mapping that only passes for arguments (RFC §12.4)."""
+    read = _read_arguments(raw)
+    if read is not None:
+        return read
+    return raw if isinstance(raw, str) else json.dumps(raw, default=str)
+
+
 def unreadable_arguments(raw: Any) -> bool:
     """Whether a call's arguments do not read as an object, which makes the
     call ``partial``: it never runs, whatever the provider and whatever stop

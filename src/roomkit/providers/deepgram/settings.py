@@ -11,8 +11,11 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-from roomkit.providers.ai.tool_declaration import declared_parameters
+from roomkit.providers.ai.tool_declaration import ToolNameRule, declared_parameters
+from roomkit.providers.anthropic.request import ANTHROPIC_TOOL_NAMES
 from roomkit.providers.deepgram.config import DeepgramAgentConfig
+from roomkit.providers.gemini.schema import GEMINI_TOOL_NAMES
+from roomkit.providers.openai.ai import OPENAI_TOOL_NAMES
 
 
 def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -37,8 +40,32 @@ def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]
     return merged
 
 
-def format_functions(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
-    """Project RoomKit tool dicts to Deepgram's ``think.functions`` shape.
+_THINK_TOOL_NAMES: dict[str, ToolNameRule] = {
+    "open_ai": OPENAI_TOOL_NAMES,
+    "anthropic": ANTHROPIC_TOOL_NAMES,
+    "google": GEMINI_TOOL_NAMES,
+}
+"""The tool-name rule of each think provider whose vendor RoomKit knows."""
+
+
+def think_tool_names(think: dict[str, Any]) -> ToolNameRule | None:
+    """The tool names a Think block's LLM accepts: its vendor's rule, none
+    for a vendor RoomKit does not know or a custom endpoint (RFC §6.7).
+
+    Deepgram applies the settings whatever the names and passes the functions
+    to the think provider, which refuses a name its vendor refuses on the
+    first turn (``THINK_REQUEST_FAILED``, measured with ``open_ai``).
+    """
+    if think.get("endpoint"):
+        return None
+    return _THINK_TOOL_NAMES.get((think.get("provider") or {}).get("type", ""))
+
+
+def format_functions(
+    tools: list[dict[str, Any]] | None, rule: ToolNameRule | None = None
+) -> list[dict[str, Any]]:
+    """Project RoomKit tool dicts to Deepgram's ``think.functions`` shape, their
+    names checked against *rule*, the think provider's.
 
     Tool dicts reaching the provider carry extra keys the caller uses elsewhere
     (notably ``tags``, added for cross-lingual Tool Search); Deepgram rejects
@@ -51,6 +78,8 @@ def format_functions(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]]
         name = tool.get("name")
         if not name:
             continue
+        if rule is not None:
+            rule.check([name])
         function: dict[str, Any] = {
             "name": name,
             "description": tool.get("description", ""),
@@ -85,7 +114,7 @@ def build_think(
         think["context_length"] = pc["context_length"]
     if system_prompt:
         think["prompt"] = system_prompt
-    functions = format_functions(tools)
+    functions = format_functions(tools, think_tool_names(think))
     if functions:
         think["functions"] = functions
     return think
@@ -163,7 +192,7 @@ def patch_think(
         else:
             think.pop("prompt", None)
     if tools is not None:
-        functions = format_functions(tools)
+        functions = format_functions(tools, think_tool_names(think))
         if functions:
             think["functions"] = functions
         else:

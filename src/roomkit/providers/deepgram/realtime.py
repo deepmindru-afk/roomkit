@@ -27,7 +27,7 @@ from typing import Any
 from pydantic import SecretStr
 
 from roomkit.core.task_utils import cancel_and_wait
-from roomkit.providers.ai.tool_calls import tool_arguments
+from roomkit.providers.ai.tool_calls import readable_arguments
 from roomkit.providers.deepgram.config import DeepgramAgentConfig
 from roomkit.providers.deepgram.settings import build_settings, patch_speak, patch_think
 from roomkit.providers.deepgram.voices import VOICES as _VOICES
@@ -620,15 +620,9 @@ class DeepgramAgentProvider(RealtimeVoiceProvider):
                     state.session.id,
                 )
                 continue
-            # Deepgram sends arguments as a JSON *string*; read as every
-            # provider reads a call's (RFC §6.4).
-            arguments = tool_arguments(function.get("arguments"))
-            if "raw" in arguments and len(arguments) == 1:
-                logger.warning(
-                    "Deepgram sent unparseable arguments for %s (session %s)",
-                    fname,
-                    state.session.id,
-                )
+            # Deepgram sends arguments as a JSON *string*: a mapping when it
+            # reads as one, else the text, which the channel refuses (RFC §12.4).
+            arguments = readable_arguments(function.get("arguments"))
             raw_signature = function.get("thought_signature")
             signature = raw_signature if isinstance(raw_signature, str) and raw_signature else None
             state.pending_calls[call_id] = _PendingCall(
