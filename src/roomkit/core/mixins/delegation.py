@@ -7,6 +7,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from roomkit.channels._shielded import shielded
 from roomkit.core._failure_log import log_failure
 from roomkit.core.exceptions import ChannelNotRegisteredError
 
@@ -36,9 +37,11 @@ from roomkit.tasks.handback import bounded, hand_back, result_text
 from roomkit.tasks.models import (
     DelegatedTask,
     DelegatedTaskResult,
+    cancelled_task_fields,
     finished_task_fields,
     task_work,
 )
+from roomkit.telemetry.base import Attr, SpanKind
 from roomkit.tools.context import _current_turn_chain_depth
 
 if TYPE_CHECKING:
@@ -89,6 +92,25 @@ def _delegation_metadata(
         # How a worker cut short ended its turn (RFC §23.3).
         meta["loop_end_reason"] = loop_end_reason
     return meta
+
+
+def _end_delegation_span(
+    telemetry: TelemetryProvider, span_id: str, result: DelegatedTaskResult | None
+) -> None:
+    """End a delegation's span with its task's status: ``ok`` completed,
+    ``error`` failed, ``cancelled`` cancelled (a task left without a result
+    was cancelled before it had one)."""
+    status = TaskStatus.CANCELLED if result is None else result.status
+    span_status = {TaskStatus.COMPLETED: "ok", TaskStatus.FAILED: "error"}.get(status, "cancelled")
+    telemetry.end_span(
+        span_id,
+        status=span_status,
+        error_message=result.error if result is not None and span_status == "error" else None,
+        attributes={
+            Attr.DELEGATION_STATUS: status,
+            Attr.DURATION_MS: result.duration_ms if result is not None else 0,
+        },
+    )
 
 
 def _result_from_handle(
@@ -150,7 +172,9 @@ def _delegation_result_text(result: DelegatedTaskResult) -> str:
     """What the notified agent receives of a finished background delegation."""
     # A failed task's error is an exception's message: for the logs and
     # ON_TASK_COMPLETED, never for a model (RFC §9.3).
-    outcome = "completed" if result.status == TaskStatus.COMPLETED else "failed"
+    outcome = {TaskStatus.COMPLETED: "completed", TaskStatus.CANCELLED: "cancelled"}.get(
+        result.status, "failed"
+    )
     return result_text(
         f"[Background task from {result.agent_id} {outcome}. Share the outcome with the user.]",
         bounded(task_work(result) or "No output"),
@@ -228,7 +252,6 @@ class DelegationMixin(HelpersMixin):
         """
         from uuid import uuid4
 
-        from roomkit.telemetry.base import Attr, SpanKind
         from roomkit.telemetry.context import get_current_span
         from roomkit.telemetry.noop import NoopTelemetryProvider
 
@@ -343,24 +366,17 @@ class DelegationMixin(HelpersMixin):
         )
 
         if wait:
-            result_handle = await self._run_inline(
-                handle,
-                context,
-                on_complete,
-                require_structured_result=require_structured_result,
-                max_result_retries=max_result_retries,
-                result_tool=result_tool,
-            )
-            telemetry.end_span(
-                span_id,
-                attributes={
-                    Attr.DELEGATION_STATUS: result_handle.status,
-                    Attr.DURATION_MS: result_handle.result.duration_ms
-                    if result_handle.result
-                    else 0,
-                },
-            )
-            return result_handle
+            try:
+                return await self._run_inline(
+                    handle,
+                    context,
+                    on_complete,
+                    require_structured_result=require_structured_result,
+                    max_result_retries=max_result_retries,
+                    result_tool=result_tool,
+                )
+            finally:
+                _end_delegation_span(telemetry, span_id, handle.result)
 
         # Background — span ends when task completes (via callback)
         return await self._run_background(handle, context, notify, on_complete, span_id, telemetry)
@@ -391,33 +407,15 @@ class DelegationMixin(HelpersMixin):
                 result_tool=result_tool,
             )
         except asyncio.CancelledError:
-            # A caller cancelled this delegation (e.g. a supervisor's per-task
-            # timeout via asyncio.wait_for). CancelledError is a BaseException, so
-            # without handling it here the completion hook below never runs — and
-            # consumers that close a step on ON_TASK_COMPLETED (the orchestration
-            # timeline) leave it stuck on "running". Fire the completion as FAILED,
-            # then propagate the cancellation.
+            # A caller cancelled this delegation (a supervisor's per-task
+            # timeout through asyncio.wait_for): the task ends as any task
+            # does, cancelled, its completion run to its end, then the
+            # cancellation goes on (RFC §23.3).
             elapsed = (time.monotonic() - start) * 1000
             cancelled = _result_from_handle(
-                handle,
-                status=TaskStatus.FAILED,
-                output=None,
-                error="cancelled (timed out)",
-                duration_ms=elapsed,
-                metadata=context or {},
+                handle, duration_ms=elapsed, **cancelled_task_fields(context)
             )
-            try:
-                await self._on_delegation_complete(cancelled)
-            except Exception:
-                # Best-effort: the cancellation still propagates below. Log so a
-                # failure to fire the completion (which unsticks a "running" step)
-                # is visible rather than silently swallowed.
-                _tasks_logger.exception(
-                    "Completion hook failed for cancelled task %s (room %s)",
-                    handle.id,
-                    handle.child_room_id,
-                )
-            handle._set_result(cancelled)
+            await shielded(self._complete_inline(handle, cancelled, on_complete))
             raise
         except Exception as exc:
             log_failure(_tasks_logger, exc, f"Inline task {handle.id}")
@@ -429,18 +427,22 @@ class DelegationMixin(HelpersMixin):
             duration_ms=elapsed,
             **finished_task_fields(agent_response, failure, context),
         )
+        await self._complete_inline(handle, result, on_complete)
+        return handle
 
-        # Fire completion hooks + callbacks (skip proactive delivery for inline —
-        # the caller handles presenting results directly)
+    async def _complete_inline(
+        self, handle: DelegatedTask, result: DelegatedTaskResult, on_complete: Any | None
+    ) -> None:
+        """End an inline delegation: ON_TASK_COMPLETED, its completion
+        callback, then its waiters. No proactive delivery: the caller
+        presents the result itself."""
         await self._on_delegation_complete(result)
         if on_complete:
             try:
                 await on_complete(result)
             except Exception:
                 _tasks_logger.exception("on_complete failed for task %s", handle.id)
-
         handle._set_result(result)
-        return handle
 
     async def _run_background(
         self,
@@ -452,21 +454,13 @@ class DelegationMixin(HelpersMixin):
         telemetry: Any,
     ) -> DelegatedTask:
         """Submit the task to the background task runner."""
-        from roomkit.telemetry.base import Attr
-
         notify_channel = notify or handle.agent_id
         # Read now, inside the tool call that delegated: the result continues
         # that turn's chain (RFC §23.3), whenever it comes back.
         chain_depth = _current_turn_chain_depth()
 
         async def _on_bg_complete(result: DelegatedTaskResult) -> None:
-            telemetry.end_span(
-                span_id,
-                attributes={
-                    Attr.DELEGATION_STATUS: result.status,
-                    Attr.DURATION_MS: result.duration_ms,
-                },
-            )
+            _end_delegation_span(telemetry, span_id, result)
             await self._on_delegation_complete(result)
             await self._deliver_delegation_result(result, notify_channel, chain_depth)
             if on_complete:

@@ -76,20 +76,19 @@ class DelegatedTask:
 
     def cancel(self) -> None:
         """Mark the task as cancelled and unblock waiters."""
-        done = self._get_done_event()
-        if done.is_set():
+        if self._get_done_event().is_set():
             return
-        self.status = TaskStatus.CANCELLED
         elapsed = (time.monotonic() - self._start_time) * 1000
-        self.result = DelegatedTaskResult(
-            task_id=self.id,
-            child_room_id=self.child_room_id,
-            parent_room_id=self.parent_room_id,
-            agent_id=self.agent_id,
-            status=TaskStatus.CANCELLED,
-            duration_ms=elapsed,
+        self._set_result(
+            DelegatedTaskResult(
+                task_id=self.id,
+                child_room_id=self.child_room_id,
+                parent_room_id=self.parent_room_id,
+                agent_id=self.agent_id,
+                duration_ms=elapsed,
+                **cancelled_task_fields(None),
+            )
         )
-        done.set()
 
     def _set_result(self, result: DelegatedTaskResult) -> None:
         """Set the task result and unblock waiters (called by TaskRunner)."""
@@ -106,6 +105,18 @@ def task_work(result: Any) -> str:
     if result is None or getattr(result, "status", None) == TaskStatus.FAILED:
         return ""
     return getattr(result, "output", None) or ""
+
+
+def cancelled_task_fields(context: dict[str, Any] | None) -> dict[str, Any]:
+    """The outcome of a delegated task cancelled from outside (its caller's
+    timeout, the runner's ``cancel`` or ``close``): cancelled, with no output
+    (RFC §23.3)."""
+    return {
+        "status": TaskStatus.CANCELLED,
+        "output": None,
+        "error": "cancelled",
+        "metadata": dict(context or {}),
+    }
 
 
 def finished_task_fields(

@@ -513,6 +513,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A delegation cancelled from outside ends as every task ends (RMK-434, RFC
+  §23.3): in the background (`kit.task_runner.cancel`, the runner's `close`)
+  it fired no `ON_TASK_COMPLETED` and no `on_complete`, its notified agent
+  heard nothing, and a Supervisor's worker stayed `already_running` in that
+  room for good; inline (a caller's timeout, as a Supervisor's
+  `task_timeout`) it ended `failed` "cancelled (timed out)" without its
+  `on_complete`. Both now end `cancelled` (`error="cancelled"`), run
+  `ON_TASK_COMPLETED` and `on_complete` to their end, tell the notified agent
+  the task was cancelled, then let the cancellation go on; a task cancelled
+  right after `delegate()` returned too. The inline status changes from
+  `failed` to `cancelled`. The delegation span, left open on a cancel, ends
+  with its task's status: `ok`, `error` (it said `ok` for a failed task) or
+  `cancelled`.
+
 - Closing or archiving a room stops its recordings once the room is found
   (RMK-405, RFC §12.11): a call scoped to another organization stopped the
   room's recordings, then raised `RoomNotFoundError`.
