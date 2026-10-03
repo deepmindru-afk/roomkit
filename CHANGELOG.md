@@ -12,7 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `AFTER_TOOL_ROUND` (RMK-409, RFC §6.4, §9.2): a SYNC hook between two rounds
   of an AI channel's tool loop. It fires after each round the channel ran
   calls in, with a `ToolRoundEvent` carrying the round whole (its calls, the
-  channel's results and the ones the provider served), so a rule about the
+  channel's results and the ones the provider served) and the names of the
+  turn's toolset (`tools`, Tool Search's catalogue included), so a rule about the
   round's concurrent calls (one success among failures, say) has the round to
   read. `event.withdraw(*names)` takes tools out of the rest of the turn with
   every guarantee of a `BEFORE_AI_GENERATION` withdrawal (never declared

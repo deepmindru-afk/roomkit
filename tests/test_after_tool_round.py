@@ -94,6 +94,21 @@ async def test_the_hook_reads_the_round_whole(streaming: bool) -> None:
     assert (event.channel_id, event.room_id, event.round_index) == ("ai1", "r1", 0)
     assert [call.id for call in event.calls] == ["c0", "c1"]
     assert [result.tool_call_id for result in event.results] == ["c0", "c1"]
+    assert {"safe_read", "delete_account"} <= set(event.tools)
+
+
+async def test_under_tool_search_the_event_names_the_whole_catalogue(streaming: bool) -> None:
+    """A deferred tool is part of the turn: the hook can name it to withdraw it."""
+    provider = MockAIProvider(
+        ai_responses=[_round(("c0", "safe_read")), _DONE], streaming=streaming
+    )
+    ch = _channel(provider, [], tools=[_READ, _WIRE], tool_search=True)
+    rounds = _Rounds()
+    ch._after_tool_round_hook = rounds
+
+    await _turn(ch)
+
+    assert {"safe_read", "wire_money"} <= set(rounds.seen[0].tools)
 
 
 async def test_a_tool_withdrawn_after_a_round_is_declared_no_more_and_refused(

@@ -36,6 +36,7 @@ from roomkit.models.tool_call import AIResponseEvent, ToolRoundEvent, response_t
 from roomkit.providers.ai.base import (
     AIContext,
     AIMessage,
+    AITool,
     AIToolResultPart,
     ProviderError,
 )
@@ -93,6 +94,14 @@ class _StreamTurnState:
         """End the loop on *reason*: the marker the consumer reads it from."""
         self.reason = reason
         return LoopEndMarker(reason=reason, rounds=rounds, usage=dict(self.usage))
+
+
+def _turn_toolset(loop_ctx: _ToolLoopContext, context: AIContext) -> list[AITool]:
+    """The toolset the turn's rounds are built from: the resolved catalogue,
+    or the context's tools before it is resolved."""
+    if loop_ctx.all_context_tools is not None:
+        return list(loop_ctx.all_context_tools)
+    return list(context.tools or [])
 
 
 def _turn_span_attributes(turn: _StreamTurnState) -> dict[str, Any]:
@@ -497,6 +506,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
             calls=list(calls),
             results=list(results),
             answered=list(answered),
+            tools=[tool.name for tool in _turn_toolset(turn.loop_ctx, context)],
         )
         await hook(event)
         if event.withdrawn:

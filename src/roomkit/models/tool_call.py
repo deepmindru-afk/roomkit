@@ -484,6 +484,10 @@ class ToolRoundEvent:
     answered: list[AIToolResultPart] = field(default_factory=list)
     """The results of the round's calls the provider served itself."""
 
+    tools: list[str] = field(default_factory=list)
+    """Names of the turn's toolset the next round is built from, Tool Search's
+    whole catalogue included: what a hook may name to :meth:`withdraw`."""
+
     withdrawn: set[str] = field(default_factory=set)
     """Names withdrawn for the rest of the turn (see :meth:`withdraw`)."""
 
