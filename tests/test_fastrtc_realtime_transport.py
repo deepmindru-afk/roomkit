@@ -552,3 +552,52 @@ class TestRejectConnection:
         await transport.reject_connection("nobody", message="bye")
 
         assert calls == ["cleaned nobody"]
+
+
+class TestAuthRefusal:
+    """A peer ``auth`` refuses is closed, not left connected with its audio
+    ignored (RMK-408)."""
+
+    async def _start(self, transport, auth) -> list[str]:
+        from roomkit.voice.realtime.fastrtc_transport import _PassthroughHandler
+        from roomkit.webrtc.utils import Context, current_context
+
+        calls: list[str] = []
+        transport._stream = _Stream(calls, {"rtc-1": _Peer(calls)})
+        handler = _PassthroughHandler(
+            transport, input_sample_rate=16000, output_sample_rate=24000, auth=auth
+        )
+        token = current_context.set(Context(webrtc_id="rtc-1"))
+        try:
+            await handler.start_up()
+        finally:
+            current_context.reset(token)
+        await asyncio.sleep(0)
+        await asyncio.gather(*transport._rejections)
+        return calls
+
+    async def test_a_peer_auth_refuses_is_closed(self, transport) -> None:
+        async def refuse(ctx):
+            return None
+
+        calls = await self._start(transport, refuse)
+
+        assert calls == ["peer closed", "cleaned rtc-1"]
+        assert "rtc-1" not in transport._handlers
+
+    async def test_a_peer_whose_auth_fails_is_closed(self, transport) -> None:
+        async def broken(ctx):
+            raise RuntimeError("auth service down")
+
+        calls = await self._start(transport, broken)
+
+        assert calls == ["peer closed", "cleaned rtc-1"]
+
+    async def test_an_admitted_peer_is_registered_and_kept(self, transport) -> None:
+        async def admit(ctx):
+            return {"user": "u1"}
+
+        calls = await self._start(transport, admit)
+
+        assert calls == []
+        assert "rtc-1" in transport._handlers

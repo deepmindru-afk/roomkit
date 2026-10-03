@@ -125,22 +125,28 @@ class _PassthroughHandler(AsyncStreamHandler):
         if ctx:
             self._webrtc_id = ctx.webrtc_id
 
-            # Run auth check before registering the handler
-            if self._auth is not None:
-                try:
-                    result = await self._auth(ctx)
-                    if result is None:
-                        self._rejected = True
-                        logger.warning("Auth rejected for webrtc_id=%s", self._webrtc_id)
-                        return
-                    self._auth_meta = result
-                except Exception:
-                    self._rejected = True
-                    logger.exception("Auth error for webrtc_id=%s", self._webrtc_id)
-                    return
+            # Run auth check before registering the handler. A refused peer is
+            # closed, not left connected with its audio ignored.
+            if self._auth is not None and not await self._authorized(self._auth, ctx):
+                self._rejected = True
+                self._transport._reject_refused(self._webrtc_id)
+                return
 
             self._transport._register_handler(self._webrtc_id, self)
             logger.info("WebRTC handler started: webrtc_id=%s", self._webrtc_id)
+
+    async def _authorized(self, auth: AuthCallback, ctx: Any) -> bool:
+        """Whether *auth* admits the connection; its metadata kept when it does."""
+        try:
+            result = await auth(ctx)
+        except Exception:
+            logger.exception("Auth error for webrtc_id=%s", self._webrtc_id)
+            return False
+        if result is None:
+            logger.warning("Auth rejected for webrtc_id=%s", self._webrtc_id)
+            return False
+        self._auth_meta = result
+        return True
 
     async def receive(self, frame: tuple[int, np.ndarray[Any, Any]]) -> None:
         """Process incoming audio from the WebRTC client.
@@ -257,6 +263,8 @@ class FastRTCRealtimeTransport(VoiceBackend):
         self._webrtc_sessions: dict[str, VoiceSession] = {}
 
         self._connection_tasks: dict[str, asyncio.Task[Any]] = {}
+        # Closings of peers ``auth`` refused, held until they finish.
+        self._rejections: set[asyncio.Task[None]] = set()
 
         # Callbacks
         self._audio_callbacks: list[AudioReceivedCallback] = []
@@ -422,6 +430,15 @@ class FastRTCRealtimeTransport(VoiceBackend):
                     stream.clean_up(webrtc_id)
             finally:
                 self._unregister_handler(webrtc_id)
+
+    def _reject_refused(self, webrtc_id: str) -> None:
+        """Close a peer ``auth`` refused, in a task of its own: ``start_up``
+        runs inside FastRTC's callback for the peer, which closing the peer
+        cancels, and that must not cut the cleanup short."""
+        task = asyncio.get_running_loop().create_task(self.reject_connection(webrtc_id))
+        self._rejections.add(task)
+        task.add_done_callback(self._rejections.discard)
+        task.add_done_callback(log_task_exception)
 
     async def close(self) -> None:
         """Close all connections and release resources."""

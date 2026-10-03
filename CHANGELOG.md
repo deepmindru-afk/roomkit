@@ -273,6 +273,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A WebRTC peer that `FastRTCRealtimeTransport`'s `auth` refuses is closed
+  (RMK-408): its peer connection closed, the stream cleaned, through
+  `reject_connection`. It was left connected with its audio ignored, holding a
+  peer connection until the client hung up.
+
 - `OpenTelemetryProvider` never exports on the event loop (RMK-408): the SDK's
   `force_flush` exports in the calling thread, behind the exporter's retries,
   and ignores its timeout, so a slow collector froze every task at the end of
