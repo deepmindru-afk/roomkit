@@ -22,7 +22,7 @@ from roomkit.channels._ai_loop_rules import (
 )
 from roomkit.channels._ai_stream_external_tools import _ExternalStreamTools
 from roomkit.channels._ai_stream_round import _StreamRound, _StreamRoundState
-from roomkit.channels._shielded import shielded
+from roomkit.core.task_utils import shielded
 from roomkit.models.channel import ChannelOutput
 from roomkit.models.event import RoomEvent
 from roomkit.models.streaming import (

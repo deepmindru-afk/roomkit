@@ -7,7 +7,6 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from roomkit.channels._shielded import shielded
 from roomkit.core._failure_log import log_failure
 from roomkit.core.exceptions import ChannelNotRegisteredError
 
@@ -23,6 +22,7 @@ from roomkit.core.mixins._child_execution import (
     run_agent_in_child_room,
 )
 from roomkit.core.mixins.helpers import HelpersMixin
+from roomkit.core.task_utils import shielded
 from roomkit.models.enums import (
     ChannelCategory,
     ChannelType,
@@ -33,6 +33,7 @@ from roomkit.models.enums import (
     Visibility,
 )
 from roomkit.models.event import EventSource, RoomEvent, TextContent
+from roomkit.tasks._child_status import record_task_end
 from roomkit.tasks.handback import bounded, hand_back, result_text
 from roomkit.tasks.models import (
     DelegatedTask,
@@ -94,23 +95,36 @@ def _delegation_metadata(
     return meta
 
 
-def _end_delegation_span(
-    telemetry: TelemetryProvider, span_id: str, result: DelegatedTaskResult | None
-) -> None:
-    """End a delegation's span with its task's status: ``ok`` completed,
-    ``error`` failed, ``cancelled`` cancelled (a task left without a result
-    was cancelled before it had one)."""
-    status = TaskStatus.CANCELLED if result is None else result.status
-    span_status = {TaskStatus.COMPLETED: "ok", TaskStatus.FAILED: "error"}.get(status, "cancelled")
-    telemetry.end_span(
-        span_id,
-        status=span_status,
-        error_message=result.error if result is not None and span_status == "error" else None,
-        attributes={
-            Attr.DELEGATION_STATUS: status,
-            Attr.DURATION_MS: result.duration_ms if result is not None else 0,
-        },
-    )
+class _DelegationSpan:
+    """A delegation's span, ended with its task's status (RFC §23.3)."""
+
+    def __init__(self, telemetry: TelemetryProvider, span_id: str) -> None:
+        self._telemetry = telemetry
+        self._span_id = span_id
+
+    def end(self, result: DelegatedTaskResult) -> None:
+        """End the span with *result*: ``ok`` completed, ``error`` failed
+        (with its error), ``cancelled`` cancelled."""
+        status = {TaskStatus.COMPLETED: "ok", TaskStatus.FAILED: "error"}.get(
+            result.status, "cancelled"
+        )
+        self._telemetry.end_span(
+            self._span_id,
+            status=status,
+            error_message=result.error if status == "error" else None,
+            attributes={
+                Attr.DELEGATION_STATUS: result.status,
+                Attr.DURATION_MS: result.duration_ms,
+            },
+        )
+
+
+def _unstarted_task_fields(cut: BaseException, context: dict[str, Any] | None) -> dict[str, Any]:
+    """The outcome of a task its delegation cut before it ran: cancelled,
+    or failed with what cut it."""
+    if isinstance(cut, asyncio.CancelledError):
+        return cancelled_task_fields(context)
+    return finished_task_fields(None, cut, context)
 
 
 def _result_from_handle(
@@ -190,6 +204,7 @@ class DelegationMixin(HelpersMixin):
     _store: ConversationStore
     _channels: dict[str, Channel]
     _task_runner: TaskRunner
+    _closed: bool
 
     # Cross-mixin methods — attribute annotations avoid MRO shadowing
     get_room: Any  # see DelegationHost
@@ -262,25 +277,86 @@ class DelegationMixin(HelpersMixin):
 
         child_room_id = f"{room_id}::task-{uuid4().hex[:12]}"
         task_id = f"task-{uuid4().hex[:12]}"
-
-        # Start telemetry span
+        handle = DelegatedTask(
+            id=task_id,
+            child_room_id=child_room_id,
+            parent_room_id=room_id,
+            agent_id=agent_id,
+            task=task,
+        )
         telemetry = getattr(self, "_telemetry", None) or NoopTelemetryProvider()
         mode = "inline" if wait else "background"
-        span_id = telemetry.start_span(
-            SpanKind.DELEGATION,
-            f"delegation.{mode}",
-            parent_id=get_current_span(),
-            room_id=room_id,
-            channel_id=agent_id,
-            attributes={
-                Attr.DELEGATION_TASK_ID: task_id,
-                Attr.DELEGATION_WORKER_ID: agent_id,
-                Attr.DELEGATION_CHILD_ROOM_ID: child_room_id,
-                Attr.DELEGATION_PARENT_ROOM_ID: room_id,
-                Attr.DELEGATION_MODE: mode,
-            },
+        span = _DelegationSpan(
+            telemetry,
+            telemetry.start_span(
+                SpanKind.DELEGATION,
+                f"delegation.{mode}",
+                parent_id=get_current_span(),
+                room_id=room_id,
+                channel_id=agent_id,
+                attributes={
+                    Attr.DELEGATION_TASK_ID: task_id,
+                    Attr.DELEGATION_WORKER_ID: agent_id,
+                    Attr.DELEGATION_CHILD_ROOM_ID: child_room_id,
+                    Attr.DELEGATION_PARENT_ROOM_ID: room_id,
+                    Attr.DELEGATION_MODE: mode,
+                },
+            ),
         )
+        start = time.monotonic()
+        announced = started = False
+        try:
+            await self._open_child_room(handle, parent_room, context, share_channels)
+            announced = True
+            await self._announce_task(handle)
+            started = True
+            if wait:
+                return await self._run_inline(
+                    handle,
+                    context,
+                    on_complete,
+                    span,
+                    require_structured_result=require_structured_result,
+                    max_result_retries=max_result_retries,
+                    result_tool=result_tool,
+                )
+            return await self._run_background(handle, context, notify, on_complete, span)
+        except BaseException as exc:
+            if not started:
+                ended = _result_from_handle(
+                    handle,
+                    duration_ms=(time.monotonic() - start) * 1000,
+                    **_unstarted_task_fields(exc, context),
+                )
+                await shielded(self._end_unstarted(handle, ended, on_complete, span, announced))
+            raise
 
+    async def _end_unstarted(
+        self,
+        handle: DelegatedTask,
+        result: DelegatedTaskResult,
+        on_complete: Any | None,
+        span: _DelegationSpan,
+        announced: bool,
+    ) -> None:
+        """End a task its delegation cut before it ran (RFC §23.3): once
+        announced, as an inline task ends; before that, only its span."""
+        if announced:
+            await self._complete_inline(handle, result, on_complete, span)
+        else:
+            span.end(result)
+
+    async def _open_child_room(
+        self,
+        handle: DelegatedTask,
+        parent_room: Any,
+        context: dict[str, Any] | None,
+        share_channels: list[str] | None,
+    ) -> None:
+        """Create the task's child room, its agent and the channels shared
+        into it (RFC §23.3 steps 1 to 3)."""
+        room_id, child_room_id = handle.parent_room_id, handle.child_room_id
+        agent_id, task = handle.agent_id, handle.task
         # Create child room — no orchestration so the parent's strategy
         # doesn't leak (e.g. Supervisor attaching itself to the child).
         # The caller may stamp a ``_child_metadata`` envelope on the parent
@@ -331,15 +407,10 @@ class DelegationMixin(HelpersMixin):
                     metadata=parent_binding.metadata,
                 )
 
-        # Create task handle
-        handle = DelegatedTask(
-            id=task_id,
-            child_room_id=child_room_id,
-            parent_room_id=room_id,
-            agent_id=agent_id,
-            task=task,
-        )
-
+    async def _announce_task(self, handle: DelegatedTask) -> None:
+        """Fire ``ON_TASK_DELEGATED`` in the parent room."""
+        room_id, child_room_id = handle.parent_room_id, handle.child_room_id
+        agent_id, task = handle.agent_id, handle.task
         # Fire ON_TASK_DELEGATED hook
         hook_meta = _delegation_metadata(
             task_id=handle.id,
@@ -365,27 +436,12 @@ class DelegationMixin(HelpersMixin):
             room_id, HookTrigger.ON_TASK_DELEGATED, hook_event, room_context
         )
 
-        if wait:
-            try:
-                return await self._run_inline(
-                    handle,
-                    context,
-                    on_complete,
-                    require_structured_result=require_structured_result,
-                    max_result_retries=max_result_retries,
-                    result_tool=result_tool,
-                )
-            finally:
-                _end_delegation_span(telemetry, span_id, handle.result)
-
-        # Background — span ends when task completes (via callback)
-        return await self._run_background(handle, context, notify, on_complete, span_id, telemetry)
-
     async def _run_inline(
         self,
         handle: DelegatedTask,
         context: dict[str, Any] | None,
         on_complete: Any | None,
+        span: _DelegationSpan,
         *,
         require_structured_result: bool = False,
         max_result_retries: int = 3,
@@ -415,7 +471,7 @@ class DelegationMixin(HelpersMixin):
             cancelled = _result_from_handle(
                 handle, duration_ms=elapsed, **cancelled_task_fields(context)
             )
-            await shielded(self._complete_inline(handle, cancelled, on_complete))
+            await shielded(self._complete_inline(handle, cancelled, on_complete, span))
             raise
         except Exception as exc:
             log_failure(_tasks_logger, exc, f"Inline task {handle.id}")
@@ -427,15 +483,22 @@ class DelegationMixin(HelpersMixin):
             duration_ms=elapsed,
             **finished_task_fields(agent_response, failure, context),
         )
-        await self._complete_inline(handle, result, on_complete)
+        # Its work ran: it ends as it stands, whatever cancels its caller now.
+        await shielded(self._complete_inline(handle, result, on_complete, span))
         return handle
 
     async def _complete_inline(
-        self, handle: DelegatedTask, result: DelegatedTaskResult, on_complete: Any | None
+        self,
+        handle: DelegatedTask,
+        result: DelegatedTaskResult,
+        on_complete: Any | None,
+        span: _DelegationSpan,
     ) -> None:
-        """End an inline delegation: ON_TASK_COMPLETED, its completion
-        callback, then its waiters. No proactive delivery: the caller
-        presents the result itself."""
+        """End an inline delegation: its span, its child room's status,
+        ON_TASK_COMPLETED, its completion callback, then its waiters. No
+        proactive delivery: the caller presents the result itself."""
+        span.end(result)
+        await record_task_end(self, result)  # ty: ignore[invalid-argument-type]
         await self._on_delegation_complete(result)
         if on_complete:
             try:
@@ -450,8 +513,7 @@ class DelegationMixin(HelpersMixin):
         context: dict[str, Any] | None,
         notify: str | None,
         on_complete: Any | None,
-        span_id: str,
-        telemetry: Any,
+        span: _DelegationSpan,
     ) -> DelegatedTask:
         """Submit the task to the background task runner."""
         notify_channel = notify or handle.agent_id
@@ -460,7 +522,7 @@ class DelegationMixin(HelpersMixin):
         chain_depth = _current_turn_chain_depth()
 
         async def _on_bg_complete(result: DelegatedTaskResult) -> None:
-            _end_delegation_span(telemetry, span_id, result)
+            span.end(result)
             await self._on_delegation_complete(result)
             await self._deliver_delegation_result(result, notify_channel, chain_depth)
             if on_complete:
@@ -528,6 +590,12 @@ class DelegationMixin(HelpersMixin):
         here: its caller presents the result itself.
         """
         if not (result.output or result.error):
+            return
+        if self._closed:
+            # A closing framework starts no turn (RFC §23.3).
+            _tasks_logger.info(
+                "Task %s ended while the framework closes: no hand-back", result.task_id
+            )
             return
         try:
             await hand_back(

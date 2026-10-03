@@ -75,20 +75,23 @@ class DelegatedTask:
         return self.result
 
     def cancel(self) -> None:
-        """Mark the task as cancelled and unblock waiters."""
-        if self._get_done_event().is_set():
+        """Mark the task as cancelled and unblock its waiters, and nothing
+        else: the work goes on, and no hook or callback hears of it. To
+        cancel the work, as every task ends (RFC §23.3), use the task
+        runner's ``cancel``."""
+        done = self._get_done_event()
+        if done.is_set():
             return
-        elapsed = (time.monotonic() - self._start_time) * 1000
-        self._set_result(
-            DelegatedTaskResult(
-                task_id=self.id,
-                child_room_id=self.child_room_id,
-                parent_room_id=self.parent_room_id,
-                agent_id=self.agent_id,
-                duration_ms=elapsed,
-                **cancelled_task_fields(None),
-            )
+        self.status = TaskStatus.CANCELLED
+        self.result = DelegatedTaskResult(
+            task_id=self.id,
+            child_room_id=self.child_room_id,
+            parent_room_id=self.parent_room_id,
+            agent_id=self.agent_id,
+            duration_ms=(time.monotonic() - self._start_time) * 1000,
+            **cancelled_task_fields(None),
         )
+        done.set()
 
     def _set_result(self, result: DelegatedTaskResult) -> None:
         """Set the task result and unblock waiters (called by TaskRunner)."""

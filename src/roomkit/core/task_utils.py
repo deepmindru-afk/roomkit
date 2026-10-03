@@ -124,3 +124,15 @@ def log_task_exception(task: asyncio.Task[Any]) -> None:
             exc,
             exc_info=exc,
         )
+
+
+_SHIELDED_IN_FLIGHT: set[asyncio.Task[None]] = set()
+"""Work a cancelled task shields: held here so none is collected mid-run."""
+
+
+async def shielded(work: Coroutine[Any, Any, None]) -> None:
+    """Run *work* to its end even if the task awaiting it is cancelled meanwhile."""
+    task = asyncio.ensure_future(work)
+    _SHIELDED_IN_FLIGHT.add(task)
+    task.add_done_callback(_SHIELDED_IN_FLIGHT.discard)
+    await asyncio.shield(task)

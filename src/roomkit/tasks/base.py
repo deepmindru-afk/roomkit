@@ -19,6 +19,13 @@ class TaskRunner(ABC):
 
     Follows the same pluggable-backend pattern as ``ConversationStore``
     and ``RoomLockManager``.
+
+    A task ends exactly once, through *on_complete*, whatever ends it (RFC
+    §23.1, §23.3): run to its end, it ends completed or failed; cancelled
+    (:meth:`cancel`, :meth:`close`, even before it ran), it ends with a
+    ``cancelled`` result (:func:`~roomkit.tasks.models.cancelled_task_fields`).
+    The framework closes the task's span, fires ``ON_TASK_COMPLETED`` and
+    hands the result back from that call.
     """
 
     @abstractmethod
@@ -41,8 +48,12 @@ class TaskRunner(ABC):
 
     @abstractmethod
     async def cancel(self, task_id: str) -> bool:
-        """Cancel a running task. Returns True if found and cancelled."""
+        """Cancel a task and end it ``cancelled`` through its *on_complete*,
+        run to its end even if this call is cancelled. A task that already
+        ran to its end ends as it stands. Returns True if the task was found
+        and cancelled."""
 
     @abstractmethod
     async def close(self) -> None:
-        """Shutdown the runner, cancelling all in-flight tasks."""
+        """Shutdown the runner: every task it holds ends cancelled, one
+        submitted meanwhile too."""

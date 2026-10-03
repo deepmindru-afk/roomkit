@@ -218,6 +218,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING — a delegated task cancelled from outside ends `cancelled`,
+  through `ON_TASK_COMPLETED` and its callback, inline or in the
+  background** (RMK-434, RFC §23.1, §23.3). In the background
+  (`kit.task_runner.cancel`, the runner's `close`) a cancelled task fired no
+  `ON_TASK_COMPLETED` and no `on_complete`, its notified agent heard nothing,
+  and a Supervisor's worker stayed `already_running` in that room for good;
+  inline (a caller's timeout, as a Supervisor's `task_timeout`) it ended
+  `failed` with "cancelled (timed out)" and no `on_complete`. Both now end
+  once, `status="cancelled"`, `error="cancelled"`, even right after
+  `delegate()` returned or while its delegation was still being set up; the
+  hooks and the callback run to their end, and a task whose work already ran
+  ends as it stands. A notified agent is told the task was cancelled, except
+  while the framework closes: `kit.close()` starts no hand-back turn. An
+  inline task now records its end on its child room as a background one
+  does. The delegation span, left open on a cancel, ends with the task's
+  status: `ok`, `error` (it said `ok` for a failed task, which OpenTelemetry
+  now records as an error) or `cancelled`. `DelegatedTask.cancel()` only
+  unblocks the handle's waiters, as before. A custom `TaskRunner` must end a
+  cancelled task through its `on_complete` with
+  `roomkit.tasks.models.cancelled_task_fields`. Migration: a host that read
+  an inline timeout as `task_status == "failed"` reads `"cancelled"`; one
+  that counted on no `ON_TASK_COMPLETED` for a background cancel now hears
+  it once.
+
 - A room recording's end is announced (RMK-405, RFC §12.11):
   `ON_RECORDING_STOPPED` and the `recording_stopped` framework event fire for
   each room recording that stops, on an explicit stop, `close_room`,
@@ -512,20 +536,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to `RealtimeVoiceChannel(..., skills=...)`.
 
 ### Fixed
-
-- A delegation cancelled from outside ends as every task ends (RMK-434, RFC
-  §23.3): in the background (`kit.task_runner.cancel`, the runner's `close`)
-  it fired no `ON_TASK_COMPLETED` and no `on_complete`, its notified agent
-  heard nothing, and a Supervisor's worker stayed `already_running` in that
-  room for good; inline (a caller's timeout, as a Supervisor's
-  `task_timeout`) it ended `failed` "cancelled (timed out)" without its
-  `on_complete`. Both now end `cancelled` (`error="cancelled"`), run
-  `ON_TASK_COMPLETED` and `on_complete` to their end, tell the notified agent
-  the task was cancelled, then let the cancellation go on; a task cancelled
-  right after `delegate()` returned too. The inline status changes from
-  `failed` to `cancelled`. The delegation span, left open on a cancel, ends
-  with its task's status: `ok`, `error` (it said `ok` for a failed task) or
-  `cancelled`.
 
 - Closing or archiving a room stops its recordings once the room is found
   (RMK-405, RFC §12.11): a call scoped to another organization stopped the

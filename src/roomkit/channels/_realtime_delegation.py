@@ -27,8 +27,8 @@ from roomkit.channels._realtime_tool_executor import (
     report_failed_call,
     run_tool_call,
 )
-from roomkit.channels._shielded import shielded
 from roomkit.core._failure_log import log_failure
+from roomkit.core.task_utils import shielded
 from roomkit.models.enums import HookTrigger
 from roomkit.telemetry.base import SpanKind
 from roomkit.telemetry.context import reset_span

@@ -25,8 +25,8 @@ from roomkit.channels._acp_usage import (
     _report_context,
     _transport_usage,
 )
-from roomkit.channels._shielded import shielded
 from roomkit.channels._tool_event_result import tool_event_result
+from roomkit.core.task_utils import shielded
 from roomkit.models.streaming import (
     ThinkingDeltaMarker,
     ToolCallEndMarker,

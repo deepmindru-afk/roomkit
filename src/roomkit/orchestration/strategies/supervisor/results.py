@@ -45,6 +45,8 @@ def _result_output(result: Any) -> str:
         return ""
     if work := task_work(result):
         return work
+    if getattr(result, "status", None) == TaskStatus.CANCELLED:
+        return "The task was cancelled."
     failed = getattr(result, "error", None) or getattr(result, "status", None) == TaskStatus.FAILED
     return "The task failed." if failed else ""
 

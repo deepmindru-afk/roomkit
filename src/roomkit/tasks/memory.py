@@ -9,10 +9,10 @@ from collections.abc import Callable, Coroutine
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
-from roomkit.channels._shielded import shielded
 from roomkit.core._failure_log import log_failure
-from roomkit.core.task_utils import cancel_and_wait, log_task_exception
+from roomkit.core.task_utils import cancel_and_wait, log_task_exception, shielded
 from roomkit.models.enums import TaskStatus
+from roomkit.tasks._child_status import record_task_end
 from roomkit.tasks.base import OnCompleteCallback, TaskRunner
 from roomkit.tasks.models import (
     DelegatedTask,
@@ -33,7 +33,9 @@ class InMemoryTaskRunner(TaskRunner):
     def __init__(self) -> None:
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._handles: dict[str, DelegatedTask] = {}
-        # How each task ends once cancelled (RFC §23.3).
+        # How each task ends cancelled. Whoever takes a task's entry ends the
+        # task, so it ends once: the task itself once its work ran, or
+        # ``cancel`` (RFC §23.3).
         self._cancelled_ends: dict[str, Callable[[], Coroutine[Any, Any, None]]] = {}
 
     async def submit(
@@ -44,6 +46,8 @@ class InMemoryTaskRunner(TaskRunner):
         context: dict[str, Any] | None = None,
         on_complete: OnCompleteCallback | None = None,
     ) -> None:
+        fields = cancelled_task_fields(context)
+        end = partial(self._finish, kit, task, fields, time.monotonic(), on_complete)
         bg = asyncio.create_task(
             self._execute(kit, task, context=context, on_complete=on_complete),
             name=f"delegate:{task.id}",
@@ -51,29 +55,29 @@ class InMemoryTaskRunner(TaskRunner):
         bg.add_done_callback(log_task_exception)
         self._tasks[task.id] = bg
         self._handles[task.id] = task
-        fields = cancelled_task_fields(context)
-        self._cancelled_ends[task.id] = partial(
-            self._finish, kit, task, fields, time.monotonic(), on_complete
-        )
+        self._cancelled_ends[task.id] = end
 
     async def cancel(self, task_id: str) -> bool:
-        handle = self._handles.get(task_id)
         bg = self._tasks.get(task_id)
-        if handle is None or bg is None:
+        if task_id not in self._handles or bg is None:
             return False
-        await cancel_and_wait(bg)
         end = self._cancelled_ends.pop(task_id, None)
-        if end is not None and handle.result is None:
-            # It ends as any task does, cancelled, its completion run to its
-            # end even if this call is cancelled meanwhile (RFC §23.3).
+        if end is None:
+            # Its work ran to its end, and it is ending as it stands.
+            await asyncio.wait({bg})
+            return False
+        try:
+            await cancel_and_wait(bg)
+        finally:
+            # It ends cancelled, to its end even if this call is cancelled.
             await shielded(end())
-        self._tasks.pop(task_id, None)
-        self._handles.pop(task_id, None)
         return True
 
     async def close(self) -> None:
-        for task_id in list(self._tasks):
-            await self.cancel(task_id)
+        # A task's end may delegate again: that task is cancelled in turn.
+        while self._tasks:
+            for task_id in list(self._tasks):
+                await self.cancel(task_id)
 
     async def _execute(
         self,
@@ -85,9 +89,12 @@ class InMemoryTaskRunner(TaskRunner):
     ) -> None:
         start = time.monotonic()
         task.status = TaskStatus.IN_PROGRESS
-        # Cancelled (``cancel``, ``close``), it is ended by ``cancel``.
         fields = await self._run(kit, task, context)
-        await self._finish(kit, task, fields, start, on_complete)
+        if self._cancelled_ends.pop(task.id, None) is None:
+            # ``cancel`` took its end: it ends the task, cancelled.
+            return
+        # Its work ran: it ends as it stands, whatever cancels it now.
+        await shielded(self._finish(kit, task, fields, start, on_complete))
 
     async def _run(
         self, kit: RoomKit, task: DelegatedTask, context: dict[str, Any] | None
@@ -144,25 +151,7 @@ class InMemoryTaskRunner(TaskRunner):
             duration_ms=(time.monotonic() - start) * 1000,
             **fields,
         )
-
-        # Update child room metadata
-        try:
-            room = await kit.get_room(task.child_room_id)
-            if room is not None:
-                completed = result.status == TaskStatus.COMPLETED
-                await kit.store.update_room(
-                    room.model_copy(
-                        update={
-                            "metadata": {
-                                **room.metadata,
-                                "task_status": result.status,
-                                "task_result": result.output if completed else None,
-                            },
-                        }
-                    )
-                )
-        except Exception:
-            logger.exception("Task %s: failed to update child room metadata", task.id)
+        await record_task_end(kit, result)
 
         # Run on_complete BEFORE setting result so hooks fire before waiters unblock
         if on_complete:
@@ -176,4 +165,3 @@ class InMemoryTaskRunner(TaskRunner):
 
         self._tasks.pop(task.id, None)
         self._handles.pop(task.id, None)
-        self._cancelled_ends.pop(task.id, None)

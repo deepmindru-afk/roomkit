@@ -17,15 +17,17 @@ import pytest
 from roomkit import ChannelCategory, HookExecution, HookTrigger, RoomKit
 from roomkit.channels.agent import Agent
 from roomkit.channels.ai import AIChannel
+from roomkit.core.mixins import delegation
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import TaskStatus
 from roomkit.models.event import TextContent
 from roomkit.orchestration.strategies.supervisor import Supervisor
 from roomkit.orchestration.strategies.supervisor.execution import _run_sequential
+from roomkit.orchestration.strategies.supervisor.results import _result_output
 from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
-from roomkit.tasks.models import DelegatedTaskResult
-from roomkit.telemetry.base import SpanKind
+from roomkit.tasks.models import DelegatedTaskResult, cancelled_task_fields
+from roomkit.telemetry.base import Attr, SpanKind
 from roomkit.telemetry.mock import MockTelemetryProvider
 from tests.test_framework import SimpleChannel
 
@@ -267,4 +269,226 @@ async def test_a_cancel_cut_while_the_task_ends_still_ends_it() -> None:
 
     assert (await task.wait(timeout=1)).status == TaskStatus.CANCELLED
     assert completed == [(TaskStatus.CANCELLED, "cancelled")]
+    await kit.close()
+
+
+DONE = [AIResponse(content="Done.")]
+
+
+def _slow_completion(seen: list[Any]) -> Any:
+    async def on_complete(result: DelegatedTaskResult) -> None:
+        seen.append(result.status)
+        await asyncio.sleep(0.3)
+        seen.append("done")
+
+    return on_complete
+
+
+@pytest.mark.parametrize("door", ["cancel", "close"])
+async def test_a_task_that_ran_ends_as_it_stands_whatever_cancels_it(door: str) -> None:
+    """Its work done, a task is ending (its callback, the hand-back): a
+    cancel then ends it once, as it stands, never a second time cancelled."""
+    kit, telemetry, completed = await _kit(DONE)
+    seen: list[Any] = []
+    task = await kit.delegate("p", "worker", "go", on_complete=_slow_completion(seen))
+    for _ in range(100):
+        if seen:
+            break
+        await asyncio.sleep(0.01)
+
+    if door == "cancel":
+        assert await kit.task_runner.cancel(task.id) is False
+    else:
+        await kit.task_runner.close()
+
+    assert seen == [TaskStatus.COMPLETED, "done"]
+    assert completed == [(TaskStatus.COMPLETED, None)]
+    assert task.status == TaskStatus.COMPLETED
+    room = await kit.get_room(task.child_room_id)
+    assert (room.metadata["task_status"], room.metadata["task_result"]) == ("completed", "Done.")
+    assert _delegation_spans(telemetry) == [("delegation.background", "ok")]
+    await kit.close()
+
+
+async def test_a_cancel_cut_while_the_worker_unwinds_still_ends_the_task() -> None:
+    async def slow_cleanup(name: str, arguments: dict[str, Any]) -> str:
+        try:
+            await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            await asyncio.shield(asyncio.sleep(0.3))
+            raise
+        return "found"
+
+    kit, telemetry, completed = await _kit(handler=slow_cleanup)
+    task = await kit.delegate("p", "worker", "go")
+    await asyncio.sleep(0.2)
+
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(kit.task_runner.cancel(task.id), 0.1)
+
+    assert (await task.wait(timeout=1)).status == TaskStatus.CANCELLED
+    assert completed == [(TaskStatus.CANCELLED, "cancelled")]
+    assert _delegation_spans(telemetry) == [("delegation.background", "cancelled")]
+    await kit.close()
+
+
+async def test_an_inline_caller_timing_out_while_the_task_ends_leaves_its_end_whole() -> None:
+    kit, telemetry, completed = await _kit(DONE)
+    seen: list[Any] = []
+
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(
+            kit.delegate("p", "worker", "go", wait=True, on_complete=_slow_completion(seen)), 0.1
+        )
+    await asyncio.sleep(0.4)
+
+    assert seen == [TaskStatus.COMPLETED, "done"]
+    assert completed == [(TaskStatus.COMPLETED, None)]
+    assert _delegation_spans(telemetry) == [("delegation.inline", "ok")]
+    await kit.close()
+
+
+@pytest.mark.parametrize("wait", [True, False])
+async def test_a_delegation_cut_before_its_task_ran_ends_it(wait: bool) -> None:
+    kit, telemetry, completed = await _kit()
+
+    @kit.hook(HookTrigger.ON_TASK_DELEGATED, execution=HookExecution.ASYNC, name="slow")
+    async def slow_announce(event: Any, ctx: Any) -> None:
+        await asyncio.sleep(1)
+
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(kit.delegate("p", "worker", "go", wait=wait), 0.1)
+    await _settle(completed)
+
+    assert completed == [(TaskStatus.CANCELLED, "cancelled")]
+    mode = "inline" if wait else "background"
+    assert _delegation_spans(telemetry) == [(f"delegation.{mode}", "cancelled")]
+    await kit.close()
+
+
+async def test_the_runner_ends_a_task_whose_handle_was_cancelled() -> None:
+    """A handle's own ``cancel`` only unblocks its waiters: the runner still
+    ends the task when it cancels it."""
+    kit, telemetry, completed = await _kit()
+    task = await kit.delegate("p", "worker", "go")
+    await asyncio.sleep(0.2)
+
+    task.cancel()
+    assert await kit.task_runner.cancel(task.id) is True
+
+    assert completed == [(TaskStatus.CANCELLED, "cancelled")]
+    assert _delegation_spans(telemetry) == [("delegation.background", "cancelled")]
+    await kit.close()
+
+
+async def test_closing_the_kit_hands_nothing_back() -> None:
+    kit, _, completed = await _kit()
+    notified = AIChannel("assistant", provider=MockAIProvider(responses=["ok"]))
+    kit.register_channel(notified)
+    kit.register_channel(SimpleChannel("phone"))
+    await kit.attach_channel("p", "phone")
+    await kit.attach_channel("p", "assistant", category=ChannelCategory.INTELLIGENCE)
+    await kit.delegate("p", "worker", "go", notify="assistant")
+    await asyncio.sleep(0.2)
+
+    await kit.close()
+
+    # The task still ends, and its observers hear it; no turn starts.
+    assert completed == [(TaskStatus.CANCELLED, "cancelled")]
+    assert notified._provider.calls == []
+
+
+async def test_a_task_delegated_while_the_runner_closes_ends_at_once() -> None:
+    kit, _, completed = await _kit()
+    again: list[Any] = []
+
+    async def delegate_again(result: DelegatedTaskResult) -> None:
+        again.append(await kit.delegate("p", "worker", "again"))
+
+    await kit.delegate("p", "worker", "go", on_complete=delegate_again)
+    await asyncio.sleep(0.2)
+
+    await kit.task_runner.close()
+
+    [retry] = again
+    assert retry.status == TaskStatus.CANCELLED
+    assert [status for status, _ in completed] == [TaskStatus.CANCELLED, TaskStatus.CANCELLED]
+    await kit.close()
+
+
+async def test_an_inline_task_records_its_end_on_its_child_room() -> None:
+    kit, _, _ = await _kit(DONE)
+
+    task = await kit.delegate("p", "worker", "go", wait=True)
+
+    room = await kit.get_room(task.child_room_id)
+    assert (room.metadata["task_status"], room.metadata["task_result"]) == ("completed", "Done.")
+    await kit.close()
+
+
+async def test_a_cancelled_task_span_carries_how_long_it_ran() -> None:
+    kit, telemetry, completed = await _kit()
+    task = await kit.delegate("p", "worker", "go")
+    await asyncio.sleep(0.2)
+
+    await kit.task_runner.cancel(task.id)
+
+    [span] = [s for s in telemetry.completed_spans if s.kind == SpanKind.DELEGATION]
+    assert span.attributes[Attr.DURATION_MS] >= 150
+    await kit.close()
+
+
+def test_a_supervisor_reads_a_cancelled_task_as_cancelled() -> None:
+    cancelled = DelegatedTaskResult(
+        task_id="t",
+        child_room_id="c",
+        parent_room_id="p",
+        agent_id="worker",
+        **cancelled_task_fields(None),
+    )
+
+    assert _result_output(cancelled) == "The task was cancelled."
+
+
+async def test_a_cancel_that_took_a_task_ends_it_once_though_its_worker_finished(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A worker that swallows the cancellation still returns its answer: the
+    cancel took the task's end, and the task ends once, cancelled."""
+
+    async def swallowing(kit: Any, child_room_id: str, task: str, **kw: Any) -> str:
+        try:
+            await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            return "found anyway"
+        return "found"
+
+    monkeypatch.setattr(delegation, "run_agent_in_child_room", swallowing)
+    kit, telemetry, completed = await _kit()
+    task = await kit.delegate("p", "worker", "go")
+    await asyncio.sleep(0.1)
+
+    assert await kit.task_runner.cancel(task.id) is True
+    await asyncio.sleep(0.1)
+
+    assert completed == [(TaskStatus.CANCELLED, "cancelled")]
+    assert task.status == TaskStatus.CANCELLED
+    assert _delegation_spans(telemetry) == [("delegation.background", "cancelled")]
+    await kit.close()
+
+
+async def test_a_task_that_ran_ends_whole_though_its_runner_task_is_cancelled() -> None:
+    kit, _, completed = await _kit(DONE)
+    seen: list[Any] = []
+    task = await kit.delegate("p", "worker", "go", on_complete=_slow_completion(seen))
+    for _ in range(100):
+        if seen:
+            break
+        await asyncio.sleep(0.01)
+
+    kit.task_runner._tasks[task.id].cancel()  # type: ignore[attr-defined]
+
+    assert (await task.wait(timeout=1)).status == TaskStatus.COMPLETED
+    assert seen == [TaskStatus.COMPLETED, "done"]
+    assert completed == [(TaskStatus.COMPLETED, None)]
     await kit.close()
