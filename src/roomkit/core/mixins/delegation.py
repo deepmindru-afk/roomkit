@@ -8,7 +8,7 @@ import time
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.core._failure_log import log_failure
-from roomkit.core.exceptions import ChannelNotRegisteredError, failure_parts
+from roomkit.core.exceptions import ChannelNotRegisteredError
 
 # _persist_child_stream and _run_with_structured_result are re-exported (self-
 # aliased) for the test suite, which imports them from this module.
@@ -33,7 +33,12 @@ from roomkit.models.enums import (
 )
 from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.tasks.handback import bounded, hand_back, result_text
-from roomkit.tasks.models import DelegatedTask, DelegatedTaskResult
+from roomkit.tasks.models import (
+    DelegatedTask,
+    DelegatedTaskResult,
+    finished_task_fields,
+    task_work,
+)
 from roomkit.tools.context import _current_turn_chain_depth
 
 if TYPE_CHECKING:
@@ -63,6 +68,7 @@ def _delegation_metadata(
     task_status: TaskStatus | str | None = None,
     duration_ms: float | None = None,
     error: str | None = None,
+    loop_end_reason: str | None = None,
 ) -> dict[str, Any]:
     """Build consistent metadata for delegation hooks."""
     meta: dict[str, Any] = {
@@ -79,6 +85,9 @@ def _delegation_metadata(
         meta["duration_ms"] = duration_ms
     if error is not None:
         meta["error"] = error
+    if loop_end_reason is not None:
+        # How a worker cut short ended its turn (RFC §23.3).
+        meta["loop_end_reason"] = loop_end_reason
     return meta
 
 
@@ -144,7 +153,7 @@ def _delegation_result_text(result: DelegatedTaskResult) -> str:
     outcome = "completed" if result.status == TaskStatus.COMPLETED else "failed"
     return result_text(
         f"[Background task from {result.agent_id} {outcome}. Share the outcome with the user.]",
-        bounded(result.output or "No output"),
+        bounded(task_work(result) or "No output"),
     )
 
 
@@ -370,8 +379,7 @@ class DelegationMixin(HelpersMixin):
         start = time.monotonic()
         handle.status = TaskStatus.IN_PROGRESS
         agent_response: str | None = None
-        error: str | None = None
-        kept: tuple[str | None, dict[str, Any]] = (None, {})
+        failure: Exception | None = None
 
         try:
             agent_response = await run_agent_in_child_room(
@@ -413,19 +421,13 @@ class DelegationMixin(HelpersMixin):
             raise
         except Exception as exc:
             log_failure(_tasks_logger, exc, f"Inline task {handle.id}")
-            error = str(exc)
-            kept = failure_parts(exc)
+            failure = exc
 
         elapsed = (time.monotonic() - start) * 1000
-        status = TaskStatus.COMPLETED if agent_response else TaskStatus.FAILED
-
         result = _result_from_handle(
             handle,
-            status=status,
-            output=agent_response or kept[0],
-            error=error,
             duration_ms=elapsed,
-            metadata={**(context or {}), **kept[1]},
+            **finished_task_fields(agent_response, failure, context),
         )
 
         # Fire completion hooks + callbacks (skip proactive delivery for inline —
@@ -494,6 +496,7 @@ class DelegationMixin(HelpersMixin):
             task_status=result.status,
             duration_ms=result.duration_ms,
             error=result.error,
+            loop_end_reason=result.metadata.get("loop_end_reason"),
         )
         hook_event = RoomEvent(
             room_id=result.parent_room_id,

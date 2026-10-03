@@ -105,7 +105,7 @@ async def _supervisor_dispatch(
         f"First worker — {_worker_profile(workers[0])}.\n\n"
         "Respond with ONLY the task text for that worker — no preamble, no JSON."
     )
-    framed, _ok = await _delegate_and_wait(
+    framed, ok = await _delegate_and_wait(
         kit,
         room_id,
         supervisor.channel_id,
@@ -113,7 +113,8 @@ async def _supervisor_dispatch(
         share_channels=share_channels,
         task_timeout=task_timeout,
     )
-    return (framed or "").strip() or goal
+    # A supervisor whose turn failed frames nothing: the goal goes as it is.
+    return framed.strip() if ok and framed.strip() else goal
 
 
 async def _supervisor_review(

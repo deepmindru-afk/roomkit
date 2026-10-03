@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
 from roomkit.channels.ai import AIChannel
-from roomkit.core.exceptions import RoomKitError, ToolRefusedError
+from roomkit.core.exceptions import ToolRefusedError, TurnCutShortError
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.streaming import LoopEndMarker, ToolCallStartMarker
 from roomkit.models.tool_call import ToolCallEvent
@@ -66,15 +66,14 @@ RefusalReporter = Callable[..., Awaitable[None]]
 refused before the channel's gate to its ON_TOOL_CALL observers."""
 
 
-class ReasoningCutShortError(RoomKitError):
+class ReasoningCutShortError(TurnCutShortError):
     """A backend's turn ended before its answer: the round cap, the deadline or
     the budget cut it. The channel answers the delegation with its spoken
     fallback (RFC §12.4.1)."""
 
     def __init__(self, delegation_id: str, reason: str | None) -> None:
-        super().__init__(f"Reasoning turn for delegation {delegation_id} ended {reason}")
+        super().__init__(f"Reasoning turn for delegation {delegation_id} ended {reason}", reason)
         self.delegation_id = delegation_id
-        self.reason = reason
 
 
 DEFAULT_TRANSCRIPT_INSTRUCTION = "Act on the user's most recent request in the conversation above."

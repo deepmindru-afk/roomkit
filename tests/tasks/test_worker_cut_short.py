@@ -9,16 +9,22 @@ and submitted it before the cut keeps it.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 from typing import Any
 
 import pytest
 
-from roomkit import RoomKit, TaskCutShortError
+from roomkit import HookExecution, HookTrigger, RoomKit, TaskCutShortError
 from roomkit.channels.agent import Agent
 from roomkit.models.enums import TaskStatus
+from roomkit.orchestration.strategies.loop import _execute_loop
+from roomkit.orchestration.strategies.supervisor.results import _result_output
+from roomkit.orchestration.strategies.supervisor.supervised import _supervisor_dispatch
 from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.tasks.models import DelegatedTaskResult, task_work
 from tests.test_framework import SimpleChannel
 
 LOOKUP = AITool(name="lookup", description="look up", parameters={"type": "object"})
@@ -59,7 +65,7 @@ def _assert_cut(result: Any) -> None:
     assert result.metadata["loop_end_reason"] == "max_rounds"
 
 
-@pytest.mark.parametrize("streaming", [False, True], ids=["buffered", "streamed"])
+@pytest.mark.parametrize("streaming", [False, True], ids=["generates", "streams"])
 @pytest.mark.parametrize("shared", [False, True], ids=["trace", "shared-transport"])
 async def test_an_inline_task_fails_with_its_narration(streaming: bool, shared: bool) -> None:
     kit = await _kit([LOOPING] * 3, streaming=streaming)
@@ -76,7 +82,7 @@ async def test_an_inline_task_fails_with_its_narration(streaming: bool, shared: 
     await kit.close()
 
 
-@pytest.mark.parametrize("streaming", [False, True], ids=["buffered", "streamed"])
+@pytest.mark.parametrize("streaming", [False, True], ids=["generates", "streams"])
 async def test_a_background_task_fails_with_its_narration(streaming: bool) -> None:
     kit = await _kit([LOOPING] * 3, streaming=streaming)
 
@@ -98,7 +104,7 @@ async def test_a_worker_that_finished_still_completes() -> None:
     await kit.close()
 
 
-@pytest.mark.parametrize("streaming", [False, True], ids=["buffered", "streamed"])
+@pytest.mark.parametrize("streaming", [False, True], ids=["generates", "streams"])
 async def test_a_result_submitted_before_the_cut_counts(streaming: bool) -> None:
     submitted = {"status": "completed", "summary": "found it", "data": {}}
     submit = AIResponse(
@@ -126,6 +132,90 @@ async def test_a_worker_owing_a_result_fails_when_cut_without_one() -> None:
     )
 
     _assert_cut(task.result)
+    await kit.close()
+
+
+async def test_a_loop_does_not_take_a_cut_producers_narration_for_its_work() -> None:
+    """Every orchestration reader reads a failed task's work as none (RMK-414)."""
+    kit = await _kit([LOOPING] * 3, streaming=True)
+    reviewer = Agent("reviewer", provider=MockAIProvider(responses=["APPROVED"] * 3))
+    kit.register_channel(reviewer)
+    producer = kit.channels["worker"]
+
+    out = await _execute_loop(
+        kit=kit,
+        room_id="parent",
+        producer=producer,
+        reviewers=[reviewer],
+        strategy=None,
+        task_desc="Find it.",
+        max_iterations=2,
+    )
+
+    assert out["approved"] is False
+    assert out["output"] == ""
+    await kit.close()
+
+
+def test_a_supervisor_reads_a_cut_worker_as_failed() -> None:
+    cut = DelegatedTaskResult(
+        task_id="t",
+        child_room_id="c",
+        parent_room_id="p",
+        agent_id="worker",
+        status=TaskStatus.FAILED,
+        output="Still checking.",
+        error="The worker's turn ended max_rounds before its answer",
+    )
+
+    assert task_work(cut) == ""
+    assert _result_output(cut) == "The task failed."
+
+
+async def test_a_supervisor_cut_framing_the_first_task_hands_on_the_goal() -> None:
+    kit = await _kit([LOOPING] * 3, streaming=True)
+    first = Agent("first", provider=MockAIProvider(responses=["done"]))
+    kit.register_channel(first)
+
+    framed = await _supervisor_dispatch(
+        kit,
+        kit.channels["worker"],
+        "parent",
+        goal="Find the flight.",
+        workers=[first],
+        share_channels=None,
+        task_timeout=10.0,
+    )
+
+    assert framed == "Find the flight."
+    await kit.close()
+
+
+async def test_the_cut_is_logged_once_as_a_warning(caplog: pytest.LogCaptureFixture) -> None:
+    kit = await _kit([LOOPING] * 3, streaming=True)
+
+    with caplog.at_level(logging.DEBUG, logger="roomkit.tasks"):
+        await kit.delegate("parent", "worker", "Find it.", wait=True)
+
+    [record] = [r for r in caplog.records if "failed" in r.getMessage()]
+    assert record.levelno == logging.WARNING
+    assert record.exc_info is None
+    await kit.close()
+
+
+async def test_on_task_completed_names_the_turns_end() -> None:
+    kit = await _kit([LOOPING] * 3, streaming=True)
+    seen: list[dict[str, Any]] = []
+
+    @kit.hook(HookTrigger.ON_TASK_COMPLETED, execution=HookExecution.ASYNC)
+    async def completed(event: Any, ctx: Any) -> None:
+        seen.append(event.metadata)
+
+    await kit.delegate("parent", "worker", "Find it.", wait=True)
+    await asyncio.sleep(0.05)
+
+    [metadata] = seen
+    assert (metadata["task_status"], metadata["loop_end_reason"]) == ("failed", "max_rounds")
     await kit.close()
 
 

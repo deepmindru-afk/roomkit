@@ -8,11 +8,10 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from roomkit.core._failure_log import log_failure
-from roomkit.core.exceptions import failure_parts
 from roomkit.core.task_utils import cancel_and_wait, log_task_exception
 from roomkit.models.enums import TaskStatus
 from roomkit.tasks.base import OnCompleteCallback, TaskRunner
-from roomkit.tasks.models import DelegatedTask, DelegatedTaskResult
+from roomkit.tasks.models import DelegatedTask, DelegatedTaskResult, finished_task_fields
 
 if TYPE_CHECKING:
     from roomkit.core.framework import RoomKit
@@ -70,7 +69,7 @@ class InMemoryTaskRunner(TaskRunner):
         task.status = TaskStatus.IN_PROGRESS
         agent_response: str | None = None
         error: str | None = None
-        kept: tuple[str | None, dict[str, Any]] = (None, {})
+        failure: Exception | None = None
 
         try:
             # Update child room status
@@ -99,22 +98,20 @@ class InMemoryTaskRunner(TaskRunner):
                 agent_response = await run_agent_in_child_room(kit, task.child_room_id, task.task)
         except Exception as exc:
             log_failure(logger, exc, f"Task {task.id}")
-            error = str(exc)
-            kept = failure_parts(exc)
+            failure = exc
 
         elapsed = (time.monotonic() - start) * 1000
-        status = TaskStatus.COMPLETED if agent_response else TaskStatus.FAILED
-
+        fields = finished_task_fields(agent_response, failure, context)
+        if failure is None and error is not None:
+            # The child room was gone: no worker ran.
+            fields["error"] = error
         result = DelegatedTaskResult(
             task_id=task.id,
             child_room_id=task.child_room_id,
             parent_room_id=task.parent_room_id,
             agent_id=task.agent_id,
-            status=status,
-            output=agent_response or kept[0],
-            error=error,
             duration_ms=elapsed,
-            metadata={**(context or {}), **kept[1]},
+            **fields,
         )
 
         # Update child room metadata
@@ -126,7 +123,7 @@ class InMemoryTaskRunner(TaskRunner):
                         update={
                             "metadata": {
                                 **room.metadata,
-                                "task_status": status,
+                                "task_status": result.status,
                                 "task_result": agent_response,
                             },
                         }

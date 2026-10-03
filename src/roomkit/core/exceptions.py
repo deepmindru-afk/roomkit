@@ -241,13 +241,27 @@ class ToolNameCollisionError(RoomKitError, ValueError):
     """
 
 
-class TaskCutShortError(RoomKitError):
+class TurnCutShortError(RoomKitError):
+    """An AI turn that ended before its answer (RFC §6.4): it ended for any
+    reason but ``completed`` (its round cap, deadline or budget cut it, a stop
+    cancelled it, its answer was cut or never came). An expected outcome, not
+    a code defect: logged as a warning, without a traceback (RFC §15.2).
+
+    Attributes:
+        reason: The turn's ``loop_end_reason``.
+    """
+
+    def __init__(self, message: str, reason: str | None) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
+class TaskCutShortError(TurnCutShortError):
     """A delegated worker's turn ended before its answer (RFC §23.3).
 
-    Its round cap, its deadline or its budget cut it: the turn has no answer,
-    and its last narration is none (RFC §6.4). The task fails, its error
-    naming how the turn ended and its output the narration, which the caller
-    may still read.
+    The turn has no answer, and its last narration is none (RFC §6.4): the
+    task fails, its error naming how the turn ended and its output the
+    narration, which the caller may still read.
 
     Attributes:
         reason: The turn's ``loop_end_reason`` (``max_rounds``, ``timeout``,
@@ -256,15 +270,5 @@ class TaskCutShortError(RoomKitError):
     """
 
     def __init__(self, reason: str, narration: str | None) -> None:
-        super().__init__(f"The worker's turn ended {reason} before its answer")
-        self.reason = reason
+        super().__init__(f"The worker's turn ended {reason} before its answer", reason)
         self.narration = narration
-
-
-def failure_parts(exc: BaseException) -> tuple[str | None, dict[str, Any]]:
-    """What a failed delegated task keeps of its worker: a turn cut short keeps
-    its last narration as the output and how it ended in the metadata (RFC
-    §23.3); any other failure, nothing."""
-    if isinstance(exc, TaskCutShortError):
-        return exc.narration, {"loop_end_reason": exc.reason}
-    return None, {}

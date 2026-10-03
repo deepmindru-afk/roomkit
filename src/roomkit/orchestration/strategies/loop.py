@@ -28,6 +28,7 @@ from roomkit.orchestration.state import (
 )
 from roomkit.orchestration.status_bus import StatusLevel, post_agent_lifecycle
 from roomkit.orchestration.strategies.supervisor import WorkerStrategy
+from roomkit.tasks.models import task_work
 from roomkit.tools.context import _current_turn_chain_depth
 
 if TYPE_CHECKING:
@@ -444,7 +445,7 @@ async def _execute_loop(
                 },
             )
             raise
-        producer_output = (delegated.result.output if delegated.result else "") or ""
+        producer_output = task_work(delegated.result)
         post_agent_lifecycle(
             kit,
             producer.channel_id,
@@ -556,7 +557,7 @@ async def _review_sequential(
                 metadata={"room_id": room_id, "role": "reviewer", "strategy": "sequential"},
             )
             raise
-        output = (delegated.result.output if delegated.result else "") or ""
+        output = task_work(delegated.result)
         is_approved = "APPROVED" in output.upper() if output else False
 
         name = getattr(reviewer, "role", None) or reviewer.channel_id
@@ -618,7 +619,7 @@ async def _review_parallel(
                 metadata={"room_id": room_id, "role": "reviewer", "strategy": "parallel"},
             )
             raise
-        output = (delegated.result.output if delegated.result else "") or ""
+        output = task_work(delegated.result)
         is_approved = "APPROVED" in output.upper() if output else False
         name = getattr(reviewer, "role", None) or reviewer.channel_id
         post_agent_lifecycle(

@@ -9,6 +9,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from roomkit.core.exceptions import TaskCutShortError
 from roomkit.models.enums import TaskStatus
 
 logger = logging.getLogger("roomkit.tasks")
@@ -95,3 +96,32 @@ class DelegatedTask:
         self.status = result.status
         self.result = result
         self._get_done_event().set()
+
+
+def task_work(result: Any) -> str:
+    """The work a delegated task hands back: its output, unless it failed. A
+    failed task hands none, whatever its output keeps (a worker cut short
+    keeps its narration there, RFC §23.3). Accepts a real result, a
+    duck-typed one, or ``None``."""
+    if result is None or getattr(result, "status", None) == TaskStatus.FAILED:
+        return ""
+    return getattr(result, "output", None) or ""
+
+
+def finished_task_fields(
+    response: str | None, failure: BaseException | None, context: dict[str, Any] | None
+) -> dict[str, Any]:
+    """The outcome of a delegated task that ran: completed with the worker's
+    *response*, or failed with *failure*. A worker cut short keeps its last
+    narration as the output and how its turn ended in the metadata (RFC
+    §23.3); any other failure keeps nothing."""
+    output, metadata = response, dict(context or {})
+    if isinstance(failure, TaskCutShortError):
+        output = output or failure.narration
+        metadata["loop_end_reason"] = failure.reason
+    return {
+        "status": TaskStatus.COMPLETED if response else TaskStatus.FAILED,
+        "output": output,
+        "error": str(failure) if failure is not None else None,
+        "metadata": metadata,
+    }
