@@ -106,6 +106,8 @@ async def test_provider_error_propagates_and_still_fires_on_error() -> None:
     assert result.error is exc
     assert isinstance(result.error.__cause__, ConnectionError)
     assert len(errors) == 1  # ON_ERROR still fires (interactive contract intact)
+    # Named by the exception's type, as every intelligence ON_ERROR is.
+    assert errors[0].metadata["error_type"] == "ProviderError"
 
 
 async def test_non_provider_error_also_propagates() -> None:
@@ -449,3 +451,4 @@ async def test_regenerate_non_streaming_failure_fires_on_error() -> None:
 
     assert result is not None and result.error is not None
     assert len(errors) == before + 1  # regenerate fired its own ON_ERROR card
+    assert errors[-1].metadata["error_type"] == "ProviderError"

@@ -74,6 +74,33 @@ async def ask(kit: RoomKit, room_id: str, body: str, **metadata: object) -> None
     )
 
 
+async def open_rooms(agent: Agent) -> RoomKit:
+    """A kit where *agent* serves rooms A and B, each with its member."""
+    kit = RoomKit()
+    kit.register_channel(agent)
+    for room_id in ("A", "B"):
+        kit.register_channel(WebSocketChannel(f"member-{room_id}"))
+        await kit.create_room(room_id=room_id)
+        await kit.attach_channel(room_id, f"member-{room_id}")
+        await kit.attach_channel(room_id, "support", category=ChannelCategory.INTELLIGENCE)
+    return kit
+
+
+async def report(kit: RoomKit, model: HeldModel) -> None:
+    """What the model read on each turn, and what each room keeps."""
+    for call in model.calls:
+        logger.info("the model read: %r", call.messages[-1].content)
+        identity = "Agent Identity" in (call.system_prompt or "")
+        logger.info("RoomKit's identity block in its prompt: %s", identity)
+    for room_id in ("A", "B"):
+        said = [
+            e.content.body
+            for e in await kit.store.list_events(room_id)
+            if e.source.channel_id == "support" and isinstance(e.content, TextContent)
+        ]
+        logger.info("room %s, the agent said: %s", room_id, said or "nothing (stopped)")
+
+
 async def main() -> None:
     model = HeldModel()
     agent = Agent(
@@ -85,13 +112,7 @@ async def main() -> None:
         identity_in_prompt=False,
         describe_empty_event=describe_upload,
     )
-    kit = RoomKit()
-    kit.register_channel(agent)
-    for room_id in ("A", "B"):
-        kit.register_channel(WebSocketChannel(f"member-{room_id}"))
-        await kit.create_room(room_id=room_id)
-        await kit.attach_channel(room_id, f"member-{room_id}")
-        await kit.attach_channel(room_id, "support", category=ChannelCategory.INTELLIGENCE)
+    kit = await open_rooms(agent)
 
     # Room A's member uploads a file without a caption; room B's asks a question.
     turn_a = asyncio.create_task(ask(kit, "A", "", attachments=[{"name": "invoice.pdf"}]))
@@ -105,17 +126,7 @@ async def main() -> None:
     model.release.set()
     await asyncio.gather(turn_a, turn_b)
 
-    for call in model.calls:
-        logger.info("the model read: %r", call.messages[-1].content)
-        identity = "Agent Identity" in (call.system_prompt or "")
-        logger.info("RoomKit's identity block in its prompt: %s", identity)
-    for room_id in ("A", "B"):
-        said = [
-            e.content.body
-            for e in await kit.store.list_events(room_id)
-            if e.source.channel_id == "support" and isinstance(e.content, TextContent)
-        ]
-        logger.info("room %s, the agent said: %s", room_id, said or "nothing (stopped)")
+    await report(kit, model)
     await kit.close()
 
 
