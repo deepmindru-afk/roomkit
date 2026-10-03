@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 from roomkit.models.channel import ChannelOutput
 from roomkit.models.enums import TaskStatus
 from roomkit.models.event import answer_text
+from roomkit.models.streaming import LoopEndMarker
 from roomkit.tasks.models import task_work
 
 if TYPE_CHECKING:
@@ -117,12 +118,15 @@ async def _extract_output_text(output: ChannelOutput) -> str:
             if (text := answer_text(resp)) is not None:
                 return text
 
-    # Drain streaming response if present
+    # Drain streaming response if present: a turn that did not complete has
+    # no answer, its text a narration (RFC §6.4).
     if output.response_stream is not None:
         parts: list[str] = []
         async for chunk in output.response_stream:
             if isinstance(chunk, str):
                 parts.append(chunk)
+            elif isinstance(chunk, LoopEndMarker) and chunk.reason != "completed":
+                parts.clear()
         return "".join(parts)
 
     return ""

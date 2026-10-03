@@ -13,6 +13,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._tool_registry import orchestration_tool, schema_tool
+from roomkit.core.exceptions import RoomKitError, TaskCutShortError
 from roomkit.core.task_utils import log_task_exception
 from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
@@ -334,6 +335,10 @@ async def _run_loop(
         task_desc=user_message,
         max_iterations=max_iterations,
     )
+    if not result["output"]:
+        # The producer's task failed before any output: the turn has no
+        # answer, and the caller reads why (RFC §19.7.4, §23.3).
+        return ChannelOutput(responded=False, error=_producer_failure(result))
 
     # The producer's response to the event, one deeper (RFC §8.3, §19.7.4).
     result_event = RoomEvent(
@@ -349,9 +354,26 @@ async def _run_loop(
         metadata={
             "approved": result["approved"],
             "iteration": result["iteration"],
+            "stopped": result["stopped"],
         },
     )
     return ChannelOutput(responded=True, response_events=[result_event])
+
+
+def _producer_failure(result: dict[str, Any]) -> Exception:
+    """Why a loop whose producer's task failed has no answer: its cut, or
+    its task's error (RFC §23.3)."""
+    if reason := result.get("loop_end_reason"):
+        return TaskCutShortError(reason, None)
+    return RoomKitError(f"The producer's task failed: {result.get('producer_error')}")
+
+
+def _stop_text(result: dict[str, Any]) -> str:
+    """How a loop ended, as the delivered text names it."""
+    if result["stopped"] == "producer_failed":
+        error = result.get("producer_error") or "no output"
+        return f"stopped: the producer's task failed ({error})"
+    return "approved" if result["approved"] else "max iterations reached"
 
 
 async def _async_loop_and_deliver(
@@ -383,7 +405,7 @@ async def _async_loop_and_deliver(
             max_iterations=max_iterations,
         )
 
-        status = "approved" if result["approved"] else "max iterations reached"
+        status = _stop_text(result)
         logger.info("[loop] Complete (%s), delivering results", status)
 
         await kit.deliver(
@@ -412,6 +434,8 @@ async def _execute_loop(
     approved = False
     final_output = ""
     iteration = 0
+    stopped = "max_iterations"
+    failure: Any = None
 
     for iteration in range(1, max_iterations + 1):
         logger.info("[loop] Iteration %d/%d — producer", iteration, max_iterations)
@@ -461,6 +485,7 @@ async def _execute_loop(
         )
         if not producer_output:
             logger.warning("[loop] Producer returned empty output")
+            stopped, failure = "producer_failed", delegated.result
             break
 
         # Run reviewers
@@ -471,6 +496,7 @@ async def _execute_loop(
         all_approved = all(r["approved"] for r in review_results)
         if all_approved:
             approved = True
+            stopped = "approved"
             final_output = producer_output
             logger.info("[loop] All reviewers approved at iteration %d", iteration)
             break
@@ -500,7 +526,16 @@ async def _execute_loop(
     room = set_conversation_state(room, state)
     await kit.store.update_room(room)
 
-    return {"approved": approved, "iteration": iteration, "output": final_output}
+    return {
+        "approved": approved,
+        "iteration": iteration,
+        "output": final_output,
+        # Why it stopped: approved, out of iterations, or its producer's task
+        # failed, with that task's error and how its turn ended (RFC §23.3).
+        "stopped": stopped,
+        "producer_error": getattr(failure, "error", None),
+        "loop_end_reason": (getattr(failure, "metadata", None) or {}).get("loop_end_reason"),
+    }
 
 
 async def _run_reviewers(
