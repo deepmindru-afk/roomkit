@@ -24,6 +24,7 @@ from roomkit.channels._turn_notes import turn_input, turn_notes, with_turn_notes
 from roomkit.channels._user_text import with_leading_text
 from roomkit.core.visibility import visible_events
 from roomkit.memory.base import MemoryResult
+from roomkit.memory.token_estimator import estimate_tokens, estimate_tool_tokens
 from roomkit.models.channel import ChannelCapabilities
 from roomkit.models.delivery import SUPERSEDED
 from roomkit.models.enums import ChannelCategory, ChannelMediaType, EventType
@@ -204,6 +205,7 @@ class AIContextMixin(_AIChannelContract):
         system_prompt = await self._add_channel_features(
             tools, system_prompt, event, binding, context, loop_ctx, standalone=standalone
         )
+        system_prompt = (system_prompt or "") + (self._prompt_identity(context) or "") or None
 
         # Store unfiltered tool list for re-application after skill activation
         self._stamp_toolset(loop_ctx, list(tools))
@@ -221,6 +223,7 @@ class AIContextMixin(_AIChannelContract):
         # may withdraw from (RFC §6.4).
         tools = self._reachable_tools(tools)
 
+        self._measure_turn(loop_ctx, system_prompt, settings.get("max_tokens"))
         messages = await self._turn_conversation(event, context, loop_ctx, standalone)
         loop_ctx.turn_input = turn_input(messages)
 
@@ -668,6 +671,27 @@ class AIContextMixin(_AIChannelContract):
         self._stamp_toolset(loop_ctx, tools)
         settings = self._turn_settings(binding, None)
         return AIContext(messages=patch_dangling_tool_calls(messages), tools=tools, **settings)
+
+    def _prompt_identity(self, context: RoomContext) -> str | None:
+        """What the channel says of itself at the end of the system prompt;
+        nothing for a plain AI channel (an :class:`Agent` says its identity)."""
+        return None
+
+    def _measure_turn(
+        self, loop_ctx: _ToolLoopContext, system_prompt: str | None, max_tokens: int | None
+    ) -> None:
+        """Measure what the turn takes of the window besides its history, as
+        round 0 will send it, before the memory reads the room (RFC §20): the
+        system prompt, the tools declared (Tool Search's collapse and the
+        re-read tool included) and the reply budget."""
+        declared = self._eviction.with_reread_tool(
+            self._apply_tool_filters(list(loop_ctx.all_context_tools or []))
+        )
+        loop_ctx.turn_footprint = (
+            estimate_tokens(system_prompt or "")
+            + sum(estimate_tool_tokens(tool) for tool in declared)
+            + (max_tokens or 0)
+        )
 
     def _stamp_toolset(self, loop_ctx: _ToolLoopContext, tools: list[AITool]) -> None:
         """Make *tools* the turn's resolved toolset, with what the channel's

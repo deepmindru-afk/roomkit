@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from html import escape
 from pathlib import Path
 
@@ -153,6 +154,42 @@ class SkillRegistry:
         self._unavailable.pop(metadata.name, None)
         self._unlisted.discard(metadata.name)
         logger.info("Registered skill: %s", metadata.name)
+
+    def add(self, skill: Skill) -> None:
+        """Register a skill built in memory (a store, a marketplace), replacing
+        any earlier one of the same name (RFC §24.3).
+
+        Its ``path`` is where its scripts and references are read from. Adding
+        it clears its marks, as registering a directory does.
+        """
+        self._commit(skill.path, skill.metadata)
+        self._skills[skill.metadata.name] = skill
+
+    def copy(self, names: Iterable[str] | None = None, *, marks: bool = True) -> SkillRegistry:
+        """A registry of *names*, every registered skill when ``None`` (RFC §24.3).
+
+        It finds every skill the source finds, one discovered but not yet
+        loaded included: each name keeps its path and, once loaded, its skill.
+        With *marks*, the copy keeps the source's unlisted marks and the
+        unavailable reasons of the names it copies; without, every skill it
+        copies is available and listed (a hand-picked set, say).
+        """
+        wanted = set(self._metadata) | set(self._unavailable) if names is None else set(names)
+        copied = SkillRegistry()
+        for name, metadata in self._metadata.items():
+            if name not in wanted:
+                continue
+            copied._metadata[name] = metadata
+            if name in self._paths:
+                copied._paths[name] = self._paths[name]
+            if name in self._skills:
+                copied._skills[name] = self._skills[name]
+        if marks:
+            copied._unlisted = self._unlisted & set(copied._metadata)
+            copied._unavailable = {
+                name: reason for name, reason in self._unavailable.items() if name in wanted
+            }
+        return copied
 
     def get_metadata(self, name: str) -> SkillMetadata | None:
         """Get metadata for a skill by name."""

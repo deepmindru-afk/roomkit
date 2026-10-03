@@ -11,6 +11,7 @@ from roomkit.channels.acp import ACPChannel as ACPChannel
 from roomkit.channels.ai import AIChannel as AIChannel
 from roomkit.channels.cli import CLIChannel as CLIChannel
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel as RealtimeVoiceChannel
+from roomkit.channels.skill_script_tool import RunSkillScriptTool as RunSkillScriptTool
 from roomkit.channels.transport import TransportChannel
 from roomkit.channels.voice import VoiceChannel as VoiceChannel
 from roomkit.channels.websocket import WebSocketChannel as WebSocketChannel

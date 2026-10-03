@@ -414,6 +414,12 @@ manifest advertises, and `registry.unavailable_skills` maps a name to the reason
 the model can quote instead of guessing. `registry.to_prompt_xml()` renders the
 manifest RoomKit would otherwise inject.
 
+A host that builds skills elsewhere (a store, a marketplace) registers them with
+`registry.add(skill)`, and one that narrows a registry for an agent copies it:
+`registry.copy(["reports", "invoices"])` keeps each skill's path, so a skill
+discovered but not yet loaded is still found, and keeps the source's marks;
+`marks=False` drops them (a hand-picked set, every skill advertised).
+
 ### Script execution
 
 There is **no default executor** — sandboxing, timeouts and allowed interpreters
@@ -437,6 +443,13 @@ never reaches your executor.
 It defaults to `"inline_full"` when the provider reports
 `supports_mid_session_reconfigure=False` (e.g. Gemini 3.x Flash Live), and to
 `"on_demand"` otherwise.
+
+When the skills belong to another agent (a reasoning backend's), the realtime
+channel still runs their scripts behind its own gate: pass
+`RunSkillScriptTool(skills, executor)` in its `tools=`. It declares the one
+`run_skill_script` schema and runs the script through the one handler every
+channel uses, so a script outside its skill is refused there too.
+`RunSkillScriptTool.name` is the name it is declared and called under.
 
 Runnable, no API key needed for the last one: `examples/agent_skills.py`
 (discovery and activation), `examples/skill_visibility.py` (the three states plus
@@ -824,6 +837,22 @@ await kit.subscribe_room("room-1", my_callback)
 ```
 
 `HookTrigger.ON_PLAN_UPDATED` fires too, as an async hook carrying a `PlanUpdatedEvent` (room, channel, tasks): the signal for a host that records or acts on plan changes without a realtime backend.
+
+### The turn's footprint
+
+What the history may take is what the window leaves once the rest of the turn
+is in it. Before it reads its memory, the AI channel measures that rest as the
+first round sends it (the system prompt with an `Agent`'s identity, the tools
+declared under Tool Search and the tool policy, the reply budget) and exposes it
+for the turn as `current_turn_footprint()` (RFC §20). `BudgetAwareMemory`
+reserves the larger of its `reserved_tokens` and that measure, so a host passes
+`reserved_tokens=0` unless it knows of more the window must hold.
+
+```python
+from roomkit.memory import BudgetAwareMemory, SlidingWindowMemory
+
+memory = BudgetAwareMemory(SlidingWindowMemory(max_events=100), max_context_tokens=128_000)
+```
 
 ### SummarizingMemory
 

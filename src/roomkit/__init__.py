@@ -48,6 +48,7 @@ from roomkit.channels.conference import (
 from roomkit.channels.realtime_av import RealtimeAudioVideoChannel
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel, get_current_voice_session
 from roomkit.channels.realtime_voice import ToolHandler as ToolHandler
+from roomkit.channels.skill_script_tool import RunSkillScriptTool
 from roomkit.channels.transport import TransportChannel
 from roomkit.channels.video import VideoChannel
 from roomkit.channels.voice import VoiceChannel
@@ -538,6 +539,7 @@ __all__ = [
     "ToolRoundEvent",
     "ContinuationPolicy",
     "EmptyEventDescriber",
+    "RunSkillScriptTool",
     "ToolHandler",
     "VideoDetectionEvent",
     # Video pipeline filters

@@ -8,9 +8,7 @@ from roomkit.channels.ai import AIChannel
 from roomkit.providers.ai.base import AIContext, AIProvider, AIResponse
 
 if TYPE_CHECKING:
-    from roomkit.models.channel import ChannelBinding
     from roomkit.models.context import RoomContext
-    from roomkit.models.event import RoomEvent
 
 
 class _NullAIProvider(AIProvider):
@@ -151,22 +149,12 @@ class Agent(AIChannel):
             return None
         return "\n--- Agent Identity ---\n" + "\n".join(lines)
 
-    async def _build_context(
-        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
-    ) -> AIContext:
-        """Build AI context, appending the identity block to the system prompt.
-
-        Checks conversation state for a per-room language override
-        (set via ``handler.set_language()``), falling back to ``self.language``.
-        """
+    def _prompt_identity(self, context: RoomContext) -> str | None:
+        """The identity block, in the room's language when the conversation
+        state sets one (``handler.set_language()``), else ``self.language``;
+        written into the prompt before the turn is measured (RFC §20)."""
         from roomkit.orchestration.state import get_conversation_state
 
-        ai_context = await super()._build_context(event, binding, context)
-        # Per-room language override from conversation state
         state = get_conversation_state(context.room)
         room_language = state.context.get("language") if state.context else None
-        identity = self._build_identity_block(language=room_language)
-        if identity is not None:
-            prompt = (ai_context.system_prompt or "") + identity
-            ai_context = ai_context.model_copy(update={"system_prompt": prompt})
-        return ai_context
+        return self._build_identity_block(language=room_language)

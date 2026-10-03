@@ -185,6 +185,10 @@ class _ToolLoopContext:
     # ``_build_context`` hands it to ``AIContext`` and ``for_loop`` inherits the
     # reference, never a copy.
     response_metadata: ResponseMetadata = field(default_factory=ResponseMetadata)
+    # What the turn takes of the window besides its history, measured as the
+    # channel will send it before it reads its memory (RFC §20); ``None``
+    # until a context build measured it. See ``current_turn_footprint()``.
+    turn_footprint: int | None = None
     # The tools the provider received, over every round of the turn, keyed by
     # name in first-declaration order (see ``AIResponseEvent.declared_tools``).
     # Round 0 is declared under the turn's context and later rounds under the
@@ -445,6 +449,18 @@ def current_tool_allowed_names() -> set[str] | None:
     return {
         name for t in ctx.offered_tools() if (name := getattr(t, "name", None)) and admits(name)
     }
+
+
+def current_turn_footprint() -> int | None:
+    """What the turn takes of the context window besides its history (RFC §20).
+
+    The system prompt, the tools declared and the reply budget, measured by
+    the AI channel as it will send them, before it reads its memory: a memory
+    reading the room for a turn sizes the history to what the window leaves.
+    ``None`` outside a turn's context build, or before the channel measured it.
+    """
+    ctx = _current_loop_ctx.get()
+    return ctx.turn_footprint if ctx is not None else None
 
 
 def current_response_metadata() -> ResponseMetadata | None:

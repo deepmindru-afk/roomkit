@@ -147,6 +147,7 @@ CONSOLE=1 uv run python examples/<example>.py
 | `ai_tools_function_calling.py` | Tools | Custom tools, function calling, and per-room tool config |
 | `ai_tool_search.py` | Tools | Progressive tool disclosure for large catalogues (find_tools/list_tools) |
 | `ai_shared_agent_rooms.py` | Context | One agent shared by two rooms: a Stop scoped to one room (`steer(room_id=)`), a captionless upload described (`describe_empty_event`), the host's own identity (`identity_in_prompt=False`) (mock provider, no API key) |
+| `agent_skills_in_memory.py` | Skills | Skills from a store (`SkillRegistry.add`), an agent's subset (`copy`), the turn's measured footprint the memory reserves, and `RunSkillScriptTool` (mock provider, no API key) |
 | `ai_continuation_policy.py` | Tools | Go on an answer that announced an action and stopped, and the `unfinished` end once the tries run out (mock provider, no API key) |
 | `ai_thinking.py` | Reasoning | Extended thinking / chain-of-thought support |
 | `ai_multi_speaker.py` | Context | Speaker attribution on user turns when several people talk in a room (mock provider, no API key) |

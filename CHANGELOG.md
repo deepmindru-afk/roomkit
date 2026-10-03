@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The turn's footprint (RMK-406, RFC §20): before it reads its memory, an AI
+  channel measures what the turn takes of the window besides its history, as
+  the first round sends it (the system prompt with an `Agent`'s identity, the
+  tools declared under Tool Search and the tool policy, the reply budget),
+  readable for the turn as `current_turn_footprint()` (`roomkit.memory`,
+  `roomkit.tools`). `BudgetAwareMemory` reserves the larger of its
+  `reserved_tokens` and that measure. An `Agent`'s identity block is written
+  into the prompt before the measure (`_prompt_identity`), not appended after
+  the build.
+
+- `RunSkillScriptTool(skills, executor)` (RMK-406, RFC §24): `run_skill_script`
+  as a `Tool`, for a realtime channel running the scripts of skills another
+  agent holds, through the one script handler every channel uses;
+  `RunSkillScriptTool.name` is the name it is declared and called under.
+
+- `SkillRegistry.add(skill)` and `SkillRegistry.copy(names=None, *,
+  marks=True)` (RMK-406, RFC §24.3): register a skill built in memory, and copy
+  a subset that keeps each skill's path (a skill discovered but not yet loaded
+  is still found) and, unless `marks=False`, the source's marks. Example:
+  `examples/agent_skills_in_memory.py`.
+
 - `RoomKit.commit_event(room_id, event, *, organization_id=None)`
   (RMK-405, RFC §10.5): commit a record no member receives (a trace, a
   display snapshot, a copy a branched conversation starts from) outside the
@@ -234,6 +255,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   No provider of the tree set the old mark. Migration: a provider that runs
   its own tools sets `served=ServedCall(result=..., is_error=...)` on the
   call instead of the `_result` / `_is_error` keys.
+
+- `BudgetAwareMemory` reserves at least the turn's measured footprint
+  (RMK-406, RFC §20): a host that passed `reserved_tokens=0`, or less than the
+  turn takes, now has its history trimmed to what the window really leaves, so
+  a turn no longer overflows it.
 
 - **BREAKING — a delegated task cancelled from outside ends `cancelled`,
   through `ON_TASK_COMPLETED` and its callback, inline or in the

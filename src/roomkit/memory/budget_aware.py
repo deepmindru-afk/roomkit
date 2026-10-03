@@ -15,6 +15,7 @@ from roomkit.memory.token_estimator import (
 from roomkit.models.context import RoomContext
 from roomkit.models.event import RoomEvent
 from roomkit.providers.ai.base import ProviderError
+from roomkit.tools.context import current_turn_footprint
 
 logger = logging.getLogger("roomkit.memory.budget_aware")
 
@@ -50,9 +51,9 @@ class BudgetAwareMemory(_MemoryWrapper):
         self._max_context_tokens = max_context_tokens
         self._safety_margin_ratio = safety_margin_ratio
         self._min_events = min_events
-        # System prompt + tool schemas: part of the same window, invisible
-        # from here. A caller that cannot name its own footprint passes 0 and
-        # gets a budget that only accounts for what this wrapper can measure.
+        # System prompt + tool schemas: part of the same window. The AI channel
+        # measures them per turn (``current_turn_footprint()``, RFC §20); a
+        # caller's reserve adds to that measure, never takes from it.
         self._reserved_tokens = reserved_tokens
 
     @property
@@ -81,7 +82,8 @@ class BudgetAwareMemory(_MemoryWrapper):
         budget = history_budget(
             max_context_tokens=self._max_context_tokens,
             # The turn's notes ride its input: they occupy the window, untrimmable.
-            reserved_tokens=self._reserved_tokens + estimate_notes_tokens(inner_result.notes),
+            reserved_tokens=max(self._reserved_tokens, current_turn_footprint() or 0)
+            + estimate_notes_tokens(inner_result.notes),
             messages=inner_result.messages,
             safety_margin_ratio=self._safety_margin_ratio,
             current_event=current_event,
