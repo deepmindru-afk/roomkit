@@ -162,8 +162,8 @@ async def test_a_loop_does_not_take_a_cut_producers_narration_for_its_work() -> 
         max_iterations=2,
     )
 
-    assert out["approved"] is False
-    assert out["output"] == ""
+    assert out.approved is False
+    assert out.output == ""
     await kit.close()
 
 
