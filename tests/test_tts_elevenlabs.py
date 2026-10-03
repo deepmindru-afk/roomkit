@@ -267,6 +267,67 @@ class TestSynthesize:
 # ---------------------------------------------------------------------------
 
 
+class TestDeclaredFormat:
+    """Chunks and data URLs declare the codec and rate ``output_format`` asks for (RMK-413)."""
+
+    @pytest.mark.parametrize(
+        ("output_format", "rate", "chunk_format"),
+        [
+            ("mp3_44100_128", 44100, "mp3"),
+            ("mp3_22050_32", 22050, "mp3"),
+            ("pcm_8000", 8000, "pcm_s16le"),
+            ("pcm_16000", 16000, "pcm_s16le"),
+            ("pcm_32000", 32000, "pcm_s16le"),
+            ("pcm_48000", 48000, "pcm_s16le"),
+            ("ulaw_8000", 8000, "ulaw"),
+            ("alaw_8000", 8000, "alaw"),
+            ("opus_48000_64", 48000, "opus"),
+        ],
+    )
+    async def test_streamed_chunks(self, output_format, rate, chunk_format):
+        config = ElevenLabsConfig(api_key="k", output_format=output_format)
+        provider = ElevenLabsTTSProvider(config)
+
+        async def mock_stream(**kwargs):
+            yield b"\x00\x01"
+
+        mock_client = MagicMock()
+        mock_client.text_to_speech.stream = mock_stream
+        with (
+            patch.object(provider, "_get_client", return_value=mock_client),
+            patch.object(provider, "_make_voice_settings", return_value="s"),
+        ):
+            chunks = [chunk async for chunk in provider.synthesize_stream("Hello")]
+
+        assert {(chunk.sample_rate, chunk.format) for chunk in chunks} == {(rate, chunk_format)}
+
+    @pytest.mark.parametrize(
+        ("output_format", "mime_type"),
+        [
+            ("mp3_44100_128", "audio/mpeg"),
+            ("pcm_16000", "audio/pcm"),
+            ("wav_16000", "audio/wav"),
+            ("ulaw_8000", "audio/basic"),
+            ("alaw_8000", "audio/alaw"),
+            ("opus_48000_64", "audio/ogg"),
+            ("something_new", "audio/mpeg"),
+        ],
+    )
+    async def test_synthesized_data_url(self, output_format, mime_type):
+        config = ElevenLabsConfig(api_key="k", output_format=output_format)
+        provider = ElevenLabsTTSProvider(config)
+        mock_client = MagicMock()
+        mock_client.text_to_speech.convert = AsyncMock(return_value=b"audio")
+        with (
+            patch.object(provider, "_get_client", return_value=mock_client),
+            patch.object(provider, "_make_voice_settings", return_value="s"),
+        ):
+            result = await provider.synthesize("Hello")
+
+        assert result.mime_type == mime_type
+        assert result.url.startswith(f"data:{mime_type};base64,")
+
+
 class TestSynthesizeStream:
     async def test_synthesize_stream_yields_chunks(self):
         provider = ElevenLabsTTSProvider(ElevenLabsConfig(api_key="k", output_format="pcm_24000"))

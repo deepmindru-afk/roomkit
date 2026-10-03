@@ -53,6 +53,18 @@ _AUDIO_TAG_MODELS = ("eleven_v3", "eleven_v4")
 # variants included); v3 and v4 answer 400 to it.
 _LATENCY_MODELS = ("eleven_multilingual_v2", "eleven_flash_v2", "eleven_turbo_v2")
 
+# The MIME type and the AudioChunk format of each output codec, the part of
+# an ``output_format`` before its sample rate (``pcm_16000``, ``mp3_44100_128``).
+# ElevenLabs refuses ``wav`` on a streamed request, so only synthesize() sees it.
+_CODECS: dict[str, tuple[str, str]] = {
+    "mp3": ("audio/mpeg", "mp3"),
+    "pcm": ("audio/pcm", "pcm_s16le"),
+    "wav": ("audio/wav", "wav"),
+    "ulaw": ("audio/basic", "ulaw"),
+    "alaw": ("audio/alaw", "alaw"),
+    "opus": ("audio/ogg", "opus"),
+}
+
 # Expressive tags recognised by v3 Conversational TTS. Eleven v4 documents a
 # wider set (``[pause]``, ``[long pause]``, sound effects) and lets tags stack.
 EXPRESSIVE_TAGS = frozenset({"[laughs]", "[whispers]", "[sighs]", "[slow]", "[excited]"})
@@ -76,7 +88,9 @@ class ElevenLabsConfig:
     similarity_boost: float = 0.75
     style: float = 0.0
     use_speaker_boost: bool = True
-    output_format: str = "mp3_44100_128"  # mp3, pcm_16000, pcm_22050, etc.
+    # <codec>_<rate>[_<bitrate>]: mp3_44100_128, pcm_16000, ulaw_8000, opus_48000_64...
+    # wav_* only for synthesize(): ElevenLabs refuses it on a streamed request.
+    output_format: str = "mp3_44100_128"
     # Latency optimization, 0-4 (higher = lower latency, at some cost of
     # quality). None sends nothing. Only the v2 / v2.5 models take it, and
     # ElevenLabs deprecates it.
@@ -409,38 +423,21 @@ class ElevenLabsTTSProvider(TTSProvider):
 
     def _get_mime_type(self) -> str:
         """Get MIME type from output format."""
-        fmt = self._config.output_format
-        if fmt.startswith("mp3"):
-            return "audio/mpeg"
-        elif fmt.startswith("pcm"):
-            return "audio/pcm"
-        elif fmt.startswith("ulaw"):
-            return "audio/basic"
-        return "audio/mpeg"
+        return self._codec()[0]
 
     def _get_sample_rate(self) -> int:
-        """Get sample rate from output format."""
-        fmt = self._config.output_format
-        if "44100" in fmt:
-            return 44100
-        elif "24000" in fmt:
-            return 24000
-        elif "22050" in fmt:
-            return 22050
-        elif "16000" in fmt:
-            return 16000
-        return 44100
+        """The sample rate ``output_format`` names (``pcm_8000`` is 8 kHz), 44.1 kHz if none."""
+        parts = self._config.output_format.split("_")
+        return int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 44100
 
     def _get_audio_format(self) -> str:
         """Get audio format string."""
-        fmt = self._config.output_format
-        if fmt.startswith("mp3"):
-            return "mp3"
-        elif fmt.startswith("pcm"):
-            return "pcm_s16le"
-        elif fmt.startswith("ulaw"):
-            return "ulaw"
-        return "mp3"
+        return self._codec()[1]
+
+    def _codec(self) -> tuple[str, str]:
+        """The MIME type and chunk format of ``output_format``'s codec, MP3's if unknown."""
+        codec = self._config.output_format.split("_")[0]
+        return _CODECS.get(codec, _CODECS["mp3"])
 
     async def close(self) -> None:  # noqa: B027
         """Release resources."""

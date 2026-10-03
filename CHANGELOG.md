@@ -367,6 +367,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`synthesize_stream` and `synthesize_stream_input`); `synthesize()` still
   returns a WAV.
 
+- `ElevenLabsTTSProvider` declares the sample rate and codec its
+  `output_format` asks for (RMK-413). The rate was read from a list of four
+  values with 44.1 kHz for anything else: `pcm_8000`, `pcm_32000`,
+  `pcm_48000` and the telephony `ulaw_8000` reached the transport declared at
+  44100 Hz, so `pcm_8000` played 5.5 times too fast. `alaw_8000` and `opus_*`
+  chunks were declared `mp3`, and a `synthesize()` in `wav_*`, `alaw_*` or
+  `opus_*` returned a data URL typed `audio/mpeg`. The rate is now the number
+  after the codec in `output_format` and the codec has its own MIME type and
+  chunk format (`audio/alaw` / `alaw`, `audio/ogg` / `opus`, `audio/wav`).
+
 - With `AudioPipelineConfig(inbound_dsp_threads=N)`, a voice channel behaves
   as it does inline (RMK-392). The pipeline's callbacks ran on the DSP worker,
   while the channels' handlers are written for the event loop. A
