@@ -239,3 +239,32 @@ class ToolNameCollisionError(RoomKitError, ValueError):
     Raised when the tool is given (a strategy's install, ``setup_handoff``,
     ``setup_delegation``, ``configure(tools=)``), naming the tool.
     """
+
+
+class TaskCutShortError(RoomKitError):
+    """A delegated worker's turn ended before its answer (RFC §23.3).
+
+    Its round cap, its deadline or its budget cut it: the turn has no answer,
+    and its last narration is none (RFC §6.4). The task fails, its error
+    naming how the turn ended and its output the narration, which the caller
+    may still read.
+
+    Attributes:
+        reason: The turn's ``loop_end_reason`` (``max_rounds``, ``timeout``,
+            ``budget_exceeded``...).
+        narration: What the worker said last, or ``None``.
+    """
+
+    def __init__(self, reason: str, narration: str | None) -> None:
+        super().__init__(f"The worker's turn ended {reason} before its answer")
+        self.reason = reason
+        self.narration = narration
+
+
+def failure_parts(exc: BaseException) -> tuple[str | None, dict[str, Any]]:
+    """What a failed delegated task keeps of its worker: a turn cut short keeps
+    its last narration as the output and how it ended in the metadata (RFC
+    §23.3); any other failure, nothing."""
+    if isinstance(exc, TaskCutShortError):
+        return exc.narration, {"loop_end_reason": exc.reason}
+    return None, {}

@@ -8,7 +8,7 @@ import time
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.core._failure_log import log_failure
-from roomkit.core.exceptions import ChannelNotRegisteredError
+from roomkit.core.exceptions import ChannelNotRegisteredError, failure_parts
 
 # _persist_child_stream and _run_with_structured_result are re-exported (self-
 # aliased) for the test suite, which imports them from this module.
@@ -371,6 +371,7 @@ class DelegationMixin(HelpersMixin):
         handle.status = TaskStatus.IN_PROGRESS
         agent_response: str | None = None
         error: str | None = None
+        kept: tuple[str | None, dict[str, Any]] = (None, {})
 
         try:
             agent_response = await run_agent_in_child_room(
@@ -413,6 +414,7 @@ class DelegationMixin(HelpersMixin):
         except Exception as exc:
             log_failure(_tasks_logger, exc, f"Inline task {handle.id}")
             error = str(exc)
+            kept = failure_parts(exc)
 
         elapsed = (time.monotonic() - start) * 1000
         status = TaskStatus.COMPLETED if agent_response else TaskStatus.FAILED
@@ -420,10 +422,10 @@ class DelegationMixin(HelpersMixin):
         result = _result_from_handle(
             handle,
             status=status,
-            output=agent_response,
+            output=agent_response or kept[0],
             error=error,
             duration_ms=elapsed,
-            metadata=context or {},
+            metadata={**(context or {}), **kept[1]},
         )
 
         # Fire completion hooks + callbacks (skip proactive delivery for inline —

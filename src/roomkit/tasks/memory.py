@@ -8,6 +8,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from roomkit.core._failure_log import log_failure
+from roomkit.core.exceptions import failure_parts
 from roomkit.core.task_utils import cancel_and_wait, log_task_exception
 from roomkit.models.enums import TaskStatus
 from roomkit.tasks.base import OnCompleteCallback, TaskRunner
@@ -69,6 +70,7 @@ class InMemoryTaskRunner(TaskRunner):
         task.status = TaskStatus.IN_PROGRESS
         agent_response: str | None = None
         error: str | None = None
+        kept: tuple[str | None, dict[str, Any]] = (None, {})
 
         try:
             # Update child room status
@@ -98,6 +100,7 @@ class InMemoryTaskRunner(TaskRunner):
         except Exception as exc:
             log_failure(logger, exc, f"Task {task.id}")
             error = str(exc)
+            kept = failure_parts(exc)
 
         elapsed = (time.monotonic() - start) * 1000
         status = TaskStatus.COMPLETED if agent_response else TaskStatus.FAILED
@@ -108,10 +111,10 @@ class InMemoryTaskRunner(TaskRunner):
             parent_room_id=task.parent_room_id,
             agent_id=task.agent_id,
             status=status,
-            output=agent_response,
+            output=agent_response or kept[0],
             error=error,
             duration_ms=elapsed,
-            metadata=context or {},
+            metadata={**(context or {}), **kept[1]},
         )
 
         # Update child room metadata

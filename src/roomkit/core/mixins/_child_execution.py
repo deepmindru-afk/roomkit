@@ -14,6 +14,7 @@ import logging
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from uuid import uuid4
 
+from roomkit.core.exceptions import TaskCutShortError
 from roomkit.core.lanes import DeliveryCascade
 from roomkit.core.mixins._response_reader import ResponseReader
 from roomkit.core.mixins._result_capture import capture_result
@@ -150,7 +151,10 @@ async def _persist_child_stream(
         chain_depth=chain_depth,
         correlation_id=uuid4().hex,
     )
-    return await _drain_turn(writer, sr)
+    answer = await _drain_turn(writer, sr)
+    if (cut := _cut_short(answer, writer.end_reason)) is not None:
+        raise cut
+    return answer
 
 
 async def _drain_turn(writer: SegmentWriter, sr: Any) -> str:
@@ -285,17 +289,44 @@ async def _deliver_answer(kit: RoomKit, child_room_id: str, result: BroadcastRes
         raise failure
     sources = [cid for cid, out in result.outputs.items() if out.responded]
     sources += [sr.source_channel_id for sr in result.streaming_responses]
-    answers = (_last_answer(cascade.response_events, cid) for cid in sources)
-    return next((answer for answer in answers if answer is not None), None)
+    rows = (_last_answer(cascade.response_events, cid) for cid in sources)
+    row = next((row for row in rows if row is not None), None)
+    if row is None:
+        return None
+    text = answer_text(row)
+    if (cut := _cut_short(text, row.metadata.get("loop_end_reason"))) is not None:
+        raise cut
+    return text
 
 
-def _last_answer(rows: list[RoomEvent], channel_id: str) -> str | None:
+def _cut_short(text: str | None, reason: str | None) -> TaskCutShortError | None:
+    """Why a delegated turn has no answer: it ended before it (its round cap,
+    deadline or budget), its *text* a narration. ``None`` for a turn that
+    completed, or whose stream carried no end (RFC §6.4)."""
+    if reason in (None, "completed"):
+        return None
+    return TaskCutShortError(reason, text or None)
+
+
+def _turn_end(rows: list[RoomEvent]) -> str | None:
+    """How a buffered turn ended: the record on its last message."""
+    return next(
+        (
+            row.metadata["loop_end_reason"]
+            for row in reversed(rows)
+            if row.type == EventType.MESSAGE and "loop_end_reason" in (row.metadata or {})
+        ),
+        None,
+    )
+
+
+def _last_answer(rows: list[RoomEvent], channel_id: str) -> RoomEvent | None:
     """*channel_id*'s last answer among *rows*, or ``None`` when it kept none."""
     return next(
         (
-            text
+            row
             for row in reversed(rows)
-            if row.source.channel_id == channel_id and (text := answer_text(row)) is not None
+            if row.source.channel_id == channel_id and answer_text(row) is not None
         ),
         None,
     )
@@ -322,6 +353,8 @@ async def _collect_answer(
             # A turn the provider interrupted after a round kept its trace and
             # has no answer.
             failure = failure or output.error
+        elif (cut := _cut_short(final_text, _turn_end(output.response_events))) is not None:
+            failure = failure or cut
         elif final_text is not None:
             answers.append(final_text)
     # Streaming: drain the marker stream, persisting tool calls + text segments.
@@ -429,8 +462,7 @@ async def _run_with_structured_result(
         message = task_desc
         last_text = ""
         for _attempt in range(max_result_retries + 1):
-            text = await _broadcast_and_collect(kit, child_room_id, message)
-            scanned = await _scan_for_submitted_result(kit, child_room_id, str(agent_id), tool)
+            scanned, text = await _owed_result(kit, child_room_id, message, str(agent_id), tool)
             if scanned is not None:
                 return json.dumps(scanned)
             last_text = text or last_text
@@ -444,6 +476,22 @@ async def _run_with_structured_result(
         return json.dumps(
             tool.on_missing(role=role, last_output=last_text, attempts=max_result_retries + 1)
         )
+
+
+async def _owed_result(
+    kit: RoomKit, child_room_id: str, message: str, worker_id: str, tool: ResultTool
+) -> tuple[dict[str, Any] | None, str | None]:
+    """One turn of a worker that owes a result: what it submitted, and its
+    text. A turn cut short keeps a result it submitted before the cut, and
+    fails the task without one (RFC §23.3)."""
+    try:
+        text = await _broadcast_and_collect(kit, child_room_id, message)
+    except TaskCutShortError:
+        submitted = await _scan_for_submitted_result(kit, child_room_id, worker_id, tool)
+        if submitted is None:
+            raise
+        return submitted, None
+    return await _scan_for_submitted_result(kit, child_room_id, worker_id, tool), text
 
 
 async def run_agent_in_child_room(

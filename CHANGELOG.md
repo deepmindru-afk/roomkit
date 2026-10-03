@@ -139,6 +139,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A delegated worker whose turn its round cap, deadline or budget cuts short
+  fails its task (RMK-414, RFC §23.3): `status=failed`, `error` saying how
+  the turn ended, `output` its last narration, `metadata["loop_end_reason"]`
+  the reason, where the narration ("Still checking.") was returned as a
+  completed result. Streamed or buffered, inline or in the background, with
+  a shared transport or not. A worker that owes a result and submitted it
+  before the cut keeps it; without one, the task fails without a re-prompt.
+  New `TaskCutShortError`.
+
 - A realtime reasoning backend is an agent like any other, on the AI
   channel's tool loop (RMK-396, RFC §12.4.1). `AgentReasoningBackend(agent)`
   serves the delegations with an agent you configured (prompt, temperature,

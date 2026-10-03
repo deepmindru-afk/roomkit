@@ -18,6 +18,7 @@ import pytest
 
 from roomkit.channels.ai import AIChannel
 from roomkit.core.event_router import BroadcastResult
+from roomkit.core.exceptions import TaskCutShortError
 from roomkit.core.framework import RoomKit
 from roomkit.core.mixins._child_execution import _broadcast_and_collect, _collect_answer
 from roomkit.core.mixins.delegation import _persist_child_stream, run_agent_in_child_room
@@ -410,6 +411,36 @@ class TestRunAgentNonStreaming:
         persisted_types = [e.type for e in kit.store.added]
         assert EventType.TOOL_CALL_END in persisted_types
         assert persisted_types.count(EventType.MESSAGE) == 2  # task + answer
+
+    async def test_a_buffered_turn_cut_short_fails_with_its_narration(self) -> None:
+        """RMK-414, RFC §23.3: a buffered agent's turn its round cap cut has no
+        answer; its narration rides the failure."""
+        kit = MagicMock()
+        kit.store = _recording_store()
+        kit._commit_indexed = kit.store.commit_event
+        kit._commit_blocked_events = AsyncMock()
+        kit._persist_side_effects = AsyncMock()
+        kit.get_room = AsyncMock(
+            return_value=Room(id="parent::task-1", metadata={"parent_room_id": "parent"})
+        )
+        kit.store.list_bindings = AsyncMock(return_value=[])
+        kit.store.list_events = AsyncMock(return_value=[])
+        narration = RoomEvent(
+            room_id="parent::task-1",
+            source=EventSource(channel_id="agent:w1", channel_type=ChannelType.AI),
+            type=EventType.MESSAGE,
+            content=TextContent(body="Still checking."),
+            metadata={"loop_end_reason": "max_rounds"},
+        )
+        output = SimpleNamespace(responded=True, error=None, response_events=[narration])
+        router = MagicMock()
+        router.broadcast = AsyncMock(return_value=BroadcastResult(outputs={"w1": output}))
+        kit._get_router = MagicMock(return_value=router)
+
+        with pytest.raises(TaskCutShortError) as cut:
+            await run_agent_in_child_room(kit, "parent::task-1", "do the task")
+
+        assert (cut.value.reason, cut.value.narration) == ("max_rounds", "Still checking.")
 
 
 async def test_a_muted_worker_answer_is_committed_once() -> None:
