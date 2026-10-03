@@ -220,8 +220,10 @@ from roomkit.voice.pipeline.agc.simple import SimpleAGCProvider
 from roomkit.voice.pipeline.denoiser.webrtc import WebRTCNoiseSuppressorProvider
 from roomkit.voice.realtime.injection import VoiceInjectionResult
 from roomkit.voice.realtime.reasoning import (
+    AgentReasoningBackend,
     AIProviderReasoningBackend,
     ReasoningBackend,
+    ReasoningCutShortError,
     ReasoningOutput,
     ReasoningRequest,
     ToolCallResult,
@@ -342,8 +344,10 @@ __all__ = [
     "add_turn_note",
     "split_turn_notes",
     # Reasoning delegation (RFC §12.4.1)
+    "AgentReasoningBackend",
     "AIProviderReasoningBackend",
     "ReasoningBackend",
+    "ReasoningCutShortError",
     "ReasoningOutput",
     "ReasoningRequest",
     "ToolCallResult",

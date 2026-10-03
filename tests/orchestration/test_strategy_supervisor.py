@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -11,14 +12,18 @@ import pytest
 from roomkit.channels._tool_registry import ChannelRegistry
 from roomkit.channels.agent import Agent
 from roomkit.core.exceptions import UnservedToolCallError
+from roomkit.core.framework import RoomKit
 from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
-from roomkit.models.enums import ChannelType, EventType
-from roomkit.models.event import EventSource, RoomEvent, TextContent
+from roomkit.models.delivery import InboundMessage
+from roomkit.models.enums import ChannelCategory, ChannelType, EventType
+from roomkit.models.event import EventSource, RoomEvent, TextContent, ToolCallContent
 from roomkit.models.room import Room
 from roomkit.orchestration.state import get_conversation_state
 from roomkit.orchestration.strategies.supervisor import Supervisor
+from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
+from tests.test_framework import SimpleChannel
 from tests.tool_room import room_tool_names, tool_call_in
 
 # -- Helpers ------------------------------------------------------------------
@@ -498,3 +503,72 @@ async def test_the_supervisors_turns_answer_at_the_depth_of_its_event(refine_tas
     assert output.response_stream is not None
     assert answered
     assert {e.chain_depth for e in answered} == {2}
+
+
+async def test_pass_one_hands_on_its_answer_and_stores_its_calls() -> None:
+    """RMK-396, RFC §6.4: pass 1 is read as every streamed turn is. The task the
+    worker receives is its final answer, not the narration of its tool round
+    glued to it, and its calls have their TOOL_CALL rows in the room."""
+    lookup = AITool(
+        name="lookup", description="look up", parameters={"type": "object", "properties": {}}
+    )
+
+    async def handler(name: str, arguments: dict[str, Any]) -> str:
+        return "found it"
+
+    boss = Agent(
+        "boss",
+        provider=MockAIProvider(
+            streaming=True,
+            ai_responses=[
+                AIResponse(
+                    content="Let me check.",
+                    finish_reason="tool_calls",
+                    tool_calls=[AIToolCall(id="c1", name="lookup", arguments={})],
+                ),
+                AIResponse(content="Analyse Anthropic"),
+                AIResponse(content="Here is the analysis."),
+            ],
+        ),
+        tools=[lookup],
+        tool_handler=handler,
+        tool_search=False,
+    )
+    worker = Agent("w1", provider=MockAIProvider(responses=["Worker analysis"]))
+    kit = RoomKit()
+    kit.register_channel(SimpleChannel("sms1"))
+    kit.register_channel(boss)
+    kit.register_channel(worker)
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "sms1")
+    await kit.attach_channel("r1", "boss", category=ChannelCategory.INTELLIGENCE)
+    tasks: list[str] = []
+    delegate = kit.delegate
+
+    async def spy(room_id: str, channel_id: str, task: str, **kwargs: Any) -> Any:
+        tasks.append(task)
+        return await delegate(room_id, channel_id, task, **kwargs)
+
+    kit.delegate = spy  # type: ignore[method-assign]
+    supervisor = Supervisor(
+        supervisor=boss, workers=[worker], strategy="parallel", auto_delegate=True
+    )
+    await supervisor.install(kit, "r1")
+
+    await kit.process_inbound(
+        InboundMessage(channel_id="sms1", sender_id="u", content=TextContent(body="Analyse"))
+    )
+    await asyncio.sleep(0.1)
+
+    assert tasks == ["Analyse Anthropic"]
+    rows = [
+        (e.type, e.content.outcome if isinstance(e.content, ToolCallContent) else e.content.body)
+        for e in await kit.store.list_events("r1")
+        if e.source.channel_id == "boss"
+    ]
+    assert rows == [
+        (EventType.TOOL_CALL_START, None),
+        (EventType.TOOL_CALL_END, "served"),
+        (EventType.MESSAGE, "Here is the analysis."),
+    ]
+    await kit.close()

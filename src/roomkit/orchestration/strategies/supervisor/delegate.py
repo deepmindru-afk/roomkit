@@ -11,6 +11,8 @@ import json
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from roomkit.core.event_router import StreamingResponse
+from roomkit.core.mixins._child_execution import persist_tool_calls
 from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import ChannelType as _ChannelType
@@ -209,6 +211,8 @@ async def _run_workers(
 
 
 async def _formulate_task(
+    kit: RoomKit,
+    room_id: str,
     supervisor: Agent,
     original_on_event: Any,
     event: RoomEvent,
@@ -232,7 +236,24 @@ async def _formulate_task(
         update={"metadata": {**binding.metadata, "system_prompt": prompt}}
     )
     pass1_output = await original_on_event(event, pass1_binding, context)
-    return pass1_output, await _extract_output_text(pass1_output)
+    return pass1_output, await _pass1_task(kit, room_id, supervisor, event, pass1_output)
+
+
+async def _pass1_task(
+    kit: RoomKit, room_id: str, supervisor: Agent, event: RoomEvent, output: ChannelOutput
+) -> str:
+    """The task pass 1 hands on: its final answer, as every streamed turn is
+    read, its tool calls stored in the room as any turn's (RFC §6.4)."""
+    if output.error is not None or output.response_stream is None:
+        return await _extract_output_text(output)
+    stream = StreamingResponse(
+        stream=output.response_stream,
+        source_channel_id=supervisor.channel_id,
+        source_channel_type=supervisor.channel_type,
+        trigger_event=event,
+        response_metadata=output.response_metadata,
+    )
+    return await persist_tool_calls(kit, room_id, stream, event.chain_depth + 1)
 
 
 async def _two_pass_delegate(
@@ -254,7 +275,7 @@ async def _two_pass_delegate(
     """Two-pass: supervisor formulates task → workers run (validated between
     steps by the supervisor in sequential mode) → supervisor presents."""
     pass1_output, refined_task = await _formulate_task(
-        supervisor, original_on_event, event, binding, context, instruction
+        kit, room_id, supervisor, original_on_event, event, binding, context, instruction
     )
 
     logger.debug("Pass 1 refined task: %s", refined_task[:200] if refined_task else "(empty)")

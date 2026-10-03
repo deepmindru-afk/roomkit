@@ -1,8 +1,10 @@
 """RoomKit — OpenAI GPT-Live with your own reasoning backend (Claude).
 
 The live model holds the spoken conversation. Anything about the user's
-flights goes to a ``ReasoningBackend`` running Claude with its own tools, in
-this process, through ``IntegratorReasoning`` (RFC §12.4.1). GPT-Live sends no
+flights goes to a Claude agent, served as an ``AgentReasoningBackend`` in this
+process through ``IntegratorReasoning`` (RFC §12.4.1). The agent runs on the AI
+channel's tool loop, like any agent in a room; only its driver differs: the
+voice instead of a room's messages. GPT-Live sends no
 task text: the channel hands the backend the transcript recorded since the
 previous delegation, and the backend works out the request from it.
 
@@ -65,7 +67,8 @@ from shared import (
 )
 
 from roomkit import (
-    AIProviderReasoningBackend,
+    Agent,
+    AgentReasoningBackend,
     HookExecution,
     HookTrigger,
     RealtimeVoiceChannel,
@@ -181,16 +184,20 @@ async def main() -> None:
     # --- Console dashboard (set CONSOLE=1 to enable) ---
     console_cleanup = setup_console(kit)
 
-    # --- The backend: Claude with the channel's tools, in a tool loop ---
-    backend = AIProviderReasoningBackend(
-        AnthropicAIProvider(
+    # --- The backend: a Claude agent, its tools the voice channel's ---
+    reasoner = Agent(
+        "flight-desk",
+        provider=AnthropicAIProvider(
             AnthropicConfig(
                 api_key=env["ANTHROPIC_API_KEY"],
                 model=os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5"),
             )
         ),
         system_prompt=BACKEND_INSTRUCTIONS,
-        spoken_progress=env_bool("SPOKEN_PROGRESS", default=True),
+        max_tool_rounds=6,
+    )
+    backend = AgentReasoningBackend(
+        reasoner, spoken_progress=env_bool("SPOKEN_PROGRESS", default=True)
     )
 
     # --- GPT-Live provider, integrator-side delegation ---

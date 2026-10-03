@@ -24,8 +24,10 @@ from roomkit.voice.realtime.provider import (
     VoiceInfo,
 )
 from roomkit.voice.realtime.reasoning import (
+    AgentReasoningBackend,
     AIProviderReasoningBackend,
     ReasoningBackend,
+    ReasoningCutShortError,
     ReasoningOutput,
     ReasoningRequest,
     ToolCallResult,
@@ -41,8 +43,10 @@ __all__ = [
     "RealtimeVoiceProvider",
     "VoiceInfo",
     # Reasoning delegation (RFC §12.4.1)
+    "AgentReasoningBackend",
     "AIProviderReasoningBackend",
     "ReasoningBackend",
+    "ReasoningCutShortError",
     "ReasoningOutput",
     "ReasoningRequest",
     "ToolCallResult",

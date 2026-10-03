@@ -17,15 +17,20 @@ import asyncio
 import json
 import logging
 import threading
+from functools import partial
 from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 from uuid import uuid4
 
 from roomkit.channels._realtime_tool_calls import RealtimeToolCall
-from roomkit.channels._realtime_tool_executor import ToolCallHost, run_tool_call
+from roomkit.channels._realtime_tool_executor import (
+    ToolCallHost,
+    report_failed_call,
+    run_tool_call,
+)
 from roomkit.models.enums import HookTrigger
 from roomkit.telemetry.base import SpanKind
 from roomkit.telemetry.context import reset_span
-from roomkit.tools._outcome import ToolOutcome
+from roomkit.tools._outcome import OutcomeKind, ToolOutcome
 from roomkit.tools.result import result_text
 from roomkit.voice.base import VoiceSession, VoiceSessionState
 from roomkit.voice.realtime.events import RealtimeDelegationEvent
@@ -322,6 +327,7 @@ class RealtimeDelegationMixin:
             execute_tool_call=lambda name, arguments: self._execute_backend_tool_call(
                 session, delegation_id, name, arguments
             ),
+            report_refusal=partial(self._report_backend_refusal, session, delegation_id),
         )
 
     def _backend_catalogue(self, session_id: str) -> list[dict[str, Any]]:
@@ -402,6 +408,23 @@ class RealtimeDelegationMixin:
             session.id,
         )
         return ToolCallResult(result_text(outcome.result), is_error=outcome.failed)
+
+    async def _report_backend_refusal(
+        self,
+        session: VoiceSession,
+        delegation_id: str,
+        name: str,
+        arguments: dict[str, Any],
+        body: str,
+        *,
+        cancelled: bool = False,
+    ) -> None:
+        """Report a call the backend's own loop refused before the gate (its
+        arguments did not read, a stop cut it), as the gate reports one."""
+        call = RealtimeToolCall(session, f"{delegation_id}:{uuid4().hex[:8]}", name, arguments)
+        call.room_id = self._session_rooms.get(session.id) or session.room_id
+        kind = OutcomeKind.CANCELLED if cancelled else OutcomeKind.REFUSED
+        await report_failed_call(cast("ToolCallHost", self), call, ToolOutcome(kind, body))
 
 
 class _BackendDoor:

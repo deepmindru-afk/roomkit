@@ -40,7 +40,11 @@ from roomkit.providers.ai.thinking_blocks import ThinkingBlocks
 from roomkit.providers.anthropic.ai import AnthropicAIProvider
 from roomkit.providers.anthropic.config import AnthropicConfig
 from roomkit.providers.anthropic.request import build_messages
-from roomkit.voice.realtime.reasoning import AIProviderReasoningBackend
+from roomkit.voice.realtime.reasoning import (
+    AIProviderReasoningBackend,
+    ReasoningRequest,
+    ToolCallResult,
+)
 from tests.tool_loop_modes import run_tool_loop
 
 _CTX = AIContext(messages=[AIMessage(role="user", content="hi")])
@@ -371,19 +375,37 @@ def test_a_wrapped_response_hands_each_block_on() -> None:
     ]
 
 
-def test_the_reasoning_backend_replays_every_block() -> None:
-    history: list[AIMessage] = []
-    response = AIResponse(
-        content="",
-        thinking_parts=[
-            AIThinkingPart(thinking="a", signature="S0"),
-            AIThinkingPart(thinking="", redacted="RRR"),
+async def test_the_reasoning_backend_replays_every_block(streaming: bool) -> None:
+    """The backend runs on the AI channel's loop (RMK-396): its rounds replay
+    their blocks as that loop's do."""
+    provider = MockAIProvider(
+        streaming=streaming,
+        ai_responses=[
+            AIResponse(
+                content="",
+                thinking_parts=[
+                    AIThinkingPart(thinking="a", signature="S0"),
+                    AIThinkingPart(thinking="", redacted="RRR"),
+                ],
+                tool_calls=[AIToolCall(id="c1", name="get_weather", arguments={})],
+            ),
+            AIResponse(content="Sunny."),
         ],
     )
+    backend = AIProviderReasoningBackend(provider)
+    request = ReasoningRequest(
+        session=SimpleNamespace(id="s1", room_id="r1"),  # type: ignore[arg-type]
+        delegation_id="d1",
+        transcript=[],
+        first=True,
+        tools=[{"name": "get_weather", "description": "Weather", "parameters": {}}],
+        execute_tool_call=AsyncMock(return_value=ToolCallResult("ok")),
+    )
 
-    AIProviderReasoningBackend._record_tool_round(history, response)
+    _ = [output async for output in backend.run(request)]
 
-    assert [_label(p) for p in history[0].content] == ["thinking:S0", "thinking:RRR"]
+    replayed = next(m for m in provider.calls[1].messages if m.role == "assistant").content
+    assert [_label(p) for p in replayed] == ["thinking:S0", "thinking:RRR", "call:c1"]
 
 
 async def test_a_response_read_through_generate_replays_its_blocks_first(

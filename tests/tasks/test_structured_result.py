@@ -10,6 +10,8 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from roomkit.channels._tool_registry import ChannelRegistry, ToolSource
 from roomkit.core.event_router import BroadcastResult
 from roomkit.core.mixins._child_execution import _scan_for_submitted_result
@@ -141,13 +143,23 @@ def _make_cc_kit(events: list[RoomEvent]):
     return kit
 
 
-def _tool_call_event(tool_name: str, arguments: dict[str, Any]) -> RoomEvent:
+def _tool_call_event(
+    tool_name: str,
+    arguments: dict[str, Any],
+    *,
+    channel_id: str = "agent:w1",
+    outcome: Any = None,
+) -> RoomEvent:
     return RoomEvent(
         room_id="parent::task-1",
-        source=EventSource(channel_id="agent:w1", channel_type=ChannelType.AI),
+        source=EventSource(channel_id=channel_id, channel_type=ChannelType.AI),
         type=EventType.TOOL_CALL_END,
         content=ToolCallContent(
-            tool_name=tool_name, tool_id="tc-1", arguments=arguments, status="completed"
+            tool_name=tool_name,
+            tool_id="tc-1",
+            arguments=arguments,
+            status="failed" if outcome not in (None, "served") else "completed",
+            outcome=outcome,
         ),
     )
 
@@ -182,6 +194,30 @@ class TestStructuredResultViaTrace:
         payload = json.loads(out)
         assert payload["status"] == "failed"
         assert payload["by"] == "orchestration"
+
+
+class TestOnlyTheWorkersServedResultCounts:
+    """A refused result call, or one another channel made, is no result (RMK-396)."""
+
+    @pytest.mark.parametrize(
+        ("channel_id", "outcome"),
+        [("agent:w1", "refused"), ("agent:w1", "failed"), ("agent:other", "served")],
+    )
+    async def test_the_scan_ignores_it(self, channel_id: str, outcome: str) -> None:
+        submitted = {"status": "completed", "summary": "not mine", "data": {}}
+        kit = _make_cc_kit(
+            [_tool_call_event("submit_result", submitted, channel_id=channel_id, outcome=outcome)]
+        )
+
+        assert await _scan_for_submitted_result(kit, "parent::task-1", "agent:w1") is None
+
+    async def test_the_scan_takes_the_workers_served_call(self) -> None:
+        submitted = {"status": "completed", "summary": "mine", "data": {}}
+        kit = _make_cc_kit([_tool_call_event("submit_result", submitted, outcome="served")])
+
+        found = await _scan_for_submitted_result(kit, "parent::task-1", "agent:w1")
+
+        assert found is not None and found["summary"] == "mine"
 
 
 class TestResultHelpers:
@@ -268,6 +304,6 @@ class TestAnotherResultTool:
             ]
         )
 
-        found = await _scan_for_submitted_result(kit, "parent::task-1", SUBMIT_VERDICT)
+        found = await _scan_for_submitted_result(kit, "parent::task-1", "agent:w1", SUBMIT_VERDICT)
 
         assert found == {"approved": False, "feedback": "add sources", "next_task": None}

@@ -23,17 +23,24 @@ from roomkit.channels._realtime_delegation import (
     FALLBACK_NO_OUTPUT,
     FALLBACK_TIMEOUT,
 )
+from roomkit.channels.agent import Agent
+from roomkit.channels.ai import AIChannel
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 from roomkit.models.tool_call import ToolCallEvent
-from roomkit.providers.ai.base import AIResponse, AIToolCall, AIToolCallPart
+from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall, AIToolCallPart
 from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.telemetry.base import Attr, SpanKind
+from roomkit.telemetry.mock import MockTelemetryProvider
 from roomkit.voice.base import VoiceSession, VoiceSessionState
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
 from roomkit.voice.realtime.reasoning import (
+    AgentReasoningBackend,
     AIProviderReasoningBackend,
     ReasoningBackend,
+    ReasoningCutShortError,
     ReasoningOutput,
     ReasoningRequest,
+    ToolCallResult,
     TranscriptLine,
     render_transcript_request,
 )
@@ -540,13 +547,15 @@ class TestAIProviderReasoningBackend:
             return "{}"
 
         request = ReasoningRequest(self._session(), "d1", [], True, [LOOKUP], execute)
-        outputs = [o async for o in backend.run(request)]
+        outputs: list[ReasoningOutput] = []
+        with pytest.raises(ReasoningCutShortError) as cut:
+            async for output in backend.run(request):
+                outputs.append(output)
 
-        assert outputs == [
-            ReasoningOutput("Still working.", spoken=True, is_final=False),
-            ReasoningOutput("Still working.", spoken=True, is_final=True),
-        ]
-        assert len(provider.calls) == 2
+        # A turn the round cap cut has no answer: its narration stays progress
+        # (RMK-396, RFC §6.4), and the run fails for the channel to answer.
+        assert cut.value.reason == "max_rounds"
+        assert outputs == [ReasoningOutput("Still working.", spoken=True, is_final=False)]
 
     async def test_missing_executor_answers_tool_calls_with_an_error(self) -> None:
         provider = MockAIProvider(
@@ -566,6 +575,256 @@ class TestAIProviderReasoningBackend:
     def test_rejects_negative_round_cap(self) -> None:
         with pytest.raises(ValueError, match="max_tool_rounds"):
             AIProviderReasoningBackend(MockAIProvider(), max_tool_rounds=-1)
+
+
+class TestAgentReasoningBackend:
+    """The backend is an agent like any other, on the AI channel's tool loop
+    (RMK-396, RFC §6.4 and §12.4.1)."""
+
+    def _request(self, execute: Any = None, delegation_id: str = "d1") -> ReasoningRequest:
+        async def served(name: str, arguments: dict[str, Any]) -> ToolCallResult:
+            return ToolCallResult('{"status": "on time"}')
+
+        return ReasoningRequest(
+            session=VoiceSession(
+                id="s1",
+                room_id="r1",
+                participant_id="u1",
+                channel_id="rt-1",
+                state=VoiceSessionState.ACTIVE,
+            ),
+            delegation_id=delegation_id,
+            transcript=[TranscriptLine("user", "Is UA482 running?")],
+            first=True,
+            tools=[LOOKUP],
+            execute_tool_call=execute or served,
+        )
+
+    async def test_an_agent_serves_with_its_own_settings(self) -> None:
+        provider = MockAIProvider(ai_responses=[AIResponse(content="UA482 is on time.")])
+        backend = AgentReasoningBackend(
+            Agent("reasoner", provider=provider, system_prompt="agent rules", temperature=0.2)
+        )
+
+        outputs = [o async for o in backend.run(self._request())]
+
+        assert outputs == [ReasoningOutput("UA482 is on time.", spoken=True, is_final=True)]
+        [call] = provider.calls
+        assert call.system_prompt == "agent rules"
+        assert call.temperature == 0.2
+        assert [t.name for t in call.tools] == ["lookup"], "the session's catalogue only"
+
+    @pytest.mark.parametrize(
+        ("own", "named"),
+        [
+            ({"tools": [AITool(name="own", description="own")]}, "tools"),
+            ({"enable_planning": True}, "planning"),
+        ],
+        ids=["tools", "planning"],
+    )
+    def test_an_agent_with_tools_of_its_own_is_refused(
+        self, own: dict[str, Any], named: str
+    ) -> None:
+        """Its own tools would run outside the voice channel's gate."""
+        with pytest.raises(ValueError, match=named):
+            AgentReasoningBackend(AIChannel("reasoner", provider=MockAIProvider(), **own))
+
+    async def test_a_call_the_provider_could_not_parse_is_tried_again(self) -> None:
+        provider = MockAIProvider(
+            ai_responses=[
+                AIResponse(content="", finish_reason="MALFORMED_FUNCTION_CALL"),
+                AIResponse(content="Your flight is AF123."),
+            ]
+        )
+        backend = AIProviderReasoningBackend(provider)
+
+        outputs = [o async for o in backend.run(self._request())]
+
+        assert outputs == [ReasoningOutput("Your flight is AF123.", spoken=True, is_final=True)]
+        assert len(provider.calls) == 2
+
+    async def test_an_empty_answer_after_a_round_is_asked_again(self) -> None:
+        provider = MockAIProvider(
+            ai_responses=[
+                AIResponse(
+                    content="",
+                    tool_calls=[AIToolCall(id="c1", name="lookup", arguments={"flight": "X"})],
+                ),
+                AIResponse(content=""),
+                AIResponse(content="It leaves at 9."),
+            ]
+        )
+        backend = AIProviderReasoningBackend(provider)
+
+        outputs = [o async for o in backend.run(self._request())]
+
+        assert outputs == [ReasoningOutput("It leaves at 9.", spoken=True, is_final=True)]
+
+    async def test_the_next_delegation_reads_the_tool_rounds(self) -> None:
+        provider = MockAIProvider(
+            ai_responses=[
+                AIResponse(
+                    content="",
+                    tool_calls=[AIToolCall(id="c1", name="lookup", arguments={"flight": "X"})],
+                ),
+                AIResponse(content="first"),
+                AIResponse(content="second"),
+            ]
+        )
+        backend = AIProviderReasoningBackend(provider)
+
+        _ = [o async for o in backend.run(self._request())]
+        _ = [o async for o in backend.run(self._request(delegation_id="d2"))]
+
+        roles = [m.role for m in provider.calls[-1].messages]
+        assert roles == ["user", "assistant", "tool", "assistant", "user"]
+
+    async def test_a_refused_call_reads_as_one(self) -> None:
+        async def refused(name: str, arguments: dict[str, Any]) -> ToolCallResult:
+            return ToolCallResult('{"error": "outside business hours"}', is_error=True)
+
+        provider = MockAIProvider(
+            ai_responses=[
+                AIResponse(
+                    content="",
+                    tool_calls=[AIToolCall(id="c1", name="lookup", arguments={"flight": "X"})],
+                ),
+                AIResponse(content="It is closed."),
+            ]
+        )
+        backend = AIProviderReasoningBackend(provider)
+
+        _ = [o async for o in backend.run(self._request(refused))]
+
+        [result] = provider.calls[1].messages[-1].content
+        assert result.is_error
+        assert "outside business hours" in result.result
+
+    async def test_a_turn_cut_by_its_deadline_has_no_answer(self) -> None:
+        """The loop's own bounds hold: its deadline ends the turn, which
+        fails for the channel to answer (RFC §6.4)."""
+
+        async def slow(name: str, arguments: dict[str, Any]) -> ToolCallResult:
+            await asyncio.sleep(0.05)
+            return ToolCallResult("{}")
+
+        looping = AIResponse(
+            content="Checking.",
+            tool_calls=[AIToolCall(id="c", name="lookup", arguments={"flight": "X"})],
+        )
+        agent = AIChannel(
+            "reasoner",
+            provider=MockAIProvider(ai_responses=[looping]),
+            tool_loop_timeout_seconds=0.01,
+        )
+        backend = AgentReasoningBackend(agent)
+
+        with pytest.raises(ReasoningCutShortError) as cut:
+            _ = [o async for o in backend.run(self._request(slow))]
+        assert cut.value.reason == "timeout"
+
+
+class TestAgentBackendOnTheChannel:
+    """What the voice channel observes of an agent backend's turn."""
+
+    async def _served(
+        self, responses: list[AIResponse], *, deny: bool = False, **backend: Any
+    ) -> tuple[RoomKit, MockRealtimeProvider, list[ToolCallEvent], MockTelemetryProvider]:
+        async def handler(name: str, arguments: dict[str, Any]) -> str:
+            return '{"status": "on time"}'
+
+        telemetry = MockTelemetryProvider()
+        provider = MockRealtimeProvider(full_duplex=True)
+        channel = RealtimeVoiceChannel(
+            "rt-1",
+            provider=provider,
+            transport=MockRealtimeTransport(),
+            tools=[LOOKUP],
+            tool_handler=handler,
+            reasoning_backend=AIProviderReasoningBackend(
+                MockAIProvider(ai_responses=responses), **backend
+            ),
+        )
+        kit = RoomKit(telemetry=telemetry)
+        kit.register_channel(channel)
+        await kit.create_room(room_id="r1")
+        await kit.attach_channel("r1", "rt-1")
+        observed: list[ToolCallEvent] = []
+
+        @kit.hook(HookTrigger.ON_TOOL_CALL, HookExecution.ASYNC)
+        async def observe(event: ToolCallEvent, ctx: Any) -> None:
+            observed.append(event)
+
+        if deny:
+
+            @kit.hook(HookTrigger.BEFORE_TOOL_USE, HookExecution.SYNC)
+            async def refuse(event: ToolCallEvent, ctx: Any) -> HookResult:
+                return HookResult.block("outside business hours")
+
+        session = await channel.start_session("r1", "user-1", "fake-ws")
+        await provider.simulate_delegation(session, "d1", "integrator")
+        await _settle(0.1)
+        return kit, provider, observed, telemetry
+
+    async def test_a_served_call_is_reported_once(self) -> None:
+        _, provider, observed, _ = await self._served(
+            [
+                AIResponse(
+                    content="",
+                    tool_calls=[AIToolCall(id="c1", name="lookup", arguments={"flight": "X"})],
+                ),
+                AIResponse(content="On time."),
+            ]
+        )
+
+        assert [(e.name, e.is_error) for e in observed] == [("lookup", False)]
+        assert provider.delegation_outputs[-1][2] == "On time."
+
+    async def test_a_call_the_gate_refuses_is_reported_once_and_read_as_refused(
+        self,
+    ) -> None:
+        """The gate reports its refusal; the loop, which reads it as one,
+        reports it no second time (RFC §9.3)."""
+        call = AIToolCall(id="c1", name="lookup", arguments={"flight": "X"})
+        _, _, observed, _ = await self._served(
+            [AIResponse(content="", tool_calls=[call]), AIResponse(content="Sorry.")], deny=True
+        )
+
+        [event] = observed
+        assert (event.name, event.is_error) == ("lookup", True)
+        assert "outside business hours" in str(event.result)
+
+    async def test_a_partial_call_reaches_the_observers(self) -> None:
+        cut = AIToolCall(id="c1", name="lookup", arguments={"raw": '{"fl'}, partial=True)
+        _, _, observed, _ = await self._served(
+            [
+                AIResponse(content="", finish_reason="length", tool_calls=[cut]),
+                AIResponse(content="ok"),
+            ]
+        )
+
+        [event] = observed
+        assert (event.name, event.is_error) == ("lookup", True)
+        assert json.loads(str(event.result))["error"] == "Tool call cut off"
+
+    async def test_a_round_capped_turn_is_answered_by_the_fallback(self) -> None:
+        looping = AIResponse(
+            content="Still working.",
+            tool_calls=[AIToolCall(id="c", name="lookup", arguments={"flight": "X"})],
+        )
+        _, provider, _, _ = await self._served([looping], max_tool_rounds=1)
+
+        said = [(text, spoken) for _, _, text, spoken in provider.delegation_outputs]
+        assert said == [("Still working.", False), (FALLBACK_FAILED, True)]
+
+    async def test_the_turn_has_a_span_with_its_usage(self) -> None:
+        answer = AIResponse(content="On time.", usage={"input_tokens": 120, "output_tokens": 8})
+        _, _, _, telemetry = await self._served([answer])
+
+        [span] = telemetry.get_spans(SpanKind.LLM_GENERATE)
+        assert span.status == "ok"
+        assert span.attributes[Attr.LLM_INPUT_TOKENS] == 120
+        assert span.attributes[Attr.LLM_OUTPUT_TOKENS] == 8
 
 
 class TestRendering:

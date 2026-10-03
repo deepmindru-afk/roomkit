@@ -780,10 +780,12 @@ class RealtimeVoiceChannel(
         return parent, token
 
     def _propagate_telemetry(self) -> None:
-        """Propagate telemetry to realtime provider."""
+        """Propagate telemetry to the realtime provider and the reasoning backend."""
         telemetry = getattr(self, "_telemetry", None)
         if telemetry is not None:
             self._provider._telemetry = telemetry  # ty: ignore[unresolved-attribute]
+            if self._reasoning_backend is not None:
+                self._reasoning_backend._adopt_telemetry(telemetry)
 
     def set_framework(self, framework: RoomKit) -> None:
         """Set the framework reference for event routing.

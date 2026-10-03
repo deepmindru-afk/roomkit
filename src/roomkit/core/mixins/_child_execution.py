@@ -63,11 +63,37 @@ class _TraceSink:
         return await self._kit._commit_indexed(self._room_id, event)
 
 
+class _ToolRowSink:
+    """A turn whose text is no answer to its room: its tool calls are stored
+    as any turn's, its text is read and kept out (a supervisor's first pass,
+    whose text is the task it hands on, RFC §19.7.3)."""
+
+    def __init__(self, kit: RoomKit, room_id: str) -> None:
+        self._kit = kit
+        self._room_id = room_id
+
+    async def commit(self, event: RoomEvent, *, exclude: set[str] | None) -> RoomEvent | None:
+        if event.type in (EventType.TOOL_CALL_START, EventType.TOOL_CALL_END):
+            return await self._kit._commit_indexed(self._room_id, event)
+        return event
+
+
+async def persist_tool_calls(kit: RoomKit, room_id: str, sr: Any, chain_depth: int) -> str:
+    """Store a turn's tool calls in *room_id* and read its answer, its text
+    kept out of the room: the writer every streamed turn goes through, so the
+    answer is the last segment, never the narration of a tool round."""
+    return await _persist_child_stream(
+        kit, room_id, sr, chain_depth, sink=_ToolRowSink(kit, room_id)
+    )
+
+
 async def _persist_child_stream(
     kit: RoomKit,
     child_room_id: str,
     sr: Any,
     chain_depth: int,
+    *,
+    sink: Any = None,
 ) -> str:
     """Write a delegated turn's stream into its child room; the worker's answer.
 
@@ -83,7 +109,7 @@ async def _persist_child_stream(
     writer = SegmentWriter(
         kit,
         sr,
-        _TraceSink(kit, child_room_id),
+        sink if sink is not None else _TraceSink(kit, child_room_id),
         room_id=child_room_id,
         chain_depth=chain_depth,
         correlation_id=uuid4().hex,
@@ -275,16 +301,18 @@ _LATEST_TAIL_CURSOR = 2**31 - 1
 
 
 async def _scan_for_submitted_result(
-    kit: RoomKit, child_room_id: str, result_tool: ResultTool | None = None
+    kit: RoomKit, child_room_id: str, worker_id: str, result_tool: ResultTool | None = None
 ) -> dict[str, Any] | None:
-    """Find a call of the result tool (``submit_result`` by default) in the
-    worker's persisted trace.
+    """Find the worker's served call of the result tool (``submit_result`` by
+    default) in its persisted trace.
 
     A call made through the channel's tool loop is caught by the capture
     handler; an agent whose tools come from an MCP server calls the tool there,
     out of that handler's reach, but the call is persisted as a TOOL_CALL event
     (named ``mcp__<server>__<name>``). Scanning the room's trace tail catches
-    it. Returns the normalized payload, or None.
+    it. Only a call that ended served counts, made by the worker itself: a
+    refused or failed call is no result, and another channel shared into the
+    room is not the worker. Returns the normalized payload, or None.
     """
     from roomkit.orchestration.result import SUBMIT_RESULT
 
@@ -293,11 +321,20 @@ async def _scan_for_submitted_result(
         child_room_id, before_index=_LATEST_TAIL_CURSOR, limit=100
     )
     for ev in reversed(events):
-        if ev.type in (EventType.TOOL_CALL_END, EventType.TOOL_CALL_START):
-            name = getattr(ev.content, "tool_name", "") or ""
-            if tool.matches(name):
-                return tool.normalize(getattr(ev.content, "arguments", None) or {})
+        if ev.type != EventType.TOOL_CALL_END or ev.source.channel_id != worker_id:
+            continue
+        if tool.matches(getattr(ev.content, "tool_name", "") or "") and _served(ev.content):
+            return tool.normalize(getattr(ev.content, "arguments", None) or {})
     return None
+
+
+def _served(content: Any) -> bool:
+    """Whether a stored tool end says its call was served; a row written
+    before outcomes existed says it by its status."""
+    outcome = getattr(content, "outcome", None)
+    if outcome is not None:
+        return outcome == "served"
+    return getattr(content, "status", None) == "completed"
 
 
 @runtime_checkable
@@ -351,7 +388,7 @@ async def _run_with_structured_result(
             text = await _broadcast_and_collect(kit, child_room_id, message)
             if slot.payload is not None:
                 return json.dumps(slot.payload)
-            scanned = await _scan_for_submitted_result(kit, child_room_id, tool)
+            scanned = await _scan_for_submitted_result(kit, child_room_id, str(agent_id), tool)
             if scanned is not None:
                 return json.dumps(scanned)
             last_text = text or last_text

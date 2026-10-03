@@ -11,6 +11,7 @@ from typing import Any
 
 from roomkit.channels._turn_config import AIChannelTurnConfig
 from roomkit.channels.agent import Agent
+from roomkit.core.framework import RoomKit
 from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import ChannelCategory, ChannelType
@@ -49,6 +50,8 @@ async def test_two_rooms_in_parallel_never_share_the_instruction() -> None:
     await asyncio.gather(
         *(
             _formulate_task(
+                RoomKit(),
+                room,
                 supervisor,
                 on_event,
                 make_event(room_id=room, body="go", channel_id="sms1"),
@@ -78,6 +81,8 @@ async def test_the_instruction_follows_the_prompt_the_turn_would_have_had() -> N
         return ChannelOutput.empty()
 
     await _formulate_task(
+        RoomKit(),
+        "r1",
         supervisor,
         on_event,
         make_event(room_id="r1", body="go", channel_id="sms1"),
