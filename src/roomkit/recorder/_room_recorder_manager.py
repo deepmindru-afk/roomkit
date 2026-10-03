@@ -26,6 +26,9 @@ class RoomRecorderManager:
 
     def __init__(self) -> None:
         self._registry: dict[str, list[_ActiveBinding]] = {}
+        # The tracks each room declares, recorded or not, until they end: a
+        # recording that joins the room later is told them before any media.
+        self._tracks: dict[str, dict[str, RecordingTrack]] = {}
 
     def register(
         self, room_id: str, bindings: list[RoomRecorderBinding]
@@ -73,11 +76,17 @@ class RoomRecorderManager:
     def adopt(self, room_id: str, active: list[_ActiveBinding]) -> list[MediaRecordingHandle]:
         """File recordings :meth:`start` opened under *room_id*; returns their handles.
 
+        Each is told the room's tracks first, so media already flowing in the
+        room reaches it only once it knows the track's format (RFC §12.11).
         They join the room's recordings rather than replace them: a store that
         rewrites a room created again under its id (in-memory, SQLite) must not
         orphan the recordings that room already runs, which only a registry
         entry lets anything stop.
         """
+        tracks = list(self._tracks.get(room_id, {}).values())
+        for binding, handle in active:
+            for track in tracks:
+                binding.recorder.on_track_added(handle, track)
         if active:
             self._registry.setdefault(room_id, []).extend(active)
         return [handle for _binding, handle in active]
@@ -90,12 +99,18 @@ class RoomRecorderManager:
                 logger.info("Room recording discarded: %s (room=%s)", handle.id, handle.room_id)
 
     def on_track_added(self, room_id: str, track: RecordingTrack) -> None:
-        """Notify all recorders in a room about a new track."""
+        """Declare a track of *room_id*: to its recordings, and to any that joins later."""
+        self._tracks.setdefault(room_id, {})[track.id] = track
         for binding, handle in self._registry.get(room_id, []):
             binding.recorder.on_track_added(handle, track)
 
     def on_track_removed(self, room_id: str, track: RecordingTrack) -> None:
-        """Notify all recorders in a room about a removed track."""
+        """End a track of *room_id*: each recording flushes it, and a recording
+        joining later is not told of it."""
+        tracks = self._tracks.get(room_id, {})
+        tracks.pop(track.id, None)
+        if not tracks:
+            self._tracks.pop(room_id, None)
         for binding, handle in self._registry.get(room_id, []):
             binding.recorder.on_track_removed(handle, track)
 
@@ -146,6 +161,7 @@ class RoomRecorderManager:
         """
         stopped: dict[str, list[MediaRecordingResult]] = {}
         seen_recorders: set[int] = set()
+        self._tracks.clear()
         for room_id in list(self._registry):
             for binding, handle in self._registry.pop(room_id, []):
                 result = _stop_quietly(binding, handle)
@@ -181,26 +197,3 @@ def _close_quietly(binding: RoomRecorderBinding) -> None:
         binding.recorder.close()
     except Exception:
         logger.exception("Failed to close room recorder %s", binding.recorder.name)
-
-
-class RoomRecordingFeed:
-    """Hands one track's media to a room's recordings (RFC §12.11).
-
-    What :meth:`RoomKit.add_room_recording_track` returns to a caller that
-    feeds a room recording from a source the framework does not wire itself:
-    the track was declared to every recording of the room, and the media goes
-    through the framework, never through a recorder the caller holds.
-    """
-
-    def __init__(self, manager: RoomRecorderManager, room_id: str, track: RecordingTrack) -> None:
-        self._manager = manager
-        self._room_id = room_id
-        self.track = track
-
-    def feed(self, data: bytes, timestamp_ms: float | None = None) -> None:
-        """Hand *data*, in the format the track declares, to the room's recordings."""
-        self._manager.on_data(self._room_id, self.track, data, timestamp_ms)
-
-    def close(self) -> None:
-        """End the track: each recording flushes what it holds of it."""
-        self._manager.on_track_removed(self._room_id, self.track)

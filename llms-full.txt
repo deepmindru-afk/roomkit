@@ -1139,8 +1139,8 @@ member management API.
 | `ON_TURN_COMPLETE` | ASYNC | `(TurnCompleteEvent, ctx) -> None` | Turn detector says turn is complete; carries combined text + confidence |
 | `ON_TURN_INCOMPLETE` | ASYNC | `(TurnIncompleteEvent, ctx) -> None` | Turn detector says turn is incomplete |
 | `ON_BACKCHANNEL` | ASYNC | `(BackchannelEvent, ctx) -> None` | Backchannel detected (uh-huh, yeah) |
-| `ON_RECORDING_STARTED` | ASYNC | `(RecordingStartedEvent, ctx) -> None` | Audio recording started (voice session or conference track) |
-| `ON_RECORDING_STOPPED` | ASYNC | `(RecordingStoppedEvent, ctx) -> None` | Audio recording stopped, result available |
+| `ON_RECORDING_STARTED` | ASYNC | `(RecordingStartedEvent, ctx) -> None` | Recording started (voice session, conference track or room), before any media: the consent point |
+| `ON_RECORDING_STOPPED` | ASYNC | `(RecordingStoppedEvent, ctx) -> None` | Recording stopped (voice session, conference track or room), result available; a room's `session` is `None` and `room_id` names it |
 | `ON_INPUT_AUDIO_LEVEL` | ASYNC | `(AudioLevelEvent, ctx) -> None` | Inbound audio level (throttled; telemetry-suppressed) |
 | `ON_OUTPUT_AUDIO_LEVEL` | ASYNC | `(AudioLevelEvent, ctx) -> None` | Outbound audio level (throttled; telemetry-suppressed) |
 | `BEFORE_BRIDGE_AUDIO` | SYNC | `(BridgeAudioEvent, ctx) -> HookResult` | Before an audio frame is forwarded across an audio bridge. Can block/modify the frame. Only invoked when hooks are registered — otherwise frames bypass the event loop for latency. |

@@ -7,12 +7,14 @@ whichever path stops it: an explicit stop, a close, an archive, a shutdown.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
 
 from roomkit import HookExecution, HookTrigger, RoomKit
 from roomkit.core.exceptions import RoomClosedError, RoomNotFoundError
+from roomkit.models.room import RoomTimers
 from roomkit.recorder.base import (
     MediaRecordingConfig,
     MediaRecordingHandle,
@@ -148,13 +150,22 @@ async def test_an_explicit_stop_returns_and_announces_each_result() -> None:
     await kit.close()
 
 
-@pytest.mark.parametrize("operation", ["close_room", "archive_room", "close"])
+async def _close_by_timer(kit: RoomKit) -> None:
+    room = await kit.get_room("r1")
+    idle = RoomTimers(closed_after_seconds=1, last_activity_at=datetime.now(UTC) - timedelta(1))
+    await kit.store.update_room(room.model_copy(update={"timers": idle}))
+    await kit.check_room_timers("r1")
+
+
+@pytest.mark.parametrize("operation", ["close_room", "archive_room", "timer", "close"])
 async def test_every_other_path_that_stops_a_recording_announces_its_end(operation: str) -> None:
     kit, heard = await _kit()
     [handle] = await kit.start_room_recording("r1", [_binding(MockMediaRecorder())])
 
     if operation == "close":
         await kit.close()
+    elif operation == "timer":
+        await _close_by_timer(kit)
     else:
         await getattr(kit, operation)("r1")
 
@@ -175,4 +186,47 @@ async def test_a_recording_resumed_after_a_stop_is_announced_again() -> None:
     [resumed] = await kit.start_room_recording("r1", [_binding(MockMediaRecorder())])
 
     assert heard[-1][0] == "started" and heard[-1][1].id == resumed.id
+    await kit.close()
+
+
+async def test_a_recording_joining_live_media_hears_it_only_once_announced() -> None:
+    """A feed declared while an earlier recording ran keeps flowing: the next
+    recording is told its track, and receives its media, only after its
+    consent point (RFC §12.11, §17.6)."""
+    kit, _heard = await _kit()
+    await kit.start_room_recording("r1", [_binding(MockMediaRecorder())])
+    feed = kit.add_room_recording_track("r1", _TRACK)
+    assert feed is not None
+    await kit.stop_room_recording("r1")
+    later = MockMediaRecorder()
+    seen_at_announcement: list[tuple[int, int]] = []
+
+    @kit.hook(HookTrigger.ON_RECORDING_STARTED, execution=HookExecution.ASYNC, name="consent")
+    async def consent(event: Any, ctx: Any) -> None:
+        feed.feed(b"\x00\x00" * 480, 0.0)  # media flowing while the consent runs
+        seen_at_announcement.append((len(later.tracks), len(later.chunks)))
+
+    await kit.start_room_recording("r1", [_binding(later)])
+    feed.feed(b"\x01\x01" * 480, 20.0)
+
+    assert seen_at_announcement == [(0, 0)]
+    assert [track.id for track in later.tracks] == [_TRACK.id]
+    assert [chunk.data for chunk in later.chunks] == [b"\x01\x01" * 480]
+    await kit.close()
+
+
+async def test_a_room_whose_row_is_gone_still_has_its_recordings_stopped() -> None:
+    """They run in memory: a file nothing stops is never finalized. The room
+    has no context left to announce the end in, which is logged instead."""
+    kit, heard = await _kit()
+    [handle] = await kit.start_room_recording("r1", [_binding(MockMediaRecorder())])
+    await kit.store.delete_room("r1")
+
+    results = await kit.stop_room_recording("r1", organization_id="tenant-a")
+
+    assert [result.id for result in results] == [handle.id]
+    assert kit.room_recordings("r1") == []
+    # Gone and recording nothing: not found, as another organization's room is.
+    with pytest.raises(RoomNotFoundError):
+        await kit.stop_room_recording("r1", organization_id="tenant-a")
     await kit.close()

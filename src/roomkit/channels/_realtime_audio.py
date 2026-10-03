@@ -291,6 +291,14 @@ class RealtimeAudioMixin:
             self._output_sample_rate,
         )
 
+    def _end_recording_track(self, session_id: str) -> None:
+        """End a session's room recording track: each recording flushes it,
+        and a recording that starts later is not told of it."""
+        rec = self._recording_tracks.pop(session_id, None)
+        if rec is not None and self._framework:
+            track, room_id = rec
+            self._framework._room_recorder_mgr.on_track_removed(room_id, track)
+
     # -----------------------------------------------------------------
     # Pipeline audio path (active when pipeline= is configured)
     # -----------------------------------------------------------------

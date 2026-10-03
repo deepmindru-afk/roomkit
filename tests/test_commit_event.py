@@ -128,3 +128,17 @@ async def test_an_unscoped_call_reads_the_room_as_get_room_does() -> None:
     assert isinstance(await kit.get_room("r1"), Room)
     assert committed.room_id == "r1"
     await kit.close()
+
+
+async def test_a_record_of_another_room_is_refused_before_anything_is_read() -> None:
+    """The stores file a row under its event's room: the room checked must be
+    the room written (RFC §10.5)."""
+    kit = RoomKit()
+    await _room(kit)
+    before = await kit.store.list_events("r1")
+
+    with pytest.raises(ValueError, match="of room elsewhere"):
+        await kit.commit_event("r1", make_event(room_id="elsewhere", channel_id="tracer"))
+
+    assert await kit.store.list_events("r1") == before
+    await kit.close()

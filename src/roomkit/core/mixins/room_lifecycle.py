@@ -52,7 +52,7 @@ class RoomLifecycleHost(Protocol):
     Cross-mixin methods (provided by other mixins in the MRO):
         register_channel: From :class:`ChannelOpsMixin`.
         attach_channel: From :class:`ChannelOpsMixin`.
-        _fire_recording_started: From :class:`RoomRecordingMixin`.
+        _file_announced: From :class:`RoomRecordingMixin`.
         _stop_room_recordings: From :class:`RoomRecordingMixin`.
     """
 
@@ -80,7 +80,7 @@ class RoomLifecycleMixin(HelpersMixin):
     # Cross-mixin methods — attribute annotations avoid MRO shadowing
     register_channel: Any  # see RoomLifecycleHost
     attach_channel: Any  # see RoomLifecycleHost
-    _fire_recording_started: Any  # see RoomLifecycleHost
+    _file_announced: Any  # see RoomLifecycleHost
     _stop_room_recordings: Any  # see RoomLifecycleHost
 
     async def create_room(
@@ -179,8 +179,7 @@ class RoomLifecycleMixin(HelpersMixin):
         except BaseException:
             self._room_recorder_mgr.discard(started)
             raise
-        for handle in self._room_recorder_mgr.adopt(room.id, started):
-            await self._fire_recording_started(room.id, handle.id)
+        await self._file_announced(room.id, started)
         return stored
 
     async def get_room(self, room_id: str, *, organization_id: str | None = None) -> Room:
@@ -338,6 +337,8 @@ class RoomLifecycleMixin(HelpersMixin):
             # Check closed threshold first (supersedes pause)
             if timers.closed_after_seconds is not None and elapsed > timers.closed_after_seconds:
                 if room.status != RoomStatus.CLOSED:
+                    # A room closing stops its recordings, whichever path closes it.
+                    await self._stop_room_recordings(room_id)
                     room = room.model_copy(
                         update={"status": RoomStatus.CLOSED, "closed_at": datetime.now(UTC)}
                     )

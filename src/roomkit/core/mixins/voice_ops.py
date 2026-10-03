@@ -317,17 +317,16 @@ class VoiceOpsMixin(HelpersMixin):
 
     async def _leave_voice(self, session: VoiceSession, channel: VoiceChannel) -> None:
         """Leave a voice session (internal)."""
-        # Remove recording tracks
-        if self._room_recorder_mgr.has_recorders(session.room_id):
-            audio_track = self._make_audio_track(
-                session.id, session.channel_id, session.participant_id
-            )
-            self._room_recorder_mgr.on_track_removed(session.room_id, audio_track)
-
-            video_track = self._make_video_track(
-                session.id, session.channel_id, session.participant_id
-            )
-            self._room_recorder_mgr.on_track_removed(session.room_id, video_track)
+        # End its recording tracks, recorded or not: a recording that starts
+        # later must not be told a track of a session that left.
+        audio_track = self._make_audio_track(
+            session.id, session.channel_id, session.participant_id
+        )
+        self._room_recorder_mgr.on_track_removed(session.room_id, audio_track)
+        video_track = self._make_video_track(
+            session.id, session.channel_id, session.participant_id
+        )
+        self._room_recorder_mgr.on_track_removed(session.room_id, video_track)
 
         # The session's own transport (one added with add_backend() serves
         # its sessions), resolved before unbinding forgets it.
@@ -352,9 +351,8 @@ class VoiceOpsMixin(HelpersMixin):
 
     async def _leave_video(self, session: Any, channel: Any) -> None:
         """Leave a video session (internal)."""
-        if self._room_recorder_mgr.has_recorders(session.room_id):
-            track = self._make_video_track(session.id, session.channel_id, session.participant_id)
-            self._room_recorder_mgr.on_track_removed(session.room_id, track)
+        track = self._make_video_track(session.id, session.channel_id, session.participant_id)
+        self._room_recorder_mgr.on_track_removed(session.room_id, track)
 
         channel.unbind_session(session)
         await channel.backend.disconnect(session)

@@ -1616,7 +1616,7 @@ class RealtimeVoiceChannel(
             self._session_transport_output_rates.pop(session.id, None)
             self._audio_forward_count.pop(session.id, None)
             self._forget_transcription_state(session.id)
-            self._recording_tracks.pop(session.id, None)
+            self._end_recording_track(session.id)
             self._barge_in_active.discard(session.id)
             self._playback_started_at.pop(session.id, None)
             self._playback_position_ms.pop(session.id, None)

@@ -365,12 +365,12 @@ class RecordingStoppedEvent:
     duration_seconds: float = 0.0
     """Duration of the recording in seconds."""
 
-    room_id: str = ""
-    """The room that was being recorded. Always set; the session carries it
-    too when there is one."""
-
     timestamp: datetime = field(default_factory=_utcnow)
     """When the recording stopped."""
+
+    room_id: str = ""
+    """The room that was being recorded. Always set; the session carries it
+    too when there is one. Last, so a positional construction keeps working."""
 
 
 @dataclass

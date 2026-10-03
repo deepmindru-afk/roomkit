@@ -1,6 +1,5 @@
 """Room-level media recording package."""
 
-from roomkit.recorder._room_recorder_manager import RoomRecordingFeed
 from roomkit.recorder.base import (
     ChannelRecordingConfig,
     MediaRecorder,
@@ -10,6 +9,7 @@ from roomkit.recorder.base import (
     RecordingTrack,
     RoomRecorderBinding,
 )
+from roomkit.recorder.feed import RoomRecordingFeed
 from roomkit.recorder.mock import MockMediaRecorder
 
 __all__ = [

@@ -13,10 +13,10 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from roomkit.core.exceptions import RoomClosedError
+from roomkit.core.exceptions import RoomClosedError, RoomNotFoundError
 from roomkit.core.mixins.helpers import HelpersMixin, _refuses_writes
 from roomkit.models.enums import HookTrigger
-from roomkit.recorder._room_recorder_manager import RoomRecordingFeed
+from roomkit.recorder.feed import RoomRecordingFeed
 from roomkit.voice.events import RecordingStartedEvent, RecordingStoppedEvent
 
 if TYPE_CHECKING:
@@ -29,6 +29,7 @@ if TYPE_CHECKING:
         RecordingTrack,
         RoomRecorderBinding,
     )
+    from roomkit.store.base import ConversationStore
 
 logger = logging.getLogger("roomkit.framework")
 
@@ -41,6 +42,7 @@ class RoomRecordingHost(Protocol):
         _room_recorder_mgr: Manager of the rooms' recordings.
         _lock_manager: Per-room lock the start and the stop are taken under.
         _hook_engine: Hook engine the announcements run on.
+        _store: Store a room whose row is gone is checked in.
 
     Methods:
         get_room: From :class:`RoomLifecycleMixin`.
@@ -60,6 +62,7 @@ class RoomRecordingMixin(HelpersMixin):
     _room_recorder_mgr: RoomRecorderManager
     _lock_manager: RoomLockManager
     _hook_engine: HookEngine
+    _store: ConversationStore
     get_room: Any  # see RoomRecordingHost / RoomLifecycleMixin
 
     async def start_room_recording(
@@ -72,11 +75,13 @@ class RoomRecordingMixin(HelpersMixin):
         """Start *recorders* on an existing room, all or nothing, and announce each.
 
         The room is read under its lock, scoped to *organization_id* (RFC
-        §17.2). The recordings join the ones the room already runs, and
-        ON_RECORDING_STARTED fires for each before this returns: a room
-        recording captures nothing until a track is added, so the announcement
-        precedes any media (RFC §12.11, §17.6). A recording resumed after a
-        restart is started here.
+        §17.2). ON_RECORDING_STARTED fires for each recording, under the lock,
+        before it joins the room's media: it is told the room's tracks, then
+        filed, so media already flowing reaches it after its consent point and
+        in the format its track declares (RFC §12.11, §17.6). It captures the
+        room's declared tracks: a session that joined while the room recorded
+        nothing declared none, and is recorded once it joins again. A
+        recording resumed after a restart is started here.
 
         Raises:
             RoomNotFoundError: the room is missing, or another organization's.
@@ -88,10 +93,8 @@ class RoomRecordingMixin(HelpersMixin):
             room = await self.get_room(room_id, organization_id=organization_id)
             if _refuses_writes(room):
                 raise RoomClosedError(f"Room {room_id} does not accept new recordings")
-            handles = self._room_recorder_mgr.register(room_id, recorders)
-        for handle in handles:
-            await self._fire_recording_started(room_id, handle.id)
-        return handles
+            started = self._room_recorder_mgr.start(room_id, recorders)
+            return await self._file_announced(room_id, started)
 
     def room_recordings(self, room_id: str) -> list[MediaRecordingHandle]:
         """The recordings *room_id* runs, in the order they started; empty when none."""
@@ -102,10 +105,11 @@ class RoomRecordingMixin(HelpersMixin):
     ) -> RoomRecordingFeed | None:
         """Declare *track* to the room's recordings; the feed its media goes through.
 
-        For a source the framework does not wire itself (a channel joined to
-        the room wires its own). The track describes the media it will carry
-        (RFC §12.11): the feed hands it as declared. ``None`` when the room
-        records nothing.
+        For a source the framework does not wire itself (a channel that joins
+        the room while it records wires its own). The track describes the
+        media it will carry (RFC §12.11): the feed hands it as declared, and a
+        recording started later is told it before any of its media. ``None``
+        when the room records nothing.
         """
         if not self._room_recorder_mgr.has_recorders(room_id):
             return None
@@ -118,14 +122,23 @@ class RoomRecordingMixin(HelpersMixin):
         """Stop the room's recordings, each announced with its result (RFC §12.11).
 
         The room is read under its lock, scoped to *organization_id*: a call
-        refused for another organization stops nothing. Returns the results of
-        the recordings that stopped; empty when the room recorded nothing.
+        refused for another organization stops nothing. A room whose row is
+        gone still has its recordings stopped: they run in memory, and a file
+        nothing stops is never finalized; with no room left to read a context
+        from, their end is logged rather than announced. Returns the results
+        of the recordings that stopped; empty when the room recorded nothing.
 
         Raises:
-            RoomNotFoundError: the room is missing, or another organization's.
+            RoomNotFoundError: the room is another organization's, or it is
+                missing and records nothing, as one would be told not found.
         """
         async with self._lock_manager.locked(room_id):
-            await self.get_room(room_id, organization_id=organization_id)
+            try:
+                await self.get_room(room_id, organization_id=organization_id)
+            except RoomNotFoundError:
+                gone = await self._store.get_room(room_id) is None
+                if not (gone and self._room_recorder_mgr.has_recorders(room_id)):
+                    raise
             return await self._stop_room_recordings(room_id)
 
     async def _stop_room_recordings(self, room_id: str) -> list[MediaRecordingResult]:
@@ -144,6 +157,21 @@ class RoomRecordingMixin(HelpersMixin):
     async def _announce_stopped(self, room_id: str, results: list[MediaRecordingResult]) -> None:
         for result in results:
             await self._fire_recording_stopped(room_id, result)
+
+    async def _file_announced(
+        self, room_id: str, started: list[tuple[RoomRecorderBinding, MediaRecordingHandle]]
+    ) -> list[MediaRecordingHandle]:
+        """Announce recordings :meth:`RoomRecorderManager.start` opened, then
+        file them under the room, its tracks declared to them: the one start a
+        room's creation and a start on an existing room share. A recording that
+        refuses a track gives the started ones up and raises."""
+        for _binding, handle in started:
+            await self._fire_recording_started(room_id, handle.id)
+        try:
+            return self._room_recorder_mgr.adopt(room_id, started)
+        except BaseException:
+            self._room_recorder_mgr.discard(started)
+            raise
 
     async def _fire_recording_started(self, room_id: str, recording_id: str) -> None:
         """Announce a room-level recording (ON_RECORDING_STARTED, RFC §17.6)."""
@@ -184,7 +212,12 @@ class RoomRecordingMixin(HelpersMixin):
             await self._emit_framework_event(
                 "recording_stopped",
                 room_id=room_id,
-                data={"id": result.id, "scope": "room", "url": result.url},
+                data={
+                    "id": result.id,
+                    "scope": "room",
+                    "url": result.url,
+                    "duration_seconds": result.duration_seconds,
+                },
             )
         except Exception:
             logger.exception("Error announcing the end of room recording %s", result.id)
