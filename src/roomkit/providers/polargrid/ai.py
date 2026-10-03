@@ -468,7 +468,7 @@ class PolarGridAIProvider(AIProvider):
             schema=context.response_schema,
             provider=self._provider_name,
             refusal="content_filter" if finish_reason == "content_filter" else None,
-            truncated=finish_reason == "length",
+            finish_reason=finish_reason,
         )
 
     # -- Streaming ----------------------------------------------------------
@@ -497,7 +497,6 @@ class PolarGridAIProvider(AIProvider):
             context,
             provider=self._provider_name,
             refusal=_content_filtered,
-            truncated=lambda done: done.finish_reason == "length",
         )
         try:
             async for event in stream:
@@ -582,22 +581,24 @@ class PolarGridAIProvider(AIProvider):
 
     def _extract_tool_calls(self, message: Any, finish_reason: str | None) -> list[AIToolCall]:
         """Read non-streaming ``message.tool_calls`` into AIToolCalls (RFC §6.4)."""
-        raw_calls = getattr(message, "tool_calls", None) or []
+        raw_calls = [
+            tc
+            for tc in getattr(message, "tool_calls", None) or []
+            if getattr(tc, "function", None) is not None
+        ]
         ids = CallIds()
+        final = len(raw_calls) - 1
         result: list[AIToolCall] = []
-        for tc in raw_calls:
-            func = getattr(tc, "function", None)
-            if func is None:
-                continue
-            name = str(getattr(func, "name", "") or "")
-            raw = getattr(func, "arguments", "")
+        for n, tc in enumerate(raw_calls):
+            name = str(getattr(tc.function, "name", "") or "")
+            raw = getattr(tc.function, "arguments", "")
             result.append(
                 AIToolCall(
                     id=ids(getattr(tc, "id", None), name),
                     name=name,
                     arguments=tool_arguments(raw),
-                    partial=call_partial(raw, finish_reason),
-                    garbled=call_garbled(raw, finish_reason),
+                    partial=call_partial(raw, finish_reason, last=n == final),
+                    garbled=call_garbled(raw, finish_reason, last=n == final),
                 )
             )
         return result

@@ -235,7 +235,6 @@ class MistralAIProvider(AIProvider):
             context,
             provider="mistral",
             refusal=lambda _done: None,
-            truncated=lambda done: done.finish_reason == "length",
         )
         try:
             async for event in stream:

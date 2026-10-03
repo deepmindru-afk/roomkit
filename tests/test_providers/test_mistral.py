@@ -678,7 +678,12 @@ class TestMistralResponseSchema:
 
     @pytest.mark.parametrize(
         ("text", "finish_reason", "reason"),
-        [('{"label": "y', "length", "truncated"), ("Yes.", "stop", "invalid_json")],
+        [
+            ('{"label": "y', "length", "truncated"),
+            # The context window filling up mid-answer (RMK-438).
+            ('{"label": "y', "model_length", "truncated"),
+            ("Yes.", "stop", "invalid_json"),
+        ],
     )
     async def test_an_answer_without_its_document_raises(
         self, text: str, finish_reason: str, reason: str

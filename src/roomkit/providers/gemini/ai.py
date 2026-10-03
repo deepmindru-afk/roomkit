@@ -55,10 +55,6 @@ def _refusal(done: StreamDone) -> str | None:
     return done.metadata.get("prompt_block_reason")
 
 
-def _truncated(done: StreamDone) -> bool:
-    return done.finish_reason == "MAX_TOKENS"
-
-
 def _parts_layout(parts: list[Any]) -> str:
     """Compact one-line summary of a streamed chunk's parts for diagnostics.
 
@@ -299,7 +295,6 @@ class GeminiAIProvider(AIProvider):
             context,
             provider="gemini",
             refusal=_refusal,
-            truncated=_truncated,
         )
         try:
             async for event in stream:

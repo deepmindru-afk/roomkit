@@ -106,19 +106,24 @@ async def test_bounded_gives_up_when_still_empty(streaming: bool) -> None:
     assert _nudged(context) == 1  # exactly one retry, then give up
 
 
-def _malformed() -> AIResponse:
-    """A round that ended on a tool call its provider could not parse."""
-    return AIResponse(content="", tool_calls=[], finish_reason="MALFORMED_FUNCTION_CALL")
+def _malformed(finish_reason: str = "MALFORMED_FUNCTION_CALL") -> AIResponse:
+    """A round that ended on a tool call its provider would not hand over."""
+    return AIResponse(content="", tool_calls=[], finish_reason=finish_reason)
 
 
 def _told_malformed(context: AIContext) -> int:
     return sum(1 for m in context.messages if m.content == MALFORMED_CALL_NUDGE)
 
 
-async def test_a_malformed_call_is_told_and_retried_on_the_first_round(streaming: bool) -> None:
-    """The model learns its call did not run and issues it again (RMK-314)."""
+@pytest.mark.parametrize("finish_reason", ["MALFORMED_FUNCTION_CALL", "UNEXPECTED_TOOL_CALL"])
+async def test_a_malformed_call_is_told_and_retried_on_the_first_round(
+    streaming: bool, finish_reason: str
+) -> None:
+    """The model learns its call did not run and issues it again (RMK-314): a
+    call Gemini could not parse, or one to a tool the request did not enable
+    (RMK-438)."""
     handler = AsyncMock(return_value="ok")
-    provider = MockAIProvider(ai_responses=[_malformed(), _tool(), _final("Done")])
+    provider = MockAIProvider(ai_responses=[_malformed(finish_reason), _tool(), _final("Done")])
     ch = AIChannel(
         "ai1",
         provider=provider,

@@ -6,10 +6,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-Finish = Literal["stop", "tool", "cut", "malformed", "none"]
+Finish = Literal["stop", "tool", "cut", "context", "filtered", "malformed", "unexpected", "none"]
 """How the response ended: on its own, on tool calls, cut by the output cap,
-on a call the vendor could not parse, or a stream that stopped with no stop
-reason."""
+cut by the context window filling up, stopped by a content filter or a
+refusal, on a call the vendor could not parse, on a call to a tool the request
+did not enable, or a stream that stopped with no stop reason."""
 
 
 @dataclass(frozen=True)

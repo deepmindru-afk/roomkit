@@ -113,7 +113,7 @@ class MockAIProvider(AIProvider):
                 schema=context.response_schema,
                 provider="mock",
                 refusal="refusal" if response.finish_reason == "refusal" else None,
-                truncated=response.finish_reason == "length",
+                finish_reason=response.finish_reason,
             )
         return response
 
@@ -161,7 +161,6 @@ class MockAIProvider(AIProvider):
             context,
             provider="mock",
             refusal=lambda done: "refusal" if done.finish_reason == "refusal" else None,
-            truncated=lambda done: done.finish_reason == "length",
         )
         try:
             async for event in stream:

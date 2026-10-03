@@ -46,17 +46,9 @@ logger = logging.getLogger("roomkit.providers.anthropic.ai")
 # a model that is genuinely in the catalog is answered from there instead.
 _VISION_PREFIXES = ("claude-",)
 
-# Stop reasons that cut the answer short: the output cap, or the context window
-# filling up mid-answer. A constrained answer ending on one is truncated JSON.
-_CUT_STOP_REASONS = frozenset({"max_tokens", "model_context_window_exceeded"})
-
 
 def _refusal(done: StreamDone) -> str | None:
     return "refusal" if done.finish_reason == "refusal" else None
-
-
-def _truncated(done: StreamDone) -> bool:
-    return done.finish_reason in _CUT_STOP_REASONS
 
 
 # How many per-request clients to keep alive alongside the configured one.
@@ -265,7 +257,6 @@ class AnthropicAIProvider(AIProvider):
             context,
             provider="anthropic",
             refusal=_refusal,
-            truncated=_truncated,
         )
         try:
             async for event in stream:

@@ -256,5 +256,5 @@ def _check_answer(response: Any, description: str, schema: dict[str, Any]) -> No
         schema=schema,
         provider="gemini-vision",
         refusal=finish if finish in REFUSAL_FINISH_REASONS else prompt_block_reason(response),
-        truncated=finish == "MAX_TOKENS",
+        finish_reason=finish,
     )

@@ -13,27 +13,33 @@ import json
 from typing import Any
 from uuid import uuid4
 
-# Every provider reports "I hit the output cap" in its own vocabulary, and
-# RoomKit forwards the raw value rather than inventing a normalized one.
-# OpenAI-compatible servers and Ollama's ``done_reason`` say ``length``,
-# Anthropic's ``stop_reason`` says ``max_tokens``, Gemini's candidate says
-# ``MAX_TOKENS``. A rule that knew only one spelling would cover only the
-# providers using it.
-_TRUNCATION_FINISH_REASONS = frozenset({"length", "max_tokens"})
+# Every provider reports "the response ran out of room" in its own
+# vocabulary, and RoomKit forwards the raw value rather than inventing a
+# normalized one. The output cap: OpenAI-compatible servers and Ollama's
+# ``done_reason`` say ``length``, Anthropic's ``stop_reason`` says
+# ``max_tokens``, Gemini's candidate says ``MAX_TOKENS``. The context window
+# filling up mid-answer: Anthropic says ``model_context_window_exceeded``,
+# Mistral ``model_length``. A rule that knew only one spelling would cover only
+# the providers using it.
+_TRUNCATION_FINISH_REASONS = frozenset(
+    {"length", "max_tokens", "model_context_window_exceeded", "model_length"}
+)
 
-# Endings that can stop a call mid-arguments: the output cap under its
-# spellings, Mistral's context cap and its generation error, and a content
-# filter cutting the stream.
+# Endings that can stop a call mid-arguments: running out of room under its
+# spellings, a content filter or a refusal stopping the stream (OpenAI's
+# ``content_filter``, Anthropic's ``refusal``), and Mistral's generation error.
 _CALL_CUTTING_FINISH_REASONS = _TRUNCATION_FINISH_REASONS | {
-    "model_length",
     "error",
     "content_filter",
+    "refusal",
 }
 
 
-# Endings where the model tried to call a tool and the provider could not
-# parse the call, so none reached the loop (Gemini's MALFORMED_FUNCTION_CALL).
-_MALFORMED_CALL_FINISH_REASONS = frozenset({"malformed_function_call"})
+# Endings where the model tried to call a tool and the provider would not hand
+# the call over, so none reached the loop: Gemini's MALFORMED_FUNCTION_CALL (it
+# could not parse the call) and UNEXPECTED_TOOL_CALL (a call to a tool the
+# request did not enable).
+_MALFORMED_CALL_FINISH_REASONS = frozenset({"malformed_function_call", "unexpected_tool_call"})
 
 # A response the model ended itself, under each provider's word for it
 # (OpenAI-compatible ``stop``, Anthropic ``end_turn`` and ``stop_sequence``,
@@ -52,7 +58,8 @@ the text loops and on a speech-to-speech session alike (RFC §6.4, §12.4)."""
 
 
 def is_malformed_call(finish_reason: str | None) -> bool:
-    """Whether a response ended on a tool call its provider could not parse."""
+    """Whether a response ended on a tool call its provider would not hand
+    over: one it could not parse, or one to a tool the request did not enable."""
     return finish_reason is not None and finish_reason.lower() in _MALFORMED_CALL_FINISH_REASONS
 
 
@@ -62,7 +69,8 @@ def is_natural_stop(finish_reason: str | None) -> bool:
 
 
 def is_truncation(finish_reason: str | None) -> bool:
-    """Whether a response ended by exhausting its output budget.
+    """Whether a response ended by running out of room: its output cap, or its
+    context window filling up mid-answer.
 
     Compared case-insensitively so Gemini's ``MAX_TOKENS`` and Anthropic's
     ``max_tokens`` are one entry rather than two.
@@ -131,12 +139,13 @@ def arguments_cut(raw: Any) -> bool:
     return False
 
 
-def call_partial(raw: Any, finish_reason: str | None) -> bool:
-    """Whether a call must not run: its arguments do not read, or the response
-    ended on something that stops a call mid-arguments (the output cap, a
-    content filter) or on nothing at all, a stream that stopped without a stop
-    reason, before argument text that reads arrived (RFC §6.4)."""
-    return partial_when(raw, cut=_cuts_calls(finish_reason))
+def call_partial(raw: Any, finish_reason: str | None, *, last: bool = True) -> bool:
+    """Whether a call must not run: its arguments do not read, or it is the
+    response's *last* call and the response ended on something that stops a
+    call mid-arguments (running out of room, a content filter, a refusal) or on
+    nothing at all, a stream that stopped without a stop reason, before
+    argument text that reads arrived (RFC §6.4)."""
+    return partial_when(raw, cut=_cuts_calls(finish_reason, last=last))
 
 
 def partial_when(raw: Any, *, cut: bool) -> bool:
@@ -152,23 +161,30 @@ def partial_when(raw: Any, *, cut: bool) -> bool:
     return cut and not (isinstance(raw, str) and raw.strip())
 
 
-def call_cut(raw: Any, finish_reason: str | None) -> bool:
-    """Whether the response was cut short over a call's arguments: it ended on
-    something that stops a call mid-arguments, and they did not arrive whole
-    (:func:`call_partial`). The call is ``partial`` and ``cut``."""
-    return _cuts_calls(finish_reason) and partial_when(raw, cut=True)
+def call_cut(raw: Any, finish_reason: str | None, *, last: bool = True) -> bool:
+    """Whether the response was cut short over a call's arguments: it is the
+    response's *last* call, the response ended on something that stops a call
+    mid-arguments, and they did not arrive whole (:func:`call_partial`). The
+    call is ``partial`` and ``cut``."""
+    return _cuts_calls(finish_reason, last=last) and partial_when(raw, cut=True)
 
 
-def _cuts_calls(finish_reason: str | None) -> bool:
-    """Whether a response that ended so can have stopped a call mid-arguments."""
+def _cuts_calls(finish_reason: str | None, *, last: bool) -> bool:
+    """Whether a response that ended so can have stopped this call mid-arguments.
+
+    Only its last call: the model writes calls one after the other, so a call
+    another followed was closed by it, whatever then cut the response.
+    """
+    if not last:
+        return False
     return finish_reason is None or finish_reason.lower() in _CALL_CUTTING_FINISH_REASONS
 
 
-def call_garbled(raw: Any, finish_reason: str | None) -> bool:
+def call_garbled(raw: Any, finish_reason: str | None, *, last: bool = True) -> bool:
     """Whether the model wrote a call's arguments unreadable: they do not
-    read, and the response ended on its own, not cut short over them
-    (:func:`call_cut`). The call is ``partial`` and ``garbled``."""
-    return unreadable_arguments(raw) and not call_cut(raw, finish_reason)
+    read, and the response did not cut them short (:func:`call_cut`). The call
+    is ``partial`` and ``garbled``."""
+    return unreadable_arguments(raw) and not call_cut(raw, finish_reason, last=last)
 
 
 def partial_call_error(name: str, *, garbled: bool) -> dict[str, Any]:

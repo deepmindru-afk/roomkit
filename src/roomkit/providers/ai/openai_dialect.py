@@ -253,16 +253,17 @@ class ToolCallSlots:
     def calls(self, finish_reason: str | None) -> list[StreamToolCall]:
         """The complete calls, each with its own id and its arguments as a
         mapping; one whose arguments do not read is partial, and cut when the
-        response was cut short over them."""
+        response was cut short over them, which only the last call can be."""
+        final = len(self._slots) - 1
         return [
             StreamToolCall(
                 id=slot["id"],
                 name=slot["name"],
                 arguments=tool_arguments(slot["arguments"]),
-                partial=call_partial(slot["arguments"], finish_reason),
-                garbled=call_garbled(slot["arguments"], finish_reason),
+                partial=call_partial(slot["arguments"], finish_reason, last=n == final),
+                garbled=call_garbled(slot["arguments"], finish_reason, last=n == final),
             )
-            for slot in self._slots
+            for n, slot in enumerate(self._slots)
         ]
 
 

@@ -359,7 +359,7 @@ class OpenAIAIProvider(AIProvider):
             schema=context.response_schema,
             provider=self._provider_name,
             refusal=choice_refusal(choice),
-            truncated=getattr(choice, "finish_reason", None) == "length",
+            finish_reason=getattr(choice, "finish_reason", None),
         )
 
     @staticmethod
@@ -470,15 +470,16 @@ class OpenAIAIProvider(AIProvider):
         if choice.message.tool_calls:
             ids = CallIds()
             finish_reason = choice.finish_reason
-            for tc in choice.message.tool_calls:
+            final = len(choice.message.tool_calls) - 1
+            for n, tc in enumerate(choice.message.tool_calls):
                 raw = tc.function.arguments
                 tool_calls.append(
                     AIToolCall(
                         id=ids(tc.id, tc.function.name),
                         name=tc.function.name,
                         arguments=tool_arguments(raw),
-                        partial=call_partial(raw, finish_reason),
-                        garbled=call_garbled(raw, finish_reason),
+                        partial=call_partial(raw, finish_reason, last=n == final),
+                        garbled=call_garbled(raw, finish_reason, last=n == final),
                     )
                 )
 
@@ -513,7 +514,6 @@ class OpenAIAIProvider(AIProvider):
             context,
             provider=self._provider_name,
             refusal=_streamed_refusal,
-            truncated=lambda done: done.finish_reason == "length",
         )
         try:
             async for event in stream:

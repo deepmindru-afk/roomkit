@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import pytest
 
+from roomkit.providers.ai.base import AITool
 from roomkit.providers.ai.tool_calls import is_malformed_call, is_truncation
 from tests.text_conformance.driver import (
     ARGUMENT_TEXT,
@@ -13,6 +14,7 @@ from tests.text_conformance.driver import (
     CALL_INDEX,
     CALLS_IN_ONE_CHUNK,
     COMPOSITION,
+    FILTER_STOP,
     MALFORMED_CALL,
     REASONING_USAGE,
     REDACTED_REASONING,
@@ -25,7 +27,9 @@ from tests.text_conformance.driver import (
     Driver,
 )
 from tests.text_conformance.scenario import LOOKUP, generation, tool_context
-from tests.text_conformance.script import Call, Reasoning, Script, Usage
+from tests.text_conformance.script import Call, Finish, Reasoning, Script, Usage
+
+NOW = AITool(name="now", description="The current time.")
 
 
 class TestCalls:
@@ -174,6 +178,44 @@ class TestCallsThatDoNotRun:
         [call] = answer.calls
         assert (call.partial, call.garbled) == (partial, False)
 
+    @pytest.mark.parametrize("finish", ["context", "filtered"])
+    @pytest.mark.parametrize("arguments", ["", '{"q": "par'], ids=["nothing", "fragment"])
+    async def test_a_call_any_cut_stopped_is_partial(
+        self, driver: Driver, mode: str, finish: Finish, arguments: str
+    ) -> None:
+        """The context window, a content filter or a refusal cuts a call as the
+        output cap does, under each provider's word for it: the call does not
+        run, and the model reads that it was cut (RFC §6.4)."""
+        driver.require(ARGUMENT_TEXT)
+        if finish == "filtered":
+            driver.require(FILTER_STOP)
+        script = Script(calls=(Call("lookup", arguments, id="c1", index=0),), finish=finish)
+
+        answer = await generation(driver, script, mode, tool_context(LOOKUP))
+
+        [call] = answer.calls
+        assert (call.partial, call.garbled) == (True, False)
+
+    async def test_a_call_another_followed_runs_though_the_response_was_cut(
+        self, driver: Driver, mode: str
+    ) -> None:
+        """A call another call followed was closed by it: the cut can only
+        reach the last one (RFC §6.4)."""
+        driver.require(ARGUMENT_TEXT)
+        script = Script(
+            calls=(
+                Call("now", "", id="c1", index=0),
+                Call("lookup", '{"q": "par', id="c2", index=1),
+            ),
+            finish="cut",
+        )
+
+        answer = await generation(driver, script, mode, tool_context(NOW, LOOKUP))
+
+        first, last = answer.calls
+        assert (first.name, first.arguments, first.partial) == ("now", {}, False)
+        assert (last.partial, last.garbled) == (True, False)
+
     async def test_a_stream_that_stops_without_a_reason_cuts_its_call(
         self, driver: Driver
     ) -> None:
@@ -198,18 +240,24 @@ class TestCallsThatDoNotRun:
 
 
 class TestEndings:
-    async def test_a_response_the_output_cap_cut_says_so(self, driver: Driver, mode: str) -> None:
+    @pytest.mark.parametrize("finish", ["cut", "context"])
+    async def test_a_response_that_ran_out_of_room_says_so(
+        self, driver: Driver, mode: str, finish: Finish
+    ) -> None:
+        """The output cap and the context window are one ending to the loop
+        and to a schema check, under every provider's word (RFC §6.4)."""
         answer = await generation(
-            driver, Script(text="Half an ans", finish="cut"), mode, tool_context(LOOKUP)
+            driver, Script(text="Half an ans", finish=finish), mode, tool_context(LOOKUP)
         )
 
         assert is_truncation(answer.finish_reason), answer.finish_reason
 
-    async def test_a_call_the_vendor_could_not_parse_says_so(
-        self, driver: Driver, mode: str
+    @pytest.mark.parametrize("finish", ["malformed", "unexpected"])
+    async def test_a_call_the_vendor_would_not_hand_over_says_so(
+        self, driver: Driver, mode: str, finish: Finish
     ) -> None:
         driver.require(MALFORMED_CALL)
-        answer = await generation(driver, Script(finish="malformed"), mode, tool_context(LOOKUP))
+        answer = await generation(driver, Script(finish=finish), mode, tool_context(LOOKUP))
 
         assert is_malformed_call(answer.finish_reason), answer.finish_reason
 

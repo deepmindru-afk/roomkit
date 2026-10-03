@@ -108,8 +108,9 @@ class AIToolCall(BaseModel):
     garbled: bool = False
     """The model wrote this ``partial`` call's arguments unreadable: the
     response was not cut short over them. A partial call that is not garbled
-    was cut (the output cap, a content filter, a stream that ended without a
-    stop reason), and the model reads which (RFC §6.4)."""
+    was cut (the output cap or the context window, a content filter or a
+    refusal, a stream that ended without a stop reason), and the model reads
+    which (RFC §6.4)."""
 
 
 class AIToolCallPart(BaseModel):

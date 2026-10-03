@@ -19,7 +19,14 @@ from tests.text_conformance.driver import (
 )
 from tests.text_conformance.script import Item, Script
 
-_STOP = {"stop": "end_turn", "tool": "tool_use", "cut": "max_tokens", "none": None}
+_STOP = {
+    "stop": "end_turn",
+    "tool": "tool_use",
+    "cut": "max_tokens",
+    "context": "model_context_window_exceeded",
+    "filtered": "refusal",
+    "none": None,
+}
 
 
 class _Stream:
@@ -87,7 +94,7 @@ def _events(script: Script) -> tuple[list[Any], list[Any]]:
         for piece in pieces(call.arguments, call.fragments):
             events.append(_delta(index, type="input_json_delta", partial_json=piece))
         last = n == len(script.calls) - 1
-        if last and script.finish in ("cut", "none"):
+        if last and script.finish in ("cut", "context", "filtered", "none"):
             # Cut mid-block: the stream never closes it; the final message
             # holds what the SDK parsed of it.
             left_open.append(

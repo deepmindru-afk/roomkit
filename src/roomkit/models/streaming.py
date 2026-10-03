@@ -119,8 +119,9 @@ class LoopEndMarker:
     """Yielded once as an AI channel's streamed response ends, saying why.
 
     The tool loop knows exactly which of its rules fired: the round cap, the
-    wall-clock deadline, a round truncated at the output cap, a model that
-    answered nothing after its tools or whose call could not be parsed, an
+    wall-clock deadline, a round truncated at the output cap or the context
+    window, a model that answered nothing after its tools or whose call its
+    provider would not hand over, an
     answer the channel's continuation policy still found unfinished
     (``unfinished``), a cancellation. Without the marker a
     consumer could not tell a finished answer from a loop cut mid-work, and

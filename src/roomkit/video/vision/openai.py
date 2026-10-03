@@ -185,7 +185,7 @@ class OpenAIVisionProvider(VisionProvider):
                 schema=response_schema,
                 provider="openai-vision",
                 refusal=choice_refusal(choice),
-                truncated=choice.finish_reason == "length",
+                finish_reason=choice.finish_reason,
             )
 
         return VisionResult(

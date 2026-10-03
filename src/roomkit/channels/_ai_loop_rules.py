@@ -203,8 +203,9 @@ def _empty_round_nudge(
     told it did not run, on any round and whatever the round said, so it can
     issue it again (RFC §6.4). An empty answer after tool rounds gets the
     plain nudge. A truncated round is a different failure and is not retried:
-    it ran out of output budget, typically a reasoning model that spent the
-    whole cap thinking, and the same cap truncates again.
+    it ran out of room, its output cap (typically a reasoning model that spent
+    the whole cap thinking) or its context window, and the same room runs out
+    again.
     """
     if is_malformed_call(finish_reason):
         return MALFORMED_CALL_NUDGE
@@ -212,8 +213,8 @@ def _empty_round_nudge(
         return None
     if is_truncation(finish_reason):
         logger.warning(
-            "%s: response truncated at the output cap before any final text "
-            "(finish_reason=%s). Raise max_tokens, or disable the model's "
+            "%s: response truncated before any final text (finish_reason=%s). "
+            "Raise max_tokens or shorten the context, or disable the model's "
             "reasoning block if it is consuming the budget.",
             log_label,
             finish_reason,

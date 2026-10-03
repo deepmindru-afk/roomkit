@@ -22,7 +22,7 @@ from roomkit.providers.ai.base import (
     StreamToolCallDelta,
 )
 from roomkit.providers.ai.json_schema import check_portable_schema, schema_mismatch
-from roomkit.providers.ai.tool_calls import is_malformed_call
+from roomkit.providers.ai.tool_calls import is_malformed_call, is_truncation
 from roomkit.providers.utils import _aclose_stream
 
 ResponseSchemaFailure = Literal["unsupported", "refusal", "truncated", "invalid_json"]
@@ -38,9 +38,10 @@ class ResponseSchemaError(ProviderError):
             provider does not support one, the turn also has tools, or a
             streaming method received it. Raised before any request is sent.
             ``"refusal"`` when the model declined to answer. ``"truncated"``
-            when the output cap cut the document. ``"invalid_json"`` when the
-            text is not a JSON document satisfying the schema, from a server
-            that accepted the constraint and did not apply it.
+            when the output cap or the context window cut the document.
+            ``"invalid_json"`` when the text is not a JSON document satisfying
+            the schema, from a server that accepted the constraint and did not
+            apply it.
     """
 
     def __init__(self, message: str, *, reason: ResponseSchemaFailure, provider: str = "") -> None:
@@ -90,7 +91,7 @@ def check_schema_answer(
     schema: Mapping[str, Any],
     provider: str,
     refusal: str | None = None,
-    truncated: bool = False,
+    finish_reason: str | None = None,
 ) -> None:
     """Refuse a constrained answer that did not deliver its JSON document.
 
@@ -105,7 +106,9 @@ def check_schema_answer(
         provider: The provider's name, carried by the error.
         refusal: Why the model declined, when it did: the provider's refusal
             text or its refusal or safety stop reason.
-        truncated: Whether the output cap cut the answer.
+        finish_reason: How the response ended: an answer that ran out of
+            room (its output cap or its context window, :func:`is_truncation`)
+            is ``truncated``, under every provider's word for it.
 
     Raises:
         ResponseSchemaError: ``refusal``, ``truncated`` or ``invalid_json``.
@@ -114,9 +117,9 @@ def check_schema_answer(
         raise ResponseSchemaError(
             f"the model declined to answer: {refusal}", reason="refusal", provider=provider
         )
-    if truncated:
+    if is_truncation(finish_reason):
         raise ResponseSchemaError(
-            "the output cap cut the JSON answer; raise max_tokens",
+            f"the JSON answer was cut ({finish_reason}): raise max_tokens, or shorten the context",
             reason="truncated",
             provider=provider,
         )
@@ -164,7 +167,6 @@ async def checked_stream(
     *,
     provider: str,
     refusal: Callable[[StreamDone], str | None],
-    truncated: Callable[[StreamDone], bool],
 ) -> AsyncIterator[StreamEvent]:
     """Pass a provider's stream through, checking a constrained answer before
     its done event (RFC §6.7).
@@ -179,7 +181,6 @@ async def checked_stream(
         context: The turn's context, whose ``response_schema`` is checked.
         provider: The provider's name, carried by the error.
         refusal: Reads, from the done event, why the model declined, if it did.
-        truncated: Reads, from the done event, whether the answer was cut.
     """
     schema = context.response_schema
     text: list[str] = []
@@ -203,7 +204,7 @@ async def checked_stream(
                         schema=schema,
                         provider=provider,
                         refusal=refusal(event),
-                        truncated=truncated(event),
+                        finish_reason=event.finish_reason,
                     )
             yield event
     finally:

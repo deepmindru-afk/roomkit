@@ -69,11 +69,20 @@ async def test_an_answer_after_tools_is_still_completed() -> None:
     assert marks[0].rounds == 1, "one tool round ran before the answer"
 
 
-async def test_a_truncated_round_is_named_truncated() -> None:
-    # The reasoning model that spent its whole output budget thinking: empty
-    # content, finish_reason=length. Distinguishing this from silence is the
-    # difference between "raise max_tokens" and "change model".
-    ch = _channel([_tool(), AIResponse(content="", finish_reason="length")])
+@pytest.mark.parametrize(
+    "finish_reason",
+    ["length", "max_tokens", "MAX_TOKENS", "model_context_window_exceeded", "model_length"],
+)
+async def test_a_truncated_round_is_named_truncated(finish_reason: str) -> None:
+    # The reasoning model that spent its whole output budget thinking, or a
+    # context window that filled up: empty content, out of room. Telling this
+    # from silence is the difference between "raise the cap" and "change model",
+    # and the round is not tried again, since the same room runs out again
+    # (RFC §6.4).
+    ch = _channel(
+        [_tool(), AIResponse(content="", finish_reason=finish_reason), AIResponse(content="x")],
+        max_empty_retries=1,
+    )
 
     marks = _markers(await _run(ch, _ctx()))
 

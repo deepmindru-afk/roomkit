@@ -11,7 +11,17 @@ from typing import Any
 from tests.text_conformance.driver import Driver
 from tests.text_conformance.script import Item
 
-FINISH = {"stop": "stop", "tool": "tool_calls", "cut": "length", "none": None}
+# An OpenAI-compatible server ends a response that filled the context window
+# ``length``, the output cap's word: it caps the output at what the window has
+# left.
+FINISH = {
+    "stop": "stop",
+    "tool": "tool_calls",
+    "cut": "length",
+    "context": "length",
+    "filtered": "content_filter",
+    "none": None,
+}
 _THINK = re.compile(r"^<think>(.*?)</think>", re.DOTALL)
 
 

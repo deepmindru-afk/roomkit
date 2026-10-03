@@ -35,7 +35,11 @@ _FINISH = {
     "stop": types.FinishReason.STOP,
     "tool": types.FinishReason.STOP,
     "cut": types.FinishReason.MAX_TOKENS,
+    # Gemini caps the output at what the context window has left.
+    "context": types.FinishReason.MAX_TOKENS,
+    "filtered": types.FinishReason.SAFETY,
     "malformed": types.FinishReason.MALFORMED_FUNCTION_CALL,
+    "unexpected": types.FinishReason.UNEXPECTED_TOOL_CALL,
     "none": None,
 }
 

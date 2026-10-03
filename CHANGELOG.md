@@ -651,6 +651,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Every text provider reads the end of a response with one rule (RMK-438,
+  RFC §6.4). Anthropic's `model_context_window_exceeded` and `refusal` now cut
+  a `tool_use` block they stop, as the output cap does: such a call with no
+  argument yet ran with `{}`, and one with a fragment was told its arguments
+  were unreadable instead of cut. A response the context window cut
+  (`model_context_window_exceeded`, Mistral's `model_length`) ends the turn
+  `truncated` without a retry, as the output cap does; it ended
+  `empty_response` after a nudge that grew a full context. Every response
+  schema check (Mistral's, the vision providers', the OpenAI-shaped ones')
+  reads that cut as `truncated`; Mistral said `invalid_json`. Gemini's
+  `UNEXPECTED_TOOL_CALL` (a call to a tool the request did not enable) is
+  told the model and retried as `MALFORMED_FUNCTION_CALL` is; a first round
+  ending on it was a silent `completed`. On a Chat Completions wire, a call
+  another call followed is closed: under a cut response it runs when its
+  arguments read, as Anthropic's closed block does, and only the last call
+  can be cut. `call_partial`, `call_cut` and `call_garbled` take `last=`
+  (default `True`), and `call_partial` is exported from `roomkit.providers.ai`
+  for a custom provider.
+
 - The caller reads how each agent's turn ended, even one that wrote no
   message (RMK-437, RFC §6.4, §6.7): `InboundResult.response_metadata` now
   carries `turns[channel_id]` (`loop_end_reason`, `ai_usage`) for every

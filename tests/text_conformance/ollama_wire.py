@@ -26,6 +26,7 @@ from tests.text_conformance.driver import (
     CACHE_WRITE_USAGE,
     CALL_INDEX,
     COMPOSITION,
+    FILTER_STOP,
     MALFORMED_CALL,
     REASONING_USAGE,
     REDACTED_REASONING,
@@ -38,7 +39,8 @@ from tests.text_conformance.driver import (
 from tests.text_conformance.script import Call, Item, Script
 
 # Ollama has no tool stop reason: a turn that ends on calls is done with "stop".
-_DONE = {"stop": "stop", "tool": "stop", "cut": "length", "none": None}
+# A response that filled the context window (num_ctx) ends "length" too.
+_DONE = {"stop": "stop", "tool": "stop", "cut": "length", "context": "length", "none": None}
 _MODEL = "qwen3:8b"
 _AT = "2026-10-02T00:00:00Z"
 
@@ -139,6 +141,7 @@ class OllamaWire(ChatDriver):
         CACHE_USAGE: "Ollama reports prompt_eval_count and eval_count only",
         CACHE_WRITE_USAGE: "Ollama reports prompt_eval_count and eval_count only",
         MALFORMED_CALL: "Ollama has no stop reason for a call it could not parse",
+        FILTER_STOP: "Ollama's done reasons are stop, length, load and unload",
         REASONING_USAGE: "Ollama counts thinking inside eval_count",
     }
     reasoning = "field"

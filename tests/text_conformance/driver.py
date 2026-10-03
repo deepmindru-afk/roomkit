@@ -46,7 +46,10 @@ SCHEMA_AS_GIVEN = "schema_as_given"
 IMAGE_RESULTS = "image_results"
 """A tool result can carry an image."""
 MALFORMED_CALL = "malformed_call"
-"""The response can end on a call the vendor could not parse."""
+"""The response can end on a call the vendor would not hand over: one it could
+not parse, or one to a tool the request did not enable."""
+FILTER_STOP = "filter_stop"
+"""A content filter or a refusal can stop the response mid-answer."""
 
 ReasoningConvention = Literal["blocks", "call_signature", "inline", "field", "dropped"]
 """How a wire replays earlier reasoning: as signed blocks, as one signature on

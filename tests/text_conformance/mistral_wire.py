@@ -21,6 +21,7 @@ from tests.text_conformance.chat_wire import FINISH, ChatDriver, assistant_items
 from tests.text_conformance.driver import (
     CACHE_WRITE_USAGE,
     COMPOSITION,
+    FILTER_STOP,
     MALFORMED_CALL,
     REASONING_USAGE,
     REDACTED_REASONING,
@@ -31,6 +32,10 @@ from tests.text_conformance.driver import (
 from tests.text_conformance.script import Call, Item, Reasoning, Script, Usage
 
 _MODEL = "mistral-large-latest"
+
+
+# Mistral names the context window filling up mid-answer ``model_length``.
+_FINISH = {**FINISH, "context": "model_length"}
 
 
 def _chunk(delta: dict[str, Any], finish: str | None = None, usage: Any = None) -> dict[str, Any]:
@@ -97,7 +102,7 @@ def _events(script: Script) -> bytes:
     if script.text:
         chunks.append(_chunk({"content": script.text}))
     chunks.extend(_call_chunks(script))
-    finish = FINISH[script.finish]
+    finish = _FINISH[script.finish]
     lines = [f"data: {json.dumps(chunk)}\n\n" for chunk in chunks]
     if finish is not None:
         final = _chunk({"content": ""}, finish, _usage(script.usage))
@@ -126,6 +131,7 @@ class MistralWire(ChatDriver):
         COMPOSITION: "Mistral streams each call whole, its arguments in one piece",
         CACHE_WRITE_USAGE: "Mistral's usage has no cache-write counter",
         MALFORMED_CALL: "Mistral has no stop reason for a call it could not parse",
+        FILTER_STOP: "Mistral's finish reasons are stop, length, model_length, error, tool_calls",
         REDACTED_REASONING: "a Mistral ThinkChunk carries text and a signature, no redacted form",
         STREAM_WITHOUT_FINISH: "Mistral streams each call whole in one chunk: none stops mid-call",
         # Measured 2026-10-02 on mistral-medium-latest with reasoning_effort high.

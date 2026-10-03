@@ -14,8 +14,8 @@ from typing import Any
 from roomkit.providers.ai.base import StreamToolCall, StreamToolCallDelta
 from roomkit.providers.ai.tool_calls import (
     CallIds,
-    is_truncation,
-    partial_when,
+    call_garbled,
+    call_partial,
     tool_arguments,
     unreadable_arguments,
 )
@@ -73,27 +73,26 @@ class ToolUseBlocks:
         A block the stream opened keeps the id its composition announced and
         the arguments that streamed, not the SDK's parse of what arrived. It
         is partial by the rule every provider follows (RFC §6.4): its
-        arguments do not read, or the response was cut over it before
+        arguments do not read, or the response was cut over it (the output
+        cap, the context window, a refusal, or no stop reason at all) before
         argument text that reads arrived. Anthropic sends no stop for a block
-        the output cap cuts, so a cut call ends here, often with nothing
-        streamed yet.
+        a cut stops, so a cut call ends here, often with nothing streamed yet.
         """
         opened = {held["server_id"]: held for held in self._open.values()}
-        cut = final.stop_reason is None or is_truncation(final.stop_reason)
+        stop = final.stop_reason
         calls: list[StreamToolCall] = []
         for block in final.content:
             if block.type != "tool_use" or block.id in self._closed:
                 continue
             held = opened.get(block.id)
             raw: Any = held["input_json"] if held is not None else block.input
-            unreadable = unreadable_arguments(raw)
             calls.append(
                 StreamToolCall(
                     id=held["id"] if held is not None else self._ids(block.id, block.name),
                     name=block.name,
                     arguments=tool_arguments(raw),
-                    partial=partial_when(raw, cut=cut),
-                    garbled=unreadable and not cut,
+                    partial=call_partial(raw, stop),
+                    garbled=call_garbled(raw, stop),
                 )
             )
         return calls

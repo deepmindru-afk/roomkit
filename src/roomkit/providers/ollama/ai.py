@@ -390,7 +390,7 @@ class OllamaAIProvider(AIProvider):
                 content,
                 schema=context.response_schema,
                 provider=self._provider_name,
-                truncated=finish_reason == "length",
+                finish_reason=finish_reason,
             )
 
         return AIResponse(
@@ -426,7 +426,6 @@ class OllamaAIProvider(AIProvider):
             context,
             provider=self._provider_name,
             refusal=lambda _done: None,
-            truncated=lambda done: done.finish_reason == "length",
         )
         try:
             async for event in stream:

@@ -172,8 +172,9 @@ class TestOpenAIDialect:
         calls = (await _openai(response).generate(_CTX)).tool_calls
 
         assert [c.arguments for c in calls] == [{}, {}, {"raw": '{"q": "ab'}]
-        # Nothing under the cut is no evidence of no arguments (RMK-398).
-        assert [c.partial for c in calls] == [True, False, True]
+        # Only the last call can be cut: the ones another call followed were
+        # closed by it, and run when their arguments read (RMK-438).
+        assert [c.partial for c in calls] == [False, False, True]
         assert len({c.id for c in calls}) == 3
 
     async def test_a_stream_with_null_arguments_is_no_error(self) -> None:
