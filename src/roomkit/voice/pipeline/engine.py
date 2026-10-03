@@ -36,14 +36,12 @@ logger = logging.getLogger("roomkit.voice.pipeline")
 def _maybe_schedule(result: object, home_loop: asyncio.AbstractEventLoop | None = None) -> None:
     """Schedule a coroutine if the callback returned one.
 
-    The frame chain runs wherever its caller runs — the event loop when
-    inline, a DSP-pool worker (``inbound_dsp_threads``) or a backend's
-    capture thread otherwise. A coroutine created on such a thread has no
-    running loop to land on, so it is sent to *home_loop*: dropping it
-    would silently unplug whoever registered the callback — the realtime
-    provider's audio feed, the audio-level hooks — while every sync
-    callback kept working, which is exactly the failure that makes a
-    threaded pipeline look "mostly fine".
+    A frame chain running off the loop sends its callbacks home first
+    (:meth:`AudioPipeline._fanout`), so they create their coroutines on the
+    loop. A session lifecycle call made from a thread with no running loop
+    still invokes its recording callbacks there, and a coroutine created
+    on such a thread has no loop to land on, so it is sent to *home_loop*:
+    dropping it would silently unplug whoever registered the callback.
     """
     if not asyncio.coroutines.iscoroutine(result):
         return
@@ -166,9 +164,9 @@ class AudioPipeline:
     ) -> None:
         self._config = config
         # The loop this pipeline calls home, captured at construction (the
-        # channel builds its pipeline inside async context). Callbacks run
-        # wherever the frame chain runs; a coroutine created off-loop is
-        # sent here by _maybe_schedule instead of being dropped.
+        # channel builds its pipeline inside async context). A frame chain
+        # running off the loop sends its callbacks here (_fanout), and a
+        # coroutine created off-loop is sent here by _maybe_schedule.
         try:
             self._home_loop: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
         except RuntimeError:
@@ -345,18 +343,58 @@ class AudioPipeline:
         payload: Any,
         label: str,
     ) -> None:
-        """Notify every listener, letting none of them stop the others.
+        """Notify every listener on the loop the channels' code lives on.
 
         ``subject`` is ``None`` for a stream-keyed caller, which reads the
         result rather than being called back: the callbacks are typed on a
         VoiceSession, so there is nothing honest to hand them.
 
+        The listeners are loop code: a channel's handlers feed asyncio queues,
+        cancel tasks and look up the running loop, none of which works from
+        another thread. A chain running off the loop (an
+        ``inbound_dsp_threads`` worker, a backend's capture thread) therefore
+        sends the notification home rather than calling from where it is. The
+        hops are queued in the order the chain fired them, so the listeners
+        see the inline sequence; only the stages stay off the loop.
+        """
+        if subject is None:
+            return
+        home = self._home_loop_from_here()
+        if home is None:
+            self._notify(callbacks, subject, payload, label)
+            return
+        try:
+            home.call_soon_threadsafe(self._notify, callbacks, subject, payload, label)
+        except RuntimeError:
+            # Closed since the pipeline was built: nobody is left to notify.
+            logger.debug("%s callbacks dropped: the pipeline's loop is closed", label)
+
+    def _home_loop_from_here(self) -> asyncio.AbstractEventLoop | None:
+        """The loop to send callbacks to, or ``None`` to call them right here.
+
+        Here is right when this thread runs a loop (inline processing), or
+        when the pipeline has no home (built outside async context and never
+        activated in one): there is nowhere else to go.
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return self._home_loop
+        return None
+
+    def _notify(
+        self,
+        callbacks: Sequence[Callable[..., Any]],
+        subject: VoiceSession,
+        payload: Any,
+        label: str,
+    ) -> None:
+        """Call every listener, letting none of them stop the others.
+
         One listener raising must not cost the rest their notification, nor
         interrupt the frame that is still being processed — the pipeline runs
         on the media path and there is no caller to unwind to.
         """
-        if subject is None:
-            return
         for callback in callbacks:
             try:
                 _maybe_schedule(callback(subject, payload), self._home_loop)
@@ -889,7 +927,7 @@ class AudioPipeline:
         """
         # A pipeline is commonly assembled during synchronous application
         # startup and only enters asyncio when its first session becomes
-        # active. Bind at that lifecycle boundary too, so async callbacks from
+        # active. Bind at that lifecycle boundary too, so the callbacks of
         # later DSP threads have a real loop to return to.
         if self._home_loop is None or self._home_loop.is_closed():
             try:

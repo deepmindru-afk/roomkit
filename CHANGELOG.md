@@ -351,6 +351,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- With `AudioPipelineConfig(inbound_dsp_threads=N)`, a voice channel behaves
+  as it does inline (RMK-392). The pipeline's callbacks ran on the DSP worker,
+  while the channels' handlers are written for the event loop. A
+  `VoiceChannel` with a streaming STT never opened its stream: every segment
+  went to a batch `transcribe()` once the speech had ended, with no partial
+  transcript. In continuous mode a chunk reached the stream only when the
+  loop woke up for another reason. A `RealtimeVoiceChannel` sent the provider
+  no audio at all (0 frames of 10 in a probe) and did not clear the client's
+  audio on speech start. The stages still run on the pool; the callbacks a
+  frame fires now run on the pipeline's event loop, in the order the chain
+  fired them.
+
 - `VuiTTSProvider` speaks a reply written on several lines without inventing
   syllables at each line break, and no longer cuts a reply at 30 s (RMK-400).
   A poem the LLM wrote one verse per line came out of the local Vui with

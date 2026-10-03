@@ -152,12 +152,11 @@ class VoicePipelineMixin:
         chain runs on the caller's thread exactly as before. With a pool,
         the frame is queued FIFO under the session's stream and processed
         by one worker at a time — the RFC §12 stage order is untouched,
-        only *where* the chain executes moves. Sync pipeline callbacks
-        run wherever the chain runs. An *async* callback's coroutine is
-        sent to the pipeline's home loop by ``_maybe_schedule`` — a pool
-        worker has no running loop, and before that fallback existed the
-        coroutines (the realtime provider's audio feed, the audio-level
-        hooks) were silently dropped while every sync path kept working.
+        only *where* the chain executes moves. The callbacks the chain
+        fires do not move: ``AudioPipeline._fanout`` sends them back to
+        the pipeline's home loop in firing order, because the channels'
+        handlers are loop code. Called from the worker, they left the
+        streaming STT unopened and a realtime provider without audio.
         """
         pipeline = self._pipeline
         if pipeline is None:
