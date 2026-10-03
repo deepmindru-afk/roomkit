@@ -10,12 +10,14 @@ import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
+from urllib.parse import urlencode
 
 import httpx
 
 from roomkit.core.task_utils import cancel_and_wait
 from roomkit.providers.utils import http_timeout
 from roomkit.voice.base import AudioChunk
+from roomkit.voice.tts.audio_utils import streamed_format
 from roomkit.voice.tts.base import TTSProvider
 
 if TYPE_CHECKING:
@@ -28,9 +30,10 @@ logger = logging.getLogger(__name__)
 GROK_VOICES = ("eve", "ara", "rex", "sal", "leo")
 
 # Supported output codecs and their MIME types / AudioChunk format strings.
+# A stream never asks for ``wav`` (see ``streamed_format``).
 _CODEC_META: dict[str, tuple[str, str]] = {
     "pcm": ("audio/pcm", "pcm_s16le"),
-    "wav": ("audio/wav", "pcm_s16le"),
+    "wav": ("audio/wav", "wav"),
     "mp3": ("audio/mpeg", "mp3"),
     "mulaw": ("audio/basic", "mulaw"),
     "alaw": ("audio/alaw", "alaw"),
@@ -133,15 +136,6 @@ class GrokTTSProvider(TTSProvider):
         body["output_format"] = output_format
         return body
 
-    def _streamed_codec(self) -> str:
-        """The codec a streamed request asks for: raw PCM in place of WAV.
-
-        A WAV stream opens with a RIFF header, which chunks declared
-        ``pcm_s16le`` would hand to the transport as audio: a click at the
-        start of every sentence.
-        """
-        return "pcm" if self._config.codec == "wav" else self._config.codec
-
     async def synthesize(self, text: str, *, voice: str | None = None) -> AudioContent:
         """Synthesize text to audio via the REST endpoint.
 
@@ -200,7 +194,7 @@ class GrokTTSProvider(TTSProvider):
         ourselves for pipeline compatibility.
         """
         client = self._get_client()
-        codec = self._streamed_codec()
+        codec = streamed_format(self._config.codec)
         body = self._build_request_body(text, voice, codec=codec)
         _, fmt = _CODEC_META.get(codec, ("audio/mpeg", "mp3"))
 
@@ -234,15 +228,15 @@ class GrokTTSProvider(TTSProvider):
 
     def _ws_uri(self, voice_id: str, codec: str) -> str:
         """The WebSocket URL of one streamed turn."""
-        params = (
-            f"?language={self._config.language}"
-            f"&voice={voice_id}"
-            f"&codec={codec}"
-            f"&sample_rate={self._config.sample_rate}"
-        )
+        params: dict[str, object] = {
+            "language": self._config.language,
+            "voice": voice_id,
+            "codec": codec,
+            "sample_rate": self._config.sample_rate,
+        }
         if codec == "mp3":
-            params += f"&bit_rate={self._config.bit_rate}"
-        return f"{self._config.ws_url}{params}"
+            params["bit_rate"] = self._config.bit_rate
+        return f"{self._config.ws_url}?{urlencode(params)}"
 
     async def synthesize_stream_input(
         self,
@@ -277,7 +271,7 @@ class GrokTTSProvider(TTSProvider):
             ) from exc
 
         voice_id = voice or self._config.voice_id
-        codec = self._streamed_codec()
+        codec = streamed_format(self._config.codec)
         _, fmt = _CODEC_META.get(codec, ("audio/mpeg", "mp3"))
 
         async with websockets.connect(

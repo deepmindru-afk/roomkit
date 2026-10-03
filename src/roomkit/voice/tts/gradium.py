@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from roomkit.voice.base import AudioChunk
+from roomkit.voice.tts.audio_utils import streamed_format
 from roomkit.voice.tts.base import TTSProvider
 from roomkit.voice.voices import VoiceInfo, filter_voices
 
@@ -17,6 +18,17 @@ if TYPE_CHECKING:
     from roomkit.voice.tts.context import TTSContext
 
 logger = logging.getLogger(__name__)
+
+# The MIME type and the AudioChunk format of each output codec, the part of
+# an ``output_format`` before its sample rate (``pcm_16000``, ``ulaw_8000``).
+# Gradium's opus is Ogg-wrapped; a stream never asks for ``wav``.
+_CODECS: dict[str, tuple[str, str]] = {
+    "pcm": ("audio/pcm", "pcm_s16le"),
+    "wav": ("audio/wav", "wav"),
+    "opus": ("audio/ogg", "opus"),
+    "ulaw": ("audio/basic", "ulaw"),
+    "alaw": ("audio/alaw", "alaw"),
+}
 
 
 @dataclass
@@ -27,8 +39,9 @@ class GradiumTTSConfig:
     voice_id: str = "default"
     region: str = "us"
     model_name: str = "default"
-    output_format: str = "pcm_16000"  # matches pipeline's 16kHz default
-    # "wav" applies to synthesize(); a streamed request asks for "pcm" instead
+    # Defaults to the pipeline's 16 kHz. "wav" applies to synthesize(); a
+    # streamed request asks for "pcm" instead.
+    output_format: str = "pcm_16000"
     # Speed: negative = faster (-4.0 to -0.1), positive = slower (0.1 to 4.0)
     padding_bonus: float | None = None
     # Temperature: 0 = deterministic, up to 1.4 = more diverse (default: 0.7)
@@ -89,41 +102,13 @@ class GradiumTTSProvider(TTSProvider):
         # Plain pcm/wav/opus without rate suffix → 48kHz (Gradium default)
         return 48000
 
-    def _get_audio_format(self) -> str:
-        """Get audio format string."""
-        fmt = self._config.output_format
-        if fmt.startswith("pcm") or fmt == "wav":
-            return "pcm_s16le"
-        elif fmt.startswith("opus"):
-            return "opus"
-        elif fmt.startswith("ulaw"):
-            return "ulaw"
-        elif fmt.startswith("alaw"):
-            return "alaw"
-        return "pcm_s16le"
+    def _get_audio_format(self, output_format: str) -> str:
+        """The AudioChunk format of *output_format*'s audio."""
+        return _codec(output_format)[1]
 
     def _get_mime_type(self) -> str:
-        """Get MIME type from output format."""
-        fmt = self._config.output_format
-        if fmt == "wav":
-            return "audio/wav"
-        elif fmt.startswith("pcm"):
-            return "audio/pcm"
-        elif fmt.startswith("opus"):
-            return "audio/opus"
-        elif fmt.startswith(("ulaw", "alaw")):
-            return "audio/basic"
-        return "audio/pcm"
-
-    def _streamed_format(self) -> str:
-        """The output format a streamed request asks for: raw PCM in place of WAV.
-
-        A WAV stream opens with a RIFF header, which chunks declared
-        ``pcm_s16le`` would hand to the transport as audio: a click at the
-        start of every sentence. Both are 48 kHz.
-        """
-        fmt = self._config.output_format
-        return "pcm" if fmt == "wav" else fmt
+        """The MIME type of the configured ``output_format``."""
+        return _codec(self._config.output_format)[0]
 
     def _build_setup(self, voice: str | None = None, *, output_format: str) -> dict[str, Any]:
         """Build the TTSSetup dict for the SDK, asking for *output_format*."""
@@ -177,10 +162,10 @@ class GradiumTTSProvider(TTSProvider):
             duration_seconds=duration,
         )
 
-    async def _yield_stream(self, stream: Any) -> AsyncIterator[AudioChunk]:
-        """Yield AudioChunks from a Gradium TTS stream."""
+    async def _yield_stream(self, stream: Any, output_format: str) -> AsyncIterator[AudioChunk]:
+        """Yield AudioChunks from a Gradium TTS stream asked for *output_format*."""
         sample_rate = stream.sample_rate or self._get_sample_rate()
-        audio_format = self._get_audio_format()
+        audio_format = self._get_audio_format(output_format)
         async for chunk in stream.iter_bytes():
             if chunk:
                 yield AudioChunk(
@@ -193,9 +178,10 @@ class GradiumTTSProvider(TTSProvider):
     ) -> AsyncIterator[AudioChunk]:
         """Stream audio chunks as they're generated."""
         client = self._get_client()
-        setup = self._build_setup(voice, output_format=self._streamed_format())
+        output_format = streamed_format(self._config.output_format)
+        setup = self._build_setup(voice, output_format=output_format)
         stream = await client.tts_stream(setup, text)
-        async for chunk in self._yield_stream(stream):
+        async for chunk in self._yield_stream(stream, output_format):
             yield chunk
 
     async def synthesize_stream_input(
@@ -207,9 +193,10 @@ class GradiumTTSProvider(TTSProvider):
     ) -> AsyncIterator[AudioChunk]:
         """Stream audio from streaming text input."""
         client = self._get_client()
-        setup = self._build_setup(voice, output_format=self._streamed_format())
+        output_format = streamed_format(self._config.output_format)
+        setup = self._build_setup(voice, output_format=output_format)
         stream = await client.tts_stream(setup, text_stream)
-        async for chunk in self._yield_stream(stream):
+        async for chunk in self._yield_stream(stream, output_format):
             yield chunk
 
     async def list_voices(
@@ -249,3 +236,8 @@ class GradiumTTSProvider(TTSProvider):
 
 def _text(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
+
+
+def _codec(output_format: str) -> tuple[str, str]:
+    """The MIME type and chunk format of *output_format*'s codec, raw PCM's if unknown."""
+    return _CODECS.get(output_format.split("_")[0], _CODECS["pcm"])

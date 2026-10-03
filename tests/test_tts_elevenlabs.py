@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import base64
+import contextlib
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from roomkit.voice.tts.context import TTSContext
 from roomkit.voice.tts.elevenlabs import (
     EXPRESSIVE_TAGS,
     MODEL_MULTILINGUAL_V2,
@@ -299,6 +302,44 @@ class TestSynthesize:
 # ---------------------------------------------------------------------------
 
 
+async def _over_http(provider: ElevenLabsTTSProvider) -> list:
+    """The chunks of ``synthesize_stream`` without a context, over a mocked SDK."""
+    client = MagicMock()
+    client.text_to_speech.stream = lambda **_: _sdk_audio(b"\x00\x01")
+    with _sdk(provider, client):
+        return [chunk async for chunk in provider.synthesize_stream("Hello")]
+
+
+async def _over_stitching(provider: ElevenLabsTTSProvider) -> list:
+    """The chunks of ``synthesize_stream`` with a context, over a mocked raw response."""
+
+    @contextlib.asynccontextmanager
+    async def raw_stream(**_):
+        yield SimpleNamespace(headers={}, data=_sdk_audio(b"\x00\x01"))
+
+    client = MagicMock()
+    client.text_to_speech.with_raw_response.stream = raw_stream
+    context = TTSContext(context_id="session", turns=(), next_turn_id="turn")
+    with _sdk(provider, client):
+        return [chunk async for chunk in provider.synthesize_stream("Hello", context=context)]
+
+
+async def _over_websocket(provider: ElevenLabsTTSProvider) -> list:
+    """The chunks of ``synthesize_stream_input``, over a mocked socket."""
+
+    async def texts():
+        yield "Hello."
+
+    provider._config.stream_input = True
+    with (
+        _sdk(provider, MagicMock()),
+        patch(
+            "roomkit.voice.tts.elevenlabs.stream_audio", lambda *_, **__: _sdk_audio(b"\x00\x01")
+        ),
+    ):
+        return [chunk async for chunk in provider.synthesize_stream_input(texts())]
+
+
 class TestDeclaredFormat:
     """Chunks and data URLs declare the codec and rate ``output_format`` asks for (RMK-413)."""
 
@@ -316,21 +357,15 @@ class TestDeclaredFormat:
             ("opus_48000_64", 48000, "opus"),
         ],
     )
-    async def test_streamed_chunks(self, output_format, rate, chunk_format):
+    @pytest.mark.parametrize(
+        "stream", [_over_http, _over_stitching, _over_websocket], ids=["http", "stitching", "ws"]
+    )
+    async def test_streamed_chunks(self, stream, output_format, rate, chunk_format):
         config = ElevenLabsConfig(api_key="k", output_format=output_format)
-        provider = ElevenLabsTTSProvider(config)
 
-        async def mock_stream(**kwargs):
-            yield b"\x00\x01"
+        chunks = await stream(ElevenLabsTTSProvider(config))
 
-        mock_client = MagicMock()
-        mock_client.text_to_speech.stream = mock_stream
-        with (
-            patch.object(provider, "_get_client", return_value=mock_client),
-            patch.object(provider, "_make_voice_settings", return_value="s"),
-        ):
-            chunks = [chunk async for chunk in provider.synthesize_stream("Hello")]
-
+        assert chunks[0].data == b"\x00\x01"
         assert {(chunk.sample_rate, chunk.format) for chunk in chunks} == {(rate, chunk_format)}
 
     @pytest.mark.parametrize(

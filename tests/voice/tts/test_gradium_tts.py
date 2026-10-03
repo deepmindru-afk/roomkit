@@ -76,12 +76,12 @@ class TestGradiumTTSProvider:
     def test_audio_format_pcm(self) -> None:
         grad = _mock_gradium_module()
         provider = _make_provider(grad, api_key="k", output_format="pcm_16000")
-        assert provider._get_audio_format() == "pcm_s16le"
+        assert provider._get_audio_format("pcm_16000") == "pcm_s16le"
 
     def test_audio_format_opus(self) -> None:
         grad = _mock_gradium_module()
         provider = _make_provider(grad, api_key="k", output_format="opus")
-        assert provider._get_audio_format() == "opus"
+        assert provider._get_audio_format("opus") == "opus"
 
     async def test_synthesize(self) -> None:
         grad = _mock_gradium_module()
@@ -160,11 +160,17 @@ class TestGradiumStreamedWav:
 
     @_STREAMS
     @pytest.mark.parametrize(
-        ("configured", "asked"),
-        [("wav", "pcm"), ("pcm", "pcm"), ("pcm_16000", "pcm_16000"), ("opus", "opus")],
+        ("configured", "asked", "declared"),
+        [
+            ("wav", "pcm", "pcm_s16le"),
+            ("pcm", "pcm", "pcm_s16le"),
+            ("pcm_16000", "pcm_16000", "pcm_s16le"),
+            ("opus", "opus", "opus"),
+            ("alaw_8000", "alaw_8000", "alaw"),
+        ],
     )
     async def test_a_stream_asks_raw_pcm_in_place_of_wav(
-        self, open_stream: Any, configured: str, asked: str
+        self, open_stream: Any, configured: str, asked: str, declared: str
     ) -> None:
         provider = _make_provider(_mock_gradium_module(), api_key="k", output_format=configured)
         fake_client = MagicMock()
@@ -175,6 +181,30 @@ class TestGradiumStreamedWav:
 
         assert fake_client.tts_stream.call_args.args[0]["output_format"] == asked
         assert chunks[0].data == b"\x00\x01" * 8
+        assert {(chunk.format, chunk.sample_rate) for chunk in chunks} == {(declared, 48000)}
+
+    @pytest.mark.parametrize(
+        ("output_format", "mime_type"),
+        [
+            ("pcm_16000", "audio/pcm"),
+            ("wav", "audio/wav"),
+            ("opus", "audio/ogg"),  # Ogg-wrapped: the stream opens with OggS
+            ("ulaw_8000", "audio/basic"),
+            ("alaw_8000", "audio/alaw"),
+        ],
+    )
+    async def test_synthesized_data_url_types_its_codec(
+        self, output_format: str, mime_type: str
+    ) -> None:
+        provider = _make_provider(_mock_gradium_module(), api_key="k", output_format=output_format)
+        fake_client = MagicMock()
+        fake_client.tts = AsyncMock(return_value=SimpleNamespace(raw_data=b"audio"))
+        provider._client = fake_client
+
+        result = await provider.synthesize("hello")
+
+        assert result.mime_type == mime_type
+        assert result.url.startswith(f"data:{mime_type};base64,")
 
     async def test_synthesize_keeps_wav(self) -> None:
         provider = _make_provider(_mock_gradium_module(), api_key="k", output_format="wav")

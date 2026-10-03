@@ -376,6 +376,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `opus_*` returned a data URL typed `audio/mpeg`. The rate is now the number
   after the codec in `output_format` and the codec has its own MIME type and
   chunk format (`audio/alaw` / `alaw`, `audio/ogg` / `opus`, `audio/wav`).
+  `GradiumTTSProvider.synthesize()` likewise types `alaw_8000` as
+  `audio/alaw` (was `audio/basic`, the µ-law type) and its Ogg-wrapped `opus`
+  as `audio/ogg` (was `audio/opus`).
 
 - `ElevenLabsTTSProvider.synthesize()` returns its audio again (found under
   RMK-413). Since the move to the official SDK it awaited

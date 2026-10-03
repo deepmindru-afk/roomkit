@@ -52,6 +52,16 @@ async def collect_wav_content(
     )
 
 
+def streamed_format(output_format: str) -> str:
+    """The format a streamed request asks for: raw ``pcm`` in place of ``wav``.
+
+    A WAV stream opens with a RIFF header, which chunks declared ``pcm_s16le``
+    would hand to the transport as audio: a click at the start of every
+    sentence. A WAV belongs to ``synthesize()``, which returns a whole file.
+    """
+    return "pcm" if output_format == "wav" else output_format
+
+
 def wav_duration_seconds(wav: bytes) -> float:
     """Duration of a WAV file held in memory.
 

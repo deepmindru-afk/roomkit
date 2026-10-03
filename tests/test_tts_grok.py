@@ -77,7 +77,7 @@ class TestCodecMeta:
         ("codec", "expected_mime", "expected_fmt"),
         [
             ("pcm", "audio/pcm", "pcm_s16le"),
-            ("wav", "audio/wav", "pcm_s16le"),
+            ("wav", "audio/wav", "wav"),
             ("mp3", "audio/mpeg", "mp3"),
             ("mulaw", "audio/basic", "mulaw"),
             ("alaw", "audio/alaw", "alaw"),
@@ -312,6 +312,21 @@ async def _stream_over_ws(provider: GrokTTSProvider) -> tuple[str, list[AudioChu
 _STREAMS = pytest.mark.parametrize(
     "stream", [_stream_over_http, _stream_over_ws], ids=["http", "websocket"]
 )
+
+
+class TestWsUri:
+    def test_query_values_are_encoded(self):
+        provider = GrokTTSProvider(GrokTTSConfig(api_key="xai-test", language="fr"))
+
+        uri = provider._ws_uri("a&b c", "mp3")
+
+        assert parse_qs(urlsplit(uri).query) == {
+            "language": ["fr"],
+            "voice": ["a&b c"],
+            "codec": ["mp3"],
+            "sample_rate": ["24000"],
+            "bit_rate": ["128000"],
+        }
 
 
 class TestStreamedWav:
