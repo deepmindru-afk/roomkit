@@ -485,3 +485,70 @@ async def test_disconnect_before_accept_cancels_connection_callback(transport, h
     transport._unregister_handler("rtc")
     await asyncio.wait_for(cancelled.wait(), 1)
     assert not transport._connection_tasks
+
+
+class _Peer:
+    def __init__(self, calls: list[str], *, fails: bool = False) -> None:
+        self._calls = calls
+        self._fails = fails
+
+    async def close(self) -> None:
+        self._calls.append("peer closed")
+        if self._fails:
+            raise RuntimeError("peer close failed")
+
+
+class _Stream:
+    def __init__(self, calls: list[str], peers: dict[str, _Peer]) -> None:
+        self._calls = calls
+        self.pcs = peers
+
+    def clean_up(self, webrtc_id: str) -> None:
+        self._calls.append(f"cleaned {webrtc_id}")
+
+
+class TestRejectConnection:
+    """``reject_connection``: a peer the host will not serve is told why,
+    closed and forgotten, each step even when an earlier one fails."""
+
+    async def test_the_peer_is_told_closed_cleaned_and_unregistered(
+        self, transport, handler
+    ) -> None:
+        calls: list[str] = []
+        transport._stream = _Stream(calls, {"rtc-1": _Peer(calls)})
+        transport._register_handler("rtc-1", handler)
+        session = _make_session()
+        await transport.accept(session, "rtc-1")
+        disconnected: list[str] = []
+        transport.on_client_disconnected(lambda s: disconnected.append(s.id))
+        with patch.object(handler, "send_message", side_effect=calls.append):
+            await transport.reject_connection("rtc-1", message='{"type": "error"}')
+        await asyncio.sleep(0)
+
+        assert calls == ['{"type": "error"}', "peer closed", "cleaned rtc-1"]
+        assert "rtc-1" not in transport._handlers
+        assert disconnected == [session.id]
+
+    async def test_a_failed_send_and_a_failed_close_still_forget_the_peer(
+        self, transport, handler
+    ) -> None:
+        calls: list[str] = []
+        transport._stream = _Stream(calls, {"rtc-1": _Peer(calls, fails=True)})
+        transport._register_handler("rtc-1", handler)
+
+        with (
+            patch.object(handler, "send_message", side_effect=RuntimeError("closed channel")),
+            pytest.raises(RuntimeError, match="peer close failed"),
+        ):
+            await transport.reject_connection("rtc-1", message="bye")
+
+        assert calls == ["peer closed", "cleaned rtc-1"]
+        assert "rtc-1" not in transport._handlers
+
+    async def test_an_unknown_peer_is_nothing_to_reject(self, transport) -> None:
+        calls: list[str] = []
+        transport._stream = _Stream(calls, {})
+
+        await transport.reject_connection("nobody", message="bye")
+
+        assert calls == ["cleaned nobody"]

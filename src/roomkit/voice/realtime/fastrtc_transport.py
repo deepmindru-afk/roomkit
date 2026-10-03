@@ -394,6 +394,35 @@ class FastRTCRealtimeTransport(VoiceBackend):
         """
         self._connected_callback = callback
 
+    async def reject_connection(self, webrtc_id: str, *, message: str | None = None) -> None:
+        """Refuse a peer: tell it why, close it, and forget it.
+
+        For a peer the host will not serve (no session waits for it, its call
+        expired). In order: *message* sent as is on its data channel, when its
+        handler is registered and the channel open; its peer connection
+        closed; the stream's record of it cleaned; its handler unregistered,
+        which fires the disconnect callbacks of a session bound to it. Each
+        step runs even when an earlier one fails; a close that failed is raised
+        once the peer is forgotten. An unknown id does nothing.
+        """
+        handler = self._handlers.get(webrtc_id)
+        try:
+            if handler is not None and message is not None:
+                handler.send_message(message)
+        except Exception:
+            logger.warning("Could not tell rejected peer %s why", webrtc_id, exc_info=True)
+        stream = self._stream
+        peer = stream.pcs.get(webrtc_id) if stream is not None else None
+        try:
+            if peer is not None:
+                await peer.close()
+        finally:
+            try:
+                if stream is not None:
+                    stream.clean_up(webrtc_id)
+            finally:
+                self._unregister_handler(webrtc_id)
+
     async def close(self) -> None:
         """Close all connections and release resources."""
         tasks = list(self._connection_tasks.values())

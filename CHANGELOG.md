@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `FastRTCRealtimeTransport.reject_connection(webrtc_id, *, message=None)`
+  (RMK-408): refuse a peer the host will not serve, told why on its data
+  channel, its peer connection closed, the stream cleaned and its handler
+  unregistered, each step even when an earlier one fails.
+
 - `MCPToolProvider.tool_meta()`, `read_resource(uri)` and
   `call_tool_result(name, arguments)` (RMK-408): what an MCP App's host reads
   from the connection beside the model's tools, each tool's `_meta` from the
