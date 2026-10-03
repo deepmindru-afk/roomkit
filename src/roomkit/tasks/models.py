@@ -122,6 +122,17 @@ def cancelled_task_fields(context: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
+def task_cut_reason(result: Any) -> str | None:
+    """How a failed task's turn was cut short (its round cap, deadline or
+    budget, a stop), when a cut ended it. ``None`` for a task that completed,
+    or that failed with an error, even one raised after its turn began and
+    named on its ``loop_end_reason`` (RFC §23.3)."""
+    reason = (getattr(result, "metadata", None) or {}).get("loop_end_reason")
+    if reason is None or getattr(result, "error", None) != TaskCutShortError.message_for(reason):
+        return None
+    return reason
+
+
 def finished_task_fields(
     response: str | None, failure: BaseException | None, context: dict[str, Any] | None
 ) -> dict[str, Any]:

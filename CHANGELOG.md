@@ -607,7 +607,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or buffered, with a shared transport or not. The failure reaches the
   delegation as a new `TaskTurnFailedError` (exported from `roomkit`), whose
   message is the error's and whose cause is the error; it is logged as its
-  cause is, a `ProviderError` without a traceback.
+  cause is, a `ProviderError` without a traceback. `ON_TASK_COMPLETED`'s
+  content is the narration where it was the error's text. A result the
+  worker submitted through its result tool before the failure still counts,
+  as before a cut. With several agents in the child room, one agent's
+  failure never carries another's end. `roomkit.tasks.models.task_cut_reason`
+  tells a cut from such a failure, and a Loop whose producer fails after a
+  round still reports the provider's error, not a cut.
 
 - A turn's toolset reads alike at its edges, on every door (RMK-430, RFC
   §6.4, §21.1, §21.4, §24.4):

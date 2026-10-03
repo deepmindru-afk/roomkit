@@ -239,3 +239,36 @@ async def test_the_voice_delegate_workers_waits_on_its_workers() -> None:
 
     assert voice._call_timeout("delegate_workers", "r") is None
     await kit.close()
+
+
+class _FailsAfterARound(MockAIProvider):
+    async def generate(self, context: AIContext) -> AIResponse:
+        self.calls.append(context)
+        if len(self.calls) % 2 == 1:
+            return LOOPING
+        raise ProviderError("upstream 400", provider="mock", status_code=400)
+
+
+def _failing_after_a_round() -> Agent:
+    return Agent(
+        "producer",
+        provider=_FailsAfterARound(streaming=True),
+        tools=[LOOKUP],
+        tool_handler=_found,
+        tool_search=False,
+        max_tool_rounds=3,
+    )
+
+
+async def test_a_producer_failing_after_a_round_gives_its_error_not_a_cut() -> None:
+    kit, result = await _sync_loop(_failing_after_a_round(), ["APPROVED"])
+
+    assert type(result.error) is RoomKitError
+    assert "upstream 400" in str(result.error)
+    await kit.close()
+
+
+async def test_the_async_loop_names_a_producer_failing_after_a_round_as_failed() -> None:
+    text = await _async_text(_failing_after_a_round())
+
+    assert text == "The review loop stopped before any output: the producer's task failed."

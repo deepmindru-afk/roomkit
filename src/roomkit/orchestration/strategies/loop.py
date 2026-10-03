@@ -30,7 +30,7 @@ from roomkit.orchestration.state import (
 )
 from roomkit.orchestration.status_bus import StatusLevel, post_agent_lifecycle
 from roomkit.orchestration.strategies.supervisor import WorkerStrategy
-from roomkit.tasks.models import task_work
+from roomkit.tasks.models import task_cut_reason, task_work
 from roomkit.tools.context import _current_turn_chain_depth
 
 if TYPE_CHECKING:
@@ -384,8 +384,8 @@ class _LoopOutcome:
 
 
 def _cut_reason(result: DelegatedTaskResult | None) -> str | None:
-    """How a task's turn was cut short, when it was (RFC §23.3)."""
-    return (result.metadata or {}).get("loop_end_reason") if result is not None else None
+    """How a task's turn was cut short, when a cut ended it (RFC §23.3)."""
+    return task_cut_reason(result)
 
 
 def _producer_failure(outcome: _LoopOutcome) -> Exception:

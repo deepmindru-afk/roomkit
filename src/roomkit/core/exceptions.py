@@ -272,8 +272,13 @@ class TaskCutShortError(TurnCutShortError):
     """
 
     def __init__(self, reason: str, narration: str | None) -> None:
-        super().__init__(f"The worker's turn ended {reason} before its answer", reason)
+        super().__init__(self.message_for(reason), reason)
         self.narration = narration
+
+    @staticmethod
+    def message_for(reason: str) -> str:
+        """The error a task cut short by *reason* carries."""
+        return f"The worker's turn ended {reason} before its answer"
 
 
 class TaskTurnFailedError(RoomKitError):

@@ -289,15 +289,53 @@ async def _deliver_answer(kit: RoomKit, child_room_id: str, result: BroadcastRes
     await kit._commit_responses(child_room_id, result.reentry_events, None, cascade)
     # The failure is raised to the delegation, which logs it.
     stream_error, _ = await kit._finish_cascade(cascade, child_room_id, caller_logs=True)
-    failure = next(
-        (out.error for out in result.outputs.values() if out.error is not None), stream_error
-    )
-    text, reason = _kept_answer(result, cascade.response_events)
+    failure, failed_by = _responder_failure(result, stream_error)
     if failure is not None:
+        # The failure carries the end of the responder that failed, never
+        # another's (RFC §23.3 step 6).
+        text, reason = _answer_of(result, cascade.response_events, failed_by)
         raise _turn_failure(failure, text, reason)
+    text, reason = _kept_answer(result, cascade.response_events)
     if (cut := _cut_short(text, reason)) is not None:
         raise cut
     return text
+
+
+def _responder_failure(
+    result: BroadcastResult, stream_error: Exception | None
+) -> tuple[Exception | None, str | None]:
+    """A delegated broadcast's failure, and the responder that failed when it
+    can be told: a buffered response's, or the only responder's stream."""
+    for cid, out in result.outputs.items():
+        if out.error is not None:
+            return out.error, cid
+    if stream_error is None:
+        return None, None
+    responders = _responder_records(result)
+    return stream_error, (next(iter(responders)) if len(responders) == 1 else None)
+
+
+def _responder_records(result: BroadcastResult) -> dict[str, Mapping[str, Any]]:
+    """Each responder's turn record, by its channel id."""
+    records: dict[str, Mapping[str, Any]] = {
+        cid: out.response_metadata for cid, out in result.outputs.items() if out.responded
+    }
+    records.update((sr.source_channel_id, _stream_record(sr)) for sr in result.streaming_responses)
+    return records
+
+
+def _answer_of(
+    result: BroadcastResult, rows: list[RoomEvent], channel_id: str | None
+) -> tuple[str | None, str | None]:
+    """*channel_id*'s answer among *rows* and how its turn ended, both read
+    off that responder alone; nothing for a responder that cannot be told."""
+    if channel_id is None:
+        return None, None
+    row = _last_answer(rows, channel_id)
+    record = _responder_records(result).get(channel_id, {})
+    return (answer_text(row) if row is not None else None), _turn_end(
+        record, [row] if row is not None else []
+    )
 
 
 def _kept_answer(result: BroadcastResult, rows: list[RoomEvent]) -> tuple[str | None, str | None]:
@@ -308,10 +346,7 @@ def _kept_answer(result: BroadcastResult, rows: list[RoomEvent]) -> tuple[str | 
     step 6). With no answer kept, the end is the first responder's that
     names one.
     """
-    records: dict[str, Mapping[str, Any]] = {
-        cid: out.response_metadata for cid, out in result.outputs.items() if out.responded
-    }
-    records.update((sr.source_channel_id, _stream_record(sr)) for sr in result.streaming_responses)
+    records = _responder_records(result)
     for cid, record in records.items():
         if (row := _last_answer(rows, cid)) is not None:
             return answer_text(row), _turn_end(record, [row])
@@ -536,11 +571,11 @@ async def _owed_result(
     kit: RoomKit, child_room_id: str, message: str, worker_id: str, tool: ResultTool
 ) -> tuple[dict[str, Any] | None, str | None]:
     """One turn of a worker that owes a result: what it submitted, and its
-    text. A turn cut short keeps a result it submitted before the cut, and
-    fails the task without one (RFC §23.3)."""
+    text. A turn cut short, or failed after it began, keeps a result it
+    submitted before, and fails the task without one (RFC §23.3)."""
     try:
         text = await _broadcast_and_collect(kit, child_room_id, message)
-    except TaskCutShortError:
+    except (TaskCutShortError, TaskTurnFailedError):
         submitted = await _scan_for_submitted_result(kit, child_room_id, worker_id, tool)
         if submitted is None:
             raise
