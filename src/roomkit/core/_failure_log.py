@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from roomkit.core.exceptions import TurnCutShortError
+from roomkit.core.exceptions import TaskTurnFailedError, TurnCutShortError
 from roomkit.providers.ai.base import ProviderError
 
 
@@ -42,6 +42,10 @@ def log_failure(
     log line (``InboundResult.error``): a provider error is then only a DEBUG
     line here, so the incident is not reported twice.
     """
+    if isinstance(exc, TaskTurnFailedError) and isinstance(exc.__cause__, Exception):
+        # A worker's turn that failed: logged as its error is.
+        log_failure(log, exc.__cause__, what, caller_logs=caller_logs, extra=extra)
+        return
     if isinstance(exc, TurnCutShortError):
         # A turn that ended before its answer: expected, never a defect.
         log.warning("%s failed: %s", what, exc, extra=extra)

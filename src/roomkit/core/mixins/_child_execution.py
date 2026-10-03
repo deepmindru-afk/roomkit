@@ -15,7 +15,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from uuid import uuid4
 
-from roomkit.core.exceptions import TaskCutShortError
+from roomkit.core.exceptions import TaskCutShortError, TaskTurnFailedError, TurnCutShortError
 from roomkit.core.lanes import DeliveryCascade
 from roomkit.core.mixins._response_reader import ResponseReader
 from roomkit.core.mixins._result_capture import capture_result
@@ -152,7 +152,11 @@ async def _persist_child_stream(
         chain_depth=chain_depth,
         correlation_id=uuid4().hex,
     )
-    answer = await _drain_turn(writer, sr)
+    try:
+        answer = await _drain_turn(writer, sr)
+    except Exception as exc:
+        end = _turn_end(_stream_record(sr), writer.persisted)
+        raise _turn_failure(exc, _last_text(writer.persisted), end)  # noqa: B904
     if (cut := _cut_short(answer, _turn_end(_stream_record(sr), writer.persisted))) is not None:
         raise cut
     return answer
@@ -176,10 +180,12 @@ async def _drain_turn(writer: SegmentWriter, sr: Any) -> str:
     await writer.record_on_last_message()
     if failure is not None:
         raise failure
-    return next(
-        (text for row in reversed(writer.persisted) if (text := answer_text(row)) is not None),
-        "",
-    )
+    return _last_text(writer.persisted) or ""
+
+
+def _last_text(rows: list[RoomEvent]) -> str | None:
+    """The text of the last row that answers, if any."""
+    return next((text for row in reversed(rows) if (text := answer_text(row)) is not None), None)
 
 
 async def _persist_response_events(
@@ -286,9 +292,9 @@ async def _deliver_answer(kit: RoomKit, child_room_id: str, result: BroadcastRes
     failure = next(
         (out.error for out in result.outputs.values() if out.error is not None), stream_error
     )
-    if failure is not None:
-        raise failure
     text, reason = _kept_answer(result, cascade.response_events)
+    if failure is not None:
+        raise _turn_failure(failure, text, reason)
     if (cut := _cut_short(text, reason)) is not None:
         raise cut
     return text
@@ -311,6 +317,15 @@ def _kept_answer(result: BroadcastResult, rows: list[RoomEvent]) -> tuple[str | 
             return answer_text(row), _turn_end(record, [row])
     ends = (_turn_end(record, []) for record in records.values())
     return None, next((end for end in ends if end is not None), None)
+
+
+def _turn_failure(failure: Exception, text: str | None, reason: str | None) -> Exception:
+    """A delegated turn that failed after it began: its error, carrying how
+    the turn ended and its narration when its record names an end (RFC §23.3
+    step 6). An error the turn raised before any end, or a cut, as it is."""
+    if reason in (None, "completed") or isinstance(failure, TurnCutShortError):
+        return failure
+    return TaskTurnFailedError(failure, reason, text or None)
 
 
 def _cut_short(text: str | None, reason: str | None) -> TaskCutShortError | None:
@@ -386,7 +401,8 @@ async def _collect_answer(
         if output.error is not None:
             # A turn the provider interrupted after a round kept its trace and
             # has no answer.
-            failure = failure or output.error
+            reason = _turn_end(output.response_metadata, output.response_events)
+            failure = failure or _turn_failure(output.error, final_text, reason)
         elif (
             cut := _cut_short(
                 final_text, _turn_end(output.response_metadata, output.response_events)

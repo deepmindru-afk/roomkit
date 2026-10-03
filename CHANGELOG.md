@@ -555,6 +555,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A delegated turn that failed after it began keeps its end on the task
+  (RMK-433, RFC §6.4, §23.3 step 6): a worker whose provider errored after a
+  round, or an ACP worker whose prompt raised, failed its task with
+  `error="upstream 400"`, `output=None` and no `loop_end_reason`, although
+  the child room recorded the end. The task keeps the error and now carries
+  `metadata["loop_end_reason"]` (`error`, `interrupted` for ACP) and the
+  worker's last narration as `output`, on `ON_TASK_COMPLETED` too, streamed
+  or buffered, with a shared transport or not. The failure reaches the
+  delegation as a new `TaskTurnFailedError` (exported from `roomkit`), whose
+  message is the error's and whose cause is the error; it is logged as its
+  cause is, a `ProviderError` without a traceback.
+
 - A turn's toolset reads alike at its edges, on every door (RMK-430, RFC
   §6.4, §21.1, §21.4, §24.4):
   - A provider's native tool without a name (`{"google_search": {}}`) left a

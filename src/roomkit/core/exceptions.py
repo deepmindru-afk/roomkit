@@ -274,3 +274,23 @@ class TaskCutShortError(TurnCutShortError):
     def __init__(self, reason: str, narration: str | None) -> None:
         super().__init__(f"The worker's turn ended {reason} before its answer", reason)
         self.narration = narration
+
+
+class TaskTurnFailedError(RoomKitError):
+    """A delegated worker's turn that failed after it began (RFC §23.3).
+
+    The task fails with the turn's error, whose message this one keeps and
+    which is its cause, and carries what the child room's record holds of the
+    turn: how it ended and what the worker said last.
+
+    Attributes:
+        reason: The turn's ``loop_end_reason`` (``error``), or an ACP worker's
+            ``interrupted`` when its prompt failed.
+        narration: What the worker said last, or ``None``.
+    """
+
+    def __init__(self, error: BaseException, reason: str, narration: str | None) -> None:
+        super().__init__(str(error))
+        self.reason = reason
+        self.narration = narration
+        self.__cause__ = error

@@ -9,7 +9,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from roomkit.core.exceptions import TaskCutShortError
+from roomkit.core.exceptions import TaskCutShortError, TaskTurnFailedError
 from roomkit.models.enums import TaskStatus
 
 logger = logging.getLogger("roomkit.tasks")
@@ -130,7 +130,7 @@ def finished_task_fields(
     narration as the output and how its turn ended in the metadata (RFC
     §23.3); any other failure keeps nothing."""
     output, metadata = response, dict(context or {})
-    if isinstance(failure, TaskCutShortError):
+    if isinstance(failure, (TaskCutShortError, TaskTurnFailedError)):
         output = output or failure.narration
         metadata["loop_end_reason"] = failure.reason
     return {
