@@ -90,6 +90,7 @@ class ElevenLabsConfig:
     use_speaker_boost: bool = True
     # <codec>_<rate>[_<bitrate>]: mp3_44100_128, pcm_16000, ulaw_8000, opus_48000_64...
     # wav_* only for synthesize(): ElevenLabs refuses it on a streamed request.
+    # A VoiceChannel plays PCM only and refuses anything else: give it pcm_<rate>.
     output_format: str = "mp3_44100_128"
     # Latency optimization, 0-4 (higher = lower latency, at some cost of
     # quality). None sends nothing. Only the v2 / v2.5 models take it, and

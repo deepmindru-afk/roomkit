@@ -18,7 +18,7 @@ from roomkit.models.enums import EventType, HookTrigger, Visibility
 from roomkit.telemetry.base import Attr, SpanKind, TelemetryProvider
 from roomkit.telemetry.noop import NoopTelemetryProvider
 from roomkit.telemetry.redaction import redact
-from roomkit.voice.base import VoiceCapability
+from roomkit.voice.base import VoiceCapability, require_pcm16
 from roomkit.voice.utils import rms_db
 
 _NOOP = NoopTelemetryProvider()
@@ -1147,9 +1147,22 @@ def _observe_audio(
     starts here, not at the first chunk: until one goes out, the user has
     heard nothing, however long synthesis takes. ``gate``, when given, is
     awaited before the first chunk goes out; False ends the stream unsaid.
+    A chunk that is not 16-bit PCM is refused before any of that.
     """
     playback.start_measuring()
-    return _observed_chunks(playback, recorder, chunks, gate)
+    return _observed_chunks(playback, recorder, _pcm16_only(chunks), gate)
+
+
+async def _pcm16_only(chunks: AsyncIterator[AudioChunk]) -> AsyncIterator[AudioChunk]:
+    """Hand on a TTS stream's chunks, refusing the first one that is not 16-bit PCM.
+
+    The outbound pipeline and every voice backend read a chunk as 16-bit signed
+    PCM whatever its ``format``: an MP3 or G.711 chunk would play as noise (RFC
+    section 12.2). The refusal comes before a byte reaches either.
+    """
+    async for chunk in chunks:
+        require_pcm16(chunk, "VoiceChannel")
+        yield chunk
 
 
 async def _observed_chunks(

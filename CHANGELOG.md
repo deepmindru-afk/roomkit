@@ -588,6 +588,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     those tools. On the text door the reveal now lasts for the next turns,
     as a `find_tools` reveal does.
 
+- A `VoiceChannel` refuses a TTS chunk that is not 16-bit PCM instead of
+  playing it as samples (RMK-415, RFC §12.2). Every voice backend and the
+  outbound pipeline read a chunk as PCM whatever its `format`, so a TTS
+  streaming MP3, Opus or G.711 (`ElevenLabsTTSProvider` with its default
+  `output_format="mp3_44100_128"`, Grok `codec="mp3"`, Gradium `opus`) was
+  heard as noise, or cut the sentence on a chunk of odd length, with no error
+  naming the cause. The first such chunk now raises `ValueError` ("VoiceChannel
+  expects decoded PCM, got format 'mp3'") before a byte reaches the pipeline
+  or the transport, on `say()`, `deliver()` and `deliver_stream()` alike; set
+  the TTS to a PCM output (`output_format="pcm_16000"`). The check is the one
+  conference backends already applied, now `roomkit.voice.base.require_pcm16`.
+
 - Closing or archiving a room stops its recordings once the room is found
   (RMK-405, RFC §12.11): a call scoped to another organization stopped the
   room's recordings, then raised `RoomNotFoundError`.
