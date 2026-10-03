@@ -218,6 +218,18 @@ class GrokTTSProvider(TTSProvider):
     # WebSocket streaming (bidirectional)
     # ------------------------------------------------------------------
 
+    def _ws_uri(self, voice_id: str, codec: str) -> str:
+        """The WebSocket URL of one streamed turn."""
+        params = (
+            f"?language={self._config.language}"
+            f"&voice={voice_id}"
+            f"&codec={codec}"
+            f"&sample_rate={self._config.sample_rate}"
+        )
+        if codec == "mp3":
+            params += f"&bit_rate={self._config.bit_rate}"
+        return f"{self._config.ws_url}{params}"
+
     async def synthesize_stream_input(
         self,
         text_stream: AsyncIterator[str],
@@ -253,18 +265,8 @@ class GrokTTSProvider(TTSProvider):
         voice_id = voice or self._config.voice_id
         _, fmt = _CODEC_META.get(self._config.codec, ("audio/mpeg", "mp3"))
 
-        params = (
-            f"?language={self._config.language}"
-            f"&voice={voice_id}"
-            f"&codec={self._config.codec}"
-            f"&sample_rate={self._config.sample_rate}"
-        )
-        if self._config.codec == "mp3":
-            params += f"&bit_rate={self._config.bit_rate}"
-        uri = f"{self._config.ws_url}{params}"
-
         async with websockets.connect(
-            uri,
+            self._ws_uri(voice_id, self._config.codec),
             additional_headers={"Authorization": f"Bearer {self._config.api_key}"},
             open_timeout=30,
         ) as ws:
