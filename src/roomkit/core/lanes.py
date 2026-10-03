@@ -133,6 +133,7 @@ class DeliveryCascade:
         "_done",
         "_pending",
         "_reentry_budget",
+        "caller_logs",
         "cancelled",
         "delivery_results",
         "unavailable_targets",
@@ -158,6 +159,10 @@ class DeliveryCascade:
         self.streams: list[Any] = []
         # First intelligence-channel failure, surfaced on InboundResult.error.
         self.error: Exception | None = None
+        # The caller waits for the streams and receives their failure (on
+        # InboundResult.error, or raised) and logs it: a stream with no
+        # streaming target then logs it at DEBUG only. Set by _finish_cascade.
+        self.caller_logs = False
         # Final response metadata produced by the root delivery set. Non-streaming
         # outputs land here when the plan finishes; detached streaming consumers
         # add their records after consuming the streams, before their handle wakes.

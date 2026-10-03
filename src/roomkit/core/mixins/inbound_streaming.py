@@ -112,13 +112,8 @@ class InboundStreamingMixin(HelpersMixin):
         *,
         cascade: DeliveryCascade,
         response_events: list[RoomEvent] | None = None,
-        caller_logs: bool = False,
     ) -> _StreamingResult | None:
-        """Consume a streaming response, pipe to streaming channels, store segments.
-
-        ``caller_logs``: the caller receives this stream's failure and logs it,
-        so a stream with no streaming target logs it at DEBUG only.
-        """
+        """Consume a streaming response, pipe to streaming channels, store segments."""
         response_vis = sr.trigger_event.response_visibility
         streaming_targets = self._find_streaming_targets(router, sr, context)
 
@@ -271,7 +266,8 @@ class InboundStreamingMixin(HelpersMixin):
                     exc,
                     f"stream consumption (no targets) of {sr.source_channel_id} "
                     f"for room {room_id}",
-                    caller_logs=caller_logs,
+                    # A chained stream's failure is not the caller's.
+                    caller_logs=cascade.caller_logs and not sr.chained,
                     extra={"room_id": room_id, "channel_id": sr.source_channel_id},
                 )
                 await self._fire_stream_error_hook(exc, room_id, context, sr, correlation_id)
@@ -377,7 +373,6 @@ class InboundStreamingMixin(HelpersMixin):
         room_id: str,
         *,
         response_events: list[RoomEvent] | None = None,
-        caller_logs: bool = False,
     ) -> tuple[Exception | None, ResponseMetadata]:
         """Read every stream of *cascade*, the ones added while reading included.
 
@@ -423,14 +418,7 @@ class InboundStreamingMixin(HelpersMixin):
                     continue
                 context = await self._build_context(room_id)
                 sr_result = await self._handle_streaming_response(
-                    router,
-                    sr,
-                    room_id,
-                    context,
-                    cascade=cascade,
-                    response_events=response_events,
-                    # A chained stream's failure is not the caller's (see above).
-                    caller_logs=caller_logs and not sr.chained,
+                    router, sr, room_id, context, cascade=cascade, response_events=response_events
                 )
                 if sr.chained:
                     continue

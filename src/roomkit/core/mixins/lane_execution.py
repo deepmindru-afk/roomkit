@@ -568,12 +568,10 @@ class LaneExecutionMixin(HelpersMixin):
         if not completed:
             self._consume_streams_when_cascade_completes(cascade, room_id)
         elif cascade.streams and cascade.cancelled is None:
+            cascade.caller_logs = caller_logs
             return await cascade.run(
                 self._process_streaming_responses(
-                    cascade,
-                    room_id,
-                    response_events=cascade.response_events,
-                    caller_logs=caller_logs,
+                    cascade, room_id, response_events=cascade.response_events
                 )
             )
         return None, ResponseMetadata()
