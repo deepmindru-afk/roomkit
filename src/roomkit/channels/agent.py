@@ -39,7 +39,9 @@ class Agent(AIChannel):
 
     Extends :class:`AIChannel` with ``role``, ``description``, ``scope``,
     ``voice``, and ``greeting`` fields.  The first three are auto-injected
-    into the system prompt as an identity block; ``voice`` is read by
+    into the system prompt as an identity block, unless
+    ``identity_in_prompt=False`` (a host that renders identity in its own
+    prompt keeps the fields readable without the block); ``voice`` is read by
     :meth:`ConversationPipeline.install` to auto-wire the voice map;
     ``greeting`` is spoken directly via TTS when a new voice session
     becomes ready (controlled by ``auto_greet``).
@@ -84,6 +86,7 @@ class Agent(AIChannel):
         greeting: str | None = None,
         language: str | None = None,
         auto_greet: bool = True,
+        identity_in_prompt: bool = True,
         **kwargs: Any,
     ) -> None:
         super().__init__(channel_id, provider=provider or _NullAIProvider(), **kwargs)
@@ -103,6 +106,9 @@ class Agent(AIChannel):
         self.greeting = greeting
         self.language = language
         self.auto_greet = auto_greet
+        # False: a host that renders the agent's identity in its own prompt
+        # turns the block off everywhere RoomKit writes it, the fields kept.
+        self.identity_in_prompt = identity_in_prompt
 
     @property
     def is_config_only(self) -> bool:
@@ -125,8 +131,12 @@ class Agent(AIChannel):
             language: Override language (e.g. from conversation state).
                 Falls back to ``self.language`` when ``None``.
 
-        Returns ``None`` when all identity fields are ``None``.
+        Returns ``None`` when all identity fields are ``None``, or when
+        ``identity_in_prompt`` is off: the turn's prompt, a handoff's and a
+        realtime pipeline's all read the block here.
         """
+        if not self.identity_in_prompt:
+            return None
         lines: list[str] = []
         if self.role is not None:
             lines.append(f"Role: {self.role}")

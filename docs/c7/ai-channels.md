@@ -113,6 +113,32 @@ agent = Agent(
 )
 ```
 
+`role`, `description`, `scope` and `language` are appended to the system
+prompt as an `--- Agent Identity ---` block, in a turn, a handoff and a
+realtime pipeline alike. A host that renders the agent's identity in its own
+prompt passes `identity_in_prompt=False`: no block is written anywhere, and
+the fields stay readable on the agent.
+
+## Steering a Running Turn
+
+`steer()` hands a running tool loop a directive (`Cancel`, `InjectMessage`,
+`UpdateSystemPrompt`, RFC §21.3) and returns how many loops it reached. One
+channel object serves every room it is bound to, so a host acting for one
+room addresses that room:
+
+```python
+from roomkit.models.steering import Cancel, InjectMessage
+
+agent.steer(Cancel(reason="stop pressed"), room_id="room-a")   # every loop of room-a
+agent.steer(InjectMessage(content="Also check the logs."), room_id="room-a")  # its latest
+agent.steer(Cancel(reason="timeout"), loop_id="loop-abc123")   # one loop
+```
+
+Without `loop_id` or `room_id`, a directive reaches the channel's most
+recent loop, whatever its room. A loop is reachable once its turn has started
+(its response stream is read): a directive that comes before reaches none, and
+`steer()` returns 0. See `examples/ai_shared_agent_rooms.py`.
+
 ## Tool Calling
 
 Define tools as JSON schema and attach them to the AI channel:
@@ -694,6 +720,21 @@ await kit.process_inbound(
     )
 )
 # AI sees the image and responds with analysis
+```
+
+An event whose content extracts to nothing (a captionless image on a provider
+without vision, an upload a host stores with an empty body and its files in
+metadata) is omitted from the turn's transcript. `AIChannel(describe_empty_event=...)`
+gives the host the word: a callable asked only for such an event, whose text
+stands in for it in the history and the turn's input, `None` keeping the
+omission. The stored event is never touched.
+
+```python
+def describe_upload(event):
+    files = event.metadata.get("attachments") or []
+    return f"The member sent {len(files)} file(s) without a caption." if files else None
+
+agent = AIChannel("ai", provider=provider, describe_empty_event=describe_upload)
 ```
 
 OpenAI-family providers (OpenAI, Azure, OpenRouter, LiteLLM, xAI) and PolarGrid send images as OpenAI-shaped `image_url` content parts (remote URL or `data:` URI); PolarGrid and xAI gate this on the model's `supports_vision` from their curated catalogs — whether the model actually reads the image is the deployed model's capability.

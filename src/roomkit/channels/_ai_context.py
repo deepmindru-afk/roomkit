@@ -44,7 +44,7 @@ if TYPE_CHECKING:
     from roomkit.channels._tool_registry import ChannelRegistry
     from roomkit.channels._tool_usage import ToolUsageMemory
     from roomkit.channels._turn_config import AIChannelTurnConfig, ConfigProvider
-    from roomkit.channels.ai import _ContentPart
+    from roomkit.channels.ai import EmptyEventDescriber, _ContentPart
     from roomkit.memory.base import MemoryProvider
     from roomkit.models.channel import ChannelBinding
     from roomkit.models.context import RoomContext
@@ -115,6 +115,7 @@ class AIContextMixin(_AIChannelContract):
     _sandbox: SandboxExecutor | None
     _human_input_handler: HumanInputToolHandler | None
     _memory: MemoryProvider
+    _describe_empty_event: EmptyEventDescriber | None
     _eviction: ToolEviction
     _tool_usage: ToolUsageMemory
     _tool_usage_loader: ToolUsageLoader | None
@@ -436,7 +437,7 @@ class AIContextMixin(_AIChannelContract):
                 # and replaying it would answer what they never heard (§12.3.12).
                 continue
             role = self._determine_role(past_event)
-            content = self._extract_content(past_event)
+            content = self._transcript_content(past_event)
             if content:
                 speaker = _event_speaker(past_event, context) if role == "user" else None
                 past_turns.append((role, content, speaker))
@@ -447,7 +448,7 @@ class AIContextMixin(_AIChannelContract):
     ) -> tuple[str | list[_ContentPart] | None, str | None]:
         """The turn's input and its speaker; an instruction marked as the
         application's, with no speaker."""
-        current_content = self._extract_content(event)
+        current_content = self._transcript_content(event)
         current_speaker = _event_speaker(event, context)
         if event.type == EventType.INSTRUCTION:
             # The application's direction for this one turn (RFC §10.1.1). It
@@ -776,6 +777,15 @@ class AIContextMixin(_AIChannelContract):
         if event.source.channel_id == self.channel_id:
             return "assistant"
         return "user"
+
+    def _transcript_content(self, event: RoomEvent) -> str | list[_ContentPart]:
+        """What *event* says in the turn's transcript, history and input alike:
+        its content, or, when that extracts to nothing, what the channel's
+        ``describe_empty_event`` says of it. Empty omits the event."""
+        content = self._extract_content(event)
+        if content or self._describe_empty_event is None:
+            return content
+        return self._describe_empty_event(event) or ""
 
     def _extract_content(
         self,

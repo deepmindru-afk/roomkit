@@ -923,6 +923,37 @@ class TestSetLanguage:
         assert "French" in prompt
         assert "English" not in prompt
 
+    async def test_set_language_writes_no_identity_for_an_agent_that_opted_out(self):
+        """An agent whose host renders identity itself keeps its prompt as is."""
+        room = Room(id="r1")
+        room = set_conversation_state(
+            room, ConversationState(phase="intake", active_agent_id="agent-triage")
+        )
+        kit = _make_mock_kit(room, [])
+
+        from roomkit.channels.agent import Agent
+        from roomkit.channels.realtime_voice import RealtimeVoiceChannel
+
+        mock_rtv = MagicMock()
+        mock_rtv.__class__ = RealtimeVoiceChannel
+        mock_rtv.get_room_sessions.return_value = [MagicMock()]
+        mock_rtv.reconfigure_session = AsyncMock()
+        kit.channels = {"voice": mock_rtv}
+
+        agent = Agent(
+            "agent-triage",
+            role="Triage",
+            system_prompt="Route the caller.",
+            identity_in_prompt=False,
+        )
+        handler = HandoffHandler(kit=kit, router=MagicMock(), event_channel_id="voice")
+        handler.agents = {"agent-triage": agent}
+
+        await handler.set_language("r1", "French", channel_id="voice")
+
+        prompt = mock_rtv.reconfigure_session.call_args[1]["system_prompt"]
+        assert prompt == "Route the caller."
+
 
 class TestSendGreetingOnARealKit:
     async def test_the_greeting_is_the_agents_line_in_the_room(self):

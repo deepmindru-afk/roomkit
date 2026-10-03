@@ -30,7 +30,7 @@ from roomkit.channels.acp_transport import (
     StdioACPTransport,
 )
 from roomkit.channels.agent import Agent
-from roomkit.channels.ai import AIChannel
+from roomkit.channels.ai import AIChannel, EmptyEventDescriber
 from roomkit.channels.av import AudioVideoChannel
 from roomkit.channels.base import Channel, FrameworkAwareChannel
 from roomkit.channels.cli import CLIChannel
@@ -535,6 +535,7 @@ __all__ = [
     "ToolCallVerdict",
     "ToolRoundEvent",
     "ContinuationPolicy",
+    "EmptyEventDescriber",
     "ToolHandler",
     "VideoDetectionEvent",
     # Video pipeline filters

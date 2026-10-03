@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `steer(directive, *, loop_id=None, room_id=None)` addresses a room and
+  returns how many loops it reached (RMK-407, RFC §21.3). One channel object
+  serves every room it is bound to: addressed to a room, a `Cancel` reaches
+  every loop of that room and no other, another directive the room's most
+  recent loop. Without either, the most recent loop whatever its room, as
+  before. `loop_id` and `room_id` together raise `ValueError`.
+
+- `AIChannel(describe_empty_event=...)` (RMK-407): a callable
+  (`EmptyEventDescriber`) asked only for an event whose content extracts to
+  nothing, a captionless upload say; its text stands in for the event in the
+  history and the turn's input, `None` keeps the omission. The stored event
+  and the memory query are untouched.
+
+- `Agent(identity_in_prompt=False)` (RMK-407): a host that renders the
+  agent's identity in its own prompt turns RoomKit's `--- Agent Identity ---`
+  block off in a turn, a handoff and a realtime pipeline alike;
+  `build_identity_block()` returns `None` and the fields stay readable.
+  Example: `examples/ai_shared_agent_rooms.py`.
+
 - `LoopEndMarker` states the limits the turn ran under (RMK-411):
   `max_rounds`, `timeout_seconds`, `budget_tokens` and `budget_usd`, `None`
   for no such limit, so a consumer names the limit a `max_rounds`, `timeout`

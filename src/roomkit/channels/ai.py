@@ -105,6 +105,10 @@ ToolHandler = Callable[[str, dict[str, Any]], Awaitable[ToolResult]]
 # call is marked failed, where a returned body would read as work that was done.
 
 
+# What an AI channel's transcript says of an event whose content extracts to
+# nothing (an upload without a caption, say): a text, or None to omit it.
+EmptyEventDescriber = Callable[[RoomEvent], str | None]
+
 # Content part union — matches AIMessage.content list type
 _ContentPart = AITextPart | AIImagePart | AIToolCallPart | AIToolResultPart | AIThinkingPart
 
@@ -183,6 +187,7 @@ class AIChannel(
         tool_search_threshold_tokens: int | None = DEFAULT_TOOL_SEARCH_THRESHOLD_TOKENS,
         tool_timeout_seconds: float | None = 30.0,
         tool_timeouts: Mapping[str, float | None] | None = None,
+        describe_empty_event: EmptyEventDescriber | None = None,
     ) -> None:
         super().__init__(channel_id)
         self._store_turn_budget(turn_budget_tokens, turn_budget_usd, provider, fallback_provider)
@@ -194,7 +199,7 @@ class AIChannel(
         self._config_provider = config_provider
         self._temperature = temperature
         self._max_tokens = max_tokens
-        self._max_context_events = max_context_events
+        self._store_transcript_rules(max_context_events, memory, describe_empty_event)
         self._thinking_budget = thinking_budget
         self._enable_thinking = enable_thinking
         self._reasoning_effort = reasoning_effort
@@ -221,7 +226,6 @@ class AIChannel(
         self._skills_in_prompt = skills_in_prompt
         self._script_executor = script_executor
         self._sandbox = sandbox
-        self._memory = memory or SlidingWindowMemory(max_events=max_context_events)
         self._tool_policy = tool_policy
         self._eviction = ToolEviction(threshold_tokens=evict_threshold_tokens)
         # Per-conversation record of tools the agent has called — feeds the
@@ -275,6 +279,19 @@ class AIChannel(
         turn_budget(tokens, usd, provider, fallback)
         self._turn_budget_tokens = tokens
         self._turn_budget_usd = usd
+
+    def _store_transcript_rules(
+        self,
+        max_events: int,
+        memory: MemoryProvider | None,
+        describe_empty_event: EmptyEventDescriber | None,
+    ) -> None:
+        """Keep how a turn's transcript is built: the history it reads (the
+        channel's memory, a sliding window of *max_events* by default) and
+        what it says of an event whose content extracts to nothing."""
+        self._max_context_events = max_events
+        self._memory = memory or SlidingWindowMemory(max_events=max_events)
+        self._describe_empty_event = describe_empty_event
 
     def _store_loop_rules(
         self,

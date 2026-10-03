@@ -178,6 +178,49 @@ class TestBuildContext:
         assert "Role: Advisor" in ai_ctx.system_prompt
 
 
+class TestIdentityInPromptOff:
+    """``identity_in_prompt=False``: a host that renders identity in its own
+    prompt turns the block off everywhere RoomKit writes it, the fields kept."""
+
+    def _agent(self) -> Agent:
+        return _make_agent(
+            role="Advisor",
+            description="Gives financial advice",
+            scope="Personal finance",
+            language="French",
+            system_prompt="Be helpful.",
+            identity_in_prompt=False,
+        )
+
+    async def test_the_turns_prompt_carries_no_identity_block(self):
+        agent = self._agent()
+        binding = _binding()
+        ctx = RoomContext(room=Room(id="r1"), bindings=[binding])
+
+        ai_ctx = await agent._build_context(make_event(room_id="r1"), binding, ctx)
+
+        assert ai_ctx.system_prompt == "Be helpful."
+
+    def test_the_public_block_is_none_whatever_the_language(self):
+        """The handoff and the realtime pipeline read the block here."""
+        agent = self._agent()
+
+        assert agent.build_identity_block() is None
+        assert agent.build_identity_block(language="German") is None
+
+    def test_the_fields_stay_readable(self):
+        agent = self._agent()
+
+        assert (agent.role, agent.scope, agent.language) == (
+            "Advisor",
+            "Personal finance",
+            "French",
+        )
+
+    def test_on_by_default(self):
+        assert _make_agent(role="Advisor").build_identity_block() is not None
+
+
 class TestConfigOnly:
     def test_config_only_no_provider(self):
         agent = Agent("agent-test", role="Triage", system_prompt="Hello.")
