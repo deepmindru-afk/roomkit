@@ -322,6 +322,33 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                 attributes={"channel_id": self.channel_id},
             )
 
+    def _new_turn_state(
+        self, loop_ctx: _ToolLoopContext, room_id: str | None, parent_span_id: str | None
+    ) -> _StreamTurnState:
+        """The turn's state, its ``llm.generate`` span started, and the limits
+        it runs under: the ones the loop enforces and its end marker states."""
+        telemetry = self._telemetry_provider
+        span_id = telemetry.start_span(
+            SpanKind.LLM_GENERATE,
+            "llm.generate",
+            parent_id=parent_span_id or get_current_span(),
+            room_id=room_id,
+            channel_id=self.channel_id,
+            attributes={
+                Attr.PROVIDER: type(self._provider).__name__,
+                Attr.LLM_STREAMING: True,
+            },
+        )
+        return _StreamTurnState(
+            loop_ctx,
+            telemetry,
+            span_id,
+            room_id,
+            max_rounds=self._max_tool_rounds,
+            # Unset or zero: no deadline.
+            timeout_seconds=self._tool_loop_timeout_seconds or None,
+        )
+
     @asynccontextmanager
     async def _streaming_tool_turn(
         self,
@@ -342,27 +369,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
         _current_loop_ctx.set(loop_ctx)
         self._active_loops[loop_ctx.loop_id] = loop_ctx
         try:
-            telemetry = self._telemetry_provider
-            span_id = telemetry.start_span(
-                SpanKind.LLM_GENERATE,
-                "llm.generate",
-                parent_id=parent_span_id or get_current_span(),
-                room_id=room_id,
-                channel_id=self.channel_id,
-                attributes={
-                    Attr.PROVIDER: type(self._provider).__name__,
-                    Attr.LLM_STREAMING: True,
-                },
-            )
-            turn = _StreamTurnState(
-                loop_ctx,
-                telemetry,
-                span_id,
-                room_id,
-                max_rounds=self._max_tool_rounds,
-                # No deadline as the loop reads one: unset or zero.
-                timeout_seconds=self._tool_loop_timeout_seconds or None,
-            )
+            turn = self._new_turn_state(loop_ctx, room_id, parent_span_id)
             try:
                 yield turn
             except BaseException as exc:
@@ -576,7 +583,9 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
             if cancelled:
                 yield turn.end("cancelled")
                 return
-            rules = self._new_loop_state("Streaming tool loop", loop_ctx.turn_budget)
+            rules = self._new_loop_state(
+                "Streaming tool loop", turn.timeout_seconds, loop_ctx.turn_budget
+            )
 
             for index in range(self._max_tool_rounds + 1):
                 if loop_ctx.cancel_event.is_set():
@@ -600,7 +609,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                     yield turn.end(outcome)
                     return
 
-                rules.warn_if_needed(index)
+                rules.warn_if_needed(turn.tool_rounds_count)
                 async with aclosing(
                     self._stream_local_tool_round(context, round_.state, turn, index)
                 ) as deltas:
@@ -677,7 +686,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
         if index >= self._max_tool_rounds:
             logger.warning("Streaming tool loop reached max_tool_rounds=%d", self._max_tool_rounds)
             return "max_rounds"
-        return rules.limit_reached(index)
+        return rules.limit_reached(turn.tool_rounds_count)
 
     def _serves_locally(self, loop_ctx: _ToolLoopContext, name: str) -> bool:
         """Whether the turn has a tool of the channel's own under *name*: a call

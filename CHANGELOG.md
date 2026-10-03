@@ -11,10 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `LoopEndMarker` states the limits the turn ran under (RMK-411):
   `max_rounds`, `timeout_seconds`, `budget_tokens` and `budget_usd`, `None`
-  for no such limit, so a consumer names the limit its reason refers to
-  without reading the channel. The budget is resolved per turn (the binding,
-  then the turn's config, then the channel), which the channel could not
-  say. The fields have defaults: a marker built by keyword still builds.
+  for no such limit, so a consumer names the limit a `max_rounds`, `timeout`
+  or `budget_exceeded` end hit without reading the channel. The budget is
+  resolved per turn (the binding, then the turn's config, then the
+  channel), which the channel could not say. The limits ride the marker
+  only, not `ON_AI_RESPONSE`. The fields have defaults: a marker built by
+  keyword still builds.
 
 - `ExternalToolHandler.on_tool_cancelled(tool_name, tool_input, *,
   tool_call_id, job_id, room_id)` (RMK-419, RFC §9.3), not abstract: the turn
@@ -172,13 +174,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cannot encrypt is deleted rather than left in the clear.
 
 ### Changed
-
-- `LoopEndMarker.rounds` is how many tool rounds ran, as `ON_AI_RESPONSE`
-  counts them in `round_count` (RMK-411). It counted the loop's generations,
-  so a round tried again without a call (an empty one, one whose call could
-  not be parsed, one the continuation policy goes on) counted as a tool
-  round: a turn ending `unfinished` after one continuation reported
-  `rounds=1` and `round_count=0`.
 
 - A call served outside the channel (RMK-419, RFC §9.3):
   - An `ExternalToolHandler` subclass no longer hears an ACP call the turn
@@ -459,6 +454,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bucket), on `MediaRecordingConfig` or `ConferenceRecordingConfig`.
 
 ### Fixed
+
+- `LoopEndMarker.rounds` is how many tool rounds ran, as its docstring said
+  and as `ON_AI_RESPONSE` counts them in `round_count` (RMK-411). It counted
+  the loop's generations, so a round tried again without a call (an empty
+  one, one whose call could not be parsed, one the continuation policy goes
+  on) counted as a tool round: a turn ending `unfinished` after one
+  continuation reported `rounds=1` and `round_count=0`. The loop's logs that
+  count rounds count tool rounds too.
 
 - `current_tool_allowed_names()` leaves out a tool the turn's policy denies
   its actor, on a text turn and a realtime session as on a conference

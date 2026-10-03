@@ -491,7 +491,7 @@ The streaming tool loop ends on rules of its own — the round cap, the
 wall-clock deadline, a round truncated at the output cap, a model that
 answered nothing after its tools, the anti-loop ripcord, a cancellation. It
 yields a final
-`LoopEndMarker(reason, rounds)` on **every** exit, `completed` included, so
+`LoopEndMarker` on **every** exit, `completed` included, so
 the end of the stream is never itself the signal and no consumer has to
 re-derive the cause by counting tool calls and reading a clock.
 
@@ -531,9 +531,10 @@ class ObservingAIChannel(AIChannel):
 `truncated`, `empty_response`, `unfinished`, `force_stopped`, `cancelled`, `error`.
 `rounds` is how many tool rounds ran, as `ON_AI_RESPONSE` counts them
 (`round_count`). The marker also states the limits the turn ran under, so the
-consumer names the one its reason refers to without reading the channel:
-`max_rounds`, `timeout_seconds`, `budget_tokens` and `budget_usd`, `None` for
-no such limit. The budget is resolved per turn (the binding, then the turn's
+consumer names the one a `max_rounds`, `timeout` or `budget_exceeded` end hit
+without reading the channel: `max_rounds`, `timeout_seconds`, `budget_tokens`
+and `budget_usd`, `None` for no such limit. They ride the marker only, not
+`ON_AI_RESPONSE`. The budget is resolved per turn (the binding, then the turn's
 config, then the channel), which only the marker can say.
 
 `force_stopped` is the one worth special attention, because it is the one

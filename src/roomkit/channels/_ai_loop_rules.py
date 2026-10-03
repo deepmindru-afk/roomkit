@@ -259,16 +259,19 @@ class _ToolLoopState:
         return None
 
     def limit_reached(self, rounds: int) -> LoopEndReason | None:
-        """The limit passed at a round boundary after *rounds* rounds, logged.
-        The loop asks it there, before running the round's calls."""
+        """The limit passed at a round boundary after *rounds* tool rounds ran,
+        logged. The loop asks it there, before running the round's calls."""
         limit = self.limit_passed()
         if limit == "timeout":
             logger.warning(
-                "%s timeout after %d rounds (%.0fs)", self.log_label, rounds, self.timeout_seconds
+                "%s timeout after %d tool rounds (%.0fs)",
+                self.log_label,
+                rounds,
+                self.timeout_seconds,
             )
         elif limit == "budget_exceeded":
             logger.warning(
-                "%s reached the turn's budget after %d rounds (%d tokens, %.4f)",
+                "%s reached the turn's budget after %d tool rounds (%d tokens, %.4f)",
                 self.log_label,
                 rounds,
                 self.billed_tokens,
@@ -276,10 +279,10 @@ class _ToolLoopState:
             )
         return limit
 
-    def warn_if_needed(self, round_idx: int) -> None:
-        """Log the soft budget warning when the loop hits ``warn_after`` rounds."""
-        if round_idx == self.warn_after:
-            logger.warning("%s reached %d rounds, still running", self.log_label, round_idx)
+    def warn_if_needed(self, rounds: int) -> None:
+        """Log the soft warning once *rounds* tool rounds have run, at ``warn_after``."""
+        if rounds == self.warn_after:
+            logger.warning("%s reached %d tool rounds, still running", self.log_label, rounds)
 
 
 def _aborted_results(tool_calls: list[Any]) -> list[AIToolResultPart]:
@@ -337,18 +340,21 @@ class AIToolLoopRulesMixin(_AIChannelContract):
         )
         return kept
 
-    def _new_loop_state(self, log_label: str, budget: TurnBudget | None = None) -> _ToolLoopState:
-        """Create the per-run loop state, computing the wall-clock deadline."""
+    def _new_loop_state(
+        self, log_label: str, timeout_seconds: float | None, budget: TurnBudget | None = None
+    ) -> _ToolLoopState:
+        """Create the per-run loop state, its wall-clock deadline
+        *timeout_seconds* from now (``None``: no deadline)."""
         deadline = (
-            asyncio.get_running_loop().time() + self._tool_loop_timeout_seconds
-            if self._tool_loop_timeout_seconds
+            asyncio.get_running_loop().time() + timeout_seconds
+            if timeout_seconds is not None
             else None
         )
         return _ToolLoopState(
             deadline=deadline,
             warn_after=self._tool_loop_warn_after,
             log_label=log_label,
-            timeout_seconds=self._tool_loop_timeout_seconds,
+            timeout_seconds=timeout_seconds,
             budget=budget,
         )
 

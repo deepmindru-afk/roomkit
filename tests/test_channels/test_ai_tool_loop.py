@@ -171,9 +171,9 @@ class TestToolLoopWarning:
             await run_tool_loop(ch, context)
 
         warning_msgs = [r.message for r in caplog.records if r.levelno == logging.WARNING]
-        assert any(f"reached {warn_after} rounds, still running" in m for m in warning_msgs), (
-            f"Expected exact warning format, got: {warning_msgs}"
-        )
+        assert any(
+            f"reached {warn_after} tool rounds, still running" in m for m in warning_msgs
+        ), f"Expected exact warning format, got: {warning_msgs}"
 
     async def test_no_warning_below_threshold(
         self, caplog: pytest.LogCaptureFixture, streaming: bool

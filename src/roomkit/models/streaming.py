@@ -143,11 +143,13 @@ class LoopEndMarker:
     which the stream's consumer writes on the turn's last message (RFC §6.4).
 
     ``max_rounds``, ``timeout_seconds``, ``budget_tokens`` and ``budget_usd``
-    are the limits the turn ran under, so a consumer names the one its reason
-    refers to without reading the channel: the budget is resolved per turn
-    (the binding, then the turn's config, then the channel), which the channel
-    cannot say. ``None`` is no such limit; a marker the channel did not build
-    may leave them all unset.
+    are the limits the turn ran under, so a consumer names the one a
+    ``max_rounds``, ``timeout`` or ``budget_exceeded`` end hit without reading
+    the channel: the budget is resolved per turn (the binding, then the turn's
+    config, then the channel), which the channel cannot say. ``None`` is no
+    such limit; a marker the channel did not build may leave them all unset.
+    They ride the marker only: ``ON_AI_RESPONSE`` reports the reason and
+    ``round_count``, not the limits.
     """
 
     reason: LoopEndReason
