@@ -370,8 +370,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   round had run), and a WARNING for a headless `process_inbound` caller, which
   gets the error on `InboundResult.error`. The channel now raises and logs
   nothing; the component that catches the failure writes the one line, through
-  one rule shared by the stream consumer, the broadcast, the delegation and the
-  task runner: a `ProviderError` without a traceback, naming the provider and
+  one rule shared by the stream consumer, the broadcast, the delegation, the
+  task runner and a realtime channel's reasoning delegation: a `ProviderError`
+  without a traceback, naming the provider and
   the status, `ERROR` for a missing model (404) or a server fault (5xx),
   `WARNING` otherwise, `DEBUG` when the caller receives the failure
   (`process_inbound`, `regenerate_response`, a delegation's child turn) and the

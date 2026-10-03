@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -27,7 +28,13 @@ from roomkit.channels.agent import Agent
 from roomkit.channels.ai import AIChannel
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 from roomkit.models.tool_call import ToolCallEvent
-from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall, AIToolCallPart
+from roomkit.providers.ai.base import (
+    AIResponse,
+    AITool,
+    AIToolCall,
+    AIToolCallPart,
+    ProviderError,
+)
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.telemetry.base import Attr, SpanKind
 from roomkit.telemetry.mock import MockTelemetryProvider
@@ -257,6 +264,27 @@ class TestFallbacks:
         _, _, provider, session = await _channel(_ScriptedBackend(error=RuntimeError("boom")))
         await provider.simulate_delegation(session, "d1", "integrator")
         await _settle()
+        assert provider.delegation_outputs == [(session.id, "d1", FALLBACK_FAILED, True)]
+
+    @pytest.mark.parametrize(("status", "level"), [(None, logging.WARNING), (503, logging.ERROR)])
+    async def test_a_backend_provider_error_is_one_line_without_a_traceback(
+        self, caplog: pytest.LogCaptureFixture, status: int | None, level: int
+    ) -> None:
+        """The reasoning backend's turn raises and logs nothing: the delegation
+        that catches its provider error writes the one line, at its level."""
+        exc = ProviderError("upstream down", provider="mock", status_code=status)
+        _, _, provider, session = await _channel(_ScriptedBackend(error=exc))
+        with caplog.at_level(logging.DEBUG):
+            await provider.simulate_delegation(session, "d1", "integrator")
+            await _settle()
+
+        records = [
+            r
+            for r in caplog.records
+            if r.name.startswith("roomkit") and r.levelno >= logging.WARNING
+        ]
+        assert [r.levelno for r in records] == [level]
+        assert records[0].exc_info is None
         assert provider.delegation_outputs == [(session.id, "d1", FALLBACK_FAILED, True)]
 
     async def test_slow_backend_is_abandoned(self) -> None:

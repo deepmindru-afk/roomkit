@@ -27,6 +27,7 @@ from roomkit.channels._realtime_tool_executor import (
     report_failed_call,
     run_tool_call,
 )
+from roomkit.core._failure_log import log_failure
 from roomkit.models.enums import HookTrigger
 from roomkit.telemetry.base import SpanKind
 from roomkit.telemetry.context import reset_span
@@ -297,8 +298,8 @@ class RealtimeDelegationMixin:
             await self._fallback(session, delegation_id, FALLBACK_TIMEOUT)
         except asyncio.CancelledError:
             raise
-        except Exception:
-            logger.exception("Delegation %s failed (session %s)", delegation_id, session.id)
+        except Exception as exc:
+            log_failure(logger, exc, f"Delegation {delegation_id} (session {session.id})")
             await self._fallback(session, delegation_id, FALLBACK_FAILED)
         else:
             if not answered:
