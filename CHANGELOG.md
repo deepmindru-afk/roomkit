@@ -482,6 +482,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Closing or archiving a room stops its recordings once the room is found
+  (RMK-405, RFC §12.11): a call scoped to another organization stopped the
+  room's recordings, then raised `RoomNotFoundError`.
+
 - A Loop whose producer's task failed says so (RMK-435, RFC §19.7.4,
   §23.3): the sync Loop published an empty producer message with no reason
   and no error. With no output at all its turn now has no answer; with an

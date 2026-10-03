@@ -227,9 +227,10 @@ class RoomLifecycleMixin(HelpersMixin):
         room belonging to another organization is reported as not found.
         """
         async with self._lock_manager.locked(room_id):
-            # Stop room-level media recorders before closing
-            self._room_recorder_mgr.stop_room(room_id)
             room = await self.get_room(room_id, organization_id=organization_id)
+            # Stop room-level media recorders before closing, once the scoped
+            # read has found the room: a refused call stops nothing (§12.11).
+            self._room_recorder_mgr.stop_room(room_id)
             room = room.model_copy(
                 update={"status": RoomStatus.CLOSED, "closed_at": datetime.now(UTC)}
             )
@@ -259,8 +260,8 @@ class RoomLifecycleMixin(HelpersMixin):
         the ``room_archived`` framework event (§8.2).
         """
         async with self._lock_manager.locked(room_id):
-            self._room_recorder_mgr.stop_room(room_id)
             room = await self.get_room(room_id, organization_id=organization_id)
+            self._room_recorder_mgr.stop_room(room_id)
             if room.status == RoomStatus.ARCHIVED:
                 return room
             room = room.model_copy(
