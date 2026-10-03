@@ -31,7 +31,12 @@ def missing_skill_error(skills: SkillRegistry, skill_name: str) -> str:
 
 
 def tools_hint(
-    result: str, skill_name: str, skills: SkillRegistry, reachable: Iterable[str]
+    result: str,
+    skill_name: str,
+    skills: SkillRegistry,
+    reachable: Iterable[str],
+    *,
+    call_tool: bool = False,
 ) -> tuple[str, list[str]]:
     """*result* of an activation that found no skill *skill_name*, with a hint
     naming the tools the turn may call that match it, and those tools, which
@@ -41,6 +46,9 @@ def tools_hint(
     skill" when ``spotify_play`` is a tool): the dead end becomes the right
     outcome. A known skill that is unavailable gets no hint: its error
     already says why, and a "this is not a skill" hint would contradict it.
+    With *call_tool* (a provider whose declarations are fixed), the tools
+    are reached through ``list_tools`` and ``call_tool``, as ``find_tools``
+    says of its matches there.
     """
     wanted = skill_name.lower()
     if not wanted or skills.get_unavailable_reason(skill_name) is not None:
@@ -48,10 +56,14 @@ def tools_hint(
     matching = sorted(name for name in reachable if wanted in name.lower())
     if not matching:
         return result, []
+    named = ", ".join(matching[:8])
     data = json.loads(result)
     data["tools_hint"] = (
-        f"{skill_name!r} is not a skill, but these TOOLS match and are now in your "
-        f"tool list — call one directly instead: {', '.join(matching[:8])}."
+        f"{skill_name!r} is not a skill, but these TOOLS match — read one's "
+        f"complete schema with list_tools(name=...), then call it with call_tool: {named}."
+        if call_tool
+        else f"{skill_name!r} is not a skill, but these TOOLS match and are now in your "
+        f"tool list — call one directly instead: {named}."
     )
     return json.dumps(data), matching
 

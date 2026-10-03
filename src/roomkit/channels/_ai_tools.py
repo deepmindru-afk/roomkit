@@ -934,13 +934,15 @@ class AIToolsMixin(_AIChannelContract):
         loop_ctx = self._get_loop_ctx()
         skill = self._skills.get_skill(skill_name) if skill_name else None
         if skill_name and skill is None:
+            own = self._channel_tool_names()
             reachable = self._reachable_tools(loop_ctx.all_context_tools or ())
             result_str, matching = tools_hint(
-                result_str, skill_name, self._skills, (t.name for t in reachable)
+                result_str,
+                skill_name,
+                self._skills,
+                (t.name for t in reachable if t.name not in own),
             )
-            # Revealed as find_tools reveals, for the rest of the session.
-            loop_ctx.revealed_tools.update(matching)
-            self._tool_usage.record_revealed(loop_ctx.room_id, matching)
+            self._defer_reveal(loop_ctx, matching)
             return result_str
         # Recorded once the call's outcome is known: an ON_TOOL_CALL hook that
         # blocks the call, or a failure, must open no gate (_settle_activation).
@@ -966,12 +968,37 @@ class AIToolsMixin(_AIChannelContract):
         else:
             self._record_activation(loop_ctx, skill_name)
 
+    def _defer_reveal(self, loop_ctx: _ToolLoopContext, names: list[str]) -> None:
+        """Hold the reveal an activation's hint asked for until its call is
+        served, as an activation is held, or reveal now outside a loop."""
+        call = _current_tool_call.get()
+        if call is not None and call.tool_call_id:
+            if names:
+                loop_ctx.pending_reveals[call.tool_call_id] = names
+        else:
+            self._reveal(loop_ctx, names)
+
+    def _reveal(self, loop_ctx: _ToolLoopContext, names: list[str]) -> None:
+        """Reveal *names* as ``find_tools`` reveals its matches: the reveal
+        window swapped, what Tool Search never defers left out, and kept for
+        the rest of the session (RFC §24.4)."""
+        never = self._never_deferred(loop_ctx)
+        revealed = {name for name in names if name not in never}
+        if not revealed:
+            return
+        loop_ctx.revealed_tools = revealed
+        self._tool_usage.record_revealed(loop_ctx.room_id, revealed)
+
     def _settle_activation(self, tool_call_id: str, *, served: bool) -> None:
-        """Record the activation a served call asked for; drop a refused one."""
+        """Record the activation, or the hint's reveal, a served call asked
+        for; drop a refused one."""
         loop_ctx = self._get_loop_ctx()
         skill_name = loop_ctx.pending_activations.pop(tool_call_id, None)
         if skill_name is not None and served:
             self._record_activation(loop_ctx, skill_name)
+        names = loop_ctx.pending_reveals.pop(tool_call_id, None)
+        if names is not None and served:
+            self._reveal(loop_ctx, names)
 
     def _record_activation(self, loop_ctx: _ToolLoopContext, skill_name: str) -> None:
         # For this turn, so gated tools become visible on the next round...

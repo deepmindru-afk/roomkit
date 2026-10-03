@@ -677,7 +677,9 @@ class RealtimeToolsMixin:
             for tool in tools
             if (tool_name := dict_tool_name(tool)) and self._tool_reachable(tool_name, session_id)
         ]
-        return self._skill_support.unknown_skill_hint(result, name, reachable)
+        search = self._tool_search_support
+        call_tool = search is not None and search.uses_call_tool and search.active(session_id)
+        return self._skill_support.unknown_skill_hint(result, name, reachable, call_tool=call_tool)
 
     async def _judge_activation(
         self, call: RealtimeToolCall, carrying: RoomContext | None, result: str, skill: Any
@@ -733,7 +735,9 @@ class RealtimeToolsMixin:
 
     async def _reveal_hinted(self, session: VoiceSession, names: list[str]) -> None:
         """Reveal the tools an activation's hint named, as ``find_tools``
-        reveals its matches (a failure is logged by :meth:`_reveal_tools`)."""
+        reveals its matches. Its observers judged the activation before it
+        went out, so a failed reconfiguration is logged by
+        :meth:`_reveal_tools`, never reported to them."""
         search = self._tool_search_support
         if (
             search is not None

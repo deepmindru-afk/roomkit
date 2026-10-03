@@ -136,6 +136,9 @@ class _ToolLoopContext:
     # by tool_call_id: committed once the call is served, dropped when
     # ON_TOOL_CALL blocks it or it fails, so a refused activation opens no gate.
     pending_activations: dict[str, str] = field(default_factory=dict)
+    # The tools an ``activate_skill`` hint named, by tool_call_id: revealed
+    # once the call is served, as an activation is committed.
+    pending_reveals: dict[str, list[str]] = field(default_factory=dict)
     # Whether Tool Search is active for this turn (catalogue over threshold).
     # Decided once in ``_build_context`` and read by ``_apply_tool_filters`` on
     # every round, so it is inherited across for_loop like ``all_context_tools``.
@@ -216,9 +219,9 @@ class _ToolLoopContext:
 
     def offered_tools(self) -> list[Any]:
         """Every tool the turn offers the model: its resolved toolset, then
-        what a round declared beyond it (the re-read of a stored result, the
-        planner's tool), from the round that first declared it (RFC §6.4,
-        §21.4), nothing withdrawn. ``AITool`` and ``DeclaredTool`` entries,
+        what a round declared beyond it (the re-read of a stored result),
+        from the round that first declared it (RFC §6.4, §21.4), nothing
+        withdrawn. ``AITool`` and ``DeclaredTool`` entries,
         each with its name and description."""
         base: list[Any] = list(self.all_context_tools or [])
         known = {tool.name for tool in base} | self.withdrawn_tools
@@ -422,7 +425,8 @@ def turn_report_claim(call_id: str, channel_id: str) -> Callable[[], bool] | Non
 
 def current_tool_allowed_names() -> set[str] | None:
     """Names of every tool in the current turn's resolved toolset that its
-    tool policy admits.
+    tool policy admits, with what a round declared beyond it (the re-read of
+    a stored result, from the round that declared it), nothing withdrawn.
 
     ``_build_context`` stamps the turn's full toolset (config-provider
     result plus channel-injected tools) into the loop context; a host's

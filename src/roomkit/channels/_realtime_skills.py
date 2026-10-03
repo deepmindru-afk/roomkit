@@ -12,6 +12,7 @@ import logging
 from collections.abc import Callable, Container, Iterable
 from typing import TYPE_CHECKING, Any
 
+from roomkit.channels._served_tools import dict_tool_name
 from roomkit.channels._skill_constants import (
     ACTIVATE_SKILL_SCHEMA,
     READ_REFERENCE_SCHEMA,
@@ -274,8 +275,11 @@ class RealtimeSkillSupport:
         gated = self._gated_tool_names(session_id, pending)
         if not gated:
             return all_tools
+        # A provider's native tool has no name for a skill to gate: kept.
         return [
-            t for t in all_tools if not self.is_gated(str(t.get("name", "")), session_id, gated)
+            t
+            for t in all_tools
+            if not (name := dict_tool_name(t)) or not self.is_gated(name, session_id, gated)
         ]
 
     def newly_visible_after_activation(
@@ -309,7 +313,7 @@ class RealtimeSkillSupport:
     @staticmethod
     def missing_required_tools(skill: Skill, tools: list[dict[str, Any]]) -> list[str]:
         """The tools *skill* requires that the catalogue *tools* lacks."""
-        names = {tool["name"] for tool in tools}
+        names = {name for tool in tools if (name := dict_tool_name(tool))}
         return [name for name in skill.metadata.required_tool_names if name not in names]
 
     @staticmethod
@@ -317,11 +321,11 @@ class RealtimeSkillSupport:
         return json.dumps({"error": f"Required tools not available: {', '.join(missing)}"})
 
     def unknown_skill_hint(
-        self, result: str, skill_name: str, reachable: Iterable[str]
+        self, result: str, skill_name: str, reachable: Iterable[str], *, call_tool: bool = False
     ) -> tuple[str, list[str]]:
         """*result* of an activation that found no skill *skill_name*, with the
         tools among *reachable* its name matches, hinted, and those tools."""
-        return tools_hint(result, skill_name, self._skills, reachable)
+        return tools_hint(result, skill_name, self._skills, reachable, call_tool=call_tool)
 
     async def prepare_activation(
         self, arguments: dict[str, Any], session_id: str, tools: list[dict[str, Any]]
@@ -336,7 +340,7 @@ class RealtimeSkillSupport:
                     "available_skills": self._skills.skill_names,
                 }
             ), None
-        catalogue = {tool["name"]: tool for tool in tools}
+        catalogue = {name: tool for tool in tools if (name := dict_tool_name(tool))}
         missing = self.missing_required_tools(skill, tools)
         if missing:
             # A refusal, as the activation itself refuses it (RMK-395).

@@ -243,6 +243,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING — `ToolRoundEvent.tools` (`AFTER_TOOL_ROUND`) names what
+  `BEFORE_AI_GENERATION` is shown** (RMK-430, RFC §6.4): what the tool
+  policy and skill gating let the turn reach, Tool Search's whole catalogue
+  included, nothing withdrawn. It listed every tool of the turn, the denied
+  and the skill-gated ones included. Migration: a hook that keeps only some
+  tools by withdrawing every name it is shown but those leaves a gated tool
+  out of reach of its withdrawal; withdraw by name (`event.withdraw` takes
+  any name, listed or not) to keep a tool closed even once its skill is
+  activated later in the turn.
+
 - **BREAKING — a call the provider already ran is marked on the call,
   never in its arguments** (RMK-439, RFC §9.3): the channel read `_result` /
   `_is_error` keys in a call's arguments as "the provider ran it", so a model
@@ -604,15 +614,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     missing from `current_tool_allowed_names()`.
   - `read_stored_result`, declared from a turn's first round, is in
     `current_tool_allowed_names()` and `list_tools` from then on, not only
-    once a result was stored; `plan_tasks` too.
-  - `ToolRoundEvent.tools` (`AFTER_TOOL_ROUND`) names what
-    `BEFORE_AI_GENERATION` is shown: it listed tools the policy denies and a
-    skill gates.
+    once a result was stored.
   - `activate_skill` called with a tool's name ("spotify" for
     `spotify_play`): the realtime door answered "Skill 'spotify' not found"
-    alone; it now adds the same `tools_hint` as the text door and reveals
-    those tools. On the text door the reveal now lasts for the next turns,
-    as a `find_tools` reveal does.
+    alone; it now adds the same `tools_hint` as the text door. Both doors
+    reveal those tools as `find_tools` reveals its matches (the window
+    swapped, what is declared anyway left out, kept for the next turns),
+    once the call is served: an `ON_TOOL_CALL` block reveals nothing. On a
+    fixed-declaration provider the hint points to `list_tools` and
+    `call_tool`; the text door no longer hints its own tools
+    (`activate_skill('skill')`).
+  - A realtime skill activation failed with `KeyError` when the session's
+    catalogue held a native tool; skill gating dropped a native tool under
+    `allowed_tools: *`, and it counted toward the size that turns Tool
+    Search on.
 
 - A `VoiceChannel` refuses a TTS chunk that is not 16-bit PCM instead of
   playing it as samples (RMK-415, RFC §12.2). Every voice backend and the

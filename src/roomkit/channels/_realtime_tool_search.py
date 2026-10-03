@@ -182,7 +182,8 @@ class RealtimeToolSearchSupport:
         """How many of *catalogue*'s tools search could hide: what is never
         deferred does not count toward the size that decides it (RFC §21.1)."""
         never = set(self._never_deferred(session_id))
-        return sum(1 for tool in catalogue if tool.get("name") not in never)
+        # A provider's native tool has no name: search can hide none.
+        return sum(1 for tool in catalogue if (name := tool.get("name")) and name not in never)
 
     def active(self, session_id: str) -> bool:
         """Whether the session's catalogue is hidden behind the search tools."""
@@ -241,12 +242,26 @@ class RealtimeToolSearchSupport:
         return result
 
     def expose(self, session_id: str, names: Iterable[str]) -> bool:
-        """Reveal *names* as ``find_tools`` reveals its matches, the exposure
-        window swapped; whether the session's declaration changes for it."""
+        """Reveal *names* as ``find_tools`` reveals its matches: the exposure
+        window swapped, what is declared anyway left out. Whether anything
+        was revealed, which the session's declaration then has to show."""
         if self.uses_call_tool or not self.active(session_id):
             return False
-        self._exposed[session_id] = set(names)
+        exclude = self._never_revealed(session_id)
+        revealed = {name for name in names if name not in exclude}
+        if not revealed:
+            return False
+        self._exposed[session_id] = revealed
         return True
+
+    def _never_revealed(self, session_id: str) -> set[str]:
+        """What a reveal never names: what is declared anyway (pinned, never
+        deferred) and the search tools themselves."""
+        return (
+            self._pinned_names
+            | set(self._never_deferred(session_id))
+            | TOOL_SEARCH_INFRA_TOOL_NAMES
+        )
 
     # -- Tool dispatch --
 
@@ -282,11 +297,7 @@ class RealtimeToolSearchSupport:
             )
 
         max_results = normalize_max_results(arguments.get("max_results"), self._threshold)
-        exclude = (
-            self._pinned_names
-            | set(self._never_deferred(session_id))
-            | TOOL_SEARCH_INFRA_TOOL_NAMES
-        )
+        exclude = self._never_revealed(session_id)
         catalogue = self._searchable(
             session_id,
             self._session_catalogues.get(

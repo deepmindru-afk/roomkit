@@ -17,7 +17,13 @@ from typing import Any
 
 import pytest
 
-from roomkit import ConferenceRealtimeConfig, RoomKit
+from roomkit import (
+    ConferenceRealtimeConfig,
+    HookExecution,
+    HookResult,
+    HookTrigger,
+    RoomKit,
+)
 from roomkit.channels.ai import AIChannel
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 from roomkit.core.hooks import SyncPipelineResult
@@ -364,4 +370,165 @@ async def test_an_unavailable_skill_named_like_tools_gets_its_reason_not_a_hint(
     )
 
     assert "unavailable" in result["error"] and "tools_hint" not in result
+    await kit.close()
+
+
+SPOTIFY = ("spotify_play", "spotify_search", *(f"x{i}" for i in range(30)))
+
+
+async def test_a_blocked_text_activation_reveals_nothing(tmp_path: Path) -> None:
+    provider = MockAIProvider(
+        ai_responses=[_calling("activate_skill", name="spotify"), AIResponse(content="done")]
+    )
+    channel = AIChannel(
+        "ai1",
+        provider=provider,
+        tools=[_tool(n) for n in SPOTIFY],
+        tool_handler=_Recorder(),
+        skills=_skills(tmp_path, "guide"),
+        tool_search=True,
+    )
+    kit = RoomKit()
+    kit.register_channel(channel)
+
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="no_skills")
+    async def block(event: Any, ctx: Any) -> HookResult:
+        return HookResult.block("no skills here")
+
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "ai1")
+    binding = ChannelBinding(channel_id="ai1", room_id="r1", channel_type=ChannelType.AI)
+    event = make_event(room_id="r1", body="go", channel_id="sms1")
+    await respond(channel, event, binding, await kit._build_context("r1"))
+
+    declared = {t.name for t in provider.calls[1].tools or [] if not t.defer_loading}
+    assert not {"spotify_play", "spotify_search"} & declared
+    await kit.close()
+
+
+async def test_a_text_activation_hints_no_tool_the_channel_serves_itself(tmp_path: Path) -> None:
+    provider = MockAIProvider(
+        ai_responses=[_calling("activate_skill", name="skill"), AIResponse(content="done")]
+    )
+    channel = AIChannel(
+        "ai1",
+        provider=provider,
+        tools=[_tool("lookup")],
+        tool_handler=_Recorder(),
+        skills=_skills(tmp_path, "guide"),
+    )
+
+    await _text_turn(channel)
+
+    [answer] = [
+        json.loads(str(part.result))
+        for message in provider.calls[1].messages
+        if message.role == "tool"
+        for part in message.content
+    ]
+    assert "tools_hint" not in answer
+
+
+async def test_a_fixed_provider_hint_points_to_call_tool(tmp_path: Path) -> None:
+    provider = _FixedProvider()
+    channel = RealtimeVoiceChannel(
+        "rt",
+        provider=provider,
+        transport=MockRealtimeTransport(),
+        tools=[_schema(n) for n in SPOTIFY],
+        tool_handler=_Recorder(),
+        skills=_skills(tmp_path, "guide"),
+        tool_search=True,
+    )
+    kit, session = await _session(channel)
+
+    result = json.loads(
+        await _call(channel, provider, session, "activate_skill", {"name": "spotify"})
+    )
+
+    assert (
+        "call_tool" in result["tools_hint"] and "now in your tool list" not in result["tools_hint"]
+    )
+    await kit.close()
+
+
+async def test_a_hint_naming_only_a_pinned_tool_reconfigures_nothing(tmp_path: Path) -> None:
+    provider = MockRealtimeProvider()
+    channel = RealtimeVoiceChannel(
+        "rt",
+        provider=provider,
+        transport=MockRealtimeTransport(),
+        tools=[_schema(n) for n in ("spotify_play", *(f"x{i}" for i in range(30)))],
+        tool_handler=_Recorder(),
+        skills=_skills(tmp_path, "guide"),
+        tool_search=True,
+        tool_search_pinned=["spotify_play"],
+    )
+    kit, session = await _session(channel)
+    before = len(provider.calls)
+
+    result = json.loads(
+        await _call(channel, provider, session, "activate_skill", {"name": "spotify"})
+    )
+
+    assert "spotify_play" in result["tools_hint"]
+    assert [c.method for c in provider.calls[before:]] == ["submit_tool_result"]
+    await kit.close()
+
+
+async def test_a_blocked_realtime_activation_reveals_nothing(tmp_path: Path) -> None:
+    provider = MockRealtimeProvider()
+    channel = RealtimeVoiceChannel(
+        "rt",
+        provider=provider,
+        transport=MockRealtimeTransport(),
+        tools=[_schema(n) for n in SPOTIFY],
+        tool_handler=_Recorder(),
+        skills=_skills(tmp_path, "guide"),
+        tool_search=True,
+    )
+    kit, session = await _session(channel)
+
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="no_skills")
+    async def block(event: Any, ctx: Any) -> HookResult:
+        return HookResult.block("no skills here")
+
+    await _call(channel, provider, session, "activate_skill", {"name": "spotify"})
+
+    assert "spotify_play" not in [t.get("name") for t in _declared(provider)]
+    await kit.close()
+
+
+async def test_a_native_tool_survives_skill_gating(tmp_path: Path) -> None:
+    provider = MockRealtimeProvider()
+    channel = RealtimeVoiceChannel(
+        "rt",
+        provider=provider,
+        transport=MockRealtimeTransport(),
+        tools=[NATIVE, _schema("crm_lookup")],
+        tool_handler=_Recorder(),
+        skills=_skills(tmp_path, "cal", gates="*"),
+    )
+    kit, session = await _session(channel)
+
+    assert NATIVE in _declared(provider)
+    # Activating a skill reads the catalogue by name: a native tool is skipped.
+    result = await _call(channel, provider, session, "activate_skill", {"name": "cal"})
+    assert "KeyError" not in result
+    await kit.close()
+
+
+async def test_a_native_tool_does_not_count_toward_tool_search(tmp_path: Path) -> None:
+    provider = MockRealtimeProvider()
+    channel = RealtimeVoiceChannel(
+        "rt",
+        provider=provider,
+        transport=MockRealtimeTransport(),
+        tools=[NATIVE, *(_schema(f"t{i}") for i in range(3))],
+        tool_handler=_Recorder(),
+        tool_search_threshold=3,
+    )
+    kit, _ = await _session(channel)
+
+    assert "find_tools" not in [t.get("name") for t in _declared(provider)]
     await kit.close()
