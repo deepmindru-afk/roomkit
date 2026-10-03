@@ -25,6 +25,7 @@ from roomkit.models.enums import (
 )
 
 if TYPE_CHECKING:
+    from roomkit.channels.ai import AIChannel
     from roomkit.core.event_router import EventRouter
     from roomkit.core.hooks import HookEngine
     from roomkit.core.locks import RoomLockManager
@@ -150,37 +151,7 @@ class ChannelOpsMixin(HelpersMixin):
         from roomkit.channels.ai import AIChannel
 
         if isinstance(channel, AIChannel):
-            channel._realtime = self._realtime
-            channel._tool_call_hook = self._build_tool_call_hook(channel.channel_id)
-            channel._tool_observer_hook = self._build_tool_observer_hook(channel.channel_id)
-            channel._tool_report_hook = self._build_tool_report_hook(channel.channel_id)
-            channel._before_tool_call_hook = self._build_before_tool_call_hook(channel.channel_id)
-            channel._tool_usage_loader = self._build_tool_usage_loader(channel.channel_id)
-            channel._before_generation_hook = self._build_before_generation_hook(
-                channel.channel_id
-            )
-            channel._after_tool_round_hook = self._build_after_tool_round_hook(channel.channel_id)
-            channel._thinking_hook = self._build_thinking_hook(channel.channel_id)
-            channel._plan_updated_hook = self._build_plan_updated_hook(channel.channel_id)
-
-            # Inject hook callbacks into external tool handler if present
-            if channel._external_tool_handler is not None:
-                self._wire_external_tool_handler(
-                    channel.channel_id, channel._external_tool_handler
-                )
-
-            # Inject ON_USER_INPUT_REQUIRED hook into human input handler.
-            # Registering makes this object the owner of the id's human-input
-            # scope; the token it gets back is what its own close() presents,
-            # so a channel replaced under the same id and torn down afterwards
-            # closes nothing.
-            if channel._human_input_handler is not None:
-                channel._human_input_registration = (
-                    channel._human_input_handler.handler._set_on_input_required(
-                        channel.channel_id,
-                        self._build_on_user_input_required_hook(channel.channel_id),
-                    )
-                )
+            self._wire_ai_channel(channel)
 
         # ACP agents own their tool loop, but use the same RoomKit permission
         # hooks and realtime activity surface as in-process AI providers.
@@ -221,6 +192,37 @@ class ChannelOpsMixin(HelpersMixin):
                 "channel_type": str(channel.channel_type),
             },
         )
+
+    def _wire_ai_channel(self, channel: AIChannel) -> None:
+        """Hand an in-process AI channel the callbacks its tool loop runs the
+        room's hooks through."""
+        channel._realtime = self._realtime
+        channel._tool_call_hook = self._build_tool_call_hook(channel.channel_id)
+        channel._tool_observer_hook = self._build_tool_observer_hook(channel.channel_id)
+        channel._tool_report_hook = self._build_tool_report_hook(channel.channel_id)
+        channel._before_tool_call_hook = self._build_before_tool_call_hook(channel.channel_id)
+        channel._tool_usage_loader = self._build_tool_usage_loader(channel.channel_id)
+        channel._before_generation_hook = self._build_before_generation_hook(channel.channel_id)
+        channel._after_tool_round_hook = self._build_after_tool_round_hook(channel.channel_id)
+        channel._thinking_hook = self._build_thinking_hook(channel.channel_id)
+        channel._plan_updated_hook = self._build_plan_updated_hook(channel.channel_id)
+
+        # Inject hook callbacks into external tool handler if present
+        if channel._external_tool_handler is not None:
+            self._wire_external_tool_handler(channel.channel_id, channel._external_tool_handler)
+
+        # Inject ON_USER_INPUT_REQUIRED hook into human input handler.
+        # Registering makes this object the owner of the id's human-input
+        # scope; the token it gets back is what its own close() presents,
+        # so a channel replaced under the same id and torn down afterwards
+        # closes nothing.
+        if channel._human_input_handler is not None:
+            channel._human_input_registration = (
+                channel._human_input_handler.handler._set_on_input_required(
+                    channel.channel_id,
+                    self._build_on_user_input_required_hook(channel.channel_id),
+                )
+            )
 
     def _wire_external_tool_handler(self, channel_id: str, handler: ExternalToolHandler) -> None:
         """Inject hook callbacks so external tool calls fire RoomKit tool hooks."""
