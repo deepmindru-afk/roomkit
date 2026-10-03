@@ -47,6 +47,7 @@ if TYPE_CHECKING:
     from roomkit.models.channel import ChannelBinding, ChannelOutput
     from roomkit.models.context import RoomContext
     from roomkit.models.event import RoomEvent
+    from roomkit.tools.policy import ToolPolicy
     from roomkit.tools.timeout import ToolTimeouts
 
 ToolServe = Callable[[dict[str, Any]], Any]
@@ -64,6 +65,9 @@ class SessionConfig:
     system_prompt: str | None
     voice: str | None
     tools: list[dict[str, Any]] | None
+    tool_policy: ToolPolicy | None = None
+    """The active agent's tool policy: the session admits a tool only when
+    the channel's policy and this one both do (RFC §19.5)."""
 
 
 SessionSource = Callable[[str], Awaitable[SessionConfig | None]]

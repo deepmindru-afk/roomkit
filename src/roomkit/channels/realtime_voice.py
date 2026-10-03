@@ -17,7 +17,6 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from roomkit.channels._ai_policy import policy_admits
 from roomkit.channels._realtime_audio import _MAX_QUEUED_AUDIO_CHUNKS, RealtimeAudioMixin
 from roomkit.channels._realtime_context import (
     _current_voice_session as _current_voice_session,
@@ -390,6 +389,9 @@ class RealtimeVoiceChannel(
         self._tool_policy = tool_policy
         # session_id -> the participant's role, for the policy's role overrides.
         self._session_roles: dict[str, str | None] = {}
+        # session_id -> the tool policy of the pipeline agent the session
+        # speaks as, which holds beside the channel's (RFC §19.5).
+        self._session_agent_policies: dict[str, ToolPolicy] = {}
         self._framework: RoomKit | None = None
         self._pipeline_config = pipeline
         self._pipeline: AudioPipeline | None = None
@@ -1218,6 +1220,7 @@ class RealtimeVoiceChannel(
             self._awaiting_tool_response.discard(session.id)
             self._session_tools.pop(session.id, None)
             self._session_roles.pop(session.id, None)
+            self._session_agent_policies.pop(session.id, None)
             self._session_config_locks.pop(session.id, None)
             self._response_generation.pop(session.id, None)
             self._audio_drained.discard(session.id)
@@ -1252,6 +1255,9 @@ class RealtimeVoiceChannel(
         channel's."""
         meta = session.metadata
         room = await self._room_session_config(session.room_id)
+        if room is not None and room.tool_policy is not None:
+            # The agent the session speaks as answers to its own policy too.
+            self._session_agent_policies[session.id] = room.tool_policy
         # Field by field: what the room's agent leaves unset is the channel's.
         room_prompt, room_voice, room_tools = (
             (room.system_prompt, room.voice, room.tools) if room is not None else (None,) * 3
@@ -1309,16 +1315,18 @@ class RealtimeVoiceChannel(
             self._preconnect_audio[session.id] = []
             self._preconnect_audio_bytes[session.id] = 0
 
-        # The participant's role, for the tool policy's role overrides; read
-        # before any tool list is composed for the session.
-        self._session_roles[session.id] = await self._resolve_session_role(room_id, participant_id)
-
         # Initialize skill activation state for this session
         if self._skill_support:
             self._skill_support.init_session(session.id)
 
         system_prompt, voice, tools, temperature, provider_config = await self._session_config(
             session
+        )
+        # The participant's role, for the role overrides of the policies the
+        # session answers to (a pipeline agent's set just above); read before
+        # any tool list is composed for the session.
+        self._session_roles[session.id] = await self._resolve_session_role(
+            room_id, participant_id, session.id
         )
 
         # Cache the resolved base tool list (channel defaults + metadata
@@ -1601,6 +1609,7 @@ class RealtimeVoiceChannel(
             self._session_bindings.pop(session.id, None)
             self._session_tools.pop(session.id, None)
             self._session_roles.pop(session.id, None)
+            self._session_agent_policies.pop(session.id, None)
             self._session_config_locks.pop(session.id, None)
             self._audio_generation.pop(session.id, None)
             self._session_transport_rates.pop(session.id, None)
@@ -1701,9 +1710,7 @@ class RealtimeVoiceChannel(
         if not self._provider.supports_tools:
             return prompt  # no tool to call, so no skill or search to advertise
         if self._skill_support:
-            scripts_allowed = policy_admits(
-                self._session_policy(session.id), TOOL_RUN_SCRIPT, self._exempt_tool_names()
-            )
+            scripts_allowed = self._session_admits(session.id, TOOL_RUN_SCRIPT)
             prompt = self._skill_support.inject_skills_prompt(
                 prompt, scripts_allowed=scripts_allowed
             )
@@ -1805,6 +1812,14 @@ class RealtimeVoiceChannel(
             visible = self._skill_support.skill_tool_dicts() + visible
             visible = self._skill_support.get_visible_tools(visible, session_id, pending_skill)
         return self._policy_filter(session_id, visible)
+
+    def _use_agent_policy(self, session: VoiceSession, policy: ToolPolicy | None) -> None:
+        """Make *policy* the one of the pipeline agent *session* now speaks as;
+        ``None`` when that agent has none (RFC §19.5)."""
+        if policy is None:
+            self._session_agent_policies.pop(session.id, None)
+        else:
+            self._session_agent_policies[session.id] = policy
 
     async def reconfigure_session(
         self,

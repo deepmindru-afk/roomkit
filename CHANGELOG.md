@@ -474,6 +474,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The active agent of a realtime pipeline answers to its own tool policy
+  (RMK-427, RFC §19.5): `Agent(tool_policy=ToolPolicy(deny=["wire_money"]))`
+  had `wire_money` declared and served on its session, the policy read on
+  its text turns only. Its policy now holds beside the channel's, each
+  resolved for the session's participant, on the declaration, the gate, Tool
+  Search and `current_tool_allowed_names()`, and a handoff applies the next
+  agent's. An agent that carries `skills` is refused at the install
+  (`ValueError`): a realtime session serves the channel's skills only, and
+  the agent's gated tools ran without their skill.
+
 - Every realtime provider hands every tool call to the channel (RMK-440, RFC
   §12.4): a call to a tool the channel never declared on ElevenLabs (the
   SDK's `ClientTools` answered it itself, so RoomKit never saw it), a call

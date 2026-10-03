@@ -63,6 +63,7 @@ class RealtimePipeline:
         greet_on_handoff: bool,
         greeting_prompt: str | None,
     ) -> None:
+        _refuse_agents_with_skills(agents, rtv)
         self._kit = kit
         self._rtv = rtv
         self._handler = handler
@@ -129,6 +130,7 @@ class RealtimePipeline:
             system_prompt=self._prompt_for(agent_id, room),
             voice=config["voice"],
             tools=self._session_tools(agent_id),
+            tool_policy=self._agent_map[agent_id]._tool_policy,
         )
 
     def _session_tools(self, agent_id: str) -> list[dict[str, Any]]:
@@ -272,8 +274,11 @@ class RealtimePipeline:
         prompt = self._prompt_for(new_id, room)
         lang = self._handler.get_room_language(room, new_id)
         tools = self._session_tools(new_id)
+        policy = self._agent_map[new_id]._tool_policy
 
         for session in rtv.get_room_sessions(room_id):
+            # The new agent's policy holds before its tools are declared.
+            rtv._use_agent_policy(session, policy)
             await rtv.reconfigure_session(
                 session,
                 system_prompt=prompt,
@@ -316,3 +321,15 @@ def _agent_session_tools(
 def _channel_tool_names(rtv: RealtimeVoiceChannel) -> set[str]:
     """The names of the tools the channel carries now."""
     return {name for t in rtv._tools or [] if (name := t.get("name"))}
+
+
+def _refuse_agents_with_skills(agents: list[Agent], rtv: RealtimeVoiceChannel) -> None:
+    """Refuse an agent that carries skills: a realtime session serves the
+    channel's skills, never an agent's, so its gated tools would run without
+    their skill and its activation would reach nothing (RFC §19.5)."""
+    if carried := [agent.channel_id for agent in agents if agent._skills is not None]:
+        raise ValueError(
+            f"A realtime pipeline on channel {rtv.channel_id!r} serves the channel's skills "
+            f"only (RFC §19.5); agent(s) {', '.join(map(repr, carried))} carry skills of "
+            "their own"
+        )

@@ -13,7 +13,8 @@ from __future__ import annotations
 import json
 import logging
 import threading
-from collections.abc import Container
+from collections.abc import Callable, Container
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._ai_policy import policy_admits
@@ -44,6 +45,7 @@ class RealtimeToolGateMixin:
     _tools: Any
     _skill_support: Any
     _tool_policy: ToolPolicy | None
+    _session_agent_policies: dict[str, ToolPolicy]
     _session_roles: dict[str, str | None]
     _collisions: CollisionLog
     _registry: ChannelRegistry
@@ -167,49 +169,71 @@ class RealtimeToolGateMixin:
         What Tool Search may name in its results and listings (RFC §21.1); the
         pre-execution gate enforces the same rule on the call itself.
         """
-        if not policy_admits(self._session_policy(session_id), name, self._exempt_tool_names()):
+        if not self._session_admits(session_id, name):
             return False
         support = self._skill_support
         return support is None or not support.is_gated(name, session_id)
 
-    def _session_policy(self, session_id: str) -> ToolPolicy | None:
-        """The tool policy resolved for the session's participant (RFC §12.4)."""
-        if self._tool_policy is None:
+    def _session_policies(self, session_id: str) -> list[ToolPolicy]:
+        """The tool policies the session answers to, each resolved for its
+        participant: the channel's, and its active agent's when a pipeline set
+        one (RFC §12.4, §19.5)."""
+        role = self._session_roles.get(session_id)
+        policies = (self._tool_policy, self._session_agent_policies.get(session_id))
+        return [policy.resolve(role) for policy in policies if policy is not None]
+
+    def _session_admits(
+        self, session_id: str, name: str, exempt: Container[str] | None = None
+    ) -> bool:
+        """Whether every policy the session answers to admits *name*, *exempt*
+        (by default the channel's own exempt tools) passing (RFC §21.1): the
+        one reading of a session's policy, for its declaration, its gate, Tool
+        Search and the names a handler reads."""
+        passes = self._exempt_tool_names() if exempt is None else exempt
+        return all(policy_admits(p, name, passes) for p in self._session_policies(session_id))
+
+    def _session_policy_check(self, session_id: str) -> Callable[[str], bool] | None:
+        """:meth:`_session_admits` for one session, or ``None`` when no policy
+        applies to it."""
+        if not self._session_policies(session_id):
             return None
-        return self._tool_policy.resolve(self._session_roles.get(session_id))
+        return partial(self._session_admits, session_id)
 
     def _policy_filter(self, session_id: str, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """The part of *tools* the session's policy admits.
+        """The part of *tools* the session's policies admit.
 
         Tool Search's ``call_tool`` transport stays declared: it is no tool of
         its own, and the policy applies to the tool it names, at the gate.
         """
-        policy = self._session_policy(session_id)
-        if policy is None:
+        if not self._session_policies(session_id):
             return tools
         search = self._tool_search_support
-        exempt = self._exempt_tool_names()
         return [
             t
             for t in tools
             if (search is not None and search.is_search_tool(str(t.get("name", ""))))
-            or policy_admits(policy, str(t.get("name", "")), exempt)
+            or self._session_admits(session_id, str(t.get("name", "")))
         ]
 
     async def _refresh_session_role(self, session: VoiceSession, room_id: str | None) -> None:
         """Read the participant's role again, so a role changed during the
         session holds at the gate from the next call on (RFC §12.4)."""
-        policy = self._tool_policy
-        if policy is None or not policy.role_overrides or not (self._framework and room_id):
+        if not self._reads_roles(session.id) or not (self._framework and room_id):
             return
-        role = await self._resolve_session_role(room_id, session.participant_id)
+        role = await self._resolve_session_role(room_id, session.participant_id, session.id)
         if session.id in self._session_roles:
             self._session_roles[session.id] = role
 
-    async def _resolve_session_role(self, room_id: str | None, participant_id: str) -> str | None:
+    def _reads_roles(self, session_id: str) -> bool:
+        """Whether a policy the session answers to has role overrides to read."""
+        policies = (self._tool_policy, self._session_agent_policies.get(session_id))
+        return any(policy is not None and policy.role_overrides for policy in policies)
+
+    async def _resolve_session_role(
+        self, room_id: str | None, participant_id: str, session_id: str
+    ) -> str | None:
         """The session participant's role, where a policy has overrides to read."""
-        policy = self._tool_policy
-        if policy is None or not policy.role_overrides or not (self._framework and room_id):
+        if not self._reads_roles(session_id) or not (self._framework and room_id):
             return None
         # Under the framework's lease, like every store read a channel makes:
         # a call landing while the kit closes must not read a closing store.
@@ -298,7 +322,7 @@ class RealtimeToolGateMixin:
     def _access_refusal(self, name: str, session_id: str, exempt: Container[str]) -> str | None:
         """Why the session may not call *name*: its tool policy, resolved for
         its participant, then skill gating, as on the classic path."""
-        if not policy_admits(self._session_policy(session_id), name, exempt):
+        if not self._session_admits(session_id, name, exempt):
             logger.warning("Realtime tool %s blocked by policy", name)
             return json.dumps({"error": policy_refusal(name)})
         # Hiding a gated tool from the catalogue is not enforcement — the model

@@ -13,7 +13,6 @@ from collections.abc import AsyncIterator, Iterator
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from roomkit.channels._ai_policy import policy_check
 from roomkit.channels._realtime_context import (
     _current_voice_session,
     own_call_orphaned,
@@ -235,7 +234,7 @@ class RealtimeToolsMixin:
     _session_base_tools: Any  # RealtimeToolGateMixin — cross-mixin
     _session_catalogue: Any  # RealtimeToolGateMixin — cross-mixin
     _session_declared_tools: Any  # RealtimeToolGateMixin — cross-mixin
-    _session_policy: Any  # RealtimeToolGateMixin — cross-mixin
+    _session_policy_check: Any  # RealtimeToolGateMixin — cross-mixin
     _exempt_tool_names: Any  # RealtimeToolGateMixin — cross-mixin
 
     def _on_provider_tool_call(
@@ -600,9 +599,7 @@ class RealtimeToolsMixin:
                 for tool in self._session_declared_tools(session.id)
                 if dict_tool_name(tool)  # a provider's native tool has no name
             ]
-            loop_ctx.admits = policy_check(
-                self._session_policy(session.id), self._exempt_tool_names()
-            )
+            loop_ctx.admits = self._session_policy_check(session.id)
         token = _current_voice_session.set(session)
         try:
             with serving_tool_call(call, self.channel_id, loop_ctx):
