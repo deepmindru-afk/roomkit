@@ -206,10 +206,12 @@ class AgentReasoningBackend(ReasoningBackend):
     not parse, its refusal of a call whose arguments do not read, its span and
     its usage (RFC §6.4). The tools it offers are the voice session's
     catalogue, each call served through the voice channel's gate, which
-    reports it; the agent's own tools, skills or sandbox would bypass that
-    gate, so an agent carrying any is refused. The agent is the backend's: its
-    tool handler and its reports are taken over, so an agent registered with a
-    kit, whose hooks would judge each call a second time, is refused too.
+    bounds and reports it: the agent's own ``tool_timeout_seconds`` and
+    ``tool_timeouts`` do not apply. The agent's own tools, skills or sandbox
+    would bypass that gate, so an agent carrying any is refused. The agent is
+    the backend's: its tool handler and its reports are taken over, so an
+    agent registered with a kit, whose hooks would judge each call a second
+    time, is refused too.
 
     Each request becomes one user message carrying the transcript. Text the
     model writes before a tool round is yielded as progress, silent by default

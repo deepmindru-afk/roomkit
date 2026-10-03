@@ -413,7 +413,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (RMK-417, RFC §12.4.1, §21.6): the backend agent's own bound (30 s by
   default) cut it first, so a tool that waits by design (`delegate_task`) or
   one the voice channel bounds above 30 s failed with `ToolTimeoutError` for
-  the model while the observers read it cancelled.
+  the model while the observers read it cancelled. The backend agent's own
+  `tool_timeout_seconds` and `tool_timeouts` no longer apply to its calls: set
+  a backend call's bound on the voice channel.
 
 - A provider request takes the same shape on every provider (RMK-398, RFC
   §6.4, §6.7):

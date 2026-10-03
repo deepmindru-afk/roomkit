@@ -1164,7 +1164,10 @@ class TestBackendCallBound:
 
         session = await channel.start_session("r1", "user-1", "fake-ws")
         await provider.simulate_delegation(session, "d1", "integrator")
-        await _settle(0.6)
+        for _ in range(100):
+            if len(model.calls) == 2:
+                break
+            await _settle()
         [result] = next(m for m in model.calls[-1].messages if m.role == "tool").content
         await kit.close()
         return result, observed
@@ -1178,8 +1181,8 @@ class TestBackendCallBound:
     async def test_the_voice_channels_bound_still_cuts_the_call(self) -> None:
         result, observed = await self._served(agent_bound=5.0, channel_bound=0.1, waits=False)
 
-        assert result.is_error
-        assert [(e.name, e.is_error) for e in observed] == [("lookup", True)]
+        assert result.is_error and "ToolTimeoutError" in result.result
+        assert [(e.name, e.is_error, e.cancelled) for e in observed] == [("lookup", True, False)]
 
     async def test_a_tool_that_waits_by_design_is_not_bounded(self) -> None:
         result, observed = await self._served(agent_bound=0.1, channel_bound=0.1, waits=True)
