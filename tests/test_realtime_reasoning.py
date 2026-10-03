@@ -26,6 +26,7 @@ from roomkit.channels._realtime_delegation import (
     FALLBACK_NO_OUTPUT,
     FALLBACK_TIMEOUT,
 )
+from roomkit.channels._tool_registry import orchestration_tool
 from roomkit.channels.agent import Agent
 from roomkit.channels.ai import AIChannel
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
@@ -1111,6 +1112,80 @@ class TestAgentBackendCutOnTheChannel:
         [span] = telemetry.get_spans(SpanKind.LLM_GENERATE)
         assert span.parent_id is not None
         assert span.parent_id == channel._session_spans.get(session.id)
+
+
+class TestBackendCallBound:
+    """A backend's call is bounded by the voice channel's gate, as every call
+    of the session, not by the backend agent's own bound (RMK-417, RFC §21.6)."""
+
+    async def _served(self, *, agent_bound: float, channel_bound: float, waits: bool) -> Any:
+        async def slow(name: str, arguments: dict[str, Any]) -> str:
+            await asyncio.sleep(0.3)
+            return "slow result"
+
+        model = MockAIProvider(
+            ai_responses=[
+                AIResponse(
+                    content="",
+                    tool_calls=[AIToolCall(id="c1", name="lookup", arguments={"flight": "X"})],
+                ),
+                AIResponse(content="done"),
+            ]
+        )
+        agent = Agent("reasoner", provider=model, tool_timeout_seconds=agent_bound)
+        provider = MockRealtimeProvider(full_duplex=True)
+        channel = RealtimeVoiceChannel(
+            "rt-1",
+            provider=provider,
+            transport=MockRealtimeTransport(),
+            tools=[] if waits else [LOOKUP],
+            tool_handler=None if waits else slow,
+            tool_timeout_seconds=channel_bound,
+            reasoning_backend=AgentReasoningBackend(agent),
+        )
+        kit = RoomKit()
+        kit.register_channel(channel)
+        await kit.create_room(room_id="r1")
+        await kit.attach_channel("r1", "rt-1")
+        if waits:
+            lookup = AITool(name="lookup", description="d", parameters=LOOKUP["parameters"])
+            channel._registry.register(
+                orchestration_tool(
+                    lookup, lambda arguments: slow("lookup", arguments), waits=True
+                ),
+                room_id="r1",
+                owner=object(),
+            )
+        observed: list[ToolCallEvent] = []
+
+        @kit.hook(HookTrigger.ON_TOOL_CALL, HookExecution.ASYNC)
+        async def observe(event: ToolCallEvent, ctx: Any) -> None:
+            observed.append(event)
+
+        session = await channel.start_session("r1", "user-1", "fake-ws")
+        await provider.simulate_delegation(session, "d1", "integrator")
+        await _settle(0.6)
+        [result] = next(m for m in model.calls[-1].messages if m.role == "tool").content
+        await kit.close()
+        return result, observed
+
+    async def test_the_voice_channels_bound_holds_not_the_agents(self) -> None:
+        result, observed = await self._served(agent_bound=0.1, channel_bound=5.0, waits=False)
+
+        assert (result.result, result.is_error) == ("slow result", False)
+        assert [(e.name, e.is_error, e.cancelled) for e in observed] == [("lookup", False, False)]
+
+    async def test_the_voice_channels_bound_still_cuts_the_call(self) -> None:
+        result, observed = await self._served(agent_bound=5.0, channel_bound=0.1, waits=False)
+
+        assert result.is_error
+        assert [(e.name, e.is_error) for e in observed] == [("lookup", True)]
+
+    async def test_a_tool_that_waits_by_design_is_not_bounded(self) -> None:
+        result, observed = await self._served(agent_bound=0.1, channel_bound=0.1, waits=True)
+
+        assert (result.result, result.is_error) == ("slow result", False)
+        assert [(e.is_error, e.cancelled) for e in observed] == [(False, False)]
 
 
 class TestRendering:

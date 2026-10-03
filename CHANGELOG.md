@@ -394,6 +394,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A reasoning backend's tool call is bounded by the voice channel's gate only
+  (RMK-417, RFC §12.4.1, §21.6): the backend agent's own bound (30 s by
+  default) cut it first, so a tool that waits by design (`delegate_task`) or
+  one the voice channel bounds above 30 s failed with `ToolTimeoutError` for
+  the model while the observers read it cancelled.
+
 - A provider request takes the same shape on every provider (RMK-398, RFC
   §6.4, §6.7):
   - A call the response cut short (the output cap, a content filter, a

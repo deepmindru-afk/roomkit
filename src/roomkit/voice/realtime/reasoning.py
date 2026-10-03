@@ -32,6 +32,7 @@ from roomkit.models.tool_call import ToolCallEvent
 from roomkit.providers.ai.base import AIContext, AIMessage, AITool
 from roomkit.tools.context import _current_loop_ctx, _ToolLoopContext, current_tool_call
 from roomkit.tools.result import tool_failure
+from roomkit.tools.timeout import ToolTimeouts
 
 if TYPE_CHECKING:
     from roomkit.providers.ai.base import AIProvider
@@ -239,9 +240,12 @@ class AgentReasoningBackend(ReasoningBackend):
         self._histories: dict[str, list[AIMessage]] = {}
         self._sessions: dict[str, asyncio.Lock] = {}
         # The session's calls go to the voice channel's gate; what the loop
-        # refuses before them is reported there too.
+        # refuses before them is reported there too. The gate bounds each call
+        # as it bounds every call of the session (RFC §21.6), so the agent's
+        # loop does not: its own bound would cut a call the gate lets run.
         agent.tool_handler = self._serve_through_gate
         agent._tool_observer_hook = self._report_loop_refusal
+        agent._tool_timeouts = ToolTimeouts(None)
 
     @property
     def agent(self) -> AIChannel:
