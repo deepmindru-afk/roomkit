@@ -155,7 +155,7 @@ class ChannelOpsMixin(HelpersMixin):
             channel._tool_observer_hook = self._build_tool_observer_hook(channel.channel_id)
             channel._tool_report_hook = self._build_tool_report_hook(channel.channel_id)
             channel._before_tool_call_hook = self._build_before_tool_call_hook(channel.channel_id)
-            channel._tool_usage_loader = self._build_tool_usage_loader()
+            channel._tool_usage_loader = self._build_tool_usage_loader(channel.channel_id)
             channel._before_generation_hook = self._build_before_generation_hook(
                 channel.channel_id
             )

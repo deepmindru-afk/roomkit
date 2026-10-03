@@ -325,6 +325,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An AI channel's tool memory and skill activations, rebuilt from the stored
+  tool rows at its first turn in a room, read its own rows only, and pair
+  each call's end with its own start (RMK-393, RFC §7.5 rule 8). The rebuild
+  read every agent's rows: an agent joining a room put another agent's call
+  and result in "Tools you've ALREADY CALLED" and its activated skill in its
+  system prompt, even when that agent's binding withheld its events
+  (`visibility="sms1"`), and the other agents' calls ate the window of 30. A
+  call id a provider reused in a later turn rebuilt one call, with the later
+  turn's arguments.
+
 - A sentence the user resumes is answered once, even when the STT is slower
   than the turn's wait (RMK-391, RFC §12.3.12). The wait for an incomplete
   turn, or for a complete one held because the user spoke again, counted

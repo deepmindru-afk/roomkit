@@ -89,7 +89,7 @@ async def _outcomes(kit: RoomKit) -> dict[str, str | None]:
 async def _digests(kit: RoomKit, ai: AIChannel) -> tuple[str, str]:
     """The live digest, and the one rebuilt from the stored rows."""
     reseeded = ToolUsageMemory(result_keep_chars=800, recorded=ai._in_usage_digest)
-    reseeded.seed("r1", await kit._build_tool_usage_loader()("r1"))
+    reseeded.seed("r1", await kit._build_tool_usage_loader(ai.channel_id)("r1"))
     return ai._tool_usage.render_digest("r1") or "", reseeded.render_digest("r1") or ""
 
 

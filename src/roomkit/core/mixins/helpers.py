@@ -123,18 +123,21 @@ IdentityHookFn = Callable[
 
 
 def _remembered_calls(events: list[RoomEvent]) -> list[dict[str, Any]]:
-    """The calls a tool memory keeps, read off a room's stored tool rows."""
+    """The calls a tool memory keeps, read off a channel's stored tool rows,
+    in the order they were written."""
     # The arguments the model sent, from the call's start: the end carries the
     # ones that ran, which a BEFORE_TOOL_USE hook may have de-tokenised, and
-    # the digest goes back into the model's prompt.
-    requested = {
-        getattr(ev.content, "tool_id", ""): getattr(ev.content, "arguments", {}) or {}
-        for ev in events
-        if ev.type == EventType.TOOL_CALL_START
-    }
+    # the digest goes back into the model's prompt. An end pairs with the
+    # latest start of its id before it: a provider may reuse an id from one
+    # turn to the next.
+    requested: dict[str, dict[str, Any]] = {}
     calls: list[dict[str, Any]] = []
     for ev in events:
         content = ev.content
+        tool_id = getattr(content, "tool_id", "")
+        if ev.type == EventType.TOOL_CALL_START:
+            requested[tool_id] = getattr(content, "arguments", {}) or {}
+            continue
         name = getattr(content, "tool_name", "")
         if ev.type != EventType.TOOL_CALL_END or not name:
             continue
@@ -145,7 +148,7 @@ def _remembered_calls(events: list[RoomEvent]) -> list[dict[str, Any]]:
         calls.append(
             {
                 "name": name,
-                "arguments": requested.get(getattr(content, "tool_id", ""), {}),
+                "arguments": requested.pop(tool_id, {}),
                 "result": getattr(content, "result", "") or "",
                 "outcome": getattr(content, "outcome", None),
             }
@@ -860,14 +863,17 @@ class HelpersMixin:
                 skip_event_filter=True,
             )
 
-    def _build_tool_usage_loader(self) -> ToolUsageLoader:
-        """Build the tool-usage hydration loader for an AIChannel.
+    def _build_tool_usage_loader(self, channel_id: str) -> ToolUsageLoader:
+        """Build the tool-usage hydration loader for AIChannel *channel_id*.
 
-        Fetches a room's most recent persisted ``TOOL_CALL_END`` events so the
-        channel's in-memory ToolUsageMemory (digest + re-reveal set) survives
-        channel-object lifetimes — the store dies with the object (process
-        restart, cache expiry) while conversations outlive it. Called at most
-        once per room per process (the channel marks the room hydrated).
+        Fetches the channel's most recent persisted tool rows in a room so its
+        in-memory ToolUsageMemory (digest + re-reveal set) and its skill
+        activations survive channel-object lifetimes — the store dies with the
+        object (process restart, cache expiry) while conversations outlive it.
+        Only the channel's own rows: another agent's calls in the room are not
+        its memory, and their results may be withheld from it (RFC §7.5 rule
+        8). Called at most once per room per process (the channel marks the
+        room hydrated).
         """
         kit_ref = self
         # Enough to refill both windows (digest 8 + reveal 12) after the
@@ -879,7 +885,8 @@ class HelpersMixin:
                 events = await kit_ref._store.get_timeline(
                     room_id,
                     event_filter=EventFilter(
-                        event_types=[EventType.TOOL_CALL_START, EventType.TOOL_CALL_END]
+                        event_types=[EventType.TOOL_CALL_START, EventType.TOOL_CALL_END],
+                        source_channel_id=channel_id,
                     ),
                     limit=limit * 2,  # a start and an end per call
                     newest_first=True,  # most recent N, returned ascending
