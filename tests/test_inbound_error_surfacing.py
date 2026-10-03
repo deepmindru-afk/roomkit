@@ -17,10 +17,12 @@ the failing agent channel.
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 from roomkit.channels.ai import AIChannel
 from roomkit.core.framework import RoomKit
 from roomkit.core.hooks import HookRegistration
+from roomkit.memory.base import MemoryProvider, MemoryResult
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelCategory, ChannelType, HookExecution, HookTrigger
@@ -82,6 +84,28 @@ async def test_non_streaming_provider_error_fires_on_error() -> None:
     # Attributed to the failing agent channel so the card renders under the agent.
     assert errors[0].source.channel_type == ChannelType.AI
     assert errors[0].source.channel_id == "ai1"
+
+
+async def test_a_turn_refused_before_its_stream_names_the_error_type() -> None:
+    """A channel that fails before its stream exists (here its memory refuses
+    the turn) reaches ON_ERROR through the delivery set, named by the
+    exception's type as the streaming path names it, not ``unknown``."""
+
+    class _MemoryRefusalError(Exception):
+        pass
+
+    class _RefusingMemory(MemoryProvider):
+        async def retrieve(self, *args: Any, **kwargs: Any) -> MemoryResult:
+            raise _MemoryRefusalError("the context would overflow")
+
+    ai = AIChannel("ai1", provider=MockAIProvider(), memory=_RefusingMemory())
+
+    errors = await _run_turn_capturing_errors(ai)
+
+    assert len(errors) == 1
+    meta = errors[0].metadata or {}
+    assert meta.get("error_type") == "_MemoryRefusalError"
+    assert "the context would overflow" in str(meta.get("error", ""))
 
 
 async def test_on_error_runs_after_room_lock_released() -> None:

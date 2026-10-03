@@ -771,6 +771,7 @@ class LaneExecutionMixin(HelpersMixin):
             error_msg = result.errors.get(binding.channel_id)
             if not error_msg:
                 continue
+            exc = result.errors_exc.get(binding.channel_id)
             await self._fire_error_hook(
                 event.room_id,
                 context,
@@ -779,7 +780,8 @@ class LaneExecutionMixin(HelpersMixin):
                     channel_type=binding.channel_type,
                 ),
                 error=error_msg,
-                error_type="unknown",
+                # As the streaming path names it: the exception's type.
+                error_type=type(exc).__name__ if exc is not None else "unknown",
                 error_category="generation",
                 chain_depth=event.chain_depth + 1,
                 visibility=event.response_visibility or "all",

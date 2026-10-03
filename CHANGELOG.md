@@ -455,6 +455,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A turn an AI channel fails before its stream exists (its memory refuses
+  it, say) reaches `ON_ERROR` named by the exception's type, as a turn that
+  fails while streaming is (RMK-407): it read `error_type="unknown"`.
+
 - `LoopEndMarker.rounds` is how many tool rounds ran, as its docstring said
   and as `ON_AI_RESPONSE` counts them in `round_count` (RMK-411). It counted
   the loop's generations, so a round tried again without a call (an empty
