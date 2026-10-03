@@ -466,6 +466,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `{"lookup", "secret_op"}` there and `{"lookup"}` in a conference, while
   the gate refuses `secret_op` before any handler on all three. A tool a
   skill keeps closed stays in, and so does a tool that escapes the policy.
+  The toolset a reasoning backend drives its agent with follows the agent's
+  policy the same way.
 
 - A call the provider could not parse, tried again after words of its own,
   no longer runs them on into the next round's text (RMK-410, RFC §6.4): the

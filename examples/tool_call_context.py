@@ -12,7 +12,8 @@ sets:
 - ``current_tool_room_id()``      — the room this turn belongs to
 - ``current_tool_room()``         — the ``Room`` itself, as the turn loaded it
 - ``current_tool_actor_id()``     — whose turn it is
-- ``current_tool_allowed_names()`` — the toolset the turn resolved
+- ``current_tool_allowed_names()`` — the toolset the turn resolved, less what
+  its tool policy denies
 
 This example puts two people in one room, both talking to the same agent, and
 shows the handler answering each of them correctly — including refusing, twice,

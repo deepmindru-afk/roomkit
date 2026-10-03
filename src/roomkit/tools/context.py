@@ -405,7 +405,8 @@ def current_tool_allowed_names() -> set[str] | None:
     On a realtime tool call (a voice session, a conference) it is every
     tool the session declares that its policy admits: its catalogue, what
     orchestration set up, the channel's own (RFC §21.4); ``None`` when the
-    session declares no catalogue, which admits any name.
+    session declares no catalogue: it names no list, and its gate, policy
+    included, still judges each call.
 
     Returns ``None`` outside a tool loop or before context build, so
     hosts can fall back to their own allowlist.

@@ -55,6 +55,7 @@ if TYPE_CHECKING:
     from roomkit.skills.registry import SkillRegistry
     from roomkit.tools.context import _ToolLoopContext
     from roomkit.tools.human_input import HumanInputToolHandler
+    from roomkit.tools.policy import ToolPolicy
 
 if TYPE_CHECKING:
     from roomkit.channels._ai_contract import _AIChannelContract
@@ -127,6 +128,7 @@ class AIContextMixin(_AIChannelContract):
     _tool_search_threshold_pct: float
     _tool_search_threshold_tokens: int | None
     _registry: ChannelRegistry
+    _tool_policy: ToolPolicy | None
     channel_id: str
 
     _warned_unoffered_human_tools: set[str]
@@ -203,8 +205,7 @@ class AIContextMixin(_AIChannelContract):
         )
 
         # Store unfiltered tool list for re-application after skill activation
-        loop_ctx.all_context_tools = list(tools)
-        loop_ctx.admits = policy_check(self._effective_tool_policy, self._exempt_tool_names)
+        self._stamp_toolset(loop_ctx, list(tools))
 
         # A human-input tool the turn never offers is a wiring mistake that
         # only shows up at runtime, and quietly: the model is not told the tool
@@ -663,9 +664,18 @@ class AIContextMixin(_AIChannelContract):
         conversation's orphaned calls answered as a room turn's are, and
         *tools* as the turn's resolved toolset."""
         loop_ctx.turn_budget = self._turn_budget(binding, None)
-        loop_ctx.all_context_tools = tools
+        self._stamp_toolset(loop_ctx, tools)
         settings = self._turn_settings(binding, None)
         return AIContext(messages=patch_dangling_tool_calls(messages), tools=tools, **settings)
+
+    def _stamp_toolset(self, loop_ctx: _ToolLoopContext, tools: list[AITool]) -> None:
+        """Make *tools* the turn's resolved toolset, with what the channel's
+        policy, resolved for the turn's participant, admits of it: what
+        ``current_tool_allowed_names()`` answers (RFC §21.4)."""
+        loop_ctx.all_context_tools = tools
+        role = loop_ctx.current_participant_role
+        policy = None if self._tool_policy is None else self._tool_policy.resolve(role)
+        loop_ctx.admits = policy_check(policy, self._exempt_tool_names)
 
     def _turn_settings(
         self, binding: ChannelBinding, turn: AIChannelTurnConfig | None

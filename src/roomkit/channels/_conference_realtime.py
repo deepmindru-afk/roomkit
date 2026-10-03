@@ -619,7 +619,7 @@ class ConferenceRealtime:
             chain_depth=room.answer_depth.answer if room is not None else 0,
         )
         # What the session declares is the call's resolved toolset (RFC §21.4).
-        # A session that declares none admits any name, and has none.
+        # A session that declares none names no list, its gate still judging.
         declared = declared_tools(config, self._collisions)
         if declared:
             loop_ctx.all_context_tools = [

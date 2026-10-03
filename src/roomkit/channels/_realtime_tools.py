@@ -586,7 +586,8 @@ class RealtimeToolsMixin:
         )
         # What the session declares is the call's resolved toolset, which
         # ``current_tool_allowed_names()`` answers, as a turn's (RFC §21.4); a
-        # session that declares no catalogue admits any name, and has none.
+        # session that declares no catalogue names no list, its gate still
+        # judging each call.
         if self._session_catalogue(session.id):
             loop_ctx.all_context_tools = [
                 schema_tool(tool)
