@@ -725,29 +725,7 @@ class LaneExecutionMixin(HelpersMixin):
                 if target not in intelligence or target not in reached
             ]
             await self._record_failed_deliveries(event, cascade.delivery_results)
-            # Surface intelligence-channel failures to ON_ERROR so hosts can
-            # render an error card (transport delivery failures above are not
-            # turn-level agent errors). Fired here, off the room lock.
-            for binding in context.bindings:
-                if binding.category != ChannelCategory.INTELLIGENCE:
-                    continue
-                error_msg = result.errors.get(binding.channel_id)
-                if not error_msg:
-                    continue
-                await self._fire_error_hook(
-                    room_id,
-                    context,
-                    EventSource(
-                        channel_id=binding.channel_id,
-                        channel_type=binding.channel_type,
-                    ),
-                    error=error_msg,
-                    error_type="unknown",
-                    error_category="generation",
-                    chain_depth=event.chain_depth + 1,
-                    visibility=event.response_visibility or "all",
-                    parent_event_id=event.parent_event_id,
-                )
+            await self._report_intelligence_errors(event, context, result)
             first_error = self._first_intelligence_error(result, context)
             if first_error is not None:
                 cascade.record_error(first_error)
@@ -780,6 +758,33 @@ class LaneExecutionMixin(HelpersMixin):
 
         if plan.emit_processed:
             await self._emit_framework_event("event_processed", room_id=room_id, event_id=event.id)
+
+    async def _report_intelligence_errors(
+        self, event: RoomEvent, context: RoomContext, result: BroadcastResult
+    ) -> None:
+        """Surface intelligence-channel failures to ON_ERROR so hosts can
+        render an error card (transport delivery failures are not turn-level
+        agent errors). Fired off the room lock."""
+        for binding in context.bindings:
+            if binding.category != ChannelCategory.INTELLIGENCE:
+                continue
+            error_msg = result.errors.get(binding.channel_id)
+            if not error_msg:
+                continue
+            await self._fire_error_hook(
+                event.room_id,
+                context,
+                EventSource(
+                    channel_id=binding.channel_id,
+                    channel_type=binding.channel_type,
+                ),
+                error=error_msg,
+                error_type="unknown",
+                error_category="generation",
+                chain_depth=event.chain_depth + 1,
+                visibility=event.response_visibility or "all",
+                parent_event_id=event.parent_event_id,
+            )
 
     async def _commit_blocked_events(self, room_id: str, result: BroadcastResult) -> None:
         """Commit the records a delivery set blocked (RFC §8.1, §8.3, §14.3).
