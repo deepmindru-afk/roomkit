@@ -120,14 +120,37 @@ def arguments_cut(raw: Any) -> bool:
     return False
 
 
+def call_partial(raw: Any, finish_reason: str | None) -> bool:
+    """Whether a call must not run: its arguments do not read, or the response
+    ended on something that stops a call mid-arguments (the output cap, a
+    content filter) or on nothing at all, a stream that stopped without a stop
+    reason, before argument text that reads arrived (RFC §6.4)."""
+    return partial_when(raw, cut=_cuts_calls(finish_reason))
+
+
+def partial_when(raw: Any, *, cut: bool) -> bool:
+    """Whether a call must not run, the response *cut* short over it or not.
+
+    Its arguments do not read, or the response was cut and they did not
+    arrive as text that reads: nothing under a cut is no evidence of no
+    arguments, and a parse of what arrived (a vendor SDK reads a fragment
+    leniently) no evidence that they are whole.
+    """
+    if unreadable_arguments(raw):
+        return True
+    return cut and not (isinstance(raw, str) and raw.strip())
+
+
 def call_cut(raw: Any, finish_reason: str | None) -> bool:
-    """Whether the response was cut short over a call's arguments: they do not
-    read, and the response ended on something that stops a call mid-arguments
-    (the output cap, a content filter) or on nothing at all, a stream that
-    stopped without a stop reason. The call is ``partial`` and ``cut``."""
-    if finish_reason is not None and finish_reason.lower() not in _CALL_CUTTING_FINISH_REASONS:
-        return False
-    return unreadable_arguments(raw)
+    """Whether the response was cut short over a call's arguments: it ended on
+    something that stops a call mid-arguments, and they did not arrive whole
+    (:func:`call_partial`). The call is ``partial`` and ``cut``."""
+    return _cuts_calls(finish_reason) and partial_when(raw, cut=True)
+
+
+def _cuts_calls(finish_reason: str | None) -> bool:
+    """Whether a response that ended so can have stopped a call mid-arguments."""
+    return finish_reason is None or finish_reason.lower() in _CALL_CUTTING_FINISH_REASONS
 
 
 def call_garbled(raw: Any, finish_reason: str | None) -> bool:

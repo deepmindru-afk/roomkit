@@ -15,6 +15,7 @@ from roomkit.providers.ai.base import StreamToolCall, StreamToolCallDelta
 from roomkit.providers.ai.tool_calls import (
     CallIds,
     is_truncation,
+    partial_when,
     tool_arguments,
     unreadable_arguments,
 )
@@ -71,12 +72,11 @@ class ToolUseBlocks:
 
         A block the stream opened keeps the id its composition announced and
         the arguments that streamed, not the SDK's parse of what arrived. It
-        is partial when its arguments do not read, whatever the stop reason,
-        as on every provider (RFC §6.4): one the response cut over still runs
-        when what streamed reads (nothing, ``null``, a whole object). A block
-        known only by the SDK's parse is partial when the response cut over
-        it: that parse reads a fragment leniently (``{"path": "/a`` as
-        ``{"path": "/a"}``), so it cannot say the arguments are whole.
+        is partial by the rule every provider follows (RFC §6.4): its
+        arguments do not read, or the response was cut over it before
+        argument text that reads arrived. Anthropic sends no stop for a block
+        the output cap cuts, so a cut call ends here, often with nothing
+        streamed yet.
         """
         opened = {held["server_id"]: held for held in self._open.values()}
         cut = final.stop_reason is None or is_truncation(final.stop_reason)
@@ -92,7 +92,7 @@ class ToolUseBlocks:
                     id=held["id"] if held is not None else self._ids(block.id, block.name),
                     name=block.name,
                     arguments=tool_arguments(raw),
-                    partial=unreadable or (cut and held is None),
+                    partial=partial_when(raw, cut=cut),
                     garbled=unreadable and not cut,
                 )
             )

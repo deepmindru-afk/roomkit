@@ -379,17 +379,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A provider request takes the same shape on every provider (RMK-398, RFC
   §6.4, §6.7):
-  - An Anthropic call the response cut over runs when its streamed arguments
-    read (nothing, `null`, a whole object), as on every other provider; it
-    stays partial when its arguments do not read, or when only the SDK's
-    parse is known, which reads a cut fragment as a whole object.
+  - A call the response cut short (the output cap, a content filter, a
+    stream with no stop reason) runs only when its argument text arrived and
+    reads (`null`, a whole object), on every provider: Anthropic marked every
+    cut call partial, and the OpenAI-family providers ran a call the cap cut
+    before its first argument chunk, with `{}`. Anthropic sends no stop for a
+    block it cuts, often before any argument text (measured).
   - A `fallback_provider` receives the primary's rounds in a form its vendor
     takes: a reasoning block without a signature (DeepSeek, Qwen, vLLM) no
     longer goes to Anthropic, which answered 400
-    (`thinking.signature: Field required`), and a round none of whose calls
-    carries a thought signature goes to a Gemini 3 model as text, where
-    Gemini answered 400 (`Function call is missing a thought_signature`).
-    Both measured on the vendors' APIs.
+    (`thinking.signature: Field required`), and a round of the current turn
+    none of whose calls carries a thought signature goes to a Gemini 3 model
+    (or one the catalogue does not know) as text, its result images kept,
+    where Gemini answered 400 (`Function call is missing a
+    thought_signature`). Both measured on the vendors' APIs.
   - A tool schema whose root has no `type` is declared an object on every
     provider: Anthropic and OpenAI refused it with a 400.
 

@@ -264,10 +264,13 @@ class GeminiAIProvider(AIProvider):
     def _calls_need_signatures(self) -> bool:
         """Whether the model refuses a function call without its thought
         signature: a Gemini 3 model, the one family that takes thinking
-        levels (measured 2026-10-03 on ``gemini-3.8-flash``)."""
+        levels (measured 2026-10-03 on ``gemini-3.8-flash``), or a model the
+        catalogue does not know, taken as recent; its own calls are signed
+        either way, so only another vendor's round changes form."""
         entry = self.catalog_entry()
-        capabilities = entry.capabilities if entry is not None else []
-        return TAKES_LEVELS in capabilities or self._config.thinking_level is not None
+        if entry is None or self._config.thinking_level is not None:
+            return True
+        return TAKES_LEVELS in entry.capabilities
 
     @property
     def supports_response_schema(self) -> bool:

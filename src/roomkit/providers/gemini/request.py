@@ -65,35 +65,31 @@ def format_messages(
 ) -> list[Any]:
     """Convert AIMessage list to Gemini Content format.
 
-    *signed_calls* says the model refuses a function call without its
-    thought signature (Gemini 3, measured 2026-10-03). A round none of whose
-    calls carries one is another vendor's, a round a fallback provider
-    received (RFC §6.4): it goes back as text, its calls and their results,
-    as the only form such a model takes for calls it did not make.
+    *signed_calls* says the model refuses, in the current turn, a function
+    call without its thought signature (Gemini 3, measured 2026-10-03). A
+    round of that turn none of whose calls carries one is another vendor's,
+    a round a fallback provider received (RFC §6.4): it goes back as text,
+    its calls and their results, the only form such a model takes for calls
+    it did not make. An earlier turn's round goes back as it is: the model
+    checks signatures in the current turn only.
     """
     contents = []
     as_text: set[str] = set()
-    for msg in messages:
-        if isinstance(msg.content, list) and any(
-            isinstance(p, AIToolCallPart) for p in msg.content
-        ):
-            if signed_calls and _round_signature(msg.content) is None:
-                as_text |= {p.id for p in msg.content if isinstance(p, AIToolCallPart)}
-                contents.append(_text_content(types, "model", _round_as_text(msg.content)))
-                continue
+    turn_start = _current_turn_start(messages) if signed_calls else len(messages)
+    for index, msg in enumerate(messages):
+        parts = msg.content if isinstance(msg.content, list) else []
+        calls = [p for p in parts if isinstance(p, AIToolCallPart)]
+        results = [p for p in parts if isinstance(p, AIToolResultPart)]
+        if calls and index >= turn_start and _round_signature(calls) is None:
+            as_text |= {call.id for call in calls}
+            contents.append(_round_as_text(types, parts))
+        elif calls:
             # Model message with function calls
-            contents.append(
-                types.Content(role="model", parts=_model_call_parts(types, msg.content))
-            )
-        elif isinstance(msg.content, list) and any(
-            isinstance(p, AIToolResultPart) for p in msg.content
-        ):
-            if any(
-                isinstance(p, AIToolResultPart) and p.tool_call_id in as_text for p in msg.content
-            ):
-                contents.append(_text_content(types, "user", _results_as_text(msg.content)))
-                continue
-            contents.extend(_tool_result_contents(types, msg.content))
+            contents.append(types.Content(role="model", parts=_model_call_parts(types, parts)))
+        elif results and any(result.tool_call_id in as_text for result in results):
+            contents.append(_results_as_text(types, results))
+        elif results:
+            contents.extend(_tool_result_contents(types, parts))
         else:
             role = "model" if msg.role == "assistant" else "user"
             parts = format_content(types, msg.content)
@@ -101,11 +97,20 @@ def format_messages(
     return contents
 
 
-def _text_content(types: Any, role: str, text: str) -> Any:
-    return types.Content(role=role, parts=[types.Part.from_text(text=text)])
+def _current_turn_start(messages: list[AIMessage]) -> int:
+    """Where the current turn starts: just after the last user message that
+    is not a round's results."""
+    for index in range(len(messages) - 1, -1, -1):
+        msg = messages[index]
+        results = isinstance(msg.content, list) and any(
+            isinstance(p, AIToolResultPart) for p in msg.content
+        )
+        if msg.role == "user" and not results:
+            return index + 1
+    return 0
 
 
-def _round_as_text(content: list[Any]) -> str:
+def _round_as_text(types: Any, content: list[Any]) -> Any:
     """Another vendor's round as the model reads it in text: what it said,
     then each call it made. Its reasoning is that vendor's and stays out."""
     lines = [p.text for p in content if isinstance(p, AITextPart) and p.text.strip()]
@@ -114,16 +119,19 @@ def _round_as_text(content: list[Any]) -> str:
         for p in content
         if isinstance(p, AIToolCallPart)
     ]
-    return "\n".join(lines)
+    return types.Content(role="model", parts=[types.Part.from_text(text="\n".join(lines))])
 
 
-def _results_as_text(content: list[Any]) -> str:
-    """The results of another vendor's calls, as text."""
-    return "\n".join(
-        f"{p.name} {'failed' if p.is_error else 'returned'}: {p.as_text()}"
-        for p in content
-        if isinstance(p, AIToolResultPart)
-    )
+def _results_as_text(types: Any, results: list[AIToolResultPart]) -> Any:
+    """The results of another vendor's calls, as a user turn: their text,
+    then the images they carry, as a structured result carries them."""
+    lines: list[str] = []
+    images: list[Any] = []
+    for result in results:
+        text, parts = result.split_for_message()
+        lines.append(f"{result.name} {'failed' if result.is_error else 'returned'}: {text}")
+        images.extend(_image_part(types, image) for image in parts)
+    return types.Content(role="user", parts=[types.Part.from_text(text="\n".join(lines)), *images])
 
 
 def _model_call_parts(types: Any, content: list[Any]) -> list[Any]:

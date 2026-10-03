@@ -24,9 +24,9 @@ from roomkit.providers.ai.base import (
 from roomkit.providers.ai.tool_calls import (
     arguments_cut,
     call_garbled,
+    call_partial,
     minted_call_id,
     tool_arguments,
-    unreadable_arguments,
 )
 
 _THINK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
@@ -259,7 +259,7 @@ class ToolCallSlots:
                 id=slot["id"],
                 name=slot["name"],
                 arguments=tool_arguments(slot["arguments"]),
-                partial=unreadable_arguments(slot["arguments"]),
+                partial=call_partial(slot["arguments"], finish_reason),
                 garbled=call_garbled(slot["arguments"], finish_reason),
             )
             for slot in self._slots

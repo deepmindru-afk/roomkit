@@ -71,8 +71,8 @@ from roomkit.providers.ai.response_schema import (
 from roomkit.providers.ai.tool_calls import (
     CallIds,
     call_garbled,
+    call_partial,
     tool_arguments,
-    unreadable_arguments,
 )
 from roomkit.providers.ai.tool_declaration import chat_tool_declarations
 from roomkit.providers.polargrid import sdk_patch
@@ -596,7 +596,7 @@ class PolarGridAIProvider(AIProvider):
                     id=ids(getattr(tc, "id", None), name),
                     name=name,
                     arguments=tool_arguments(raw),
-                    partial=unreadable_arguments(raw),
+                    partial=call_partial(raw, finish_reason),
                     garbled=call_garbled(raw, finish_reason),
                 )
             )
