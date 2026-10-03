@@ -1769,7 +1769,11 @@ class ObservingAIChannel(AIChannel):
     async def _observe(self, inner):
         async for delta in inner:
             if isinstance(delta, LoopEndMarker):
-                if delta.reason != "completed":
+                if delta.reason == "timeout":
+                    logger.warning(
+                        "agent stopped at its %ss deadline", delta.timeout_seconds
+                    )
+                elif delta.reason != "completed":
                     logger.warning(
                         "agent stopped: %s after %d rounds", delta.reason, delta.rounds
                     )
@@ -1778,9 +1782,13 @@ class ObservingAIChannel(AIChannel):
 ```
 
 `reason` is one of `completed`, `max_rounds`, `timeout`, `budget_exceeded`,
-`truncated`, `empty_response`, `unfinished`, `force_stopped`, `cancelled`, `error`. The limits each
-reason refers to are the caller's own configuration and are not repeated on
-the marker.
+`truncated`, `empty_response`, `unfinished`, `force_stopped`, `cancelled`, `error`.
+`rounds` is how many tool rounds ran, as `ON_AI_RESPONSE` counts them
+(`round_count`). The marker also states the limits the turn ran under, so the
+consumer names the one its reason refers to without reading the channel:
+`max_rounds`, `timeout_seconds`, `budget_tokens` and `budget_usd`, `None` for
+no such limit. The budget is resolved per turn (the binding, then the turn's
+config, then the channel), which only the marker can say.
 
 `force_stopped` is the one worth special attention, because it is the one
 non-`completed` exit that usually ends **with text**: the anti-loop guard pulled the

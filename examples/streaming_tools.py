@@ -7,7 +7,7 @@ Shows:
 - Streaming tool loop yielding text in real time
 - WebSocket stream_send_fn receiving progressive chunks
 - Tool handler executing between generation rounds
-- LoopEndMarker: why the loop stopped, on every exit
+- LoopEndMarker: why the loop stopped, on every exit, and the limits it ran under
 
 Run with:
     uv run python examples/streaming_tools.py
@@ -109,7 +109,9 @@ class ObservingAIChannel(AIChannel):
     included, so the end of the stream is never itself the signal. Without
     it, a loop cut at its round cap or its deadline is indistinguishable
     from a model that simply finished, and every consumer that cares has to
-    re-derive the cause by counting tool calls and reading a clock.
+    re-derive the cause by counting tool calls and reading a clock. It
+    states the limits the turn ran under too (round cap, deadline, budget),
+    so the reason's limit is named without reading the channel.
 
     The marker is read here, at the source, by wrapping
     ``ChannelOutput.response_stream``. That is the consumption point: the
@@ -138,7 +140,10 @@ class ObservingAIChannel(AIChannel):
         async for delta in inner:
             if isinstance(delta, LoopEndMarker):
                 self.loop_end = delta
-                print(f"  [loop] stopped: reason={delta.reason!r} rounds={delta.rounds}")
+                print(
+                    f"  [loop] stopped: reason={delta.reason!r} rounds={delta.rounds} "
+                    f"(cap {delta.max_rounds} rounds, deadline {delta.timeout_seconds}s)"
+                )
                 continue
             yield delta
 

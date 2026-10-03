@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `LoopEndMarker` states the limits the turn ran under (RMK-411):
+  `max_rounds`, `timeout_seconds`, `budget_tokens` and `budget_usd`, `None`
+  for no such limit, so a consumer names the limit its reason refers to
+  without reading the channel. The budget is resolved per turn (the binding,
+  then the turn's config, then the channel), which the channel could not
+  say. The fields have defaults: a marker built by keyword still builds.
+
 - `ExternalToolHandler.on_tool_cancelled(tool_name, tool_input, *,
   tool_call_id, job_id, room_id)` (RMK-419, RFC §9.3), not abstract: the turn
   cut a call before its report, while the handler still decided it (an
@@ -166,6 +173,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cannot encrypt is deleted rather than left in the clear.
 
 ### Changed
+
+- `LoopEndMarker.rounds` is how many tool rounds ran, as `ON_AI_RESPONSE`
+  counts them in `round_count` (RMK-411). It counted the loop's generations,
+  so a round tried again without a call (an empty one, one whose call could
+  not be parsed, one the continuation policy goes on) counted as a tool
+  round: a turn ending `unfinished` after one continuation reported
+  `rounds=1` and `round_count=0`.
 
 - A delegated worker whose turn does not complete (its round cap, deadline
   or budget cuts it, a stop cancels it, its answer is cut or never comes)

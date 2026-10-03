@@ -136,16 +136,27 @@ class LoopEndMarker:
     only renders text keeps filtering on ``isinstance(chunk, str)`` and is
     unaffected.
 
-    ``rounds`` is how many tool rounds ran before the stop. The limits the
-    reason refers to are the caller's own configuration, so they are not
-    repeated here. ``usage`` is what the turn's generations used, summed over
-    every round: with the reason, it is the turn's record, which the stream's
-    consumer writes on the turn's last message (RFC §6.4).
+    ``rounds`` is how many tool rounds ran before the stop, as
+    ``ON_AI_RESPONSE`` counts them (``round_count``): a round the loop tried
+    again without a call is none. ``usage`` is what the turn's generations
+    used, summed over every round: with the reason, it is the turn's record,
+    which the stream's consumer writes on the turn's last message (RFC §6.4).
+
+    ``max_rounds``, ``timeout_seconds``, ``budget_tokens`` and ``budget_usd``
+    are the limits the turn ran under, so a consumer names the one its reason
+    refers to without reading the channel: the budget is resolved per turn
+    (the binding, then the turn's config, then the channel), which the channel
+    cannot say. ``None`` is no such limit; a marker the channel did not build
+    may leave them all unset.
     """
 
     reason: LoopEndReason
     rounds: int = 0
     usage: dict[str, int] = field(default_factory=dict)
+    max_rounds: int | None = None
+    timeout_seconds: float | None = None
+    budget_tokens: int | None = None
+    budget_usd: float | None = None
 
 
 #: Union of all marker types that may appear in a streaming response.

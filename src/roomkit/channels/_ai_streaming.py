@@ -71,6 +71,9 @@ class _StreamTurnState:
     telemetry: TelemetryProvider
     span_id: str
     room_id: str | None
+    # The limits the turn runs under, as its end marker states them.
+    max_rounds: int
+    timeout_seconds: float | None
     usage: dict[str, int] = field(default_factory=dict)
     segments: list[list[str]] = field(default_factory=list)
     tool_calls_count: int = 0
@@ -90,10 +93,20 @@ class _StreamTurnState:
         self.tool_calls_count += len(calls)
         self.tool_rounds_count += 1
 
-    def end(self, reason: LoopEndReason, rounds: int) -> LoopEndMarker:
-        """End the loop on *reason*: the marker the consumer reads it from."""
+    def end(self, reason: LoopEndReason) -> LoopEndMarker:
+        """End the loop on *reason*: the marker the consumer reads it from,
+        with the tool rounds that ran and the limits the turn ran under."""
         self.reason = reason
-        return LoopEndMarker(reason=reason, rounds=rounds, usage=dict(self.usage))
+        budget = self.loop_ctx.turn_budget
+        return LoopEndMarker(
+            reason=reason,
+            rounds=self.tool_rounds_count,
+            usage=dict(self.usage),
+            max_rounds=self.max_rounds,
+            timeout_seconds=self.timeout_seconds,
+            budget_tokens=budget.tokens if budget is not None else None,
+            budget_usd=budget.usd if budget is not None else None,
+        )
 
 
 def _turn_span_attributes(turn: _StreamTurnState) -> dict[str, Any]:
@@ -341,7 +354,15 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                     Attr.LLM_STREAMING: True,
                 },
             )
-            turn = _StreamTurnState(loop_ctx, telemetry, span_id, room_id)
+            turn = _StreamTurnState(
+                loop_ctx,
+                telemetry,
+                span_id,
+                room_id,
+                max_rounds=self._max_tool_rounds,
+                # No deadline as the loop reads one: unset or zero.
+                timeout_seconds=self._tool_loop_timeout_seconds or None,
+            )
             try:
                 yield turn
             except BaseException as exc:
@@ -527,7 +548,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
             if not interrupts_turn(exc, after_round=turn.saw_tool_call):
                 raise
             turn.error = exc
-            yield turn.end("error", index)
+            yield turn.end("error")
             raise
         if round_.state.thinking:
             turn.thinking.append(round_.state.thinking)
@@ -553,13 +574,13 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
             )
             context, cancelled = self._drain_steering_queue(context, loop_ctx)
             if cancelled:
-                yield turn.end("cancelled", 0)
+                yield turn.end("cancelled")
                 return
             rules = self._new_loop_state("Streaming tool loop", loop_ctx.turn_budget)
 
             for index in range(self._max_tool_rounds + 1):
                 if loop_ctx.cancel_event.is_set():
-                    yield turn.end("cancelled", index)
+                    yield turn.end("cancelled")
                     return
                 context = self._prepare_round_context(context, loop_ctx, rules, index)
                 round_ = self._new_stream_round(turn, rules, index, external)
@@ -576,7 +597,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                     yield SegmentBreakMarker()
                     continue
                 if outcome is not None:
-                    yield turn.end(outcome, index)
+                    yield turn.end(outcome)
                     return
 
                 rules.warn_if_needed(index)
@@ -587,11 +608,11 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                         yield delta
                 context, cancelled = self._drain_steering_queue(context, loop_ctx)
                 if cancelled:
-                    yield turn.end("cancelled", index)
+                    yield turn.end("cancelled")
                     return
 
             # An empty-response retry can consume the final generation slot.
-            yield turn.end("max_rounds", self._max_tool_rounds)
+            yield turn.end("max_rounds")
 
     def _new_stream_round(
         self,
