@@ -3,10 +3,9 @@ streams and whether it carries tools (RFC §6.4)."""
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
-from collections.abc import AsyncGenerator, AsyncIterator, Coroutine
+from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import aclosing, asynccontextmanager
 from dataclasses import dataclass, field
 from functools import partial
@@ -23,6 +22,7 @@ from roomkit.channels._ai_loop_rules import (
 )
 from roomkit.channels._ai_stream_external_tools import _ExternalStreamTools
 from roomkit.channels._ai_stream_round import _StreamRound, _StreamRoundState
+from roomkit.channels._shielded import shielded
 from roomkit.models.channel import ChannelOutput
 from roomkit.models.event import RoomEvent
 from roomkit.models.streaming import (
@@ -156,18 +156,6 @@ async def _unrun_call_ends(calls: list[Any]) -> AsyncGenerator[StreamDelta, None
             error="cancelled",
             outcome="cancelled",
         )
-
-
-_REPORTS_IN_FLIGHT: set[asyncio.Task[None]] = set()
-"""Reports a cancelled turn shields: held here so none is collected mid-run."""
-
-
-async def _shielded(report: Coroutine[Any, Any, None]) -> None:
-    """Run *report* to its end even if the turn is cancelled again meanwhile."""
-    task = asyncio.ensure_future(report)
-    _REPORTS_IN_FLIGHT.add(task)
-    task.add_done_callback(_REPORTS_IN_FLIGHT.discard)
-    await asyncio.shield(task)
 
 
 async def _answered_or_raise(
@@ -366,6 +354,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
         room = context.room.room if context.room else None
         room_id = room.id if room is not None else None
         loop_ctx = _ToolLoopContext.for_loop(parent, room_id, room=room)
+        loop_ctx.channel_id = self.channel_id
         _current_loop_ctx.set(loop_ctx)
         self._active_loops[loop_ctx.loop_id] = loop_ctx
         try:
@@ -379,7 +368,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
         finally:
             # Finalization may itself be cancelled while publishing a hook.
             self._active_loops.pop(loop_ctx.loop_id, None)
-            await _shielded(self._report_unreported_calls(loop_ctx))
+            await shielded(self._report_unreported_calls(loop_ctx))
             _current_loop_ctx.set(enclosing_ctx)
 
     async def _end_raised_turn(self, turn: _StreamTurnState, exc: BaseException) -> None:

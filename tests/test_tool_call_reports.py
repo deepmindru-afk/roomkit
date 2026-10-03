@@ -477,6 +477,56 @@ async def test_an_acp_call_the_turn_ended_under_is_reported_once_with_a_handler(
     await kit.close()
 
 
+async def _start_then_complete(
+    connection: Any, session_id: str, prompt: list[Any], **kw: Any
+) -> Any:
+    await connection.client.session_update(
+        session_id,
+        acp.start_tool_call("tool-1", "Read", kind="read", status="in_progress", raw_input={}),
+    )
+    await connection.client.session_update(
+        session_id, acp.update_tool_call("tool-1", status="completed", raw_output="ok")
+    )
+    return PromptResponse(stop_reason="end_turn")
+
+
+@pytest.mark.parametrize("with_handler", [False, True], ids=["no-handler", "handler"])
+async def test_an_acp_call_whose_report_is_cut_is_still_reported_once(
+    tmp_path: Path, with_handler: bool
+) -> None:
+    kit = RoomKit()
+    handler = PolicyExternalToolHandler() if with_handler else None
+    channel, conn, _ = _channel(tmp_path, handler=handler, emit_updates=False)
+    conn.prompt = lambda *a, **k: _start_then_complete(conn, *a, **k)  # type: ignore[method-assign]
+    kit.register_channel(SimpleChannel("sms"))
+    kit.register_channel(channel)
+    await kit.create_room(room_id="room-1")
+    await kit.attach_channel("room-1", "sms")
+    await kit.attach_channel("room-1", "acp-agent", category=ChannelCategory.INTELLIGENCE)
+    held = asyncio.Event()
+
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="hold")
+    async def hold(event: ToolCallEvent, ctx: Any) -> HookResult:
+        held.set()
+        await asyncio.sleep(0.2)
+        return HookResult.allow()
+
+    seen = _observe(kit)
+    turn = asyncio.create_task(
+        kit.process_inbound(
+            InboundMessage(channel_id="sms", sender_id="u", content=TextContent(body="go"))
+        )
+    )
+    await asyncio.wait_for(held.wait(), 5)
+    turn.cancel()
+    await asyncio.gather(turn, return_exceptions=True)
+    await until(lambda: bool(seen))
+    await asyncio.sleep(0.3)
+
+    assert [(e.tool_call_id, e.is_error, e.cancelled) for e in seen] == [("tool-1", False, False)]
+    await kit.close()
+
+
 async def test_an_acp_call_refused_then_approved_fails_on_its_own(tmp_path: Path) -> None:
     """The last permission decision stands: an approval clears a refusal."""
 

@@ -997,12 +997,16 @@ class HelpersMixin:
         A report, by construction (RFC §9.3): the agent already read the
         provider's result, so nothing a hook returns reaches it, no rewrite is
         folded in, and a BLOCK withholds nothing. The observers see the
-        provider's outcome and its own ``is_error``, a block included.
+        provider's outcome and its own ``is_error``, a block included. The
+        channel's turn that announced the call claims its one report once the
+        observers hear it.
         """
         kit_ref = self
 
         async def _callback(event: ToolCallEvent) -> None:
-            claim = turn_report_claim(event.tool_call_id)
+            # The turn that announced the call claims its one report where
+            # the observers hear it (RFC §9.3).
+            claim = turn_report_claim(event.tool_call_id, channel_id)
             await kit_ref._report_tool_call(event, channel_id, claim=claim)
 
         return _callback
@@ -1028,8 +1032,7 @@ class HelpersMixin:
         if not event.room_id:
             return
         if event.cancelled:
-            if claim is None or claim():
-                await self._observe_failed_tool_call(event, channel_id)
+            await self._observe_failed_tool_call(event, channel_id, claim=claim)
             return
         context: RoomContext | None = None
         if self._hook_engine.has_hooks(HookTrigger.ON_TOOL_CALL):
@@ -1131,24 +1134,37 @@ class HelpersMixin:
         kit_ref = self
 
         async def _callback(event: ToolCallEvent) -> None:
-            await kit_ref._observe_failed_tool_call(event, channel_id)
+            claim = turn_report_claim(event.tool_call_id, channel_id)
+            await kit_ref._observe_failed_tool_call(event, channel_id, claim=claim)
 
         return _callback
 
-    async def _observe_failed_tool_call(self, event: ToolCallEvent, channel_id: str) -> None:
+    async def _observe_failed_tool_call(
+        self,
+        event: ToolCallEvent,
+        channel_id: str,
+        *,
+        claim: Callable[[], bool] | None = None,
+    ) -> None:
         """Tell ON_TOOL_CALL's ASYNC observers a call failed, was refused or was
         cancelled, or one whose report a cut left unmade, and emit its
-        ``tool_call`` framework event (RFC §9.3).
+        ``tool_call`` framework event, both as *event* stands (RFC §9.3).
 
         The one report of such a call, for every channel: nothing that could
-        serve the call reads it.
+        serve the call reads it. *claim* claims that report once the context
+        the observers read is built, as every report runner does: a report cut
+        before then is still owed.
         """
         if not event.room_id:
             return
+        context: RoomContext | None = None
         if self._hook_engine.has_hooks(HookTrigger.ON_TOOL_CALL):
             context = await self._hook_context(event.room_id, HookTrigger.ON_TOOL_CALL)
             if context is None:
                 return
+        if claim is not None and not claim():
+            return
+        if context is not None:
             await self._hook_engine.run_observers(
                 event.room_id,
                 HookTrigger.ON_TOOL_CALL,
@@ -1156,8 +1172,7 @@ class HelpersMixin:
                 context,
                 skip_event_filter=True,
             )
-
-        await self._emit_tool_call_event(replace(event, is_error=True), channel_id)
+        await self._emit_tool_call_event(event, channel_id)
 
     def _build_thinking_hook(self, channel_id: str) -> ThinkingHook:
         """Build an ON_AI_THINKING callback closure for an AIChannel.

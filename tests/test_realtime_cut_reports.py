@@ -1,10 +1,10 @@
 """A realtime call cut while it was reported, or issued once its session
 ended, is reported once (RMK-431, RFC §9.3, §12.4).
 
-A Tool Search call whose result went out is reported after delivery: an
-ending that cuts that report leaves it owed, with what the model read. A
-reasoning backend's call issued after its session ended runs no gate and is
-reported once, cancelled.
+A call whose result went out before its report (a Tool Search call, a
+refused or failed call) owes the observers that outcome when an ending cuts
+in between. A call issued once its session ended, by the provider or a
+reasoning backend, runs no gate and is reported once, cancelled.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from roomkit import (
+    ConferenceRealtimeConfig,
     HookExecution,
     HookResult,
     HookTrigger,
@@ -23,8 +24,10 @@ from roomkit import (
     ToolCallResult,
 )
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
+from roomkit.voice.base import VoiceSessionState
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
 from roomkit.voice.realtime.reasoning import ReasoningBackend, ReasoningOutput, ReasoningRequest
+from tests.conference.test_conference_realtime import ROOM, realtime_kit, until
 
 MANY = [
     {
@@ -158,4 +161,167 @@ async def test_a_backend_call_after_its_session_ended_is_reported_once_cancelled
         ("hangup", False, False),
         ("lookup", True, True),
     ]
+    await kit.close()
+
+
+class _SlowRevealProvider(MockRealtimeProvider):
+    """Reveals tools slowly: an ending lands after the result went out."""
+
+    @property
+    def supports_mid_session_reconfigure(self) -> bool:
+        return True
+
+    async def reconfigure(self, session: Any, **kwargs: Any) -> None:
+        self.revealing.set()
+        await asyncio.sleep(30)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.revealing = asyncio.Event()
+
+
+async def test_a_search_call_cut_before_its_report_keeps_what_the_model_read() -> None:
+    async def handler(name: str, arguments: dict[str, Any]) -> str:
+        return "ok"
+
+    provider = _SlowRevealProvider()
+    channel = RealtimeVoiceChannel(
+        "rt",
+        provider=provider,
+        transport=MockRealtimeTransport(),
+        tool_handler=handler,
+        tools=MANY,
+        tool_search=True,
+    )
+    kit, session = await _session(channel)
+    seen = _observe(kit)
+
+    await provider.simulate_tool_call(session, "c1", "find_tools", {"query": "weather forecast"})
+    await asyncio.wait_for(provider.revealing.wait(), 5)
+    await channel.end_session(session)
+    await _until(lambda: bool(seen))
+
+    assert [(e.name, e.is_error, e.cancelled) for e in seen] == [("find_tools", False, False)]
+    await kit.close()
+
+
+class _SlowSubmitProvider(MockRealtimeProvider):
+    """Writes a result slowly: an ending lands while it goes out."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.submitting = asyncio.Event()
+
+    async def submit_tool_result(self, session: Any, call_id: str, result: str) -> None:
+        await super().submit_tool_result(session, call_id, result)
+        self.submitting.set()
+        await asyncio.sleep(30)
+
+    async def submit_tool_error(self, session: Any, call_id: str, result: str) -> None:
+        await self.submit_tool_result(session, call_id, result)
+
+
+async def test_a_failed_call_cut_while_it_goes_out_is_reported_once() -> None:
+    async def handler(name: str, arguments: dict[str, Any]) -> str:
+        raise RuntimeError("backend down")
+
+    provider = _SlowSubmitProvider()
+    channel = RealtimeVoiceChannel(
+        "rt",
+        provider=provider,
+        transport=MockRealtimeTransport(),
+        tool_handler=handler,
+        tools=[{"name": "lookup", "parameters": {"type": "object"}}],
+    )
+    kit, session = await _session(channel)
+    seen = _observe(kit)
+
+    await provider.simulate_tool_call(session, "c1", "lookup", {})
+    await asyncio.wait_for(provider.submitting.wait(), 5)
+    await channel.end_session(session)
+    await _until(lambda: bool(seen))
+    await asyncio.sleep(0.05)
+
+    assert [(e.tool_call_id, e.is_error, e.cancelled) for e in seen] == [("c1", True, False)]
+    await kit.close()
+
+
+async def test_a_provider_call_on_an_ended_session_is_reported_once_cancelled() -> None:
+    ran: list[str] = []
+
+    async def handler(name: str, arguments: dict[str, Any]) -> str:
+        ran.append(name)
+        return "ok"
+
+    provider = MockRealtimeProvider()
+    channel = RealtimeVoiceChannel(
+        "rt",
+        provider=provider,
+        transport=MockRealtimeTransport(),
+        tool_handler=handler,
+        tools=[{"name": "lookup", "parameters": {"type": "object"}}],
+    )
+    kit, session = await _session(channel)
+    seen = _observe(kit)
+
+    await provider.simulate_tool_call(session, "c1", "lookup", {})
+    # The provider's connection dropped before the call was served.
+    session.state = VoiceSessionState.ENDED
+    await _until(lambda: bool(seen))
+
+    assert ran == []
+    assert provider.tool_results == []
+    assert [(e.tool_call_id, e.is_error, e.cancelled) for e in seen] == [("c1", True, True)]
+    await kit.close()
+
+
+async def test_a_call_from_a_conference_session_left_behind_is_reported_once() -> None:
+    ran: list[str] = []
+
+    async def handler(room_id: str, name: str, arguments: dict[str, Any]) -> str:
+        ran.append(name)
+        return "ok"
+
+    provider = MockRealtimeProvider()
+    config = ConferenceRealtimeConfig(
+        provider=provider,
+        tools=[{"name": "lookup", "parameters": {"type": "object"}}],
+        tool_handler=handler,
+    )
+    kit, channel, _, _ = await realtime_kit(provider=provider, config=config)
+    session = await channel._realtime.ensure_session(ROOM)
+    assert session is not None
+    seen = _observe(kit)
+    await kit.detach_channel(ROOM, "conf")
+
+    # A late frame of the session the conference no longer speaks for.
+    await provider.simulate_tool_call(session, "c1", "lookup", {})
+    await until(lambda: bool(seen))
+
+    assert ran == []
+    assert [(e.tool_call_id, e.is_error, e.cancelled) for e in seen] == [("c1", True, True)]
+    await kit.close()
+
+
+async def test_a_provider_call_arriving_after_the_session_ended_is_reported_once() -> None:
+    async def handler(name: str, arguments: dict[str, Any]) -> str:
+        return "ok"
+
+    provider = MockRealtimeProvider()
+    channel = RealtimeVoiceChannel(
+        "rt",
+        provider=provider,
+        transport=MockRealtimeTransport(),
+        tool_handler=handler,
+        tools=[{"name": "lookup", "parameters": {"type": "object"}}],
+    )
+    kit, session = await _session(channel)
+    seen = _observe(kit)
+    await channel.end_session(session)
+
+    # A late frame of the connection that just closed.
+    await provider.simulate_tool_call(session, "late", "lookup", {})
+    await _until(lambda: bool(seen))
+
+    assert [(e.tool_call_id, e.cancelled) for e in seen] == [("late", True)]
     await kit.close()

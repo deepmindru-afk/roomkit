@@ -260,6 +260,12 @@ async def test_a_call_the_provider_ran_cut_while_reported_keeps_its_outcome(
     async def audit(event: ToolCallEvent, ctx: Any) -> None:
         observed.append(event)
 
+    framework: list[dict[str, Any]] = []
+
+    @kit.on("tool_call")
+    async def on_tool_call(event: Any) -> None:
+        framework.append(dict(event.data))
+
     await _cut_while(kit, held)
     await _until(lambda: bool(observed))
     await asyncio.sleep(0.05)
@@ -267,6 +273,8 @@ async def test_a_call_the_provider_ran_cut_while_reported_keeps_its_outcome(
     assert [(e.name, e.is_error, e.cancelled, str(e.result)) for e in observed] == [
         ("Bash", False, False, "removed")
     ]
+    # The framework event says what the observers heard: not a failure.
+    assert [(f["tool_call_id"], f.get("is_error", False)) for f in framework] == [("c1", False)]
     await kit.close()
 
 
@@ -346,4 +354,43 @@ async def test_a_handler_that_raises_while_deciding_fails_the_call() -> None:
     ]
     assert ends == [("failed", json.dumps({"error": "Tool 'Bash' failed (RuntimeError)"}))]
     assert [(e.name, e.is_error, e.cancelled) for e in observed] == [("Bash", True, False)]
+    await kit.close()
+
+
+class _OtherChannelHandler(PolicyExternalToolHandler):
+    """Another channel's handler that reports a call of its own under an id the
+    current turn also announced."""
+
+
+async def test_another_channels_report_never_claims_the_turns_call() -> None:
+    other = _OtherChannelHandler()
+    started = asyncio.Event()
+
+    async def lookup(name: str, arguments: dict[str, Any]) -> str:
+        # Under the turn's context, another channel reports its own call "c1".
+        await other.on_tool_result("Bash", {}, "ran", tool_call_id="c1", room_id="r1")
+        started.set()
+        return "found"
+
+    channel = AIChannel(
+        "ai1",
+        provider=MockAIProvider(
+            ai_responses=[_call("lookup"), AIResponse(content="done")], streaming=True
+        ),
+        tools=[LOOKUP],
+        tool_handler=lookup,
+    )
+    kit = await _room(channel)
+    kit.register_channel(
+        AIChannel("other", provider=MockAIProvider(), external_tool_handler=other)
+    )
+    observed, _ = _observe(kit)
+
+    await _say(kit)
+    await _until(lambda: len(observed) == 2)
+
+    assert sorted((e.channel_id, e.name) for e in observed) == [
+        ("ai1", "lookup"),
+        ("other", "Bash"),
+    ]
     await kit.close()

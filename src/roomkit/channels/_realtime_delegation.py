@@ -20,7 +20,6 @@ from functools import partial
 from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 from uuid import uuid4
 
-from roomkit.channels._ai_streaming import _shielded
 from roomkit.channels._realtime_tool_calls import RealtimeToolCall
 from roomkit.channels._realtime_tool_executor import (
     ToolCallHost,
@@ -28,6 +27,7 @@ from roomkit.channels._realtime_tool_executor import (
     report_failed_call,
     run_tool_call,
 )
+from roomkit.channels._shielded import shielded
 from roomkit.core._failure_log import log_failure
 from roomkit.models.enums import HookTrigger
 from roomkit.telemetry.base import SpanKind
@@ -398,15 +398,7 @@ class RealtimeDelegationMixin:
         bound; the one difference is where the outcome goes — back to the
         backend model, with whether it failed, not to the provider (RFC §12.4.1).
         """
-        # The session's room, which a session already ended no longer maps:
-        # its call is reported there all the same (RFC §9.3).
-        call = RealtimeToolCall(
-            session,
-            f"{delegation_id}:{uuid4().hex[:8]}",
-            name,
-            arguments,
-            room_id=session.room_id or None,
-        )
+        call = RealtimeToolCall(session, f"{delegation_id}:{uuid4().hex[:8]}", name, arguments)
         # The delegation's task serves the call: a call that ends its own
         # session is then not taken for one the session's end interrupted.
         call.task = asyncio.current_task()
@@ -440,7 +432,7 @@ class RealtimeDelegationMixin:
         reported there, with its own reason."""
         if self._tool_calls.get(call.session.id, call.call_id) is not call:
             return
-        await _shielded(
+        await shielded(
             report_cancelled_call(cast("ToolCallHost", self), call, "The delegation ended")
         )
 

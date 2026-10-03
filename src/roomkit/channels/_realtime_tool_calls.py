@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 from roomkit.providers.ai.tool_calls import tool_arguments, unreadable_call_error
 
 if TYPE_CHECKING:
+    from roomkit.tools._outcome import ToolOutcome
     from roomkit.voice.base import VoiceSession
 
 logger = logging.getLogger("roomkit.channels.realtime_tools")
@@ -46,9 +47,9 @@ class RealtimeToolCall:
     task: asyncio.Task[Any] | None = field(default=None, repr=False)
     delivered: bool = False
     reported: bool = False
-    read: str | None = None
-    """What the model read of the call, when its result went out before its
-    report (Tool Search): a report an ending cuts still owes it (RFC §9.3)."""
+    owed: ToolOutcome | None = None
+    """The outcome the model reads, kept from its delivery when the call's
+    report comes after it: a report an ending cuts still owes it (RFC §9.3)."""
 
     @classmethod
     def from_provider(

@@ -336,7 +336,8 @@ class AIToolsMixin(_AIChannelContract):
         must not turn a refusal into a crash either: the refusal is already on
         its way to the model.
         """
-        if self._tool_observer_hook is None or not self._get_loop_ctx().claim_report(tc.id):
+        loop_ctx = self._get_loop_ctx()
+        if self._tool_observer_hook is None or tc.id in loop_ctx.reported_calls:
             return
         event = ToolCallEvent(
             channel_id=self.channel_id,
@@ -356,6 +357,9 @@ class AIToolsMixin(_AIChannelContract):
             logger.debug(
                 "ON_TOOL_CALL observation failed for refused tool %s", tc.name, exc_info=True
             )
+        # Claimed where the observers heard it; an observer hook that reports
+        # nothing has made the call's report all the same.
+        loop_ctx.claim_report(tc.id)
 
     async def _failed_call(
         self,
@@ -656,7 +660,7 @@ class AIToolsMixin(_AIChannelContract):
         """Report a call whose outcome the model already read, its own report
         cut before the observers heard it: to them alone, with that outcome
         (RFC §9.3)."""
-        if self._tool_observer_hook is None or not loop_ctx.claim_report(event.tool_call_id):
+        if self._tool_observer_hook is None:
             return
         try:
             await self._tool_observer_hook(event)
@@ -664,6 +668,7 @@ class AIToolsMixin(_AIChannelContract):
             logger.warning(
                 "ON_TOOL_CALL observation failed for tool %s", event.name, exc_info=True
             )
+        loop_ctx.claim_report(event.tool_call_id)
 
     async def _raised_outcome(
         self, tc: Any, arguments: dict[str, Any], room_id: str | None, exc: Exception

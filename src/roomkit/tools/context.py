@@ -37,7 +37,7 @@ if TYPE_CHECKING:
 
     from roomkit.channels._turn_budget import TurnBudget
     from roomkit.models.steering import SteeringDirective
-    from roomkit.models.tool_call import DeclaredTool
+    from roomkit.models.tool_call import DeclaredTool, ToolCallEvent
     from roomkit.providers.ai.base import AIMessage
 
 
@@ -154,6 +154,9 @@ class _ToolLoopContext:
     # ``current_tool_actor_id()`` documents the resolution a host owes it.
     actor_id: str | None = None
     room_id: str | None = None
+    # The channel whose loop runs the turn: the calls it announced are its
+    # own, claimed by its reports alone (RFC §9.3).
+    channel_id: str | None = None
     # The chain depth of the response this turn produces (RFC §8.3, §21.4):
     # a result delivered later on the turn's behalf, a background
     # delegation's, inherits it, so a cycle of delegations ends at
@@ -201,7 +204,7 @@ class _ToolLoopContext:
     # The announced calls whose outcome the model already read (a call the
     # provider ran, or one an external handler decided), each with its
     # report: one cut before its observers heard it owes them that outcome.
-    known_outcomes: dict[str, Any] = field(default_factory=dict)
+    known_outcomes: dict[str, ToolCallEvent] = field(default_factory=dict)
     # Whether the turn's tool policy, resolved for its actor, admits a name;
     # ``None`` when no policy applies. Read by ``current_tool_allowed_names()``
     # (RFC §21.4): the gate refuses what it denies, so it is not callable.
@@ -394,11 +397,11 @@ def _current_turn_chain_depth() -> int:
     return ctx.chain_depth if ctx is not None else 0
 
 
-def turn_report_claim(call_id: str) -> Callable[[], bool] | None:
-    """The claim on call *call_id*'s one report in the turn running now, or
-    ``None`` when that turn did not announce it (RFC §9.3)."""
+def turn_report_claim(call_id: str, channel_id: str) -> Callable[[], bool] | None:
+    """The claim on call *call_id*'s one report in *channel_id*'s turn running
+    now, or ``None`` when no such turn announced it (RFC §9.3)."""
     ctx = _current_loop_ctx.get()
-    if ctx is None or call_id not in ctx.announced_calls:
+    if ctx is None or ctx.channel_id != channel_id or call_id not in ctx.announced_calls:
         return None
     return partial(ctx.claim_report, call_id)
 

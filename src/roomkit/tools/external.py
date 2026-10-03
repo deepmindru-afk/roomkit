@@ -188,8 +188,10 @@ class ExternalToolHandler(ABC):
         Fires ``ON_TOOL_CALL`` hooks via the injected callback for
         observability. Subclasses that override this should call
         ``await self._fire_on_tool_hook(...)`` to preserve hook integration,
-        and MUST pass ``is_error`` on to it — it is the outcome of the call,
-        and nothing downstream can recover it from the result body.
+        within this call, and MUST pass ``is_error`` and ``tool_call_id`` on
+        to it: ``is_error`` is the outcome of the call, which nothing
+        downstream can recover from the result body, and ``tool_call_id`` is
+        how the turn knows this call's one report was made (RFC §9.3).
 
         Args:
             tool_name: Name of the tool.

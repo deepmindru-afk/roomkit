@@ -156,12 +156,12 @@ async def _decide(host: ToolCallHost, call: RealtimeToolCall, door: ToolCallDoor
         return ToolOutcome(OutcomeKind.REFUSED, call.unreadable)
     if host._call_ended(call):
         # Whoever issued it is gone: no gate runs for it.
-        return _ended_outcome(call)
+        return ended_outcome(call)
     denial, carrying = await host._authorize_call(call, door)
     if denial is not None:
         return ToolOutcome(OutcomeKind.REFUSED, denial.body, detail=denial.detail)
     if host._call_ended(call):
-        return _ended_outcome(call)
+        return ended_outcome(call)
     if door.channel_serves:
         served = await host._serve_channel_tool(call, door, carrying)
         if served is not None:
@@ -242,6 +242,10 @@ async def finish_tool_call(
     result, and an observer must not stand in front of it.
     """
     bounded = replace(outcome, result=host._bound_call_result(call, result_text(outcome.result)))
+    if outcome.failed:
+        # Reported after it goes out: an ending that cuts in between still
+        # owes the observers this outcome.
+        call.owed = outcome
     await deliver_once(call, door, bounded)
     if outcome.failed:
         # The bound is the model's copy: a refusal's observers receive its raw
@@ -293,8 +297,13 @@ async def submit_tool_outcome(
 
 async def report_cancelled_call(host: ToolCallHost, call: RealtimeToolCall, why: str) -> None:
     """Report *call*, interrupted before its result, once, as cancelled (RFC §9.3)."""
+    await report_failed_call(host, call, cancelled_outcome(call, why))
+
+
+def cancelled_outcome(call: RealtimeToolCall, why: str) -> ToolOutcome:
+    """The outcome of *call*, cut before its result by what *why* names."""
     body = cancelled_tool_error(call.name, f"{why} before its result; nothing was sent.")
-    await report_failed_call(host, call, ToolOutcome(OutcomeKind.CANCELLED, body))
+    return ToolOutcome(OutcomeKind.CANCELLED, body)
 
 
 async def report_interrupted_calls(
@@ -307,20 +316,26 @@ async def report_interrupted_calls(
 
 
 async def _report_interrupted(host: ToolCallHost, call: RealtimeToolCall, why: str) -> None:
+    """Report one call an ending interrupted: cancelled before its result went
+    out; with the outcome it owes after, when the ending cut its report."""
     if not call.delivered:
         await report_cancelled_call(host, call, why)
-    elif call.read is not None:
-        await _report_read_call(host, call, call.read)
+    elif call.owed is not None and call.owed.failed:
+        await report_failed_call(host, call, call.owed)
+    elif call.owed is not None:
+        await _report_read_call(host, call, result_text(call.owed.result))
 
 
 async def _report_read_call(host: ToolCallHost, call: RealtimeToolCall, read: str) -> None:
     """Tell ON_TOOL_CALL's observers alone what the model read of *call*,
     unless its report was already made (RFC §9.3)."""
     framework = host._tool_framework(call)
-    if framework is None or not call.claim_report():
+    if framework is None:
         return
     try:
-        await framework._observe_failed_tool_call(host._tool_event(call, read), host.channel_id)
+        await framework._observe_failed_tool_call(
+            host._tool_event(call, read), host.channel_id, claim=call.claim_report
+        )
     except Exception:
         logger.warning("ON_TOOL_CALL observation failed for tool %s", call.name, exc_info=True)
 
@@ -331,7 +346,7 @@ async def report_failed_call(
     """Tell ON_TOOL_CALL's observers *call* failed, was refused or was
     cancelled, unless its outcome was already reported (RFC §9.3)."""
     framework = host._tool_framework(call)
-    if framework is None or not call.claim_report():
+    if framework is None:
         return
     event = replace(
         host._tool_event(call, result_text(outcome.result)),
@@ -340,7 +355,7 @@ async def report_failed_call(
         error_detail=outcome.detail,
     )
     try:
-        await framework._observe_failed_tool_call(event, host.channel_id)
+        await framework._observe_failed_tool_call(event, host.channel_id, claim=call.claim_report)
     except Exception:
         logger.warning("ON_TOOL_CALL observation failed for tool %s", call.name, exc_info=True)
 
@@ -405,7 +420,6 @@ def serving_tool_call(
         _current_tool_call.reset(call_token)
 
 
-def _ended_outcome(call: RealtimeToolCall) -> ToolOutcome:
+def ended_outcome(call: RealtimeToolCall) -> ToolOutcome:
     """The outcome of a call whose issuer is gone before it was served."""
-    body = cancelled_tool_error(call.name, "The session ended before its result.")
-    return ToolOutcome(OutcomeKind.CANCELLED, body)
+    return cancelled_outcome(call, "The session ended")

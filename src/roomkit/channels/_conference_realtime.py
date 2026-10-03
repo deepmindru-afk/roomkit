@@ -530,11 +530,12 @@ class ConferenceRealtime:
         self, session: VoiceSession, call_id: str, name: str, arguments: dict[str, Any] | str
     ) -> None:
         room = self._guarded(session)
-        if room is None:
-            return
         call = RealtimeToolCall.from_provider(
             session, call_id, name, arguments, room_id=session.room_id
         )
+        if room is None:
+            self._report_stale_call(call)
+            return
         if not self._tool_calls.open(call):
             room.spawn(refuse_duplicate_call(self, call))
             return
@@ -693,6 +694,21 @@ class ConferenceRealtime:
             self._report_detached_calls(session)
         return session
 
+    def _report_stale_call(self, call: RealtimeToolCall) -> None:
+        """Report a call a session this channel no longer speaks for issued
+        (after a detach or a reconnect): nothing serves it and nothing is
+        sent, and it still gets its one report, cancelled (RFC §9.3)."""
+        if self._config is None:
+            return
+        self._track_report(report_cancelled_call(self, call, "The conference left the room"))
+
+    def _track_report(self, coro: Awaitable[None]) -> None:
+        """Run a report beside the teardown; the disconnect waits for it."""
+        report = asyncio.ensure_future(coro)
+        self._reports.add(report)
+        report.add_done_callback(self._reports.discard)
+        report.add_done_callback(log_task_exception)
+
     def _report_detached_calls(self, session: VoiceSession) -> None:
         """Report each call the detach interrupted, once, as cancelled (RFC §12.4).
 
@@ -702,12 +718,7 @@ class ConferenceRealtime:
         calls = self._tool_calls.take(session.id)
         if not calls:
             return
-        report = asyncio.ensure_future(
-            report_interrupted_calls(self, calls, "The conference left the room")
-        )
-        self._reports.add(report)
-        report.add_done_callback(self._reports.discard)
-        report.add_done_callback(log_task_exception)
+        self._track_report(report_interrupted_calls(self, calls, "The conference left the room"))
 
     async def _settle_reports(self) -> None:
         """Wait for the reports of the calls detaches interrupted."""

@@ -474,18 +474,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- A tool call cut while its own report ran is reported once (RMK-431, RFC
-  §9.3): a call the provider ran, a realtime Tool Search call whose result
-  went out, and a call an external handler decided are reported to
-  ON_TOOL_CALL's observers with the outcome the model read, where they were
-  reported nowhere; a call an external handler decided, cut while its
-  observers ran, is no longer reported a second time, cancelled. Every
-  channel claims a report after ON_TOOL_CALL's SYNC chain. A reasoning
-  backend's call issued once its session ended runs no gate and is reported
-  once, cancelled (`{"error": "Tool call cancelled", ...}`), where it read
-  "The session has ended." and was reported nowhere; a realtime call whose
-  session ended before its gate reads the same cancelled body, where it read
-  that no handler served it.
+- A tool call is reported once, whatever cuts it (RMK-431, RFC §9.3):
+  - A call whose outcome the model already read and whose report a cut
+    interrupted is reported to ON_TOOL_CALL's observers with that outcome: a
+    call the provider ran, a call an external handler decided (no longer
+    reported a second time, cancelled, when cut while its observers ran), a
+    realtime Tool Search call, a realtime call refused or failed whose result
+    went out. Every report runner claims the report once the observers'
+    context is built, and an ACP call's end reaches its report even when its
+    task is cut.
+  - A call issued once its session ended (by the provider, from speech, by
+    a reasoning backend, or by a conference session left behind) runs no
+    gate and is reported once, cancelled: it was reported nowhere. Every
+    ended call reads one body, `{"error": "Tool call cancelled", ...
+    "The session ended before its result; nothing was sent."}`.
 
 - A turn an AI channel fails before its stream exists (its memory refuses
   it, say) reaches `ON_ERROR` named by the exception's type, as a turn that

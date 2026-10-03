@@ -25,6 +25,7 @@ from roomkit.channels._acp_usage import (
     _report_context,
     _transport_usage,
 )
+from roomkit.channels._shielded import shielded
 from roomkit.channels._tool_event_result import tool_event_result
 from roomkit.models.streaming import (
     ThinkingDeltaMarker,
@@ -446,6 +447,14 @@ class ACPEventsMixin:
         end = _tool_end(tool, status, error, interrupted=interrupted)
         if turn is not None:
             turn.queue.put_nowait(_end_marker(tool, end))
+        # The call is closed from here: its end reaches its reports even if
+        # this task is cut meanwhile (RFC §9.3, one report per call).
+        await shielded(self._announce_tool_end(room_id, tool, end))
+
+    async def _announce_tool_end(
+        self, room_id: str | None, tool: _ToolState, end: _ToolEnd
+    ) -> None:
+        """Publish a closed call's end and report it, once."""
         if room_id is not None:
             await self._publish_tool_end(room_id, tool, end)
         if self._external_tool_handler is not None:

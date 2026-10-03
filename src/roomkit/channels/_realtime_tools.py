@@ -26,6 +26,7 @@ from roomkit.channels._realtime_tool_executor import (
     ABANDONED_BY_PROVIDER,
     ToolCallDoor,
     deliver_once,
+    ended_outcome,
     judge_tool_call,
     refuse_duplicate_call,
     report_cancelled_call,
@@ -248,8 +249,8 @@ class RealtimeToolsMixin:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
-        if session.state == VoiceSessionState.ENDED:
-            return
+        # A call on a session that ended still gets its one report, cancelled
+        # (RFC §9.3): the executor serves nothing for it.
         call = RealtimeToolCall.from_provider(
             session, call_id, name, arguments, mutes=self._mute_on_tool_call
         )
@@ -351,7 +352,9 @@ class RealtimeToolsMixin:
         """
         session_id = call.session.id
         if call.room_id is None:
-            call.room_id = self._session_room(call.session)
+            # A session already ended no longer maps its room: its calls are
+            # reported there all the same (RFC §9.3).
+            call.room_id = self._session_room(call.session) or call.session.room_id or None
         muted_before = self._tool_calls.muting(session_id)
         if not self._tool_calls.open(call):
             return False
@@ -370,24 +373,18 @@ class RealtimeToolsMixin:
         self._update_idle_event(session_id)
 
     async def _handle_tool_call(self, call: RealtimeToolCall) -> None:
-        if call.session.state == VoiceSessionState.ENDED:
-            return
         with serving_call(call.session.id, call.call_id):
             await self._execute_tool_call(call)
 
     async def _execute_tool_call(self, call: RealtimeToolCall) -> None:
         """Serve a provider's function call and submit its outcome (RFC §12.4)."""
         session = call.session
-        if session.state == VoiceSessionState.ENDED:
-            return
         # Unwrapped first, so the books, the span and every report name the
         # tool a fixed-declaration call_tool carries, not the transport.
         if call.unreadable is None:
             call.unreadable = self._unwrap_call_tool(call)
         await self._after_earlier_transcriptions(session)
-        if session.state == VoiceSessionState.ENDED:
-            return
-        call.room_id = self._session_room(session)
+        call.room_id = self._session_room(session) or call.room_id
         with self._tool_call_span(call, SpanKind.REALTIME_TOOL_CALL, "realtime_tool") as span:
             outcome = await run_tool_call(self, call, _ProviderDoor(self))
             span.close(outcome)
@@ -643,7 +640,7 @@ class RealtimeToolsMixin:
         support, session = self._skill_support, call.session
         lock = self._session_config_locks.get(session.id)
         if lock is None:
-            return _session_ended()
+            return ended_outcome(call)
         # A skill requires tools the session declares, whoever set them up
         # (its catalogue, orchestration).
         tools = self._session_catalogue(session.id)
@@ -656,7 +653,7 @@ class RealtimeToolsMixin:
         # this lock.
         async with lock:
             if session.state == VoiceSessionState.ENDED:
-                return _session_ended()
+                return ended_outcome(call)
             return await self._deliver_activation(call, door, outcome, result, skill)
 
     async def _judge_activation(
@@ -755,14 +752,17 @@ class RealtimeToolsMixin:
         session = call.session
         lock = self._session_config_locks.get(session.id)
         if lock is None:
-            return _session_ended()
+            return ended_outcome(call)
         async with lock:
             if session.state == VoiceSessionState.ENDED:
-                return _session_ended()
+                return ended_outcome(call)
             result, updated = await self._tool_search_support.handle_tool_call(
                 call.name, call.arguments, session.id
             )
             outcome = ToolOutcome(OutcomeKind.SERVED, self._bound_call_result(call, result))
+            # Reported after it goes out: an ending that cuts in between still
+            # owes the observers what the model read.
+            call.owed = outcome
             delivered = await deliver_once(call, door, outcome)
             if (
                 delivered
@@ -806,7 +806,6 @@ class RealtimeToolsMixin:
         """Report a delivered Tool Search call to every ON_TOOL_CALL hook, its
         report claimed where the observers hear it: an ending that cuts the
         chain leaves it owed, with what the model read (RFC §9.3)."""
-        call.read = result
         framework = self._tool_framework(call)
         if framework is None:
             return
@@ -818,8 +817,3 @@ class RealtimeToolsMixin:
             logger.debug(
                 "ON_TOOL_CALL report failed for tool-search tool %s", call.name, exc_info=True
             )
-
-
-def _session_ended() -> ToolOutcome:
-    """The outcome of a call its session ended before it was served."""
-    return ToolOutcome(OutcomeKind.CANCELLED, json.dumps({"error": "The session has ended."}))

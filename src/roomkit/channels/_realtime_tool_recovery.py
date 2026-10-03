@@ -207,8 +207,7 @@ class RealtimeToolRecoveryMixin:
     ) -> None:
         """Serve a recovered tool call behind the gate, as any realtime call
         (RFC §12.4), and inject its outcome as context."""
-        if session.state == VoiceSessionState.ENDED:
-            return
+        # A call on a session that ended still gets its one report, cancelled.
         call = RealtimeToolCall(session, f"recovered-{uuid4().hex[:12]}", tool_name, arguments)
         call.task = asyncio.current_task()
         self._open_tool_call(call)
