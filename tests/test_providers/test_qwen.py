@@ -148,6 +148,7 @@ class TestQwenAIProvider:
                 timeout=httpx.Timeout(30.0, connect=5.0),
                 max_retries=0,
                 default_headers=None,
+                http_client=None,
             )
 
     @pytest.mark.asyncio

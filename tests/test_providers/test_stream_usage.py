@@ -15,7 +15,6 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import patch
 
 import httpx
 import pytest
@@ -85,18 +84,14 @@ def _stream(requests: list[dict[str, Any]]) -> Callable[[httpx.Request], httpx.R
 async def _provider(
     handler: Callable[[httpx.Request], httpx.Response], **config: Any
 ) -> AsyncIterator[OpenAIAIProvider]:
-    sdk = pytest.importorskip("openai")
-    constructor = sdk.AsyncOpenAI
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        with patch(
-            "openai.AsyncOpenAI",
-            side_effect=lambda **kwargs: constructor(http_client=client, **kwargs),
-        ):
-            provider = OpenAIAIProvider(OpenAIConfig(api_key="k", model=_MODEL, **config))
-        try:
-            yield provider
-        finally:
-            await provider.close()
+    pytest.importorskip("openai")
+    provider = OpenAIAIProvider(
+        OpenAIConfig(api_key="k", model=_MODEL, **config), transport=httpx.MockTransport(handler)
+    )
+    try:
+        yield provider
+    finally:
+        await provider.close()
 
 
 async def _streamed_usage(provider: OpenAIAIProvider) -> dict[str, int]:

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import AsyncIterator
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from roomkit.providers.ai.base import (
     RETRYABLE_STATUS_CODES,
@@ -60,6 +60,9 @@ from roomkit.providers.ai.tool_declaration import ToolNameRule, chat_tool_declar
 from roomkit.providers.openai.config import OpenAIConfig
 from roomkit.providers.openai.models import MODELS
 from roomkit.providers.utils import _aclose_stream, http_timeout
+
+if TYPE_CHECKING:
+    import httpx
 
 OPENAI_TOOL_NAMES = ToolNameRule("openai", r"[A-Za-z0-9_-]{1,128}")
 """The tool names OpenAI's endpoint accepts (measured 2026-10-02)."""
@@ -108,7 +111,14 @@ class OpenAIAIProvider(AIProvider):
     mode sets it false; ``supports_response_schema`` on the config overrides
     it either way, for a server behind ``base_url`` that differs."""
 
-    def __init__(self, config: OpenAIConfig) -> None:
+    def __init__(
+        self, config: OpenAIConfig, *, transport: httpx.AsyncBaseTransport | None = None
+    ) -> None:
+        """*transport* carries every request the SDK makes, inside the SDK's own
+        default client (its connection limits and redirects kept): the seam
+        for an outbound policy that judges the address actually dialled, or a
+        ``MockTransport`` in a test. It is closed with the provider. ``None``
+        leaves the SDK its default client."""
         try:
             import openai as _openai
         except ImportError as exc:
@@ -126,7 +136,23 @@ class OpenAIAIProvider(AIProvider):
             timeout=http_timeout(config),
             max_retries=config.max_retries,
             default_headers=config.default_headers,
+            http_client=self._sdk_http_client(_openai, transport),
         )
+
+    @staticmethod
+    def _sdk_http_client(
+        openai_module: Any, transport: httpx.AsyncBaseTransport | None
+    ) -> httpx.AsyncClient | None:
+        """The SDK's default HTTP client over *transport*; ``None`` without one.
+
+        The SDK's own class, not a bare ``httpx.AsyncClient``, so its defaults
+        (connection limits, redirects) stay. Its timeout is the one the SDK
+        client is built with, applied per request.
+        """
+        if transport is None:
+            return None
+        client: httpx.AsyncClient = openai_module.DefaultAsyncHttpxClient(transport=transport)
+        return client
 
     @property
     def _provider_name(self) -> str:

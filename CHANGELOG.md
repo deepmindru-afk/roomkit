@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `transport=` on `OpenAIAIProvider`, `AzureAIProvider`,
+  `OpenRouterAIProvider` and `create_vllm_provider` (RMK-408), inherited by
+  every provider built on `OpenAIAIProvider`: an `httpx.AsyncBaseTransport`
+  every request goes through, inside the SDK's own default client, for an
+  outbound policy that judges the address dialled or a `MockTransport`.
+  Example: `examples/openai_outbound_policy.py`.
+
 - `ConferenceChannel.ensure_bot(room_id)` (RMK-408, RFC §12.10.4): a host's
   own request for the bot's join, awaited, returning the `BotSession`; one join
   for concurrent calls and the lazy triggers, a lost session joined again,

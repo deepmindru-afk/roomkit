@@ -148,6 +148,7 @@ class TestLiteLLMAIProvider:
                 timeout=httpx.Timeout(30.0, connect=5.0),
                 max_retries=0,
                 default_headers=None,
+                http_client=None,
             )
 
     def test_lazy_import_error_names_litellm_extra(self) -> None:

@@ -201,6 +201,7 @@ class TestOpenRouterAIProvider:
                     "HTTP-Referer": "https://myapp.example",
                     "X-Title": "My App",
                 },
+                http_client=None,
             )
 
     def test_client_created_without_headers_when_unset(self) -> None:

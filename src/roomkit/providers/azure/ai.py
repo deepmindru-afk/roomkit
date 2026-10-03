@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from roomkit.providers.ai.base import ModelInfo
 from roomkit.providers.azure.config import AzureAIConfig
 from roomkit.providers.openai.ai import OpenAIAIProvider
 from roomkit.providers.utils import http_timeout
+
+if TYPE_CHECKING:
+    import httpx
 
 
 class AzureAIProvider(OpenAIAIProvider):
@@ -18,7 +23,10 @@ class AzureAIProvider(OpenAIAIProvider):
 
     _config: AzureAIConfig
 
-    def __init__(self, config: AzureAIConfig) -> None:
+    def __init__(
+        self, config: AzureAIConfig, *, transport: httpx.AsyncBaseTransport | None = None
+    ) -> None:
+        """*transport* carries every request, as for :class:`OpenAIAIProvider`."""
         try:
             import openai as _openai
         except ImportError as exc:
@@ -35,6 +43,7 @@ class AzureAIProvider(OpenAIAIProvider):
             api_version=config.api_version,
             timeout=http_timeout(config),
             max_retries=config.max_retries,
+            http_client=self._sdk_http_client(_openai, transport),
         )
 
     @property

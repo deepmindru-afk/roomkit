@@ -116,6 +116,7 @@ CONSOLE=1 uv run python examples/<example>.py
 | `quickstart.py` | WebSocket | Two WebSocket users chatting with an AI assistant |
 | `anthropic_ai.py` | Anthropic | AI-powered assistant using Anthropic Claude |
 | `openai_ai.py` | OpenAI | AI-powered assistant using OpenAI GPT |
+| `openai_outbound_policy.py` | OpenAI | An outbound policy through `transport=`: a private endpoint refused before a byte leaves (mock endpoint, no API key) |
 | `cerebras_ai.py` | Cerebras | Assistant with Cerebras reasoning and model selection |
 | `mistral_ai.py` | Mistral | AI-powered assistant using Mistral AI |
 | `openrouter_ai.py` | OpenRouter | Interactive CLI for any of 300+ models behind one key |

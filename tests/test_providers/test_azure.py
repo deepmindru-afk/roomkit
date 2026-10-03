@@ -310,6 +310,7 @@ class TestAzureAIProvider:
                 api_version="2024-12-01-preview",
                 timeout=httpx.Timeout(30.0, connect=5.0),
                 max_retries=0,
+                http_client=None,
             )
 
 

@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from roomkit.providers.ai.base import AIContext, ModelInfo
 from roomkit.providers.ai.reasoning import thinking_switch
 from roomkit.providers.openai.ai import OpenAIAIProvider
 from roomkit.providers.openai.config import OpenAIConfig
 from roomkit.providers.vllm.config import VLLMConfig
+
+if TYPE_CHECKING:
+    import httpx
 
 __all__ = ["VLLMConfig", "create_vllm_provider"]
 
@@ -99,7 +102,9 @@ class _VLLMProvider(OpenAIAIProvider):
         return True
 
 
-def create_vllm_provider(config: VLLMConfig) -> OpenAIAIProvider:
+def create_vllm_provider(
+    config: VLLMConfig, *, transport: httpx.AsyncBaseTransport | None = None
+) -> OpenAIAIProvider:
     """Create an OpenAI-compatible AI provider pointed at a local vLLM server.
 
     The returned provider is an :class:`OpenAIAIProvider` subclass: identical
@@ -115,11 +120,12 @@ def create_vllm_provider(config: VLLMConfig) -> OpenAIAIProvider:
 
     Args:
         config: vLLM connection settings.
+        transport: Carries every request, as for :class:`OpenAIAIProvider`.
 
     Returns:
         A provider configured for the local vLLM server.
     """
-    return _VLLMProvider(_openai_config(config))
+    return _VLLMProvider(_openai_config(config), transport=transport)
 
 
 def _openai_config(config: VLLMConfig) -> OpenAIConfig:

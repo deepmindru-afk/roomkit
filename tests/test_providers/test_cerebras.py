@@ -98,20 +98,15 @@ def _stream_response(*deltas: dict[str, Any], finish: str = "stop") -> httpx.Res
 async def _provider(
     handler: Callable[[httpx.Request], httpx.Response], **config: Any
 ) -> AsyncIterator[CerebrasAIProvider]:
-    sdk = pytest.importorskip("openai")
-    constructor = sdk.AsyncOpenAI
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        with patch(
-            "openai.AsyncOpenAI",
-            side_effect=lambda **kwargs: constructor(http_client=client, **kwargs),
-        ):
-            provider = CerebrasAIProvider(
-                CerebrasConfig(**{"api_key": "test-key", "model": _MODEL, **config})
-            )
-        try:
-            yield provider
-        finally:
-            await provider.close()
+    pytest.importorskip("openai")
+    provider = CerebrasAIProvider(
+        CerebrasConfig(**{"api_key": "test-key", "model": _MODEL, **config}),
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        yield provider
+    finally:
+        await provider.close()
 
 
 def _context(**overrides: Any) -> AIContext:
