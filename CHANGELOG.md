@@ -331,6 +331,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A provider error that fails a turn before any round is logged once again
+  (RMK-403). Since the single tool loop (RMK-308) the AI channel logged it and
+  the stream's consumer logged it too: two WARNING lines for one incident with
+  a streaming target, and a WARNING a headless caller (`process_inbound` with
+  no streaming target, which gets the error on `InboundResult.error` and logs
+  it itself) did not ask for. The consumer's line is now the only one:
+  WARNING with a streaming target, ERROR for a missing model (404) or a server
+  fault (5xx), DEBUG for a headless caller.
+
 - Every outcome of a tool call reaches `ON_TOOL_CALL` as the model read it,
   on every door (RMK-395, RFC §9.3):
   - An AI channel reports, once and with `cancelled=True`, every call its

@@ -37,6 +37,18 @@ if TYPE_CHECKING:
 logger = logging.getLogger("roomkit.framework")
 
 
+def _provider_error_level(exc: ProviderError) -> int:
+    """ERROR for a missing model or a server fault, WARNING for a transient.
+
+    A 404 (the model does not exist) or a 5xx needs someone to act; no status
+    (connect refused, timeout), a 429 or another 4xx is expected now and then.
+    """
+    status = exc.status_code
+    if status == 404 or (status is not None and status >= 500):
+        return logging.ERROR
+    return logging.WARNING
+
+
 @dataclass
 class _StreamingResult:
     """Result of handling a streaming response.
@@ -330,19 +342,21 @@ class InboundStreamingMixin(HelpersMixin):
     def _log_stream_failure(
         exc: Exception, what: str, room_id: str, *, headless: bool = False
     ) -> None:
-        """Log a streaming-response failure at the right verbosity.
+        """Log a streaming-response failure once, at the level its cause calls for.
 
-        A ``ProviderError`` (backend unreachable, 5xx, timeout, context
-        overflow) is a transient/expected condition, not a code defect — no
-        traceback, and the error is also returned to the caller and delivered to
-        ``ON_ERROR`` hooks. When there is no streaming target (``headless`` — a
-        one-shot programmatic caller that owns its own logging), a framework
-        WARNING would just duplicate the caller's line, so it drops to DEBUG;
-        with a streaming target the framework WARNING is the operational record.
-        Any other exception is unexpected and keeps its full traceback.
+        This is the one line a failed turn gets: the AI channel raises its
+        error and leaves the log to the stream's consumer. A ``ProviderError``
+        (backend unreachable, 5xx, timeout, context overflow) is not a code
+        defect: no traceback, and the error is also returned to the caller and
+        delivered to ``ON_ERROR`` hooks. When there is no streaming target
+        (``headless``: a one-shot programmatic caller that owns its own
+        logging), a framework WARNING would just duplicate the caller's line, so
+        it drops to DEBUG; with a streaming target the framework line is the
+        operational record (:func:`_provider_error_level`). Any other exception
+        is unexpected and keeps its full traceback.
         """
         if isinstance(exc, ProviderError):
-            level = logging.DEBUG if headless else logging.WARNING
+            level = logging.DEBUG if headless else _provider_error_level(exc)
             logger.log(level, "%s failed for room %s: %s", what, room_id, exc)
         else:
             logger.exception("%s failed for room %s", what, room_id)

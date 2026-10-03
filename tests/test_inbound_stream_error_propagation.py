@@ -17,9 +17,12 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 
+import pytest
+
 from roomkit.channels.ai import AIChannel
 from roomkit.core.framework import RoomKit
 from roomkit.core.hooks import HookRegistration
+from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage, InboundResult
 from roomkit.models.enums import ChannelCategory, HookExecution, HookTrigger
@@ -176,16 +179,95 @@ async def test_non_streaming_provider_error_propagates_with_cause() -> None:
     assert len(errors) == 1  # ON_ERROR card still fires
 
 
-async def test_a_turn_failing_before_any_round_logs_one_warning_no_traceback(caplog) -> None:
-    """The channel logs a ProviderError that fails a turn before any round as
-    one WARNING line without a stack, whatever the provider streams."""
-    exc = ProviderError("connection refused", provider="mock")
-    with caplog.at_level(logging.WARNING, logger="roomkit.channels.ai"):
-        await _run_headless_turn(AIChannel("ai1", provider=_GenerateRaisingProvider(exc)))
+class _StreamingTransport(SimpleChannel):
+    """A transport that takes the live text of a streamed answer."""
 
-    records = [r for r in caplog.records if "AI provider error" in r.message]
-    assert len(records) == 1
-    assert records[0].levelno == logging.WARNING
+    @property
+    def supports_streaming_delivery(self) -> bool:
+        return True
+
+    async def deliver_stream(
+        self,
+        text_stream: AsyncIterator[object],
+        event: RoomEvent,
+        binding: ChannelBinding,
+        context: RoomContext,
+    ) -> ChannelOutput:
+        async for _chunk in text_stream:
+            pass
+        return ChannelOutput.empty()
+
+
+async def _run_targeted_turn(ai: AIChannel) -> InboundResult:
+    """One inbound turn on a room where a second transport takes the live stream."""
+    kit = RoomKit()
+    kit.register_channel(SimpleChannel("sms1"))
+    kit.register_channel(_StreamingTransport("ws1"))
+    kit.register_channel(ai)
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "sms1")
+    await kit.attach_channel("r1", "ws1")
+    await kit.attach_channel("r1", "ai1", category=ChannelCategory.INTELLIGENCE)
+    result = await kit.process_inbound(
+        InboundMessage(channel_id="sms1", sender_id="u1", content=TextContent(body="go"))
+    )
+    await kit.close()
+    return result
+
+
+def _raising_provider(streams: bool, exc: Exception) -> MockAIProvider:
+    return _StreamRaisingProvider(exc) if streams else _GenerateRaisingProvider(exc)
+
+
+def _roomkit_records(caplog, level: int) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if r.name.startswith("roomkit") and r.levelno >= level]
+
+
+@pytest.mark.parametrize("streams", [True, False])
+async def test_a_turn_failing_before_any_round_is_one_warning_for_a_streaming_target(
+    caplog, streams: bool
+) -> None:
+    """One incident, one roomkit line: the stream's consumer logs it, the loop
+    does not log it a second time, whatever the provider streams."""
+    exc = ProviderError("connection refused", provider="mock")
+    with caplog.at_level(logging.DEBUG):
+        result = await _run_targeted_turn(
+            AIChannel("ai1", provider=_raising_provider(streams, exc))
+        )
+
+    assert result.error is exc
+    warnings = _roomkit_records(caplog, logging.WARNING)
+    assert [r.levelno for r in warnings] == [logging.WARNING]
+    assert "connection refused" in warnings[0].getMessage()
+    assert warnings[0].exc_info is None
+
+
+@pytest.mark.parametrize("streams", [True, False])
+async def test_a_turn_failing_before_any_round_is_no_roomkit_warning_when_headless(
+    caplog, streams: bool
+) -> None:
+    """A headless caller gets the error back and owns its log: roomkit's own
+    line stays at DEBUG, whatever the provider streams."""
+    exc = ProviderError("connection refused", provider="mock")
+    with caplog.at_level(logging.DEBUG):
+        result, _errors = await _run_headless_turn(
+            AIChannel("ai1", provider=_raising_provider(streams, exc))
+        )
+
+    assert result.error is exc
+    assert _roomkit_records(caplog, logging.WARNING) == []
+
+
+@pytest.mark.parametrize("status", [404, 503])
+async def test_a_missing_model_or_a_server_fault_is_an_error_for_a_streaming_target(
+    caplog, status: int
+) -> None:
+    exc = ProviderError("model gone", provider="mock", status_code=status)
+    with caplog.at_level(logging.DEBUG):
+        await _run_targeted_turn(AIChannel("ai1", provider=_raising_provider(False, exc)))
+
+    records = _roomkit_records(caplog, logging.WARNING)
+    assert [r.levelno for r in records] == [logging.ERROR]
     assert records[0].exc_info is None
 
 

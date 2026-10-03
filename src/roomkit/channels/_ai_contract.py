@@ -27,7 +27,6 @@ if TYPE_CHECKING:
         AITextPart,
         AITool,
         AIToolResultPart,
-        ProviderError,
         StreamEvent,
     )
     from roomkit.realtime.base import EphemeralEventType
@@ -117,8 +116,6 @@ class _AIChannelContract:
 
     @property
     def _telemetry_provider(self) -> TelemetryProvider: ...
-
-    def _log_provider_error(self, exc: ProviderError) -> None: ...
 
     @property
     def _effective_tool_policy(self) -> ToolPolicy | None: ...

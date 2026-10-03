@@ -11,7 +11,7 @@ from roomkit.channels._served_tools import CollisionLog
 from roomkit.channels._turn_notes import turn_input
 from roomkit.models.event import RoomEvent
 from roomkit.models.tool_call import AIGenerationEvent
-from roomkit.providers.ai.base import AIContext, ProviderError
+from roomkit.providers.ai.base import AIContext
 from roomkit.telemetry.base import TelemetryProvider
 from roomkit.telemetry.noop import NoopTelemetryProvider
 from roomkit.tools.context import _current_loop_ctx, _ToolLoopContext
@@ -86,35 +86,6 @@ class AIGenerationMixin(_AIChannelContract):
                 collisions=self._collisions,
             )
         return gen_event.ai_context, False
-
-    def _log_provider_error(self, exc: ProviderError) -> None:
-        """One log line for a failed turn, its level by what the status says."""
-        if exc.status_code == 404:
-            logger.error(
-                "AI model not found (channel=%s, provider=%s): %s",
-                self.channel_id,
-                exc.provider,
-                exc,
-            )
-        elif exc.status_code and exc.status_code >= 500:
-            logger.error(
-                "AI provider server error (channel=%s, provider=%s, status=%s): %s",
-                self.channel_id,
-                exc.provider,
-                exc.status_code,
-                exc,
-            )
-        else:
-            # Connect-refused/timeout (status None), rate-limit (429), other
-            # 4xx: expected transients — one WARNING line, no traceback (the
-            # error is re-raised and surfaced to the caller regardless).
-            logger.warning(
-                "AI provider error (channel=%s, provider=%s, status=%s): %s",
-                self.channel_id,
-                exc.provider,
-                exc.status_code,
-                exc,
-            )
 
 
 def _adopt_hook_toolset(
