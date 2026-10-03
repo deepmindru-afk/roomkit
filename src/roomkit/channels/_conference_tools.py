@@ -14,10 +14,11 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
-from roomkit.channels._ai_policy import policy_admits, policy_refusal
+from roomkit.channels._ai_policy import policy_admits
 from roomkit.channels._served_tools import CollisionLog, declared_once, dict_tool_name
 from roomkit.models.enums import ChannelType
 from roomkit.models.tool_call import ToolCallEvent
+from roomkit.tools.policy import policy_refusal
 from roomkit.tools.result import GateRefusal, bounded_result, pre_execution_denial
 from roomkit.tools.validation import fold_hoisted_arguments, validate_tool_arguments
 

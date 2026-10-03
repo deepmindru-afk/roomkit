@@ -41,7 +41,7 @@ from typing import Any
 
 from roomkit.models.enums import ChannelType
 from roomkit.models.tool_call import ToolCallEvent
-from roomkit.tools.policy import ToolPolicy
+from roomkit.tools.policy import ToolPolicy, policy_refusal
 from roomkit.tools.result import pre_execution_denial
 
 logger = logging.getLogger("roomkit.tools.external")
@@ -314,7 +314,11 @@ class PolicyExternalToolHandler(ExternalToolHandler):
         tenant_id: str | None = None,
         room_id: str | None = None,
     ) -> ToolDecision:
-        # Fire BEFORE_TOOL_USE hook first
+        # The policy before BEFORE_TOOL_USE, as every gate orders them (RFC
+        # §21.1): an approval hook is never asked about a tool it may not run.
+        if self._policy and not self._policy.is_allowed(tool_name):
+            return ToolDecision(approved=False, reason=policy_refusal(tool_name))
+
         decision = await self._fire_before_hook(
             tool_name, tool_input, tool_call_id=tool_call_id, room_id=room_id
         )
@@ -324,13 +328,6 @@ class PolicyExternalToolHandler(ExternalToolHandler):
                 logger.warning("BEFORE_TOOL_USE refused %s: %s", tool_name, decision.detail)
             return ToolDecision(
                 approved=False, reason=pre_execution_denial(tool_name, decision.reason)
-            )
-
-        # Apply policy
-        if self._policy and not self._policy.is_allowed(tool_name):
-            return ToolDecision(
-                approved=False,
-                reason=f"Tool '{tool_name}' denied by policy",
             )
 
         return ToolDecision(approved=True, modified_input=decision.arguments)

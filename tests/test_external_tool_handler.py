@@ -27,7 +27,7 @@ from roomkit.tools.external import (
     PolicyExternalToolHandler,
     ToolDecision,
 )
-from roomkit.tools.policy import ToolPolicy
+from roomkit.tools.policy import ToolPolicy, policy_refusal
 from tests.tool_loop_modes import respond
 
 # ---------------------------------------------------------------------------
@@ -113,7 +113,7 @@ class TestPolicyExternalToolHandler:
         handler = PolicyExternalToolHandler(policy=ToolPolicy(deny=["Bash"]))
         decision = await handler.process_tool_call("Bash", {"command": "rm -rf /"})
         assert decision.approved is False
-        assert "denied by policy" in decision.reason
+        assert decision.reason == policy_refusal("Bash")
 
     async def test_allow_by_policy(self) -> None:
         handler = PolicyExternalToolHandler(policy=ToolPolicy(deny=["Bash"]))
@@ -177,10 +177,13 @@ class TestPolicyExternalToolHandler:
         assert decision.approved is True
 
     async def test_before_hook_and_policy_combined(self) -> None:
-        """Hook allows but policy denies — should be denied."""
+        """The policy refuses before the hook is asked (RFC §21.1): an approval
+        hook never sees a tool it may not run (RMK-394)."""
         handler = PolicyExternalToolHandler(policy=ToolPolicy(deny=["Bash"]))
+        asked: list[str] = []
 
         async def allow_all(event: ToolCallEvent) -> BeforeToolDecision:
+            asked.append(event.name)
             return BeforeToolDecision(allowed=True)
 
         handler._before_tool_hook = allow_all
@@ -188,7 +191,10 @@ class TestPolicyExternalToolHandler:
 
         decision = await handler.process_tool_call("Bash", {"cmd": "ls"})
         assert decision.approved is False
-        assert "denied by policy" in decision.reason
+        assert decision.reason == policy_refusal("Bash")
+        assert asked == []
+        assert (await handler.process_tool_call("Read", {})).approved is True
+        assert asked == ["Read"]
 
 
 # ---------------------------------------------------------------------------

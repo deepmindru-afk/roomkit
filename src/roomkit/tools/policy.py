@@ -35,6 +35,13 @@ class RoleOverride(BaseModel):
     mode: Literal["restrict", "replace"] = "restrict"
 
 
+def policy_refusal(name: str) -> str:
+    """What the model reads of a call the tool policy refused, whichever
+    gate refused it (an AI channel, a realtime session, a conference, an
+    external tool handler)."""
+    return f"Tool '{name}' is not permitted by the agent's tool policy."
+
+
 class ToolPolicy(BaseModel):
     """Per-agent allow/deny rules for tool access.
 

@@ -9,7 +9,7 @@ import json
 import logging
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -57,6 +57,7 @@ from roomkit.voice.base import VoiceSessionState
 if TYPE_CHECKING:
     from roomkit.core.framework import RoomKit
     from roomkit.models.context import RoomContext
+    from roomkit.tools.context import _ToolLoopContext
     from roomkit.voice.backends.base import VoiceBackend
     from roomkit.voice.base import VoiceSession
     from roomkit.voice.realtime.provider import RealtimeVoiceProvider
@@ -503,13 +504,18 @@ class RealtimeToolsMixin:
         if call.name == TOOL_ACTIVATE_SKILL:
             return await self._serve_skill_activation(call, door, carrying)
         return await serve_tool_call(
-            self, call, carrying, answer_with=lambda: self._skill_answer(call)
+            self, call, carrying, answer_with=lambda: self._skill_answer(call, carrying)
         )
 
-    async def _skill_answer(self, call: RealtimeToolCall) -> str:
-        """A skill tool's answer (a reference, a script's output), bounded in time."""
-        answer = self._skill_support.handle_tool_call(call.name, call.arguments, call.session.id)
-        return await answer_within(self._call_timeout(call.name, call.room_id), call.name, answer)
+    async def _skill_answer(self, call: RealtimeToolCall, carrying: RoomContext | None) -> str:
+        """A skill tool's answer (a reference, a script's output), bounded in
+        time, inside the tool call context as a handler's (RFC §12.4)."""
+        async with self._tool_call_scope(call, carrying) as loop_ctx:
+            answer = self._skill_support.handle_tool_call(
+                call.name, call.arguments, call.session.id
+            )
+            timeout = self._call_timeout(call.name, loop_ctx.room_id)
+            return await answer_within(timeout, call.name, answer)
 
     async def _answer_call(self, call: RealtimeToolCall, carrying: RoomContext | None) -> str:
         """The handler's answer, as the text the model reads.
@@ -551,6 +557,17 @@ class RealtimeToolsMixin:
         """The answer to one call, run inside the tool call context (RFC §21.4),
         whichever door brought the call: the tool orchestration set up for the
         room, else the host's handler."""
+        async with self._tool_call_scope(call, gate_context) as loop_ctx:
+            timeout = self._call_timeout(call.name, loop_ctx.room_id)
+            answer = self._answer(call.name, call.arguments, loop_ctx.room_id)
+            return await answer_within(timeout, call.name, answer)
+
+    @contextlib.asynccontextmanager
+    async def _tool_call_scope(
+        self, call: RealtimeToolCall, gate_context: RoomContext | None
+    ) -> AsyncIterator[_ToolLoopContext]:
+        """The tool call context one call is served in (RFC §21.4): its room,
+        actor and chain depth, the session, and ``current_tool_call()``."""
         session = call.session
         loop_ctx = await tool_loop_context(
             self._framework,
@@ -563,9 +580,7 @@ class RealtimeToolsMixin:
         token = _current_voice_session.set(session)
         try:
             with serving_tool_call(call, self.channel_id, loop_ctx):
-                timeout = self._call_timeout(call.name, loop_ctx.room_id)
-                answer = self._answer(call.name, call.arguments, loop_ctx.room_id)
-                return await answer_within(timeout, call.name, answer)
+                yield loop_ctx
         finally:
             _current_voice_session.reset(token)
 

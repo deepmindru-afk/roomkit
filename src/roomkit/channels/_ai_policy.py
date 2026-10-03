@@ -15,7 +15,7 @@ from roomkit.channels._tool_reopen import (
 )
 from roomkit.models.tool_call import DeclaredTool, ToolDeclarationOrigin
 from roomkit.providers.ai.base import AIContext, AIMessage, AITool, AIToolResultPart
-from roomkit.tools.policy import ToolPolicy, matches_any_pattern
+from roomkit.tools.policy import ToolPolicy, matches_any_pattern, policy_refusal
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -48,11 +48,6 @@ def policy_admits(policy: ToolPolicy | None, name: str, exempt: Container[str]) 
     one of these names is not the channel's, and the policy governs it.
     """
     return name in exempt or policy is None or policy.is_allowed(name)
-
-
-def policy_refusal(name: str) -> str:
-    """What the model reads of a call the tool policy refused."""
-    return f"Tool '{name}' is not permitted by the agent's tool policy."
 
 
 class AIToolPolicyMixin(_AIChannelContract):

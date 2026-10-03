@@ -204,6 +204,10 @@ async def judge_tool_call(
     verdict: ToolCallVerdict | None = None
     if framework is not None:
         event = host._tool_event(call, None if served is None else str(served))
+        if served is not None:
+            # The handler's structured copy, which the SYNC chain may replace
+            # or clear and the observers then receive (RFC §9.3).
+            event = replace(event, structured_content=call.structured_content)
         verdict = await framework._judge_tool_call(
             event, host.channel_id, carrying=carrying, claim=call.claim_report
         )
@@ -359,7 +363,9 @@ def serving_tool_call(
     call: RealtimeToolCall, channel_id: str, loop_ctx: _ToolLoopContext
 ) -> Iterator[None]:
     """Run a handler inside *call*'s tool call context: ``current_tool_call()``
-    names the call, its room and the channel, as on every channel (RFC §21.4)."""
+    names the call, its room and the channel, as on every channel (RFC §21.4).
+    The structured copy the handler leaves there stays on *call*, for
+    ON_TOOL_CALL to see (RFC §9.3)."""
     call_ctx = ToolCallContext(
         room_id=loop_ctx.room_id or "", tool_call_id=call.call_id, channel_id=channel_id
     )
@@ -367,6 +373,7 @@ def serving_tool_call(
     loop_token = _current_loop_ctx.set(loop_ctx)
     try:
         yield
+        call.structured_content = call_ctx.structured_content
     finally:
         _current_loop_ctx.reset(loop_token)
         _current_tool_call.reset(call_token)

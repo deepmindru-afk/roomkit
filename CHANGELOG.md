@@ -325,6 +325,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A tool call meets the same gate and the same serving on every door
+  (RMK-394, RFC §6.4, §9.3, §21.1, §21.4, §21.5):
+  - Under Tool Search, a sandbox command or a human-input tool the model calls
+    while it is hidden is recovered and validated as a host tool is, where it
+    ran unvalidated (`sandbox_bash` with `{"cmd": 42}` ran against a strict
+    schema, and an `AskUserQuestion` with bogus arguments made the turn wait on
+    a person). One the policy or a skill keeps from the turn is still refused
+    by the gate, in its own words.
+  - An AI channel bounds a gate's refusal (a `BEFORE_TOOL_USE` block's reason,
+    a validation error) as it bounds a result: a 300 KB reason reached the
+    model whole.
+  - A realtime session serves its skill tools (`run_skill_script`,
+    `read_skill_reference`) inside the tool call context, as a handler:
+    `current_tool_call()` and `current_tool_room_id()` answered `None`.
+  - `PolicyExternalToolHandler` applies its policy before `BEFORE_TOOL_USE`,
+    so an approval hook is never asked about a tool the policy denies, and
+    refuses with the text every gate gives (`policy_refusal`, now in
+    `roomkit.tools.policy`), where it said "denied by policy".
+  - A realtime or conference handler's structured copy
+    (`current_tool_call().structured_content`) reaches `ON_TOOL_CALL`: a SYNC
+    hook sees it and may replace or clear it, and the observers receive what
+    the chain left, as on an AI channel. It was dropped.
+
 - An AI channel's tool memory and skill activations, rebuilt from the stored
   tool rows at its first turn in a room, read its own rows only, and pair
   each call's end with the start of the same call in the same turn (RMK-393,

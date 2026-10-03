@@ -16,11 +16,12 @@ import threading
 from collections.abc import Container
 from typing import TYPE_CHECKING, Any
 
-from roomkit.channels._ai_policy import policy_admits, policy_refusal
+from roomkit.channels._ai_policy import policy_admits
 from roomkit.channels._served_tools import CollisionLog, declared_once, dict_tool_name
 from roomkit.channels._tool_registry import ChannelRegistry, ToolSource, tool_dict
 from roomkit.models.enums import ChannelType
 from roomkit.models.tool_call import ToolCallEvent
+from roomkit.tools.policy import policy_refusal
 from roomkit.tools.result import GateRefusal, pre_execution_denial
 from roomkit.tools.validation import fold_hoisted_arguments, validate_tool_arguments
 

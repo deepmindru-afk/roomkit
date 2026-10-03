@@ -40,6 +40,9 @@ class RealtimeToolCall:
     ``call_tool`` transport's, are not an object): refused before the gate."""
     mutes: bool = False
     """The call holds the session's input muted while it runs."""
+    structured_content: dict[str, Any] | None = None
+    """The structured copy its handler left on the tool call context (MCP
+    ``structuredContent``), carried to ON_TOOL_CALL (RFC §9.3)."""
     task: asyncio.Task[Any] | None = field(default=None, repr=False)
     delivered: bool = False
     reported: bool = False

@@ -237,24 +237,35 @@ class AIToolsMixin(_AIChannelContract):
 
         Once the turn's toolset is resolved, a call must name a tool the round
         declared, an empty declaration included, or one Tool Search recovers
-        from the turn's catalogue (RFC §6.4); the channel's own tools answer
-        for themselves. A loop built without context (``all_context_tools``
-        is ``None``) has no declaration to hold the call to.
+        from the turn's catalogue (RFC §6.4); the channel's own tools that
+        Tool Search never hides answer for themselves. Its sandbox commands
+        and human-input tools it can hide, so they are recovered and validated
+        as a host tool is; one the policy or a skill keeps from the turn is
+        left to the gate, which refuses it in its own words. A loop built
+        without context
+        (``all_context_tools`` is ``None``) has no declaration to hold the
+        call to.
         """
         params = self._tool_parameters(name, declared_tools)
+        loop_ctx = self._get_loop_ctx()
         # A tool held unseen that nothing referenced is not callable yet: it
         # goes through recovery like a tool Tool Search hides (RFC §6.4).
-        referenced = self._get_loop_ctx().referenced
+        referenced = loop_ctx.referenced
         declared_names = {
             tool.name
             for tool in declared_tools or []
             if not tool.defer_loading or tool.name in referenced
         }
         channel_managed = name in self._channel_tool_names()
-        resolved = bool(declared_names) or self._get_loop_ctx().all_context_tools is not None
-        if not resolved or name in declared_names or channel_managed:
+        always_shown = channel_managed and name in self._never_hidden(loop_ctx.room_id)
+        resolved = bool(declared_names) or loop_ctx.all_context_tools is not None
+        if not resolved or name in declared_names or always_shown:
             return params, None
         recovered = self._recover_deferred_tool(name)
+        if recovered is None and channel_managed:
+            # A sandbox command or human-input tool the policy or a skill keeps
+            # from the turn: the gate below refuses it, in its own words.
+            return params, None
         if recovered is None:
             logger.warning("Provider requested undeclared tool %s", name)
             return None, self._undeclared_tool_error(name)
@@ -419,7 +430,10 @@ class AIToolsMixin(_AIChannelContract):
         guard = self._repeated_call_guard(tc.name, tc.arguments)
         body = guard or stopped.body
         await self._fire_tool_refusal(tc, tc.arguments, body, scope.room_id, detail=stopped.detail)
-        return ToolOutcome(OutcomeKind.REFUSED, body).as_part(tc.id, tc.name)
+        # Bounded as any outcome the model reads (RFC §21.5): a hook's reason
+        # can be as large as a result.
+        bounded = self._bound_tool_result(tc.name, body, tc.id)
+        return ToolOutcome(OutcomeKind.REFUSED, bounded).as_part(tc.id, tc.name)
 
     async def _gate_call(
         self, tc: Any, scope: _CallRound
