@@ -36,6 +36,7 @@ from roomkit.models.event import (
     TextContent,
     answer_text,
 )
+from roomkit.models.response_metadata import recorded_turn_end
 from roomkit.models.store_filter import EventFilter
 from roomkit.providers.utils import _aclose_stream
 
@@ -377,26 +378,14 @@ def _turn_end(record: Mapping[str, Any], rows: list[RoomEvent]) -> str | None:
     """How a delegated turn ended: as the turn's record names it, else as its
     last message does, for a channel that records it there only (RFC §6.4).
     ``None`` when neither names an end."""
-    return _named_end(record) or next(
+    return recorded_turn_end(record) or next(
         (
             reason
             for row in reversed(rows)
-            if row.type == EventType.MESSAGE and (reason := _named_end(row.metadata or {}))
+            if row.type == EventType.MESSAGE and (reason := recorded_turn_end(row.metadata or {}))
         ),
         None,
     )
-
-
-def _named_end(record: Mapping[str, Any]) -> str | None:
-    """The end a turn's record names: an AI channel's ``loop_end_reason``, or
-    an ACP agent's unclean outcome, its stop reason when it is not
-    ``end_turn``, ``interrupted`` when its prompt never returned (RFC §6.4)."""
-    if (reason := record.get("loop_end_reason")) is not None:
-        return reason
-    acp = record.get("acp")
-    if not isinstance(acp, Mapping):
-        return None
-    return acp.get("stop_reason") or ("interrupted" if acp.get("interrupted") else None)
 
 
 def _stream_record(sr: StreamingResponse) -> Mapping[str, Any]:

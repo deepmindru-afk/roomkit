@@ -603,6 +603,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The caller reads how each agent's turn ended, even one that wrote no
+  message (RMK-437, RFC §6.4, §6.7): `InboundResult.response_metadata` now
+  carries `turns[channel_id]` (`loop_end_reason`, `ai_usage`) for every
+  replying channel, an ACP agent's entry its stop reason (`completed` for
+  `end_turn`); an AI turn cut before writing any message told its caller
+  nothing, and the per-channel key keeps two agents from overwriting each
+  other's end. An ACP turn's `ON_AI_RESPONSE` now carries its stop reason as
+  `loop_end_reason` (it was always `None`); the field's type widens to
+  `str` to hold ACP's reasons.
+
 - A Supervisor whose task-formulation pass was cut short answers the user
   (RMK-436, RFC §19.7.3): with `auto_delegate`, a pass 1 its round cap,
   deadline or budget cut ran no worker, as it should, but the user's message

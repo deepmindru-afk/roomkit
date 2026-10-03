@@ -91,3 +91,18 @@ class ResponseMetadata(MutableMapping[str, Any]):
             python_schema=core_schema.no_info_plain_validator_function(cls.coerce),
             serialization=core_schema.plain_serializer_function_ser_schema(dict),
         )
+
+
+def recorded_turn_end(record: Mapping[str, Any]) -> str | None:
+    """How a turn ended, as its record names it (RFC §6.4): an AI channel's
+    ``loop_end_reason``; an ACP agent's stop reason, ``completed`` for a clean
+    ``end_turn``, ``interrupted`` when its prompt never returned. ``None`` when
+    the record names no end."""
+    if (reason := record.get("loop_end_reason")) is not None:
+        return reason
+    acp = record.get("acp")
+    if not isinstance(acp, Mapping):
+        return None
+    if acp.get("interrupted"):
+        return "interrupted"
+    return acp.get("stop_reason") or "completed"

@@ -222,7 +222,9 @@ class InboundResult(BaseModel):
     the same reason. It also rides each MESSAGE segment the turn persisted,
     but only segments that had text to carry: a turn ending on a tool call
     persists nothing after it, so the room cannot be asked how such a turn
-    ended. The caller is handed the record instead of hunting for it.
+    ended. The caller is handed the record instead of hunting for it, with
+    each replying channel's end under ``turns[channel_id]``
+    (``loop_end_reason``, an ACP agent's stop reason, ``ai_usage``).
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)

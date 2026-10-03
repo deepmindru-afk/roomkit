@@ -12,7 +12,7 @@ import asyncio
 import contextlib
 import logging
 import time
-from collections.abc import AsyncGenerator, AsyncIterator, Callable, Coroutine, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Coroutine, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any
@@ -29,7 +29,7 @@ from roomkit.channels._acp_usage import (
 from roomkit.channels.acp_transport import ACPSessionInvalidatedError
 from roomkit.models.context import RoomContext
 from roomkit.models.event import RoomEvent
-from roomkit.models.response_metadata import ResponseMetadata
+from roomkit.models.response_metadata import ResponseMetadata, recorded_turn_end
 from roomkit.models.streaming import StreamDelta
 from roomkit.models.tool_call import AfterResponseCallback, AIResponseEvent, response_transcript
 from roomkit.providers.ai.base import ProviderError
@@ -291,9 +291,9 @@ class ACPTurnMixin:
             if self._turns.get(session_id) is turn:
                 self._turns.pop(session_id, None)
             if turn.completed:
-                await self._report_response(turn)
+                await self._report_response(turn, metadata)
 
-    async def _report_response(self, turn: _TurnState) -> None:
+    async def _report_response(self, turn: _TurnState, metadata: Mapping[str, Any]) -> None:
         """Announce a finished turn to whatever observes agent responses.
 
         Reached only from a turn that ran to its terminal item without an
@@ -317,6 +317,8 @@ class ACPTurnMixin:
                     usage_metadata=turn.usage_metadata,
                     latency_ms=int((time.monotonic() - turn.started_at) * 1000),
                     streaming=True,
+                    # Its stop reason, ``completed`` for ``end_turn`` (RFC §6.4).
+                    loop_end_reason=recorded_turn_end(metadata),
                 )
             )
         except Exception:

@@ -23,7 +23,7 @@ from roomkit.models.enums import (
     ChannelDirection,
 )
 from roomkit.models.event import EventSource, RoomEvent, TextContent
-from roomkit.models.response_metadata import ResponseMetadata
+from roomkit.models.response_metadata import ResponseMetadata, recorded_turn_end
 from roomkit.providers.utils import _aclose_stream
 
 if TYPE_CHECKING:
@@ -418,6 +418,7 @@ class InboundStreamingMixin(HelpersMixin):
                 # replied; each writes under its own key, so merging keeps them
                 # all rather than letting the last one win.
                 record.update(sr.response_metadata or {})
+                _record_turn_end(record, sr)
         finally:
             # A transport can stop reading between two yields (or fail while
             # rendering one). Async-for alone does not close its generator;
@@ -443,3 +444,19 @@ class InboundStreamingMixin(HelpersMixin):
             room_id, unanswered(sr.trigger_event, sr.source_channel_id, sr.source_channel_type)
         )
         return False
+
+
+def _record_turn_end(record: ResponseMetadata, sr: StreamingResponse) -> None:
+    """Put how *sr*'s turn ended in the caller's record, under its channel:
+    ``turns[channel_id]`` = its ``loop_end_reason`` (an ACP agent's stop
+    reason) and ``ai_usage``. Readable for a turn that wrote no message, and
+    never overwritten by another channel's (RFC §6.4)."""
+    own = {**(sr.response_metadata or {}), **(sr.turn_record or {})}
+    if (end := recorded_turn_end(own)) is None:
+        return
+    entry: dict[str, Any] = {"loop_end_reason": end}
+    if (usage := own.get("ai_usage")) is not None:
+        entry["ai_usage"] = usage
+    turns = dict(record.get("turns") or {})
+    turns[sr.source_channel_id] = entry
+    record["turns"] = turns

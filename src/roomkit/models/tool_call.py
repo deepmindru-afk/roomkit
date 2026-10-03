@@ -349,7 +349,7 @@ class AIResponseEvent:
     round_count: int = 0
     """Number of tool execution rounds."""
 
-    loop_end_reason: LoopEndReason | None = None
+    loop_end_reason: LoopEndReason | str | None = None
     """Which of the tool loop's rules ended the turn, or None if unreported.
 
     The loop names it on its :class:`LoopEndMarker`, and this event carries
@@ -363,7 +363,10 @@ class AIResponseEvent:
     and ``"error"`` each name the rule that stopped it (``"unfinished"``: the
     channel's continuation policy still asked to go on once its tries had run
     out; ``"error"``: the provider interrupted the turn after a tool round and
-    the turn was delivered once its loop ended, RFC §6.4).
+    the turn was delivered once its loop ended, RFC §6.4). An ACP agent's
+    turn carries its stop reason: ``"completed"`` for ``end_turn``, else the
+    agent's own (``"max_tokens"``, ``"max_turn_requests"``, ``"refusal"``,
+    ``"cancelled"``).
 
     A turn whose loop did not reach its end fires no event at all: one that
     raised (a streamed turn the provider interrupted included) or whose
