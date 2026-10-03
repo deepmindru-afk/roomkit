@@ -544,6 +544,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
             external = _ExternalStreamTools(
                 channel_id=self.channel_id,
                 room_id=turn.room_id,
+                loop_ctx=loop_ctx,
                 publish=self._publish_tool_event,
                 serves_locally=partial(self._serves_locally, loop_ctx),
                 handler=self._external_tool_handler,

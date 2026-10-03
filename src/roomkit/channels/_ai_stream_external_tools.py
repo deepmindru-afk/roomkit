@@ -8,6 +8,7 @@ is the channel's own, served by the loop (RFC §9.3, who serves a call).
 from __future__ import annotations
 
 import json
+import logging
 import time
 from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass
@@ -20,8 +21,11 @@ from roomkit.providers.ai.base import StreamToolCall
 from roomkit.providers.ai.tool_calls import partial_call_error
 from roomkit.realtime.base import EphemeralEventType
 from roomkit.tools._outcome import OutcomeKind, ToolOutcome
+from roomkit.tools.context import _ToolLoopContext
 from roomkit.tools.external import ExternalToolHandler
 from roomkit.tools.result import as_tool_result
+
+logger = logging.getLogger("roomkit.channels.ai")
 
 
 class _ToolEventPublisher(Protocol):
@@ -42,6 +46,9 @@ class _ExternalStreamTools:
 
     channel_id: str
     room_id: str | None
+    # The turn's call registry: a call is announced there before its start,
+    # and its one report claimed (RFC §9.3).
+    loop_ctx: _ToolLoopContext
     publish: _ToolEventPublisher
     # Whether the turn has a tool of the channel's own under a name.
     serves_locally: Callable[[str], bool]
@@ -66,6 +73,10 @@ class _ExternalStreamTools:
         result = arguments.pop("_result", None) or ""
         is_error = arguments.pop("_is_error", False)
 
+        # Announced before its start goes out: whatever cuts it from here on
+        # (an approval still pending, say), the turn's end reports it.
+        self.loop_ctx.announced_calls[call.id] = call.model_copy(update={"arguments": arguments})
+        self.loop_ctx.external_calls.add(call.id)
         yield ToolCallStartMarker(tool_name=call.name, tool_id=call.id, arguments=arguments)
         if self.room_id:
             await self.publish(
@@ -144,6 +155,8 @@ class _ExternalStreamTools:
         """Hand the call's outcome to its handler, or report it to ON_TOOL_CALL's
         observers when the provider ran it with no handler: an outcome the
         model already read, so no hook may rewrite it (RFC §9.3)."""
+        if not self.loop_ctx.claim_report(call.id):
+            return
         if self.handler is not None:
             await self.handler.on_tool_result(
                 call.name,
@@ -168,3 +181,15 @@ class _ExternalStreamTools:
                 is_error=is_error,
             )
         )
+
+
+async def report_cut(handler: ExternalToolHandler, call: Any, room_id: str | None) -> None:
+    """Tell *handler* the turn cut *call* before its report: it reports the
+    call cancelled, as every channel reports a call it cut (RFC §9.3). A
+    handler that raises does not disturb the turn's end."""
+    try:
+        await handler.on_tool_cancelled(
+            call.name, call.arguments, tool_call_id=call.id, room_id=room_id
+        )
+    except Exception:
+        logger.exception("External tool handler failed on the cut call %s", call.id)

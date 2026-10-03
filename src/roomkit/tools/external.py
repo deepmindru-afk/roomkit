@@ -42,7 +42,7 @@ from typing import Any
 from roomkit.models.enums import ChannelType
 from roomkit.models.tool_call import ToolCallEvent
 from roomkit.tools.policy import ToolPolicy, policy_refusal
-from roomkit.tools.result import pre_execution_denial
+from roomkit.tools.result import cancelled_tool_error, pre_execution_denial
 
 logger = logging.getLogger("roomkit.tools.external")
 
@@ -201,6 +201,42 @@ class ExternalToolHandler(ABC):
             room_id: RoomKit room ID.
         """
 
+    async def on_tool_cancelled(
+        self,
+        tool_name: str,
+        tool_input: dict[str, Any],
+        *,
+        tool_call_id: str = "",
+        job_id: str | None = None,
+        room_id: str | None = None,
+    ) -> None:
+        """Called when the turn cut a call before its outcome was reported.
+
+        A stop, the turn's cancellation or a transport that stopped reading
+        ended it while this handler decided it (an approval still pending) or
+        while the provider ran it. The call has no result: it is reported to
+        ``ON_TOOL_CALL`` as cancelled, as every channel reports a call it cut
+        (RFC §9.3). Override it to withdraw what the call left pending (an
+        approval prompt, say), and call ``await super().on_tool_cancelled(...)``
+        to keep the report.
+
+        Args:
+            tool_name: Name of the tool.
+            tool_input: Tool arguments.
+            tool_call_id: Provider-assigned ID for this tool call.
+            job_id: Job identifier.
+            room_id: RoomKit room ID.
+        """
+        await self._fire_on_tool_hook(
+            tool_name,
+            tool_input,
+            cancelled_tool_error(tool_name, "The turn ended before its result."),
+            is_error=True,
+            cancelled=True,
+            tool_call_id=tool_call_id,
+            room_id=room_id,
+        )
+
     @property
     def channel_id(self) -> str:
         """The channel this handler serves, or ``""`` before registration.
@@ -261,6 +297,7 @@ class ExternalToolHandler(ABC):
         result: str,
         *,
         is_error: bool = False,
+        cancelled: bool = False,
         tool_call_id: str = "",
         room_id: str | None = None,
     ) -> None:
@@ -270,7 +307,8 @@ class ExternalToolHandler(ABC):
         MUST be forwarded: this boundary is the only place that holds it. The
         body is the provider's — a terminal's stderr, an SDK's message — and
         recognising a failure in it is guesswork, so an observer handed the
-        body alone reads a failed tool as a completed one.
+        body alone reads a failed tool as a completed one. ``cancelled`` marks
+        a call the turn cut before its outcome (:meth:`on_tool_cancelled`).
         """
         if self._on_tool_hook is None:
             return
@@ -283,6 +321,7 @@ class ExternalToolHandler(ABC):
             result=result,
             room_id=room_id,
             is_error=is_error,
+            cancelled=cancelled,
         )
         await self._on_tool_hook(event)
 

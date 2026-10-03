@@ -501,7 +501,14 @@ class ACPEventsMixin:
     async def _report_tool_end(
         handler: ExternalToolHandler, room_id: str | None, tool: _ToolState, end: _ToolEnd
     ) -> None:
+        """Hand a call's end to the handler: a call the turn cut has no result,
+        and the handler reports it cancelled (RFC §9.3)."""
         try:
+            if end.outcome == "cancelled":
+                await handler.on_tool_cancelled(
+                    tool.name, tool.arguments, tool_call_id=tool.tool_id, room_id=room_id
+                )
+                return
             await handler.on_tool_result(
                 tool.name,
                 tool.arguments,

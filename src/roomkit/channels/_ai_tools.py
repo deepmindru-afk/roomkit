@@ -11,6 +11,7 @@ from dataclasses import dataclass, replace
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
+from roomkit.channels._ai_stream_external_tools import report_cut
 from roomkit.channels._sandbox_handlers import handle_sandbox_command
 from roomkit.channels._served_tools import CollisionLog, declared_once
 from roomkit.channels._skill_constants import (
@@ -91,7 +92,7 @@ if TYPE_CHECKING:
     from roomkit.skills.executor import ScriptExecutor
     from roomkit.skills.registry import SkillRegistry
     from roomkit.tools.context import _ToolLoopContext
-    from roomkit.tools.external import BeforeToolCallback
+    from roomkit.tools.external import BeforeToolCallback, ExternalToolHandler
     from roomkit.tools.human_input import HumanInputToolHandler
 
     ToolResult = str | list[AITextPart | AIImagePart]
@@ -176,6 +177,7 @@ class AIToolsMixin(_AIChannelContract):
     _tool_call_hook: ToolCallCallback | None
     _tool_observer_hook: ToolCallObserver | None
     _before_tool_call_hook: BeforeToolCallback | None
+    _external_tool_handler: ExternalToolHandler | None
     _tool_search: bool | None
     _tool_search_pinned: set[str]
     _tool_search_threshold: int
@@ -631,8 +633,14 @@ class AIToolsMixin(_AIChannelContract):
     async def _report_unreported_calls(self, loop_ctx: _ToolLoopContext) -> None:
         """Report, cancelled, each call the turn announced and no report
         claimed: a stop, a cancellation or a transport that stopped reading cut
-        it before its result. Every channel reports such a call once (RFC §9.3)."""
+        it before its result. Every channel reports such a call once (RFC §9.3),
+        a call its external handler decides through that handler."""
+        handler = self._external_tool_handler
         for tc in loop_ctx.unreported_calls():
+            if handler is not None and tc.id in loop_ctx.external_calls:
+                loop_ctx.claim_report(tc.id)
+                await report_cut(handler, tc, loop_ctx.room_id)
+                continue
             body = cancelled_tool_error(tc.name, "The turn ended before its result.")
             await self._fire_tool_refusal(tc, tc.arguments, body, loop_ctx.room_id, cancelled=True)
 
