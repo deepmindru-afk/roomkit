@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import pytest
@@ -96,7 +97,7 @@ class TestCodecMeta:
 class TestBuildRequestBody:
     def test_pcm_body(self):
         provider = GrokTTSProvider(GrokTTSConfig(api_key="xai-test"))
-        body = provider._build_request_body("Hello", None)
+        body = provider._build_request_body("Hello", None, codec="pcm")
         assert body == {
             "text": "Hello",
             "voice_id": "eve",
@@ -106,12 +107,12 @@ class TestBuildRequestBody:
 
     def test_mp3_body_includes_bit_rate(self):
         provider = GrokTTSProvider(GrokTTSConfig(api_key="xai-test", codec="mp3"))
-        body = provider._build_request_body("Hi", None)
+        body = provider._build_request_body("Hi", None, codec="mp3")
         assert body["output_format"]["bit_rate"] == 128000
 
     def test_voice_override(self):
         provider = GrokTTSProvider(GrokTTSConfig(api_key="xai-test"))
-        body = provider._build_request_body("Hi", "rex")
+        body = provider._build_request_body("Hi", "rex", codec="pcm")
         assert body["voice_id"] == "rex"
 
 
@@ -253,6 +254,104 @@ class TestSynthesizeStreamInput:
         assert result[0].sample_rate == 24000
         assert result[1].data == b""
         assert result[1].is_final is True
+
+
+# ---------------------------------------------------------------------------
+# Streamed WAV (RMK-413)
+# ---------------------------------------------------------------------------
+
+
+async def _stream_over_http(provider: GrokTTSProvider) -> tuple[str, list[AudioChunk]]:
+    """Run ``synthesize_stream`` on a mocked client: the codec asked for, the chunks."""
+
+    async def aiter_bytes(chunk_size: int = 4096):
+        yield b"\x00\x01" * 8
+
+    response = MagicMock()
+    response.status_code = 200
+    response.aiter_bytes = aiter_bytes
+    stream_cm = AsyncMock()
+    stream_cm.__aenter__ = AsyncMock(return_value=response)
+    stream_cm.__aexit__ = AsyncMock(return_value=False)
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.stream = MagicMock(return_value=stream_cm)
+    provider._client = client
+    chunks = [chunk async for chunk in provider.synthesize_stream("Hello")]
+    return client.stream.call_args.kwargs["json"]["output_format"]["codec"], chunks
+
+
+async def _stream_over_ws(provider: GrokTTSProvider) -> tuple[str, list[AudioChunk]]:
+    """Run ``synthesize_stream_input`` on a mocked socket: the codec asked for, the chunks."""
+    audio = base64.b64encode(b"\x00\x01" * 8).decode()
+    messages = [
+        json.dumps({"type": "audio.delta", "delta": audio}),
+        json.dumps({"type": "audio.done", "trace_id": "t"}),
+    ]
+
+    async def ws_aiter():
+        for message in messages:
+            yield message
+
+    async def text():
+        yield "Hello"
+
+    ws = AsyncMock()
+    ws.__aiter__ = lambda self: ws_aiter()
+    ws_cm = AsyncMock()
+    ws_cm.__aenter__ = AsyncMock(return_value=ws)
+    ws_cm.__aexit__ = AsyncMock(return_value=False)
+    websockets = MagicMock()
+    websockets.connect = MagicMock(return_value=ws_cm)
+    websockets.exceptions = MagicMock()
+    with patch.dict("sys.modules", {"websockets": websockets}):
+        chunks = [chunk async for chunk in provider.synthesize_stream_input(text())]
+    query = parse_qs(urlsplit(websockets.connect.call_args.args[0]).query)
+    return query["codec"][0], chunks
+
+
+_STREAMS = pytest.mark.parametrize(
+    "stream", [_stream_over_http, _stream_over_ws], ids=["http", "websocket"]
+)
+
+
+class TestStreamedWav:
+    """A WAV stream opens with a RIFF header the chunks would play as audio."""
+
+    @_STREAMS
+    async def test_a_wav_config_streams_raw_pcm(self, stream):
+        provider = GrokTTSProvider(GrokTTSConfig(api_key="xai-test", codec="wav"))
+
+        codec, chunks = await stream(provider)
+
+        assert codec == "pcm"
+        assert {chunk.format for chunk in chunks} == {"pcm_s16le"}
+
+    @_STREAMS
+    @pytest.mark.parametrize(
+        ("configured", "declared"),
+        [("pcm", "pcm_s16le"), ("mp3", "mp3"), ("mulaw", "mulaw"), ("alaw", "alaw")],
+    )
+    async def test_other_codecs_stream_as_configured(self, stream, configured, declared):
+        provider = GrokTTSProvider(GrokTTSConfig(api_key="xai-test", codec=configured))
+
+        codec, chunks = await stream(provider)
+
+        assert codec == configured
+        assert {chunk.format for chunk in chunks} == {declared}
+
+    async def test_synthesize_keeps_wav(self):
+        response = MagicMock(spec=httpx.Response)
+        response.content = b"RIFF" + b"\x00" * 40 + b"\x00\x01" * 100
+        response.raise_for_status = MagicMock()
+        client = AsyncMock(spec=httpx.AsyncClient)
+        client.post = AsyncMock(return_value=response)
+        provider = GrokTTSProvider(GrokTTSConfig(api_key="xai-test", codec="wav"))
+        provider._client = client
+
+        result = await provider.synthesize("Hello")
+
+        assert client.post.call_args.kwargs["json"]["output_format"]["codec"] == "wav"
+        assert result.mime_type == "audio/wav"
 
 
 # ---------------------------------------------------------------------------

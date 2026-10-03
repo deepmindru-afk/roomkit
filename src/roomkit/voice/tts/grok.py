@@ -46,6 +46,8 @@ class GrokTTSConfig:
         voice_id: One of ``eve``, ``ara``, ``rex``, ``sal``, ``leo``.
         language: BCP-47 language code or ``auto``.
         codec: Output codec — ``pcm``, ``wav``, ``mp3``, ``mulaw``, ``alaw``.
+            ``wav`` applies to ``synthesize()``; a streamed request asks
+            for ``pcm`` instead.
         sample_rate: Output sample rate in Hz.
         bit_rate: MP3 bit rate (only used when *codec* is ``mp3``).
         base_url: Override the REST API base URL.
@@ -112,8 +114,10 @@ class GrokTTSProvider(TTSProvider):
     # REST synthesis
     # ------------------------------------------------------------------
 
-    def _build_request_body(self, text: str, voice: str | None) -> dict[str, object]:
-        """Build the JSON payload for the /tts endpoint."""
+    def _build_request_body(
+        self, text: str, voice: str | None, *, codec: str
+    ) -> dict[str, object]:
+        """Build the JSON payload for the /tts endpoint, asking for *codec*."""
         voice_id = voice or self._config.voice_id
         body: dict[str, object] = {
             "text": text,
@@ -121,13 +125,22 @@ class GrokTTSProvider(TTSProvider):
             "language": self._config.language,
         }
         output_format: dict[str, object] = {
-            "codec": self._config.codec,
+            "codec": codec,
             "sample_rate": self._config.sample_rate,
         }
-        if self._config.codec == "mp3":
+        if codec == "mp3":
             output_format["bit_rate"] = self._config.bit_rate
         body["output_format"] = output_format
         return body
+
+    def _streamed_codec(self) -> str:
+        """The codec a streamed request asks for: raw PCM in place of WAV.
+
+        A WAV stream opens with a RIFF header, which chunks declared
+        ``pcm_s16le`` would hand to the transport as audio: a click at the
+        start of every sentence.
+        """
+        return "pcm" if self._config.codec == "wav" else self._config.codec
 
     async def synthesize(self, text: str, *, voice: str | None = None) -> AudioContent:
         """Synthesize text to audio via the REST endpoint.
@@ -142,7 +155,7 @@ class GrokTTSProvider(TTSProvider):
         from roomkit.models.event import AudioContent as AudioContentModel
 
         client = self._get_client()
-        body = self._build_request_body(text, voice)
+        body = self._build_request_body(text, voice, codec=self._config.codec)
 
         t0 = time.monotonic()
         response = await client.post("/tts", json=body)
@@ -187,8 +200,9 @@ class GrokTTSProvider(TTSProvider):
         ourselves for pipeline compatibility.
         """
         client = self._get_client()
-        body = self._build_request_body(text, voice)
-        _, fmt = _CODEC_META.get(self._config.codec, ("audio/mpeg", "mp3"))
+        codec = self._streamed_codec()
+        body = self._build_request_body(text, voice, codec=codec)
+        _, fmt = _CODEC_META.get(codec, ("audio/mpeg", "mp3"))
 
         async with client.stream("POST", "/tts", json=body) as response:
             if response.status_code >= 400:
@@ -263,10 +277,11 @@ class GrokTTSProvider(TTSProvider):
             ) from exc
 
         voice_id = voice or self._config.voice_id
-        _, fmt = _CODEC_META.get(self._config.codec, ("audio/mpeg", "mp3"))
+        codec = self._streamed_codec()
+        _, fmt = _CODEC_META.get(codec, ("audio/mpeg", "mp3"))
 
         async with websockets.connect(
-            self._ws_uri(voice_id, self._config.codec),
+            self._ws_uri(voice_id, codec),
             additional_headers={"Authorization": f"Bearer {self._config.api_key}"},
             open_timeout=30,
         ) as ws:

@@ -358,6 +358,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `GrokTTSProvider` with `codec="wav"` and `GradiumTTSProvider` with
+  `output_format="wav"` no longer click at the start of every sentence they
+  stream (RMK-413). Both servers open a streamed WAV with its 44-byte RIFF
+  header, which the chunks, declared `pcm_s16le`, handed to the transport as
+  22 samples at 93-100 % of full scale. A streamed request now asks for raw
+  `pcm` in place of `wav`, on both paths of each provider
+  (`synthesize_stream` and `synthesize_stream_input`); `synthesize()` still
+  returns a WAV.
+
 - With `AudioPipelineConfig(inbound_dsp_threads=N)`, a voice channel behaves
   as it does inline (RMK-392). The pipeline's callbacks ran on the DSP worker,
   while the channels' handlers are written for the event loop. A

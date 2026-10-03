@@ -28,6 +28,7 @@ class GradiumTTSConfig:
     region: str = "us"
     model_name: str = "default"
     output_format: str = "pcm_16000"  # matches pipeline's 16kHz default
+    # "wav" applies to synthesize(); a streamed request asks for "pcm" instead
     # Speed: negative = faster (-4.0 to -0.1), positive = slower (0.1 to 4.0)
     padding_bonus: float | None = None
     # Temperature: 0 = deterministic, up to 1.4 = more diverse (default: 0.7)
@@ -114,12 +115,22 @@ class GradiumTTSProvider(TTSProvider):
             return "audio/basic"
         return "audio/pcm"
 
-    def _build_setup(self, voice: str | None = None) -> dict[str, Any]:
-        """Build the TTSSetup dict for the SDK."""
+    def _streamed_format(self) -> str:
+        """The output format a streamed request asks for: raw PCM in place of WAV.
+
+        A WAV stream opens with a RIFF header, which chunks declared
+        ``pcm_s16le`` would hand to the transport as audio: a click at the
+        start of every sentence. Both are 48 kHz.
+        """
+        fmt = self._config.output_format
+        return "pcm" if fmt == "wav" else fmt
+
+    def _build_setup(self, voice: str | None = None, *, output_format: str) -> dict[str, Any]:
+        """Build the TTSSetup dict for the SDK, asking for *output_format*."""
         voice_value = voice or self._config.voice_id
         setup: dict[str, Any] = {
             "model_name": self._config.model_name,
-            "output_format": self._config.output_format,
+            "output_format": output_format,
         }
         # SDK distinguishes voice (profile name) from voice_id (UID).
         # Use voice_id only when the value looks like a UID (not a name).
@@ -149,7 +160,8 @@ class GradiumTTSProvider(TTSProvider):
         from roomkit.models.event import AudioContent as AudioContentModel
 
         client = self._get_client()
-        result = await client.tts(self._build_setup(voice), text)
+        setup = self._build_setup(voice, output_format=self._config.output_format)
+        result = await client.tts(setup, text)
 
         mime_type = self._get_mime_type()
         data_url = f"data:{mime_type};base64,{base64.b64encode(result.raw_data).decode()}"
@@ -181,7 +193,8 @@ class GradiumTTSProvider(TTSProvider):
     ) -> AsyncIterator[AudioChunk]:
         """Stream audio chunks as they're generated."""
         client = self._get_client()
-        stream = await client.tts_stream(self._build_setup(voice), text)
+        setup = self._build_setup(voice, output_format=self._streamed_format())
+        stream = await client.tts_stream(setup, text)
         async for chunk in self._yield_stream(stream):
             yield chunk
 
@@ -194,7 +207,8 @@ class GradiumTTSProvider(TTSProvider):
     ) -> AsyncIterator[AudioChunk]:
         """Stream audio from streaming text input."""
         client = self._get_client()
-        stream = await client.tts_stream(self._build_setup(voice), text_stream)
+        setup = self._build_setup(voice, output_format=self._streamed_format())
+        stream = await client.tts_stream(setup, text_stream)
         async for chunk in self._yield_stream(stream):
             yield chunk
 

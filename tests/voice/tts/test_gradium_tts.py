@@ -7,6 +7,8 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 
 def _mock_gradium_module() -> MagicMock:
     """Create a MagicMock that stands in for the gradium module."""
@@ -114,7 +116,7 @@ class TestGradiumTTSProvider:
             temperature=0.5,
             rewrite_rules="en",
         )
-        setup = provider._build_setup()
+        setup = provider._build_setup(output_format="pcm_16000")
         assert setup["model_name"] == "fast"
         assert setup["voice_id"] == "my-voice"
         assert setup["json_config"]["padding_bonus"] == -1.0
@@ -124,10 +126,66 @@ class TestGradiumTTSProvider:
     def test_build_setup_default_voice(self) -> None:
         grad = _mock_gradium_module()
         provider = _make_provider(grad, api_key="k", voice_id="default")
-        setup = provider._build_setup()
+        setup = provider._build_setup(output_format="pcm_16000")
         # default voice uses "voice" key, not "voice_id"
         assert setup["voice"] == "default"
         assert "voice_id" not in setup
+
+
+def _from_text(provider: Any) -> Any:
+    return provider.synthesize_stream("hello")
+
+
+def _from_text_stream(provider: Any) -> Any:
+    async def text() -> Any:
+        yield "hello"
+
+    return provider.synthesize_stream_input(text())
+
+
+def _fake_stream() -> Any:
+    async def iter_bytes() -> Any:
+        yield b"\x00\x01" * 8
+
+    return SimpleNamespace(sample_rate=48000, iter_bytes=iter_bytes)
+
+
+_STREAMS = pytest.mark.parametrize(
+    "open_stream", [_from_text, _from_text_stream], ids=["text", "text-stream"]
+)
+
+
+class TestGradiumStreamedWav:
+    """A WAV stream opens with a RIFF header the chunks would play as audio (RMK-413)."""
+
+    @_STREAMS
+    @pytest.mark.parametrize(
+        ("configured", "asked"),
+        [("wav", "pcm"), ("pcm", "pcm"), ("pcm_16000", "pcm_16000"), ("opus", "opus")],
+    )
+    async def test_a_stream_asks_raw_pcm_in_place_of_wav(
+        self, open_stream: Any, configured: str, asked: str
+    ) -> None:
+        provider = _make_provider(_mock_gradium_module(), api_key="k", output_format=configured)
+        fake_client = MagicMock()
+        fake_client.tts_stream = AsyncMock(return_value=_fake_stream())
+        provider._client = fake_client
+
+        chunks = [chunk async for chunk in open_stream(provider)]
+
+        assert fake_client.tts_stream.call_args.args[0]["output_format"] == asked
+        assert chunks[0].data == b"\x00\x01" * 8
+
+    async def test_synthesize_keeps_wav(self) -> None:
+        provider = _make_provider(_mock_gradium_module(), api_key="k", output_format="wav")
+        fake_client = MagicMock()
+        fake_client.tts = AsyncMock(return_value=SimpleNamespace(raw_data=b"RIFF"))
+        provider._client = fake_client
+
+        result = await provider.synthesize("hello")
+
+        assert fake_client.tts.call_args.args[0]["output_format"] == "wav"
+        assert result.url.startswith("data:audio/wav;base64,")
 
 
 class TestGradiumListVoices:
