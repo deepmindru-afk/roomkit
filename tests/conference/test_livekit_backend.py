@@ -1374,6 +1374,20 @@ class TestTheVoiceTrackAtTheEnd:
 
         assert [source.closed for source in sources] == [True]
 
+    @pytest.mark.parametrize("fmt", ["opus", "pcm_f32le"])
+    async def test_a_chunk_that_is_not_16_bit_pcm_is_refused_before_a_source(
+        self, fmt: str
+    ) -> None:
+        """rtc.AudioFrame is 16-bit signed PCM: an encoded chunk, or another width,
+        would publish noise (RFC section 12.10.3).
+        """
+        track, sources = _voice_track()
+
+        with pytest.raises(ValueError, match=f"'{fmt}'"):
+            await track.publish(AudioChunk(data=b"\x00\x00" * 160, format=fmt))
+
+        assert sources == []
+
 
 class TestARefusedVoiceEndsTheSession:
     async def test_the_session_ends_as_unhealthy_and_says_why(self) -> None:

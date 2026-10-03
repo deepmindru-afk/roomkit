@@ -125,6 +125,10 @@ class VoiceBackend(ABC):
     ) -> None:
         """Send audio to a voice session.
 
+        The audio is decoded 16-bit signed PCM: a VoiceChannel refuses a TTS
+        chunk in another encoding before it gets here (RFC section 12.2), and
+        encoding for the wire (G.711, Opus) is the backend's own work.
+
         Args:
             session: The target session.
             audio: Raw audio bytes or an async iterator of AudioChunks

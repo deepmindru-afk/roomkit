@@ -50,7 +50,7 @@ class GrokTTSConfig:
         language: BCP-47 language code or ``auto``.
         codec: Output codec — ``pcm``, ``wav``, ``mp3``, ``mulaw``, ``alaw``.
             ``wav`` applies to ``synthesize()``; a streamed request asks
-            for ``pcm`` instead.
+            for ``pcm`` instead. A VoiceChannel plays ``pcm`` only.
         sample_rate: Output sample rate in Hz.
         bit_rate: MP3 bit rate (only used when *codec* is ``mp3``).
         base_url: Override the REST API base URL.

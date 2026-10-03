@@ -193,14 +193,17 @@ class TTSPlaybackState:
         self.measured = True
 
     def note_audio(self, chunk: AudioChunk) -> None:
-        """Account for an outbound chunk, so ``played_ms`` measures audio."""
+        """Account for an outbound chunk, so ``played_ms`` measures audio.
+
+        The chunk is 16-bit PCM: a VoiceChannel refuses any other before it
+        gets here (``_pcm16_only``, RFC section 12.2).
+        """
         if not chunk.data:
             return
         if self.first_audio_at is None:
             self.first_audio_at = time.monotonic()
-        if chunk.format == "pcm_s16le":
-            duration = len(chunk.data) / (2 * chunk.channels * chunk.sample_rate) * 1000
-            self.audio_ms = (self.audio_ms or 0.0) + duration
+        duration = len(chunk.data) / (2 * chunk.channels * chunk.sample_rate) * 1000
+        self.audio_ms = (self.audio_ms or 0.0) + duration
 
     @property
     def played_ms(self) -> int:

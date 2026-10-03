@@ -40,7 +40,7 @@ class GradiumTTSConfig:
     region: str = "us"
     model_name: str = "default"
     # Defaults to the pipeline's 16 kHz. "wav" applies to synthesize(); a
-    # streamed request asks for "pcm" instead.
+    # streamed request asks for "pcm" instead. A VoiceChannel plays pcm only.
     output_format: str = "pcm_16000"
     # Speed: negative = faster (-4.0 to -0.1), positive = slower (0.1 to 4.0)
     padding_bonus: float | None = None

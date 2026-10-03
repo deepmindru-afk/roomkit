@@ -100,8 +100,10 @@ ENTRY_POINTS = pytest.mark.parametrize(
     [_Room.say, _Room.deliver, _Room.deliver_stream],
     ids=["say", "deliver", "deliver_stream"],
 )
-# say() and deliver() log a failed synthesis; deliver_stream() raises it to the
-# inbound stream, which fires ON_ERROR, when no session was served.
+# The refusal is raised inside the TTS stream the backend reads. The mock
+# backend hands it back, as twilio_ws, webtransport and SIP do: say() and
+# deliver() then log it, deliver_stream() raises it to the inbound stream
+# (ON_ERROR). The local, RTP, FastRTC and Buzz backends log it themselves.
 RAISED = {_Room.deliver_stream}
 PIPELINE = pytest.mark.parametrize("pipeline", [False, True], ids=["no-pipeline", "pipeline"])
 
@@ -133,9 +135,10 @@ async def test_an_encoded_tts_chunk_is_refused_before_a_byte_plays(
 
 @ENTRY_POINTS
 @PIPELINE
-async def test_pcm_still_plays(speak: Speak, pipeline: bool) -> None:
+@pytest.mark.parametrize("fmt", ["pcm_s16le", "pcm"])
+async def test_pcm_still_plays(speak: Speak, pipeline: bool, fmt: str) -> None:
     backend = MockVoiceBackend()
-    room = await _room(backend, _TTS("pcm_s16le"), pipeline=pipeline)
+    room = await _room(backend, _TTS(fmt), pipeline=pipeline)
 
     await speak(room)
 

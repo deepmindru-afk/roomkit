@@ -124,14 +124,3 @@ async def test_barge_in_threshold_ignores_synthesis_latency() -> None:
     assert barge_ins == []
     assert session.id in channel._playing_sessions  # noqa: SLF001
     await kit.close()
-
-
-async def test_encoded_audio_is_measured_by_time_since_its_first_chunk() -> None:
-    """A chunk whose duration is not counted (mp3, ulaw) does not cap the
-    measure at 0: the time since the first chunk stands."""
-    playback = TTSPlaybackState(session_id="s", text="mp3 answer")
-    playback.start_measuring()
-    playback.note_audio(AudioChunk(data=b"\xff\xfb" * 400, sample_rate=44100, format="mp3"))
-    await asyncio.sleep(0.1)
-
-    assert playback.played_ms >= 80

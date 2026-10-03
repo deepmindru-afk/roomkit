@@ -141,9 +141,14 @@ ElevenLabsConfig = get_elevenlabs_config()
 tts = ElevenLabsTTSProvider(ElevenLabsConfig(
     api_key="...",
     voice_id="21m00Tcm4TlvDq8ikWAM",
-    model="eleven_turbo_v2",
+    model_id="eleven_flash_v2_5",
+    output_format="pcm_16000",  # a VoiceChannel plays PCM only
 ))
 ```
+
+A Voice Channel plays decoded 16-bit PCM (RFC §12.2): a TTS chunk in MP3,
+Opus or G.711 is refused before a byte plays, with an error naming the
+format. ElevenLabs streams MP3 by default, so give it `output_format="pcm_<rate>"`.
 
 ### Voices, dialogue and custom voices
 

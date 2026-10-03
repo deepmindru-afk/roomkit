@@ -113,12 +113,15 @@ class AssistantTurnRecorder:
         self._channels = 1
 
     def add(self, chunk: AudioChunk) -> None:
-        """Keep the chunk's audio, when audio is kept and the format allows it."""
+        """Keep the chunk's 16-bit PCM audio, when audio is kept.
+
+        A VoiceChannel refuses any other format before a chunk gets here.
+        """
         if not self._keep_audio or not chunk.data:
             return
-        if chunk.format != "pcm_s16le" or (
-            self._sample_rate is not None
-            and (chunk.sample_rate, chunk.channels) != (self._sample_rate, self._channels)
+        if self._sample_rate is not None and (chunk.sample_rate, chunk.channels) != (
+            self._sample_rate,
+            self._channels,
         ):
             # A turn whose audio cannot be cut by duration keeps its text only.
             self._keep_audio = False

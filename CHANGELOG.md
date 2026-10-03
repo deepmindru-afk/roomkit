@@ -641,11 +641,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   streaming MP3, Opus or G.711 (`ElevenLabsTTSProvider` with its default
   `output_format="mp3_44100_128"`, Grok `codec="mp3"`, Gradium `opus`) was
   heard as noise, or cut the sentence on a chunk of odd length, with no error
-  naming the cause. The first such chunk now raises `ValueError` ("VoiceChannel
-  expects decoded PCM, got format 'mp3'") before a byte reaches the pipeline
-  or the transport, on `say()`, `deliver()` and `deliver_stream()` alike; set
-  the TTS to a PCM output (`output_format="pcm_16000"`). The check is the one
-  conference backends already applied, now `roomkit.voice.base.require_pcm16`.
+  naming the cause. The first such chunk is now refused with a `ValueError`
+  ("VoiceChannel expects decoded PCM, got format 'mp3'") before a byte reaches
+  the pipeline or the transport, on `say()`, `deliver()` and
+  `deliver_stream()` alike; set the TTS to a PCM output
+  (`output_format="pcm_16000"`). The error is raised inside the stream the
+  backend reads: twilio_ws, WebTransport and SIP hand it back (`say()` and
+  `deliver()` log it, `deliver_stream()` raises it to the inbound stream),
+  while the local, RTP, FastRTC and Buzz backends log it themselves.
+  `VoiceBackend.send_audio` is documented as receiving decoded PCM only. The
+  check is the one conference backends applied, now shared; the mock
+  conference backend also refuses another PCM width, as LiveKit does.
 
 - Closing or archiving a room stops its recordings once the room is found
   (RMK-405, RFC §12.11): a call scoped to another organization stopped the
