@@ -4,7 +4,7 @@ a provider holds unseen, kept from one turn to the next (RFC §6.4)."""
 from __future__ import annotations
 
 import logging
-from collections.abc import Container
+from collections.abc import Callable, Container
 from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._tool_reopen import (
@@ -48,6 +48,16 @@ def policy_admits(policy: ToolPolicy | None, name: str, exempt: Container[str]) 
     one of these names is not the channel's, and the policy governs it.
     """
     return name in exempt or policy is None or policy.is_allowed(name)
+
+
+def policy_check(
+    policy: ToolPolicy | None, exempt: Container[str]
+) -> Callable[[str], bool] | None:
+    """Whether *policy* admits a name, as :func:`policy_admits` reads it, held
+    for a turn; ``None`` when no policy applies (RFC §21.4)."""
+    if policy is None:
+        return None
+    return lambda name: policy_admits(policy, name, exempt)
 
 
 class AIToolPolicyMixin(_AIChannelContract):

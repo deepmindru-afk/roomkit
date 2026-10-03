@@ -433,6 +433,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `current_tool_allowed_names()` leaves out a tool the turn's policy denies
+  its actor, on a text turn and a realtime session as on a conference
+  (RMK-420, RFC §21.4): `ToolPolicy(deny=["secret_op"])` gave
+  `{"lookup", "secret_op"}` there and `{"lookup"}` in a conference, while
+  the gate refuses `secret_op` before any handler on all three. A tool a
+  skill keeps closed stays in, and so does a tool that escapes the policy.
+
 - A call the provider could not parse, tried again after words of its own,
   no longer runs them on into the next round's text (RMK-410, RFC §6.4): the
   room stored `Let me look.The run finished at noon.` as one message, while

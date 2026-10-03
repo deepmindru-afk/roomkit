@@ -123,6 +123,9 @@ class _AIChannelContract:
     @property
     def _gated_tool_names(self) -> set[str]: ...
 
+    @property
+    def _exempt_tool_names(self) -> set[str]: ...
+
     def _maybe_truncate_result(
         self, result: str | list[AITextPart | AIImagePart], tool_call_id: str = ""
     ) -> str | list[AITextPart | AIImagePart]: ...

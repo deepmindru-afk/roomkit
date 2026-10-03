@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from roomkit.channels._ai_policy import policy_check
 from roomkit.channels._dangling_recovery import patch_dangling_tool_calls
 from roomkit.channels._instruction import instruction_fingerprint, is_standalone, mark_instruction
 from roomkit.channels._skill_constants import (
@@ -203,6 +204,7 @@ class AIContextMixin(_AIChannelContract):
 
         # Store unfiltered tool list for re-application after skill activation
         loop_ctx.all_context_tools = list(tools)
+        loop_ctx.admits = policy_check(self._effective_tool_policy, self._exempt_tool_names)
 
         # A human-input tool the turn never offers is a wiring mistake that
         # only shows up at runtime, and quietly: the model is not told the tool

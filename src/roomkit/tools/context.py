@@ -32,7 +32,7 @@ from roomkit.models.response_metadata import ResponseMetadata
 from roomkit.models.room import Room
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Callable, Iterable
 
     from roomkit.channels._turn_budget import TurnBudget
     from roomkit.models.steering import SteeringDirective
@@ -198,6 +198,10 @@ class _ToolLoopContext:
     # or its external handler decides them): one cut before its report is
     # reported through that handler, when the channel has one (RFC §9.3).
     external_calls: set[str] = field(default_factory=set)
+    # Whether the turn's tool policy, resolved for its actor, admits a name;
+    # ``None`` when no policy applies. Read by ``current_tool_allowed_names()``
+    # (RFC §21.4): the gate refuses what it denies, so it is not callable.
+    admits: Callable[[str], bool] | None = None
 
     def withdraw(self, names: Iterable[str]) -> None:
         """Take *names* out of the rest of the turn (RFC §6.4).
@@ -256,6 +260,7 @@ class _ToolLoopContext:
             ctx.actor_id = parent.actor_id
             ctx.chain_depth = parent.chain_depth
             ctx.all_context_tools = parent.all_context_tools
+            ctx.admits = parent.admits
             ctx.withdrawn_tools = parent.withdrawn_tools
             ctx.hook_pinned = parent.hook_pinned
             ctx.tool_search_active = parent.tool_search_active
@@ -386,19 +391,22 @@ def _current_turn_chain_depth() -> int:
 
 
 def current_tool_allowed_names() -> set[str] | None:
-    """Names of every tool in the current turn's resolved toolset.
+    """Names of every tool in the current turn's resolved toolset that its
+    tool policy admits.
 
     ``_build_context`` stamps the turn's full toolset (config-provider
     result plus channel-injected tools) into the loop context; a host's
     tool handler can validate an incoming call against it instead of an
-    attach-time snapshot that goes stale on shared channels. Includes
-    skill-gated tools whose *visibility* is filtered per round — gating
-    is presentation, not an execution boundary.
+    attach-time snapshot that goes stale on shared channels. A tool the
+    policy denies the turn's actor is left out, on every channel: the gate
+    refuses it before any handler. Includes skill-gated tools whose
+    *visibility* is filtered per round — gating is presentation, not an
+    execution boundary.
 
     On a realtime tool call (a voice session, a conference) it is every
-    tool the session declares: its catalogue, what orchestration set up, the
-    channel's own (RFC §21.4); ``None`` when the session declares no
-    catalogue, which admits any name.
+    tool the session declares that its policy admits: its catalogue, what
+    orchestration set up, the channel's own (RFC §21.4); ``None`` when the
+    session declares no catalogue, which admits any name.
 
     Returns ``None`` outside a tool loop or before context build, so
     hosts can fall back to their own allowlist.
@@ -406,7 +414,10 @@ def current_tool_allowed_names() -> set[str] | None:
     ctx = _current_loop_ctx.get()
     if ctx is None or ctx.all_context_tools is None:
         return None
-    return {t.name for t in ctx.all_context_tools if getattr(t, "name", None)}
+    admits = ctx.admits or (lambda _name: True)
+    return {
+        name for t in ctx.all_context_tools if (name := getattr(t, "name", None)) and admits(name)
+    }
 
 
 def current_response_metadata() -> ResponseMetadata | None:
