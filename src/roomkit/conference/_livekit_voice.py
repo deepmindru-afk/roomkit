@@ -17,8 +17,8 @@ import contextlib
 import logging
 from typing import Any
 
-from roomkit.conference._livekit_mapping import SAMPLE_WIDTH, require_publishable_pcm
-from roomkit.voice.base import AudioChunk
+from roomkit.conference._livekit_mapping import SAMPLE_WIDTH
+from roomkit.voice.base import AudioChunk, require_pcm16
 
 logger = logging.getLogger("roomkit.conference.livekit")
 
@@ -72,7 +72,7 @@ class BotVoiceTrack:
         the barge-in gesture — and the queue's size bounds only what is left
         playing when that gesture fails or never arrives.
         """
-        require_publishable_pcm(chunk)
+        require_pcm16(chunk, "publish_audio")  # rtc.AudioFrame is 16-bit signed PCM
         if chunk.data:
             source = await self._ensure_source(chunk)
             await source.capture_frame(self._frame(chunk))

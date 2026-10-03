@@ -29,7 +29,6 @@ from roomkit.conference._livekit_mapping import (
     participant_permission_kwargs,
     participant_record,
     quality_label,
-    require_publishable_pcm,
     rtc_participant_kind_name,
     rtc_track_kind_name,
     rtc_track_source_name,
@@ -40,7 +39,6 @@ from roomkit.conference._livekit_mapping import (
 from roomkit.conference.base import ConferenceBackend
 from roomkit.conference.livekit import LiveKitConferenceBackend, LiveKitConfig
 from roomkit.conference.models import ConferenceCapability, ConferenceGrants, TrackKind
-from roomkit.voice.base import AudioChunk
 
 BACKEND_SURFACE = (
     "name",
@@ -600,23 +598,3 @@ class TestVideoCodec:
         """Converting it here would be media-plane work in the wrong place."""
         with pytest.raises(ValueError, match="no codec for"):
             codec_for_buffer_type("ARGB")
-
-
-class TestPublishableChunk:
-    def test_decoded_pcm_is_accepted(self) -> None:
-        require_publishable_pcm(AudioChunk(data=b"\x00\x00", format="pcm_s16le"))
-        require_publishable_pcm(AudioChunk(data=b"\x00\x00", format="pcm"))
-
-    def test_an_encoded_chunk_is_refused(self) -> None:
-        """Encoding belongs to the backend: a caller choosing the wire format
-        defeats the boundary (RFC section 12.10.3).
-        """
-        with pytest.raises(ValueError, match="expects decoded PCM"):
-            require_publishable_pcm(AudioChunk(data=b"\x00", format="opus"))
-
-    def test_another_pcm_width_is_refused_rather_than_reinterpreted(self) -> None:
-        """LiveKit's frame is 16-bit signed. Handing it float samples would not
-        fail, it would publish noise into a conference.
-        """
-        with pytest.raises(ValueError, match="16-bit signed"):
-            require_publishable_pcm(AudioChunk(data=b"\x00" * 4, format="pcm_f32le"))

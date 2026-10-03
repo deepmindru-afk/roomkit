@@ -21,7 +21,6 @@ from roomkit.conference.models import (
     ConferenceTrack,
     TrackKind,
 )
-from roomkit.voice.base import AudioChunk
 
 # LiveKit's own names for the sources a token may grant. Passed as strings
 # because that is what VideoGrants.can_publish_sources carries.
@@ -393,30 +392,3 @@ def codec_for_buffer_type(buffer_type_name: str) -> str:
 
 SAMPLE_WIDTH = 2
 """Bytes per sample on both sides: LiveKit's audio frames are 16-bit signed."""
-
-PUBLISHABLE_FORMATS = frozenset({"pcm", "pcm_s16le"})
-"""Chunk formats ``rtc.AudioFrame`` can carry. It is 16-bit signed, always."""
-
-
-def require_publishable_pcm(chunk: AudioChunk) -> None:
-    """Reject a chunk this backend cannot put on the bot's track.
-
-    Two refusals, for two different reasons. An encoded chunk is refused because
-    encoding belongs to the backend (RFC section 12.10.3): a caller choosing the
-    wire format would defeat the boundary this interface exists to draw. Another
-    PCM width is refused because ``rtc.AudioFrame`` is 16-bit signed and nothing
-    else — handing it 32-bit float would not fail, it would publish noise, and
-    noise that reaches a conference is worse than a chunk that was refused.
-    """
-    if not chunk.format.startswith("pcm"):
-        raise ValueError(
-            f"publish_audio expects decoded PCM, got format {chunk.format!r}. "
-            "Encoding belongs to the backend: a caller choosing the wire format "
-            "defeats the abstraction boundary."
-        )
-    if chunk.format not in PUBLISHABLE_FORMATS:
-        raise ValueError(
-            f"LiveKit publishes 16-bit signed PCM, and this chunk is {chunk.format!r}. "
-            f"Reinterpreting it would publish noise rather than fail. Accepted: "
-            f"{sorted(PUBLISHABLE_FORMATS)}."
-        )

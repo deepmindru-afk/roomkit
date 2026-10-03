@@ -44,7 +44,7 @@ from roomkit.conference.models import (
 from roomkit.core.exceptions import ConferenceCapabilityError
 from roomkit.video.video_frame import VideoFrame
 from roomkit.voice.audio_frame import AudioFrame
-from roomkit.voice.base import AudioChunk
+from roomkit.voice.base import AudioChunk, require_pcm16
 
 INJECTABLE_METHODS = frozenset(
     {
@@ -318,12 +318,7 @@ class MockConferenceBackend(ConferenceBackend):
 
     async def publish_audio(self, bot: BotSession, chunk: AudioChunk) -> None:
         await self._enter("publish_audio", bot=bot.id, is_final=chunk.is_final)
-        if not chunk.format.startswith("pcm"):
-            raise ValueError(
-                f"publish_audio expects decoded PCM, got format {chunk.format!r}. "
-                "Encoding belongs to the backend: a caller choosing the wire "
-                "format defeats the abstraction boundary."
-            )
+        require_pcm16(chunk, "publish_audio")
         self.published_audio.append(chunk)
         self._append_to_utterance(bot, chunk)
 

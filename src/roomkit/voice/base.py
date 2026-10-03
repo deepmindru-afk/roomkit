@@ -79,6 +79,35 @@ class AudioChunk:
     is_final: bool = False
 
 
+PCM16_FORMATS = frozenset({"pcm", "pcm_s16le"})
+"""The ``AudioChunk.format`` values that carry 16-bit signed PCM."""
+
+
+def require_pcm16(chunk: AudioChunk, consumer: str) -> None:
+    """Refuse a chunk *consumer* cannot play: encoded audio, or PCM of another width.
+
+    An encoded chunk is refused because encoding belongs to the backend (RFC
+    sections 12.2 and 12.10.3): a caller choosing the wire format would defeat
+    the boundary this interface exists to draw. Another PCM width is refused
+    because reading it as 16-bit signed would not fail, it would play noise, and
+    noise that reaches a call is worse than a chunk that was refused.
+
+    Raises:
+        ValueError: *chunk* is not 16-bit signed PCM.
+    """
+    if not chunk.format.startswith("pcm"):
+        raise ValueError(
+            f"{consumer} expects decoded PCM, got format {chunk.format!r}. Encoding "
+            "belongs to the backend: configure the audio source for PCM output."
+        )
+    if chunk.format not in PCM16_FORMATS:
+        raise ValueError(
+            f"{consumer} plays 16-bit signed PCM, and this chunk is {chunk.format!r}. "
+            f"Reinterpreting it would play noise rather than fail. Accepted: "
+            f"{sorted(PCM16_FORMATS)}."
+        )
+
+
 def _utcnow() -> datetime:
     """Get current UTC time (timezone-aware)."""
     return datetime.now(UTC)
