@@ -139,12 +139,22 @@ class RealtimeToolSearchSupport:
             return name, {}, "Invalid arguments_json: expected a JSON object encoded as a string"
         if not isinstance(decoded, dict):
             return name, {}, "Invalid arguments_json: expected a JSON object"
-        # Only the session's granted catalogue is callable. An absent catalogue
+        # Only what the session can call is callable. An absent catalogue
         # must not activate the native channel's dynamic/hook-only fallback.
-        catalogue = self._session_catalogues.get(session_id, [])
-        if self.is_search_tool(name) or not any(t.get("name") == name for t in catalogue):
+        callable_ = self._callable(session_id)
+        if self.is_search_tool(name) or not any(t.get("name") == name for t in callable_):
             return name, decoded, f"Tool '{name}' is unavailable in this session"
         return name, decoded, None
+
+    def _callable(self, session_id: str) -> list[dict[str, Any]]:
+        """Every tool the session can call, declared or hidden: what
+        ``list_tools`` lists, names and ``call_tool`` reaches (RFC §21.1)."""
+        if session_id not in self._session_catalogues:
+            return [] if self.uses_call_tool else self._catalogue
+        if self._listed is not None:
+            # A provider's native tool has no name to list or call.
+            return [t for t in self._listed(session_id) if t.get("name")]
+        return self._session_catalogues[session_id]
 
     def _searchable(
         self, session_id: str, catalogue: list[dict[str, Any]]
@@ -292,22 +302,15 @@ class RealtimeToolSearchSupport:
     def _handle_list_tools(self, arguments: dict[str, Any], session_id: str) -> str:
         if self.uses_call_tool and "name" in arguments:
             name = arguments["name"]
-            for tool in self._searchable(session_id, self._session_catalogues.get(session_id, [])):
+            for tool in self._searchable(session_id, self._callable(session_id)):
                 if tool.get("name") == name and not self.is_search_tool(name):
                     return json.dumps(
                         {"tool": tool, "_note": "Execute this tool using call_tool."}
                     )
             return json.dumps({"error": f"Tool '{name}' is unavailable in this session"})
         category = str(arguments.get("category", "")).strip()
-        listed = (
-            self._listed(session_id)
-            if self._listed is not None
-            else self._session_catalogues.get(
-                session_id, [] if self.uses_call_tool else self._catalogue
-            )
-        )
         return render_list_payload(
-            self._searchable(session_id, listed),
+            self._searchable(session_id, self._callable(session_id)),
             category,
-            exclude_names=TOOL_SEARCH_INFRA_TOOL_NAMES,
+            exclude_names=self.tool_names,
         )

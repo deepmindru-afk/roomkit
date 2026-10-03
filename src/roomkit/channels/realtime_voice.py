@@ -1756,7 +1756,7 @@ class RealtimeVoiceChannel(
             reconfigure_capable=provider.supports_mid_session_reconfigure,
             reachable=self._tool_reachable,
             never_deferred=self._session_never_deferred,
-            listed=self._session_catalogue,
+            listed=self._session_declared_tools,
             auto=tool_search is None and not fixed_skill_gates,
         )
 

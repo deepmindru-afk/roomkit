@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `SkillRegistry.has_entries` (RMK-397): whether a registry has anything to
+  tell the model, a skill it can activate or one marked unavailable; the text
+  turn and the realtime session decide on it alike.
+
 - `PhraseBackchannelDetector` (`roomkit.voice.pipeline.backchannel`, RMK-390):
   RoomKit's first real backchannel detector, for the `SEMANTIC` interruption
   strategy. An utterance made only of known acknowledgements ("okay",
@@ -391,8 +395,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (RMK-397, RFC §6.4, §12.4, §19.5, §21.1, §21.4, §24.3):
   - A skill registry whose every skill is unavailable gives the reasons and
     declares `activate_skill` and `read_skill_reference` on a text turn too,
-    where the turn said nothing and the model guessed (new
-    `SkillRegistry.has_entries`).
+    where the turn said nothing and the model guessed.
   - A realtime skill's `requires` is checked against every tool the session
     declares: a skill requiring `delegate_task` after
     `setup_realtime_delegation` was refused ("Required tools not available").
@@ -400,19 +403,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     handoff lands: after `configure(tools=...)`, new sessions kept the
     install's tools. A name the channel's tools carry is the channel's: the
     agent's tool of that name is no longer declared under the channel's
-    handler, and a warning names it at the install.
+    handler, nor once the channel drops its own, and a warning names it at
+    the install.
   - `find_tools` no longer names, as related, a tool it never returns (one
     pinned or declared already), on either path.
   - A channel tool Tool Search never hides (`plan_tasks`) is reported
     `always` in `declared_tools` after its first use too, where it read
     `sticky`.
   - `list_tools` lists every tool a realtime session can call, its
-    orchestration tools included, as a text turn does.
+    orchestration and skill tools included, as a text turn does; on a
+    fixed-declaration provider, `list_tools(name=...)` and `call_tool` reach
+    every tool it lists.
   - An infrastructure tool the turn or the session does not declare
     (`find_tools` while Tool Search hides nothing, `run_skill_script` with no
     executor) is refused as undeclared on both paths, where it was served.
   - `current_tool_allowed_names()` answers every tool the session declares
-    in a realtime or conference tool handler, where it answered `None`.
+    in a realtime or conference tool handler, where it answered `None`; it
+    stays `None` for a session that declares no catalogue (any name admitted).
 
 - With `AudioPipelineConfig(inbound_dsp_threads=N)`, a voice channel behaves
   as it does inline (RMK-392). The pipeline's callbacks ran on the DSP worker,

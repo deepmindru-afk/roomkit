@@ -14,6 +14,7 @@ from __future__ import annotations
 import functools
 import json
 import logging
+from collections.abc import Collection
 from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._tool_registry import SessionConfig, orchestration_tool
@@ -72,6 +73,8 @@ class RealtimePipeline:
         self.agent_configs: dict[str, dict[str, Any]] = {
             agent.channel_id: self._agent_config(agent, stages) for agent in agents
         }
+        # The agents' tools the pipeline serves, fixed at the install.
+        self._served: frozenset[str] = frozenset()
 
     def install(self) -> None:
         """Serve the handoff and the agents' own tools on the channel, and start
@@ -80,6 +83,8 @@ class RealtimePipeline:
         # Declared by each agent's configuration, with its own targets: never
         # hidden by Tool Search, served by the handoff handler.
         handoff = orchestration_tool(HANDOFF_TOOL, self.serve_handoff, always_declared=False)
+        served = self._agent_tools()
+        self._served = frozenset(served)
         agent_tools = [
             orchestration_tool(
                 definition,
@@ -87,7 +92,7 @@ class RealtimePipeline:
                 always_declared=False,
                 deferrable=True,
             )
-            for name, definition in self._agent_tools().items()
+            for name, definition in served.items()
         ]
         registry.register_all([handoff, *agent_tools], owner=self)
         registry.set_session_source(self.session_config, owner=self)
@@ -131,7 +136,10 @@ class RealtimePipeline:
         tools as they are now: a channel configured after the install keeps
         its tools under every agent (RFC §19.5)."""
         return _agent_session_tools(
-            self._rtv, self._agent_map[agent_id], self.agent_configs[agent_id]["handoff"]
+            self._rtv,
+            self._agent_map[agent_id],
+            self.agent_configs[agent_id]["handoff"],
+            self._served,
         )
 
     def _prompt_for(self, agent_id: str, room: Room) -> str | None:
@@ -290,18 +298,18 @@ class RealtimePipeline:
 
 
 def _agent_session_tools(
-    rtv: RealtimeVoiceChannel, agent: Agent, handoff: AITool
+    rtv: RealtimeVoiceChannel, agent: Agent, handoff: AITool, served: Collection[str]
 ) -> list[dict[str, Any]]:
     """The tools an agent's realtime session declares (RFC §19.5).
 
-    The channel's own tools, which stay declared under every agent, the
-    agent's, then the handoff tool. A name the channel carries is the
-    channel's: one schema, one server (RFC §21.1), so an agent tool of the
-    same name is not declared.
+    The channel's own tools as they are now, which stay declared under every
+    agent, the agent's that the pipeline serves (*served*), then the handoff
+    tool. One schema, one server (RFC §21.1): an agent tool that a channel
+    tool shadowed at the install is served by nothing of the agent's, so it
+    is not declared, even once the channel dropped its own.
     """
     host = [dict(t) for t in rtv._tools or []]
-    names = _channel_tool_names(rtv)
-    own = {t.name: t.model_dump() for t in agent._user_tools if t.name not in names}
+    own = {t.name: t.model_dump() for t in agent._user_tools if t.name in served}
     return [*host, *own.values(), handoff.model_dump()]
 
 

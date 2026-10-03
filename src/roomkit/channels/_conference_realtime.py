@@ -52,7 +52,7 @@ from roomkit.channels._realtime_tool_executor import (
     submit_tool_outcome,
     tool_loop_context,
 )
-from roomkit.channels._served_tools import CollisionLog, warn_tools_uncallable
+from roomkit.channels._served_tools import CollisionLog, dict_tool_name, warn_tools_uncallable
 from roomkit.channels._tool_registry import schema_tool
 from roomkit.core.exceptions import ToolRefusedError
 from roomkit.core.task_utils import log_task_exception
@@ -619,9 +619,14 @@ class ConferenceRealtime:
             chain_depth=room.answer_depth.answer if room is not None else 0,
         )
         # What the session declares is the call's resolved toolset (RFC §21.4).
+        # A session that declares none admits any name, and has none.
         declared = declared_tools(config, self._collisions)
-        if declared is not None:
-            loop_ctx.all_context_tools = [schema_tool(tool) for tool in declared]
+        if declared:
+            loop_ctx.all_context_tools = [
+                schema_tool(tool)
+                for tool in declared
+                if dict_tool_name(tool)  # a provider's native tool has no name
+            ]
         with serving_tool_call(call, self._channel_id, loop_ctx):
             answer = config.tool_handler(room_id, call.name, call.arguments)
             answered = await answer_within(config.tool_bound(call.name), call.name, answer)

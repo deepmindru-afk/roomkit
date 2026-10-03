@@ -34,6 +34,7 @@ from roomkit.channels._realtime_tool_executor import (
     submit_tool_outcome,
     tool_loop_context,
 )
+from roomkit.channels._served_tools import dict_tool_name
 from roomkit.channels._skill_constants import TOOL_ACTIVATE_SKILL
 from roomkit.channels._tool_registry import ChannelRegistry, schema_tool
 from roomkit.channels._tool_search_constants import TOOL_CALL_TOOL, TOOL_LIST_TOOLS
@@ -585,7 +586,9 @@ class RealtimeToolsMixin:
         # session that declares no catalogue admits any name, and has none.
         if self._session_catalogue(session.id):
             loop_ctx.all_context_tools = [
-                schema_tool(tool) for tool in self._session_declared_tools(session.id)
+                schema_tool(tool)
+                for tool in self._session_declared_tools(session.id)
+                if dict_tool_name(tool)  # a provider's native tool has no name
             ]
         token = _current_voice_session.set(session)
         try:
