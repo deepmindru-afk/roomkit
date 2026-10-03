@@ -32,6 +32,8 @@ from roomkit.models.response_metadata import ResponseMetadata
 from roomkit.models.room import Room
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from roomkit.channels._turn_budget import TurnBudget
     from roomkit.models.steering import SteeringDirective
     from roomkit.models.tool_call import DeclaredTool
@@ -105,7 +107,7 @@ class _ToolLoopContext:
     # ``None`` means context construction has not run. An empty list is a
     # completed, deny-all toolset and must remain distinguishable from it.
     all_context_tools: list[Any] | None = None
-    # Names BEFORE_AI_GENERATION withdrew from the toolset it saw.
+    # Names withdrawn for the rest of the turn (``withdraw``).
     # ``all_context_tools`` has already lost them; this keeps the channel's
     # per-round injections (the eviction re-read) from bringing one back.
     # Inherited across for_loop like the toolset it amends.
@@ -192,6 +194,19 @@ class _ToolLoopContext:
     # stopped reading), is reported cancelled when the loop ends (RFC §9.3).
     announced_calls: dict[str, Any] = field(default_factory=dict)
     reported_calls: set[str] = field(default_factory=set)
+
+    def withdraw(self, names: Iterable[str]) -> None:
+        """Take *names* out of the rest of the turn (RFC §6.4).
+
+        Gone from the toolset every round is built from, and remembered: the
+        gate refuses a call naming one (a tool the channel provides itself
+        included), an external handler is never handed it, and the channel's
+        per-round injections (the eviction re-read) do not bring it back.
+        """
+        gone = frozenset(names)
+        if self.all_context_tools is not None:
+            self.all_context_tools = [t for t in self.all_context_tools if t.name not in gone]
+        self.withdrawn_tools = self.withdrawn_tools | gone
 
     def claim_report(self, call_id: str) -> bool:
         """Claim the one report of call *call_id*: ``False`` when it was made."""

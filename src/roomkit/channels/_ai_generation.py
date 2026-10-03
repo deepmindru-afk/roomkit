@@ -117,14 +117,10 @@ def _adopt_hook_toolset(
         # A tool added under a served name, or a served tool redefined.
         if name in served and original.get(name) != tool:
             collisions.served(name)
-    base = [
-        t if t.name in served else kept.get(t.name, t)
-        for t in loop_ctx.all_context_tools
-        if t.name not in withdrawn
-    ]
+    base = [t if t.name in served else kept.get(t.name, t) for t in loop_ctx.all_context_tools]
     known = {tool.name for tool in base}
     added = {name for name in kept if name not in known and name not in served}
     base.extend(kept[name] for name in kept if name in added)
     loop_ctx.all_context_tools = base
-    loop_ctx.withdrawn_tools = loop_ctx.withdrawn_tools | withdrawn
+    loop_ctx.withdraw(withdrawn)
     loop_ctx.hook_pinned = loop_ctx.hook_pinned | added
