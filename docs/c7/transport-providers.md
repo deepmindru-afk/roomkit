@@ -337,6 +337,17 @@ dialled (pin-on-connect), or a test that wants the POST to land in a
 provider = WebhookHTTPProvider(config, transport=my_transport)
 ```
 
+A subclass shapes what is sent: `send()` posts `build_payload(event, to, text)`
+(RoomKit's envelope by default) serialized, with `build_headers(body)` (the
+configured headers and an `X-RoomKit-Signature` HMAC when a secret is set).
+`config` is the provider's `HTTPProviderConfig`.
+
+```python
+class SlackWebhook(WebhookHTTPProvider):
+    def build_payload(self, event, to, text):
+        return {"text": text}
+```
+
 ## WebSocket
 
 WebSocket channels don't use a provider — they handle connections directly:

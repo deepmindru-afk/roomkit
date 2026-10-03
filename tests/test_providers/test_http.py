@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+from typing import Any
 from unittest.mock import AsyncMock
 
 import httpx
@@ -69,6 +70,34 @@ class TestWebhookHTTPProvider:
         assert result.provider_message_id == "msg-002"
         assert [str(request.url) for request in seen] == ["https://example.com/hook"]
         assert json.loads(seen[0].content)["content"]["body"] == "hello"
+
+    async def test_a_subclass_shapes_the_body_and_headers_send_posts(self) -> None:
+        """``build_payload`` and ``build_headers`` are the extension points:
+        ``send()`` posts what a subclass returns, signed as it signs."""
+        seen: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(200, json={})
+
+        class SlackLike(WebhookHTTPProvider):
+            def build_payload(self, event: RoomEvent, to: str, text: str) -> dict[str, Any]:
+                return {"text": text}
+
+            def build_headers(self, body: str) -> dict[str, str]:
+                return {**super().build_headers(body), "X-Signed-By": self.config.headers["Id"]}
+
+        config = HTTPProviderConfig(webhook_url="https://example.com/hook", headers={"Id": "a1"})
+        provider = SlackLike(config, transport=httpx.MockTransport(handler))
+        try:
+            await provider.send(_make_event("hi"), to="user-123")
+        finally:
+            await provider.close()
+
+        assert provider.config is config
+        assert json.loads(seen[0].content) == {"text": "hi"}
+        assert seen[0].headers["X-Signed-By"] == "a1"
+        assert seen[0].headers["Content-Type"] == "application/json"
 
     async def test_send_with_headers(self) -> None:
         config = HTTPProviderConfig(

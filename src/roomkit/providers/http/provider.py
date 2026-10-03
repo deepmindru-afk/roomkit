@@ -28,6 +28,11 @@ class WebhookHTTPProvider(HTTPProvider):
     :mod:`roomkit.providers.url_safety`) puts that policy here, and a test puts
     a ``MockTransport`` here instead of behind the network. ``None`` leaves
     httpx to build its default transport.
+
+    A subclass shapes what is sent by overriding :meth:`build_payload` (the
+    JSON body: a Slack or Teams rendering, say) and :meth:`build_headers` (a
+    signature scheme of its own), and reads its settings through
+    :attr:`config`.
     """
 
     def __init__(
@@ -50,14 +55,19 @@ class WebhookHTTPProvider(HTTPProvider):
             transport=transport,
         )
 
+    @property
+    def config(self) -> HTTPProviderConfig:
+        """The provider's configuration: the URL, the secret, the headers."""
+        return self._config
+
     async def send(self, event: RoomEvent, to: str) -> ProviderResult:
         text = self._extract_text(event)
         if not text:
             return ProviderResult(success=False, error="empty_message")
 
-        payload = self._build_payload(event, to, text)
+        payload = self.build_payload(event, to, text)
         body = json.dumps(payload)
-        headers = self._build_headers(body)
+        headers = self.build_headers(body)
 
         try:
             import time
@@ -95,7 +105,12 @@ class WebhookHTTPProvider(HTTPProvider):
 
         return self._parse_response(data)
 
-    def _build_payload(self, event: RoomEvent, to: str, text: str) -> dict[str, Any]:
+    def build_payload(self, event: RoomEvent, to: str, text: str) -> dict[str, Any]:
+        """The JSON body sent for *event* to *to*, *text* its extracted text.
+
+        RoomKit's envelope by default: recipient, channel, room, the text as
+        content, and the event's metadata. Override it to send another shape.
+        """
         return {
             "recipient_id": to,
             "channel_id": event.source.channel_id,
@@ -104,7 +119,13 @@ class WebhookHTTPProvider(HTTPProvider):
             "metadata": event.metadata or {},
         }
 
-    def _build_headers(self, body: str) -> dict[str, str]:
+    def build_headers(self, body: str) -> dict[str, str]:
+        """The request headers for *body*, the serialized payload.
+
+        ``Content-Type``, the configured headers, and an
+        ``X-RoomKit-Signature`` (HMAC-SHA256 of *body*) when a secret is set.
+        Override it to sign another way.
+        """
         headers: dict[str, str] = {
             "Content-Type": "application/json",
             **self._config.headers,

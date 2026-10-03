@@ -254,6 +254,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `WebhookHTTPProvider.build_payload(event, to, text)` and
+  `build_headers(body)` are public, with a `config` property (RMK-408): the
+  extension points a subclass overrides to send another body or sign another
+  way. `send()` calls the public names; a subclass that overrode the former
+  `_build_payload` / `_build_headers` renames them, or its override is no
+  longer called.
+
 - **BREAKING — `ToolRoundEvent.tools` (`AFTER_TOOL_ROUND`) names what
   `BEFORE_AI_GENERATION` is shown** (RMK-430, RFC §6.4): what the tool
   policy and skill gating let the turn reach, Tool Search's whole catalogue
