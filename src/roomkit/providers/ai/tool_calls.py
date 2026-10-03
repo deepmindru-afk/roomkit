@@ -35,6 +35,12 @@ _CALL_CUTTING_FINISH_REASONS = _TRUNCATION_FINISH_REASONS | {
 # parse the call, so none reached the loop (Gemini's MALFORMED_FUNCTION_CALL).
 _MALFORMED_CALL_FINISH_REASONS = frozenset({"malformed_function_call"})
 
+# A response the model ended itself, under each provider's word for it
+# (OpenAI-compatible ``stop``, Anthropic ``end_turn`` and ``stop_sequence``,
+# Gemini ``STOP``): not cut, not filtered, not refused, not a stream that ended
+# without saying why.
+_NATURAL_FINISH_REASONS = frozenset({"stop", "end_turn", "stop_sequence"})
+
 
 MALFORMED_CALL_NUDGE = (
     "Your last tool call could not be parsed, so it did not run. Call the tool "
@@ -48,6 +54,11 @@ the text loops and on a speech-to-speech session alike (RFC §6.4, §12.4)."""
 def is_malformed_call(finish_reason: str | None) -> bool:
     """Whether a response ended on a tool call its provider could not parse."""
     return finish_reason is not None and finish_reason.lower() in _MALFORMED_CALL_FINISH_REASONS
+
+
+def is_natural_stop(finish_reason: str | None) -> bool:
+    """Whether the model ended the response itself, whatever its provider calls it."""
+    return finish_reason is not None and finish_reason.lower() in _NATURAL_FINISH_REASONS
 
 
 def is_truncation(finish_reason: str | None) -> bool:

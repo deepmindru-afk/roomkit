@@ -646,6 +646,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                 finish_reason=state.finish_reason,
                 limit=rules.limit_passed(),
                 force_stopped=loop_ctx.force_stop,
+                unfinished=rules.unfinished,
             )
         turn.saw_tool_call = True
         if index >= self._max_tool_rounds:

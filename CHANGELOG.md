@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `AIChannel(continuation=...)` (RMK-410, RFC §6.4): an AI channel's
+  continuation policy goes on an answer that did not act. Given the text of a
+  round the model ended itself, without a call and with a tool declared, it
+  returns the instruction that makes the model go on, or `None` when the
+  answer stands (a recognizer of "I will check that", say). The loop decides
+  the natural stop from what the round carried, every provider alike
+  (`stop`, `end_turn`, `STOP`; never a truncation, a filter, a call it could
+  not parse or a stream that ended without saying why). It shares the empty
+  round's bound (`max_empty_retries`) and the loop keeps its guards (no
+  continuation after a cancellation or a force-stop, nor past the turn's
+  deadline or budget). A turn whose policy still asks once the bound has run
+  out ends on the new `LoopEndReason` `unfinished`, with its end marker and
+  `ON_AI_RESPONSE`, never `completed`. Example:
+  `examples/ai_continuation_policy.py`.
+
 - `AFTER_TOOL_ROUND` (RMK-409, RFC §6.4, §9.2): a SYNC hook between two rounds
   of an AI channel's tool loop. It fires after each round the channel ran
   calls in, with a `ToolRoundEvent` carrying the round whole (its calls, the

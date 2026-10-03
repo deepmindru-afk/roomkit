@@ -88,7 +88,7 @@ from roomkit.tools.timeout import ToolTimeouts
 
 if TYPE_CHECKING:
     from roomkit.channels._ai_callbacks import AfterToolRoundHook
-    from roomkit.models.tool_call import ToolCallCallback, ToolCallObserver
+    from roomkit.models.tool_call import ContinuationPolicy, ToolCallCallback, ToolCallObserver
     from roomkit.sandbox.executor import SandboxExecutor
     from roomkit.skills.executor import ScriptExecutor
     from roomkit.skills.registry import SkillRegistry
@@ -153,6 +153,7 @@ class AIChannel(
         tool_loop_timeout_seconds: float | None = 300.0,
         tool_loop_warn_after: int = 25,
         max_empty_retries: int = 1,
+        continuation: ContinuationPolicy | None = None,
         thinking_coalesce_ms: float = 80.0,
         thinking_coalesce_chars: int = 256,
         retry_policy: RetryPolicy | None = None,
@@ -204,6 +205,8 @@ class AIChannel(
         self._store_tool_bounds(tool_loop_timeout_seconds, tool_timeout_seconds, tool_timeouts)
         self._tool_loop_warn_after = tool_loop_warn_after
         self._max_empty_retries = max_empty_retries
+        # Goes on an answer that did not act, within the same bound (RFC §6.4).
+        self._continuation = continuation
         # Reasoning-stream coalescing window — see _ThinkingCoalescer. Per-token
         # thinking deltas are batched into one realtime publish per window so a
         # long reasoning trace costs 10-100x fewer ephemeral events + WS sends

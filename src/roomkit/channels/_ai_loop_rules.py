@@ -28,6 +28,7 @@ from roomkit.providers.ai.response_schema import ResponseSchemaError
 from roomkit.providers.ai.tool_calls import (
     MALFORMED_CALL_NUDGE,
     is_malformed_call,
+    is_natural_stop,
     is_truncation,
 )
 from roomkit.realtime.base import EphemeralEventType
@@ -36,6 +37,7 @@ from roomkit.tools._outcome import OutcomeKind, ToolOutcome
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from roomkit.models.tool_call import ContinuationPolicy
     from roomkit.providers.ai.base import (
         AIContext,
     )
@@ -146,6 +148,7 @@ def final_round_reason(
     finish_reason: str | None,
     limit: LoopEndReason | None,
     force_stopped: bool = False,
+    unfinished: bool = False,
 ) -> LoopEndReason:
     """Why a loop that reached its final-answer round is stopping there.
 
@@ -163,6 +166,10 @@ def final_round_reason(
     *limit* is the loop's own limit the turn has passed (its deadline, its
     budget): a round that failed to answer past one ends on that limit.
 
+    *unfinished* is the channel's continuation policy still asking once no
+    continuation may run: an answer that did not act ends ``unfinished`` (or
+    on the limit that stopped it), never ``completed`` (RFC §6.4).
+
     The other exits (round cap, a limit at a round boundary, cancellation)
     are named at their own ``return``: they know their reason without asking.
     """
@@ -171,6 +178,8 @@ def final_round_reason(
     if is_malformed_call(finish_reason):
         # Its call never ran: no answer, whatever the round said (RFC §6.4).
         return limit or "empty_response"
+    if unfinished:
+        return limit or "unfinished"
     if final_text.strip() or not had_tool_round:
         return "completed"
     if is_truncation(finish_reason):
@@ -221,6 +230,8 @@ class _ToolLoopState:
     billed_tokens: int = 0
     spent: float = 0.0
     empty_retries: int = 0
+    # The continuation policy asked to go on and no continuation may run.
+    unfinished: bool = False
     force_stop_nudged: bool = False
 
     def count(self, total: dict[str, int], usage: dict[str, Any]) -> None:
@@ -286,6 +297,7 @@ class AIToolLoopRulesMixin(_AIChannelContract):
     _tool_loop_timeout_seconds: float | None
     _tool_loop_warn_after: int
     _max_empty_retries: int
+    _continuation: ContinuationPolicy | None
     _eviction: ToolEviction
 
     # Ceiling on the tool calls honoured from ONE generation. The loop already
@@ -402,6 +414,9 @@ class AIToolLoopRulesMixin(_AIChannelContract):
             finish_reason=finish_reason,
             log_label=state.log_label,
         )
+        if nudge is None:
+            nudge = self._continuation_nudge(context, loop_ctx, final_text, finish_reason)
+            state.unfinished = nudge is not None
         if not (
             nudge is not None
             and state.empty_retries < self._max_empty_retries
@@ -410,6 +425,7 @@ class AIToolLoopRulesMixin(_AIChannelContract):
         ):
             return False
         state.empty_retries += 1
+        state.unfinished = False
         logger.warning(
             "%s: round ended with no text (finish_reason=%s); re-prompting (retry %d/%d)",
             state.log_label,
@@ -423,6 +439,23 @@ class AIToolLoopRulesMixin(_AIChannelContract):
             context.messages.append(AIMessage(role="assistant", content=final_text))
         context.messages.append(AIMessage(role="user", content=nudge))
         return True
+
+    def _continuation_nudge(
+        self,
+        context: AIContext,
+        loop_ctx: _ToolLoopContext,
+        final_text: str,
+        finish_reason: str | None,
+    ) -> str | None:
+        """What the channel's continuation policy says of a round the model
+        ended itself on text, without a call, a tool declared: the instruction
+        to go on, or ``None`` when the answer stands (RFC §6.4)."""
+        policy = self._continuation
+        if policy is None or loop_ctx.force_stop or not context.tools:
+            return None
+        if not final_text.strip() or not is_natural_stop(finish_reason):
+            return None
+        return policy(final_text)
 
     async def _execute_round_tools(
         self,

@@ -507,6 +507,12 @@ class ToolRoundEvent:
         self.messages.append(text)
 
 
+ContinuationPolicy = Callable[[str], "str | None"]
+"""An AI channel's continuation policy (RFC §6.4): given the text a round ended
+on naturally, without a call, the instruction that makes the model go on, or
+``None`` when the answer stands (a recognizer of an announced action, say)."""
+
+
 # Callback type for BEFORE_AI_GENERATION hook (sync, can block/modify).
 # Returns SyncPipelineResult (from roomkit.core.hooks) — typed as Any to
 # avoid circular import from models into core.  Only the framework's

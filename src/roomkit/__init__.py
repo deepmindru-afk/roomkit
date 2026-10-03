@@ -159,6 +159,7 @@ from roomkit.models.tool_call import (
     AIGenerationEvent,
     AIResponseEvent,
     BeforeGenerationCallback,
+    ContinuationPolicy,
     DeclaredTool,
     ToolCallCallback,
     ToolCallEvent,
@@ -533,6 +534,7 @@ __all__ = [
     "ToolCallEvent",
     "ToolCallVerdict",
     "ToolRoundEvent",
+    "ContinuationPolicy",
     "ToolHandler",
     "VideoDetectionEvent",
     # Video pipeline filters

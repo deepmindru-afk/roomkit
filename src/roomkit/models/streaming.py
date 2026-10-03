@@ -91,6 +91,7 @@ LoopEndReason = Literal[
     "budget_exceeded",
     "truncated",
     "empty_response",
+    "unfinished",
     "force_stopped",
     "cancelled",
     "error",
@@ -103,8 +104,9 @@ class LoopEndMarker:
 
     The tool loop knows exactly which of its rules fired: the round cap, the
     wall-clock deadline, a round truncated at the output cap, a model that
-    answered nothing after its tools or whose call could not be parsed, a
-    cancellation. Without the marker a
+    answered nothing after its tools or whose call could not be parsed, an
+    answer the channel's continuation policy still found unfinished
+    (``unfinished``), a cancellation. Without the marker a
     consumer could not tell a finished answer from a loop cut mid-work, and
     would re-derive it by counting tool calls and reading a clock.
 
