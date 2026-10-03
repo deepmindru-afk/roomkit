@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Any
 
 from roomkit.telemetry.base import SpanKind, TelemetryProvider
@@ -33,6 +34,13 @@ class OpenTelemetryProvider(TelemetryProvider):
         from roomkit.telemetry.opentelemetry import OpenTelemetryProvider
 
         kit = RoomKit(telemetry=OpenTelemetryProvider(tracer_provider=provider))
+
+    Exporting never runs on the event loop. ``force_flush`` exports in the
+    thread that calls it, behind the exporter's own retries, and the SDK does
+    not honour its timeout: called from the loop, a slow collector froze every
+    task on it. :meth:`flush` (the end of a voice session) hands it to a thread
+    and returns at once; :meth:`close` waits for it at most
+    ``shutdown_flush_timeout`` seconds, then gives up the spans not yet out.
     """
 
     def __init__(
@@ -42,6 +50,7 @@ class OpenTelemetryProvider(TelemetryProvider):
         meter_provider: Any = None,
         service_name: str = "roomkit",
         metadata: dict[str, str] | None = None,
+        shutdown_flush_timeout: float = 4.0,
     ) -> None:
         try:
             from opentelemetry import trace
@@ -77,6 +86,10 @@ class OpenTelemetryProvider(TelemetryProvider):
         # as parents (e.g. AFTER_TTS hook fires after VOICE_SESSION ends).
         self._ended_spans: dict[str, Any] = {}
         self._metadata: dict[str, str] = metadata or {}
+        self._shutdown_flush_timeout = shutdown_flush_timeout
+        # Held while a flush thread runs: a flush asked meanwhile is skipped,
+        # the running one exports what it asked for and more.
+        self._flushing = threading.Lock()
 
     @property
     def name(self) -> str:
@@ -216,13 +229,19 @@ class OpenTelemetryProvider(TelemetryProvider):
             logger.debug("Failed to record OTel metric %s", name, exc_info=True)
 
     def flush(self) -> None:
-        if self._tracer_provider is not None:
-            try:
-                self._tracer_provider.force_flush()
-            except Exception:
-                logger.debug("Failed to flush OTel tracer provider", exc_info=True)
+        """Export the ended spans on a thread of its own, and return at once."""
+        if self._tracer_provider is None or not self._flushing.acquire(blocking=False):
+            return
+        try:
+            self._flush_thread(self._flush_and_release).start()
+        except RuntimeError:
+            # No thread to be had: release, or every later flush is skipped.
+            self._flushing.release()
+            logger.debug("Could not start the OTel flush thread", exc_info=True)
 
     def close(self) -> None:
+        """End the active spans, then export, waiting at most
+        ``shutdown_flush_timeout`` seconds."""
         # End any remaining active spans gracefully (shutdown, not error)
         for span_id in list(self._active_spans):
             self.end_span(span_id)
@@ -230,12 +249,34 @@ class OpenTelemetryProvider(TelemetryProvider):
         # Keep _ended_spans — late async tasks (e.g. AFTER_TTS hook fired
         # during shutdown) may still need parent lookup.  The dict will be
         # garbage-collected with the provider instance.
-        # Flush pending spans so nothing is lost on shutdown
-        if self._tracer_provider is not None:
-            try:
-                self._tracer_provider.force_flush()
-            except Exception:
-                logger.debug("Failed to flush OTel tracer provider", exc_info=True)
+        if self._tracer_provider is None:
+            return
+        thread = self._flush_thread(self._force_flush)
+        thread.start()
+        thread.join(self._shutdown_flush_timeout)
+        if thread.is_alive():
+            logger.warning(
+                "OTel flush did not finish within %.1fs at shutdown; spans may be lost",
+                self._shutdown_flush_timeout,
+            )
+
+    @staticmethod
+    def _flush_thread(target: Any) -> threading.Thread:
+        # Daemon: the interpreter never waits on an export at exit, and
+        # close() bounds its own wait.
+        return threading.Thread(target=target, name="otel-flush", daemon=True)
+
+    def _flush_and_release(self) -> None:
+        try:
+            self._force_flush()
+        finally:
+            self._flushing.release()
+
+    def _force_flush(self) -> None:
+        try:
+            self._tracer_provider.force_flush()
+        except Exception:
+            logger.debug("Failed to flush OTel tracer provider", exc_info=True)
 
     def reset(self) -> None:
         self._active_spans.clear()

@@ -45,7 +45,9 @@ async def main() -> None:
     # Create RoomKit with OpenTelemetry
     from roomkit.telemetry.opentelemetry import OpenTelemetryProvider
 
-    telemetry = OpenTelemetryProvider(tracer_provider=provider)
+    # Exports never run on the event loop: flush() (the end of a voice session)
+    # hands them to a thread, and close() waits for them at most this long.
+    telemetry = OpenTelemetryProvider(tracer_provider=provider, shutdown_flush_timeout=4.0)
     kit = RoomKit(telemetry=telemetry)
 
     # Channels

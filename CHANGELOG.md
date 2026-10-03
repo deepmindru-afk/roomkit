@@ -268,6 +268,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `OpenTelemetryProvider` never exports on the event loop (RMK-408): the SDK's
+  `force_flush` exports in the calling thread, behind the exporter's retries,
+  and ignores its timeout, so a slow collector froze every task at the end of
+  a voice session. `flush()` now hands the export to a thread and returns at
+  once (a flush asked while one runs is skipped); `close()` waits for it at most
+  `shutdown_flush_timeout` seconds (new constructor argument, 4.0 by default),
+  then logs that spans may be lost.
+
 - `WebhookHTTPProvider.build_payload(event, to, text)` and
   `build_headers(body)` are public, with a `config` property (RMK-408): the
   extension points a subclass overrides to send another body or sign another
