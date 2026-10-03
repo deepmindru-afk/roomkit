@@ -264,7 +264,7 @@ class GeminiLiveToolsMixin(RealtimeVoiceProvider):
             await self._fire(
                 self._tool_call_callbacks,
                 session,
-                fc.id,
+                fc.id or "",
                 fc.name,
                 args_dict,
                 label="tool_call",

@@ -759,7 +759,7 @@ class TestInboundDispatch:
         assert await tool_call.wait() == (session, "fc_2", "boom", "not-json")
         await provider.disconnect(session)
 
-    async def test_malformed_and_duplicate_function_ids_are_ignored(
+    async def test_id_less_and_duplicate_calls_reach_the_channel_untracked(
         self, provider: DeepgramAgentProvider, session: VoiceSession
     ) -> None:
         tool_call = _Recorder()
@@ -779,9 +779,16 @@ class TestInboundDispatch:
             )
         )
 
-        assert await tool_call.wait() == (session, "fc-dup", "first", {})
+        await tool_call.wait()
         await asyncio.sleep(0.05)
-        assert tool_call.calls == [(session, "fc-dup", "first", {})]
+        # The channel refuses and reports the id-less call and the duplicate,
+        # sending nothing (RFC §12.4); only the first is the provider's to answer.
+        assert tool_call.calls == [
+            (session, "", "missing_id", {}),
+            (session, "fc-dup", "first", {}),
+            (session, "fc-dup", "second", {}),
+        ]
+        assert list(provider._states[session.id].pending_calls) == ["fc-dup"]
         assert provider._states[session.id].pending_calls["fc-dup"].name == "first"
         await provider.disconnect(session)
 

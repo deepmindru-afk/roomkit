@@ -643,17 +643,21 @@ class TestClientToolBridge:
         assert await handler({}) == "ok"
         await asyncio.gather(*tasks)
 
-    async def test_duplicate_inflight_call_id_is_rejected(
+    async def test_a_duplicate_inflight_call_goes_to_the_channel_and_sends_nothing(
         self, provider: ElevenLabsRealtimeProvider, session: VoiceSession
     ) -> None:
-        provider.on_tool_call(lambda *_: None)
+        heard: list[str] = []
+        provider.on_tool_call(lambda _s, call_id, *_: heard.append(call_id))
         handler = provider._make_tool_handler(session, "lookup")
         first = asyncio.create_task(handler({"tool_call_id": "same"}))
         while "same" not in provider._pending_tools.get(session.id, {}):
             await asyncio.sleep(0)
 
-        with pytest.raises(RuntimeError, match="Duplicate ElevenLabs tool call id"):
+        # The channel refuses and reports it; the SDK sends nothing for a
+        # cancellation, so the id's one result stays the first call's.
+        with pytest.raises(asyncio.CancelledError):
             await handler({"tool_call_id": "same"})
+        assert heard == ["same", "same"]
 
         await provider.submit_tool_result(session, "same", "ok")
         assert await first == "ok"

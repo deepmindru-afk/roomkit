@@ -607,28 +607,27 @@ class DeepgramAgentProvider(RealtimeVoiceProvider):
                 continue
             call_id = str(function.get("id") or "")
             fname = str(function.get("name") or "")
-            if not call_id or not fname:
+            if not fname:
                 logger.warning(
-                    "Deepgram sent a function call without a non-empty id and name (session %s)",
-                    state.session.id,
-                )
-                continue
-            if call_id in state.pending_calls:
-                logger.warning(
-                    "Deepgram reused pending function call id %s (session %s); ignoring duplicate",
-                    call_id,
+                    "Deepgram sent a function call without a name (session %s)",
                     state.session.id,
                 )
                 continue
             # Deepgram sends arguments as a JSON *string*: a mapping when it
             # reads as one, else the text, which the channel refuses (RFC §12.4).
             arguments = readable_arguments(function.get("arguments"))
-            raw_signature = function.get("thought_signature")
-            signature = raw_signature if isinstance(raw_signature, str) and raw_signature else None
-            state.pending_calls[call_id] = _PendingCall(
-                name=fname,
-                thought_signature=signature,
-            )
+            # A call without an id, or under an id still in flight, goes to the
+            # channel all the same, which refuses and reports it, sending
+            # nothing (RFC §12.4); only a call it may answer is kept here.
+            if call_id and call_id not in state.pending_calls:
+                raw_signature = function.get("thought_signature")
+                signature = (
+                    raw_signature if isinstance(raw_signature, str) and raw_signature else None
+                )
+                state.pending_calls[call_id] = _PendingCall(
+                    name=fname,
+                    thought_signature=signature,
+                )
             await self._fire(
                 self._tool_call_callbacks,
                 state.session,

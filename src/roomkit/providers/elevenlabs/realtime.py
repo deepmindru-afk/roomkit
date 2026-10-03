@@ -26,8 +26,10 @@ import contextlib
 import logging
 import time
 import uuid
+from functools import partial
 from typing import Any, cast
 
+from roomkit.providers.elevenlabs import sdk_patch
 from roomkit.providers.elevenlabs.config import ElevenLabsRealtimeConfig
 from roomkit.providers.elevenlabs.voices import VOICES as _VOICES
 from roomkit.voice.base import VoiceSession, VoiceSessionState
@@ -212,7 +214,13 @@ class ElevenLabsRealtimeProvider(RealtimeVoiceProvider):
         # SDK's ``end_session`` stops it, after which any further tool call
         # raises. Registration is also refused for a name already present,
         # so a shared instance would break on the second connect.
-        client_tools = ClientTools(loop=asyncio.get_running_loop())
+        # A name with no handler goes to the channel too, whose gate refuses
+        # and reports it (RFC §12.4), rather than being answered by the SDK.
+        client_tools = sdk_patch.client_tools(
+            ClientTools,
+            loop=asyncio.get_running_loop(),
+            route=partial(self._route_unregistered, session),
+        )
         self._register_client_tools(client_tools, session, tools)
 
         # Create SDK client (pass base_url for regional endpoints)
@@ -550,6 +558,13 @@ class ElevenLabsRealtimeProvider(RealtimeVoiceProvider):
                 ", ".join(sorted(registered)),
             )
 
+    async def _route_unregistered(
+        self, session: VoiceSession, name: str, parameters: dict[str, Any]
+    ) -> str:
+        """A call to a name RoomKit did not declare, bridged as a declared one:
+        the channel refuses and reports it."""
+        return await self._make_tool_handler(session, name)(parameters)
+
     def _make_tool_handler(self, session: VoiceSession, name: str) -> Any:
         """Build the SDK handler that hands a call to RoomKit and waits.
 
@@ -567,7 +582,14 @@ class ElevenLabsRealtimeProvider(RealtimeVoiceProvider):
 
             pending_calls = self._pending_tools.setdefault(session.id, {})
             if call_id in pending_calls:
-                raise RuntimeError(f"Duplicate ElevenLabs tool call id: {call_id}")
+                # A second call under an id in flight: the channel refuses and
+                # reports it, and nothing goes out for it, the id's one result
+                # being the first call's (RFC §12.4). The SDK answers every
+                # outcome but a cancellation on the wire.
+                await self._fire(
+                    self._tool_call_callbacks, session, call_id, name, arguments, label="tool_call"
+                )
+                raise asyncio.CancelledError
             future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
             pending_calls[call_id] = future
 

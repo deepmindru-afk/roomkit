@@ -474,6 +474,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Every realtime provider hands every tool call to the channel (RMK-440, RFC
+  §12.4): a call to a tool the channel never declared on ElevenLabs (the
+  SDK's `ClientTools` answered it itself, so RoomKit never saw it), a call
+  under an id still in flight on Deepgram and GPT-Live (dropped with a
+  warning) and on ElevenLabs (answered twice on the wire), a call without an
+  id on Deepgram and GPT-Live (dropped), and a GPT-Live call the output cap
+  cut (dropped). The channel refuses a call without an id as it refuses a
+  duplicate: reported once, nothing sent. The ElevenLabs part lives in
+  `providers/elevenlabs/sdk_patch.py`, with a canary that fails once the SDK
+  stops answering an unregistered tool itself.
+
 - A tool call is reported once, whatever cuts it (RMK-431, RFC §9.3):
   - A call whose outcome the model already read and whose report a cut
     interrupted is reported to ON_TOOL_CALL's observers with that outcome: a

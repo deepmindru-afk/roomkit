@@ -113,27 +113,29 @@ class OpenAILiveHostedDelegationMixin(RealtimeVoiceProvider):
     ) -> None:
         if item.get("type") != "function_call":
             return
-        if item.get("status", "completed") != "completed":
-            logger.debug("[%s] ignoring %s function call item", _LOG_TAG, item.get("status"))
-            return
-        call_id = item.get("call_id")
         name = item.get("name")
-        if not call_id or not name:
-            logger.warning("[%s] function call item without call_id or name: %s", _LOG_TAG, item)
+        if not name:
+            logger.warning("[%s] function call item without a name: %s", _LOG_TAG, item)
             return
-        if call_id in state.open_calls:
-            logger.warning("[%s] function call %s already in progress", _LOG_TAG, call_id)
-            return
-        arguments = readable_arguments(item.get("arguments"))
+        call_id = str(item.get("call_id") or "")
+        # A call the output cap cut is handed on as the text it is, which the
+        # channel refuses and reports, as OpenAI Realtime's (RFC §6.4, §12.4).
+        incomplete = item.get("status", "completed") != "completed"
+        raw = item.get("arguments")
+        arguments = str(raw or "") if incomplete else readable_arguments(raw)
 
-        pending = state.pending.setdefault(key, PendingResponse())
-        pending.call_ids.add(str(call_id))
-        pending.had_calls = True
-        state.open_calls[str(call_id)] = key
+        if call_id and call_id not in state.open_calls:
+            # Only a call the channel may answer holds the response open: one
+            # without an id, or under an id in flight, is refused and reported
+            # with nothing sent (RFC §12.4).
+            pending = state.pending.setdefault(key, PendingResponse())
+            pending.call_ids.add(call_id)
+            pending.had_calls = True
+            state.open_calls[call_id] = key
         await self._fire(
             self._tool_call_callbacks,
             state.session,
-            str(call_id),
+            call_id,
             str(name),
             arguments,
             label="tool_call",

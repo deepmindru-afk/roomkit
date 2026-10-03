@@ -281,6 +281,18 @@ async def refuse_duplicate_call(host: ToolCallHost, call: RealtimeToolCall) -> N
     await report_failed_call(host, call, ToolOutcome(OutcomeKind.REFUSED, body))
 
 
+async def refuse_unidentified_call(host: ToolCallHost, call: RealtimeToolCall) -> None:
+    """Report a call that came without an id, sending nothing: no result can
+    name it, nor can a cancellation (RFC §12.4)."""
+    logger.warning(
+        "Tool call %s arrived without an id on channel %s; refused, nothing sent",
+        call.name,
+        host.channel_id,
+    )
+    body = json.dumps({"error": f"Tool call '{call.name}' came without an id"})
+    await report_failed_call(host, call, ToolOutcome(OutcomeKind.REFUSED, body))
+
+
 async def submit_tool_outcome(
     provider: RealtimeVoiceProvider,
     session: VoiceSession,

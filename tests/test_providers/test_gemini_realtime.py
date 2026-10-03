@@ -1604,7 +1604,8 @@ class TestGeminiLiveProvider:
             session, SimpleNamespace(tool_call=SimpleNamespace(function_calls=[fc]))
         )
 
-        assert tool_calls == [(None, "ping")]
+        # The channel refuses an id-less call and reports it (RFC §12.4).
+        assert tool_calls == [("", "ping")]
         assert state.pending_call_ids == set()
 
     async def test_handle_voice_activity_start(self):
