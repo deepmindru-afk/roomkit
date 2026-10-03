@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, NamedTuple, Protocol, runtime_checkable
 from uuid import uuid4
 
 from roomkit.core.exceptions import TaskCutShortError, TaskTurnFailedError, TurnCutShortError
@@ -81,11 +81,20 @@ class _ToolRowsOnly:
         return event
 
 
+class PersistedTurn(NamedTuple):
+    """A turn whose text was kept out of the room: its answer, how it ended,
+    and its record (its response metadata with how its loop ended)."""
+
+    answer: str
+    end: str | None
+    record: dict[str, Any]
+
+
 async def persist_tool_calls(
     kit: RoomKit, room_id: str, sr: StreamingResponse, context: RoomContext
-) -> tuple[str, str | None]:
+) -> PersistedTurn:
     """Store a turn's tool calls in *room_id* as any streamed turn's, its text
-    kept out of the room; the turn's answer, and how the turn ended.
+    kept out of the room; the turn's answer, how it ended, and its record.
 
     The rows cross the room's gate and ride its lane (``BEFORE_BROADCAST``,
     the source's right to write, the delivery's visibility), one deeper than
@@ -117,7 +126,8 @@ async def persist_tool_calls(
         answer = await _drain_turn(writer, sr)
     finally:
         await kit._finish_cascade(cascade, room_id, caller_logs=True)
-    reason = _turn_end(_stream_record(sr), writer.persisted)
+    record = dict(_stream_record(sr))
+    reason = _turn_end(record, writer.persisted)
     if reason not in (None, "completed"):
         _tasks_logger.warning(
             "Turn of %s in room %s ended %s: no answer to hand on",
@@ -125,8 +135,8 @@ async def persist_tool_calls(
             room_id,
             reason,
         )
-        return "", reason
-    return answer, reason
+        return PersistedTurn("", reason, record)
+    return PersistedTurn(answer, reason, record)
 
 
 async def _persist_child_stream(

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from roomkit.core._failure_log import log_failure
@@ -251,6 +251,7 @@ class _Pass1:
     output: ChannelOutput
     task: str = ""
     end: str | None = None
+    record: dict[str, Any] = field(default_factory=dict)
 
 
 async def _pass1_task(
@@ -263,7 +264,7 @@ async def _pass1_task(
 ) -> _Pass1:
     """The task pass 1 hands on: its final answer, as every streamed turn is
     read, its tool calls stored in the room as any turn's (RFC §19.7.3). A
-    pass that failed hands its error to the turn's caller, who logs it."""
+    pass that failed hands its error to the turn's caller, its stream read."""
     if output.error is not None or output.response_stream is None:
         return _Pass1(output, await _extract_output_text(output))
     stream = StreamingResponse(
@@ -274,21 +275,31 @@ async def _pass1_task(
         response_metadata=output.response_metadata,
     )
     try:
-        task, end = await persist_tool_calls(kit, room_id, stream, context)
+        turn = await persist_tool_calls(kit, room_id, stream, context)
     except Exception as exc:
-        # Logged once, as a room turn's: the caller receives the error.
-        log_failure(
-            logger, exc, f"Pass 1 of {supervisor.channel_id} in room {room_id}", caller_logs=True
-        )
-        return _Pass1(output.model_copy(update={"error": exc}))
-    return _Pass1(output, task, end)
+        # Logged once, at its own level: whoever opened the turn may not
+        # receive it (``send_event``, a delivery).
+        log_failure(logger, exc, f"Pass 1 of {supervisor.channel_id} in room {room_id}")
+        return _Pass1(_read(output, error=exc))
+    return _Pass1(_read(output), turn.answer, turn.end, turn.record)
+
+
+def _read(output: ChannelOutput, *, error: Exception | None = None) -> ChannelOutput:
+    """*output* once its stream was read here: nothing of it is left to
+    deliver, never an empty stream handed on to the room's transports."""
+    update: dict[str, Any] = {"response_stream": None}
+    if error is not None:
+        update["error"] = error
+    return output.model_copy(update=update)
 
 
 def _pass1_answer(supervisor: Agent, event: RoomEvent, pass1: _Pass1) -> ChannelOutput:
     """What the room reads of a pass that handed on no task: the supervisor's
-    fallback when the pass was cut short, so the message it answered gets an
-    answer (RFC §19.7.3); else the pass's own output, its error included."""
-    if pass1.end in (None, "completed"):
+    fallback when the pass stopped short of its answer, so the message it
+    answered gets one, the turn's record on it (RFC §19.7.3); else the pass's
+    own output, its error included. A pass stopped on purpose
+    (``cancelled``) is no failure to report."""
+    if pass1.end in (None, "completed", "cancelled"):
         return pass1.output
     fallback = RoomEvent(
         room_id=event.room_id,
@@ -297,9 +308,14 @@ def _pass1_answer(supervisor: Agent, event: RoomEvent, pass1: _Pass1) -> Channel
         content=TextContent(body=FALLBACK_FAILED),
         chain_depth=event.chain_depth + 1,
         parent_event_id=event.parent_event_id,
-        metadata={"loop_end_reason": pass1.end},
+        # The turn's whole record, as its last message would carry it (§6.4).
+        metadata={**pass1.record, "loop_end_reason": pass1.end},
     )
-    return ChannelOutput(responded=True, response_events=[fallback])
+    return ChannelOutput(
+        responded=True,
+        response_events=[fallback],
+        response_metadata=pass1.output.response_metadata,
+    )
 
 
 async def _two_pass_delegate(
