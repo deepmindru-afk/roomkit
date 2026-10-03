@@ -243,11 +243,19 @@ Integrate Model Context Protocol servers:
 ```python
 from roomkit.tools.mcp import MCPToolProvider
 
-mcp = MCPToolProvider(server_command=["uvx", "mcp-server-sqlite", "--db", "data.db"])
-await mcp.initialize()
-
-ai = AIChannel("ai", provider=provider, tools=mcp.tools())
+async with MCPToolProvider.from_command("uvx", ["mcp-server-sqlite", "--db", "data.db"]) as mcp:
+    ai = AIChannel("ai", provider=provider, tools=mcp.get_tools(), tool_handler=mcp.as_tool_handler())
 ```
+
+Beside the model's tools, a host reads what an MCP App needs from the same
+connection: `mcp.tool_meta()` (each discovered tool's `_meta`, `ui.resourceUri`
+and `ui.csp` among it, from the listing made at connection),
+`await mcp.read_resource(uri)` (the server's `ReadResourceResult`, the app's
+HTML) and `await mcp.call_tool_result(name, arguments)` (the server's
+`CallToolResult` as it is, `isError` included, for a frame's own calls). Like
+`call_tool`, `call_tool_result` calls any tool the server has: `tool_filter`
+shapes what discovery offers the model, not what the host may call, so the
+host authorizes a frame's call itself.
 
 ## Tool Search (Progressive Tool Disclosure)
 

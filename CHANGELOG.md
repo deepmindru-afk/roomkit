@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `MCPToolProvider.tool_meta()`, `read_resource(uri)` and
+  `call_tool_result(name, arguments)` (RMK-408): what an MCP App's host reads
+  from the connection beside the model's tools, each tool's `_meta` from the
+  listing made at connection, a resource, and a tool's raw `CallToolResult`.
+  `call_tool_result`, like `call_tool`, is not bound by `tool_filter`, which
+  shapes discovery only.
+
 - `transport=` on `OpenAIAIProvider`, `AzureAIProvider`,
   `OpenRouterAIProvider` and `create_vllm_provider` (RMK-408), inherited by
   every provider built on `OpenAIAIProvider`: an `httpx.AsyncBaseTransport`

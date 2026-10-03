@@ -132,6 +132,7 @@ class MCPToolProvider:
         self._stack: AsyncExitStack | None = None
         self._tools: list[AITool] = []
         self._tool_set: set[str] = set()
+        self._tool_meta: dict[str, dict[str, Any]] = {}
         self._connected = False
 
     @classmethod
@@ -229,6 +230,7 @@ class MCPToolProvider:
         self._session = session
         self._tools = []
         self._tool_set = set()
+        self._tool_meta = {}
         for tool in listed.tools:
             if self._tool_filter and not self._tool_filter(tool.name):
                 continue
@@ -237,6 +239,8 @@ class MCPToolProvider:
                 continue
             self._tools.append(ai_tool)
             self._tool_set.add(tool.name)
+            if isinstance(meta := getattr(tool, "meta", None), dict):
+                self._tool_meta[tool.name] = meta
 
         self._connected = True
         logger.info(
@@ -308,19 +312,43 @@ class MCPToolProvider:
         self._ensure_connected()
         return [t.name for t in self._tools]
 
-    async def _invoke(
+    def tool_meta(self) -> dict[str, dict[str, Any]]:
+        """The ``_meta`` each discovered tool was listed with, by tool name.
+
+        Read from the listing made at connection, so no second ``tools/list``:
+        an MCP App's ``ui`` (``resourceUri``, ``csp``) among the rest. A tool
+        listed without one, or not discovered (``tool_filter``, a name no
+        provider accepts), is absent.
+        """
+        self._ensure_connected()
+        return {name: dict(meta) for name, meta in self._tool_meta.items()}
+
+    async def read_resource(self, uri: str, *, timeout: float = _DEFAULT_CALL_TIMEOUT) -> Any:
+        """The server's ``ReadResourceResult`` for *uri* (an MCP App's HTML, say).
+
+        Raises:
+            McpError: The server refused the read (an unknown resource).
+            TimeoutError: No answer within *timeout* seconds.
+        """
+        self._ensure_connected()
+        return await asyncio.wait_for(self._session.read_resource(uri), timeout=timeout)
+
+    async def call_tool_result(
         self,
         name: str,
         arguments: dict[str, Any],
         *,
-        timeout: float,
+        timeout: float = _DEFAULT_CALL_TIMEOUT,
     ) -> Any:
-        """Call the tool and return the server's ``CallToolResult``.
+        """Call the tool and return the server's ``CallToolResult`` as it is.
 
-        The server's ``isError`` is the one place a refusal exists, and both
-        entry points below read it: :meth:`call_tool` renders it into the error
-        envelope its callers have always received, while the tool handler
-        raises, because a tool loop cannot recognise a refusal in a body.
+        A refusal is the result's ``isError``, not an exception: :meth:`call_tool`
+        renders it into its error envelope, the tool handler raises it. For a
+        host relaying the raw result (an MCP App's frame calling its server).
+
+        Like :meth:`call_tool`, it calls any tool the server has: ``tool_filter``
+        shapes what discovery offers a model, not what the host may call (an
+        app-only tool the frame calls, say). The host authorizes the call.
         """
         self._ensure_connected()
         result = await asyncio.wait_for(self._session.call_tool(name, arguments), timeout=timeout)
@@ -351,7 +379,7 @@ class MCPToolProvider:
         :class:`~roomkit.core.exceptions.ToolRefusedError` so the outcome does
         not have to be recognised in the body.
         """
-        result = await self._invoke(name, arguments, timeout=timeout)
+        result = await self.call_tool_result(name, arguments, timeout=timeout)
         if result.isError:
             return json.dumps({"error": error_text(result)})
         return text_body(result)
@@ -395,7 +423,7 @@ class MCPToolProvider:
                 lookup = lookup.split("__", 2)[-1]
             if gate_discovery and lookup not in self._tool_set:
                 raise UnservedToolCallError(f"tool {name!r} is not served here")
-            result = await self._invoke(lookup, arguments, timeout=_DEFAULT_CALL_TIMEOUT)
+            result = await self.call_tool_result(lookup, arguments, timeout=_DEFAULT_CALL_TIMEOUT)
             if result.isError:
                 # The server refused; say so instead of returning a body the
                 # loop would have to recognise, and keep the server's words —
