@@ -142,6 +142,28 @@ class ConferenceSessionMixin:
     _emit_framework_event: Any
     _announce_end: Any
 
+    async def ensure_bot(self, room_id: str) -> BotSession:
+        """Join the conference as the bot now, and return its session (RFC §12.10.4).
+
+        The lazy join's triggers (a mint, a delivery, an arrival, the occupancy
+        found at attach) start the join without waiting on it. A host that must
+        know the bot is in, to listen before it lets a meeting begin, awaits it
+        here. A live session is returned as it is; concurrent calls and the
+        other triggers are serialised, so the room is joined once; a session
+        that was lost is joined again. A new join fires ``ON_SESSION_STARTED``
+        and ``conference_started`` before this returns, as every trigger does.
+
+        Raises:
+            RoomNotAttachedError: the channel is not attached to *room_id*, or
+                was detached from it while joining.
+            Exception: the backend's ``join_as_bot`` failed.
+        """
+        if self._attached_room(room_id) is None:
+            raise RoomNotAttachedError(
+                f"Channel {self.channel_id!r} is not attached to room {room_id!r}"
+            )
+        return await self._ensure_bot(room_id)
+
     async def _ensure_bot(self, room_id: str) -> BotSession:
         """Join the conference on first need.
 

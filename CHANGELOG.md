@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ConferenceChannel.ensure_bot(room_id)` (RMK-408, RFC §12.10.4): a host's
+  own request for the bot's join, awaited, returning the `BotSession`; one join
+  for concurrent calls and the lazy triggers, a lost session joined again,
+  `RoomNotAttachedError` for a room the channel is not attached to.
+
 - `acp_event_text(event)` (RMK-408, RFC A.9.1): the text an `ACPChannel`
   gives its agent for an event, a `RichContent` read as its `plain_text`, for a
   host that builds an ACP prompt of its own.
