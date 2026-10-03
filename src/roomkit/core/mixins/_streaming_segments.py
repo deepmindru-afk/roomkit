@@ -128,12 +128,6 @@ class SegmentWriter:
         self._started: set[str] = set()
         self.persisted: list[RoomEvent] = []
 
-    @property
-    def end_reason(self) -> str | None:
-        """How the turn's loop ended, from its ``LoopEndMarker``; ``None``
-        while the stream carried none (a provider that streams text only)."""
-        return None if self._turn_record is None else self._turn_record["loop_end_reason"]
-
     # -- what the stream hands in ------------------------------------------
 
     def add_text(self, delta: str) -> None:
@@ -145,10 +139,13 @@ class SegmentWriter:
 
         The marker comes last, so the next flush is the turn's final text and
         carries it; a turn with no final text has it written on the message it
-        already wrote, by :meth:`record_on_last_message` (RFC §6.4).
+        already wrote, by :meth:`record_on_last_message` (RFC §6.4). It joins
+        the turn's response-metadata record too, where a caller reads how the
+        turn ended when it wrote no message at all (RFC §6.7).
         """
         self._turn_record = {"ai_usage": dict(marker.usage), "loop_end_reason": marker.reason}
         self._record_owed = True
+        self._sr.response_metadata.update(self._turn_record)
 
     async def record_on_last_message(self) -> None:
         """Write a record no final text carried on the last MESSAGE already stored.

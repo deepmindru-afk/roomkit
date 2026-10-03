@@ -22,6 +22,7 @@ from roomkit.core.exceptions import TaskCutShortError
 from roomkit.core.framework import RoomKit
 from roomkit.core.mixins._child_execution import _broadcast_and_collect, _collect_answer
 from roomkit.core.mixins.delegation import _persist_child_stream, run_agent_in_child_room
+from roomkit.models.channel import ChannelOutput
 from roomkit.models.enums import ChannelCategory, ChannelType, EventType
 from roomkit.models.event import EventSource, RoomEvent, TextContent, ToolCallContent
 from roomkit.models.room import Room
@@ -395,9 +396,7 @@ class TestRunAgentNonStreaming:
             type=EventType.MESSAGE,
             content=TextContent(body="the answer"),
         )
-        output = SimpleNamespace(
-            responded=True, error=None, response_events=[tool_event, msg_event]
-        )
+        output = ChannelOutput(responded=True, response_events=[tool_event, msg_event])
         broadcast_result = BroadcastResult(outputs={"w1": output})
 
         router = MagicMock()
@@ -432,7 +431,7 @@ class TestRunAgentNonStreaming:
             content=TextContent(body="Still checking."),
             metadata={"loop_end_reason": "max_rounds"},
         )
-        output = SimpleNamespace(responded=True, error=None, response_events=[narration])
+        output = ChannelOutput(responded=True, response_events=[narration])
         router = MagicMock()
         router.broadcast = AsyncMock(return_value=BroadcastResult(outputs={"w1": output}))
         kit._get_router = MagicMock(return_value=router)

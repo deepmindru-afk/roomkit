@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
-from roomkit.models.channel import ChannelBinding
+from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.enums import ChannelCategory, ChannelType, TaskStatus
 from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.models.room import Room
@@ -17,14 +17,11 @@ from roomkit.tasks.models import DelegatedTask, DelegatedTaskResult
 
 class _MockBroadcastResult:
     def __init__(self, response_text: str | None = None):
-        self.outputs: dict[str, MagicMock] = {}
+        self.outputs: dict[str, ChannelOutput] = {}
         self.blocked_events: list[RoomEvent] = []
         self.tasks: list[object] = []
         self.observations: list[object] = []
         if response_text:
-            output = MagicMock()
-            output.responded = True
-            output.error = None
             resp_event = RoomEvent(
                 room_id="child-1",
                 source=EventSource(
@@ -33,14 +30,9 @@ class _MockBroadcastResult:
                 ),
                 content=TextContent(body=response_text),
             )
-            output.response_events = [resp_event]
-            self.outputs["agent-a"] = output
+            self.outputs["agent-a"] = ChannelOutput(responded=True, response_events=[resp_event])
         else:
-            output = MagicMock()
-            output.responded = False
-            output.error = None
-            output.response_events = []
-            self.outputs["agent-a"] = output
+            self.outputs["agent-a"] = ChannelOutput()
 
 
 def _make_mock_kit(
