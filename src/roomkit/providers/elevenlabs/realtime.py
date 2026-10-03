@@ -25,9 +25,8 @@ import asyncio
 import contextlib
 import logging
 import time
-import uuid
 from functools import partial
-from typing import Any, cast
+from typing import Any, NoReturn, cast
 
 from roomkit.providers.elevenlabs import sdk_patch
 from roomkit.providers.elevenlabs.config import ElevenLabsRealtimeConfig
@@ -578,18 +577,11 @@ class ElevenLabsRealtimeProvider(RealtimeVoiceProvider):
             arguments = dict(parameters)
             # The SDK folds the call id into the arguments; the tool itself
             # never declared it, so it must not travel to the handler.
-            call_id = str(arguments.pop("tool_call_id", "") or f"el-{uuid.uuid4().hex}")
+            call_id = str(arguments.pop("tool_call_id", "") or "")
 
             pending_calls = self._pending_tools.setdefault(session.id, {})
-            if call_id in pending_calls:
-                # A second call under an id in flight: the channel refuses and
-                # reports it, and nothing goes out for it, the id's one result
-                # being the first call's (RFC §12.4). The SDK answers every
-                # outcome but a cancellation on the wire.
-                await self._fire(
-                    self._tool_call_callbacks, session, call_id, name, arguments, label="tool_call"
-                )
-                raise asyncio.CancelledError
+            if not call_id or call_id in pending_calls:
+                await self._hand_on_unanswerable(session, call_id, name, arguments)
             future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
             pending_calls[call_id] = future
 
@@ -620,6 +612,18 @@ class ElevenLabsRealtimeProvider(RealtimeVoiceProvider):
                     pending.pop(call_id, None)
 
         return handler
+
+    async def _hand_on_unanswerable(
+        self, session: VoiceSession, call_id: str, name: str, arguments: dict[str, Any]
+    ) -> NoReturn:
+        """Hand on a call no result can be sent for (no id, or an id still in
+        flight): the channel refuses and reports it, and nothing goes out, the
+        id's one result being the first call's (RFC §12.4). The SDK answers
+        every outcome but a cancellation on the wire (``sdk_patch``)."""
+        await self._fire(
+            self._tool_call_callbacks, session, call_id, name, arguments, label="tool_call"
+        )
+        raise asyncio.CancelledError
 
     def _reject_pending_tools(self, session_id: str, reason: str) -> list[str]:
         """Fail every in-flight call so no SDK handler is left hanging; the

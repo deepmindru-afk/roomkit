@@ -57,3 +57,22 @@ async def test_the_patch_routes_an_unregistered_tool_through_the_sdks_dispatch()
 
     assert routed == ["secret_op"]
     assert (result["result"], result["is_error"]) == ("refused by the channel", False)
+
+
+async def test_the_sdk_sends_nothing_for_a_cancelled_handler() -> None:
+    """How the provider sends nothing for a call no result can name."""
+    tools = conversation.ClientTools(loop=asyncio.get_running_loop())
+
+    async def unanswerable(parameters: dict[str, Any]) -> str:
+        raise asyncio.CancelledError
+
+    tools.register("lookup", unanswerable, is_async=True)
+    results: list[dict[str, Any]] = []
+    tools.start()
+    try:
+        tools.execute_tool("lookup", {"tool_call_id": "t1"}, results.append)
+        await asyncio.sleep(0.1)
+    finally:
+        tools.stop()
+
+    assert results == []

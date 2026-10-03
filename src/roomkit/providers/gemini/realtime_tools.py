@@ -244,10 +244,12 @@ class GeminiLiveToolsMixin(RealtimeVoiceProvider):
         await self._flush_transcription_buffer(session, "user")
         state.has_conversation = True
         for fc in tool_call.function_calls:
-            # A call without an id can be neither answered nor cancelled, so
-            # there is nothing to keep for it. One with an id belongs to this
-            # connection now, even if an earlier one cancelled the same id.
-            if fc.id:
+            # A call without an id can be neither answered nor cancelled, nor
+            # can a second call under an id in flight: there is nothing to keep
+            # for either, the channel refusing them (RFC §12.4). One with an id
+            # belongs to this connection now, even if an earlier one cancelled
+            # the same id.
+            if fc.id and fc.id not in state.pending_call_ids:
                 state.cancelled_call_ids.discard(fc.id)
                 state.pending_call_ids.add(fc.id)
                 state.call_names[fc.id] = fc.name or ""

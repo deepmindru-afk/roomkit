@@ -13,10 +13,18 @@ overridden: a name with no handler goes to *route*, the bridge every declared
 name has, and is served, refused and reported as any call. Everything else,
 the registry, the dispatch and the result on the wire, stays the SDK's.
 
-Remove it when ``test_the_sdk_still_answers_an_unregistered_tool_itself`` in
-``tests/test_providers/test_elevenlabs_sdk_patch.py`` fails: the SDK then
-hands such calls on itself. Undo with it the ``sdk_patch.client_tools`` call
-in ``providers/elevenlabs/realtime.py`` (back to ``ClientTools(loop=…)``).
+The provider also counts on one more behaviour of the SDK: its dispatch
+answers every outcome of a handler on the wire but a cancellation, so a
+handler that raises ``asyncio.CancelledError`` sends nothing. That is how a
+call no result can name (no id, or an id still in flight) gets none
+(``_hand_on_unanswerable``). The canary
+``test_the_sdk_sends_nothing_for_a_cancelled_handler`` watches it.
+
+Remove the patch when ``test_the_sdk_still_answers_an_unregistered_tool_itself``
+in ``tests/test_providers/test_elevenlabs_sdk_patch.py`` fails: the SDK then
+hands such calls on itself. Undo with it, in ``providers/elevenlabs/realtime.py``,
+the ``sdk_patch.client_tools`` call (back to ``ClientTools(loop=…)``) and
+``_route_unregistered`` with its ``functools.partial`` import.
 """
 
 from __future__ import annotations

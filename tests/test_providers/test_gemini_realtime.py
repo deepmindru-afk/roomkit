@@ -1608,6 +1608,27 @@ class TestGeminiLiveProvider:
         assert tool_calls == [("", "ping")]
         assert state.pending_call_ids == set()
 
+    async def test_a_second_call_under_an_id_in_flight_keeps_the_first(self):
+        """The channel refuses the second and sends nothing: the first call's
+        response must still name its own tool (RFC §12.4)."""
+        mod = _load_provider()
+        provider = mod.GeminiLiveProvider(api_key="test-key")
+        session = _make_session()
+
+        state = mod._GeminiSessionState(session=session)
+        provider._sessions[session.id] = state
+        provider.on_tool_call(lambda s, cid, name, args: None)
+
+        calls = [
+            SimpleNamespace(id="c1", name="lookup", args=None),
+            SimpleNamespace(id="c1", name="other_tool", args=None),
+        ]
+        await provider._handle_server_response(
+            session, SimpleNamespace(tool_call=SimpleNamespace(function_calls=calls))
+        )
+
+        assert state.call_names == {"c1": "lookup"}
+
     async def test_handle_voice_activity_start(self):
         mod = _load_provider()
         provider = mod.GeminiLiveProvider(api_key="test-key")

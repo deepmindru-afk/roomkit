@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
+from unittest.mock import AsyncMock
 
 from roomkit import ConferenceRealtimeConfig, HookExecution, HookTrigger, RoomKit
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
@@ -17,6 +18,7 @@ from roomkit.providers.elevenlabs import sdk_patch
 from roomkit.providers.elevenlabs.config import ElevenLabsRealtimeConfig
 from roomkit.providers.elevenlabs.realtime import ElevenLabsRealtimeProvider
 from roomkit.providers.openai.live_config import HostedReasoning
+from roomkit.providers.openai.realtime import OpenAIRealtimeProvider
 from roomkit.voice.base import VoiceSession, VoiceSessionState
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
 from tests.conference.test_conference_realtime import ROOM, realtime_kit, until
@@ -102,18 +104,24 @@ def _session() -> VoiceSession:
     )
 
 
-async def _gpt_live_calls(items: list[dict[str, Any]]) -> tuple[list[str], list[Any]]:
+async def _gpt_live_calls(
+    items: list[dict[str, Any] | tuple[str, dict[str, Any]]],
+) -> tuple[dict[str, str], list[Any]]:
+    """GPT-Live's books after *items* (an item, or a delegation id and an
+    item), and what the channel heard."""
     provider = _provider(delegation=HostedReasoning(model="gpt-5.6-terra"))
     session = _session()
     heard: list[Any] = []
     provider.on_tool_call(lambda _s, call_id, name, arguments: heard.append((call_id, arguments)))
     ws, _ = await live_connect(provider, session, tools=[TOOL])
-    ws.push(_response_event({"type": "response.created"}))
-    for item in items:
-        ws.push(_response_event({"type": "response.output_item.done", "item": item}))
+    for entry in items:
+        delegation, item = entry if isinstance(entry, tuple) else ("d1", entry)
+        ws.push(_response_event({"type": "response.created"}, delegation_id=delegation))
+        event = {"type": "response.output_item.done", "item": item}
+        ws.push(_response_event(event, delegation_id=delegation))
     await asyncio.sleep(0.1)
     # Read before the disconnect clears the books.
-    open_calls = list(provider._states[session.id].open_calls)
+    open_calls = dict(provider._states[session.id].open_calls)
     await provider.disconnect(session)
     return open_calls, heard
 
@@ -134,7 +142,24 @@ async def test_gpt_live_hands_on_a_call_the_output_cap_cut() -> None:
 
     # The fragment as text: the channel refuses it as unreadable, and answers.
     assert heard == [("c1", cut)]
-    assert open_calls == ["c1"]
+    assert list(open_calls) == ["c1"]
+
+
+async def test_gpt_live_hands_on_a_cut_call_whose_arguments_read_whole() -> None:
+    _, heard = await _gpt_live_calls(
+        [
+            {
+                "type": "function_call",
+                "status": "incomplete",
+                "call_id": "c1",
+                "name": "get_weather",
+                "arguments": '{"city": "Paris"}',
+            }
+        ]
+    )
+
+    # Whole arguments are whole, cut or not (RFC §6.4), as on OpenAI Realtime.
+    assert heard == [("c1", {"city": "Paris"})]
 
 
 async def test_gpt_live_hands_on_id_less_and_duplicate_calls_untracked() -> None:
@@ -145,7 +170,33 @@ async def test_gpt_live_hands_on_id_less_and_duplicate_calls_untracked() -> None
 
     assert [call_id for call_id, _ in heard] == ["c1", "c1", ""]
     # Only the call the channel may answer holds the response open.
-    assert open_calls == ["c1"]
+    assert list(open_calls) == ["c1"]
+
+
+async def test_gpt_live_keeps_an_id_in_flight_on_its_first_delegation() -> None:
+    call = {"type": "function_call", "name": "get_weather", "arguments": "{}", "call_id": "c1"}
+    open_calls, heard = await _gpt_live_calls([("d1", call), ("d2", call)])
+
+    assert [call_id for call_id, _ in heard] == ["c1", "c1"]
+    assert open_calls == {"c1": "d1"}
+
+
+async def test_openai_realtime_books_only_a_call_it_can_answer() -> None:
+    provider = OpenAIRealtimeProvider(api_key="sk-test")
+    session = _session()
+    provider._connections[session.id] = AsyncMock()
+    provider._sessions[session.id] = session
+    heard: list[str] = []
+    provider.on_tool_call(lambda _s, call_id, *_: heard.append(call_id))
+
+    for call_id in ("c1", "c1", ""):
+        await provider._on_function_call_done(
+            session, {"call_id": call_id, "name": "get_weather", "arguments": "{}"}
+        )
+
+    assert heard == ["c1", "c1", ""]
+    assert provider._open_calls[session.id] == {"c1"}
+    assert provider._pending_responses[session.id].call_ids == {"c1"}
 
 
 class _SdkLikeClientTools:
@@ -197,7 +248,9 @@ async def test_an_unregistered_elevenlabs_call_reaches_on_tool_call() -> None:
     routed = asyncio.create_task(
         provider._route_unregistered(session, "secret_op", {"tool_call_id": "t1"})
     )
-    while not heard:
+    for _ in range(100):
+        if heard:
+            break
         await asyncio.sleep(0)
     await provider.submit_tool_result(session, "t1", '{"error": "not declared"}')
 

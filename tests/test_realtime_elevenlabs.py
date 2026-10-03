@@ -20,17 +20,26 @@ from roomkit.voice.base import VoiceSession, VoiceSessionState
 
 
 class _FakeClientTools:
-    """Stand-in for the SDK registry — records what the provider registers."""
+    """Stand-in for the SDK registry — records what the provider registers,
+    and dispatches as the SDK's ``handle`` does: an unregistered name is the
+    SDK's own error."""
 
     def __init__(self, loop: asyncio.AbstractEventLoop | None = None) -> None:
         self.handlers: dict[str, Any] = {}
         self.is_async: dict[str, bool] = {}
+        self.tools: dict[str, tuple[Any, bool]] = {}
 
     def register(self, tool_name: str, handler: Any, is_async: bool = False) -> None:
         if tool_name in self.handlers:
             raise ValueError(f"Tool '{tool_name}' is already registered")
         self.handlers[tool_name] = handler
         self.is_async[tool_name] = is_async
+        self.tools[tool_name] = (handler, is_async)
+
+    async def handle(self, tool_name: str, parameters: dict[str, Any]) -> Any:
+        if tool_name not in self.tools:
+            raise ValueError(f"Tool '{tool_name}' is not registered")
+        return await self.tools[tool_name][0](parameters)
 
 
 class _FakeAsyncConversation:
@@ -49,6 +58,7 @@ class _FakeAsyncConversation:
         self.audio_interface = audio_interface
         self.callback_end_session = callback_end_session
         self.config = kwargs.get("config")
+        self.client_tools = kwargs.get("client_tools")
         self.started = asyncio.Event()
         self.ended = asyncio.Event()
         self.__class__.instances.append(self)
@@ -183,6 +193,38 @@ class TestConnectReadiness:
         assert session.state == VoiceSessionState.ACTIVE
         await provider.send_audio(session, b"ready")
         assert input_callback.await_args_list == [call(b"early"), call(b"ready")]
+        await provider.disconnect(session)
+
+    async def test_a_tool_the_channel_did_not_declare_reaches_the_channel(
+        self,
+        provider: ElevenLabsRealtimeProvider,
+        session: VoiceSession,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _install_fake_sdk(monkeypatch)
+        heard: list[tuple[str, str]] = []
+        provider.on_tool_call(lambda _s, call_id, name, *_: heard.append((call_id, name)))
+        connect_task = asyncio.create_task(provider.connect(session, tools=[]))
+        while not _FakeAsyncConversation.instances:
+            await asyncio.sleep(0)
+        conversation = _FakeAsyncConversation.instances[0]
+        await conversation.started.wait()
+        await conversation.audio_interface.start(AsyncMock())
+        await connect_task
+
+        routed = asyncio.create_task(
+            conversation.client_tools.handle("secret_op", {"tool_call_id": "t1"})
+        )
+        for _ in range(100):
+            if heard:
+                break
+            await asyncio.sleep(0)
+        await provider.submit_tool_error(session, "t1", '{"error": "not declared"}')
+
+        assert heard == [("t1", "secret_op")]
+        # Raised to the SDK, which sends it as an error result.
+        with pytest.raises(Exception, match="not declared"):
+            await routed
         await provider.disconnect(session)
 
     async def test_connect_clamps_voice_speed_into_the_tts_override(
@@ -626,22 +668,18 @@ class TestClientToolBridge:
         assert provider._pending_tools[session.id] == {}
         await asyncio.gather(*tasks)
 
-    async def test_call_without_an_id_still_correlates(
+    async def test_a_call_without_an_id_goes_to_the_channel_and_sends_nothing(
         self, provider: ElevenLabsRealtimeProvider, session: VoiceSession
     ) -> None:
-        tasks: list[asyncio.Task[None]] = []
+        heard: list[str] = []
+        provider.on_tool_call(lambda _s, call_id, *_: heard.append(call_id))
+        handler = provider._make_tool_handler(session, "lookup")
 
-        def on_tool_call(
-            s: VoiceSession, call_id: str, name: str, arguments: dict[str, Any]
-        ) -> None:
-            assert call_id
-            tasks.append(asyncio.create_task(provider.submit_tool_result(s, call_id, "ok")))
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(handler({"tool_call_id": None}), 1)
 
-        provider.on_tool_call(on_tool_call)
-        handler = provider._make_tool_handler(session, "ping")
-
-        assert await handler({}) == "ok"
-        await asyncio.gather(*tasks)
+        assert heard == [""]
+        assert provider._pending_tools.get(session.id, {}) == {}
 
     async def test_a_duplicate_inflight_call_goes_to_the_channel_and_sends_nothing(
         self, provider: ElevenLabsRealtimeProvider, session: VoiceSession
@@ -650,13 +688,15 @@ class TestClientToolBridge:
         provider.on_tool_call(lambda _s, call_id, *_: heard.append(call_id))
         handler = provider._make_tool_handler(session, "lookup")
         first = asyncio.create_task(handler({"tool_call_id": "same"}))
-        while "same" not in provider._pending_tools.get(session.id, {}):
+        for _ in range(100):
+            if "same" in provider._pending_tools.get(session.id, {}):
+                break
             await asyncio.sleep(0)
 
         # The channel refuses and reports it; the SDK sends nothing for a
         # cancellation, so the id's one result stays the first call's.
         with pytest.raises(asyncio.CancelledError):
-            await handler({"tool_call_id": "same"})
+            await asyncio.wait_for(handler({"tool_call_id": "same"}), 1)
         assert heard == ["same", "same"]
 
         await provider.submit_tool_result(session, "same", "ok")

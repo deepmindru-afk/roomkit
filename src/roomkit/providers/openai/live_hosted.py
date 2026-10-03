@@ -118,11 +118,10 @@ class OpenAILiveHostedDelegationMixin(RealtimeVoiceProvider):
             logger.warning("[%s] function call item without a name: %s", _LOG_TAG, item)
             return
         call_id = str(item.get("call_id") or "")
-        # A call the output cap cut is handed on as the text it is, which the
-        # channel refuses and reports, as OpenAI Realtime's (RFC §6.4, §12.4).
-        incomplete = item.get("status", "completed") != "completed"
-        raw = item.get("arguments")
-        arguments = str(raw or "") if incomplete else readable_arguments(raw)
+        # A call the output cap cut is handed on too, as OpenAI Realtime's: its
+        # arguments read as a mapping when whole, else as the text the
+        # channel refuses and reports (RFC §6.4, §12.4).
+        arguments = readable_arguments(item.get("arguments"))
 
         if call_id and call_id not in state.open_calls:
             # Only a call the channel may answer holds the response open: one

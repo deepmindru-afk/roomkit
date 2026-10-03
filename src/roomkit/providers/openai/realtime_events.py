@@ -256,10 +256,15 @@ class OpenAIRealtimeEventHandlersMixin(RealtimeVoiceProvider):
         # A mapping, or the model's text when it does not read as one: the
         # channel refuses that call (RFC §12.4).
         arguments = readable_arguments(event.get("arguments"))
-        pending = self._pending_responses.setdefault(session.id, PendingResponse())
-        pending.call_ids.add(call_id)
-        pending.had_calls = True
-        self._open_calls.setdefault(session.id, set()).add(call_id)
+        open_calls = self._open_calls.setdefault(session.id, set())
+        if call_id and call_id not in open_calls:
+            # Only a call the channel may answer holds the response open: one
+            # without an id, or under an id in flight, is refused and reported
+            # with nothing sent (RFC §12.4).
+            pending = self._pending_responses.setdefault(session.id, PendingResponse())
+            pending.call_ids.add(call_id)
+            pending.had_calls = True
+            open_calls.add(call_id)
         await self._fire(
             self._tool_call_callbacks,
             session,
