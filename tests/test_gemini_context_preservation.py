@@ -111,4 +111,5 @@ async def test_actual_sdk_response_keeps_full_instructions_and_reference(provide
     await provider.submit_tool_result(session, "activation", json.dumps(payload))
     response = live.send_tool_response.call_args.kwargs["function_responses"][0]
     assert response.id == "activation"
-    assert response.response == payload
+    # Whole, under ``result`` as every served result (RMK-375).
+    assert json.loads(response.response["result"]) == payload

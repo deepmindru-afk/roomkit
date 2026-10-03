@@ -9,7 +9,6 @@ provider with a state machine of its own.
 
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import Callable, Coroutine
 from typing import Any
@@ -17,6 +16,7 @@ from typing import Any
 from roomkit.providers.gemini.realtime_config import enum_value, genai_types, warn_unsupported
 from roomkit.providers.gemini.realtime_models import live_model_profile
 from roomkit.providers.gemini.realtime_state import _GeminiSessionState
+from roomkit.providers.gemini.request import function_response_body
 from roomkit.voice.base import VoiceSession
 from roomkit.voice.realtime.provider import RealtimeVoiceProvider
 
@@ -48,6 +48,17 @@ class GeminiLiveToolsMixin(RealtimeVoiceProvider):
     _flush_transcription_buffer: Callable[[VoiceSession, str], Coroutine[Any, Any, None]]
 
     async def submit_tool_result(self, session: VoiceSession, call_id: str, result: str) -> None:
+        await self._submit_function_response(session, call_id, result, is_error=False)
+
+    async def submit_tool_error(self, session: VoiceSession, call_id: str, result: str) -> None:
+        """A failed call's result under the ``error`` key, Gemini's failure
+        flag, as Gemini text sends it (RFC §12.4)."""
+        await self._submit_function_response(session, call_id, result, is_error=True)
+
+    async def _submit_function_response(
+        self, session: VoiceSession, call_id: str, result: str, *, is_error: bool
+    ) -> None:
+        """Answer *call_id* with *result*, then release the call."""
         types = genai_types()
 
         state = self._sessions.get(session.id)
@@ -72,35 +83,7 @@ class GeminiLiveToolsMixin(RealtimeVoiceProvider):
         if state.live_session is None:
             raise RuntimeError("Cannot deliver tool result without an active Gemini connection")
 
-        # Track tool result bytes for debugging
-        state.tool_result_bytes += len(result)
-
-        # Diagnostic: log every tool result we send back to Gemini so
-        # the request → response → result cycle is visible end-to-end.
-        # Body is truncated to 800 chars in the log; the full thing is
-        # still sent to Gemini.
-        self._log_event(
-            session.id,
-            "submit_tool_result",
-            call_id=call_id,
-            len=len(result),
-            preview=(result[:800] + ("…" if len(result) > 800 else "")),
-        )
-
-        if len(result) > 16384:
-            logger.warning(
-                "Large tool result (%d chars) for call %s may cause Gemini to "
-                "disconnect or silently fail (session %s)",
-                len(result),
-                call_id,
-                session.id,
-            )
-
-        try:
-            parsed = json.loads(result)
-            result_dict = parsed if isinstance(parsed, dict) else {"result": parsed}
-        except ValueError:  # json.JSONDecodeError is one
-            result_dict = {"result": result}
+        self._log_tool_result(state, session, call_id, result)
 
         # The response names the function the call named. The id alone was
         # enough through 3.1, and the name went out empty on that account;
@@ -120,7 +103,7 @@ class GeminiLiveToolsMixin(RealtimeVoiceProvider):
         response_kwargs: dict[str, Any] = {
             "id": call_id,
             "name": state.call_names.get(call_id, ""),
-            "response": result_dict,
+            "response": function_response_body(result, is_error=is_error),
         }
         # Only when the caller asks. A default here looked harmless and was
         # not: gemini-3.8-live-extended-thinking closes the session with
@@ -145,6 +128,34 @@ class GeminiLiveToolsMixin(RealtimeVoiceProvider):
         self._release_call(state, call_id)
         if not state.blocking_call_ids:
             await self._flush_queued_injections(state)
+
+    def _log_tool_result(
+        self, state: _GeminiSessionState, session: VoiceSession, call_id: str, result: str
+    ) -> None:
+        """Count, log and size-check a tool result before it goes out."""
+        # Track tool result bytes for debugging
+        state.tool_result_bytes += len(result)
+
+        # Diagnostic: log every tool result we send back to Gemini so
+        # the request → response → result cycle is visible end-to-end.
+        # Body is truncated to 800 chars in the log; the full thing is
+        # still sent to Gemini.
+        self._log_event(
+            session.id,
+            "submit_tool_result",
+            call_id=call_id,
+            len=len(result),
+            preview=(result[:800] + ("…" if len(result) > 800 else "")),
+        )
+
+        if len(result) > 16384:
+            logger.warning(
+                "Large tool result (%d chars) for call %s may cause Gemini to "
+                "disconnect or silently fail (session %s)",
+                len(result),
+                call_id,
+                session.id,
+            )
 
     async def _flush_queued_injections(self, state: _GeminiSessionState) -> None:
         """Send what the blocking calls held back, text first, then images.

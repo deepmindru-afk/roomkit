@@ -406,10 +406,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   was also billed on top of the recovered one (measured on `deepseek-v4-pro`:
   1,057 prompt tokens, 813 now).
 
+- Gemini Live sends a failed call's result under the function response's
+  `error` key, through the new `submit_tool_error`, and a served result under
+  `result`, with Gemini text's `function_response_body` (RMK-375, RFC §12.4).
+  The key followed the result's text before: a refusal in plain words went
+  under `result`, as a success, and a served body that carried an `error`
+  field of its own went out as a failure. Measured on `gemini-3.8-live`,
+  `gemini-3.8-live-extended-thinking` and
+  `gemini-2.5-flash-native-audio-preview-12-2025`: the model reads the refusal
+  as one, reads a served JSON body under `result`, and reports no system
+  error. A served JSON object now reaches the model as text under `result`
+  rather than as the response's own fields.
+
 - Gemini (and Vertex) receives a tool result whose call was refused, failed,
   blocked, served by nothing or cancelled under its function response's
   `error` key, where it went under `result` like a success (RMK-378, RFC
-  §6.4). Gemini Live does not yet (RMK-375).
+  §6.4). Gemini Live does the same since RMK-375.
 
 - Anthropic reports a response's thinking tokens as `reasoning_tokens`, a
   detail of `output_tokens`, from the `output_tokens_details.thinking_tokens`

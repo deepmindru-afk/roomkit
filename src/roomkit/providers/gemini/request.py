@@ -118,6 +118,15 @@ def _model_call_parts(types: Any, content: list[Any]) -> list[Any]:
     return parts
 
 
+def function_response_body(text: str, *, is_error: bool) -> dict[str, str]:
+    """A tool result as a ``FunctionResponse.response``: under ``error``,
+    Gemini's flag for a call that failed (RFC §6.4, §6.7), or under
+    ``result``, the text the same either way. Shared by Gemini and Gemini
+    Live, so a result a tool wrote with an ``error`` key of its own is not
+    read as a failure."""
+    return {"error": text} if is_error else {"result": text}
+
+
 def _tool_result_contents(types: Any, content: list[Any]) -> list[Any]:
     """Contents replaying a tool-result turn: the responses, then any images.
 
@@ -133,7 +142,7 @@ def _tool_result_contents(types: Any, content: list[Any]) -> list[Any]:
     for p in content:
         if isinstance(p, AIToolResultPart):
             text, images = p.split_for_message()
-            response = {"error": text} if p.is_error else {"result": text}
+            response = function_response_body(text, is_error=p.is_error)
             parts.append(types.Part.from_function_response(name=p.name, response=response))
             image_parts.extend(_image_part(types, img) for img in images)
     contents = [types.Content(role="user", parts=parts)]

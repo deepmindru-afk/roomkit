@@ -8,7 +8,8 @@ One scenario per provider, each on its own fake transport:
 - a failed call's result travels as an error where the protocol can say so;
 - the tasks a session lives on run in a context of their own;
 - a provider whose model calls no tool is declared none;
-- Gemini Live tells the model, once, that a call it could not parse did not run;
+- Gemini Live tells the model, once, that a call it could not parse did not run,
+  and flags a failed call's result under ``error`` as Gemini text does;
 - a call whose arguments do not read, which reaches the channel as the model's
   text (``test_realtime_call_arguments``), is refused by the channel and by a
   conference (RMK-375);
@@ -286,6 +287,32 @@ async def test_elevenlabs_sends_a_failed_result_as_an_error() -> None:
         await handler({"tool_call_id": "c1"})
 
     assert str(raised.value) == error
+
+
+@pytest.mark.parametrize(
+    ("submit", "result", "response"),
+    [
+        ("submit_tool_error", "Guests cannot book rooms.", {"error": "Guests cannot book rooms."}),
+        (
+            "submit_tool_result",
+            '{"error": "no flights that day", "flights": []}',
+            {"result": '{"error": "no flights that day", "flights": []}'},
+        ),
+    ],
+    ids=["failed-call-flagged", "served-body-with-an-error-key-not-flagged"],
+)
+async def test_gemini_live_flags_a_failed_call_as_gemini_text_does(
+    submit: str, result: str, response: dict[str, str]
+) -> None:
+    """The flag follows how the call ended, never the result's text (RMK-375)."""
+    provider, session, state, live = _blocking_call_state()
+    state.call_names["call-1"] = "book_room"
+
+    await getattr(provider, submit)(session, "call-1", result)
+
+    [sent] = live.send_tool_response.await_args.kwargs["function_responses"]
+    assert sent.name == "book_room"
+    assert sent.response == response
 
 
 async def test_a_protocol_without_errors_sends_the_failed_result_as_a_result() -> None:
