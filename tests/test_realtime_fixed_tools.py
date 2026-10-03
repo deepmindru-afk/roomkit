@@ -137,6 +137,9 @@ async def test_large_catalogue_uses_fixed_declarations_and_complete_schemas() ->
         ({"name": "invented", "arguments_json": "{}"}, "unavailable in this session"),
         ({"name": "call_tool", "arguments_json": "{}"}, "unavailable in this session"),
         ({"name": "find_tools", "arguments_json": "{}"}, "unavailable in this session"),
+        # The transport's own arguments cut: unreadable, refused before the
+        # unwrap (RMK-375).
+        ('{"name": "calendar", "arguments_json"', "Tool call arguments unreadable"),
     ],
 )
 async def test_transport_refusals_never_execute(args: Any, error: str) -> None:

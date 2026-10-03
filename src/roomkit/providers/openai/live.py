@@ -29,6 +29,8 @@ from pydantic import SecretStr
 
 from roomkit.core.task_utils import cancel_and_wait, log_task_exception
 from roomkit.providers.ai.base import ModelInfo
+from roomkit.providers.ai.tool_declaration import ToolNameRule
+from roomkit.providers.openai.ai import OPENAI_TOOL_NAMES
 from roomkit.providers.openai.live_client import OpenAILiveClientMixin
 from roomkit.providers.openai.live_config import (
     _ACKNOWLEDGED_CLOSE_TIMEOUT,
@@ -212,6 +214,28 @@ class OpenAILiveProvider(
     def _auth_headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._api_key.get_secret_value()}"}
 
+    @property
+    def _tool_name_rule(self) -> ToolNameRule | None:
+        """The tool names the hosted backend accepts: an OpenAI Responses
+        model on OpenAI's own endpoint takes OpenAI's rule, and the session
+        accepts any name, so a refused one would only fail the delegation
+        later, opaquely (measured on ``gpt-live-1``, RFC §6.7). The integrator
+        backend's own provider checks its tools; behind ``base_url`` the
+        server decides."""
+        if isinstance(self._delegation, HostedReasoning) and self._base_url == _DEFAULT_BASE_URL:
+            return OPENAI_TOOL_NAMES
+        return None
+
+    def _check_tool_names(self, tools: list[dict[str, Any]]) -> None:
+        """Raise before anything is sent for a tool name the backend refuses."""
+        rule = self._tool_name_rule
+        if rule is not None:
+            rule.check(
+                tool.get("name", "")
+                for tool in tools
+                if tool.get("type", "function") == "function"
+            )
+
     def _build_session_config(
         self,
         *,
@@ -252,6 +276,7 @@ class OpenAILiveProvider(
         websockets = self._import_websockets()
         pc = dict(provider_config or {})
         tool_list = list(tools or [])
+        self._check_tool_names(tool_list)
 
         # Built before opening the socket so validation errors fail fast.
         audio_format, law = build_audio_format(output_sample_rate, str(pc.get("codec", "pcm")))
@@ -532,6 +557,10 @@ class OpenAILiveProvider(
             return
         if temperature is not None:
             logger.debug("[%s] temperature ignored on reconfigure", _LOG_TAG)
+        # Before anything is sent or torn down: a refused name leaves the
+        # session as it was.
+        if tools is not None:
+            self._check_tool_names(list(tools))
 
         new_codec = (provider_config or {}).get("codec")
         needs_restart = (voice is not None and voice != state.voice) or (

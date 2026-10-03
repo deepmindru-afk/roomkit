@@ -41,11 +41,10 @@ from roomkit.providers.anam.config import AnamConfig
 from roomkit.providers.anam.realtime import AnamRealtimeProvider
 from roomkit.providers.deepgram.config import DeepgramAgentConfig
 from roomkit.providers.deepgram.realtime import DeepgramAgentProvider
-from roomkit.providers.deepgram.settings import build_think
+from roomkit.providers.deepgram.settings import build_settings, patch_think
 from roomkit.providers.elevenlabs.config import ElevenLabsRealtimeConfig
 from roomkit.providers.elevenlabs.realtime import ElevenLabsRealtimeProvider
 from roomkit.providers.openai.live_config import HostedReasoning
-from roomkit.providers.openai.live_events import format_backend_tools
 from roomkit.providers.openai.realtime import OpenAIRealtimeProvider
 from roomkit.providers.personaplex.realtime import PersonaPlexRealtimeProvider
 from roomkit.providers.xai.realtime import XAIRealtimeProvider
@@ -59,6 +58,7 @@ from tests.test_openai_live import (
     _provider,
     _started,
 )
+from tests.test_openai_live import _connect as live_connect
 from tests.test_providers import test_gemini_realtime as gemini_tests
 from tests.test_providers.test_gemini_realtime import (
     _blocking_call_state,
@@ -608,26 +608,48 @@ async def test_a_conference_refuses_a_call_that_arrives_as_text() -> None:
 # -- A tool name the endpoint refuses fails when the tools are declared -------
 
 _DOTTED = {"name": "crm.lookup", "description": "d", "parameters": {"type": "object"}}
+_GATEWAY = "wss://gateway.example/v1/live/sessions"
 
 
-def _deepgram_think(tools: list[dict[str, Any]], **pc: Any) -> dict[str, Any]:
-    return build_think(
+def _deepgram_settings(tools: list[dict[str, Any]], **pc: Any) -> dict[str, Any]:
+    return build_settings(
         DeepgramAgentConfig(api_key=SecretStr("dg-key")),
         system_prompt=None,
+        voice=None,
         tools=tools,
         temperature=None,
+        input_sample_rate=16000,
+        output_sample_rate=24000,
         pc=pc,
     )
+
+
+def _deepgram_switched_to_open_ai(tools: list[dict[str, Any]]) -> dict[str, Any]:
+    """A Gemini think block, switched to OpenAI's without new tools."""
+    think = _deepgram_settings(tools, think_provider="google")["agent"]["think"]
+    return patch_think(
+        think, system_prompt=None, tools=None, temperature=None, pc={"think_provider": "open_ai"}
+    )
+
+
+def _gpt_live_hosted(**kwargs: Any) -> Any:
+    return _provider(delegation=HostedReasoning(model="gpt-5.6-terra"), **kwargs)
 
 
 @pytest.mark.parametrize(
     "declare",
     [
         lambda tools: OpenAIRealtimeProvider(api_key="sk")._format_session_tools(tools),
-        format_backend_tools,
-        _deepgram_think,
+        lambda tools: _gpt_live_hosted()._check_tool_names(tools),
+        _deepgram_settings,
+        _deepgram_switched_to_open_ai,
     ],
-    ids=["openai-realtime", "gpt-live-hosted", "deepgram-open-ai-think"],
+    ids=[
+        "openai-realtime",
+        "gpt-live-hosted",
+        "deepgram-open-ai-think",
+        "deepgram-switched-think",
+    ],
 )
 def test_a_name_the_endpoint_refuses_fails_at_declaration(
     declare: Callable[[list[dict[str, Any]]], Any],
@@ -642,18 +664,82 @@ def test_a_name_the_endpoint_refuses_fails_at_declaration(
         lambda tools: OpenAIRealtimeProvider(
             api_key="sk", base_url="wss://proxy.example/v1/realtime"
         )._format_session_tools(tools),
+        lambda tools: _gpt_live_hosted(base_url=_GATEWAY)._check_tool_names(tools),
+        lambda tools: _provider()._check_tool_names(tools),
         lambda tools: XAIRealtimeProvider(api_key="xai")._format_session_tools(tools),
-        lambda tools: _deepgram_think(tools, think_provider="google"),
-        lambda tools: _deepgram_think(
+        lambda tools: _deepgram_settings(tools, think_provider="google"),
+        lambda tools: _deepgram_settings(
             tools, think_provider="open_ai", think_endpoint={"url": "https://llm.example"}
         ),
+        lambda tools: _deepgram_settings(
+            tools, settings={"agent": {"think": {"endpoint": {"url": "https://llm.example"}}}}
+        ),
     ],
-    ids=["behind-base-url", "xai-accepts-any", "deepgram-google-think", "deepgram-custom-think"],
+    ids=[
+        "behind-base-url",
+        "gpt-live-behind-base-url",
+        "gpt-live-integrator",
+        "xai-accepts-any",
+        "deepgram-google-think",
+        "deepgram-custom-think",
+        "deepgram-endpoint-through-settings",
+    ],
 )
 def test_an_endpoint_whose_rule_admits_the_name_or_is_unknown_declares_it(
     declare: Callable[[list[dict[str, Any]]], Any],
 ) -> None:
     declare([_DOTTED])
+
+
+async def _openai_realtime_connects(connect: AsyncMock) -> None:
+    with patch("websockets.connect", connect):
+        await OpenAIRealtimeProvider(api_key="sk").connect(
+            _session(), tools=[_DOTTED], input_sample_rate=24000
+        )
+
+
+async def _gpt_live_connects(connect: AsyncMock) -> None:
+    with patch("websockets.connect", connect):
+        await _gpt_live_hosted().connect(_session(), tools=[_DOTTED])
+
+
+async def _deepgram_connects(connect: AsyncMock) -> None:
+    provider = DeepgramAgentProvider(DeepgramAgentConfig(api_key=SecretStr("dg-key")))
+    with patch("websockets.connect", connect):
+        await provider.connect(_session(), tools=[_DOTTED])
+
+
+@pytest.mark.parametrize(
+    "connects",
+    [_openai_realtime_connects, _gpt_live_connects, _deepgram_connects],
+    ids=["openai-realtime", "gpt-live-hosted", "deepgram"],
+)
+async def test_a_refused_name_fails_the_session_before_a_socket_opens(
+    connects: Callable[[AsyncMock], Awaitable[None]],
+) -> None:
+    connect = AsyncMock()
+
+    with pytest.raises(ProviderError, match="crm.lookup"):
+        await connects(connect)
+
+    connect.assert_not_called()
+
+
+async def test_a_refused_name_leaves_a_gpt_live_session_as_it_was() -> None:
+    provider = _gpt_live_hosted()
+    session = _session()
+    ws, _ = await live_connect(provider, session, tools=[TOOL], system_prompt="old")
+    sent = list(ws.sent)
+
+    with pytest.raises(ProviderError, match="crm.lookup"):
+        await provider.reconfigure(session, system_prompt="new", tools=[TOOL, _DOTTED])
+    with pytest.raises(ProviderError, match="crm.lookup"):
+        await provider.reconfigure(session, voice="cedar", tools=[_DOTTED])
+
+    assert ws.sent == sent
+    assert not ws.closed
+    assert provider._states[session.id].system_prompt == "old"
+    await provider.disconnect(session)
 
 
 @pytest.mark.parametrize("name", ["look up", "", "café"])
@@ -673,3 +759,23 @@ def test_a_name_no_vendor_accepts_is_refused_when_given(name: str) -> None:
     )
     with pytest.raises(ValueError, match="accepted by no provider"):
         ConferenceChannel("conf", backend=MockConferenceBackend(), realtime=realtime)
+
+
+async def test_a_name_no_vendor_accepts_is_refused_with_a_session() -> None:
+    """Tools given with a session, or to reconfigure one, are given too."""
+    provider = MockRealtimeProvider()
+    channel = RealtimeVoiceChannel("rt", provider=provider, transport=MockRealtimeTransport())
+    kit = RoomKit()
+    kit.register_channel(channel)
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "rt")
+    unnamable = [{"name": "look up", "description": "d", "parameters": {"type": "object"}}]
+
+    with pytest.raises(ValueError, match="accepted by no provider"):
+        await channel.start_session("r1", "u1", "ws", metadata={"tools": unnamable})
+    session = await channel.start_session("r1", "u1", "ws")
+    with pytest.raises(ValueError, match="accepted by no provider"):
+        await channel.reconfigure_session(session, tools=unnamable)
+
+    assert [c.method for c in provider.calls].count("reconfigure") == 0
+    await kit.close()

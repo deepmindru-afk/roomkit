@@ -1260,6 +1260,10 @@ class RealtimeVoiceChannel(
         meta["system_prompt"] = system_prompt
         voice = meta.get("voice", room_voice if room_voice is not None else self._voice)
         tools = meta.get("tools", room_tools if room_tools is not None else self._tools)
+        if "tools" in meta:
+            # Given with the session, so refused here as at construction (§6.7).
+            given = meta["tools"] or []
+            refuse_unnamable((dict_tool_name(tool) for tool in given), self.channel_id)
         temperature = meta.get("temperature", self._temperature)
         provider_config = meta.get("provider_config")
         if self._skill_support and self._skill_support.uses_tool_result:
@@ -1819,10 +1823,13 @@ class RealtimeVoiceChannel(
             session: The active session to reconfigure.
             system_prompt: New system instructions for the AI.
             voice: New voice ID for audio output.
-            tools: New tool/function definitions.
+            tools: New tool/function definitions; one under a name no vendor
+                accepts raises ``ValueError``, the session left as it was.
             temperature: New sampling temperature.
             provider_config: Provider-specific configuration overrides.
         """
+        if tools is not None:
+            refuse_unnamable((dict_tool_name(tool) for tool in tools), self.channel_id)
         lock = self._session_config_locks.get(session.id)
         if lock is None:
             return

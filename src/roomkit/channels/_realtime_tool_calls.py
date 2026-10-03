@@ -16,7 +16,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from roomkit.providers.ai.tool_calls import unreadable_call_error
+from roomkit.providers.ai.tool_calls import tool_arguments, unreadable_call_error
 
 if TYPE_CHECKING:
     from roomkit.voice.base import VoiceSession
@@ -64,7 +64,7 @@ class RealtimeToolCall:
             call_id,
         )
         refusal = json.dumps(unreadable_call_error(name))
-        return cls(session, call_id, name, {"raw": arguments}, unreadable=refusal, **fields)
+        return cls(session, call_id, name, tool_arguments(arguments), unreadable=refusal, **fields)
 
     def claim_report(self) -> bool:
         """Claim the call's one report: False when it was already made."""

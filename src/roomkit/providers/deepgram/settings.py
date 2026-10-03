@@ -61,11 +61,18 @@ def think_tool_names(think: dict[str, Any]) -> ToolNameRule | None:
     return _THINK_TOOL_NAMES.get((think.get("provider") or {}).get("type", ""))
 
 
-def format_functions(
-    tools: list[dict[str, Any]] | None, rule: ToolNameRule | None = None
-) -> list[dict[str, Any]]:
-    """Project RoomKit tool dicts to Deepgram's ``think.functions`` shape, their
-    names checked against *rule*, the think provider's.
+def check_think_functions(think: dict[str, Any]) -> None:
+    """Raise, before the block is sent, for a function name the Think block's
+    LLM refuses (RFC §6.7): the block as it goes out, so a think provider or
+    an endpoint set through ``settings`` or switched by a reconfigure is the
+    one whose rule applies."""
+    rule = think_tool_names(think)
+    if rule is not None:
+        rule.check(function.get("name", "") for function in think.get("functions") or [])
+
+
+def format_functions(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """Project RoomKit tool dicts to Deepgram's ``think.functions`` shape.
 
     Tool dicts reaching the provider carry extra keys the caller uses elsewhere
     (notably ``tags``, added for cross-lingual Tool Search); Deepgram rejects
@@ -78,8 +85,6 @@ def format_functions(
         name = tool.get("name")
         if not name:
             continue
-        if rule is not None:
-            rule.check([name])
         function: dict[str, Any] = {
             "name": name,
             "description": tool.get("description", ""),
@@ -114,7 +119,7 @@ def build_think(
         think["context_length"] = pc["context_length"]
     if system_prompt:
         think["prompt"] = system_prompt
-    functions = format_functions(tools, think_tool_names(think))
+    functions = format_functions(tools)
     if functions:
         think["functions"] = functions
     return think
@@ -192,11 +197,12 @@ def patch_think(
         else:
             think.pop("prompt", None)
     if tools is not None:
-        functions = format_functions(tools, think_tool_names(think))
+        functions = format_functions(tools)
         if functions:
             think["functions"] = functions
         else:
             think.pop("functions", None)
+    check_think_functions(think)
     return think
 
 
@@ -306,4 +312,10 @@ def build_settings(
         settings["tags"] = list(pc["tags"])
     if pc.get("settings"):
         settings = deep_merge(settings, pc["settings"])
+    # The merged block: an override may have changed the think stage, or
+    # broken it, which the provider reports before the socket opens.
+    merged_agent = settings.get("agent")
+    think = merged_agent.get("think") if isinstance(merged_agent, dict) else None
+    if isinstance(think, dict):
+        check_think_functions(think)
     return settings

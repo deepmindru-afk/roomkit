@@ -150,14 +150,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a conference ran it before. An application registered directly on a
   provider's `on_tool_call` reads a `str` for such a call. A tool name the
   endpoint refuses raises a `ProviderError` naming it when the session's
-  tools are declared, at connection or reconfiguration: OpenAI Realtime on
-  its own endpoint and GPT-Live's hosted backend check OpenAI's rule,
-  Deepgram its think provider's (`open_ai`, `anthropic`, `google`), xAI
-  none, since it accepts any name (measured 2026-10-03); GPT-Live's hosted
+  tools are declared, before the socket opens at connection and before
+  anything is sent at a reconfiguration: OpenAI Realtime and GPT-Live's
+  hosted backend, each on its own endpoint, check OpenAI's rule, Deepgram the
+  rule of the think provider in force (`open_ai`, `anthropic`, `google`; none
+  for another or a custom endpoint, `settings` overrides included), xAI
+  none, since it accepts any name (measured 2026-10-02); GPT-Live's hosted
   backend failed such a call later with "connection error: unknown", and
   Deepgram's think stage with `THINK_REQUEST_FAILED`. A tool dict given to a
-  `RealtimeVoiceChannel` (at construction or `configure`) or a conference
-  under a name no vendor accepts is refused, as `AITool` refuses it.
+  `RealtimeVoiceChannel` (at construction, `configure`, a session's
+  `metadata` or `reconfigure_session`) or a conference under a name no vendor
+  accepts is refused, as `AITool` refuses it.
 - **BREAKING — a tool name no provider accepts is refused when the tool is
   defined** (RMK-309, RFC §6.7): `AITool` raises on an empty name or one with
   a character other than a letter, a digit, `_`, `.`, `:` or `-`, which every
