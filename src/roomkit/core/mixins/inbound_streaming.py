@@ -255,21 +255,7 @@ class InboundStreamingMixin(HelpersMixin):
                 # as an ordinary event, to everyone.
                 writer.stream_lost()
                 await writer.end_failed(reader)
-                await self._fire_error_hook(
-                    room_id,
-                    context,
-                    EventSource(
-                        channel_id=sr.source_channel_id,
-                        channel_type=sr.source_channel_type,
-                    ),
-                    error=str(exc),
-                    error_type=type(exc).__name__,
-                    error_category="streaming",
-                    chain_depth=chain_depth,
-                    visibility=visibility,
-                    correlation_id=correlation_id,
-                    parent_event_id=parent_event_id,
-                )
+                await self._fire_stream_error_hook(exc, room_id, context, sr, correlation_id)
         else:
             # No streaming targets (e.g. a PII-locked / edge agent whose stream
             # send fn was withheld, or a headless one-shot call whose only
@@ -286,21 +272,7 @@ class InboundStreamingMixin(HelpersMixin):
                 self._log_stream_failure(
                     exc, "stream consumption (no targets)", room_id, headless=True
                 )
-                await self._fire_error_hook(
-                    room_id,
-                    context,
-                    EventSource(
-                        channel_id=sr.source_channel_id,
-                        channel_type=sr.source_channel_type,
-                    ),
-                    error=str(exc),
-                    error_type=type(exc).__name__,
-                    error_category="streaming",
-                    chain_depth=chain_depth,
-                    visibility=visibility,
-                    correlation_id=correlation_id,
-                    parent_event_id=parent_event_id,
-                )
+                await self._fire_stream_error_hook(exc, room_id, context, sr, correlation_id)
 
         # Every segment's delivery set, awaited once now that the stream is
         # done — the run's completion is what the caller's turn waits on.
@@ -337,6 +309,28 @@ class InboundStreamingMixin(HelpersMixin):
         except Exception:
             logger.exception("Closing an unread response stream failed for room %s", room_id)
         await writer.flush_text(cancelled=True)
+
+    async def _fire_stream_error_hook(
+        self,
+        exc: Exception,
+        room_id: str,
+        context: RoomContext,
+        sr: StreamingResponse,
+        correlation_id: str,
+    ) -> None:
+        """Fire ON_ERROR for a response stream that failed, as its source."""
+        await self._fire_error_hook(
+            room_id,
+            context,
+            EventSource(channel_id=sr.source_channel_id, channel_type=sr.source_channel_type),
+            error=str(exc),
+            error_type=type(exc).__name__,
+            error_category="streaming",
+            chain_depth=sr.trigger_event.chain_depth + 1,
+            visibility=sr.trigger_event.response_visibility or "all",
+            correlation_id=correlation_id,
+            parent_event_id=sr.trigger_event.parent_event_id,
+        )
 
     @staticmethod
     def _log_stream_failure(
