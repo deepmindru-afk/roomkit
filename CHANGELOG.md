@@ -377,6 +377,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   after the codec in `output_format` and the codec has its own MIME type and
   chunk format (`audio/alaw` / `alaw`, `audio/ogg` / `opus`, `audio/wav`).
 
+- `ElevenLabsTTSProvider.synthesize()` returns its audio again (found under
+  RMK-413). Since the move to the official SDK it awaited
+  `text_to_speech.convert()`, which is an async generator, and every call
+  raised `TypeError: 'async_generator' object can't be awaited`; the tests
+  mocked `convert` as a coroutine returning bytes. The provider now reads the
+  stream to its end.
+
 - With `AudioPipelineConfig(inbound_dsp_threads=N)`, a voice channel behaves
   as it does inline (RMK-392). The pipeline's callbacks ran on the DSP worker,
   while the channels' handlers are written for the event loop. A

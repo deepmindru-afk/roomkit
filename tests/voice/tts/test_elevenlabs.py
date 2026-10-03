@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import importlib
+from collections.abc import AsyncIterator
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 
 def _mock_elevenlabs_module() -> MagicMock:
@@ -97,8 +98,11 @@ class TestElevenLabsTTSProvider:
         el = _mock_elevenlabs_module()
         provider = _make_provider(el, api_key="k", output_format="pcm_16000")
 
+        async def sdk_audio(**kwargs: Any) -> AsyncIterator[bytes]:
+            yield b"\x00\x01" * 50  # convert() is an async generator, as in the SDK
+
         fake_client = MagicMock()
-        fake_client.text_to_speech.convert = AsyncMock(return_value=b"\x00\x01" * 50)
+        fake_client.text_to_speech.convert = MagicMock(side_effect=sdk_audio)
         provider._client = fake_client
 
         with patch.dict("sys.modules", {"elevenlabs": el, "elevenlabs.client": el.client}):
@@ -106,7 +110,7 @@ class TestElevenLabsTTSProvider:
 
         assert result.transcript == "hello world"
         assert result.url.startswith("data:audio/pcm;base64,")
-        fake_client.text_to_speech.convert.assert_awaited_once()
+        fake_client.text_to_speech.convert.assert_called_once()
 
     async def test_close(self) -> None:
         el = _mock_elevenlabs_module()

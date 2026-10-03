@@ -244,6 +244,20 @@ class ElevenLabsTTSProvider(TTSProvider):
             self._voices_cache = [_voice_info(voice) for voice in response.voices]
         return filter_voices(self._voices_cache, language=language, gender=gender, query=query)
 
+    async def _convert(self, voice_id: str, text: str) -> bytes:
+        """The whole audio of *text*, read from the SDK's ``convert`` stream.
+
+        ``convert()`` is an async generator: awaiting it raises ``TypeError``.
+        """
+        audio = self._get_client().text_to_speech.convert(
+            voice_id=voice_id,
+            text=text,
+            model_id=self._config.model_id,
+            voice_settings=self._make_voice_settings(),
+            **self._query_params(),
+        )
+        return b"".join([chunk async for chunk in audio])
+
     async def synthesize(self, text: str, *, voice: str | None = None) -> AudioContent:
         """Synthesize text to audio.
 
@@ -257,25 +271,9 @@ class ElevenLabsTTSProvider(TTSProvider):
         from roomkit.models.event import AudioContent as AudioContentModel
 
         voice_id = voice or self._config.voice_id
-        client = self._get_client()
 
         t0 = time.monotonic()
-        response = await client.text_to_speech.convert(
-            voice_id=voice_id,
-            text=text,
-            model_id=self._config.model_id,
-            voice_settings=self._make_voice_settings(),
-            **self._query_params(),
-        )
-
-        # SDK convert() may return bytes or an async iterator — normalise.
-        if isinstance(response, bytes):
-            audio_bytes = response
-        else:
-            parts: list[bytes] = []
-            async for chunk in response:
-                parts.append(chunk)
-            audio_bytes = b"".join(parts)
+        audio_bytes = await self._convert(voice_id, text)
 
         ttfb_ms = (time.monotonic() - t0) * 1000
         from roomkit.telemetry.noop import NoopTelemetryProvider

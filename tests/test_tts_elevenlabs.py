@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -15,6 +16,13 @@ from roomkit.voice.tts.elevenlabs import (
     ElevenLabsConfig,
     ElevenLabsTTSProvider,
 )
+
+
+async def _sdk_audio(*parts: bytes):
+    """What the SDK's ``text_to_speech.convert()`` returns: an async generator of bytes."""
+    for part in parts:
+        yield part
+
 
 # ---------------------------------------------------------------------------
 # Config
@@ -214,7 +222,9 @@ class TestSynthesize:
         provider = ElevenLabsTTSProvider(ElevenLabsConfig(api_key="k"))
 
         mock_client = MagicMock()
-        mock_client.text_to_speech.convert = AsyncMock(return_value=b"fake-audio-bytes")
+        mock_client.text_to_speech.convert = MagicMock(
+            side_effect=lambda **_: _sdk_audio(b"fake-audio-bytes")
+        )
 
         with (
             patch.object(provider, "_get_client", return_value=mock_client),
@@ -228,12 +238,32 @@ class TestSynthesize:
         assert call_kwargs["voice_settings"] == "mock-settings"
         assert result.transcript == "Hello world"
 
+    async def test_synthesize_reads_the_sdk_stream_to_the_end(self):
+        """``convert()`` is an async generator, never a coroutine (RMK-413)."""
+        config = ElevenLabsConfig(api_key="k", output_format="pcm_16000")
+        provider = ElevenLabsTTSProvider(config)
+        mock_client = MagicMock()
+        mock_client.text_to_speech.convert = MagicMock(
+            side_effect=lambda **_: _sdk_audio(b"\x00\x01", b"\x02\x03")
+        )
+
+        with (
+            patch.object(provider, "_get_client", return_value=mock_client),
+            patch.object(provider, "_make_voice_settings", return_value="s"),
+        ):
+            result = await provider.synthesize("Hello")
+
+        audio = base64.b64encode(b"\x00\x01\x02\x03").decode()
+        assert result.url == f"data:audio/pcm;base64,{audio}"
+
     async def test_synthesize_expressive_payload(self):
         """Expressive mode sends the v4 Turbo model."""
         provider = ElevenLabsTTSProvider(ElevenLabsConfig(api_key="k", expressive=True))
 
         mock_client = MagicMock()
-        mock_client.text_to_speech.convert = AsyncMock(return_value=b"fake-audio")
+        mock_client.text_to_speech.convert = MagicMock(
+            side_effect=lambda **_: _sdk_audio(b"fake-audio")
+        )
 
         with (
             patch.object(provider, "_get_client", return_value=mock_client),
@@ -250,7 +280,9 @@ class TestSynthesize:
         provider = ElevenLabsTTSProvider(ElevenLabsConfig(api_key="k"))
 
         mock_client = MagicMock()
-        mock_client.text_to_speech.convert = AsyncMock(return_value=b"audio")
+        mock_client.text_to_speech.convert = MagicMock(
+            side_effect=lambda **_: _sdk_audio(b"audio")
+        )
 
         with (
             patch.object(provider, "_get_client", return_value=mock_client),
@@ -317,7 +349,9 @@ class TestDeclaredFormat:
         config = ElevenLabsConfig(api_key="k", output_format=output_format)
         provider = ElevenLabsTTSProvider(config)
         mock_client = MagicMock()
-        mock_client.text_to_speech.convert = AsyncMock(return_value=b"audio")
+        mock_client.text_to_speech.convert = MagicMock(
+            side_effect=lambda **_: _sdk_audio(b"audio")
+        )
         with (
             patch.object(provider, "_get_client", return_value=mock_client),
             patch.object(provider, "_make_voice_settings", return_value="s"),
@@ -398,7 +432,7 @@ def _mock_client() -> tuple[list[dict], MagicMock]:
 
     mock_client = MagicMock()
     mock_client.text_to_speech.stream = mock_stream
-    mock_client.text_to_speech.convert = AsyncMock(return_value=b"audio")
+    mock_client.text_to_speech.convert = MagicMock(side_effect=lambda **_: _sdk_audio(b"audio"))
     return calls, mock_client
 
 
