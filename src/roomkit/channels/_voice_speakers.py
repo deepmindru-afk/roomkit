@@ -130,8 +130,8 @@ class PipelineSpeakerTally:
     counted, and awaits the answer (:func:`claimed_speaker`). Without a VAD a
     transcript takes the count as its final lands (:meth:`take`).
 
-    The pipeline may run on a worker thread (``inbound_dsp_threads``), hence
-    the lock and the thread-safe futures.
+    A pipeline without an event loop of its own calls back on whatever thread
+    runs its frames, hence the lock and the thread-safe futures.
     """
 
     def __init__(self) -> None:

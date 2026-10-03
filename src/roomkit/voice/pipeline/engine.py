@@ -367,7 +367,7 @@ class AudioPipeline:
             home.call_soon_threadsafe(self._notify, callbacks, subject, payload, label)
         except RuntimeError:
             # Closed since the pipeline was built: nobody is left to notify.
-            logger.debug("%s callbacks dropped: the pipeline's loop is closed", label)
+            logger.warning("%s callbacks dropped: the pipeline's loop is closed", label)
 
     def _home_loop_from_here(self) -> asyncio.AbstractEventLoop | None:
         """The loop to send callbacks to, or ``None`` to call them right here.

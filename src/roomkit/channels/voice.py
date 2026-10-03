@@ -864,7 +864,8 @@ class VoiceChannel(
         if self._bridge is None:
             return
         # Fast path: no framework or no BEFORE_BRIDGE_AUDIO hooks registered
-        # → forward directly in the audio thread for minimum latency.
+        # → forward right here in the frame callback (on the pipeline's loop,
+        # with or without the DSP pool), no task in between.
         if self._framework is None or not self._framework.hook_engine.has_hooks(
             HookTrigger.BEFORE_BRIDGE_AUDIO
         ):
@@ -2118,6 +2119,9 @@ class VoiceChannel(
         return ChannelOutputModel.empty()
 
     async def close(self) -> None:
+        # 0. No more frames, and those in flight finish first: their callbacks
+        #    run against live state and anything they open is swept below.
+        await self._pipeline_quiesce()
         # 1. Cancel STT streams first (stops feeding audio)
         for sid in list(self._stt_streams):
             self._cancel_stt_stream(sid)
@@ -2127,10 +2131,7 @@ class VoiceChannel(
         if self._scheduled_tasks:
             await asyncio.gather(*self._scheduled_tasks, return_exceptions=True)
         self._scheduled_tasks.clear()
-        # 3. Drain the DSP pool first — in-flight frames finish against
-        #    live stage state — then close the pipeline that owns it.
-        if self._inbound_offload is not None:
-            await asyncio.to_thread(self._pipeline_offload_shutdown)
+        # 3. Close the pipeline (its DSP pool was drained at step 0).
         if self._pipeline is not None:
             self._pipeline.close()
         # 3b. Close audio bridge

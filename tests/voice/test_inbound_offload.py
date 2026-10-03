@@ -148,6 +148,21 @@ class TestInboundFrameOffload:
         offload.shutdown()
         offload.submit("s1", lambda: None)  # must not raise
 
+    def test_shutdown_finishes_the_queue_and_refuses_what_comes_after(self) -> None:
+        offload = InboundFrameOffload(1)
+        gate = threading.Event()
+        seen: list[int] = []
+        offload.submit("s1", gate.wait, 5.0)
+        offload.submit("s1", seen.append, 1)
+        stopper = threading.Thread(target=offload.shutdown)
+        stopper.start()
+        time.sleep(0.05)  # shutdown is now waiting on the blocked frame
+        offload.submit("s1", seen.append, 2)
+        gate.set()
+        stopper.join(timeout=5.0)
+
+        assert seen == [1]
+
 
 class TestVoiceChannelWithOffload:
     async def test_the_frame_to_stt_path_runs_through_the_pool(self) -> None:
@@ -330,3 +345,72 @@ class TestRealtimeVoiceChannelBehindThePool:
 
         assert await _until(cleared), transport.sent_messages
         await channel.close()
+
+
+class TestCloseWithAFrameInFlight:
+    """A frame still in the stages when the channel closes leaves nothing behind.
+
+    The stage is slow, so on the pool the SPEECH_START frame is still being
+    processed when ``close()`` starts; its callbacks must not open what the
+    teardown has already swept.
+    """
+
+    @_PATHS
+    async def test_voice_channel_leaves_no_stt_stream(self, threads: int | None) -> None:
+        backend = MockVoiceBackend()
+        kit = RoomKit(voice=backend)
+        channel = VoiceChannel(
+            "voice-1",
+            stt=_StreamingSTT(),
+            tts=MockTTSProvider(),
+            backend=backend,
+            pipeline=AudioPipelineConfig(
+                vad=MockVADProvider(events=[VADEvent(type=VADEventType.SPEECH_START)]),
+                denoiser=_SlowDenoiser(0.05),
+                inbound_dsp_threads=threads,
+            ),
+        )
+        kit.register_channel(channel)
+        room = await kit.create_room()
+        await kit.attach_channel(room.id, "voice-1")
+        session = await kit.join(room.id, "voice-1", participant_id="user-1")
+        await backend.simulate_audio_received(session, AudioFrame(data=_FRAME))
+
+        await channel.close()
+        await asyncio.sleep(0.1)
+
+        assert channel._stt_streams == {}
+        alive = [t.get_name() for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        assert not [name for name in alive if name.startswith("stt_stream:")], alive
+        await kit.close()
+
+    @_PATHS
+    async def test_realtime_provider_hears_nothing_after_disconnect(
+        self, threads: int | None
+    ) -> None:
+        provider = MockRealtimeProvider()
+        transport = MockRealtimeTransport()
+        channel = RealtimeVoiceChannel(
+            "rt-1",
+            provider=provider,
+            transport=transport,
+            pipeline=AudioPipelineConfig(
+                vad=MockVADProvider(events=[VADEvent(type=VADEventType.SPEECH_START)]),
+                denoiser=_SlowDenoiser(0.05),
+                inbound_dsp_threads=threads,
+            ),
+        )
+        kit = RoomKit()
+        kit.register_channel(channel)
+        room = await kit.create_room()
+        await kit.attach_channel(room.id, "rt-1")
+        session = await channel.start_session(room.id, "user-1", "fake-ws")
+        await transport.simulate_client_audio(session, _FRAME)
+
+        await channel.close()
+        await asyncio.sleep(0.1)
+
+        calls = [call.method for call in provider.calls]
+        assert calls[calls.index("disconnect") + 1 :] == ["close"], calls
+        types = [message.get("type") for _, message in transport.sent_messages]
+        assert "clear_audio" not in types[types.index("session_ended") :], types

@@ -12,6 +12,7 @@ callbacks on the pipeline after creation.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
@@ -155,8 +156,8 @@ class VoicePipelineMixin:
         only *where* the chain executes moves. The callbacks the chain
         fires do not move: ``AudioPipeline._fanout`` sends them back to
         the pipeline's home loop in firing order, because the channels'
-        handlers are loop code. Called from the worker, they left the
-        streaming STT unopened and a realtime provider without audio.
+        handlers are loop code (asyncio queues and tasks, which only work
+        from the loop's thread).
         """
         pipeline = self._pipeline
         if pipeline is None:
@@ -201,8 +202,24 @@ class VoicePipelineMixin:
         if self._pipeline is not None:
             self._pipeline.on_session_ended(session)
 
+    async def _pipeline_quiesce(self) -> None:
+        """Bring the inbound audio path to rest. Call first in close().
+
+        The backends stop handing frames to the pipeline, and the frames the
+        DSP pool already holds are processed. Their callbacks run on the loop
+        before this returns (they were queued ahead of its resumption), so a
+        stream or task one of them opens is there for the teardown to sweep,
+        and nothing reaches a session after it ended.
+        """
+        for unsubscribe in getattr(self, "_pipeline_unsubscribers", []):
+            if unsubscribe is not None:
+                unsubscribe()
+        self._pipeline_unsubscribers = []
+        if self._inbound_offload is not None:
+            await asyncio.to_thread(self._pipeline_offload_shutdown)
+
     def _pipeline_offload_shutdown(self) -> None:
-        """Drain and stop the DSP pool. Call from the channel's close()."""
+        """Drain and stop the DSP pool."""
         if self._inbound_offload is not None:
             self._inbound_offload.shutdown()
             self._inbound_offload = None

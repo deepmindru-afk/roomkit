@@ -120,8 +120,12 @@ class InboundFrameOffload:
         return False
 
     def shutdown(self, *, timeout: float = 5.0) -> None:
-        """Finish what is queued (bounded by *timeout*), then stop the pool."""
-        self.wait_idle(timeout=timeout)
+        """Refuse new frames, finish what is queued (bounded by *timeout*), stop.
+
+        Refused first: a backend still delivering would otherwise keep the
+        queues from ever emptying, and the drain would last its whole timeout.
+        """
         with self._lock:
             self._closed = True
+        self.wait_idle(timeout=timeout)
         self._pool.shutdown(wait=False, cancel_futures=True)

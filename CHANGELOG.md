@@ -368,7 +368,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no audio at all (0 frames of 10 in a probe) and did not clear the client's
   audio on speech start. The stages still run on the pool; the callbacks a
   frame fires now run on the pipeline's event loop, in the order the chain
-  fired them.
+  fired them. The audio bridge's forwarding is one of them, so with the pool
+  it runs on the loop as it does inline. `close()` on either channel first
+  stops taking frames and lets the pool finish the ones it holds, so a
+  frame in flight cannot open an STT stream after the teardown, nor reach
+  the provider after its session ended.
 
 - `VuiTTSProvider` speaks a reply written on several lines without inventing
   syllables at each line break, and no longer cuts a reply at 30 s (RMK-400).

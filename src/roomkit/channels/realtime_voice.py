@@ -2042,10 +2042,9 @@ class RealtimeVoiceChannel(
             if unsubscribe is not None:
                 unsubscribe()
         self._transport_unsubscribers.clear()
-        for unsubscribe in getattr(self, "_pipeline_unsubscribers", []):
-            if unsubscribe is not None:
-                unsubscribe()
-        self._pipeline_unsubscribers = []
+        # The frames in flight finish while their sessions are live: nothing
+        # they fire reaches a provider or a client after the session ended.
+        await self._pipeline_quiesce()
         self._closing = True
         connecting = list(self._connecting_sessions.values())
         current = asyncio.current_task()
@@ -2096,10 +2095,6 @@ class RealtimeVoiceChannel(
         if self._resample_executor is not None:
             self._resample_executor.shutdown(wait=False)
             self._resample_executor = None
-
-        # Drain the inbound DSP pool; sessions are ended, nothing new queues.
-        if self._inbound_offload is not None:
-            await asyncio.to_thread(self._pipeline_offload_shutdown)
 
         if self._reasoning_backend is not None:
             try:

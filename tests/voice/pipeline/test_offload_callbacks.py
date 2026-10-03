@@ -11,11 +11,9 @@ The fix: ``AudioPipeline`` captures its home loop at construction and
 ``_maybe_schedule`` sends off-loop coroutines there via
 ``run_coroutine_threadsafe``.
 
-That covered coroutines only. The sync callbacks — the channels' handlers,
-written for the loop (asyncio queues, tasks, ``get_running_loop``) — still ran
-on the worker: the streaming STT never opened, a realtime provider heard
-nothing (RMK-392). So every callback a chain fires off the loop is now sent
-home, in the order the chain fired them.
+Sync callbacks go home too: the channels' handlers are loop code (asyncio
+queues, tasks, ``get_running_loop``), so every callback a chain fires off the
+loop runs on the home loop, in the order the chain fired them (RMK-392).
 """
 
 from __future__ import annotations
