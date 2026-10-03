@@ -182,15 +182,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `TurnCutShortError` its base and `ReasoningCutShortError`'s).
 
 - An ACP worker whose prompt stops on any reason but `end_turn`
-  (`max_tokens`, `max_turn_requests`, `refusal`, `cancelled`) fails its task
-  as a cut AI worker does (RMK-418, RFC §23.3), the stop reason in `error`
-  and `metadata["loop_end_reason"]`, where it completed with its narration.
+  (`max_tokens`, `max_turn_requests`, `refusal`, `cancelled`), or never
+  returns (`interrupted`: the channel closing mid-turn), fails its task as a
+  cut AI worker does (RMK-418, RFC §23.3), that reason in `error` and
+  `metadata["loop_end_reason"]`, where it completed with its narration.
   A worker cut before writing any text, with a transport shared into the
   child room, fails naming its end too, where its task failed with no
-  `error` and no `loop_end_reason`, so a notified agent was not told. An AI
-  turn's `loop_end_reason` and `ai_usage` also join its response-metadata
-  record (RFC §6.4): `InboundResult.response_metadata` carries them, for a
-  turn that wrote no message too.
+  `error` and no `loop_end_reason`, so a notified agent was not told. With
+  several agents answering in the child room, the answer and how its turn
+  ended are read off the same agent. A buffered response that failed with
+  no rows now fails the task, as it does with a shared transport.
 
 - A realtime reasoning backend is an agent like any other, on the AI
   channel's tool loop (RMK-396, RFC §12.4.1). `AgentReasoningBackend(agent)`

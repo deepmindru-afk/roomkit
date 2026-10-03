@@ -139,13 +139,13 @@ class SegmentWriter:
 
         The marker comes last, so the next flush is the turn's final text and
         carries it; a turn with no final text has it written on the message it
-        already wrote, by :meth:`record_on_last_message` (RFC §6.4). It joins
-        the turn's response-metadata record too, where a caller reads how the
-        turn ended when it wrote no message at all (RFC §6.7).
+        already wrote, by :meth:`record_on_last_message` (RFC §6.4). It rides
+        the stream too, where a reader of the turn finds how it ended when it
+        wrote no message at all.
         """
         self._turn_record = {"ai_usage": dict(marker.usage), "loop_end_reason": marker.reason}
         self._record_owed = True
-        self._sr.response_metadata.update(self._turn_record)
+        self._sr.turn_record = self._turn_record
 
     async def record_on_last_message(self) -> None:
         """Write a record no final text carried on the last MESSAGE already stored.

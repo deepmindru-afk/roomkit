@@ -24,7 +24,6 @@ from roomkit import HookExecution, HookTrigger, RoomKit, TaskCutShortError
 from roomkit.channels.agent import Agent
 from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
-from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelCategory, ChannelType, TaskStatus
 from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.models.response_metadata import ResponseMetadata
@@ -183,8 +182,11 @@ def test_a_supervisor_reads_a_cut_worker_as_failed() -> None:
     assert _result_output(cut) == "The task failed."
 
 
-async def test_a_supervisor_cut_framing_the_first_task_hands_on_the_goal() -> None:
-    kit = await _kit([LOOPING] * 3, streaming=True)
+@pytest.mark.parametrize("cut", [LOOPING, SILENT_LOOPING], ids=["narrated", "silent"])
+async def test_a_supervisor_cut_framing_the_first_task_hands_on_the_goal(
+    cut: AIResponse,
+) -> None:
+    kit = await _kit([cut] * 3, streaming=True)
     first = Agent("first", provider=MockAIProvider(responses=["done"]))
     kit.register_channel(first)
 
@@ -292,13 +294,24 @@ def _message(channel_id: str, body: str) -> RoomEvent:
     )
 
 
+@pytest.mark.parametrize("shared", [False, True], ids=["trace", "shared-transport"])
 @pytest.mark.parametrize("narration", [None, "Halfway."], ids=["no-text", "narrated"])
-async def test_a_buffered_worker_whose_record_names_a_cut_fails(narration: str | None) -> None:
+async def test_a_buffered_worker_whose_record_names_a_cut_fails(
+    narration: str | None, shared: bool
+) -> None:
     kit = RoomKit()
     kit.register_channel(_BufferedWorker("worker", narration))
+    kit.register_channel(SimpleChannel("email-out"))
     await kit.create_room(room_id="parent")
+    await kit.attach_channel("parent", "email-out")
 
-    task = await kit.delegate("parent", "worker", "Find it.", wait=True)
+    task = await kit.delegate(
+        "parent",
+        "worker",
+        "Find it.",
+        share_channels=["email-out"] if shared else None,
+        wait=True,
+    )
 
     assert task.result is not None
     assert (task.result.status, task.result.output) == (TaskStatus.FAILED, narration)
@@ -316,29 +329,63 @@ def _acp_turn(stop_reason: str) -> Any:
     return prompt
 
 
-@pytest.mark.parametrize(
-    "stop_reason", ["max_tokens", "max_turn_requests", "cancelled", "refusal"]
-)
-async def test_an_acp_worker_that_stopped_short_fails_with_its_narration(
-    tmp_path: Any, stop_reason: str
-) -> None:
+def _interrupted_turn() -> Any:
+    async def prompt(connection: Any, session_id: str, *args: Any, **kwargs: Any) -> Any:
+        await connection.client.session_update(
+            session_id, acp.update_agent_message_text("Let me look into that.")
+        )
+        # The channel closing, or a cancel while its session is rebuilt.
+        raise asyncio.CancelledError
+
+    return prompt
+
+
+async def _acp_worker_task(tmp_path: Any, turn: Any, *, shared: bool) -> Any:
     kit = RoomKit()
     channel, connection, _ = _channel(tmp_path, emit_updates=False)
-    turn = _acp_turn(stop_reason)
     connection.prompt = lambda *a, **k: turn(connection, *a, **k)  # type: ignore[method-assign]
     kit.register_channel(channel)
+    kit.register_channel(SimpleChannel("email-out"))
     await kit.create_room(room_id="parent")
+    await kit.attach_channel("parent", "email-out")
+    seen: list[dict[str, Any]] = []
 
-    task = await kit.delegate("parent", channel.channel_id, "Find it.", wait=True)
+    @kit.hook(HookTrigger.ON_TASK_COMPLETED, execution=HookExecution.ASYNC)
+    async def completed(event: Any, ctx: Any) -> None:
+        seen.append(event.metadata)
 
-    assert task.result is not None
-    assert (task.result.status, task.result.output) == (
-        TaskStatus.FAILED,
-        "Let me look into that.",
+    task = await kit.delegate(
+        "parent",
+        channel.channel_id,
+        "Find it.",
+        share_channels=["email-out"] if shared else None,
     )
-    assert task.result.error == f"The worker's turn ended {stop_reason} before its answer"
-    assert task.result.metadata["loop_end_reason"] == stop_reason
+    result = await task.wait(timeout=5)
+    await asyncio.sleep(0.05)
     await kit.close()
+    [metadata] = seen
+    assert metadata["loop_end_reason"] == result.metadata.get("loop_end_reason")
+    return result
+
+
+@pytest.mark.parametrize("shared", [False, True], ids=["trace", "shared-transport"])
+@pytest.mark.parametrize(
+    ("turn", "reason"),
+    [
+        *((_acp_turn(stop), stop) for stop in ("max_tokens", "max_turn_requests", "cancelled")),
+        (_acp_turn("refusal"), "refusal"),
+        (_interrupted_turn(), "interrupted"),
+    ],
+    ids=["max_tokens", "max_turn_requests", "cancelled", "refusal", "interrupted"],
+)
+async def test_an_acp_worker_that_stopped_short_fails_with_its_narration(
+    tmp_path: Any, turn: Any, reason: str, shared: bool
+) -> None:
+    result = await _acp_worker_task(tmp_path, turn, shared=shared)
+
+    assert (result.status, result.output) == (TaskStatus.FAILED, "Let me look into that.")
+    assert result.error == f"The worker's turn ended {reason} before its answer"
+    assert result.metadata["loop_end_reason"] == reason
 
 
 async def test_an_acp_worker_that_ended_its_turn_completes(tmp_path: Any) -> None:
@@ -359,26 +406,35 @@ async def test_an_acp_worker_that_ended_its_turn_completes(tmp_path: Any) -> Non
     await kit.close()
 
 
-async def test_a_room_turn_with_no_text_reports_its_end_to_the_caller() -> None:
+def _cutting_agent(channel_id: str, responses: list[AIResponse]) -> Agent:
+    return Agent(
+        channel_id,
+        provider=MockAIProvider(ai_responses=responses, streaming=True),
+        tools=[LOOKUP],
+        tool_handler=_found,
+        tool_search=False,
+        max_tool_rounds=1,
+    )
+
+
+@pytest.mark.parametrize("worker_cut", [True, False], ids=["worker-cut", "helper-cut"])
+async def test_the_answer_and_its_end_are_read_off_one_responder(worker_cut: bool) -> None:
+    done = [AIResponse(content="Found it.")] * 3
     kit = RoomKit()
-    kit.register_channel(
-        Agent(
-            "agent",
-            provider=MockAIProvider(ai_responses=[SILENT_LOOPING] * 3),
-            tools=[LOOKUP],
-            tool_handler=_found,
-            tool_search=False,
-            max_tool_rounds=1,
-        )
-    )
-    kit.register_channel(SimpleChannel("sms"))
-    await kit.create_room(room_id="r1")
-    await kit.attach_channel("r1", "sms")
-    await kit.attach_channel("r1", "agent", category=ChannelCategory.INTELLIGENCE)
+    kit.register_channel(_cutting_agent("worker", [LOOPING] * 3 if worker_cut else done))
+    kit.register_channel(_cutting_agent("helper", done if worker_cut else [LOOPING] * 3))
+    kit.register_channel(SimpleChannel("email-out"))
+    await kit.create_room(room_id="parent")
+    await kit.attach_channel("parent", "email-out")
+    await kit.attach_channel("parent", "helper", category=ChannelCategory.INTELLIGENCE)
 
-    result = await kit.process_inbound(
-        InboundMessage(channel_id="sms", sender_id="u", content=TextContent(body="Find it."))
+    task = await kit.delegate(
+        "parent", "worker", "Find it.", share_channels=["helper", "email-out"], wait=True
     )
 
-    assert result.response_metadata["loop_end_reason"] == "max_rounds"
+    assert task.result is not None
+    if worker_cut:
+        _assert_cut(task.result)
+    else:
+        assert (task.result.status, task.result.output) == (TaskStatus.COMPLETED, "Found it.")
     await kit.close()

@@ -53,6 +53,7 @@ def _sr(stream: Any) -> SimpleNamespace:
         source_channel_id="agent:w1",
         source_channel_type=ChannelType.AI,
         response_metadata={},
+        turn_record=None,
     )
 
 

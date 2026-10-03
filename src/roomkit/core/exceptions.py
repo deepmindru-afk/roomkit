@@ -265,7 +265,9 @@ class TaskCutShortError(TurnCutShortError):
 
     Attributes:
         reason: The turn's ``loop_end_reason`` (``max_rounds``, ``timeout``,
-            ``budget_exceeded``...).
+            ``budget_exceeded``...), or an ACP worker's unclean outcome: its
+            stop reason (``max_tokens``, ``max_turn_requests``, ``refusal``,
+            ``cancelled``) or ``interrupted`` when its prompt never returned.
         narration: What the worker said last, or ``None``.
     """
 

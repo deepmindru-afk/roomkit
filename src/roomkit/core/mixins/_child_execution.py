@@ -116,7 +116,7 @@ async def persist_tool_calls(
         answer = await _drain_turn(writer, sr)
     finally:
         await kit._finish_cascade(cascade, room_id, caller_logs=True)
-    if (reason := _turn_end(sr.response_metadata, writer.persisted)) not in (None, "completed"):
+    if (reason := _turn_end(_stream_record(sr), writer.persisted)) not in (None, "completed"):
         _tasks_logger.warning(
             "Turn of %s in room %s ended %s: no answer to hand on",
             sr.source_channel_id,
@@ -153,7 +153,7 @@ async def _persist_child_stream(
         correlation_id=uuid4().hex,
     )
     answer = await _drain_turn(writer, sr)
-    if (cut := _cut_short(answer, _turn_end(sr.response_metadata, writer.persisted))) is not None:
+    if (cut := _cut_short(answer, _turn_end(_stream_record(sr), writer.persisted))) is not None:
         raise cut
     return answer
 
@@ -282,23 +282,35 @@ async def _deliver_answer(kit: RoomKit, child_room_id: str, result: BroadcastRes
     cascade.add_streams(result.streaming_responses)
     await kit._commit_responses(child_room_id, result.reentry_events, None, cascade)
     # The failure is raised to the delegation, which logs it.
-    stream_error, record = await kit._finish_cascade(cascade, child_room_id, caller_logs=True)
+    stream_error, _ = await kit._finish_cascade(cascade, child_room_id, caller_logs=True)
     failure = next(
         (out.error for out in result.outputs.values() if out.error is not None), stream_error
     )
     if failure is not None:
         raise failure
-    for output in result.outputs.values():
-        if output.responded and output.response_stream is None:
-            record.update(output.response_metadata)
-    sources = [cid for cid, out in result.outputs.items() if out.responded]
-    sources += [sr.source_channel_id for sr in result.streaming_responses]
-    rows = (_last_answer(cascade.response_events, cid) for cid in sources)
-    row = next((row for row in rows if row is not None), None)
-    text = None if row is None else answer_text(row)
-    if (cut := _cut_short(text, _turn_end(record, [] if row is None else [row]))) is not None:
+    text, reason = _kept_answer(result, cascade.response_events)
+    if (cut := _cut_short(text, reason)) is not None:
         raise cut
     return text
+
+
+def _kept_answer(result: BroadcastResult, rows: list[RoomEvent]) -> tuple[str | None, str | None]:
+    """The answer the child room kept, and how the turn that gave it ended.
+
+    Both are read off one responder, never off another's: the first that
+    kept an answer among *rows*, its end read from its own record (RFC §23.3
+    step 6). With no answer kept, the end is the first responder's that
+    names one.
+    """
+    records: dict[str, Mapping[str, Any]] = {
+        cid: out.response_metadata for cid, out in result.outputs.items() if out.responded
+    }
+    records.update((sr.source_channel_id, _stream_record(sr)) for sr in result.streaming_responses)
+    for cid, record in records.items():
+        if (row := _last_answer(rows, cid)) is not None:
+            return answer_text(row), _turn_end(record, [row])
+    ends = (_turn_end(record, []) for record in records.values())
+    return None, next((end for end in ends if end is not None), None)
 
 
 def _cut_short(text: str | None, reason: str | None) -> TaskCutShortError | None:
@@ -326,12 +338,20 @@ def _turn_end(record: Mapping[str, Any], rows: list[RoomEvent]) -> str | None:
 
 def _named_end(record: Mapping[str, Any]) -> str | None:
     """The end a turn's record names: an AI channel's ``loop_end_reason``, or
-    the stop reason an ACP agent gave, written only when it is not
-    ``end_turn`` (RFC §6.4)."""
+    an ACP agent's unclean outcome, its stop reason when it is not
+    ``end_turn``, ``interrupted`` when its prompt never returned (RFC §6.4)."""
     if (reason := record.get("loop_end_reason")) is not None:
         return reason
     acp = record.get("acp")
-    return acp.get("stop_reason") if isinstance(acp, Mapping) else None
+    if not isinstance(acp, Mapping):
+        return None
+    return acp.get("stop_reason") or ("interrupted" if acp.get("interrupted") else None)
+
+
+def _stream_record(sr: StreamingResponse) -> Mapping[str, Any]:
+    """A stream's record: its turn's response metadata (where an ACP agent
+    writes its outcome) with how its loop ended, once read."""
+    return {**sr.response_metadata, **(sr.turn_record or {})}
 
 
 def _last_answer(rows: list[RoomEvent], channel_id: str) -> RoomEvent | None:

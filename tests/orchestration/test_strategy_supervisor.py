@@ -624,14 +624,18 @@ async def test_pass_ones_rows_cross_the_rooms_gate() -> None:
     await kit.close()
 
 
-async def test_pass_one_cut_by_its_round_cap_hands_on_no_task() -> None:
+@pytest.mark.parametrize("narration", ["Still checking.", ""], ids=["narrated", "silent"])
+async def test_pass_one_cut_by_its_round_cap_hands_on_no_task(
+    narration: str, caplog: pytest.LogCaptureFixture
+) -> None:
     """A turn cut short has no answer; its narration is no task (RFC §6.4)."""
     kit, tasks = await _two_pass_room(
-        [_tool_round("c1", "Still checking."), _tool_round("c2", "Still checking.")],
+        [_tool_round("c1", narration), _tool_round("c2", narration)],
         max_tool_rounds=1,
     )
 
     await _say(kit)
 
     assert tasks == []
+    assert "ended max_rounds: no answer to hand on" in caplog.text
     await kit.close()

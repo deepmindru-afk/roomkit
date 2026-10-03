@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -42,7 +42,6 @@ from roomkit.models.event import (
     is_interruption_marker,
     is_tool_call_record,
 )
-from roomkit.models.response_metadata import ResponseMetadata
 from roomkit.models.task import Observation, Task
 from roomkit.providers.utils import _aclose_stream
 
@@ -155,9 +154,12 @@ class StreamingResponse:
     source_channel_type: Any  # ChannelType
     trigger_event: RoomEvent
     # The turn's live record (``ChannelOutput.response_metadata``), read by the
-    # persistence of each segment as it stands then — never copied here. The
-    # turn's end joins it once read (RFC §6.4).
-    response_metadata: ResponseMetadata = field(default_factory=ResponseMetadata)
+    # persistence of each segment as it stands then — never copied here.
+    response_metadata: Mapping[str, Any] = field(default_factory=dict)
+    # How the turn's loop ended (``loop_end_reason``, ``ai_usage``), once its
+    # reader read the ``LoopEndMarker``: this stream's own, kept off the
+    # caller's merged record (RFC §6.4).
+    turn_record: dict[str, Any] | None = None
     # An answer to an answer, started by a reentry pass or a streamed
     # segment's delivery rather than by the caller's own event. Set when the
     # stream joins its cascade (``DeliveryCascade.add_streams``).
