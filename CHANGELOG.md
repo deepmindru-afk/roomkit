@@ -331,6 +331,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Every outcome of a tool call reaches `ON_TOOL_CALL` as the model read it,
+  on every door (RMK-395, RFC §9.3):
+  - An AI channel reports a call a stop or the turn's cancellation cut (one
+    announced that never ran, one whose handler was running) with
+    `cancelled=True`, as a realtime session does. It was stored `cancelled`
+    and never reported.
+  - An ACP channel reports every call its agent ran, with or without an
+    external handler, through the same report as a call an AI provider ran
+    itself. Without a handler, none was reported.
+  - An ACP call the turn ended under is stored `cancelled`, and one whose
+    permission RoomKit refused `refused`, as an AI channel stores them,
+    where both were `failed`.
+  - A report's `ON_TOOL_CALL` chain (a call an external handler or a provider
+    ran) runs through the one chain runner: the next SYNC hook sees a
+    `metadata={"result": ...}` rewrite as it sees a `modify`.
+  - A realtime `activate_skill` missing a required tool, at activation or
+    once the hooks ran (a handoff changed the catalogue meanwhile), is
+    refused for the model and the observers alike: the observers read it
+    served while the model read the refusal.
+  - A realtime pipeline reads an agent's handler answer through
+    `declined_answer`: `{"error": "Unknown tool: ..."}` is a call nothing
+    served, not a result.
+
 - A tool call meets the same gate and the same serving on every door
   (RMK-394, RFC §6.4, §9.3, §21.1, §21.4, §21.5):
   - Under Tool Search, a sandbox command or a human-input tool the model calls

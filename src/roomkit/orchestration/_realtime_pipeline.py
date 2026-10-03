@@ -25,6 +25,7 @@ from roomkit.orchestration.handoff import (
 )
 from roomkit.orchestration.state import get_conversation_state
 from roomkit.tools.context import current_tool_room_id
+from roomkit.tools.result import declined_answer
 
 if TYPE_CHECKING:
     from roomkit.channels.agent import Agent
@@ -215,10 +216,12 @@ class RealtimePipeline:
         agent = await self._active_agent()
         agent_handler = agent._user_tool_handler if agent is not None else None
         agent_tools = agent._user_tools if agent is not None else []
+        # Each answer read as every channel reads a handler's: the "not mine"
+        # envelope is a call nothing served, not a result (RFC §21.4).
         if agent_handler is not None and any(t.name == name for t in agent_tools):
-            return await agent_handler(name, arguments)
+            return declined_answer(await agent_handler(name, arguments), name)
         if channel_handler is not None:
-            return await channel_handler(name, arguments)
+            return declined_answer(await channel_handler(name, arguments), name)
         raise UnservedToolCallError(f"tool {name!r} is not served here")
 
     async def _active_agent(self) -> Agent | None:

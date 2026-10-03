@@ -397,9 +397,15 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
             )
         # A stop that came while the calls were announced: none of them runs,
         # and the loop ends cancelled at its next check (RFC §21.3).
+        stopped = turn.loop_ctx.cancel_event.is_set()
+        if stopped:
+            for call in calls:
+                await self._report_cancelled(
+                    call, call.arguments, turn.loop_ctx.room_id, before_run=True
+                )
         ends = (
             _unrun_call_ends(calls)
-            if turn.loop_ctx.cancel_event.is_set()
+            if stopped
             else self._run_announced_calls(context, calls, turn, index, state.provider_results)
         )
         async with aclosing(ends) as deltas:

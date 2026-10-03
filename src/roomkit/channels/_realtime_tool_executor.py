@@ -30,6 +30,7 @@ from roomkit.tools.context import (
 )
 from roomkit.tools.result import (
     GateRefusal,
+    cancelled_tool_error,
     failure_detail,
     read_tool_call_verdict,
     result_text,
@@ -193,12 +194,16 @@ async def judge_tool_call(
     call: RealtimeToolCall,
     outcome: ToolOutcome,
     carrying: RoomContext | None,
+    *,
+    admit: Callable[[], bool] | None = None,
 ) -> ToolOutcome:
     """*outcome* once ON_TOOL_CALL's SYNC chain judged it, read as on every
     channel (RFC §9.3): a block withholds the result, a hook's result replaces
     the handler's or serves a call nothing served, and a call nothing served
     failed. The judgement reports a served or blocked call to the observers,
-    claiming the call's one report before it does."""
+    claiming the call's one report before it does. *admit*, asked after the
+    chain and before the observers, can keep that report back: the caller
+    then reports what it delivers instead."""
     served = outcome.result if outcome.kind is OutcomeKind.SERVED else None
     framework = host._tool_framework(call)
     verdict: ToolCallVerdict | None = None
@@ -208,8 +213,12 @@ async def judge_tool_call(
             # The handler's structured copy, which the SYNC chain may replace
             # or clear and the observers then receive (RFC §9.3).
             event = replace(event, structured_content=call.structured_content)
+
+        def claim() -> bool:
+            return (admit is None or admit()) and call.claim_report()
+
         verdict = await framework._judge_tool_call(
-            event, host.channel_id, carrying=carrying, claim=call.claim_report
+            event, host.channel_id, carrying=carrying, claim=claim
         )
         # Don't fuse hook dispatch with the delivery into one loop step.
         await asyncio.sleep(0)
@@ -281,13 +290,7 @@ async def submit_tool_outcome(
 
 async def report_cancelled_call(host: ToolCallHost, call: RealtimeToolCall, why: str) -> None:
     """Report *call*, interrupted before its result, once, as cancelled (RFC §9.3)."""
-    body = json.dumps(
-        {
-            "error": "Tool call cancelled",
-            "tool": call.name,
-            "hint": f"{why} before its result; nothing was sent.",
-        }
-    )
+    body = cancelled_tool_error(call.name, f"{why} before its result; nothing was sent.")
     await report_failed_call(host, call, ToolOutcome(OutcomeKind.CANCELLED, body))
 
 

@@ -43,6 +43,8 @@ class _ToolState:
     started_at: float = field(default_factory=time.monotonic)
     started: bool = False
     finished: bool = False
+    refused: bool = False
+    """RoomKit refused the agent's permission request for the call."""
 
 
 @dataclass(slots=True)

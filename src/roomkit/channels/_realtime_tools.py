@@ -36,7 +36,7 @@ from roomkit.channels._realtime_tool_executor import (
 from roomkit.channels._skill_constants import TOOL_ACTIVATE_SKILL
 from roomkit.channels._tool_registry import ChannelRegistry
 from roomkit.channels._tool_search_constants import TOOL_CALL_TOOL, TOOL_LIST_TOOLS
-from roomkit.core.exceptions import UnservedToolCallError
+from roomkit.core.exceptions import ToolRefusedError, UnservedToolCallError
 from roomkit.models.enums import ChannelType
 from roomkit.models.tool_call import (
     ToolCallEvent,
@@ -625,24 +625,38 @@ class RealtimeToolsMixin:
         if lock is None:
             return _session_ended()
         tools = self._session_base_tools(session.id)
-        result, skill = await support.prepare_activation(call.arguments, session.id, tools)
+        try:
+            result, skill = await support.prepare_activation(call.arguments, session.id, tools)
+        except ToolRefusedError as refusal:
+            return ToolOutcome(OutcomeKind.REFUSED, refusal.message)
+        # The catalogue may change while the hooks run (a handoff): the skill's
+        # tools are checked again once they ran, before anyone is told, so the
+        # observers read what the model reads.
+        missing: list[str] | None = None
+
+        def required_tools_held() -> bool:
+            nonlocal missing
+            current = self._session_base_tools(session.id)
+            missing = support.missing_required_tools(skill, current) if skill else []
+            return not missing
+
         outcome = await judge_tool_call(
-            self, call, ToolOutcome(OutcomeKind.SERVED, result), carrying
+            self,
+            call,
+            ToolOutcome(OutcomeKind.SERVED, result),
+            carrying,
+            admit=required_tools_held,
         )
+        if missing is None:  # no framework judged the call
+            required_tools_held()
+        if missing and outcome.kind is OutcomeKind.SERVED:
+            outcome = ToolOutcome(OutcomeKind.REFUSED, support.missing_tools_error(missing))
+            skill = None
         # Provider updates (discovery, handoff, activation) are serialised on
-        # this lock; the catalogue may have changed while the hooks ran.
+        # this lock.
         async with lock:
             if session.state == VoiceSessionState.ENDED:
                 return _session_ended()
-            if skill is not None and outcome.kind is OutcomeKind.SERVED:
-                missing = support.missing_required_tools(
-                    skill, self._session_base_tools(session.id)
-                )
-                if missing:
-                    outcome = ToolOutcome(
-                        OutcomeKind.REFUSED, support.missing_tools_error(missing)
-                    )
-                    skill = None
             # An activated skill's instructions go out whole (RFC §21.5); a
             # refusal, a block or a hook's replacement is bounded.
             if not (outcome.kind is OutcomeKind.SERVED and outcome.result == result):

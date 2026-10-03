@@ -87,6 +87,10 @@ class _AIChannelContract:
 
     def _never_hidden(self, room_id: str | None) -> set[str]: ...
 
+    async def _report_cancelled(
+        self, tc: Any, arguments: dict[str, Any], room_id: str | None, *, before_run: bool = False
+    ) -> None: ...
+
     def _show_summarized_references(self, summarized: list[AIMessage]) -> None: ...
 
     async def _build_context(

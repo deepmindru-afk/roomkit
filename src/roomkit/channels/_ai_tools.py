@@ -66,6 +66,7 @@ from roomkit.tools.context import ToolCallContext, _current_tool_call
 from roomkit.tools.result import (
     GateRefusal,
     as_tool_result,
+    cancelled_tool_error,
     declined_answer,
     failure_detail,
     pre_execution_denial,
@@ -305,12 +306,14 @@ class AIToolsMixin(_AIChannelContract):
         room_id: str | None,
         *,
         detail: str | None = None,
+        cancelled: bool = False,
     ) -> None:
-        """Fire ON_TOOL_CALL for a call that failed or was refused.
+        """Fire ON_TOOL_CALL for a call that failed, was refused or was cancelled.
 
         *detail* is a raised call's full failure, or the error of a
         BEFORE_TOOL_USE hook that failed closed, for the observers only
-        (``ToolCallEvent.error_detail``).
+        (``ToolCallEvent.error_detail``). *cancelled* marks a call a stop or
+        the turn's cancellation interrupted, as every channel marks it.
 
         The refusal paths below return before the handler runs, and a handler
         that raises jumps past the firing that follows it — so without this,
@@ -336,6 +339,7 @@ class AIToolsMixin(_AIChannelContract):
             result=result,
             room_id=room_id,
             is_error=True,
+            cancelled=cancelled,
             error_detail=detail,
         )
         try:
@@ -591,6 +595,7 @@ class AIToolsMixin(_AIChannelContract):
             parent_id=scope.parent_span_id,
             attributes={"tool.name": tc.name, "tool.id": tc.id},
         )
+        judging = False
         try:
             # Set contextvar so HumanInputToolHandler can read
             # room_id / tool_call_id / channel_id without protocol changes.
@@ -602,6 +607,7 @@ class AIToolsMixin(_AIChannelContract):
             started = time.monotonic()
             result = await self._serve_call(scope.handler, tc.name, arguments, _tc_ctx)
             _log_answer(tc.name, result, started)
+            judging = True
             hook = await self._apply_tool_call_hook(tc, arguments, result, _tc_ctx, scope.room_id)
             # The call's own answer, neither replaced nor withheld by a hook.
             served = hook.kind is OutcomeKind.SERVED and hook.recorded is result
@@ -611,10 +617,26 @@ class AIToolsMixin(_AIChannelContract):
             return judged
         except asyncio.CancelledError:
             telemetry.end_span(tool_span_id, status="cancelled")
+            if not judging:
+                # Interrupted before ON_TOOL_CALL judged it: reported once.
+                await asyncio.shield(self._report_cancelled(tc, arguments, scope.room_id))
             raise
         except Exception as exc:
             telemetry.end_span(tool_span_id, status="error", error_message=str(exc))
             return await self._raised_outcome(tc, arguments, scope.room_id, exc)
+
+    async def _report_cancelled(
+        self, tc: Any, arguments: dict[str, Any], room_id: str | None, *, before_run: bool = False
+    ) -> None:
+        """Tell ON_TOOL_CALL's observers a stop or the turn's cancellation
+        interrupted *tc*, as every channel reports it (RFC §9.3)."""
+        hint = (
+            "The turn was stopped before the call ran."
+            if before_run
+            else "The turn was cancelled before its result."
+        )
+        body = cancelled_tool_error(tc.name, hint)
+        await self._fire_tool_refusal(tc, arguments, body, room_id, cancelled=True)
 
     async def _raised_outcome(
         self, tc: Any, arguments: dict[str, Any], room_id: str | None, exc: Exception

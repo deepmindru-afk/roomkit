@@ -31,10 +31,13 @@ from roomkit.models.streaming import (
     ToolCallEndMarker,
     ToolCallStartMarker,
 )
+from roomkit.models.tool_call import ToolCallEvent
 from roomkit.realtime.base import EphemeralEvent, EphemeralEventType
 
 if TYPE_CHECKING:
     from roomkit.channels.acp_transport import ACPTransport
+    from roomkit.models.enums import ChannelType, ToolCallOutcome
+    from roomkit.models.tool_call import ToolCallObserver
     from roomkit.realtime.base import RealtimeBackend
     from roomkit.tools.external import ExternalToolHandler
 
@@ -53,9 +56,23 @@ class _ToolEnd:
     duration_ms: int
     display: Any
     """The agent's display payload for the call (ACP tool content), dumped."""
+    outcome: ToolCallOutcome
+    """How the call ended, as every channel names it (RFC §6.4)."""
 
 
-def _tool_end(tool: _ToolState, status: str, error: str | None) -> _ToolEnd:
+def _end_outcome(tool: _ToolState, status: str, *, interrupted: bool) -> ToolCallOutcome:
+    """The outcome of an ACP call: cancelled when the turn ended under it,
+    refused when RoomKit refused its permission, else what the agent said."""
+    if interrupted:
+        return "cancelled"
+    if status != "failed":
+        return "served"
+    return "refused" if tool.refused else "failed"
+
+
+def _tool_end(
+    tool: _ToolState, status: str, error: str | None, *, interrupted: bool = False
+) -> _ToolEnd:
     """Read how a tool call ended off what the agent reported of it."""
     display = _model_dump(tool.content) if tool.content is not None else None
     result = tool.raw_output
@@ -70,7 +87,8 @@ def _tool_end(tool: _ToolState, status: str, error: str | None) -> _ToolEnd:
         # would put its base64 in the event's error field whole.
         error = _result_text(tool_event_result(result))
     duration_ms = max(0, int((time.monotonic() - tool.started_at) * 1000))
-    return _ToolEnd(result, end_status, error, duration_ms, display)
+    outcome = _end_outcome(tool, status, interrupted=interrupted)
+    return _ToolEnd(result, end_status, error, duration_ms, display, outcome)
 
 
 def _end_marker(tool: _ToolState, end: _ToolEnd) -> ToolCallEndMarker:
@@ -88,7 +106,7 @@ def _end_marker(tool: _ToolState, end: _ToolEnd) -> ToolCallEndMarker:
         duration_ms=end.duration_ms,
         error=end.error,
         structured_content=structured,
-        outcome="failed" if end.status == "failed" else "served",
+        outcome=end.outcome,
     )
 
 
@@ -96,6 +114,7 @@ class ACPEventsMixin:
     """Consume agent updates and enforce the ACP permission boundary."""
 
     channel_id: str
+    channel_type: ChannelType
     _turns: dict[str, _TurnState]
     _session_rooms: dict[str, str]
     _session_options: dict[str, list[Any]]
@@ -104,6 +123,7 @@ class ACPEventsMixin:
     _sdk: Callable[[], _SDK]
     _transport: ACPTransport
     _external_tool_handler: ExternalToolHandler | None
+    _tool_report_hook: ToolCallObserver | None
     _realtime: RealtimeBackend | None
 
     async def _receive_update(self, session_id: str, update: Any) -> None:
@@ -405,6 +425,7 @@ class ACPEventsMixin:
                 tool,
                 "failed",
                 error=_TURN_ENDED_ERROR,
+                interrupted=True,
             )
         return True
 
@@ -416,18 +437,23 @@ class ACPEventsMixin:
         status: str,
         *,
         error: str | None = None,
+        interrupted: bool = False,
     ) -> None:
         """Close a tool call once, in every report its end reaches."""
         if tool.finished:
             return
         tool.finished = True
-        end = _tool_end(tool, status, error)
+        end = _tool_end(tool, status, error, interrupted=interrupted)
         if turn is not None:
             turn.queue.put_nowait(_end_marker(tool, end))
         if room_id is not None:
             await self._publish_tool_end(room_id, tool, end)
         if self._external_tool_handler is not None:
             await self._report_tool_end(self._external_tool_handler, room_id, tool, end)
+        elif self._tool_report_hook is not None:
+            # No handler to report it: ON_TOOL_CALL still hears of every call,
+            # as of a call an AI provider ran itself (RFC §9.3).
+            await self._report_tool_call(room_id, tool, end)
 
     async def _publish_tool_end(self, room_id: str, tool: _ToolState, end: _ToolEnd) -> None:
         await self._publish(
@@ -446,6 +472,30 @@ class ACPEventsMixin:
                 "duration_ms": end.duration_ms,
             },
         )
+
+    async def _report_tool_call(
+        self, room_id: str | None, tool: _ToolState, end: _ToolEnd
+    ) -> None:
+        """Report a call the agent ran to ON_TOOL_CALL, through the kit."""
+        report = self._tool_report_hook
+        if report is None:
+            return
+        failed = end.status == "failed"
+        event = ToolCallEvent(
+            channel_id=self.channel_id,
+            channel_type=self.channel_type,
+            tool_call_id=tool.tool_id,
+            name=tool.name,
+            arguments=tool.arguments,
+            result=(end.error or "") if failed else _result_text(end.result),
+            room_id=room_id,
+            is_error=failed,
+            cancelled=end.outcome == "cancelled",
+        )
+        try:
+            await report(event)
+        except Exception:
+            logger.exception("ACP tool-call report failed")
 
     @staticmethod
     async def _report_tool_end(
@@ -506,6 +556,9 @@ class ACPEventsMixin:
                     approved = False
             except Exception:
                 logger.exception("ACP external permission handler failed")
+        if not approved and tool is not None:
+            # The call's end then reads as refused, not as a tool that failed.
+            tool.refused = True
 
         preferred = (
             ("allow_once", "allow_always") if approved else ("reject_once", "reject_always")

@@ -1008,18 +1008,15 @@ class HelpersMixin:
         if not event.room_id:
             return
         if self._hook_engine.has_hooks(HookTrigger.ON_TOOL_CALL):
-            context = await self._hook_context(event.room_id, HookTrigger.ON_TOOL_CALL)
-            if context is None:
+            # The one runner of the chain, so each hook sees the call as the
+            # previous one left it, whichever form its rewrite took; nothing it
+            # returns reaches the agent.
+            chain = await self._run_tool_call_chain(event, event.room_id)
+            if chain is None:
                 return
-            await self._hook_engine.run_sync_hooks(
-                event.room_id,
-                HookTrigger.ON_TOOL_CALL,
-                event,
-                context,
-                skip_event_filter=True,
-                fire_observers=False,
-            )
-            await self._observe_tool_call(event, context)
+            _, context = chain
+            if context is not None:
+                await self._observe_tool_call(event, context)
         await self._emit_tool_call_event(event, channel_id)
 
     async def _hook_context(

@@ -227,6 +227,12 @@ def unserved_tool_error(name: str) -> str:
     return json.dumps({"error": f"No handler for tool {name}"})
 
 
+def cancelled_tool_error(name: str, hint: str) -> str:
+    """The failure a call reports when a stop or an ending interrupted it
+    before its result, on every channel (RFC §9.3); *hint* says what did."""
+    return json.dumps({"error": "Tool call cancelled", "tool": name, "hint": hint})
+
+
 def _content_parts(value: Any) -> list[AITextPart | AIImagePart] | None:
     """*value* as content parts, when every item is one or a mapping in a
     part's exact shape; ``None`` otherwise."""

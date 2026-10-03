@@ -64,7 +64,7 @@ from roomkit.models.enums import (
 )
 from roomkit.models.event import RoomEvent, is_tool_call_record
 from roomkit.models.response_metadata import ResponseMetadata
-from roomkit.models.tool_call import AfterResponseCallback
+from roomkit.models.tool_call import AfterResponseCallback, ToolCallObserver
 
 if TYPE_CHECKING:
     from roomkit.realtime.base import RealtimeBackend
@@ -217,6 +217,8 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
         self._mcp_servers = list(mcp_servers or ())
         self._authentication_method = authentication_method
         self._external_tool_handler = external_tool_handler
+        # ON_TOOL_CALL's report on a call the agent ran, wired by the kit.
+        self._tool_report_hook: ToolCallObserver | None = None
         if room_history < 0:
             raise ValueError(
                 "room_history is a count of messages to catch up on: pass 0 to turn "

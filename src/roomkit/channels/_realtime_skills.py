@@ -31,6 +31,7 @@ from roomkit.channels._skill_handlers import (
     handle_run_script,
     missing_skill_error,
 )
+from roomkit.core.exceptions import ToolRefusedError
 from roomkit.skills.registry import SkillRegistry
 from roomkit.tools.policy import matches_any_pattern
 
@@ -307,7 +308,8 @@ class RealtimeSkillSupport:
         catalogue = {tool["name"]: tool for tool in tools}
         missing = self.missing_required_tools(skill, tools)
         if missing:
-            return self.missing_tools_error(missing), None
+            # A refusal, as the activation itself refuses it (RMK-395).
+            raise ToolRefusedError(self.missing_tools_error(missing))
 
         if self.uses_tool_result:
             result = await asyncio.to_thread(activation_content, skill)
