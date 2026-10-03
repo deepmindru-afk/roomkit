@@ -7,6 +7,7 @@ is the channel's own, served by the loop (RFC §9.3, who serves a call).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -23,7 +24,7 @@ from roomkit.realtime.base import EphemeralEventType
 from roomkit.tools._outcome import OutcomeKind, ToolOutcome
 from roomkit.tools.context import _ToolLoopContext
 from roomkit.tools.external import ExternalToolHandler
-from roomkit.tools.result import as_tool_result
+from roomkit.tools.result import as_tool_result, failure_detail, tool_failure
 
 logger = logging.getLogger("roomkit.channels.ai")
 
@@ -66,18 +67,35 @@ class _ExternalStreamTools:
     async def stream_call(
         self, call: StreamToolCall, round_idx: int
     ) -> AsyncGenerator[StreamDelta, None]:
-        """Report a call the provider serves inline, keeping persistence markers
-        around its callbacks."""
+        """The lifecycle of a call the provider serves: its start, its outcome
+        (the provider's, or its handler's decision) reported once, its end."""
         arguments = dict(call.arguments)
         already_executed = "_result" in arguments
         result = arguments.pop("_result", None) or ""
-        is_error = arguments.pop("_is_error", False)
-
-        # Announced before its start goes out: whatever cuts it from here on
-        # (an approval still pending, say), the turn's end reports it.
-        self.loop_ctx.announced_calls[call.id] = call.model_copy(update={"arguments": arguments})
-        self.loop_ctx.external_calls.add(call.id)
+        kind = OutcomeKind.FAILED if arguments.pop("_is_error", False) else OutcomeKind.SERVED
+        started_at = time.monotonic()
+        # A proxy's embedded result means the side effect already happened: its
+        # outcome is reported at once, before anything can cut the call. Only a
+        # still-pending call can be denied or rewritten before acting.
+        pending = not already_executed and self.handler is not None
+        if pending:
+            self._announce(call, arguments)
+        else:
+            await self._report(call, arguments, result, kind is not OutcomeKind.SERVED)
         yield ToolCallStartMarker(tool_name=call.name, tool_id=call.id, arguments=arguments)
+        await self._publish_start(call, arguments, round_idx)
+        if pending and self.handler is not None:
+            arguments, result, kind = await self._decide(
+                self.handler, call, arguments, result, kind
+            )
+            await self._report(call, arguments, result, kind is not OutcomeKind.SERVED)
+        duration_ms = int((time.monotonic() - started_at) * 1000)
+        yield _end_marker(call, arguments, result, kind, duration_ms)
+        await self._publish_end(call, result, kind, round_idx, duration_ms)
+
+    async def _publish_start(
+        self, call: StreamToolCall, arguments: dict[str, Any], round_idx: int
+    ) -> None:
         if self.room_id:
             await self.publish(
                 EphemeralEventType.TOOL_CALL_START,
@@ -86,28 +104,14 @@ class _ExternalStreamTools:
                 round_idx,
             )
 
-        started_at = time.monotonic()
-        kind = OutcomeKind.FAILED if is_error else OutcomeKind.SERVED
-        # A proxy's embedded result means the side effect already happened.
-        # Only a still-pending call can be denied or rewritten before acting.
-        if not already_executed and self.handler is not None:
-            arguments, result, kind = await self._decide(
-                self.handler, call, arguments, result, kind
-            )
-        is_error = kind is not OutcomeKind.SERVED
-        await self._report(call, arguments, result, is_error)
-
-        duration_ms = int((time.monotonic() - started_at) * 1000)
-        yield ToolCallEndMarker(
-            tool_name=call.name,
-            tool_id=call.id,
-            arguments=arguments,
-            result=result,
-            status="failed" if is_error else "completed",
-            duration_ms=duration_ms,
-            error=result if is_error else None,
-            outcome=kind.value,
-        )
+    async def _publish_end(
+        self,
+        call: StreamToolCall,
+        result: str,
+        kind: OutcomeKind,
+        round_idx: int,
+        duration_ms: int,
+    ) -> None:
         if self.room_id:
             await self.publish(
                 EphemeralEventType.TOOL_CALL_END,
@@ -116,6 +120,13 @@ class _ExternalStreamTools:
                 round_idx,
                 duration_ms=duration_ms,
             )
+
+    def _announce(self, call: StreamToolCall, arguments: dict[str, Any]) -> None:
+        """Put a pending call in the turn's registry before its start goes out:
+        whatever cuts it from there (an approval still pending, a transport
+        that stops reading), the turn's end reports it, through the handler."""
+        self.loop_ctx.announced_calls[call.id] = call.model_copy(update={"arguments": arguments})
+        self.loop_ctx.external_calls.add(call.id)
 
     async def _decide(
         self,
@@ -129,14 +140,22 @@ class _ExternalStreamTools:
 
         A call the response cut before its arguments were complete is refused
         without asking the handler (RFC §6.4); any other is the handler's to
-        refuse, rewrite or serve.
+        refuse, rewrite or serve. A handler that raises fails the call, as a
+        tool handler that raises does: the model reads the failure's class,
+        the log its message (RFC §9.3).
         """
         if call.partial:
             error = partial_call_error(call.name, garbled=call.garbled)
             return arguments, json.dumps(error), OutcomeKind.REFUSED
-        decision = await handler.process_tool_call(
-            call.name, arguments, tool_call_id=call.id, room_id=self.room_id
-        )
+        try:
+            decision = await handler.process_tool_call(
+                call.name, arguments, tool_call_id=call.id, room_id=self.room_id
+            )
+        except Exception as exc:
+            logger.warning(
+                "External tool handler failed deciding %s: %s", call.name, failure_detail(exc)
+            )
+            return arguments, tool_failure(call.name, exc), OutcomeKind.FAILED
         if not decision.approved:
             return (
                 arguments,
@@ -158,14 +177,20 @@ class _ExternalStreamTools:
         if not self.loop_ctx.claim_report(call.id):
             return
         if self.handler is not None:
-            await self.handler.on_tool_result(
-                call.name,
-                arguments,
-                result,
-                is_error=is_error,
-                tool_call_id=call.id,
-                room_id=self.room_id,
-            )
+            try:
+                await self.handler.on_tool_result(
+                    call.name,
+                    arguments,
+                    result,
+                    is_error=is_error,
+                    tool_call_id=call.id,
+                    room_id=self.room_id,
+                )
+            except asyncio.CancelledError:
+                # Cut while its report ran: a pending call is reported by the
+                # turn's end, cancelled, as a local call cut while judged is.
+                self.loop_ctx.reported_calls.discard(call.id)
+                raise
             return
         if self.report is None:
             return
@@ -183,7 +208,9 @@ class _ExternalStreamTools:
         )
 
 
-async def report_cut(handler: ExternalToolHandler, call: Any, room_id: str | None) -> None:
+async def report_cut(
+    handler: ExternalToolHandler, call: StreamToolCall, room_id: str | None
+) -> None:
     """Tell *handler* the turn cut *call* before its report: it reports the
     call cancelled, as every channel reports a call it cut (RFC §9.3). A
     handler that raises does not disturb the turn's end."""
@@ -193,3 +220,24 @@ async def report_cut(handler: ExternalToolHandler, call: Any, room_id: str | Non
         )
     except Exception:
         logger.exception("External tool handler failed on the cut call %s", call.id)
+
+
+def _end_marker(
+    call: StreamToolCall,
+    arguments: dict[str, Any],
+    result: str,
+    kind: OutcomeKind,
+    duration_ms: int,
+) -> ToolCallEndMarker:
+    """The stream's END marker of a call the provider serves, with its outcome."""
+    failed = kind is not OutcomeKind.SERVED
+    return ToolCallEndMarker(
+        tool_name=call.name,
+        tool_id=call.id,
+        arguments=arguments,
+        result=result,
+        status="failed" if failed else "completed",
+        duration_ms=duration_ms,
+        error=result if failed else None,
+        outcome=kind.value,
+    )

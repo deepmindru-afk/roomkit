@@ -18,13 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `ExternalToolHandler.on_tool_cancelled(tool_name, tool_input, *,
   tool_call_id, job_id, room_id)` (RMK-419, RFC §9.3), not abstract: the turn
-  cut a call before its report, while the handler still decided it (an
-  approval pending) or the provider ran it. The default reports it to
-  `ON_TOOL_CALL` once, `is_error=True, cancelled=True`; an override can
-  withdraw what the call left pending, then call `super()`. Such a call on an
-  AI channel was reported nowhere, and an ACP call the turn ended under
-  reached the handler's `on_tool_result` without `cancelled`; both now go
-  through `on_tool_cancelled`, as the channel's own calls are reported.
+  cut a call the handler was to decide before its report (cancelled while the
+  handler decided it, or before it was asked). The default reports it to
+  `ON_TOOL_CALL`'s observers once, `is_error=True, cancelled=True`; an
+  override can withdraw what the call left pending, then call `super()`. Such
+  a call on an AI channel was reported nowhere, and an ACP call the turn ended
+  under reached the handler's `on_tool_result` without `cancelled`.
 
 - `AIChannel(continuation=...)` (RMK-410, RFC §6.4): an AI channel's
   continuation policy goes on an answer that did not act. Given the text of a
@@ -180,6 +179,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not be parsed, one the continuation policy goes on) counted as a tool
   round: a turn ending `unfinished` after one continuation reported
   `rounds=1` and `round_count=0`.
+
+- A call served outside the channel (RMK-419, RFC §9.3):
+  - An `ExternalToolHandler` subclass no longer hears an ACP call the turn
+    ended under in `on_tool_result`: it comes through `on_tool_cancelled`.
+    A subclass that recorded results there, or closed a prompt, overrides
+    `on_tool_cancelled` too.
+  - A call the turn cut reaches `ON_TOOL_CALL`'s ASYNC observers only, never
+    its SYNC hooks, as a local call cut does; an ACP call without a handler
+    included.
+  - A call the provider already ran is reported before its start, so a
+    transport that stops reading there no longer leaves it unreported.
+  - A `process_tool_call` that raises fails the call (the model reads
+    `{"error": "Tool 'X' failed (RuntimeError)"}`, the log the message)
+    rather than the turn.
 
 - A delegated worker whose turn does not complete (its round cap, deadline
   or budget cuts it, a stop cancels it, its answer is cut or never comes)

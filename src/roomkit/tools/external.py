@@ -210,15 +210,21 @@ class ExternalToolHandler(ABC):
         job_id: str | None = None,
         room_id: str | None = None,
     ) -> None:
-        """Called when the turn cut a call before its outcome was reported.
+        """Called when the turn cut a call this handler was to decide, before
+        its outcome was reported.
 
-        A stop, the turn's cancellation or a transport that stopped reading
-        ended it while this handler decided it (an approval still pending) or
-        while the provider ran it. The call has no result: it is reported to
-        ``ON_TOOL_CALL`` as cancelled, as every channel reports a call it cut
-        (RFC §9.3). Override it to withdraw what the call left pending (an
-        approval prompt, say), and call ``await super().on_tool_cancelled(...)``
-        to keep the report.
+        The turn's cancellation, or a transport that stopped reading before
+        the call was decided, ended it: the handler may never have been asked
+        about it, or may still be deciding it. On an AI channel the turn's
+        cancellation also cancels a pending :meth:`process_tool_call`; an ACP
+        agent's permission request runs in the connection's own task and is
+        not cancelled, so an override resolves it itself (it denies the
+        approval still pending). The call has no result: it is reported to
+        ``ON_TOOL_CALL``'s observers as cancelled, as every channel reports a
+        call it cut (RFC §9.3). Override it to withdraw what the call left
+        pending (an approval prompt, say), and call
+        ``await super().on_tool_cancelled(...)`` to keep the report. It runs in
+        the turn's teardown: keep it short.
 
         Args:
             tool_name: Name of the tool.

@@ -188,15 +188,14 @@ class _ToolLoopContext:
     # ``response_metadata``: whichever context recorded a round, the emission
     # reads the whole turn.
     declared_tools: dict[str, DeclaredTool] = field(default_factory=dict)
-    # The local calls the loop announced (their id to the call), and those
+    # The calls the loop announced (their id to the call), and those
     # whose one ON_TOOL_CALL report was made: a call announced and never
     # reported, whatever cut it (a stop, a cancellation, a transport that
     # stopped reading), is reported cancelled when the loop ends (RFC §9.3).
     announced_calls: dict[str, Any] = field(default_factory=dict)
     reported_calls: set[str] = field(default_factory=set)
-    # The announced calls served outside the channel (the provider ran them,
-    # or its external handler decides them): one cut before its report is
-    # reported through that handler, when the channel has one (RFC §9.3).
+    # The announced calls the channel's external handler decides: one cut
+    # before its report is reported through that handler (RFC §9.3).
     external_calls: set[str] = field(default_factory=set)
     # Whether the turn's tool policy, resolved for its actor, admits a name;
     # ``None`` when no policy applies. Read by ``current_tool_allowed_names()``

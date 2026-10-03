@@ -1011,9 +1011,13 @@ class HelpersMixin:
         Every hook runs and nothing it returns is applied (RFC §9.3): the
         observers see *event* as it stands, a BLOCK included. For a call an
         external handler or a provider ran, and for a result delivered before
-        the hooks ran (a realtime Tool Search call).
+        the hooks ran (a realtime Tool Search call). A call the turn cut never
+        ran: its ASYNC observers alone hear of it, as of a local call cut.
         """
         if not event.room_id:
+            return
+        if event.cancelled:
+            await self._observe_failed_tool_call(event, channel_id)
             return
         if self._hook_engine.has_hooks(HookTrigger.ON_TOOL_CALL):
             # The one runner of the chain, so each hook sees the call as the

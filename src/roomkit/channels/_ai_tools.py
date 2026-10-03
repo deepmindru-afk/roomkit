@@ -634,7 +634,7 @@ class AIToolsMixin(_AIChannelContract):
         """Report, cancelled, each call the turn announced and no report
         claimed: a stop, a cancellation or a transport that stopped reading cut
         it before its result. Every channel reports such a call once (RFC §9.3),
-        a call its external handler decides through that handler."""
+        a call its external handler was deciding through that handler."""
         handler = self._external_tool_handler
         for tc in loop_ctx.unreported_calls():
             if handler is not None and tc.id in loop_ctx.external_calls:

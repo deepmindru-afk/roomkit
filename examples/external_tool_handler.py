@@ -12,6 +12,10 @@ whether each call may run and reports how it went:
       -> the agent runs the tool
       -> handler.on_tool_result()      ON_TOOL_CALL hooks, with is_error
 
+A turn stopped while the reviewer is still asked reaches
+``handler.on_tool_cancelled()`` instead: the handler withdraws the question,
+and ON_TOOL_CALL's observers hear of the call as cancelled.
+
 The agent here is simulated in-process — no API key, no subprocess. It plays
 the part ``ACPChannel`` plays for a real agent: it asks the handler before each
 call and reports each result. Each line of output is printed by the part that
@@ -42,7 +46,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from shared import setup_logging
 
-from roomkit import AIChannel, HookResult, HookTrigger, RoomContext, RoomKit, ToolCallEvent
+from roomkit import (
+    AIChannel,
+    HookExecution,
+    HookResult,
+    HookTrigger,
+    RoomContext,
+    RoomKit,
+    ToolCallEvent,
+)
 from roomkit.providers.ai import MockAIProvider
 from roomkit.tools import ExternalToolHandler, PolicyExternalToolHandler, ToolDecision, ToolPolicy
 
@@ -65,6 +77,8 @@ PLAN: list[tuple[str, dict[str, Any]]] = [
     ("Write", {"path": "notes/plan.md", "content": "Fix the TODOs."}),
     ("Write", {"path": "pyproject.toml", "content": "[project]"}),
 ]
+# Proposed last; the user stops the turn while the reviewer is still asked.
+STOPPED = ("Write", {"path": "drafts/idea.md", "content": "Maybe later."})
 
 Reviewer = Callable[[str, dict[str, Any]], Awaitable[bool]]
 
@@ -116,9 +130,29 @@ class ReviewedPolicyHandler(PolicyExternalToolHandler):
             return decision
         return ToolDecision(approved=False, reason=f"Tool '{tool_name}' rejected by the reviewer")
 
+    async def on_tool_cancelled(
+        self,
+        tool_name: str,
+        tool_input: dict[str, Any],
+        *,
+        tool_call_id: str = "",
+        job_id: str | None = None,
+        room_id: str | None = None,
+    ) -> None:
+        # The turn was cut while the reviewer was asked: withdraw the question
+        # (a real one closes its prompt), then report the call cancelled.
+        print(f"   [cut] the reviewer's question about {tool_name} is withdrawn")
+        await super().on_tool_cancelled(
+            tool_name, tool_input, tool_call_id=tool_call_id, job_id=job_id, room_id=room_id
+        )
+
 
 async def scripted_reviewer(tool_name: str, arguments: dict[str, Any]) -> bool:
-    """Stands in for a human: approves writes under notes/, nothing else."""
+    """Stands in for a human: approves writes under notes/, nothing else, and
+    takes its time over drafts/."""
+    if str(arguments.get("path", "")).startswith("drafts/"):
+        print(f"   [ask] reviewer is asked about {tool_name} {_show(arguments)}...")
+        await asyncio.sleep(3600)
     approved = str(arguments.get("path", "")).startswith("notes/")
     verdict = "approves" if approved else "rejects"
     print(f"   [ask] reviewer {verdict} {tool_name} {_show(arguments)}")
@@ -147,6 +181,25 @@ class SimulatedAgent:
         for number, (name, arguments) in enumerate(plan, start=1):
             print(f"\n{number}. agent proposes {name} {_show(arguments)}")
             await self._attempt(f"call-{number}", name, arguments)
+
+    async def stopped_while_asked(self, name: str, arguments: dict[str, Any]) -> None:
+        """Propose a call, then stop the turn while the reviewer is asked, as an
+        AI channel's cancelled turn does: the decision is cancelled and the
+        handler told."""
+        print(f"\n{len(PLAN) + 1}. agent proposes {name} {_show(arguments)}")
+        call_id = "call-stopped"
+        asking = asyncio.create_task(
+            self._handler.process_tool_call(
+                name, arguments, tool_call_id=call_id, room_id=self._room_id
+            )
+        )
+        await asyncio.sleep(0.05)
+        print("   user stops the turn")
+        asking.cancel()
+        await asyncio.gather(asking, return_exceptions=True)
+        await self._handler.on_tool_cancelled(
+            name, arguments, tool_call_id=call_id, room_id=self._room_id
+        )
 
     async def _attempt(self, call_id: str, name: str, arguments: dict[str, Any]) -> None:
         decision = await self._handler.process_tool_call(
@@ -222,6 +275,12 @@ def install_hooks(kit: RoomKit) -> None:
         )
         return HookResult.allow()
 
+    # A call the turn cut never ran: only the observers hear of it.
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="cut-audit")
+    async def cut_audit(event: ToolCallEvent, _ctx: RoomContext) -> None:
+        if event.cancelled:
+            print(f"   [ON_TOOL_CALL observer] {event.name} {_show(event.arguments)} cancelled")
+
 
 async def main() -> None:
     setup_logging("external_tool_handler")
@@ -243,6 +302,8 @@ async def main() -> None:
     agent = SimulatedAgent(handler, ROOM_ID)
     try:
         await agent.run(PLAN)
+        await agent.stopped_while_asked(*STOPPED)
+        await asyncio.sleep(0.1)  # the observers run after the report
     finally:
         await kit.close()
     print(f"\nFiles the agent wrote: {agent.written}")
