@@ -472,8 +472,9 @@ class AIToolsMixin(_AIChannelContract):
         at all: its arguments unreadable, withdrawn for the turn, or not declared."""
         if getattr(tc, "partial", False):
             return None, _refused_with(_partial_call_error(tc))
-        # A tool BEFORE_AI_GENERATION withdrew is gone for the turn, the
-        # channel's own included: no exemption below may bring it back.
+        # A tool withdrawn for the turn (by BEFORE_AI_GENERATION or
+        # AFTER_TOOL_ROUND) is gone, the channel's own included: no exemption
+        # below may bring it back.
         if tc.name in self._get_loop_ctx().withdrawn_tools:
             logger.warning("Provider called %s, withdrawn for this turn", tc.name)
             return None, _refused_with(

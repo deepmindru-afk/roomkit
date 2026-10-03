@@ -36,7 +36,6 @@ from roomkit.models.tool_call import AIResponseEvent, ToolRoundEvent, response_t
 from roomkit.providers.ai.base import (
     AIContext,
     AIMessage,
-    AITool,
     AIToolResultPart,
     ProviderError,
 )
@@ -94,14 +93,6 @@ class _StreamTurnState:
         """End the loop on *reason*: the marker the consumer reads it from."""
         self.reason = reason
         return LoopEndMarker(reason=reason, rounds=rounds, usage=dict(self.usage))
-
-
-def _turn_toolset(loop_ctx: _ToolLoopContext, context: AIContext) -> list[AITool]:
-    """The toolset the turn's rounds are built from: the resolved catalogue,
-    or the context's tools before it is resolved."""
-    if loop_ctx.all_context_tools is not None:
-        return list(loop_ctx.all_context_tools)
-    return list(context.tools or [])
 
 
 def _turn_span_attributes(turn: _StreamTurnState) -> dict[str, Any]:
@@ -446,8 +437,9 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
         index: int,
         answered: list[AIToolResultPart],
     ) -> AsyncGenerator[StreamDelta, None]:
-        """Execute a round's announced calls and yield one end marker per call;
-        *answered* are the round's calls the provider served, read beside them."""
+        """Execute a round's announced calls, yield one end marker per call,
+        then hand the round to AFTER_TOOL_ROUND; *answered* are the round's
+        calls the provider served, read beside them."""
         results, duration_ms, executed_arguments = await self._execute_round_tools(
             context,
             calls,
@@ -506,7 +498,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
             calls=list(calls),
             results=list(results),
             answered=list(answered),
-            tools=[tool.name for tool in _turn_toolset(turn.loop_ctx, context)],
+            tools=[tool.name for tool in turn.loop_ctx.all_context_tools or []],
         )
         await hook(event)
         if event.withdrawn:
@@ -664,8 +656,8 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
     def _serves_locally(self, loop_ctx: _ToolLoopContext, name: str) -> bool:
         """Whether the turn has a tool of the channel's own under *name*: a call
         to it is the channel's to serve, never an external handler's. A tool
-        BEFORE_AI_GENERATION withdrew stays the channel's, whose gate refuses
-        it (RFC §6.4)."""
+        withdrawn for the turn (by BEFORE_AI_GENERATION or AFTER_TOOL_ROUND)
+        stays the channel's, whose gate refuses it (RFC §6.4)."""
         if name in loop_ctx.withdrawn_tools:
             return True
         known = loop_ctx.all_context_tools

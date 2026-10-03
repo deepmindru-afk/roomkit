@@ -21,6 +21,8 @@ import asyncio
 import json
 from typing import Any
 
+from shared import setup_logging
+
 from roomkit import (
     AIChannel,
     ChannelCategory,
@@ -37,6 +39,8 @@ from roomkit import (
 from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.tools import current_response_metadata
+
+logger = setup_logging("hook_after_tool_round")
 
 MAIL_TOOLS = ("mail_search", "mail_read")
 TOOLS = [
@@ -58,6 +62,24 @@ async def mailbox(name: str, arguments: dict[str, Any]) -> str:
     return json.dumps({"success": False, "error": "mail connection expired"})
 
 
+async def count_calls(event: Any, ctx: RoomContext) -> HookResult:
+    """BEFORE_TOOL_USE: count each call the turn starts into its record."""
+    record = current_response_metadata()
+    if record is not None:
+        record["calls_started"] = record.get("calls_started", 0) + 1
+    return HookResult.allow()
+
+
+async def close_mailbox(event: ToolRoundEvent, ctx: RoomContext) -> HookResult:
+    """AFTER_TOOL_ROUND: a round whose every call failed closes the mailbox."""
+    failed = [r for r in event.results if '"success": false' in str(r.result)]
+    if failed and len(failed) == len(event.results):
+        event.withdraw(*MAIL_TOOLS)
+        event.add_message("The mailbox is unavailable for the rest of this turn.")
+        logger.info("round %d: mailbox tools withdrawn", event.round_index)
+    return HookResult.allow()
+
+
 async def main() -> None:
     model = MockAIProvider(
         ai_responses=[
@@ -72,22 +94,8 @@ async def main() -> None:
     await kit.create_room(room_id="room")
     await kit.attach_channel("room", "member")
     await kit.attach_channel("room", "agent", category=ChannelCategory.INTELLIGENCE)
-
-    @kit.hook(HookTrigger.BEFORE_TOOL_USE, name="count_calls")
-    async def count_calls(event: Any, ctx: RoomContext) -> HookResult:
-        record = current_response_metadata()
-        if record is not None:
-            record["calls_started"] = record.get("calls_started", 0) + 1
-        return HookResult.allow()
-
-    @kit.hook(HookTrigger.AFTER_TOOL_ROUND, name="close_mailbox")
-    async def close_mailbox(event: ToolRoundEvent, ctx: RoomContext) -> HookResult:
-        failed = [r for r in event.results if '"success": false' in str(r.result)]
-        if failed and len(failed) == len(event.results):
-            event.withdraw(*MAIL_TOOLS)
-            event.add_message("The mailbox is unavailable for the rest of this turn.")
-            print(f"round {event.round_index}: mailbox tools withdrawn")
-        return HookResult.allow()
+    kit.hook(HookTrigger.BEFORE_TOOL_USE, name="count_calls")(count_calls)
+    kit.hook(HookTrigger.AFTER_TOOL_ROUND, name="close_mailbox")(close_mailbox)
 
     result = await kit.process_inbound(
         InboundMessage(channel_id="member", sender_id="u1", content=TextContent(body="Any mail?"))
@@ -95,10 +103,8 @@ async def main() -> None:
 
     for event in await kit.store.list_events("room"):
         if event.type == EventType.TOOL_CALL_END:
-            print(f"{event.content.tool_name}: {event.content.status}")
-        elif event.content.type == "text" and event.source.channel_id == "agent":
-            print(f"agent: {event.content.body}")
-    print(f"calls started: {result.response_metadata.get('calls_started')}")
+            logger.info("%s: %s", event.content.tool_name, event.content.status)
+    logger.info("calls started: %s", result.response_metadata.get("calls_started"))
     await kit.close()
 
 

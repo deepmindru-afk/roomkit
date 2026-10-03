@@ -486,7 +486,9 @@ class ToolRoundEvent:
 
     tools: list[str] = field(default_factory=list)
     """Names of the turn's toolset the next round is built from, Tool Search's
-    whole catalogue included: what a hook may name to :meth:`withdraw`."""
+    whole catalogue included, before the tool policy and skill gating filter a
+    round. :meth:`withdraw` takes any name, listed here or not (an external
+    handler's tool)."""
 
     withdrawn: set[str] = field(default_factory=set)
     """Names withdrawn for the rest of the turn (see :meth:`withdraw`)."""

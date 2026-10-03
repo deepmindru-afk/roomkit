@@ -1354,12 +1354,14 @@ class HelpersMixin:
 
         return _callback
 
-    def _build_after_tool_round_hook(self, channel_id: str) -> AfterToolRoundHook:
+    def _build_after_tool_round_hook(self) -> AfterToolRoundHook:
         """AFTER_TOOL_ROUND for an AIChannel: the room's SYNC hooks on a round
         its loop ran, between that round and the next (RFC §6.4).
 
-        The hooks act on the event (withdrawals, messages); their verdict
-        changes nothing, the round having run.
+        The hooks act on the event they receive, in place (withdrawals,
+        messages); a MODIFY's returned event is not read. A BLOCK stops the
+        hooks after it, as on any SYNC trigger, and changes nothing of the
+        round, which has run.
         """
         kit_ref = self
 

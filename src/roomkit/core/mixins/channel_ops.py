@@ -203,7 +203,7 @@ class ChannelOpsMixin(HelpersMixin):
         channel._before_tool_call_hook = self._build_before_tool_call_hook(channel.channel_id)
         channel._tool_usage_loader = self._build_tool_usage_loader(channel.channel_id)
         channel._before_generation_hook = self._build_before_generation_hook(channel.channel_id)
-        channel._after_tool_round_hook = self._build_after_tool_round_hook(channel.channel_id)
+        channel._after_tool_round_hook = self._build_after_tool_round_hook()
         channel._thinking_hook = self._build_thinking_hook(channel.channel_id)
         channel._plan_updated_hook = self._build_plan_updated_hook(channel.channel_id)
 

@@ -138,6 +138,7 @@ RoomKit exports **192 symbols** from `roomkit`. Providers and voice types import
 | `ToolCallEvent` | Tool call event model |
 | `ToolCallContent` | Content for TOOL_CALL_START and TOOL_CALL_END events |
 | `AIGenerationEvent` | Payload for BEFORE_AI_GENERATION hooks, before AI provider invocation |
+| `ToolRoundEvent` | Payload for AFTER_TOOL_ROUND hooks, between two rounds of a tool loop: the round's calls and results, the turn's toolset, `withdraw()` and `add_message()` |
 | `AIResponseEvent` | Payload for ON_AI_RESPONSE hooks, after AI generation completes |
 | `BeforeGenerationCallback` | Async callback type receiving AIGenerationEvent |
 | `AfterResponseCallback` | Async callback type receiving AIResponseEvent |

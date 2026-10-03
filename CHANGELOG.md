@@ -19,7 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every guarantee of a `BEFORE_AI_GENERATION` withdrawal (never declared
   again, refused if called, the channel's own tools included, never handed to
   an external handler); `event.add_message(text)` is what the next round reads
-  after the results. A BLOCK changes nothing, the round having run. A
+  after the results. Hooks act on the event in place; a BLOCK stops the hooks
+  after it, as on any SYNC trigger, and changes nothing of the round. A
   `BEFORE_TOOL_USE` hook writing `current_response_metadata()` reaches
   `InboundResult.response_metadata`, the turn answered or failed: the way to
   count the calls a turn started. Example: `examples/hook_after_tool_round.py`.

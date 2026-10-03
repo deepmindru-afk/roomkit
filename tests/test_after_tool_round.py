@@ -255,3 +255,36 @@ async def test_a_room_hook_withdraws_a_tool_an_external_handler_would_have_decid
         ("lookup", "served"),
         ("Bash", "refused"),
     ]
+
+
+async def test_a_block_stops_the_hooks_after_it_and_changes_nothing_of_the_round(
+    streaming: bool,
+) -> None:
+    """As on any SYNC trigger: a BLOCK ends the chain (a later hook's
+    withdrawal never happens) and the round it judged has already run."""
+    provider = MockAIProvider(
+        ai_responses=[
+            _calls(AIToolCall(id="l1", name="lookup", arguments={})),
+            _calls(AIToolCall(id="l2", name="lookup", arguments={})),
+            AIResponse(content="ok"),
+        ],
+        streaming=streaming,
+    )
+    local = _Local()
+    lookup = AITool(name="lookup", description="Look it up.", parameters={"type": "object"})
+    room = await _Room(
+        AIChannel("ai1", provider=provider, tools=[lookup], tool_handler=local)
+    ).open()
+
+    @room.kit.hook(HookTrigger.AFTER_TOOL_ROUND, name="judge", priority=0)
+    async def judge(event: ToolRoundEvent, ctx: Any) -> HookResult:
+        return HookResult.block("seen enough")
+
+    @room.kit.hook(HookTrigger.AFTER_TOOL_ROUND, name="withdraw", priority=10)
+    async def withdraw(event: ToolRoundEvent, ctx: Any) -> HookResult:
+        event.withdraw("lookup")
+        return HookResult.allow()
+
+    await room.say()
+
+    assert local.served == ["lookup", "lookup"]

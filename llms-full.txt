@@ -1151,6 +1151,7 @@ member management API.
 |---------|-----------|-----------|-------------|
 | `BEFORE_TOOL_USE` | SYNC | `(ToolCallEvent, ctx) -> HookResult` | Before a tool executes (AIChannel, realtime channels, conference, external/ACP tools). Block denies the call. **Fails closed**: a hook that raises, times out or returns something unusable denies the call; the model then reads `Tool 'x' denied by pre-execution hook.`, never the hook's error, which reaches ON_TOOL_CALL's observers on `error_detail` (an external tool handler decides and reports the call itself). A room context that cannot be built refuses the call too. |
 | `ON_TOOL_CALL` | SYNC | `(ToolCallEvent, ctx) -> HookResult` | A tool call executed (AIChannel, RealtimeVoiceChannel, skills, external/ACP tools). In the AI channel's tool loop, Block returns an error result to the model and marks the call failed, its structured copy dropped; `HookResult(metadata={"result": ...})` or `HookResult.modify(event)` supplies or overrides the tool result (`event.result is None` means the hook must provide it; a served result replaced with `None` reads as JSON `null`, on every channel) and keeps the copy; SYNC hooks chain, each seeing the result the previous one left, and ASYNC observers see the final one as the model reads it (a replacement serialized), a blocked call included (`is_error=True`), while a report on a call whose outcome the model already read (an external tool's, one the provider ran itself, a realtime Tool Search call) reaches them as it was read, whatever a SYNC hook returned; `event.structured_content` is the copy the tool-call event carries for UI surfaces (MCP `structuredContent`), which `metadata={"structured_content": ...}` replaces and `None` clears. RFC §9 lists this ASYNC; code invokes it through the sync pipeline. |
+| `AFTER_TOOL_ROUND` | SYNC | `(ToolRoundEvent, ctx) -> HookResult` | Between two rounds of an AIChannel's tool loop, after each round the channel ran calls in. The event carries the round whole (`calls`, the channel's `results`, the provider's `answered`) and the names of the turn's toolset (`tools`). Act on it in place: `event.withdraw(*names)` takes tools out of the rest of the turn with every guarantee of a BEFORE_AI_GENERATION withdrawal, `event.add_message(text)` is what the next round reads after the results. A BLOCK stops the hooks after it and changes nothing of the round; a MODIFY's event is not read. Not fired by realtime sessions, a reasoning backend's agent or an ACP agent's own loop. |
 | `ON_USER_INPUT_REQUIRED` | SYNC | `(PendingInputEvent, ctx) -> HookResult` | A `HumanInputHandler`-backed tool paused awaiting human input. Sync so the notification (e.g. WebSocket push) lands before `wait()` starts blocking; block auto-rejects the pending request. |
 
 ### Realtime Voice
@@ -2315,6 +2316,33 @@ agent = ACPChannel(
 ### Transports
 
 `ACPTransport` (ABC, `channels/acp_transport.py`) is the pipe, and nothing more: `open(client, *, queue) -> ClientSideConnection` (build it with `acp.connect_to_agent(client, writer, reader, queue=queue)` — the protocol only needs a reader/writer pair; `queue` is `None` under SDK ≥0.12.1, which removed it and rejects the keyword, so forward it only when set), `close()` (must not raise; called on teardown *and* on a failed handshake), `is_alive()` (default `True`), and a `name` property surfaced as `info["transport"]`. `StdioACPTransport(command, cwd=…, env=…, inherit_env=…)` is the default, constructed for you from `command=`, and owns the spawn: argument-vector validation, `_resolve_spawn_env`, the stderr drain, and `returncode`-based liveness. Everything protocol-level — `initialize`, version negotiation, `authenticate`, sessions, prompts, permissions, config options, event mapping — stays on the channel, so a transport inherits it.
+
+### Recovering a refused room prompt
+
+A custom transport's connection may raise
+`ACPSessionInvalidatedError(reason, recovery_authorized=True)` from `prompt()`
+only after proving the session is unusable **and no part of the prompt ran**.
+Authorization belongs to the host: reserve any durable retry identity before
+raising, and keep the refusal's receipt. An ordinary error or the default
+`recovery_authorized=False` authorizes nothing. This is a local Python contract,
+not a new ACP wire error or a general retry policy.
+
+RoomKit keeps the room's turn lock, closes the failed stream, forgets that
+session and its catch-up cursor, then opens a session normally on the same
+connection. The same event id, contributed blocks and request are prompted once
+more, with the visible room tail recomposed under `room_history`. Opening uses
+the usual cwd, MCP servers and transport-provided instructions/configuration;
+RoomKit does not restore private agent state or copy obsolete session options.
+A successful recovery reports one response without a stale `interrupted` mark.
+
+Any observed update (including a plan, usage or thinking) or permission request
+makes the refusal terminal. So do a second refusal, an opening failure and a
+standalone turn. Cancellation/abandonment during recovery discards the replacement
+session and releases the lock. Existing transports do not opt in implicitly.
+The host must enforce its retry budget across redelivery, restarts and workers;
+RoomKit limits only this one stream to two attempts.
+
+Runnable without a remote agent: `examples/acp_session_recovery.py`.
 
 ### Process and session model
 
@@ -5455,6 +5483,7 @@ RoomKit exports **192 symbols** from `roomkit`. Providers and voice types import
 | `ToolCallEvent` | Tool call event model |
 | `ToolCallContent` | Content for TOOL_CALL_START and TOOL_CALL_END events |
 | `AIGenerationEvent` | Payload for BEFORE_AI_GENERATION hooks, before AI provider invocation |
+| `ToolRoundEvent` | Payload for AFTER_TOOL_ROUND hooks, between two rounds of a tool loop: the round's calls and results, the turn's toolset, `withdraw()` and `add_message()` |
 | `AIResponseEvent` | Payload for ON_AI_RESPONSE hooks, after AI generation completes |
 | `BeforeGenerationCallback` | Async callback type receiving AIGenerationEvent |
 | `AfterResponseCallback` | Async callback type receiving AIResponseEvent |

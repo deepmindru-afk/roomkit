@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from roomkit.channels import SMSChannel
 from roomkit.channels.ai import AIChannel
 from roomkit.core.framework import RoomKit
 from roomkit.core.hooks import SyncPipelineResult
@@ -34,6 +35,7 @@ from roomkit.models.room import Room
 from roomkit.models.tool_call import AIGenerationEvent
 from roomkit.providers.ai.base import AIContext, AIResponse, AIToolCall, ProviderError
 from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.providers.sms.mock import MockSMSProvider
 from roomkit.tools import current_response_metadata
 from tests.conftest import make_event
 from tests.tool_loop_modes import respond
@@ -400,9 +402,6 @@ async def test_a_before_tool_use_write_reaches_the_inbound_result(
     """A BEFORE_TOOL_USE hook runs under the call's turn: what it writes through
     ``current_response_metadata()`` is the record the caller reads, the turn
     answered or failed (RFC §6.7), so a host counts the calls a turn started."""
-    from roomkit.channels import SMSChannel
-    from roomkit.providers.sms.mock import MockSMSProvider
-
     provider_cls = _FailsAfterTheCall if fails else MockAIProvider
     kit = RoomKit()
     ai = AIChannel(
