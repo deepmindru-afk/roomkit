@@ -43,8 +43,8 @@ from roomkit.channels._acp_client import (
 )
 from roomkit.channels._acp_context import (
     ACPContextContributor,
+    acp_event_text,
     contributed_blocks,
-    event_text,
 )
 from roomkit.channels._acp_events import ACPEventsMixin
 from roomkit.channels._acp_sessions import ACPSessionsMixin
@@ -374,7 +374,7 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
         if is_tool_call_record(event):
             return ChannelOutput.empty()
 
-        text = event_text(event)
+        text = acp_event_text(event)
 
         room_id = context.room.id if context.room is not None else event.room_id
         # Host-only blocks can be collected now. Catch-up is deliberately

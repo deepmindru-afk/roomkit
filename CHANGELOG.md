@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `acp_event_text(event)` (RMK-408, RFC A.9.1): the text an `ACPChannel`
+  gives its agent for an event, a `RichContent` read as its `plain_text`, for a
+  host that builds an ACP prompt of its own.
+
 - The turn's footprint (RMK-406, RFC §20): before it reads its memory, an AI
   channel measures what the turn takes of the window besides its history, as
   the first round sends it, readable for the turn as `current_turn_footprint()`,

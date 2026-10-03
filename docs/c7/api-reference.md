@@ -19,6 +19,7 @@ RoomKit exports **192 symbols** from `roomkit`. Providers and voice types import
 | Symbol | Description |
 |--------|-------------|
 | `ACPChannel` | Connects a room to an external ACP coding agent over stdio |
+| `acp_event_text` | The text an `ACPChannel` gives its agent for an event (a `RichContent` as its `plain_text`), for a host building its own ACP prompt |
 | `Agent` | AI agent with role, description, greeting, tools |
 | `AIChannel` | Intelligence layer for AI responses |
 | `AIChannelTurnConfig` | Per-turn generation overrides for AIChannel (None fields keep channel defaults) |

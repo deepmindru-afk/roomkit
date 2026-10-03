@@ -66,6 +66,8 @@ One connection per channel, opened lazily on the first prompt; one ACP **session
 
 Methods: `session_id(room_id)` returns the process-local session id or `None`; `cancel(room_id)` cancels the active turn (`True` if a cancel was sent); `close_session(room_id)` closes and forgets one Room's session and never raises for a refused close (`session/close` is optional in ACP: it is sent only to an agent whose `initialize` announces `sessionCapabilities.close`, or to a connection whose `initialize` reply carries no `agent_capabilities` at all; an agent that does not announce it keeps its sessions until the connection closes, with a warning per standalone turn); `close()` cancels turns, closes sessions, closes the transport and stops the handler. The `info` property reports `{transport, protocol_version, sdk_version, connected, agent, session_count}`.
 
+`acp_event_text(event)` (exported from `roomkit`) is the text the channel gives the agent for an event, its prompt and each line of room context: a `RichContent` is read as its `plain_text`, where `extract_event_text` keeps the markup body. A host that builds an ACP prompt of its own (an edge relay, say) reads events through it to send what the channel sends.
+
 ### How agent output enters the room
 
 For each non-self text event, `on_event()` returns `ChannelOutput(responded=True, response_stream=...)` (TOOL_CALL_START/END events are skipped). The prompt (tagged `roomkit.live/eventId`) yields a `StreamDelta` stream consumed by the inbound-streaming pipeline:

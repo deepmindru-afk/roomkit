@@ -42,11 +42,15 @@ ACPContextContributor = Callable[[RoomContext, RoomEvent], Awaitable[Sequence[st
 """What a host adds to one turn's prompt: blocks, for this request, right now."""
 
 
-def event_text(event: RoomEvent) -> str:
-    """The text an ACP agent should read for *event*.
+def acp_event_text(event: RoomEvent) -> str:
+    """The text an ACP agent reads for *event*: its prompt, and each line of
+    the room context it is given (RFC Appendix A.9.1).
 
     Rich content is offered as its plain-text rendering: the prompt is a
     string, and a session that received the markup would answer about it.
+    That is where it differs from ``extract_event_text``, which reads a rich
+    event's markup body. A host building an ACP prompt of its own reads an
+    event as the channel does through this.
     """
     content = event.content
     if isinstance(content, TextContent):
@@ -105,7 +109,7 @@ def room_context_block(
         and event.id != trigger.id
         and (event.source.channel_id != channel_id or _from_standalone_turn(event))
         and event.type not in _SKIPPED_TYPES
-        and event_text(event).strip()
+        and acp_event_text(event).strip()
     ]
     oldest = min((event.index for event in context.recent_events), default=after_index + 1)
     unloaded = max(0, oldest - after_index - 1)
@@ -122,7 +126,7 @@ def room_context_block(
 
     shown = missed[-limit:]
     lines = [
-        f"[{position}] {_label(event, context, channel_id)}: {event_text(event).strip()}"
+        f"[{position}] {_label(event, context, channel_id)}: {acp_event_text(event).strip()}"
         for position, event in enumerate(shown, start=1)
     ]
     header = _header(len(shown), len(missed), unloaded)
