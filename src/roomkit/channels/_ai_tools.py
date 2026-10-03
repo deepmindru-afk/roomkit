@@ -258,12 +258,17 @@ class AIToolsMixin(_AIChannelContract):
             if not tool.defer_loading or tool.name in referenced
         }
         channel_managed = name in self._channel_tool_names()
-        always_shown = channel_managed and name in self._never_hidden(loop_ctx.room_id)
+        # The channel's own tools answer for themselves, when the turn offers
+        # them: Tool Search's only while it hides the catalogue (RFC §6.4).
+        offered = {tool.name for tool in loop_ctx.all_context_tools or ()}
+        always_shown = (
+            channel_managed and name in self._never_hidden(loop_ctx.room_id) and name in offered
+        )
         resolved = bool(declared_names) or loop_ctx.all_context_tools is not None
         if not resolved or name in declared_names or always_shown:
             return params, None
         recovered = self._recover_deferred_tool(name)
-        if recovered is None and channel_managed:
+        if recovered is None and channel_managed and name in offered:
             # A sandbox command or human-input tool the policy or a skill keeps
             # from the turn: the gate below refuses it, in its own words.
             return params, None
@@ -1014,7 +1019,7 @@ class AIToolsMixin(_AIChannelContract):
         return render_find_payload(
             matches,
             miss_hint=self._tool_search_miss_hint,
-            related=related_family_tools(catalogue, matches),
+            related=related_family_tools(catalogue, matches, exclude_names=exclude),
         )
 
     async def _handle_list_tools(self, arguments: dict[str, Any]) -> str:

@@ -60,6 +60,7 @@ class RealtimeToolSearchSupport:
         reconfigure_capable: bool = True,
         reachable: Callable[[str, str], bool] | None = None,
         never_deferred: Callable[[str], Iterable[str]] | None = None,
+        listed: Callable[[str], list[dict[str, Any]]] | None = None,
         auto: bool = False,
     ) -> None:
         self._catalogue: list[dict[str, Any]] = list(catalogue)
@@ -75,6 +76,9 @@ class RealtimeToolSearchSupport:
         # and what orchestration set up (RFC §21.1). Declared already, so
         # ``find_tools`` never names them.
         self._never_deferred = never_deferred or (lambda _session_id: ())
+        # session id -> every tool the session can call, declared or hidden,
+        # for ``list_tools`` (RFC §21.1); its searchable catalogue without it.
+        self._listed = listed
         self._pinned_names: set[str] = set(pinned or [])
         self._threshold = threshold
         self.uses_call_tool = not reconfigure_capable
@@ -277,7 +281,7 @@ class RealtimeToolSearchSupport:
 
         result_str = render_find_payload(
             matches,
-            related=related_family_tools(catalogue, matches),
+            related=related_family_tools(catalogue, matches, exclude_names=exclude),
             call_tool=self.uses_call_tool,
         )
         if not matches or self.uses_call_tool:
@@ -295,13 +299,15 @@ class RealtimeToolSearchSupport:
                     )
             return json.dumps({"error": f"Tool '{name}' is unavailable in this session"})
         category = str(arguments.get("category", "")).strip()
+        listed = (
+            self._listed(session_id)
+            if self._listed is not None
+            else self._session_catalogues.get(
+                session_id, [] if self.uses_call_tool else self._catalogue
+            )
+        )
         return render_list_payload(
-            self._searchable(
-                session_id,
-                self._session_catalogues.get(
-                    session_id, [] if self.uses_call_tool else self._catalogue
-                ),
-            ),
+            self._searchable(session_id, listed),
             category,
             exclude_names=TOOL_SEARCH_INFRA_TOOL_NAMES,
         )

@@ -1,0 +1,437 @@
+"""One tool list, one set of rules, on a text turn and a realtime session (RMK-397).
+
+The same configuration declares the same tools and applies the same rules on
+both paths: skills a host marked unavailable, a skill's ``requires``, a
+pipeline that reads the channel's tools as they are, ``find_tools``'
+related names, a never-hidden tool's origin, the ``list_tools`` inventory, an
+infrastructure tool the turn does not offer, and the names a handler reads
+from ``current_tool_allowed_names()`` (RFC §6.4, §12.4, §19.5, §21.1, §21.4,
+§24.3).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+from pathlib import Path
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from roomkit import RoomKit
+from roomkit.channels.agent import Agent
+from roomkit.channels.ai import AIChannel
+from roomkit.channels.realtime_voice import RealtimeVoiceChannel
+from roomkit.core.exceptions import ToolNameCollisionError
+from roomkit.models.channel import ChannelBinding
+from roomkit.models.context import RoomContext
+from roomkit.models.enums import ChannelCategory, ChannelType
+from roomkit.models.room import Room
+from roomkit.models.tool_call import AIResponseEvent
+from roomkit.orchestration.pipeline import ConversationPipeline, PipelineStage
+from roomkit.providers.ai.base import AITool
+from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.skills.registry import SkillRegistry
+from roomkit.tasks.delegate import DelegateHandler, setup_realtime_delegation
+from roomkit.tools import current_tool_allowed_names
+from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
+from tests.conftest import make_event
+from tests.test_tool_search_orchestration import (
+    CRM,
+    _calling,
+    _crm,
+    _model,
+    _orchestrated,
+    _turn,
+)
+from tests.tool_loop_modes import respond
+
+REASON = "requires tool(s) not available in this context: calendar"
+
+
+def _dicts(tools: list[AITool]) -> list[dict[str, Any]]:
+    return [
+        {"name": t.name, "description": t.description, "parameters": t.parameters} for t in tools
+    ]
+
+
+def _schema(name: str, description: str = "") -> dict[str, Any]:
+    return {
+        "name": name,
+        "description": description or name,
+        "parameters": {"type": "object", "properties": {}},
+    }
+
+
+async def _session(
+    channel: RealtimeVoiceChannel, provider: MockRealtimeProvider
+) -> tuple[RoomKit, Any]:
+    kit = RoomKit()
+    kit.register_channel(channel)
+    room = await kit.create_room()
+    await kit.attach_channel(room.id, channel.channel_id)
+    return kit, await channel.start_session(room.id, "u", "ws")
+
+
+async def _call(
+    channel: RealtimeVoiceChannel,
+    provider: MockRealtimeProvider,
+    session: Any,
+    name: str,
+    arguments: dict[str, Any],
+) -> str:
+    await provider.simulate_tool_call(session, f"c-{name}", name, arguments)
+    await asyncio.wait_for(asyncio.gather(*list(channel._scheduled_tasks)), 5)
+    return provider.tool_results[-1][2]
+
+
+def _text_result(channel: AIChannel, first: int) -> str:
+    messages = _model(channel).calls[first + 1].messages
+    return next(str(p.result) for m in messages if m.role == "tool" for p in m.content)
+
+
+class TestUnavailableSkills:
+    """A registry whose every skill is unavailable still says why (§24.3)."""
+
+    @staticmethod
+    def _registry(tmp: Path) -> SkillRegistry:
+        folder = tmp / "test-skill"
+        folder.mkdir()
+        (folder / "SKILL.md").write_text(
+            "---\nname: test-skill\ndescription: A test skill\n---\nBody.", encoding="utf-8"
+        )
+        registry = SkillRegistry()
+        registry.discover(tmp)
+        registry.mark_unavailable("test-skill", REASON)
+        return registry
+
+    async def test_a_text_turn_gives_the_reason(self, tmp_path: Path) -> None:
+        provider = MockAIProvider(responses=["ok"])
+        channel = AIChannel("ai1", provider=provider, skills=self._registry(tmp_path))
+        binding = ChannelBinding(
+            channel_id="ai1",
+            room_id="r1",
+            channel_type=ChannelType.AI,
+            category=ChannelCategory.INTELLIGENCE,
+        )
+
+        await respond(
+            channel,
+            make_event(body="go", channel_id="sms1"),
+            binding,
+            RoomContext(room=Room(id="r1")),
+        )
+
+        [context] = provider.calls
+        assert REASON in (context.system_prompt or "")
+        assert {"activate_skill", "read_skill_reference"} <= {t.name for t in context.tools}
+
+    async def test_a_realtime_session_gives_the_reason(self, tmp_path: Path) -> None:
+        provider = MockRealtimeProvider()
+        channel = RealtimeVoiceChannel(
+            "rt",
+            provider=provider,
+            transport=MockRealtimeTransport(),
+            skills=self._registry(tmp_path),
+        )
+        kit, _ = await _session(channel, provider)
+
+        connect = next(c for c in provider.calls if c.method == "connect")
+        assert REASON in (connect.args["system_prompt"] or "")
+        assert {"activate_skill", "read_skill_reference"} <= {
+            t["name"] for t in connect.args["tools"] or []
+        }
+        await kit.close()
+
+
+async def test_a_skill_requires_what_orchestration_set_up(tmp_path: Path) -> None:
+    """``requires`` is checked against what the session declares (§24.3)."""
+    folder = tmp_path / "deleg-skill"
+    folder.mkdir()
+    (folder / "SKILL.md").write_text(
+        "---\nname: deleg-skill\ndescription: Delegates\nrequires: delegate_task\n---\n"
+        "Call delegate_task.",
+        encoding="utf-8",
+    )
+    registry = SkillRegistry()
+    registry.discover(tmp_path)
+    provider = MockRealtimeProvider()
+    provider.reconfigure = AsyncMock()  # type: ignore[method-assign]
+    channel = RealtimeVoiceChannel(
+        "rt",
+        provider=provider,
+        transport=MockRealtimeTransport(),
+        skills=registry,
+        tool_handler=AsyncMock(return_value="ok"),
+        skill_delivery_mode="on_demand",
+    )
+    setup_realtime_delegation(channel, DelegateHandler(MagicMock()))
+    kit, session = await _session(channel, provider)
+
+    result = await _call(channel, provider, session, "activate_skill", {"name": "deleg-skill"})
+
+    assert "error" not in json.loads(result)
+    await kit.close()
+
+
+class TestPipelineTools:
+    """A pipeline declares the channel's tools as they are now (§19.5)."""
+
+    @staticmethod
+    def _install(rtv: RealtimeVoiceChannel, agent: Agent) -> RoomKit:
+        kit = MagicMock()
+        kit.hook.return_value = MagicMock()
+        kit.channels = {"rtv": rtv}
+        kit.get_room = AsyncMock(return_value=Room(id="r1"))
+        pipeline = ConversationPipeline(stages=[PipelineStage(phase="a", agent_id="agent-a")])
+        pipeline.install(kit, [agent], voice_channel_id="rtv")
+        return kit
+
+    async def test_a_channel_configured_after_the_install_keeps_its_tools(self) -> None:
+        rtv = RealtimeVoiceChannel(
+            "rtv",
+            provider=MockRealtimeProvider(),
+            transport=MockRealtimeTransport(),
+            tools=[_schema("old_lookup")],
+        )
+        self._install(rtv, Agent("agent-a", role="A", system_prompt="Be A."))
+
+        rtv.configure(tools=[_schema("new_lookup")])
+        config = await rtv._room_session_config("r1")
+
+        assert config is not None
+        assert [t["name"] for t in config.tools or []] == ["new_lookup", "handoff_conversation"]
+
+    async def test_a_name_the_channel_carries_is_the_channels(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """One schema, one server (§21.1): the agent's tool of that name is
+        neither declared nor served, and a warning names it."""
+        channel_handler = AsyncMock(return_value="channel")
+        agent_handler = AsyncMock(return_value="agent")
+        rtv = RealtimeVoiceChannel(
+            "rtv",
+            provider=MockRealtimeProvider(),
+            transport=MockRealtimeTransport(),
+            tools=[_schema("lookup", "the channel's")],
+            tool_handler=channel_handler,
+        )
+        agent = Agent(
+            "agent-a",
+            role="A",
+            tools=[AITool(name="lookup", description="the agent's", parameters={})],
+            tool_handler=agent_handler,
+        )
+
+        with caplog.at_level(logging.WARNING, logger="roomkit.orchestration.pipeline"):
+            self._install(rtv, agent)
+        config = await rtv._room_session_config("r1")
+
+        assert config is not None
+        [lookup] = [t for t in config.tools or [] if t["name"] == "lookup"]
+        assert lookup["description"] == "the channel's"
+        assert "shares its name with a tool of channel rtv" in caplog.text
+        assert rtv._registry.lookup("lookup", "r1") is None
+
+    async def test_the_channel_cannot_take_an_agents_name_later(self) -> None:
+        """The registry refuses it, so no call is left between two servers."""
+        rtv = RealtimeVoiceChannel(
+            "rtv",
+            provider=MockRealtimeProvider(),
+            transport=MockRealtimeTransport(),
+            tools=[_schema("other")],
+            tool_handler=AsyncMock(return_value="channel"),
+        )
+        agent = Agent(
+            "agent-a",
+            role="A",
+            tools=[AITool(name="lookup", description="the agent's", parameters={})],
+            tool_handler=AsyncMock(return_value="agent"),
+        )
+        self._install(rtv, agent)
+
+        with pytest.raises(ToolNameCollisionError):
+            rtv.configure(tools=[_schema("lookup", "the channel's")])
+
+
+class TestFindTools:
+    """``find_tools`` never names what it never returns (§21.1)."""
+
+    PINNED = AITool(
+        name="crm_pinned_summary",
+        description="Summary of the customer.",
+        parameters={"type": "object", "properties": {}},
+    )
+
+    async def test_a_text_search_names_no_pinned_tool_as_related(self) -> None:
+        channel = _orchestrated(
+            False,
+            [self.PINNED, *CRM],
+            _calling("find_tools", query="crm operation number 3"),
+            tool_search=True,
+            tool_search_pinned=["crm_pinned_summary"],
+        )
+
+        result = json.loads(_text_result(channel, await _turn(channel, "r1")))
+
+        assert result["matches"]
+        assert "crm_pinned_summary" not in (result.get("related_tools_same_source") or [])
+
+    async def test_a_realtime_search_names_no_pinned_tool_as_related(self) -> None:
+        provider = MockRealtimeProvider()
+        channel = RealtimeVoiceChannel(
+            "voice",
+            provider=provider,
+            transport=MockRealtimeTransport(),
+            tools=_dicts([self.PINNED, *CRM]),
+            tool_handler=_crm,
+            tool_search=True,
+            tool_search_pinned=["crm_pinned_summary"],
+        )
+        kit, session = await _session(channel, provider)
+
+        result = json.loads(
+            await _call(channel, provider, session, "find_tools", {"query": "crm operation 3"})
+        )
+
+        assert result["matches"]
+        assert "crm_pinned_summary" not in (result.get("related_tools_same_source") or [])
+        await kit.close()
+
+
+async def test_a_tool_tool_search_never_hides_is_always_declared() -> None:
+    """``plan_tasks`` is reported ``always``, its first use aside (§6.4)."""
+    plan = _calling("plan_tasks", tasks=[{"title": "one", "status": "pending"}])
+    channel = _orchestrated(False, CRM, plan, tool_search=True, enable_planning=True)
+    seen: list[AIResponseEvent] = []
+
+    async def observe(event: AIResponseEvent) -> None:
+        seen.append(event)
+
+    channel._after_response_hook = observe
+    await _turn(channel, "r1")
+    await _turn(channel, "r1")
+
+    origins = [{t.name: t.origin for t in event.declared_tools}["plan_tasks"] for event in seen]
+    assert origins == ["always", "always"]
+
+
+class TestListTools:
+    """``list_tools`` lists every tool the turn or session can call (§21.1)."""
+
+    async def test_a_text_turn_lists_the_tools_always_declared(self) -> None:
+        channel = _orchestrated(False, CRM, _calling("list_tools"), tool_search=True)
+
+        result = json.loads(_text_result(channel, await _turn(channel, "r1")))
+
+        names = {tool["name"] for tool in result["tools"]}
+        assert "delegate_task" in names
+        assert not names & {"find_tools", "list_tools"}
+
+    async def test_a_realtime_session_lists_the_tools_always_declared(self) -> None:
+        provider = MockRealtimeProvider()
+        channel = RealtimeVoiceChannel(
+            "voice",
+            provider=provider,
+            transport=MockRealtimeTransport(),
+            tools=_dicts(CRM),
+            tool_handler=_crm,
+            tool_search=True,
+        )
+        setup_realtime_delegation(channel, DelegateHandler(MagicMock()))
+        kit, session = await _session(channel, provider)
+
+        result = json.loads(await _call(channel, provider, session, "list_tools", {}))
+
+        names = {tool["name"] for tool in result["tools"]}
+        assert "delegate_task" in names
+        assert {t.name for t in CRM} <= names
+        assert not names & {"find_tools", "list_tools"}
+        await kit.close()
+
+
+class TestAnUndeclaredInfrastructureTool:
+    """Tool Search hiding nothing, ``find_tools`` is refused as undeclared (§6.4, §12.4)."""
+
+    async def test_a_text_turn_refuses_it(self) -> None:
+        channel = _orchestrated(False, CRM[:2], _calling("find_tools", query="crm"))
+
+        result = json.loads(_text_result(channel, await _turn(channel, "r1")))
+
+        assert result == {"error": "Tool 'find_tools' is not declared in this turn."}
+
+    async def test_a_realtime_session_refuses_it(self) -> None:
+        provider = MockRealtimeProvider()
+        channel = RealtimeVoiceChannel(
+            "voice",
+            provider=provider,
+            transport=MockRealtimeTransport(),
+            tools=[_schema("lookup")],
+            tool_handler=AsyncMock(return_value="ok"),
+        )
+        kit, session = await _session(channel, provider)
+
+        result = json.loads(await _call(channel, provider, session, "find_tools", {"query": "x"}))
+
+        assert result == {"error": "Tool 'find_tools' is not declared"}
+        await kit.close()
+
+    async def test_a_realtime_session_refuses_a_script_with_no_executor(
+        self, tmp_path: Path
+    ) -> None:
+        folder = tmp_path / "scripted"
+        folder.mkdir()
+        (folder / "SKILL.md").write_text(
+            "---\nname: scripted\ndescription: Runs scripts\n---\nBody.", encoding="utf-8"
+        )
+        registry = SkillRegistry()
+        registry.discover(tmp_path)
+        provider = MockRealtimeProvider()
+        channel = RealtimeVoiceChannel(
+            "voice",
+            provider=provider,
+            transport=MockRealtimeTransport(),
+            skills=registry,
+            tool_handler=AsyncMock(return_value="ok"),
+        )
+        kit, session = await _session(channel, provider)
+
+        result = json.loads(
+            await _call(
+                channel,
+                provider,
+                session,
+                "run_skill_script",
+                {"skill_name": "scripted", "script_name": "x.sh"},
+            )
+        )
+
+        assert result == {"error": "Tool 'run_skill_script' is not declared"}
+        await kit.close()
+
+
+async def test_a_realtime_handler_reads_the_sessions_tools() -> None:
+    """``current_tool_allowed_names()`` on a realtime door (§21.4)."""
+    seen: list[set[str] | None] = []
+
+    async def handler(name: str, arguments: dict[str, Any]) -> str:
+        seen.append(current_tool_allowed_names())
+        return "ok"
+
+    provider = MockRealtimeProvider()
+    channel = RealtimeVoiceChannel(
+        "voice",
+        provider=provider,
+        transport=MockRealtimeTransport(),
+        tools=[_schema("lookup"), _schema("book")],
+        tool_handler=handler,
+    )
+    setup_realtime_delegation(channel, DelegateHandler(MagicMock()))
+    kit, session = await _session(channel, provider)
+
+    await _call(channel, provider, session, "lookup", {})
+
+    assert seen == [{"lookup", "book", "delegate_task"}]
+    await kit.close()

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import functools
 import json
+import logging
 from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._tool_registry import SessionConfig, orchestration_tool
@@ -40,6 +41,9 @@ _DEFAULT_GREETING = (
     "Handoff complete. You are now the active agent. "
     "Please introduce yourself briefly to the caller."
 )
+
+
+logger = logging.getLogger("roomkit.orchestration.pipeline")
 
 
 class RealtimePipeline:
@@ -90,12 +94,21 @@ class RealtimePipeline:
 
     def _agent_tools(self) -> dict[str, AITool]:
         """The agents' own tools the pipeline serves: a name the channel's host
-        tools carry is the channel's to serve (RFC §19.5)."""
-        host = {tool.get("name") for tool in self._rtv._tools or []}
+        tools carry is the channel's, declared and served as the channel's
+        (RFC §19.5, §21.1)."""
+        host = _channel_tool_names(self._rtv)
         tools: dict[str, AITool] = {}
         for agent in self._agent_map.values():
             for tool in agent._user_tools:
-                if tool.name not in host and tool.name != HANDOFF_TOOL_NAME:
+                if tool.name in host:
+                    logger.warning(
+                        "Agent %s's tool %r shares its name with a tool of channel %s: "
+                        "the channel's is declared and served",
+                        agent.channel_id,
+                        tool.name,
+                        self._rtv.channel_id,
+                    )
+                elif tool.name != HANDOFF_TOOL_NAME:
                     tools.setdefault(tool.name, tool)
         return tools
 
@@ -110,7 +123,15 @@ class RealtimePipeline:
         return SessionConfig(
             system_prompt=self._prompt_for(agent_id, room),
             voice=config["voice"],
-            tools=config["tools"],
+            tools=self._session_tools(agent_id),
+        )
+
+    def _session_tools(self, agent_id: str) -> list[dict[str, Any]]:
+        """The tools *agent_id*'s sessions declare, read from the channel's
+        tools as they are now: a channel configured after the install keeps
+        its tools under every agent (RFC §19.5)."""
+        return _agent_session_tools(
+            self._rtv, self._agent_map[agent_id], self.agent_configs[agent_id]["handoff"]
         )
 
     def _prompt_for(self, agent_id: str, room: Room) -> str | None:
@@ -125,7 +146,7 @@ class RealtimePipeline:
         return prompt
 
     def _agent_config(self, agent: Agent, stages: list[PipelineStage]) -> dict[str, Any]:
-        """The prompt, voice and tools *agent*'s sessions run with."""
+        """The prompt, voice and handoff tool *agent*'s sessions run with."""
         prompt = agent.system_prompt or ""
         identity = agent.build_identity_block()
         if identity:
@@ -133,7 +154,7 @@ class RealtimePipeline:
         return {
             "system_prompt": prompt or None,
             "voice": agent.voice,
-            "tools": _agent_session_tools(self._rtv, agent, self._handoff_tool(agent, stages)),
+            "handoff": self._handoff_tool(agent, stages),
         }
 
     def _handoff_tool(self, agent: Agent, stages: list[PipelineStage]) -> AITool:
@@ -242,13 +263,14 @@ class RealtimePipeline:
         room = await self._kit.get_room(room_id)
         prompt = self._prompt_for(new_id, room)
         lang = self._handler.get_room_language(room, new_id)
+        tools = self._session_tools(new_id)
 
         for session in rtv.get_room_sessions(room_id):
             await rtv.reconfigure_session(
                 session,
                 system_prompt=prompt,
                 voice=config["voice"],
-                tools=config["tools"],
+                tools=tools,
             )
 
             if self._greet_on_handoff:
@@ -273,12 +295,16 @@ def _agent_session_tools(
     """The tools an agent's realtime session declares (RFC §19.5).
 
     The channel's own tools, which stay declared under every agent, the
-    agent's, then the handoff tool; a later tool replaces an earlier one of
-    the same name, so an agent may specialise one.
+    agent's, then the handoff tool. A name the channel carries is the
+    channel's: one schema, one server (RFC §21.1), so an agent tool of the
+    same name is not declared.
     """
-    declared = [
-        *(dict(t) for t in rtv._tools or []),
-        *(t.model_dump() for t in agent._user_tools),
-        handoff.model_dump(),
-    ]
-    return list({tool["name"]: tool for tool in declared}.values())
+    host = [dict(t) for t in rtv._tools or []]
+    names = _channel_tool_names(rtv)
+    own = {t.name: t.model_dump() for t in agent._user_tools if t.name not in names}
+    return [*host, *own.values(), handoff.model_dump()]
+
+
+def _channel_tool_names(rtv: RealtimeVoiceChannel) -> set[str]:
+    """The names of the tools the channel carries now."""
+    return {name for t in rtv._tools or [] if (name := t.get("name"))}

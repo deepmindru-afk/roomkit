@@ -53,6 +53,7 @@ from roomkit.channels._realtime_tool_executor import (
     tool_loop_context,
 )
 from roomkit.channels._served_tools import CollisionLog, warn_tools_uncallable
+from roomkit.channels._tool_registry import schema_tool
 from roomkit.core.exceptions import ToolRefusedError
 from roomkit.core.task_utils import log_task_exception
 from roomkit.models.event import TextContent
@@ -617,6 +618,10 @@ class ConferenceRealtime:
             actor_id=None,  # the mix names no participant
             chain_depth=room.answer_depth.answer if room is not None else 0,
         )
+        # What the session declares is the call's resolved toolset (RFC §21.4).
+        declared = declared_tools(config, self._collisions)
+        if declared is not None:
+            loop_ctx.all_context_tools = [schema_tool(tool) for tool in declared]
         with serving_tool_call(call, self._channel_id, loop_ctx):
             answer = config.tool_handler(room_id, call.name, call.arguments)
             answered = await answer_within(config.tool_bound(call.name), call.name, answer)

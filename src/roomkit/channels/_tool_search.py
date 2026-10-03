@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import math
 import re
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from typing import Any
 
 from roomkit.channels._tool_search_constants import (
@@ -187,9 +187,12 @@ def related_family_tools(
     catalogue: list[dict[str, Any]],
     matches: list[dict[str, Any]],
     *,
+    exclude_names: Collection[str] = frozenset(),
     limit: int = _RELATED_MAX_NAMES,
 ) -> list[str]:
-    """Names of unmatched catalogue tools sharing a match's name-prefix family.
+    """Names of unmatched catalogue tools sharing a match's name-prefix family,
+    bar *exclude_names*: what the search itself never returns (a tool declared
+    already, an infrastructure tool) is never named either (RFC §21.1).
 
     Family = the segment before the first ``_`` (the MCP-gateway convention:
     ``square_get-menu`` → ``square``); a name without ``_`` has no family.
@@ -207,7 +210,7 @@ def related_family_tools(
     related: list[str] = []
     for entry in catalogue:
         name = entry.get("name") or ""
-        if name in matched_names or "_" not in name:
+        if name in matched_names or name in exclude_names or "_" not in name:
             continue
         if name.split("_", 1)[0] in families:
             related.append(name)

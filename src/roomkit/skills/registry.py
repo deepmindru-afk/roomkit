@@ -234,6 +234,12 @@ class SkillRegistry:
         """Number of registered skills."""
         return len(self._metadata)
 
+    @property
+    def has_entries(self) -> bool:
+        """Whether the model has anything to be told: a skill it can activate,
+        or one marked unavailable, whose reason it gives instead of guessing."""
+        return bool(self._metadata or self._unavailable)
+
     def to_prompt_xml(self) -> str:
         """Generate spec-compliant <available_skills> XML block.
 

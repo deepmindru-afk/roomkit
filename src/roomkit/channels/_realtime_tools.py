@@ -35,7 +35,7 @@ from roomkit.channels._realtime_tool_executor import (
     tool_loop_context,
 )
 from roomkit.channels._skill_constants import TOOL_ACTIVATE_SKILL
-from roomkit.channels._tool_registry import ChannelRegistry
+from roomkit.channels._tool_registry import ChannelRegistry, schema_tool
 from roomkit.channels._tool_search_constants import TOOL_CALL_TOOL, TOOL_LIST_TOOLS
 from roomkit.core.exceptions import ToolRefusedError, UnservedToolCallError
 from roomkit.models.enums import ChannelType
@@ -229,6 +229,8 @@ class RealtimeToolsMixin:
     _compose_session_tools: Any
     _authorize_realtime_tool: Any  # RealtimeToolGateMixin — cross-mixin
     _session_base_tools: Any  # RealtimeToolGateMixin — cross-mixin
+    _session_catalogue: Any  # RealtimeToolGateMixin — cross-mixin
+    _session_declared_tools: Any  # RealtimeToolGateMixin — cross-mixin
 
     def _on_provider_tool_call(
         self,
@@ -578,6 +580,13 @@ class RealtimeToolsMixin:
             chain_depth=self._session_answer_depth(session.id).answer,
             room=gate_context.room if gate_context is not None else None,
         )
+        # What the session declares is the call's resolved toolset, which
+        # ``current_tool_allowed_names()`` answers, as a turn's (RFC §21.4); a
+        # session that declares no catalogue admits any name, and has none.
+        if self._session_catalogue(session.id):
+            loop_ctx.all_context_tools = [
+                schema_tool(tool) for tool in self._session_declared_tools(session.id)
+            ]
         token = _current_voice_session.set(session)
         try:
             with serving_tool_call(call, self.channel_id, loop_ctx):
@@ -625,7 +634,9 @@ class RealtimeToolsMixin:
         lock = self._session_config_locks.get(session.id)
         if lock is None:
             return _session_ended()
-        tools = self._session_base_tools(session.id)
+        # A skill requires tools the session declares, whoever set them up
+        # (its catalogue, orchestration).
+        tools = self._session_catalogue(session.id)
         try:
             result, skill = await support.prepare_activation(call.arguments, session.id, tools)
         except ToolRefusedError as refusal:
@@ -651,7 +662,7 @@ class RealtimeToolsMixin:
         """
         support = self._skill_support
         check = RequiredToolsCheck(
-            support, skill, lambda: self._session_base_tools(call.session.id)
+            support, skill, lambda: self._session_catalogue(call.session.id)
         )
         served = ToolOutcome(OutcomeKind.SERVED, result)
         outcome = await judge_tool_call(self, call, served, carrying, admit=check.held)

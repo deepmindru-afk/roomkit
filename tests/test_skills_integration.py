@@ -551,15 +551,15 @@ class TestRunScriptHandler:
             ],
             streaming=streaming,
         )
-        # No script_executor — run_skill_script tool shouldn't be injected,
-        # but if AI calls it anyway, we handle gracefully
+        # No script_executor: run_skill_script is not declared, and a call to
+        # it is refused as any undeclared tool is (RMK-397, RFC §6.4).
         ch = AIChannel("ai1", provider=provider, skills=registry)
         await respond(ch, make_event(body="go", channel_id="sms1"), _binding(), _ctx())
 
         messages = provider.calls[1].messages
         tool_msg = [m for m in messages if m.role == "tool"]
         result_json = json.loads(tool_msg[0].content[0].result)
-        assert "not available" in result_json["error"]
+        assert result_json["error"] == "Tool 'run_skill_script' is not declared in this turn."
 
 
 class TestUserToolHandlerDelegation:

@@ -108,15 +108,39 @@ class RealtimeToolGateMixin:
         undeclared name and reach a generic dispatcher.
 
         Infrastructure tools (Tool Search, skills) are declared by the channel
-        rather than by the caller's catalogue, so they answer ``True`` without
-        appearing in it.
+        rather than by the caller's catalogue, so they answer for themselves
+        without appearing in it, when the session declares them: Tool
+        Search's only while it hides the session's catalogue (RFC §12.4).
         """
         if name in (self._channel_tool_names() if served is None else served):
-            return True
+            return self._channel_declares(name, session.id)
         tools = self._session_catalogue(session.id)
         if not tools:
             return True
         return any(isinstance(tool, dict) and tool.get("name") == name for tool in tools)
+
+    def _session_declared_tools(self, session_id: str) -> list[dict[str, Any]]:
+        """Every tool the session can call: its catalogue, then the channel's
+        own it declares (Tool Search's while active, the skills')."""
+        own: list[dict[str, Any]] = []
+        if self._tool_search_support is not None:
+            own += self._tool_search_support.search_tool_dicts()
+        if self._skill_support is not None:
+            own += self._skill_support.skill_tool_dicts()
+        declared = [t for t in own if self._channel_declares(t["name"], session_id)]
+        return self._session_catalogue(session_id) + declared
+
+    def _channel_declares(self, name: str, session_id: str) -> bool:
+        """Whether the session declares the channel's own tool *name*: Tool
+        Search's while it hides the session's catalogue, the skills' it
+        offers (``run_skill_script`` only with an executor)."""
+        search = self._tool_search_support
+        if search is not None and search.is_search_tool(name):
+            return search.active(session_id)
+        skills = self._skill_support
+        if skills is not None and skills.is_skill_tool(name):
+            return any(tool["name"] == name for tool in skills.skill_tool_dicts())
+        return True
 
     def _channel_tool_names(self) -> frozenset[str]:
         """The tools this channel serves itself: Tool Search's and the skills'."""

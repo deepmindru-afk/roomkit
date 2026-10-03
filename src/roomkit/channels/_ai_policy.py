@@ -176,7 +176,7 @@ class AIToolPolicyMixin(_AIChannelContract):
             return "always"
         if name in self._tool_search_pinned:
             return "pinned"
-        if name in self._orchestration_tool_names(loop_ctx.room_id) | loop_ctx.hook_pinned:
+        if name in self._never_held(loop_ctx):
             return "always"
         if name in loop_ctx.sticky_tools:
             return "sticky"

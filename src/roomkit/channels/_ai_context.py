@@ -506,7 +506,7 @@ class AIContextMixin(_AIChannelContract):
         """The system prompt with the skills' manifest and the bodies of the
         skills active in *activation_room*; the skill tools join *tools*
         (infra tools here, gated tools later)."""
-        if not self._skills or self._skills.skill_count == 0:
+        if not self._skills or not self._skills.has_entries:
             return system_prompt
         tools.extend(self._skill_tools())
         # The manifest block is skipped when the host renders its own skills

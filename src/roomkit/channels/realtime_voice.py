@@ -625,7 +625,7 @@ class RealtimeVoiceChannel(
         initial system_instruction. Others default to ``on_demand`` so
         the prompt stays short until a skill is activated.
         """
-        if not (skills and (skills.skill_count > 0 or skills.unavailable_skills)):
+        if not (skills and skills.has_entries):
             return None
         from roomkit.channels._realtime_skills import RealtimeSkillSupport
 
@@ -1756,6 +1756,7 @@ class RealtimeVoiceChannel(
             reconfigure_capable=provider.supports_mid_session_reconfigure,
             reachable=self._tool_reachable,
             never_deferred=self._session_never_deferred,
+            listed=self._session_catalogue,
             auto=tool_search is None and not fixed_skill_gates,
         )
 
