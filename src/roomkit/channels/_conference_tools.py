@@ -47,10 +47,12 @@ def declared_tools(
     if config.tools is None or not config.provider.supports_tools:
         return None
     tools = declared_once(config.tools, dict_tool_name, _NO_CHANNEL_TOOLS, collisions)
+    # A provider's native tool has no name for a policy to name: kept.
     return [
         t
         for t in tools
-        if policy_admits(config.tool_policy, str(t.get("name", "")), _NO_CHANNEL_TOOLS)
+        if not (name := dict_tool_name(t))
+        or policy_admits(config.tool_policy, name, _NO_CHANNEL_TOOLS)
     ]
 
 

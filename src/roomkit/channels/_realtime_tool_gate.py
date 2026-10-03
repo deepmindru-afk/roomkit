@@ -204,19 +204,14 @@ class RealtimeToolGateMixin:
         return lambda name: all(policy_admits(p, name, passes) for p in policies)
 
     def _policy_filter(self, session_id: str, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """The part of *tools* the session's policies admit.
-
-        Tool Search's ``call_tool`` transport stays declared: it is no tool of
-        its own, and the policy applies to the tool it names, at the gate.
-        """
+        """The part of *tools* the session's policies admit; a provider's
+        native tool, which has no name for a policy to name, is kept."""
         if not self._session_policies(session_id):
             return tools
-        search = self._tool_search_support
         return [
             t
             for t in tools
-            if (search is not None and search.is_search_tool(str(t.get("name", ""))))
-            or self._session_admits(session_id, str(t.get("name", "")))
+            if not (name := dict_tool_name(t)) or self._session_admits(session_id, name)
         ]
 
     async def _use_agent_policy(self, session: VoiceSession, policy: ToolPolicy | None) -> None:

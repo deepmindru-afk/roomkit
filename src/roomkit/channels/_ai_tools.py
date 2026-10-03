@@ -25,6 +25,7 @@ from roomkit.channels._skill_handlers import (
     handle_activate_skill,
     handle_read_reference,
     handle_run_script,
+    tools_hint,
 )
 from roomkit.channels._task_planner import TaskPlanner
 from roomkit.channels._tool_eviction import ToolEviction, kept_whole
@@ -933,24 +934,13 @@ class AIToolsMixin(_AIChannelContract):
         loop_ctx = self._get_loop_ctx()
         skill = self._skills.get_skill(skill_name) if skill_name else None
         if skill_name and skill is None:
-            # A known-but-unavailable skill already carries its reason in the
-            # error — a "this is not a skill" tools hint would contradict it.
-            if self._skills.get_unavailable_reason(skill_name) is None:
-                # Small models routinely confuse skills with TOOLS ("activate the
-                # Spotify skill" when SpotifySearch/... are tools). Turn the dead
-                # end into the right outcome: reveal the matching tools and say so.
-                wanted = skill_name.lower()
-                reachable = self._reachable_tools(loop_ctx.all_context_tools or ())
-                matching = sorted(t.name for t in reachable if wanted in t.name.lower())
-                if matching:
-                    loop_ctx.revealed_tools.update(matching)
-                    data = json.loads(result_str)
-                    data["tools_hint"] = (
-                        f"{skill_name!r} is not a skill, but these TOOLS match and are "
-                        f"now in your tool list — call one directly instead: "
-                        f"{', '.join(matching[:8])}."
-                    )
-                    result_str = json.dumps(data)
+            reachable = self._reachable_tools(loop_ctx.all_context_tools or ())
+            result_str, matching = tools_hint(
+                result_str, skill_name, self._skills, (t.name for t in reachable)
+            )
+            # Revealed as find_tools reveals, for the rest of the session.
+            loop_ctx.revealed_tools.update(matching)
+            self._tool_usage.record_revealed(loop_ctx.room_id, matching)
             return result_str
         # Recorded once the call's outcome is known: an ON_TOOL_CALL hook that
         # blocks the call, or a failure, must open no gate (_settle_activation).
@@ -1015,7 +1005,7 @@ class AIToolsMixin(_AIChannelContract):
                 "description": getattr(t, "description", "") or "",
                 "tags": getattr(t, "tags", []) or [],
             }
-            for t in self._reachable_tools(loop_ctx.all_context_tools or ())
+            for t in self._reachable_tools(loop_ctx.offered_tools())
         ]
 
     async def _handle_find_tools(self, arguments: dict[str, Any]) -> str:

@@ -235,6 +235,7 @@ class RealtimeToolsMixin:
     _session_catalogue: Any  # RealtimeToolGateMixin — cross-mixin
     _session_declared_tools: Any  # RealtimeToolGateMixin — cross-mixin
     _session_policy_check: Any  # RealtimeToolGateMixin — cross-mixin
+    _tool_reachable: Any  # RealtimeToolGateMixin — cross-mixin
 
     def _on_provider_tool_call(
         self,
@@ -653,13 +654,30 @@ class RealtimeToolsMixin:
             result, skill = await support.prepare_activation(call.arguments, session.id, tools)
         except ToolRefusedError as refusal:
             return ToolOutcome(OutcomeKind.REFUSED, refusal.message)
+        result, hinted = self._unknown_skill_hint(call, result, skill, tools)
         outcome, skill = await self._judge_activation(call, carrying, result, skill)
         # Provider updates (discovery, handoff, activation) are serialised on
         # this lock.
         async with lock:
             if session.state == VoiceSessionState.ENDED:
                 return ended_outcome(call)
-            return await self._deliver_activation(call, door, outcome, result, skill)
+            return await self._deliver_activation(call, door, outcome, result, skill, hinted)
+
+    def _unknown_skill_hint(
+        self, call: RealtimeToolCall, result: str, skill: Any, tools: list[dict[str, Any]]
+    ) -> tuple[str, list[str]]:
+        """An activation that found no skill, with the session's tools its
+        name matches hinted, and those tools, as on the text path."""
+        name = call.arguments.get("name")
+        if skill is not None or not isinstance(name, str):
+            return result, []
+        session_id = call.session.id
+        reachable = [
+            tool_name
+            for tool in tools
+            if (tool_name := dict_tool_name(tool)) and self._tool_reachable(tool_name, session_id)
+        ]
+        return self._skill_support.unknown_skill_hint(result, name, reachable)
 
     async def _judge_activation(
         self, call: RealtimeToolCall, carrying: RoomContext | None, result: str, skill: Any
@@ -693,8 +711,10 @@ class RealtimeToolsMixin:
         outcome: ToolOutcome,
         result: str,
         skill: Any,
+        hinted: list[str],
     ) -> ToolOutcome:
-        """Deliver the judged activation, then open its gates when it was served."""
+        """Deliver the judged activation, then open its gates when it was
+        served, or reveal the tools a name that is no skill matched."""
         # An activated skill's instructions go out whole (RFC §21.5); a
         # refusal, a block or a hook's replacement is bounded.
         if not (outcome.kind is OutcomeKind.SERVED and outcome.result == result):
@@ -703,9 +723,24 @@ class RealtimeToolsMixin:
         # The call ID belongs to the current connection. Deliver before
         # native reconfiguration can replace that connection.
         delivered = await deliver_once(call, door, outcome)
-        if delivered and skill is not None and outcome.kind is OutcomeKind.SERVED:
+        if not (delivered and outcome.kind is OutcomeKind.SERVED):
+            return outcome
+        if skill is not None:
             await self._open_skill_gates(call.session, skill)
+        elif hinted:
+            await self._reveal_hinted(call.session, hinted)
         return outcome
+
+    async def _reveal_hinted(self, session: VoiceSession, names: list[str]) -> None:
+        """Reveal the tools an activation's hint named, as ``find_tools``
+        reveals its matches (a failure is logged by :meth:`_reveal_tools`)."""
+        search = self._tool_search_support
+        if (
+            search is not None
+            and search.expose(session.id, names)
+            and self._provider.supports_mid_session_reconfigure
+        ):
+            await self._reveal_tools(session)
 
     async def _open_skill_gates(self, session: VoiceSession, skill: Any) -> None:
         """Give the session a delivered activation's rules, then commit it."""

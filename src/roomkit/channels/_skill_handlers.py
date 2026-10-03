@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
 from roomkit.skills.errors import SkillPathError
@@ -27,6 +28,32 @@ def missing_skill_error(skills: SkillRegistry, skill_name: str) -> str:
     if reason is not None:
         return f"Skill {skill_name!r} is unavailable in this context: {reason}"
     return f"Skill {skill_name!r} not found"
+
+
+def tools_hint(
+    result: str, skill_name: str, skills: SkillRegistry, reachable: Iterable[str]
+) -> tuple[str, list[str]]:
+    """*result* of an activation that found no skill *skill_name*, with a hint
+    naming the tools the turn may call that match it, and those tools, which
+    the caller reveals as ``find_tools`` reveals its matches.
+
+    Small models routinely confuse skills with tools ("activate the Spotify
+    skill" when ``spotify_play`` is a tool): the dead end becomes the right
+    outcome. A known skill that is unavailable gets no hint: its error
+    already says why, and a "this is not a skill" hint would contradict it.
+    """
+    wanted = skill_name.lower()
+    if not wanted or skills.get_unavailable_reason(skill_name) is not None:
+        return result, []
+    matching = sorted(name for name in reachable if wanted in name.lower())
+    if not matching:
+        return result, []
+    data = json.loads(result)
+    data["tools_hint"] = (
+        f"{skill_name!r} is not a skill, but these TOOLS match and are now in your "
+        f"tool list — call one directly instead: {', '.join(matching[:8])}."
+    )
+    return json.dumps(data), matching
 
 
 def activation_ack(skill: Skill, note: str, *, already_active: bool = False) -> str:

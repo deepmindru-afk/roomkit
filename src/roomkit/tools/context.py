@@ -210,6 +210,16 @@ class _ToolLoopContext:
     # (RFC §21.4): the gate refuses what it denies, so it is not callable.
     admits: Callable[[str], bool] | None = None
 
+    def offered_tools(self) -> list[Any]:
+        """Every tool the turn offers the model: its resolved toolset, then
+        what a round declared beyond it (the re-read of a stored result, the
+        planner's tool), from the round that first declared it (RFC §6.4,
+        §21.4), nothing withdrawn. ``AITool`` and ``DeclaredTool`` entries,
+        each with its name and description."""
+        base: list[Any] = list(self.all_context_tools or [])
+        known = {tool.name for tool in base} | self.withdrawn_tools
+        return base + [tool for name, tool in self.declared_tools.items() if name not in known]
+
     def withdraw(self, names: Iterable[str]) -> None:
         """Take *names* out of the rest of the turn (RFC §6.4).
 
@@ -433,7 +443,7 @@ def current_tool_allowed_names() -> set[str] | None:
         return None
     admits = ctx.admits or (lambda _name: True)
     return {
-        name for t in ctx.all_context_tools if (name := getattr(t, "name", None)) and admits(name)
+        name for t in ctx.offered_tools() if (name := getattr(t, "name", None)) and admits(name)
     }
 
 

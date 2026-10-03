@@ -542,6 +542,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A turn's toolset reads alike at its edges, on every door (RMK-430, RFC
+  §6.4, §21.1, §21.4, §24.4):
+  - A provider's native tool without a name (`{"google_search": {}}`) left a
+    realtime session's declaration once Tool Search hid the catalogue, and an
+    allow-list (`ToolPolicy(allow=["crm_*"])`) dropped it on a realtime
+    session and a conference. It stays declared.
+  - Tool Search's `call_tool` on a fixed-declaration provider is exempt like
+    `find_tools` and `list_tools`: it was declared under an allow-list but
+    missing from `current_tool_allowed_names()`.
+  - `read_stored_result`, declared from a turn's first round, is in
+    `current_tool_allowed_names()` and `list_tools` from then on, not only
+    once a result was stored; `plan_tasks` too.
+  - `ToolRoundEvent.tools` (`AFTER_TOOL_ROUND`) names what
+    `BEFORE_AI_GENERATION` is shown: it listed tools the policy denies and a
+    skill gates.
+  - `activate_skill` called with a tool's name ("spotify" for
+    `spotify_play`): the realtime door answered "Skill 'spotify' not found"
+    alone; it now adds the same `tools_hint` as the text door and reveals
+    those tools. On the text door the reveal now lasts for the next turns,
+    as a `find_tools` reveal does.
+
 - Closing or archiving a room stops its recordings once the room is found
   (RMK-405, RFC §12.11): a call scoped to another organization stopped the
   room's recordings, then raised `RoomNotFoundError`.

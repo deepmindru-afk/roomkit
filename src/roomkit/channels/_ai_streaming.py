@@ -516,7 +516,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
             calls=list(calls),
             results=list(results),
             answered=list(answered),
-            tools=[tool.name for tool in turn.loop_ctx.all_context_tools or []],
+            tools=self._hook_toolset(turn.loop_ctx),
         )
         await hook(event)
         if event.withdrawn:

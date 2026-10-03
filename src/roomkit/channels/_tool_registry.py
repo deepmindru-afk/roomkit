@@ -115,8 +115,9 @@ CHANNEL_TOOL_TRAITS: dict[str, ToolTraits] = {
     TOOL_RUN_SCRIPT: ToolTraits(deferrable=False, in_digest=False),
     TOOL_FIND_TOOLS: ToolTraits(exempt=True, deferrable=False, in_digest=False, pure=True),
     TOOL_LIST_TOOLS: ToolTraits(exempt=True, deferrable=False, in_digest=False, pure=True),
-    # Only carries a call to the tool it names, whom the policy governs.
-    TOOL_CALL_TOOL: ToolTraits(deferrable=False, in_digest=False),
+    # Only carries a call to the tool it names: the policy judges that tool,
+    # at the gate, once the call is unwrapped.
+    TOOL_CALL_TOOL: ToolTraits(exempt=True, deferrable=False, in_digest=False),
     REREAD_TOOL: ToolTraits(exempt=True, deferrable=False, in_digest=False),
     "plan_tasks": ToolTraits(deferrable=False),
 }

@@ -237,6 +237,13 @@ class AIToolPolicyMixin(_AIChannelContract):
         exempt = self._exempt_tool_names
         return [tool for tool in tools if self._is_reachable(tool.name, policy, gated, exempt)]
 
+    def _hook_toolset(self, loop_ctx: _ToolLoopContext) -> list[str]:
+        """The turn's toolset as a tool hook reads it: what the policy and
+        skill gating let it reach, as ``BEFORE_AI_GENERATION`` sees it, Tool
+        Search's whole catalogue included; a withdrawn tool has left it
+        (RFC §6.4)."""
+        return [tool.name for tool in self._reachable_tools(loop_ctx.all_context_tools or ())]
+
     @staticmethod
     def _is_reachable(
         name: str, policy: ToolPolicy | None, gated: set[str], exempt: Container[str]

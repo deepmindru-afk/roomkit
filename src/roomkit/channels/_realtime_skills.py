@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Callable, Container
+from collections.abc import Callable, Container, Iterable
 from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._skill_constants import (
@@ -30,6 +30,7 @@ from roomkit.channels._skill_handlers import (
     handle_read_reference,
     handle_run_script,
     missing_skill_error,
+    tools_hint,
 )
 from roomkit.core.exceptions import ToolRefusedError
 from roomkit.skills.registry import SkillRegistry
@@ -314,6 +315,13 @@ class RealtimeSkillSupport:
     @staticmethod
     def missing_tools_error(missing: list[str]) -> str:
         return json.dumps({"error": f"Required tools not available: {', '.join(missing)}"})
+
+    def unknown_skill_hint(
+        self, result: str, skill_name: str, reachable: Iterable[str]
+    ) -> tuple[str, list[str]]:
+        """*result* of an activation that found no skill *skill_name*, with the
+        tools among *reachable* its name matches, hinted, and those tools."""
+        return tools_hint(result, skill_name, self._skills, reachable)
 
     async def prepare_activation(
         self, arguments: dict[str, Any], session_id: str, tools: list[dict[str, Any]]

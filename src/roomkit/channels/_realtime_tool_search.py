@@ -232,10 +232,21 @@ class RealtimeToolSearchSupport:
                 seen.add(n)
         for tool in base_tools:
             n = tool.get("name", "")
-            if n in keep and n not in seen:
+            if not n:
+                # A provider's native tool: no name to search or hide it by.
+                result.append(tool)
+            elif n in keep and n not in seen:
                 result.append(tool)
                 seen.add(n)
         return result
+
+    def expose(self, session_id: str, names: Iterable[str]) -> bool:
+        """Reveal *names* as ``find_tools`` reveals its matches, the exposure
+        window swapped; whether the session's declaration changes for it."""
+        if self.uses_call_tool or not self.active(session_id):
+            return False
+        self._exposed[session_id] = set(names)
+        return True
 
     # -- Tool dispatch --
 

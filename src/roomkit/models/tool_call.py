@@ -486,10 +486,11 @@ class ToolRoundEvent:
     """The results of the round's calls the provider served itself."""
 
     tools: list[str] = field(default_factory=list)
-    """Names of the turn's toolset the next round is built from, Tool Search's
-    whole catalogue included, before the tool policy and skill gating filter a
-    round. :meth:`withdraw` takes any name, listed here or not (an external
-    handler's tool)."""
+    """Names of the turn's toolset the next round is built from, as
+    ``BEFORE_AI_GENERATION`` sees it: what the tool policy and skill gating
+    let the turn reach, Tool Search's whole catalogue included, less what was
+    withdrawn. :meth:`withdraw` takes any name, listed here or not (an
+    external handler's tool)."""
 
     withdrawn: set[str] = field(default_factory=set)
     """Names withdrawn for the rest of the turn (see :meth:`withdraw`)."""
