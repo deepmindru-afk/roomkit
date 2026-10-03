@@ -1,5 +1,5 @@
 """AIChannel mixin for what every turn's generation shares: the
-BEFORE_AI_GENERATION hook, the telemetry provider and the provider-error log."""
+BEFORE_AI_GENERATION hook and the telemetry provider."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ logger = logging.getLogger("roomkit.channels.ai")
 
 
 class AIGenerationMixin(_AIChannelContract):
-    """The generation hook, telemetry and provider-error log every turn uses.
+    """The generation hook and telemetry every turn uses.
 
     What it calls on the other mixins is declared once, in
     :class:`~roomkit.channels._ai_contract._AIChannelContract`, which it

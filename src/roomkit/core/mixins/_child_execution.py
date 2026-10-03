@@ -206,7 +206,8 @@ async def _deliver_answer(kit: RoomKit, child_room_id: str, result: BroadcastRes
     cascade = DeliveryCascade(child_room_id, reentry_budget=kit._max_chain_depth * 10)
     cascade.add_streams(result.streaming_responses)
     await kit._commit_responses(child_room_id, result.reentry_events, None, cascade)
-    stream_error, _ = await kit._finish_cascade(cascade, child_room_id)
+    # The failure is raised to the delegation, which logs it.
+    stream_error, _ = await kit._finish_cascade(cascade, child_room_id, caller_logs=True)
     failure = next(
         (out.error for out in result.outputs.values() if out.error is not None), stream_error
     )

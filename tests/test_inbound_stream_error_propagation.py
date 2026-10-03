@@ -6,9 +6,10 @@ call) has no streaming target to render an error card, so before this contract
 the failure fired ON_ERROR and then vanished — ``process_inbound`` returned a
 result with no signal, and the caller saw an empty response. The failure is
 now also returned on ``InboundResult.error`` (with its cause chain intact) so
-the caller can classify + react. ``ProviderError`` — an expected transient — is
-logged as one WARNING line without a traceback; any other exception keeps its
-full traceback.
+the caller can classify + react. A ``ProviderError`` is logged once, without a
+traceback, by the stream's consumer: at its own level (WARNING, ERROR for a 404
+or a 5xx) unless the caller receives the error, then at DEBUG. Any other
+exception keeps its full traceback.
 """
 
 from __future__ import annotations
@@ -27,7 +28,14 @@ from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage, InboundResult
 from roomkit.models.enums import ChannelCategory, HookExecution, HookTrigger
 from roomkit.models.event import RoomEvent, TextContent
-from roomkit.providers.ai.base import AIContext, AIResponse, ProviderError, StreamEvent
+from roomkit.providers.ai.base import (
+    AIContext,
+    AIResponse,
+    AITool,
+    AIToolCall,
+    ProviderError,
+    StreamEvent,
+)
 from roomkit.providers.ai.mock import MockAIProvider
 from tests.test_framework import SimpleChannel
 
@@ -55,7 +63,7 @@ class _StreamRaisingProvider(MockAIProvider):
 
 async def _run_headless_turn(ai: AIChannel) -> tuple[InboundResult, list[RoomEvent]]:
     """One inbound turn on a room whose only transport is a plain (non-streaming)
-    channel — the no-target branch, as PostProcessKit uses it. Returns the
+    channel — the no-target branch, as a one-shot AI call uses it. Returns the
     InboundResult and any ON_ERROR events."""
     kit = RoomKit()
     sms = SimpleChannel("sms1")
@@ -258,17 +266,118 @@ async def test_a_turn_failing_before_any_round_is_no_roomkit_warning_when_headle
     assert _roomkit_records(caplog, logging.WARNING) == []
 
 
+@pytest.mark.parametrize("streams", [True, False])
 @pytest.mark.parametrize("status", [404, 503])
 async def test_a_missing_model_or_a_server_fault_is_an_error_for_a_streaming_target(
-    caplog, status: int
+    caplog, status: int, streams: bool
 ) -> None:
     exc = ProviderError("model gone", provider="mock", status_code=status)
     with caplog.at_level(logging.DEBUG):
-        await _run_targeted_turn(AIChannel("ai1", provider=_raising_provider(False, exc)))
+        await _run_targeted_turn(AIChannel("ai1", provider=_raising_provider(streams, exc)))
 
     records = _roomkit_records(caplog, logging.WARNING)
     assert [r.levelno for r in records] == [logging.ERROR]
     assert records[0].exc_info is None
+    assert "provider=mock" in records[0].getMessage()
+    assert f"status={status}" in records[0].getMessage()
+
+
+@pytest.mark.parametrize("streams", [True, False])
+async def test_a_send_event_caller_that_never_gets_the_failure_sees_it_logged(
+    caplog, streams: bool
+) -> None:
+    """``send_event`` hands back the stored event, never the turn's failure: with
+    no streaming target the framework's line is the only record, at the
+    failure's own level, not the DEBUG kept for a caller that receives it."""
+    exc = ProviderError("model gone", provider="mock", status_code=404)
+    kit = RoomKit()
+    kit.register_channel(SimpleChannel("sms1"))
+    kit.register_channel(AIChannel("ai1", provider=_raising_provider(streams, exc)))
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "sms1")
+    await kit.attach_channel("r1", "ai1", category=ChannelCategory.INTELLIGENCE)
+    with caplog.at_level(logging.DEBUG):
+        await kit.send_event("r1", "sms1", TextContent(body="go"))
+    await kit.close()
+
+    records = _roomkit_records(caplog, logging.WARNING)
+    assert [r.levelno for r in records] == [logging.ERROR]
+    assert records[0].exc_info is None
+
+
+class _FailsAfterARound(MockAIProvider):
+    """A model that calls a tool, then fails on the next round."""
+
+    def __init__(self, exc: Exception, *, streams: bool) -> None:
+        super().__init__(
+            ai_responses=[
+                AIResponse(content="", tool_calls=[AIToolCall(id="c1", name="look", arguments={})])
+            ],
+            streaming=streams,
+        )
+        self._exc = exc
+
+    async def generate(self, context: AIContext) -> AIResponse:
+        if self.calls:
+            raise self._exc
+        return await super().generate(context)
+
+
+def _agent_with_a_tool(provider: MockAIProvider) -> AIChannel:
+    async def look(_name: str, _arguments: dict[str, object]) -> str:
+        return "seen"
+
+    return AIChannel(
+        "ai1",
+        provider=provider,
+        tools=[AITool(name="look", description="Look.", parameters={"type": "object"})],
+        tool_handler=look,
+    )
+
+
+@pytest.mark.parametrize("streams", [True, False])
+async def test_a_turn_failing_after_a_round_is_one_line_too(caplog, streams: bool) -> None:
+    """Once a round ran, the turn ends ``error`` and its consumer logs it: the
+    loop adds no line (and no traceback) of its own."""
+    exc = ProviderError("connection reset", provider="mock")
+    agent = _agent_with_a_tool(_FailsAfterARound(exc, streams=streams))
+    with caplog.at_level(logging.DEBUG):
+        result = await _run_targeted_turn(agent)
+
+    assert result.error is exc
+    warnings = _roomkit_records(caplog, logging.WARNING)
+    assert [r.levelno for r in warnings] == [logging.WARNING]
+    assert warnings[0].exc_info is None
+
+
+@pytest.mark.parametrize("streams", [True, False])
+async def test_a_headless_turn_failing_after_a_round_is_no_roomkit_warning(
+    caplog, streams: bool
+) -> None:
+    exc = ProviderError("connection reset", provider="mock")
+    agent = _agent_with_a_tool(_FailsAfterARound(exc, streams=streams))
+    with caplog.at_level(logging.DEBUG):
+        result, _errors = await _run_headless_turn(agent)
+
+    assert result.error is exc
+    assert _roomkit_records(caplog, logging.WARNING) == []
+
+
+async def test_a_delegated_turn_failure_is_one_line_at_its_level(caplog) -> None:
+    """The delegation receives the child's failure and logs it, once, by its
+    status: the child's own stream line stays at DEBUG."""
+    exc = ProviderError("upstream down", provider="mock", status_code=503)
+    kit = RoomKit()
+    kit.register_channel(AIChannel("w1", provider=_GenerateRaisingProvider(exc)))
+    await kit.create_room(room_id="r1")
+    with caplog.at_level(logging.DEBUG):
+        await kit.delegate(room_id="r1", agent_id="w1", task="go", wait=True)
+    await kit.close()
+
+    records = _roomkit_records(caplog, logging.WARNING)
+    assert [r.levelno for r in records] == [logging.ERROR]
+    assert records[0].exc_info is None
+    assert "status=503" in records[0].getMessage()
 
 
 # ── regenerate_response surfaces the same error ───────────────────────────

@@ -7,6 +7,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
+from roomkit.core._failure_log import log_failure
 from roomkit.core.task_utils import cancel_and_wait, log_task_exception
 from roomkit.models.enums import TaskStatus
 from roomkit.tasks.base import OnCompleteCallback, TaskRunner
@@ -95,7 +96,7 @@ class InMemoryTaskRunner(TaskRunner):
 
                 agent_response = await run_agent_in_child_room(kit, task.child_room_id, task.task)
         except Exception as exc:
-            logger.exception("Task %s failed: %s", task.id, exc)
+            log_failure(logger, exc, f"Task {task.id}")
             error = str(exc)
 
         elapsed = (time.monotonic() - start) * 1000

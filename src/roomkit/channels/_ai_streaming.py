@@ -477,7 +477,8 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
         The rounds already reached the room, so the turn reaches its end on
         the error, its ON_AI_RESPONSE fired, and the error then reaches the
         consumer (RFC §6.4). A turn that fails before any round is the error
-        itself: the stream's consumer logs it, once.
+        itself. Either way the stream's consumer logs it, once: the loop
+        raises and logs nothing.
         """
         try:
             async with aclosing(
@@ -488,7 +489,6 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
         except ProviderError as exc:
             if not interrupts_turn(exc, after_round=turn.saw_tool_call):
                 raise
-            logger.exception("Streaming tool loop interrupted by a provider error after a round")
             turn.error = exc
             yield turn.end("error", index)
             raise

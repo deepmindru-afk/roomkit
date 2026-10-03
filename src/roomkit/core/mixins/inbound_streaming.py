@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from uuid import uuid4
 
+from roomkit.core._failure_log import log_failure
 from roomkit.core.event_router import unanswered
 from roomkit.core.lanes import DeliveryCascade
 from roomkit.core.mixins._response_reader import ResponseReader
@@ -23,7 +24,6 @@ from roomkit.models.enums import (
 )
 from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.models.response_metadata import ResponseMetadata
-from roomkit.providers.ai.base import ProviderError
 from roomkit.providers.utils import _aclose_stream
 
 if TYPE_CHECKING:
@@ -35,18 +35,6 @@ if TYPE_CHECKING:
     from roomkit.store.base import ConversationStore
 
 logger = logging.getLogger("roomkit.framework")
-
-
-def _provider_error_level(exc: ProviderError) -> int:
-    """ERROR for a missing model or a server fault, WARNING for a transient.
-
-    A 404 (the model does not exist) or a 5xx needs someone to act; no status
-    (connect refused, timeout), a 429 or another 4xx is expected now and then.
-    """
-    status = exc.status_code
-    if status == 404 or (status is not None and status >= 500):
-        return logging.ERROR
-    return logging.WARNING
 
 
 @dataclass
@@ -124,8 +112,13 @@ class InboundStreamingMixin(HelpersMixin):
         *,
         cascade: DeliveryCascade,
         response_events: list[RoomEvent] | None = None,
+        caller_logs: bool = False,
     ) -> _StreamingResult | None:
-        """Consume a streaming response, pipe to streaming channels, store segments."""
+        """Consume a streaming response, pipe to streaming channels, store segments.
+
+        ``caller_logs``: the caller receives this stream's failure and logs it,
+        so a stream with no streaming target logs it at DEBUG only.
+        """
         response_vis = sr.trigger_event.response_visibility
         streaming_targets = self._find_streaming_targets(router, sr, context)
 
@@ -247,8 +240,12 @@ class InboundStreamingMixin(HelpersMixin):
                 raise
             except Exception as exc:
                 stream_error = exc
-                self._log_stream_failure(
-                    exc, f"streaming delivery to {binding.channel_id}", room_id
+                log_failure(
+                    logger,
+                    exc,
+                    f"streaming delivery of {sr.source_channel_id} to {binding.channel_id} "
+                    f"for room {room_id}",
+                    extra={"room_id": room_id, "channel_id": sr.source_channel_id},
                 )
                 # Persist any text accumulated before the error. The stream is
                 # gone, so this text never reached its channels — it goes out
@@ -269,8 +266,13 @@ class InboundStreamingMixin(HelpersMixin):
                 await writer.drain(reader)
             except Exception as exc:
                 stream_error = exc
-                self._log_stream_failure(
-                    exc, "stream consumption (no targets)", room_id, headless=True
+                log_failure(
+                    logger,
+                    exc,
+                    f"stream consumption (no targets) of {sr.source_channel_id} "
+                    f"for room {room_id}",
+                    caller_logs=caller_logs,
+                    extra={"room_id": room_id, "channel_id": sr.source_channel_id},
                 )
                 await self._fire_stream_error_hook(exc, room_id, context, sr, correlation_id)
 
@@ -332,29 +334,6 @@ class InboundStreamingMixin(HelpersMixin):
             parent_event_id=sr.trigger_event.parent_event_id,
         )
 
-    @staticmethod
-    def _log_stream_failure(
-        exc: Exception, what: str, room_id: str, *, headless: bool = False
-    ) -> None:
-        """Log a streaming-response failure once, at the level its cause calls for.
-
-        This is the one line a failed turn gets: the AI channel raises its
-        error and leaves the log to the stream's consumer. A ``ProviderError``
-        (backend unreachable, 5xx, timeout, context overflow) is not a code
-        defect: no traceback, and the error is also returned to the caller and
-        delivered to ``ON_ERROR`` hooks. When there is no streaming target
-        (``headless``: a one-shot programmatic caller that owns its own
-        logging), a framework WARNING would just duplicate the caller's line, so
-        it drops to DEBUG; with a streaming target the framework line is the
-        operational record (:func:`_provider_error_level`). Any other exception
-        is unexpected and keeps its full traceback.
-        """
-        if isinstance(exc, ProviderError):
-            level = logging.DEBUG if headless else _provider_error_level(exc)
-            logger.log(level, "%s failed for room %s: %s", what, room_id, exc)
-        else:
-            logger.exception("%s failed for room %s", what, room_id)
-
     def _find_streaming_targets(
         self,
         router: Any,
@@ -398,6 +377,7 @@ class InboundStreamingMixin(HelpersMixin):
         room_id: str,
         *,
         response_events: list[RoomEvent] | None = None,
+        caller_logs: bool = False,
     ) -> tuple[Exception | None, ResponseMetadata]:
         """Read every stream of *cascade*, the ones added while reading included.
 
@@ -443,7 +423,14 @@ class InboundStreamingMixin(HelpersMixin):
                     continue
                 context = await self._build_context(room_id)
                 sr_result = await self._handle_streaming_response(
-                    router, sr, room_id, context, cascade=cascade, response_events=response_events
+                    router,
+                    sr,
+                    room_id,
+                    context,
+                    cascade=cascade,
+                    response_events=response_events,
+                    # A chained stream's failure is not the caller's (see above).
+                    caller_logs=caller_logs and not sr.chained,
                 )
                 if sr.chained:
                     continue

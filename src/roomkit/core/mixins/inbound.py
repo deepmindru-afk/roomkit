@@ -462,7 +462,7 @@ class InboundMixin(HelpersMixin):
         # room's lock. A stream failure is surfaced on the result so a
         # headless caller can react (interactive callers ignore it — the
         # ON_ERROR hooks already fired an error card).
-        stream_error, record = await self._finish_cascade(cascade, room_id)
+        stream_error, record = await self._finish_cascade(cascade, room_id, caller_logs=True)
         # Step 18 reports the delivery set the caller waited for, read after
         # the streams: what the other agents answered to a streamed segment
         # re-entered while it was read.

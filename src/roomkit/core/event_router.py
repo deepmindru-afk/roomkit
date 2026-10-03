@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from roomkit.channels.base import Channel
+from roomkit.core._failure_log import log_failure
 from roomkit.core.circuit_breaker import CircuitBreaker
 from roomkit.core.lanes import DeliveryPlan
 from roomkit.core.rate_limiter import TokenBucketRateLimiter
@@ -42,25 +43,9 @@ from roomkit.models.event import (
     is_tool_call_record,
 )
 from roomkit.models.task import Observation, Task
-from roomkit.providers.ai.base import ProviderError
 from roomkit.providers.utils import _aclose_stream
 
 logger = logging.getLogger("roomkit.event_router")
-
-
-def _log_target_failure(what: str, channel_id: str, exc: Exception, extra: dict[str, Any]) -> None:
-    """Log a broadcast-target failure at the right verbosity.
-
-    A ``ProviderError`` (backend unreachable, 5xx, timeout, context overflow) is
-    an expected transient — one WARNING line without a traceback, matching the
-    streaming path's ``_log_stream_failure``. The exception is captured on the
-    ``_TargetResult`` regardless, so it still reaches the caller. Anything else
-    is unexpected and keeps its full traceback.
-    """
-    if isinstance(exc, ProviderError):
-        logger.warning("%s %s failed: %s", what, channel_id, exc, extra=extra)
-    else:
-        logger.exception("%s %s failed", what, channel_id, extra=extra)
 
 
 def _solicits(
@@ -513,11 +498,11 @@ class EventRouter:
                             breaker.record_failure()
                             tr.error = str(exc)
                             tr.error_exc = exc
-                            _log_target_failure(
-                                "Delivery to",
-                                binding.channel_id,
+                            log_failure(
+                                logger,
                                 exc,
-                                {
+                                f"Delivery to {binding.channel_id}",
+                                extra={
                                     "room_id": event.room_id,
                                     "channel_id": binding.channel_id,
                                     "event_id": event.id,
@@ -554,11 +539,11 @@ class EventRouter:
             except Exception as exc:
                 tr.error = str(exc)
                 tr.error_exc = exc
-                _log_target_failure(
-                    "Processing target",
-                    binding.channel_id,
+                log_failure(
+                    logger,
                     exc,
-                    {
+                    f"Processing target {binding.channel_id}",
+                    extra={
                         "room_id": event.room_id,
                         "channel_id": binding.channel_id,
                         "event_id": event.id,

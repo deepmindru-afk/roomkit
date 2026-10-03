@@ -343,14 +343,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   60 s, since the poem needed 42 s and was cut mid-verse at 30.0 s, and a
   reply that reaches it logs a warning instead of ending silently.
 
-- A provider error that fails a turn before any round is logged once again
-  (RMK-403). Since the single tool loop (RMK-308) the AI channel logged it and
-  the stream's consumer logged it too: two WARNING lines for one incident with
-  a streaming target, and a WARNING a headless caller (`process_inbound` with
-  no streaming target, which gets the error on `InboundResult.error` and logs
-  it itself) did not ask for. The consumer's line is now the only one:
-  WARNING with a streaming target, ERROR for a missing model (404) or a server
-  fault (5xx), DEBUG for a headless caller.
+- A failed turn, delivery or delegated task is logged once, at the level its
+  cause calls for (RMK-403, RFC §15.2). Since the single tool loop (RMK-308)
+  the AI channel logged a provider error and the stream's consumer logged it
+  too: two lines for one incident with a streaming target (a traceback once a
+  round had run), and a WARNING for a headless `process_inbound` caller, which
+  gets the error on `InboundResult.error`. The channel now raises and logs
+  nothing; the component that catches the failure writes the one line, through
+  one rule shared by the stream consumer, the broadcast, the delegation and the
+  task runner: a `ProviderError` without a traceback, naming the provider and
+  the status, `ERROR` for a missing model (404) or a server fault (5xx),
+  `WARNING` otherwise, `DEBUG` when the caller receives the failure
+  (`process_inbound`, `regenerate_response`, a delegation's child turn) and the
+  turn had no streaming target. `send_event`, which returns only the stored
+  event, and a stream read in the background keep the failure's own level. A
+  delegated task's provider error lost its traceback, and a broadcast target's
+  404 or 5xx is now `ERROR` where it was `WARNING`.
 
 - Every outcome of a tool call reaches `ON_TOOL_CALL` as the model read it,
   on every door (RMK-395, RFC §9.3):

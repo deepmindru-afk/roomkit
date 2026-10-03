@@ -325,7 +325,9 @@ class RegenerateMixin(HelpersMixin):
         for output in broadcast_result.outputs.values():
             if output.response_stream is None:
                 record.update(output.response_metadata)
-        stream_error, stream_record = await self._finish_cascade(cascade, room_id)
+        stream_error, stream_record = await self._finish_cascade(
+            cascade, room_id, caller_logs=True
+        )
         record.update(stream_record)
 
         result = InboundResult(

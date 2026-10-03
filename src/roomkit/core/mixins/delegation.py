@@ -7,6 +7,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from roomkit.core._failure_log import log_failure
 from roomkit.core.exceptions import ChannelNotRegisteredError
 
 # _persist_child_stream and _run_with_structured_result are re-exported (self-
@@ -410,7 +411,7 @@ class DelegationMixin(HelpersMixin):
             handle._set_result(cancelled)
             raise
         except Exception as exc:
-            _tasks_logger.exception("Inline task %s failed: %s", handle.id, exc)
+            log_failure(_tasks_logger, exc, f"Inline task {handle.id}")
             error = str(exc)
 
         elapsed = (time.monotonic() - start) * 1000

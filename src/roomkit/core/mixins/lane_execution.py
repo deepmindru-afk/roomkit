@@ -544,7 +544,7 @@ class LaneExecutionMixin(HelpersMixin):
         return task
 
     async def _finish_cascade(
-        self, cascade: DeliveryCascade, room_id: str
+        self, cascade: DeliveryCascade, room_id: str, *, caller_logs: bool = False
     ) -> tuple[Exception | None, ResponseMetadata]:
         """Wait for a caller's delivery set, then read every stream it started.
 
@@ -555,6 +555,12 @@ class LaneExecutionMixin(HelpersMixin):
         ``cascade.response_events``, beside the answers that re-enter while
         they are read. The reading runs as the cascade's owned work, so a
         cancelled caller does not leave it half-done.
+
+        ``caller_logs`` says the caller receives a stream's failure (on
+        ``InboundResult.error``, or raised) and logs it: the framework's own
+        line for a stream with no streaming target then drops to DEBUG. A
+        caller that does not wait never receives it, so a background read logs
+        at the failure's own level.
         """
         completed = await cascade.wait()
         if cascade.cancelled is not None:
@@ -564,7 +570,10 @@ class LaneExecutionMixin(HelpersMixin):
         elif cascade.streams and cascade.cancelled is None:
             return await cascade.run(
                 self._process_streaming_responses(
-                    cascade, room_id, response_events=cascade.response_events
+                    cascade,
+                    room_id,
+                    response_events=cascade.response_events,
+                    caller_logs=caller_logs,
                 )
             )
         return None, ResponseMetadata()
