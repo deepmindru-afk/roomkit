@@ -21,9 +21,11 @@ from functools import partial
 from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 from uuid import uuid4
 
+from roomkit.channels._ai_streaming import _shielded
 from roomkit.channels._realtime_tool_calls import RealtimeToolCall
 from roomkit.channels._realtime_tool_executor import (
     ToolCallHost,
+    report_cancelled_call,
     report_failed_call,
     run_tool_call,
 )
@@ -125,6 +127,7 @@ class RealtimeDelegationMixin:
     _tool_reachable: Any  # see RealtimeToolsMixin
     _open_tool_call: Any  # see RealtimeToolsMixin
     _close_tool_call: Any  # see RealtimeToolsMixin
+    _tool_calls: Any  # see RealtimeToolsMixin
     _tool_call_span: Any  # see RealtimeToolsMixin
 
     # -----------------------------------------------------------------
@@ -200,7 +203,7 @@ class RealtimeDelegationMixin:
         self._begin_delegation(session.id, delegation_id)
         task = self._track_task(
             loop,
-            self._serve_delegation(session, delegation_id),
+            self._serve_delegation_under_session(session, delegation_id),
             name=f"rt_delegation:{session.id}:{delegation_id}",
         )
         task.add_done_callback(lambda _: self._finish_delegation(session.id, delegation_id))
@@ -263,6 +266,18 @@ class RealtimeDelegationMixin:
             session.id,
         )
         await self._fallback(session, delegation_id, FALLBACK_NO_BACKEND)
+
+    async def _serve_delegation_under_session(
+        self, session: VoiceSession, delegation_id: str
+    ) -> None:
+        """Serve a delegation under its session's span: the backend's own turn
+        is traced as part of the session."""
+        _, token = self._rt_span_ctx(session.id)
+        try:
+            await self._serve_delegation(session, delegation_id)
+        finally:
+            if token is not None:
+                reset_span(token)
 
     async def _serve_delegation(self, session: VoiceSession, delegation_id: str) -> None:
         backend = self._reasoning_backend
@@ -397,7 +412,11 @@ class RealtimeDelegationMixin:
             ) as span:
                 # The channel's RealtimeToolsMixin is the host of every door.
                 host = cast("ToolCallHost", self)
-                outcome = await run_tool_call(host, call, _BackendDoor())
+                try:
+                    outcome = await run_tool_call(host, call, _BackendDoor())
+                except asyncio.CancelledError:
+                    await self._report_cut_backend_call(call)
+                    raise
                 span.close(outcome)
         finally:
             self._close_tool_call(call)
@@ -409,6 +428,16 @@ class RealtimeDelegationMixin:
             session.id,
         )
         return ToolCallResult(result_text(outcome.result), is_error=outcome.failed)
+
+    async def _report_cut_backend_call(self, call: RealtimeToolCall) -> None:
+        """Report a backend call the end of its delegation cut, once, as
+        cancelled (RFC §9.3). A call the session's end took off the books is
+        reported there, with its own reason."""
+        if self._tool_calls.get(call.session.id, call.call_id) is not call:
+            return
+        await _shielded(
+            report_cancelled_call(cast("ToolCallHost", self), call, "The delegation ended")
+        )
 
     async def _report_backend_refusal(
         self,

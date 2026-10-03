@@ -15,6 +15,7 @@ own gate; :class:`AIProviderReasoningBackend` builds that agent from an
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from abc import ABC, abstractmethod
@@ -23,7 +24,6 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
-from roomkit.channels._tool_eviction import REREAD_TOOL
 from roomkit.channels.ai import AIChannel
 from roomkit.core.exceptions import RoomKitError, ToolRefusedError
 from roomkit.models.channel import ChannelBinding
@@ -200,24 +200,26 @@ _DELEGATION: ContextVar[ReasoningRequest | None] = ContextVar("_DELEGATION", def
 class AgentReasoningBackend(ReasoningBackend):
     """A backend that is an agent like any other, driven by the voice (RFC §12.4.1).
 
-    Each delegation runs on the agent's tool loop, the AI channel's, with
-    everything that loop does: its round cap and timeout, its retry of an
-    empty answer and of a call the provider could not parse, its refusal of a
-    call whose arguments do not read, its span and its usage (RFC §6.4). The
-    tools it offers are the voice session's catalogue, each call served
-    through the voice channel's gate, which reports it; the agent's own tools,
-    skills or sandbox would bypass that gate, so an agent carrying any is
-    refused. The agent is the backend's: its tool handler and its refusal
-    reports are taken over, so it serves no room besides.
+    Each delegation runs on the agent's tool loop, the AI channel's, with the
+    agent's settings and everything that loop does: its round cap, deadline
+    and budget, its retry of an empty answer and of a call the provider could
+    not parse, its refusal of a call whose arguments do not read, its span and
+    its usage (RFC §6.4). The tools it offers are the voice session's
+    catalogue, each call served through the voice channel's gate, which
+    reports it; the agent's own tools, skills or sandbox would bypass that
+    gate, so an agent carrying any is refused. The agent is the backend's: its
+    tool handler and its reports are taken over, so an agent registered with a
+    kit, whose hooks would judge each call a second time, is refused too.
 
     Each request becomes one user message carrying the transcript. Text the
     model writes before a tool round is yielded as progress, silent by default
     and spoken with ``spoken_progress=True``; its final answer is yielded
-    spoken. A turn cut short (the round cap, the deadline, the budget) has no
-    answer, and its narration is not passed off as one: the run raises
-    :class:`ReasoningCutShortError`, as a provider error raises its own, and
-    the channel's spoken fallback answers. The backend keeps its own conversation per voice
-    session, so a later delegation sees what it worked out for an earlier one.
+    spoken. A turn that did not complete (its round cap, deadline or budget
+    cut it) has no answer, and its narration is not passed off as one: the
+    run raises :class:`ReasoningCutShortError`, as a provider error raises its
+    own, and the channel's spoken fallback answers. The backend keeps its own
+    conversation per voice session, and serves a session's delegations one at
+    a time, so each sees what the one before it worked out.
 
     Example:
         backend = AgentReasoningBackend(
@@ -231,9 +233,12 @@ class AgentReasoningBackend(ReasoningBackend):
 
     def __init__(self, agent: AIChannel, *, spoken_progress: bool = False) -> None:
         _refuse_own_tools(agent)
+        if _registered(agent):
+            raise ValueError(_REGISTERED.format(agent.channel_id))
         self._agent = agent
         self._spoken_progress = spoken_progress
         self._histories: dict[str, list[AIMessage]] = {}
+        self._sessions: dict[str, asyncio.Lock] = {}
         # The session's calls go to the voice channel's gate; what the loop
         # refuses before them is reported there too.
         agent.tool_handler = self._serve_through_gate
@@ -250,12 +255,18 @@ class AgentReasoningBackend(ReasoningBackend):
         return self._agent.provider
 
     async def run(self, request: ReasoningRequest) -> AsyncIterator[ReasoningOutput]:
-        token = _DELEGATION.set(request)
-        try:
-            async for output in self._answer(request):
-                yield output
-        finally:
-            _DELEGATION.reset(token)
+        if self._agent._tool_observer_hook != self._report_loop_refusal:
+            raise ValueError(_REGISTERED.format(self._agent.channel_id))
+        async with self._sessions.setdefault(request.session.id, asyncio.Lock()):
+            # Restored by value: a generator its consumer left is finalised
+            # in another context, where a token would not reset.
+            enclosing = _DELEGATION.get()
+            _DELEGATION.set(request)
+            try:
+                async for output in self._answer(request):
+                    yield output
+            finally:
+                _DELEGATION.set(enclosing)
 
     async def _answer(self, request: ReasoningRequest) -> AsyncIterator[ReasoningOutput]:
         """Run the delegation on the agent's loop: progress, then the answer."""
@@ -289,9 +300,9 @@ class AgentReasoningBackend(ReasoningBackend):
             closing = AIMessage(role="assistant", content="".join(text).strip() or "(no answer)")
             self._histories[session_id] = [*context.messages, closing]
         if reason != "completed":
-            # A turn cut short (its round cap, its deadline, its budget) has
-            # no answer, and its narration is none: the request failed, which
-            # the channel answers aloud (RFC §12.4.1).
+            # A turn that did not complete has no answer, and its narration
+            # is none: the request failed, which the channel answers aloud
+            # (RFC §12.4.1).
             raise ReasoningCutShortError(request.delegation_id, reason)
         if answer := "".join(text).strip():
             yield ReasoningOutput(answer, spoken=True, is_final=True)
@@ -299,13 +310,14 @@ class AgentReasoningBackend(ReasoningBackend):
     def _turn_context(
         self, request: ReasoningRequest, messages: list[AIMessage]
     ) -> tuple[AIContext, _ToolLoopContext]:
-        """The turn's context, with the agent's own settings, and its loop
-        context: the session's catalogue as the resolved toolset."""
+        """The turn's context, as the agent builds a turn it does not read
+        from a room, and its loop context: the session's catalogue as the
+        resolved toolset."""
         tools = [
             AITool(
                 name=t["name"],
-                description=str(t.get("description", "")),
-                parameters=dict(t.get("parameters") or {}),
+                description=t.get("description", ""),
+                parameters=t.get("parameters", {}),
             )
             for t in request.tools
             if isinstance(t, dict) and t.get("name")
@@ -315,16 +327,8 @@ class AgentReasoningBackend(ReasoningBackend):
         binding = ChannelBinding(
             channel_id=agent.channel_id, room_id=room_id or "", channel_type=agent.channel_type
         )
-        # The agent's own settings, its system prompt among them, as a turn
-        # with no room override starts from.
-        settings = agent._turn_settings(binding, None)
-        context = AIContext(messages=messages, tools=tools, **settings)
         loop_ctx = _ToolLoopContext(room_id=room_id)
-        loop_ctx.all_context_tools = tools
-        # Every result comes through the voice channel's gate, which bounds it
-        # (RFC §21.5): the loop has nothing to store and page back.
-        loop_ctx.withdrawn_tools = frozenset({REREAD_TOOL})
-        return context, loop_ctx
+        return agent._driven_turn(binding, loop_ctx, messages, tools), loop_ctx
 
     async def _serve_through_gate(self, name: str, arguments: dict[str, Any]) -> str:
         """Serve one of the agent's calls through the voice channel's gate.
@@ -353,15 +357,15 @@ class AgentReasoningBackend(ReasoningBackend):
 
     async def session_ended(self, session_id: str) -> None:
         self._histories.pop(session_id, None)
+        self._sessions.pop(session_id, None)
 
     async def close(self) -> None:
         self._histories.clear()
+        self._sessions.clear()
 
     def _adopt_telemetry(self, telemetry: TelemetryProvider) -> None:
-        # An agent registered with a kit keeps the kit's.
-        if getattr(self._agent, "_telemetry", None) is None:
-            self._agent._telemetry = telemetry  # ty: ignore[unresolved-attribute]
-            self._agent._propagate_telemetry()
+        self._agent._telemetry = telemetry  # ty: ignore[unresolved-attribute]
+        self._agent._propagate_telemetry()
 
 
 class AIProviderReasoningBackend(AgentReasoningBackend):
@@ -414,6 +418,17 @@ def _refuse_own_tools(agent: AIChannel) -> None:
             f"the voice channel's gate (RFC §12.4.1); agent {agent.channel_id!r} carries "
             f"{', '.join(carried)}"
         )
+
+
+_REGISTERED = (
+    "A reasoning backend's agent serves the voice session only (RFC §12.4.1); agent {!r} "
+    "is registered with a kit, whose hooks would judge each call a second time"
+)
+
+
+def _registered(agent: AIChannel) -> bool:
+    """Whether *agent* is registered with a kit, which wires its reports."""
+    return agent._tool_observer_hook is not None or agent._tool_report_hook is not None
 
 
 async def _execute(

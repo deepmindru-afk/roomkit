@@ -236,14 +236,20 @@ async def _formulate_task(
         update={"metadata": {**binding.metadata, "system_prompt": prompt}}
     )
     pass1_output = await original_on_event(event, pass1_binding, context)
-    return pass1_output, await _pass1_task(kit, room_id, supervisor, event, pass1_output)
+    task = await _pass1_task(kit, room_id, supervisor, event, pass1_output, context)
+    return pass1_output, task
 
 
 async def _pass1_task(
-    kit: RoomKit, room_id: str, supervisor: Agent, event: RoomEvent, output: ChannelOutput
+    kit: RoomKit,
+    room_id: str,
+    supervisor: Agent,
+    event: RoomEvent,
+    output: ChannelOutput,
+    context: RoomContext,
 ) -> str:
     """The task pass 1 hands on: its final answer, as every streamed turn is
-    read, its tool calls stored in the room as any turn's (RFC §6.4)."""
+    read, its tool calls stored in the room as any turn's (RFC §19.7.3)."""
     if output.error is not None or output.response_stream is None:
         return await _extract_output_text(output)
     stream = StreamingResponse(
@@ -253,7 +259,7 @@ async def _pass1_task(
         trigger_event=event,
         response_metadata=output.response_metadata,
     )
-    return await persist_tool_calls(kit, room_id, stream, event.chain_depth + 1)
+    return await persist_tool_calls(kit, room_id, stream, context)
 
 
 async def _two_pass_delegate(

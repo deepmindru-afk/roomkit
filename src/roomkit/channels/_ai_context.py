@@ -648,6 +648,23 @@ class AIContextMixin(_AIChannelContract):
             turn = await self._config_provider(binding, context)
         return turn, self._turn_settings(binding, turn)
 
+    def _driven_turn(
+        self,
+        binding: ChannelBinding,
+        loop_ctx: _ToolLoopContext,
+        messages: list[AIMessage],
+        tools: list[AITool],
+    ) -> AIContext:
+        """The context of a turn another component drives with a conversation
+        of its own (a reasoning backend's, RFC §12.4.1): the channel's settings
+        and turn budget as a turn with no room override starts from, the
+        conversation's orphaned calls answered as a room turn's are, and
+        *tools* as the turn's resolved toolset."""
+        loop_ctx.turn_budget = self._turn_budget(binding, None)
+        loop_ctx.all_context_tools = tools
+        settings = self._turn_settings(binding, None)
+        return AIContext(messages=patch_dangling_tool_calls(messages), tools=tools, **settings)
+
     def _turn_settings(
         self, binding: ChannelBinding, turn: AIChannelTurnConfig | None
     ) -> dict[str, Any]:

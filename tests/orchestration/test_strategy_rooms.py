@@ -321,7 +321,7 @@ async def test_a_result_tool_is_declared_in_the_child_room_only() -> None:
     )
 
     # A delegation to this same agent runs in another room meanwhile.
-    with capture_result(channel, "parent::task-abc", SUBMIT_RESULT) as slot:
+    with capture_result(channel, "parent::task-abc", SUBMIT_RESULT):
         await respond(
             channel,
             make_event(room_id="customer-room", body="hi", channel_id="sms1"),
@@ -334,7 +334,6 @@ async def test_a_result_tool_is_declared_in_the_child_room_only() -> None:
         "read_stored_result",
     ]
     assert seen == []
-    assert slot.payload is None
     assert not channel._registry.entries("parent::task-abc", source=ToolSource.ORCHESTRATION)
 
 

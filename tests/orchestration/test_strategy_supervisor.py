@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from roomkit import HookExecution, HookResult, HookTrigger
 from roomkit.channels._tool_registry import ChannelRegistry
 from roomkit.channels.agent import Agent
 from roomkit.core.exceptions import UnservedToolCallError
@@ -55,6 +56,9 @@ def _make_mock_kit(room: Room) -> MagicMock:
     kit.lock_manager.locked = MagicMock(return_value=_NoopLock())
     kit.channels = {}
     kit.register_channel = MagicMock()
+    # Pass 1's rows ride the room's lane, whose cascade the turn finishes.
+    kit._max_chain_depth = 5
+    kit._finish_cascade = AsyncMock(return_value=(None, None))
     return kit
 
 
@@ -505,39 +509,38 @@ async def test_the_supervisors_turns_answer_at_the_depth_of_its_event(refine_tas
     assert {e.chain_depth for e in answered} == {2}
 
 
-async def test_pass_one_hands_on_its_answer_and_stores_its_calls() -> None:
-    """RMK-396, RFC §6.4: pass 1 is read as every streamed turn is. The task the
-    worker receives is its final answer, not the narration of its tool round
-    glued to it, and its calls have their TOOL_CALL rows in the room."""
-    lookup = AITool(
-        name="lookup", description="look up", parameters={"type": "object", "properties": {}}
+_LOOKUP = AITool(
+    name="lookup", description="look up", parameters={"type": "object", "properties": {}}
+)
+
+
+def _tool_round(call_id: str, text: str = "") -> AIResponse:
+    return AIResponse(
+        content=text,
+        finish_reason="tool_calls",
+        tool_calls=[AIToolCall(id=call_id, name="lookup", arguments={})],
     )
 
-    async def handler(name: str, arguments: dict[str, Any]) -> str:
-        return "found it"
 
-    boss = Agent(
+async def _two_pass_room(responses: list[AIResponse], **boss: Any) -> tuple[RoomKit, list[str]]:
+    """A room whose boss supervises one worker in two passes; the tasks the
+    workers were handed."""
+
+    async def handler(name: str, arguments: dict[str, Any]) -> str:
+        return "secret-555-1234"
+
+    supervisor = Agent(
         "boss",
-        provider=MockAIProvider(
-            streaming=True,
-            ai_responses=[
-                AIResponse(
-                    content="Let me check.",
-                    finish_reason="tool_calls",
-                    tool_calls=[AIToolCall(id="c1", name="lookup", arguments={})],
-                ),
-                AIResponse(content="Analyse Anthropic"),
-                AIResponse(content="Here is the analysis."),
-            ],
-        ),
-        tools=[lookup],
+        provider=MockAIProvider(streaming=True, ai_responses=responses),
+        tools=[_LOOKUP],
         tool_handler=handler,
         tool_search=False,
+        **boss,
     )
     worker = Agent("w1", provider=MockAIProvider(responses=["Worker analysis"]))
     kit = RoomKit()
     kit.register_channel(SimpleChannel("sms1"))
-    kit.register_channel(boss)
+    kit.register_channel(supervisor)
     kit.register_channel(worker)
     await kit.create_room(room_id="r1")
     await kit.attach_channel("r1", "sms1")
@@ -550,15 +553,32 @@ async def test_pass_one_hands_on_its_answer_and_stores_its_calls() -> None:
         return await delegate(room_id, channel_id, task, **kwargs)
 
     kit.delegate = spy  # type: ignore[method-assign]
-    supervisor = Supervisor(
-        supervisor=boss, workers=[worker], strategy="parallel", auto_delegate=True
-    )
-    await supervisor.install(kit, "r1")
+    await Supervisor(
+        supervisor=supervisor, workers=[worker], strategy="parallel", auto_delegate=True
+    ).install(kit, "r1")
+    return kit, tasks
 
+
+async def _say(kit: RoomKit) -> None:
     await kit.process_inbound(
         InboundMessage(channel_id="sms1", sender_id="u", content=TextContent(body="Analyse"))
     )
     await asyncio.sleep(0.1)
+
+
+async def test_pass_one_hands_on_its_answer_and_stores_its_calls() -> None:
+    """RMK-396, RFC §19.7.3: pass 1 is read as every streamed turn is. The task the
+    worker receives is its final answer, not the narration of its tool round
+    glued to it, and its calls have their TOOL_CALL rows in the room."""
+    kit, tasks = await _two_pass_room(
+        [
+            _tool_round("c1", "Let me check."),
+            AIResponse(content="Analyse Anthropic"),
+            AIResponse(content="Here is the analysis."),
+        ]
+    )
+
+    await _say(kit)
 
     assert tasks == ["Analyse Anthropic"]
     rows = [
@@ -571,4 +591,47 @@ async def test_pass_one_hands_on_its_answer_and_stores_its_calls() -> None:
         (EventType.TOOL_CALL_END, "served"),
         (EventType.MESSAGE, "Here is the analysis."),
     ]
+    await kit.close()
+
+
+async def test_pass_ones_rows_cross_the_rooms_gate() -> None:
+    """Its rows are the room's: a BEFORE_BROADCAST hook rewrites them as it
+    rewrites pass 2's (RMK-396)."""
+    kit, _ = await _two_pass_room(
+        [
+            _tool_round("c1"),
+            AIResponse(content="Analyse Anthropic"),
+            _tool_round("c2"),
+            AIResponse(content="Here is the analysis."),
+        ]
+    )
+
+    @kit.hook(HookTrigger.BEFORE_BROADCAST, HookExecution.SYNC)
+    async def redact(event: RoomEvent, ctx: Any) -> HookResult:
+        if event.type == EventType.TOOL_CALL_END and isinstance(event.content, ToolCallContent):
+            content = event.content.model_copy(update={"result": "[REDACTED]"})
+            return HookResult.modify(event.model_copy(update={"content": content}))
+        return HookResult.allow()
+
+    await _say(kit)
+
+    ends = [
+        (e.content.tool_id, e.content.result)
+        for e in await kit.store.list_events("r1")
+        if e.type == EventType.TOOL_CALL_END and isinstance(e.content, ToolCallContent)
+    ]
+    assert ends == [("c1", "[REDACTED]"), ("c2", "[REDACTED]")]
+    await kit.close()
+
+
+async def test_pass_one_cut_by_its_round_cap_hands_on_no_task() -> None:
+    """A turn cut short has no answer; its narration is no task (RFC §6.4)."""
+    kit, tasks = await _two_pass_room(
+        [_tool_round("c1", "Still checking."), _tool_round("c2", "Still checking.")],
+        max_tool_rounds=1,
+    )
+
+    await _say(kit)
+
+    assert tasks == []
     await kit.close()

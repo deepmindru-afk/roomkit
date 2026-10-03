@@ -113,6 +113,13 @@ class DeliverySource:
     binding: ChannelBinding
     context: RoomContext
 
+    @classmethod
+    def of(cls, channel_id: str, context: RoomContext) -> DeliverySource | str:
+        """The planning inputs of *channel_id*'s run in *context*: its
+        binding there, or its id alone when the context holds none."""
+        binding = next((b for b in context.bindings if b.channel_id == channel_id), None)
+        return cls(binding=binding, context=context) if binding is not None else channel_id
+
 
 def _delivery_source(context: RoomContext, channel_id: str) -> DeliverySource | None:
     """Who sends and against what state, read off *context*.

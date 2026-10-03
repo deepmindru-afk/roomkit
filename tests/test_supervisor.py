@@ -86,6 +86,9 @@ def _make_mock_kit(room: Room) -> MagicMock:
     kit.channels = {}
     kit.register_channel = MagicMock()
     kit.deliver = AsyncMock()
+    # Pass 1's rows ride the room's lane, whose cascade the turn finishes.
+    kit._max_chain_depth = 5
+    kit._finish_cascade = AsyncMock(return_value=(None, None))
     return kit
 
 

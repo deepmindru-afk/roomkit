@@ -13,7 +13,7 @@ from roomkit.core._failure_log import log_failure
 from roomkit.core.event_router import unanswered
 from roomkit.core.lanes import DeliveryCascade
 from roomkit.core.mixins._response_reader import ResponseReader
-from roomkit.core.mixins._streaming_segments import LaneSink, SegmentWriter
+from roomkit.core.mixins._streaming_segments import LaneSink, SegmentWriter, TurnScope
 from roomkit.core.mixins.helpers import HelpersMixin, _source_block_reason
 from roomkit.core.mixins.lane_execution import DeliverySource
 from roomkit.core.visibility import visibility_allows
@@ -114,7 +114,6 @@ class InboundStreamingMixin(HelpersMixin):
         response_events: list[RoomEvent] | None = None,
     ) -> _StreamingResult | None:
         """Consume a streaming response, pipe to streaming channels, store segments."""
-        response_vis = sr.trigger_event.response_visibility
         streaming_targets = self._find_streaming_targets(router, sr, context)
 
         logger.debug(
@@ -134,12 +133,10 @@ class InboundStreamingMixin(HelpersMixin):
             {streaming_targets[0][1].channel_id} if streaming_targets else set()
         )
         correlation_id = uuid4().hex
-        chain_depth = sr.trigger_event.chain_depth + 1
-        visibility = response_vis or "all"
-        # Inherit the trigger's thread root so the AI reply lands in the same
-        # thread (already normalised to a root by the locked pipeline). None
-        # when the trigger is top-level — the reply stays top-level too.
-        parent_event_id = sr.trigger_event.parent_event_id
+        scope = TurnScope.answering(sr.trigger_event)
+        chain_depth = scope.chain_depth
+        visibility = scope.visibility
+        parent_event_id = scope.parent_event_id
 
         # Planning inputs for the whole run, resolved once. Every segment has
         # the same sender and the same delivery set, so re-resolving per
@@ -148,14 +145,7 @@ class InboundStreamingMixin(HelpersMixin):
         # delivery lanes exist to keep clear. The binding is already in the
         # context the caller built; the batch broadcast this replaced planned
         # off that same snapshot.
-        source_binding = next(
-            (b for b in context.bindings if b.channel_id == sr.source_channel_id), None
-        )
-        plan_source: DeliverySource | str = (
-            DeliverySource(binding=source_binding, context=context)
-            if source_binding is not None
-            else sr.source_channel_id
-        )
+        plan_source = DeliverySource.of(sr.source_channel_id, context)
 
         writer = SegmentWriter(
             self,
@@ -166,7 +156,7 @@ class InboundStreamingMixin(HelpersMixin):
             room_id=room_id,
             chain_depth=chain_depth,
             visibility=visibility,
-            response_visibility=response_vis,
+            response_visibility=scope.response_visibility,
             correlation_id=correlation_id,
             parent_event_id=parent_event_id,
             streamed_to=streamed_to,

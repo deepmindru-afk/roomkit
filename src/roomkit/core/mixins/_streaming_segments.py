@@ -6,7 +6,7 @@ import asyncio
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Protocol
 
 from roomkit.channels._tool_event_result import tool_event_payload
@@ -41,6 +41,32 @@ class RowSink(Protocol):
         *exclude* names the channels the row must not be delivered to.
         """
         ...
+
+
+@dataclass(frozen=True)
+class TurnScope:
+    """Where a streamed turn writes its rows in a room: one deeper than the
+    event it answers, in that event's answer scope and thread (RFC §8.3)."""
+
+    chain_depth: int
+    visibility: str
+    response_visibility: str | None
+    parent_event_id: str | None
+
+    @classmethod
+    def answering(cls, trigger: RoomEvent) -> TurnScope:
+        """The scope of a turn that answers *trigger*.
+
+        The trigger's thread root is inherited, so the reply lands in the same
+        thread (already normalised to a root by the locked pipeline); a
+        top-level trigger keeps the reply top-level.
+        """
+        return cls(
+            chain_depth=trigger.chain_depth + 1,
+            visibility=trigger.response_visibility or Visibility.ALL,
+            response_visibility=trigger.response_visibility,
+            parent_event_id=trigger.parent_event_id,
+        )
 
 
 class SegmentWriter:
@@ -101,6 +127,12 @@ class SegmentWriter:
         self._writing: set[asyncio.Task[RoomEvent | None]] = set()
         self._started: set[str] = set()
         self.persisted: list[RoomEvent] = []
+
+    @property
+    def end_reason(self) -> str | None:
+        """How the turn's loop ended, from its ``LoopEndMarker``; ``None``
+        while the stream carried none (a provider that streams text only)."""
+        return None if self._turn_record is None else self._turn_record["loop_end_reason"]
 
     # -- what the stream hands in ------------------------------------------
 

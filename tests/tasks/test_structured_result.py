@@ -12,15 +12,21 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from roomkit import HookExecution, HookResult, HookTrigger
 from roomkit.channels._tool_registry import ChannelRegistry, ToolSource
+from roomkit.channels.agent import Agent
 from roomkit.core.event_router import BroadcastResult
+from roomkit.core.framework import RoomKit
 from roomkit.core.mixins._child_execution import _scan_for_submitted_result
 from roomkit.core.mixins.delegation import _run_with_structured_result
 from roomkit.models.enums import ChannelType, EventType
 from roomkit.models.event import EventSource, RoomEvent, TextContent, ToolCallContent
 from roomkit.models.room import Room
+from roomkit.models.tool_call import ToolCallEvent
 from roomkit.orchestration.result import is_submit_result, normalize_result, orchestration_fail
 from roomkit.orchestration.strategies.supervisor.prompts import SUBMIT_VERDICT
+from roomkit.providers.ai.base import AIResponse, AIToolCall
+from roomkit.providers.ai.mock import MockAIProvider
 from tests.tool_room import room_tool_names
 
 
@@ -47,7 +53,10 @@ def _make_kit(
         return_value=Room(id="parent::task-1", metadata={"task_agent_id": agent_id})
     )
     kit.store.list_bindings = AsyncMock(return_value=[])
-    kit.store.list_events = AsyncMock(return_value=[])
+    # The child room's trace: the worker's served call lands there, as the
+    # loop stores it.
+    trace: list[RoomEvent] = []
+    kit.store.list_events = AsyncMock(side_effect=lambda *_a, **_k: list(trace))
     kit.store.add_event_auto_index = AsyncMock(side_effect=lambda _rid, ev: ev)
     kit.store.commit_event = AsyncMock(side_effect=lambda _rid, ev: ev)
     kit._commit_indexed = AsyncMock(side_effect=lambda _rid, ev: ev)
@@ -64,8 +73,10 @@ def _make_kit(
         if submit_on_attempt is not None and counter["n"] == submit_on_attempt:
             # The agent's tool loop in the child room serves the result tool.
             entry = channel._registry.lookup(tool_name, "parent::task-1")
-            await entry.serve(
-                payload or {"status": "completed", "summary": "done", "data": {"x": 1}}
+            arguments = payload or {"status": "completed", "summary": "done", "data": {"x": 1}}
+            await entry.serve(arguments)
+            trace.append(
+                _tool_call_event(tool_name, arguments, channel_id=agent_id, outcome="served")
             )
         out = SimpleNamespace(
             responded=True, error=None, response_events=[_text_event("raw text")]
@@ -307,3 +318,47 @@ class TestAnotherResultTool:
         found = await _scan_for_submitted_result(kit, "parent::task-1", "agent:w1", SUBMIT_VERDICT)
 
         assert found == {"approved": False, "feedback": "add sources", "next_task": None}
+
+
+class TestAResultTheHooksBlockedIsNone:
+    """The result tool served in the loop is read once ON_TOOL_CALL judged the
+    call: a call a hook blocked is no result (RMK-396, RFC §23.3)."""
+
+    async def _delegate(self, *, block: bool) -> str:
+        submitted = {"status": "completed", "summary": "the worker's result", "data": {}}
+        worker = Agent(
+            "worker",
+            provider=MockAIProvider(
+                ai_responses=[
+                    AIResponse(
+                        content="",
+                        tool_calls=[
+                            AIToolCall(id="s1", name="submit_result", arguments=submitted)
+                        ],
+                    ),
+                    AIResponse(content="ok"),
+                ]
+                * 3
+            ),
+        )
+        kit = RoomKit()
+        kit.register_channel(worker)
+        await kit.create_room(room_id="parent")
+        if block:
+
+            @kit.hook(HookTrigger.ON_TOOL_CALL, HookExecution.SYNC)
+            async def refuse(event: ToolCallEvent, ctx: Any) -> HookResult:
+                return HookResult.block("not now")
+
+        task = await kit.delegate(
+            "parent", "worker", "do it", wait=True, require_structured_result=True
+        )
+        await kit.close()
+        assert task.result is not None
+        return json.dumps(task.result.model_dump(mode="json"))
+
+    async def test_a_blocked_call_is_no_result(self) -> None:
+        assert "the worker's result" not in await self._delegate(block=True)
+
+    async def test_a_served_call_is_the_result(self) -> None:
+        assert "the worker's result" in await self._delegate(block=False)

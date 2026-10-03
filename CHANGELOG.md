@@ -126,19 +126,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   thinking, round cap, deadline, budget), its tools the voice session's
   catalogue, each call through the voice channel's gate; an agent carrying
   tools of its own (tools, skills, a sandbox, planning, an external or
-  human-input handler) is refused. `AIProviderReasoningBackend` keeps its
-  signature and builds that agent. A delegation now ends as every AI turn
-  does (RFC §6.4): a call the provider could not parse
+  human-input handler) is refused, and so is an agent registered with a kit,
+  whose hooks would judge each call a second time. `AIProviderReasoningBackend`
+  keeps its signature and builds that agent. A delegation now ends as every
+  AI turn does (RFC §6.4): a call the provider could not parse
   (`MALFORMED_FUNCTION_CALL`) or an empty answer after a round is asked
   again, where the backend stopped and the user heard "The delegated work
   finished without an answer."; a call whose arguments do not read is
   reported to the voice channel's `ON_TOOL_CALL` observers (new
   `ReasoningRequest.report_refusal`); the turn has its `llm.generate` span
-  and its usage, under the voice channel's telemetry; and the session's
-  conversation keeps the tool rounds. A turn its round cap, deadline or
-  budget cuts short raises `ReasoningCutShortError`, answered by the
-  channel's spoken fallback, where its last narration was spoken as the
-  answer.
+  under the voice session's span, with its usage; a large result is stored
+  and read back with `read_stored_result`; and the session's conversation
+  keeps the tool rounds. A turn that does not complete (its round cap,
+  deadline or budget, an answer cut or empty) raises
+  `ReasoningCutShortError`, answered by the channel's spoken fallback, where
+  its last narration was spoken as the answer. A session's delegations run
+  one at a time, each reading the one before it; two at once lost one
+  exchange from the conversation. A backend call the run's timeout cuts is
+  reported once, cancelled, and the call it left unanswered no longer
+  reaches the next delegation's provider request, which OpenAI and
+  Anthropic refuse.
 
 - `PolicyExternalToolHandler` applies its policy before `BEFORE_TOOL_USE`
   (RMK-394, RFC §21.1): an approval or audit hook is no longer called for a
@@ -395,13 +402,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A supervisor's task-formulation pass is read as every streamed turn
   (RMK-396, RFC §19.7.3): the workers' task is its final answer, where the
-  narration of its tool round was glued to it ("Let me check.Anthropic"),
-  and its tool calls are stored in the room as TOOL_CALL rows.
+  narration of its tool round was glued to it ("Let me check.Anthropic"), and
+  a pass cut short (round cap, deadline, budget) hands on no task. Its tool
+  calls are stored in the room as TOOL_CALL rows, through `BEFORE_BROADCAST`
+  and in the answered event's scope and thread.
 
-- A delegated worker's result read from its trace (a result tool an MCP
-  server served) is the worker's own call that ended served (RMK-396, RFC
-  §23.3): a refused `submit_result`, or one another channel shared into the
-  child room made, was taken for the result.
+- A delegated worker's result is read from its trace, wherever the result
+  tool was served, and is the worker's own call that ended served (RMK-396,
+  RFC §23.3): a `submit_result` an `ON_TOOL_CALL` hook blocked, one refused,
+  or one another channel shared into the child room made, was taken for the
+  result.
 
 - Every outcome of a tool call reaches `ON_TOOL_CALL` as the model read it,
   on every door (RMK-395, RFC §9.3):

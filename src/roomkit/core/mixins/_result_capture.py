@@ -25,20 +25,20 @@ if TYPE_CHECKING:
 
 @dataclass
 class ResultSlot:
-    """Where one child room's result-tool call lands."""
+    """Where one child room's result-tool call is served."""
 
     tool: ResultTool
-    payload: dict[str, Any] | None = None
 
     async def receive(self, arguments: dict[str, Any]) -> str:
-        """Keep the payload of the result tool's call."""
-        self.payload = self.tool.normalize(arguments or {})
+        """Acknowledge the result tool's call. Its payload is read from the
+        call's stored end once ON_TOOL_CALL has judged it: a call a hook
+        blocked is no result (RFC §23.3)."""
         return json.dumps({"status": "received"})
 
 
 @contextlib.contextmanager
 def capture_result(channel: Any, child_room_id: str, tool: ResultTool) -> Iterator[ResultSlot]:
-    """Capture *tool*'s call made in *child_room_id* by the agent behind *channel*.
+    """Serve *tool*'s call made in *child_room_id* by the agent behind *channel*.
 
     The tool is declared and served in *child_room_id*'s turns for as long as
     the capture runs.
