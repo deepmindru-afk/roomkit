@@ -365,8 +365,9 @@ class TestExecuteLoop:
             max_iterations=3,
         )
 
-        assert result["approved"] is False
-        assert result["output"] == ""
+        assert result.approved is False
+        assert result.output == ""
+        assert (result.stopped, result.iteration) == ("producer_failed", 0)
 
     async def test_all_reviewers_approve(self) -> None:
         kit = _make_mock_kit(Room(id="r1"))
@@ -391,9 +392,9 @@ class TestExecuteLoop:
             max_iterations=3,
         )
 
-        assert result["approved"] is True
-        assert result["output"] == "My content"
-        assert result["iteration"] == 1
+        assert result.approved is True
+        assert result.output == "My content"
+        assert result.iteration == 1
 
     async def test_revision_cycle(self) -> None:
         """Reviewer rejects first, approves second."""
@@ -416,9 +417,9 @@ class TestExecuteLoop:
             max_iterations=5,
         )
 
-        assert result["approved"] is True
-        assert result["iteration"] == 2
-        assert result["output"] == "Draft 2"
+        assert result.approved is True
+        assert result.iteration == 2
+        assert result.output == "Draft 2"
 
     async def test_max_iterations_reached(self) -> None:
         """When max iterations hit, returns last output as not approved."""
@@ -447,8 +448,9 @@ class TestExecuteLoop:
             max_iterations=3,
         )
 
-        assert result["approved"] is False
-        assert result["iteration"] == 3
+        assert result.approved is False
+        assert result.iteration == 3
+        assert result.stopped == "max_iterations"
 
     async def test_updates_room_state(self) -> None:
         kit = _make_mock_kit(Room(id="r1"))
@@ -637,8 +639,8 @@ class TestFeedbackCombination:
             max_iterations=5,
         )
 
-        assert result["approved"] is True
-        assert result["iteration"] == 2
+        assert result.approved is True
+        assert result.iteration == 2
 
         # The revision input (call 4 = index 3) should contain both feedbacks
         revision_call = kit.delegate.call_args_list[3]

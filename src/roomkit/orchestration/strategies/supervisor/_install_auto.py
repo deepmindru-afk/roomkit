@@ -96,7 +96,8 @@ class _AutoDelegateInstallMixin:
             server = _VoiceDelegateServer(
                 kit, voice_channel.channel_id, self._workers, self._strategy, self._share_channels
             )
-            # It waits on the workers, as its twins do: no call bound applies.
+            # A strategy's tool: the channel's default call bound does not
+            # apply to it (RFC §21.6).
             return orchestration_tool(tool, in_call_room(tool.name, server.serve), waits=True)
 
         set_up_for_voice_room(kit, room_id, self, entry_for)

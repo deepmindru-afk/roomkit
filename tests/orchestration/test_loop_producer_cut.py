@@ -1,29 +1,30 @@
 """A Loop whose producer's task failed says so (RMK-435, RFC §19.7.4, §23.3).
 
 The sync Loop no longer publishes an empty producer message: with no output
-at all the turn has no answer and the caller reads why; with an earlier
-output, that output goes out, not approved, with why the loop stopped. The
-async Loop's delivered text names the real reason. The voice
-``delegate_workers`` of a Supervisor waits on its workers like its twins, and
-a stream read for a supervisor's task is no answer when its turn was cut.
+at all the turn has no answer; with an earlier output, that output goes out,
+not approved, with why the loop stopped; either way the caller reads the
+producer's failure. The async Loop's delivered text says the producer's task
+failed, never with its error. The voice ``delegate_workers`` of a Supervisor
+is a strategy's tool, unbound by the channel's default call timeout.
 """
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
-from roomkit import RoomKit, TaskCutShortError
+import pytest
+
+from roomkit import HookExecution, HookTrigger, RoomKit, RoomKitError, TaskCutShortError
 from roomkit.channels.agent import Agent
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
-from roomkit.models.channel import ChannelOutput
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import EventType
 from roomkit.models.event import TextContent
-from roomkit.models.streaming import LoopEndMarker
+from roomkit.orchestration.state import get_conversation_state
 from roomkit.orchestration.strategies.loop import Loop, _async_loop_and_deliver
 from roomkit.orchestration.strategies.supervisor import Supervisor
-from roomkit.orchestration.strategies.supervisor.results import _extract_output_text
-from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
+from roomkit.providers.ai.base import AIContext, AIResponse, AITool, AIToolCall, ProviderError
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
 from tests.test_framework import SimpleChannel
@@ -40,6 +41,11 @@ async def _found(name: str, arguments: dict[str, Any]) -> str:
     return "found"
 
 
+class _Refused(MockAIProvider):
+    async def generate(self, context: AIContext) -> AIResponse:
+        raise ProviderError("401 invalid x-api-key sk-live-SECRET", provider="p", status_code=401)
+
+
 def _producer(responses: list[AIResponse]) -> Agent:
     return Agent(
         "producer",
@@ -51,15 +57,28 @@ def _producer(responses: list[AIResponse]) -> Agent:
     )
 
 
-async def _sync_loop(producer: Agent, reviews: list[str]) -> tuple[RoomKit, Any]:
+async def _sync_loop(
+    producer: Agent,
+    reviews: list[str],
+    *,
+    max_iterations: int = 3,
+    errors: list[Any] | None = None,
+) -> tuple[RoomKit, Any]:
     kit = RoomKit()
     kit.register_channel(SimpleChannel("sms"))
     kit.register_channel(producer)
     reviewer = Agent("reviewer", provider=MockAIProvider(responses=reviews))
     await kit.create_room(
-        room_id="r", orchestration=Loop(agent=producer, reviewer=reviewer, max_iterations=3)
+        room_id="r",
+        orchestration=Loop(agent=producer, reviewer=reviewer, max_iterations=max_iterations),
     )
     await kit.attach_channel("r", "sms")
+    if errors is not None:
+
+        @kit.hook(HookTrigger.ON_ERROR, execution=HookExecution.ASYNC, name="errors")
+        async def on_error(event: Any, ctx: Any) -> None:
+            errors.append(event)
+
     result = await kit.process_inbound(
         InboundMessage(channel_id="sms", sender_id="u", content=TextContent(body="Write it."))
     )
@@ -85,17 +104,72 @@ async def test_a_producer_cut_before_any_output_gives_no_answer_and_its_reason()
 
 async def test_a_producer_cut_after_an_output_keeps_it_not_approved() -> None:
     first = AIResponse(content="Draft one.")
-    kit, result = await _sync_loop(_producer([first, *[LOOPING] * 10]), ["Needs work."] * 3)
+    errors: list[Any] = []
+    kit, result = await _sync_loop(
+        _producer([first, *[LOOPING] * 10]), ["Needs work."] * 3, errors=errors
+    )
 
     [(body, metadata)] = await _producer_messages(kit)
     assert body == "Draft one."
-    assert (metadata["approved"], metadata["stopped"]) == (False, "producer_failed")
+    assert (metadata["approved"], metadata["stopped"], metadata["iteration"]) == (
+        False,
+        "producer_failed",
+        1,
+    )
+    # The draft goes out and the failure surfaces beside it.
+    assert isinstance(result.error, TaskCutShortError)
+    for _ in range(50):
+        if errors:
+            break
+        await asyncio.sleep(0.01)
+    assert [e.metadata["error_type"] for e in errors] == ["TaskCutShortError"]
+    state = get_conversation_state(await kit.get_room("r"))
+    assert state.context["_loop_stopped"] == "producer_failed"
+    await kit.close()
+
+
+async def test_a_producer_whose_provider_fails_gives_its_error_to_the_caller() -> None:
+    kit, result = await _sync_loop(Agent("producer", provider=_Refused()), ["APPROVED"])
+
+    assert await _producer_messages(kit) == []
+    assert isinstance(result.error, RoomKitError)
+    assert "401" in str(result.error)
+    await kit.close()
+
+
+async def test_a_producer_with_nothing_to_say_is_named_so() -> None:
+    kit, result = await _sync_loop(Agent("producer", provider=MockAIProvider(responses=[""])), [])
+
+    assert str(result.error) == "The producer's task gave no output"
+    await kit.close()
+
+
+async def test_a_loop_that_runs_no_iteration_blames_no_producer() -> None:
+    kit, result = await _sync_loop(_producer([]), [], max_iterations=0)
+
+    assert await _producer_messages(kit) == []
     assert result.error is None
     await kit.close()
 
 
-async def test_the_async_loop_names_the_producers_failure() -> None:
-    producer = _producer([LOOPING] * 10)
+@pytest.mark.parametrize(
+    ("reviews", "stopped", "iteration"),
+    [(["Needs work.", "APPROVED"], "approved", 2), (["Needs work."] * 3, "max_iterations", 3)],
+)
+async def test_the_result_says_how_the_loop_stopped(
+    reviews: list[str], stopped: str, iteration: int
+) -> None:
+    drafts = [AIResponse(content=f"Draft {n}.") for n in range(1, 4)]
+    kit, result = await _sync_loop(_producer(drafts), reviews)
+
+    [(_, metadata)] = await _producer_messages(kit)
+    assert (metadata["stopped"], metadata["iteration"]) == (stopped, iteration)
+    assert metadata["approved"] is (stopped == "approved")
+    assert result.error is None
+    await kit.close()
+
+
+async def _async_text(producer: Agent) -> str:
     kit = RoomKit()
     kit.register_channel(SimpleChannel("sms"))
     kit.register_channel(producer)
@@ -121,11 +195,25 @@ async def test_the_async_loop_names_the_producers_failure() -> None:
         max_iterations=3,
         on_done=lambda: None,
     )
-
-    [text] = delivered
-    assert "the producer's task failed" in text
-    assert "max iterations reached" not in text
     await kit.close()
+    [text] = delivered
+    return text
+
+
+async def test_the_async_loop_names_the_producers_cut() -> None:
+    text = await _async_text(_producer([LOOPING] * 10))
+
+    assert text == (
+        "The review loop stopped before any output: "
+        "the producer's task failed (cut short: max_rounds)."
+    )
+
+
+async def test_the_async_loop_says_its_producer_failed_without_the_error() -> None:
+    text = await _async_text(Agent("producer", provider=_Refused()))
+
+    assert text == "The review loop stopped before any output: the producer's task failed."
+    assert "SECRET" not in text
 
 
 async def test_the_voice_delegate_workers_waits_on_its_workers() -> None:
@@ -151,11 +239,3 @@ async def test_the_voice_delegate_workers_waits_on_its_workers() -> None:
 
     assert voice._call_timeout("delegate_workers", "r") is None
     await kit.close()
-
-
-async def test_a_cut_streamed_task_text_is_no_answer() -> None:
-    async def stream() -> Any:
-        yield "Still checking."
-        yield LoopEndMarker(reason="max_rounds", rounds=1, usage={})
-
-    assert await _extract_output_text(ChannelOutput(response_stream=stream())) == ""

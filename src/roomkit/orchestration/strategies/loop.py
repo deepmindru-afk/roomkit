@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._tool_registry import orchestration_tool, schema_tool
@@ -36,6 +37,7 @@ if TYPE_CHECKING:
     from roomkit.channels.agent import Agent
     from roomkit.channels.ai import ToolResult
     from roomkit.core.framework import RoomKit
+    from roomkit.tasks.models import DelegatedTask, DelegatedTaskResult
 
 logger = logging.getLogger("roomkit.orchestration.strategies.loop")
 
@@ -326,7 +328,7 @@ async def _run_loop(
     if not user_message:
         return ChannelOutput.empty()
 
-    result = await _execute_loop(
+    outcome = await _execute_loop(
         kit=kit,
         room_id=room_id,
         producer=producer,
@@ -335,10 +337,12 @@ async def _run_loop(
         task_desc=user_message,
         max_iterations=max_iterations,
     )
-    if not result["output"]:
-        # The producer's task failed before any output: the turn has no
-        # answer, and the caller reads why (RFC §19.7.4, §23.3).
-        return ChannelOutput(responded=False, error=_producer_failure(result))
+    # The producer's failure reaches the caller whether an earlier output goes
+    # out or not (RFC §19.7.4, §23.3).
+    failure = _producer_failure(outcome) if outcome.stopped == "producer_failed" else None
+    if not outcome.output:
+        # No output at all: the turn has no answer, and the caller reads why.
+        return ChannelOutput(responded=False, error=failure)
 
     # The producer's response to the event, one deeper (RFC §8.3, §19.7.4).
     result_event = RoomEvent(
@@ -348,32 +352,72 @@ async def _run_loop(
             channel_id=producer.channel_id,
             channel_type=ChannelType.AI,
         ),
-        content=TextContent(body=result["output"]),
+        content=TextContent(body=outcome.output),
         chain_depth=event.chain_depth + 1,
         parent_event_id=event.parent_event_id,
         metadata={
-            "approved": result["approved"],
-            "iteration": result["iteration"],
-            "stopped": result["stopped"],
+            "approved": outcome.approved,
+            "iteration": outcome.iteration,
+            "stopped": outcome.stopped,
         },
     )
-    return ChannelOutput(responded=True, response_events=[result_event])
+    return ChannelOutput(responded=True, response_events=[result_event], error=failure)
 
 
-def _producer_failure(result: dict[str, Any]) -> Exception:
-    """Why a loop whose producer's task failed has no answer: its cut, or
-    its task's error (RFC §23.3)."""
-    if reason := result.get("loop_end_reason"):
+@dataclass
+class _LoopOutcome:
+    """How a loop ended (RFC §19.7.4): ``stopped`` is ``approved``,
+    ``max_iterations`` or ``producer_failed``; ``output`` is the last output
+    reviewed, from ``iteration``, the last iteration completed; ``failure`` is
+    the producer's failed task, when one stopped the loop."""
+
+    approved: bool = False
+    iteration: int = 0
+    output: str = ""
+    stopped: str = "max_iterations"
+    failure: DelegatedTaskResult | None = None
+
+    @property
+    def cut_reason(self) -> str | None:
+        """How the failed producer's turn was cut short, when it was."""
+        return _cut_reason(self.failure)
+
+
+def _cut_reason(result: DelegatedTaskResult | None) -> str | None:
+    """How a task's turn was cut short, when it was (RFC §23.3)."""
+    return (result.metadata or {}).get("loop_end_reason") if result is not None else None
+
+
+def _producer_failure(outcome: _LoopOutcome) -> Exception:
+    """The producer's failure, as the loop's caller reads it: its cut, or its
+    task's error."""
+    if reason := outcome.cut_reason:
         return TaskCutShortError(reason, None)
-    return RoomKitError(f"The producer's task failed: {result.get('producer_error')}")
+    error = outcome.failure.error if outcome.failure is not None else None
+    return RoomKitError(
+        f"The producer's task failed: {error}" if error else "The producer's task gave no output"
+    )
 
 
-def _stop_text(result: dict[str, Any]) -> str:
-    """How a loop ended, as the delivered text names it."""
-    if result["stopped"] == "producer_failed":
-        error = result.get("producer_error") or "no output"
-        return f"stopped: the producer's task failed ({error})"
-    return "approved" if result["approved"] else "max iterations reached"
+def _failed_task_text(result: DelegatedTaskResult | None) -> str:
+    """A producer's failed task, named without its error (RFC §23.3 step 8)."""
+    reason = _cut_reason(result)
+    return (
+        f"the producer's task failed (cut short: {reason})"
+        if reason
+        else ("the producer's task failed")
+    )
+
+
+def _delivered_text(outcome: _LoopOutcome) -> str:
+    """What an async loop delivers: how it ended, then its output."""
+    if outcome.stopped != "producer_failed":
+        status = "approved" if outcome.approved else "max iterations reached"
+        return f"The review loop has completed ({status}).\n\n{outcome.output}"
+    why = _failed_task_text(outcome.failure)
+    if not outcome.output:
+        return f"The review loop stopped before any output: {why}."
+    return f"The review loop stopped: {why}. Its last output, not approved:\n\n{outcome.output}"
 
 
 async def _async_loop_and_deliver(
@@ -395,7 +439,7 @@ async def _async_loop_and_deliver(
     """
     chain_depth = _current_turn_chain_depth()
     try:
-        result = await _execute_loop(
+        outcome = await _execute_loop(
             kit=kit,
             room_id=room_id,
             producer=producer,
@@ -404,15 +448,8 @@ async def _async_loop_and_deliver(
             task_desc=task_desc,
             max_iterations=max_iterations,
         )
-
-        status = _stop_text(result)
-        logger.info("[loop] Complete (%s), delivering results", status)
-
-        await kit.deliver(
-            room_id,
-            f"The review loop has completed ({status}).\n\n{result['output']}",
-            chain_depth=chain_depth,
-        )
+        logger.info("[loop] Complete (%s), delivering results", outcome.stopped)
+        await kit.deliver(room_id, _delivered_text(outcome), chain_depth=chain_depth)
     except Exception:
         logger.exception("[loop] Async loop failed")
     finally:
@@ -428,114 +465,101 @@ async def _execute_loop(
     strategy: WorkerStrategy | None,
     task_desc: str,
     max_iterations: int,
-) -> dict[str, Any]:
-    """Core loop logic shared by sync and async modes."""
+) -> _LoopOutcome:
+    """Core loop logic shared by sync and async modes: produce, review,
+    revise, until approved, out of iterations, or the producer's task fails."""
+    outcome = _LoopOutcome()
     current_input = task_desc
-    approved = False
-    final_output = ""
-    iteration = 0
-    stopped = "max_iterations"
-    failure: Any = None
 
     for iteration in range(1, max_iterations + 1):
         logger.info("[loop] Iteration %d/%d — producer", iteration, max_iterations)
-
-        post_agent_lifecycle(
-            kit,
-            producer.channel_id,
-            StatusLevel.PENDING,
-            action="iteration",
-            detail=current_input,
-            metadata={
-                "room_id": room_id,
-                "role": "producer",
-                "iteration": iteration,
-                "max_iterations": max_iterations,
-            },
+        delegated = await _produce(
+            kit, room_id, producer, current_input, iteration, max_iterations
         )
-        try:
-            delegated = await kit.delegate(room_id, producer.channel_id, current_input, wait=True)
-        except Exception as exc:
-            post_agent_lifecycle(
-                kit,
-                producer.channel_id,
-                StatusLevel.FAILED,
-                action="iteration",
-                detail=str(exc),
-                metadata={
-                    "room_id": room_id,
-                    "role": "producer",
-                    "iteration": iteration,
-                },
-            )
-            raise
         producer_output = task_work(delegated.result)
-        post_agent_lifecycle(
-            kit,
-            producer.channel_id,
-            StatusLevel.COMPLETED if producer_output else StatusLevel.FAILED,
-            action="iteration",
-            detail=producer_output or "empty output",
-            metadata={
-                "room_id": room_id,
-                "role": "producer",
-                "iteration": iteration,
-                "task_id": delegated.id,
-            },
-        )
         if not producer_output:
-            logger.warning("[loop] Producer returned empty output")
-            stopped, failure = "producer_failed", delegated.result
+            logger.info("[loop] The producer's task failed at iteration %d: stopping", iteration)
+            outcome.stopped, outcome.failure = "producer_failed", delegated.result
             break
+        outcome.iteration, outcome.output = iteration, producer_output
 
-        # Run reviewers
         logger.info("[loop] Iteration %d/%d — reviewers", iteration, max_iterations)
         review_results = await _run_reviewers(kit, room_id, reviewers, strategy, producer_output)
-
-        # Check if ALL reviewers approved
-        all_approved = all(r["approved"] for r in review_results)
-        if all_approved:
-            approved = True
-            stopped = "approved"
-            final_output = producer_output
+        if all(r["approved"] for r in review_results):
+            outcome.approved, outcome.stopped = True, "approved"
             logger.info("[loop] All reviewers approved at iteration %d", iteration)
             break
+        current_input = _revision_prompt(producer_output, review_results)
 
-        # Combine feedback from reviewers who didn't approve
-        feedback_parts = []
-        for r in review_results:
-            if not r["approved"]:
-                reviewer_name = r["reviewer"]
-                feedback_parts.append(f"[{reviewer_name}]: {r['feedback']}")
+    await _save_loop_state(kit, room_id, outcome)
+    return outcome
 
-        combined_feedback = "\n\n".join(feedback_parts)
-        current_input = (
-            f"Revise your previous work based on this feedback:\n\n"
-            f"--- Your previous output ---\n{producer_output}\n\n"
-            f"--- Reviewer feedback ---\n{combined_feedback}"
+
+async def _produce(
+    kit: RoomKit,
+    room_id: str,
+    producer: Agent,
+    task: str,
+    iteration: int,
+    max_iterations: int,
+) -> DelegatedTask:
+    """One producer iteration: its task delegated, with its status posts."""
+    metadata = {"room_id": room_id, "role": "producer", "iteration": iteration}
+    post_agent_lifecycle(
+        kit,
+        producer.channel_id,
+        StatusLevel.PENDING,
+        action="iteration",
+        detail=task,
+        metadata={**metadata, "max_iterations": max_iterations},
+    )
+    try:
+        delegated = await kit.delegate(room_id, producer.channel_id, task, wait=True)
+    except Exception as exc:
+        post_agent_lifecycle(
+            kit,
+            producer.channel_id,
+            StatusLevel.FAILED,
+            action="iteration",
+            detail=str(exc),
+            metadata=metadata,
         )
-        final_output = producer_output
+        raise
+    output = task_work(delegated.result)
+    post_agent_lifecycle(
+        kit,
+        producer.channel_id,
+        StatusLevel.COMPLETED if output else StatusLevel.FAILED,
+        action="iteration",
+        detail=output or _failed_task_text(delegated.result).capitalize() + ".",
+        metadata={**metadata, "task_id": delegated.id},
+    )
+    return delegated
 
-    # Update state
+
+def _revision_prompt(producer_output: str, review_results: list[dict[str, Any]]) -> str:
+    """The producer's next task: its output, with the feedback of every
+    reviewer who did not approve it."""
+    combined_feedback = "\n\n".join(
+        f"[{r['reviewer']}]: {r['feedback']}" for r in review_results if not r["approved"]
+    )
+    return (
+        f"Revise your previous work based on this feedback:\n\n"
+        f"--- Your previous output ---\n{producer_output}\n\n"
+        f"--- Reviewer feedback ---\n{combined_feedback}"
+    )
+
+
+async def _save_loop_state(kit: RoomKit, room_id: str, outcome: _LoopOutcome) -> None:
+    """Record how the loop ended on the room's conversation state."""
     room = await kit.get_room(room_id)
     state = get_conversation_state(room)
     ctx = dict(state.context)
-    ctx["_loop_approved"] = approved
-    ctx["_loop_iteration"] = iteration
+    ctx["_loop_approved"] = outcome.approved
+    ctx["_loop_iteration"] = outcome.iteration
+    ctx["_loop_stopped"] = outcome.stopped
     state = state.model_copy(update={"context": ctx})
-    room = set_conversation_state(room, state)
-    await kit.store.update_room(room)
-
-    return {
-        "approved": approved,
-        "iteration": iteration,
-        "output": final_output,
-        # Why it stopped: approved, out of iterations, or its producer's task
-        # failed, with that task's error and how its turn ended (RFC §23.3).
-        "stopped": stopped,
-        "producer_error": getattr(failure, "error", None),
-        "loop_end_reason": (getattr(failure, "metadata", None) or {}).get("loop_end_reason"),
-    }
+    await kit.store.update_room(set_conversation_state(room, state))
 
 
 async def _run_reviewers(

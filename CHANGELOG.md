@@ -476,14 +476,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A Loop whose producer's task failed says so (RMK-435, RFC §19.7.4,
   §23.3): the sync Loop published an empty producer message with no reason
-  and no error; with no output at all its turn now has no answer and
-  `InboundResult.error` carries the producer's failure, and with an earlier
-  output that output goes out, `approved: False`, with a new
-  `metadata["stopped"]`. The async Loop's text named "max iterations
-  reached" whatever stopped it. The voice `delegate_workers` of a
-  Supervisor with `auto_delegate` and `async_delivery` now waits on its
-  workers like its twins (no call bound), and `_extract_output_text` reads a
-  cut turn's stream as no answer.
+  and no error. With no output at all its turn now has no answer; with an
+  earlier output that output goes out, `approved: False`, with a new
+  `metadata["stopped"]` (`approved`, `max_iterations` or `producer_failed`)
+  and `iteration` naming the last iteration completed. Either way
+  `InboundResult.error` carries the producer's failure and ON_ERROR fires.
+  The async Loop's text named "max iterations reached" whatever stopped it;
+  it now says the producer's task failed (and the cut that ended it), never
+  with the task's error. The room's conversation state records
+  `_loop_stopped`. The voice `delegate_workers` of a Supervisor with
+  `auto_delegate` and `async_delivery` is a strategy's tool, no longer bound
+  by the channel's default call timeout (RFC §21.6).
 
 - The active agent of a realtime pipeline answers to its own tool policy
   (RMK-427, RFC §19.5): `Agent(tool_policy=ToolPolicy(deny=["wire_money"]))`
