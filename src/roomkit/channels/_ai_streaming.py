@@ -28,6 +28,7 @@ from roomkit.models.event import RoomEvent
 from roomkit.models.streaming import (
     LoopEndMarker,
     LoopEndReason,
+    SegmentBreakMarker,
     StreamDelta,
     ToolCallEndMarker,
     ToolCallStartMarker,
@@ -572,6 +573,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                         yield delta
                 outcome = self._round_outcome(round_.state, turn, context, rules, index)
                 if outcome == "retry":
+                    yield SegmentBreakMarker()
                     continue
                 if outcome is not None:
                     yield turn.end(outcome, index)
@@ -632,14 +634,15 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
             turn.saw_tool_call = True
             return "completed"
         if not state.tool_calls:
-            if self._try_empty_retry(
+            again = self._try_round_again(
                 context,
                 loop_ctx,
                 rules,
                 had_tool_round=turn.saw_tool_call,
                 final_text=state.text,
                 finish_reason=state.finish_reason,
-            ):
+            )
+            if again == "retry":
                 return "retry"
             return final_round_reason(
                 had_tool_round=turn.saw_tool_call,
@@ -647,7 +650,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                 finish_reason=state.finish_reason,
                 limit=rules.limit_passed(),
                 force_stopped=loop_ctx.force_stop,
-                unfinished=rules.unfinished,
+                unfinished=again == "unfinished",
             )
         turn.saw_tool_call = True
         if index >= self._max_tool_rounds:

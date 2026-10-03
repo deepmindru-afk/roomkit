@@ -524,7 +524,7 @@ class ObservingAIChannel(AIChannel):
 ```
 
 `reason` is one of `completed`, `max_rounds`, `timeout`, `budget_exceeded`,
-`truncated`, `empty_response`, `force_stopped`, `cancelled`, `error`. The limits each
+`truncated`, `empty_response`, `unfinished`, `force_stopped`, `cancelled`, `error`. The limits each
 reason refers to are the caller's own configuration and are not repeated on
 the marker.
 
@@ -573,6 +573,12 @@ and thinking markers to a channel's `deliver_stream`, but **not** the terminal
 marker — it would reach a renderer as noise. Overriding `deliver_stream` on a
 WebSocket or CLI channel will therefore not see it; wrap the AI channel's own
 `response_stream` instead.
+
+A round the loop tries again without a call, a continuation the channel's
+policy asked for or a call the provider could not parse, ends on a
+`SegmentBreakMarker`: the round's text is a segment of its own, as text
+before a call is, and the room writes it as its own message, so the next
+round's text never runs on from it.
 
 Additive by construction: the streaming protocol is a mixed
 `str | StreamMarker` whose consumers already dispatch on the markers they

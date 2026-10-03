@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from roomkit.channels.ai import AIChannel
 from roomkit.core.exceptions import ToolRefusedError, TurnCutShortError
 from roomkit.models.channel import ChannelBinding
-from roomkit.models.streaming import LoopEndMarker, ToolCallStartMarker
+from roomkit.models.streaming import LoopEndMarker, SegmentBreakMarker, ToolCallStartMarker
 from roomkit.models.tool_call import ToolCallEvent
 from roomkit.providers.ai.base import AIContext, AIMessage, AITool
 from roomkit.tools.context import _current_loop_ctx, _ToolLoopContext, current_tool_call
@@ -292,7 +292,7 @@ class AgentReasoningBackend(ReasoningBackend):
             ):
                 if isinstance(delta, str):
                     text.append(delta)
-                elif isinstance(delta, ToolCallStartMarker):
+                elif isinstance(delta, ToolCallStartMarker | SegmentBreakMarker):
                     if progress := "".join(text).strip():
                         yield ReasoningOutput(progress, spoken=self._spoken_progress)
                     text.clear()

@@ -16,6 +16,7 @@ from roomkit.models.enums import EventStatus, EventType, Visibility
 from roomkit.models.event import EventSource, RoomEvent, TextContent, ToolCallContent
 from roomkit.models.streaming import (
     LoopEndMarker,
+    SegmentBreakMarker,
     ThinkingDeltaMarker,
     ToolCallEndMarker,
     ToolCallStartMarker,
@@ -286,12 +287,16 @@ class SegmentWriter:
     async def take(self, marker: Any) -> list[RoomEvent]:
         """Handle a stream marker; the rows it committed, in order.
 
-        A call's start ends the text before it, which is its own segment. The
-        loop's end is recorded, and written with the turn's last message.
+        A call's start ends the text before it, which is its own segment, and
+        so does a break the loop marks when it goes on after a round without
+        a call. The loop's end is recorded, and written with the turn's last
+        message.
         """
         rows: list[RoomEvent | None] = []
         if isinstance(marker, ToolCallStartMarker):
             rows = [await self.flush_text(), await self.tool_start(marker)]
+        elif isinstance(marker, SegmentBreakMarker):
+            rows = [await self.flush_text()]
         elif isinstance(marker, ToolCallEndMarker):
             rows = [await self.tool_end(marker)]
         elif isinstance(marker, LoopEndMarker):

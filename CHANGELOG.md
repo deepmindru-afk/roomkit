@@ -31,8 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   continuation after a cancellation or a force-stop, nor past the turn's
   deadline or budget). A turn whose policy still asks once the bound has run
   out ends on the new `LoopEndReason` `unfinished`, with its end marker and
-  `ON_AI_RESPONSE`, never `completed`. Example:
-  `examples/ai_continuation_policy.py`.
+  `ON_AI_RESPONSE`, never `completed`. The text of a round it continues
+  stays its own message: the loop yields the new `SegmentBreakMarker`
+  there, where the room writer and a reasoning backend end the segment, as
+  at a call's start. Example: `examples/ai_continuation_policy.py`.
 
 - `AFTER_TOOL_ROUND` (RMK-409, RFC §6.4, §9.2): a SYNC hook between two rounds
   of an AI channel's tool loop. It fires after each round the channel ran
@@ -430,6 +432,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bucket), on `MediaRecordingConfig` or `ConferenceRecordingConfig`.
 
 ### Fixed
+
+- A call the provider could not parse, tried again after words of its own,
+  no longer runs them on into the next round's text (RMK-410, RFC §6.4): the
+  room stored `Let me look.The run finished at noon.` as one message, while
+  `ON_AI_RESPONSE` reported two segments, and a reasoning backend spoke the
+  run-on. The loop yields a `SegmentBreakMarker` before the try, and the
+  words are their own message.
 
 - A reasoning backend's tool call is bounded by the voice channel's gate only
   (RMK-417, RFC §12.4.1, §21.6): the backend agent's own bound (30 s by

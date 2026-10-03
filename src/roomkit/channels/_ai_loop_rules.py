@@ -13,7 +13,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from roomkit.channels._tool_eviction import REREAD_TOOL, ToolEviction
 from roomkit.channels._turn_budget import TurnBudget
@@ -87,8 +87,11 @@ def _accumulate_usage(total: dict[str, int], round_usage: dict[str, Any]) -> Non
             total[counter] = total.get(counter, 0) + value
 
 
-# How a tool loop can stop short of its final answer. A turn constrained to a
-# response schema that ends this way has no checked document to deliver.
+# How a tool loop can stop short of its final answer: every end but
+# ``completed``, and ``cancelled``, which someone chose. A turn constrained to
+# a response schema that ends this way has no checked document to deliver;
+# ``unfinished`` included, since the host's own policy judged its last text no
+# answer.
 _CUT_SHORT: frozenset[str] = frozenset(
     {
         "max_rounds",
@@ -97,6 +100,7 @@ _CUT_SHORT: frozenset[str] = frozenset(
         "force_stopped",
         "empty_response",
         "truncated",
+        "unfinished",
         "error",
     }
 )
@@ -230,8 +234,6 @@ class _ToolLoopState:
     billed_tokens: int = 0
     spent: float = 0.0
     empty_retries: int = 0
-    # The continuation policy asked to go on and no continuation may run.
-    unfinished: bool = False
     force_stop_nudged: bool = False
 
     def count(self, total: dict[str, int], usage: dict[str, Any]) -> None:
@@ -392,7 +394,7 @@ class AIToolLoopRulesMixin(_AIChannelContract):
             tools = self._eviction.with_reread_tool(tools)
         return context.model_copy(update={"tools": tools})
 
-    def _try_empty_retry(
+    def _try_round_again(
         self,
         context: AIContext,
         loop_ctx: _ToolLoopContext,
@@ -401,12 +403,17 @@ class AIToolLoopRulesMixin(_AIChannelContract):
         had_tool_round: bool,
         final_text: str,
         finish_reason: str | None = None,
-    ) -> bool:
-        """Bounded re-prompt when a round ends with no call to run and no answer.
+    ) -> Literal["retry", "unfinished"] | None:
+        """Another try at a round that ended without a call to run (RFC §6.4).
 
-        Returns ``True`` when the caller should re-generate: the nudge has
-        been appended and the retry counted. The deadline term is evaluated
-        last so no clock read happens when an earlier term already fails.
+        An empty answer after tool rounds, or a call that could not be parsed,
+        is tried again with the empty round's nudge; an answer the channel's
+        continuation policy finds unfinished, with the policy's instruction.
+        Both share one bound. Returns ``"retry"`` when the caller should
+        re-generate (the instruction appended, the try counted),
+        ``"unfinished"`` when the policy still asks and no try may run, and
+        ``None`` when the round stands. The deadline term is evaluated last so
+        no clock read happens when an earlier term already fails.
         """
         nudge = _empty_round_nudge(
             had_tool_round=had_tool_round,
@@ -414,44 +421,45 @@ class AIToolLoopRulesMixin(_AIChannelContract):
             finish_reason=finish_reason,
             log_label=state.log_label,
         )
+        continuation = nudge is None
+        if continuation:
+            nudge = self._continuation_nudge(context, final_text, finish_reason)
         if nudge is None:
-            nudge = self._continuation_nudge(context, loop_ctx, final_text, finish_reason)
-            state.unfinished = nudge is not None
+            return None
         if not (
-            nudge is not None
-            and state.empty_retries < self._max_empty_retries
+            state.empty_retries < self._max_empty_retries
             and not loop_ctx.cancel_event.is_set()
             and state.limit_passed() is None
         ):
-            return False
+            return "unfinished" if continuation else None
         state.empty_retries += 1
-        state.unfinished = False
         logger.warning(
-            "%s: round ended with no text (finish_reason=%s); re-prompting (retry %d/%d)",
+            "%s: %s (finish_reason=%s); re-prompting (retry %d/%d)",
             state.log_label,
+            "the continuation policy asked to go on" if continuation else "no answer",
             finish_reason,
             state.empty_retries,
             self._max_empty_retries,
         )
         if final_text.strip():
-            # What the model said before its call failed to parse, so it goes
-            # on from there rather than say it again.
+            # What the model said before its call failed to parse, or the
+            # answer the policy continues: it goes on from there.
             context.messages.append(AIMessage(role="assistant", content=final_text))
         context.messages.append(AIMessage(role="user", content=nudge))
-        return True
+        return "retry"
 
     def _continuation_nudge(
-        self,
-        context: AIContext,
-        loop_ctx: _ToolLoopContext,
-        final_text: str,
-        finish_reason: str | None,
+        self, context: AIContext, final_text: str, finish_reason: str | None
     ) -> str | None:
         """What the channel's continuation policy says of a round the model
         ended itself on text, without a call, a tool declared: the instruction
-        to go on, or ``None`` when the answer stands (RFC §6.4)."""
+        to go on, or ``None`` when the answer stands (RFC §6.4).
+
+        A cancelled or force-stopped round never reaches it: the loop ends on
+        those before it asks for another try.
+        """
         policy = self._continuation
-        if policy is None or loop_ctx.force_stop or not context.tools:
+        if policy is None or not context.tools:
             return None
         if not final_text.strip() or not is_natural_stop(finish_reason):
             return None

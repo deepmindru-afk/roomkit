@@ -145,6 +145,7 @@ CONSOLE=1 uv run python examples/<example>.py
 |---------|---------|-------------|
 | `ai_tools_function_calling.py` | Tools | Custom tools, function calling, and per-room tool config |
 | `ai_tool_search.py` | Tools | Progressive tool disclosure for large catalogues (find_tools/list_tools) |
+| `ai_continuation_policy.py` | Tools | Go on an answer that announced an action and stopped, and the `unfinished` end once the tries run out (mock provider, no API key) |
 | `ai_thinking.py` | Reasoning | Extended thinking / chain-of-thought support |
 | `ai_multi_speaker.py` | Context | Speaker attribution on user turns when several people talk in a room (mock provider, no API key) |
 | `ai_planning.py` | Planning | Structured task tracking with `plan_tasks` tool |
@@ -190,6 +191,7 @@ CONSOLE=1 uv run python examples/<example>.py
 | `hook_logging_analytics.py` | Hooks | AFTER_BROADCAST async hooks for logging and analytics |
 | `hook_moderation.py` | Hooks | Content moderation with BEFORE_BROADCAST hooks |
 | `hook_inject_welcome.py` | Hooks | Auto-inject welcome messages with hooks |
+| `hook_after_tool_round.py` | Hooks | AFTER_TOOL_ROUND between two tool rounds: withdraw tools for the rest of the turn and tell the model why (mock provider, no API key) |
 | `channel_mute_unmute.py` | Channel mgmt | Dynamic channel muting/unmuting and lifecycle hooks |
 | `presence_tracking.py` | Presence | Online/away/offline presence tracking |
 | `typing_indicators.py` | Typing | Typing start/stop indicator events |

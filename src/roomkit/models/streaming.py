@@ -65,6 +65,18 @@ class ThinkingDeltaMarker:
     thinking: str
 
 
+@dataclass(slots=True)
+class SegmentBreakMarker:
+    """Yielded when the loop goes on after a round that ended without a call.
+
+    The round's text, if any, is a segment of its own, as text before a call
+    is: a continuation the channel's policy asked for, or another try at a
+    round with nothing to deliver. A consumer ends the segment it holds there,
+    so the next round's text never runs on from it (RFC §6.4). One that only
+    renders text ignores it.
+    """
+
+
 #: Why a tool loop stopped. ``completed`` is the model having answered; every
 #: other value is the loop ending on a rule of its own.
 #:
@@ -78,6 +90,10 @@ class ThinkingDeltaMarker:
 #: ``budget_exceeded`` is a turn that reached its token or cost budget at a
 #: round boundary: the calls its last generation asked for do not run, and no
 #: further generation is asked for (RFC §6.4).
+#:
+#: ``unfinished`` is an answer the channel's continuation policy still asked
+#: to go on once the tries it shares with an empty round had run out: its text
+#: announced an action the model never took (RFC §6.4).
 #:
 #: ``error`` is a turn the provider interrupted after a tool round: the rounds
 #: are kept, each round's text as its own message, and it is an error too
@@ -133,7 +149,13 @@ class LoopEndMarker:
 
 
 #: Union of all marker types that may appear in a streaming response.
-StreamMarker = ToolCallStartMarker | ToolCallEndMarker | ThinkingDeltaMarker | LoopEndMarker
+StreamMarker = (
+    ToolCallStartMarker
+    | ToolCallEndMarker
+    | ThinkingDeltaMarker
+    | SegmentBreakMarker
+    | LoopEndMarker
+)
 
 #: A single item in the streaming response: either a text delta or a marker.
 StreamDelta = str | StreamMarker

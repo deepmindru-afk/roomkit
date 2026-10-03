@@ -97,7 +97,7 @@ async def test_prepare_round_context_drives_both_paths(monkeypatch, streaming: b
 @pytest.mark.parametrize("streaming", [False, True])
 async def test_empty_retry_rule_drives_both_paths(monkeypatch, streaming: bool) -> None:
     """Both loops consult the shared empty-retry rule, not a local copy."""
-    monkeypatch.setattr(AIChannel, "_try_empty_retry", lambda self, *a, **k: False)
+    monkeypatch.setattr(AIChannel, "_try_round_again", lambda self, *a, **k: None)
 
     provider = MockAIProvider(
         ai_responses=[_tool(), AIResponse(content=""), AIResponse(content="never")],
@@ -131,13 +131,13 @@ async def test_length_truncation_reaches_the_rule_on_both_paths(
     rule ``None``, making truncation indistinguishable from a silent model.
     """
     seen: list[str | None] = []
-    original = AIChannel._try_empty_retry
+    original = AIChannel._try_round_again
 
     def recording(self, context, loop_ctx, state, **kwargs):
         seen.append(kwargs.get("finish_reason"))
         return original(self, context, loop_ctx, state, **kwargs)
 
-    monkeypatch.setattr(AIChannel, "_try_empty_retry", recording)
+    monkeypatch.setattr(AIChannel, "_try_round_again", recording)
 
     provider = MockAIProvider(
         ai_responses=[

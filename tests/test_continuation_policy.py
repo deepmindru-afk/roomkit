@@ -14,13 +14,15 @@ from typing import Any
 
 import pytest
 
+from roomkit import InboundMessage, RoomKit, TextContent, WebSocketChannel
 from roomkit.channels.ai import AIChannel
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.context import RoomContext
-from roomkit.models.enums import ChannelCategory, ChannelType
+from roomkit.models.enums import ChannelCategory, ChannelType, EventType
 from roomkit.models.room import Room
+from roomkit.models.steering import Cancel
 from roomkit.models.tool_call import AIResponseEvent
-from roomkit.providers.ai.base import AIResponse, AITool
+from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from tests.conftest import make_event
 from tests.tool_loop_modes import LoopRun, respond
@@ -69,7 +71,7 @@ async def _turn(
     return run, provider, policy, reported
 
 
-@pytest.mark.parametrize("stop", ["stop", "end_turn", "STOP"])
+@pytest.mark.parametrize("stop", ["stop", "end_turn", "stop_sequence", "STOP"])
 async def test_an_announcement_is_continued_once_whatever_the_providers_stop(
     streaming: bool, stop: str
 ) -> None:
@@ -146,3 +148,122 @@ async def test_no_continuation_past_the_turns_deadline(streaming: bool) -> None:
 
     assert len(provider.calls) == 1
     assert run.reason == "timeout"
+
+
+async def _served(name: str, arguments: dict[str, Any]) -> str:
+    return "ok"
+
+
+async def test_an_earlier_empty_round_spends_the_bound_the_policy_shares(
+    streaming: bool,
+) -> None:
+    """One bound for both tries: once an empty round has used it, an
+    announcement ends the turn ``unfinished`` without a continuation."""
+    looked_up = AIResponse(
+        content="",
+        finish_reason="tool_calls",
+        tool_calls=[AIToolCall(id="c1", name="lookup", arguments={})],
+    )
+    run, provider, policy, _reported = await _turn(
+        [looked_up, _said(""), _said("I will check the run.")],
+        streaming,
+        tool_handler=_served,
+        max_empty_retries=1,
+    )
+
+    assert len(provider.calls) == 3
+    assert policy.read == ["I will check the run."]
+    assert run.reason == "unfinished"
+
+
+async def test_a_force_stopped_round_is_not_continued(streaming: bool) -> None:
+    """The ripcord's demanded prose ends the turn ``force_stopped``, whatever
+    the policy would say of it."""
+    repeated = AIResponse(
+        content="",
+        finish_reason="tool_calls",
+        tool_calls=[AIToolCall(id="c0", name="lookup", arguments={"q": "same"})],
+    )
+    run, _provider, policy, _reported = await _turn(
+        [*[repeated] * 6, _said("I will check the run.")], streaming, tool_handler=_served
+    )
+
+    assert run.reason == "force_stopped"
+    assert policy.read == []
+
+
+class _CancelledWhileAnswering(MockAIProvider):
+    """Answers, and the turn is cancelled while it does."""
+
+    channel: AIChannel
+
+    def _next_response(self) -> AIResponse:
+        self.channel.steer(Cancel(reason="the user stopped it"))
+        return super()._next_response()
+
+
+async def test_a_cancelled_round_is_not_continued(streaming: bool) -> None:
+    provider = _CancelledWhileAnswering(
+        ai_responses=[_said("I will check the run.")], streaming=streaming
+    )
+    policy = _Policy()
+    ch = AIChannel("ai1", provider=provider, tools=[_LOOKUP], continuation=policy)
+    provider.channel = ch
+    binding = ChannelBinding(
+        channel_id="ai1",
+        room_id="r1",
+        channel_type=ChannelType.AI,
+        category=ChannelCategory.INTELLIGENCE,
+    )
+
+    run = await respond(
+        ch, make_event(body="go", channel_id="sms1"), binding, RoomContext(room=Room(id="r1"))
+    )
+
+    assert run.reason == "cancelled"
+    assert policy.read == []
+    assert len(provider.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "first",
+    [
+        _said("I will check the run."),
+        # A call the provider could not parse, after words of its own: tried
+        # again under the same bound, and its words stay their own segment.
+        _said("Let me look.", "malformed_function_call"),
+    ],
+    ids=["continuation", "malformed-call"],
+)
+async def test_in_a_room_the_round_tried_again_keeps_its_own_message(
+    streaming: bool, first: AIResponse
+) -> None:
+    """Through the framework: the room stores the round's text and the
+    answer as two messages, the segments ON_AI_RESPONSE reports, never one
+    run-on sentence (RFC §6.4)."""
+    kit = RoomKit()
+    kit.register_channel(WebSocketChannel("member"))
+    kit.register_channel(
+        AIChannel(
+            "agent",
+            provider=MockAIProvider(
+                ai_responses=[first, _said("The run finished at noon.")], streaming=streaming
+            ),
+            tools=[_LOOKUP],
+            continuation=_Policy(),
+        )
+    )
+    await kit.create_room(room_id="room")
+    await kit.attach_channel("room", "member")
+    await kit.attach_channel("room", "agent", category=ChannelCategory.INTELLIGENCE)
+
+    await kit.process_inbound(
+        InboundMessage(channel_id="member", sender_id="u1", content=TextContent(body="go"))
+    )
+
+    said = [
+        event.content.body
+        for event in await kit.store.list_events("room")
+        if event.type == EventType.MESSAGE and event.source.channel_id == "agent"
+    ]
+    assert said == [first.content, "The run finished at noon."]

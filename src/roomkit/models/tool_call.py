@@ -359,10 +359,11 @@ class AIResponseEvent:
     multi-round answer and one guillotined by the round cap both report a
     positive count. Read this instead: ``"completed"`` is a turn that ended on
     its own terms, and ``"max_rounds"``, ``"timeout"``, ``"budget_exceeded"``, ``"cancelled"``,
-    ``"force_stopped"``, ``"truncated"``, ``"empty_response"`` and ``"error"``
-    each name the rule that stopped it (``"error"``: the provider interrupted
-    the turn after a tool round and the turn was delivered once its loop
-    ended, RFC §6.4).
+    ``"force_stopped"``, ``"truncated"``, ``"empty_response"``, ``"unfinished"``
+    and ``"error"`` each name the rule that stopped it (``"unfinished"``: the
+    channel's continuation policy still asked to go on once its tries had run
+    out; ``"error"``: the provider interrupted the turn after a tool round and
+    the turn was delivered once its loop ended, RFC §6.4).
 
     A turn whose loop did not reach its end fires no event at all: one that
     raised (a streamed turn the provider interrupted included) or whose

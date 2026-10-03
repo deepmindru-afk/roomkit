@@ -823,6 +823,32 @@ class TestAgentBackendAsAnAgent:
         assert "read_stored_result" in str(part.result)
         assert "read_stored_result" in [t.name for t in provider.calls[1].tools]
 
+    async def test_an_answer_its_policy_continues_is_progress_not_run_on(
+        self, streaming: bool
+    ) -> None:
+        """The announcement the agent's continuation policy goes on is its own
+        segment: said as progress, then the answer, never the two run together
+        (RFC §6.4)."""
+        provider = MockAIProvider(
+            ai_responses=[
+                AIResponse(content="I will check the run.", finish_reason="stop"),
+                AIResponse(content="X is running.", finish_reason="stop"),
+            ],
+            streaming=streaming,
+        )
+        agent = Agent(
+            "reasoner",
+            provider=provider,
+            continuation=lambda text: "Go on." if text.startswith("I will") else None,
+        )
+
+        outputs = [o async for o in AgentReasoningBackend(agent).run(self._request())]
+
+        assert outputs == [
+            ReasoningOutput("I will check the run.", spoken=False),
+            ReasoningOutput("X is running.", spoken=True, is_final=True),
+        ]
+
     async def test_a_registered_agent_is_refused(self) -> None:
         """A kit's hooks would judge each call a second time."""
         agent = Agent("reasoner", provider=MockAIProvider())

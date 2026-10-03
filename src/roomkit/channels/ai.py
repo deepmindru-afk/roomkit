@@ -201,12 +201,10 @@ class AIChannel(
         # Every turn's answer is constrained to this schema unless the binding
         # or the config provider says otherwise (RFC §6.7).
         self._response_schema = _portable_schema(response_schema)
-        self._max_tool_rounds = max_tool_rounds
+        self._store_loop_rules(
+            max_tool_rounds, tool_loop_warn_after, max_empty_retries, continuation
+        )
         self._store_tool_bounds(tool_loop_timeout_seconds, tool_timeout_seconds, tool_timeouts)
-        self._tool_loop_warn_after = tool_loop_warn_after
-        self._max_empty_retries = max_empty_retries
-        # Goes on an answer that did not act, within the same bound (RFC §6.4).
-        self._continuation = continuation
         # Reasoning-stream coalescing window — see _ThinkingCoalescer. Per-token
         # thinking deltas are batched into one realtime publish per window so a
         # long reasoning trace costs 10-100x fewer ephemeral events + WS sends
@@ -277,6 +275,21 @@ class AIChannel(
         turn_budget(tokens, usd, provider, fallback)
         self._turn_budget_tokens = tokens
         self._turn_budget_usd = usd
+
+    def _store_loop_rules(
+        self,
+        max_rounds: int,
+        warn_after: int,
+        max_empty_retries: int,
+        continuation: ContinuationPolicy | None,
+    ) -> None:
+        """Keep the rules the tool loop applies between rounds: its round cap,
+        when it warns, and the tries an empty round and the continuation policy
+        share, the policy going on an answer that did not act (RFC §6.4)."""
+        self._max_tool_rounds = max_rounds
+        self._tool_loop_warn_after = warn_after
+        self._max_empty_retries = max_empty_retries
+        self._continuation = continuation
 
     def _store_tool_bounds(
         self,

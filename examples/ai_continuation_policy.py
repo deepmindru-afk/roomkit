@@ -67,8 +67,18 @@ def scripted_model() -> MockAIProvider:
     )
 
 
-async def main() -> None:
-    model = scripted_model()
+def announcing_model() -> MockAIProvider:
+    """A model that announces the check again when told to go on."""
+    return MockAIProvider(
+        ai_responses=[
+            AIResponse(content="I will check the run.", finish_reason="stop"),
+            AIResponse(content="I will check it right away.", finish_reason="stop"),
+        ]
+    )
+
+
+async def run_turn(model: MockAIProvider) -> None:
+    """One member question to an agent with the policy; log what the room keeps."""
     kit = RoomKit()
     kit.register_channel(WebSocketChannel("member"))
     kit.register_channel(
@@ -78,6 +88,8 @@ async def main() -> None:
             tools=[STATUS],
             tool_handler=run_status,
             continuation=go_on_after_an_announcement,
+            # One try, shared with an empty round: the default.
+            max_empty_retries=1,
         )
     )
     await kit.create_room(room_id="room")
@@ -90,12 +102,20 @@ async def main() -> None:
         )
     )
 
+    # The announcement and what follows it are two messages, never one run-on.
     for event in await kit.store.list_events("room"):
         if event.type == EventType.MESSAGE and event.source.channel_id == "agent":
             reason = event.metadata.get("loop_end_reason", "")
             logger.info("agent: %s %s", event.content.body, f"[{reason}]" if reason else "")
     logger.info("model rounds: %d", len(model.calls))
     await kit.close()
+
+
+async def main() -> None:
+    logger.info("A model that acts once told to go on:")
+    await run_turn(scripted_model())
+    logger.info("A model that announces again: the turn ends unfinished.")
+    await run_turn(announcing_model())
 
 
 if __name__ == "__main__":
