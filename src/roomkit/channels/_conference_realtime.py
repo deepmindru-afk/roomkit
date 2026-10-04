@@ -699,9 +699,8 @@ class ConferenceRealtime:
     def _report_stale_call(self, call: RealtimeToolCall) -> None:
         """Report a call a session this channel no longer speaks for issued
         (after a detach or a reconnect): nothing serves it and nothing is
-        sent, and it still gets its one report, cancelled (RFC §9.3)."""
-        if self._config is None:
-            return
+        sent, and it still gets its one report, cancelled (RFC §9.3), after
+        a detach as after an unplug: the report needs no realtime config."""
         self._track_report(report_cancelled_call(self, call, "The conference left the room"))
 
     def _track_report(self, coro: Awaitable[None]) -> None:

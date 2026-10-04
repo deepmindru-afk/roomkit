@@ -144,9 +144,12 @@ class RealtimeToolRecoveryMixin:
         except RuntimeError:
             return False, None
 
-        self._track_task(
+        # Booked on arrival, as the provider door books its calls: a session
+        # that ends before the task runs still reports it (RFC §12.4).
+        call = self._book_recovered_call(session, tool_name, arguments)
+        call.task = self._track_task(
             loop,
-            self._dispatch_recovered_tool_call(session, tool_name, arguments, text),
+            self._serve_recovered_call(call),
             name=f"rt_tool_recovery:{session.id}:{tool_name}",
         )
         return True, remaining
@@ -205,12 +208,23 @@ class RealtimeToolRecoveryMixin:
         arguments: dict[str, Any],
         raw_text: str,
     ) -> None:
-        """Serve a recovered tool call behind the gate, as any realtime call
-        (RFC §12.4), and inject its outcome as context."""
-        # A call on a session that ended still gets its one report, cancelled.
-        call = RealtimeToolCall(session, f"recovered-{uuid4().hex[:12]}", tool_name, arguments)
+        """Book a recovered tool call and serve it in this task."""
+        call = self._book_recovered_call(session, tool_name, arguments)
         call.task = asyncio.current_task()
+        await self._serve_recovered_call(call)
+
+    def _book_recovered_call(
+        self, session: VoiceSession, tool_name: str, arguments: dict[str, Any]
+    ) -> RealtimeToolCall:
+        """A call recovered from speech, on the books under an id of its own."""
+        call = RealtimeToolCall(session, f"recovered-{uuid4().hex[:12]}", tool_name, arguments)
         self._open_tool_call(call)
+        return call
+
+    async def _serve_recovered_call(self, call: RealtimeToolCall) -> None:
+        """Serve a booked recovered call behind the gate, as any realtime call
+        (RFC §12.4), and inject its outcome as context; a call on a session
+        that ended still gets its one report, cancelled."""
         try:
             with self._tool_call_span(
                 call, SpanKind.REALTIME_TOOL_RECOVERY, "recovered_tool"
@@ -223,10 +237,10 @@ class RealtimeToolRecoveryMixin:
             self._close_tool_call(call)
         logger.info(
             "Recovered tool %s(%s) %s for session %s",
-            tool_name,
+            call.name,
             call.call_id,
             outcome.kind,
-            session.id,
+            call.session.id,
         )
 
 

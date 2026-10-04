@@ -796,6 +796,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A realtime call an ending cuts before its task ran, or that arrives while
+  the session is torn down, is reported once, cancelled, on every door
+  (RMK-460, RFC §12.4): a call recovered from speech is booked on arrival
+  as a provider's call is (a session ending first left it unreported), and
+  a conference reports a late call after `unplug_realtime()` as after a
+  detach.
+
 - Gemini Live frees the calls a reconnect orphans before the new socket's
   handshake when `reconfigure()` asked for the reconnect, as its receive
   loop already did (RMK-460, RFC §12.4): a handler finishing during the
