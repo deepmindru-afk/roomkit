@@ -473,7 +473,7 @@ def _refuse_own_tools(agent: AIChannel) -> None:
         "skills": agent._skills is not None,
         "a sandbox": agent._sandbox is not None,
         "an external tool handler": agent._external_tool_handler is not None,
-        "a human-input handler": agent._human_input_handler is not None,
+        "a human-input handler": agent._human_input is not None,
         "planning": agent._planner is not None,
     }
     if carried := [what for what, has in own.items() if has]:

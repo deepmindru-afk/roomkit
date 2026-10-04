@@ -81,6 +81,7 @@ from roomkit.providers.ai.base import (
 )
 from roomkit.providers.ai.json_schema import check_portable_schema
 from roomkit.realtime.base import RealtimeBackend
+from roomkit.tools._human_input_channel import ChannelHumanInput
 from roomkit.tools.compose import compose_tool_handlers, extract_tools
 from roomkit.tools.context import _current_loop_ctx, _ToolLoopContext
 from roomkit.tools.policy import ToolPolicy
@@ -331,23 +332,22 @@ class AIChannel(
         human_input_handler: HumanInputToolHandler | None,
     ) -> None:
         """The tools this channel declares and the handlers that serve them."""
-        self._human_input_handler = human_input_handler
+        # The person's tools, which the channel serves itself, before the
+        # host's handler, under their own timeout (RFC §9.3, §21.6).
+        self._human_input = (
+            ChannelHumanInput(human_input_handler, self.channel_type)
+            if human_input_handler is not None
+            else None
+        )
         # Names already reported as intercepted-but-never-offered; the
         # warning is a wiring diagnostic, not a per-turn event.
         self._warned_unoffered_human_tools: set[str] = set()
-        # Token identifying this channel object as the owner of its id's
-        # human-input scope; set at register_channel time (see
-        # ``ChannelOpsMixin.register_channel``) and handed back on close so a
-        # displaced predecessor cannot close the scope out from under the
-        # object that replaced it.
-        self._human_input_registration: int | None = None
-        extracted_defs, effective_handler = self._compose_host_tools(
-            tool_handler, tools, human_input_handler
-        )
+        extracted_defs, effective_handler = self._compose_host_tools(tool_handler, tools)
 
         # The host's handler, kept apart: all dispatch goes through
         # _channel_tool_handler, which routes to the registry's entries (the
-        # channel's own tools, orchestration's), the sandbox, then to this.
+        # channel's own tools, orchestration's), the sandbox, the person's
+        # tools, then to this.
         self._user_tool_handler = effective_handler
 
         # The host's tools (from the constructor), served by its handler.
@@ -365,10 +365,7 @@ class AIChannel(
         refuse_given_twice((tool.name for tool in self._user_tools), self.channel_id)
 
     def _compose_host_tools(
-        self,
-        tool_handler: ToolHandler | None,
-        tools: list[AITool | Tool] | None,
-        human_input_handler: HumanInputToolHandler | None,
+        self, tool_handler: ToolHandler | None, tools: list[AITool | Tool] | None
     ) -> tuple[list[AITool], ToolHandler | None]:
         """The host's tool definitions, and the one handler that serves them."""
         # Extract Tool objects: split into AITool definitions + composed handler
@@ -383,22 +380,14 @@ class AIChannel(
             effective_handler = compose_tool_handlers(tool_handler, extracted_handler)
         elif extracted_handler:
             effective_handler = extracted_handler
-
-        # Human-input handler: composed first (highest priority) so it
-        # intercepts matching tools before the user handler chain.
-        if human_input_handler:
-            if effective_handler:
-                effective_handler = compose_tool_handlers(human_input_handler, effective_handler)
-            else:
-                effective_handler = human_input_handler
         return extracted_defs, effective_handler
 
     def _host_tool_names(self) -> list[str]:
         """The names the host's own tools carry: its definitions and its
         human-input tools, served by the handlers it gave."""
         names = [tool.name for tool in self._user_tools]
-        if self._human_input_handler is not None:
-            names.extend(tool.name for tool in self._human_input_handler.tools or ())
+        if self._human_input is not None:
+            names.extend(self._human_input.declared_names)
         return names
 
     def _in_usage_digest(self, name: str) -> bool:
@@ -614,11 +603,8 @@ class AIChannel(
 
     async def close(self) -> None:
         """Close the channel, its provider, memory, and executors."""
-        if self._human_input_handler is not None:
-            await self._human_input_handler.handler.close(
-                channel_id=self.channel_id,
-                registration=self._human_input_registration,
-            )
+        if self._human_input is not None:
+            await self._human_input.close(self.channel_id)
         await super().close()
         await self._memory.close()
         if self._script_executor is not None:

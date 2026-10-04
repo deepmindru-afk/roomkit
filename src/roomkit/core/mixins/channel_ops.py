@@ -212,17 +212,13 @@ class ChannelOpsMixin(HelpersMixin):
         if channel._external_tool_handler is not None:
             self._wire_external_tool_handler(channel.channel_id, channel._external_tool_handler)
 
-        # Inject ON_USER_INPUT_REQUIRED hook into human input handler.
-        # Registering makes this object the owner of the id's human-input
-        # scope; the token it gets back is what its own close() presents,
-        # so a channel replaced under the same id and torn down afterwards
-        # closes nothing.
-        if channel._human_input_handler is not None:
-            channel._human_input_registration = (
-                channel._human_input_handler.handler._set_on_input_required(
-                    channel.channel_id,
-                    self._build_on_user_input_required_hook(channel.channel_id),
-                )
+        # The person's tools announce their requests through the room's
+        # ON_USER_INPUT_REQUIRED hooks; registering makes this object the
+        # owner of its id's requests (a session channel registers its own
+        # from set_framework).
+        if channel._human_input is not None:
+            channel._human_input.register(
+                channel.channel_id, self._build_on_user_input_required_hook(channel.channel_id)
             )
 
     def _wire_external_tool_handler(self, channel_id: str, handler: ExternalToolHandler) -> None:

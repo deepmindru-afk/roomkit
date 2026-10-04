@@ -4,8 +4,9 @@ Provides two layers:
 
 * :class:`HumanInputHandler` — core async primitive that manages pending
   requests (create / wait / resolve / reject).
-* :class:`HumanInputToolHandler` — :data:`ToolHandler` wrapper that composes
-  with :func:`compose_tool_handlers` for the native AIChannel path.
+* :class:`HumanInputToolHandler` — the tools that ask a person, which an
+  AIChannel, a RealtimeVoiceChannel or a conference's realtime configuration
+  serves itself when given it as ``human_input_handler=``.
 
 For the external-provider path (Claude Code sandbox), applications use
 :class:`HumanInputHandler` directly inside their
@@ -507,10 +508,15 @@ class HumanInputToolHandler:
     :class:`~roomkit.core.exceptions.UnservedToolCallError`, so the compose
     chain continues to the next handler (RFC §21.4).
 
-    Pass this to :class:`~roomkit.channels.ai.AIChannel` via the
-    ``human_input_handler`` parameter — the channel auto-composes it
-    and the framework injects the ``ON_USER_INPUT_REQUIRED`` hook
-    callback at registration time.
+    Pass this as ``human_input_handler=`` to an
+    :class:`~roomkit.channels.ai.AIChannel`, a
+    :class:`~roomkit.channels.realtime_voice.RealtimeVoiceChannel` or a
+    :class:`~roomkit.conference.models.ConferenceRealtimeConfig`: the channel
+    declares :attr:`tools` and serves :attr:`tool_names` before the host's
+    handler, on every door, under :attr:`timeout` rather than its default
+    call bound, and the framework injects the ``ON_USER_INPUT_REQUIRED``
+    hook callback at registration time (RFC §9.3, §21.6). Given as a plain
+    ``tool_handler`` it is served as any other handler, without those rules.
     """
 
     def __init__(
@@ -545,7 +551,19 @@ class HumanInputToolHandler:
         return list(self._tool_definitions)
 
     async def __call__(self, name: str, arguments: dict[str, Any]) -> str:
-        """ToolHandler protocol — blocks on matching tools, falls through otherwise.
+        """ToolHandler protocol: :meth:`ask` on an AI channel's door."""
+        return await self.ask(name, arguments)
+
+    async def ask(
+        self, name: str, arguments: dict[str, Any], *, channel_type: ChannelType = ChannelType.AI
+    ) -> str:
+        """Block on a person's answer to the call *name*; decline any other.
+
+        *channel_type* is the door the call came through, which the request
+        and its ``ON_USER_INPUT_REQUIRED`` event name. Raises
+        :class:`~roomkit.core.exceptions.UnservedToolCallError` for a name
+        outside :attr:`tool_names`, so a compose chain goes on to the next
+        handler (RFC §21.4).
 
         Raises :class:`~roomkit.core.exceptions.ToolRefusedError` when the
         request is rejected (a human, an ``ON_USER_INPUT_REQUIRED`` hook), the
@@ -570,6 +588,7 @@ class HumanInputToolHandler:
                 room_id=room_id,
                 tool_call_id=tool_call_id,
                 channel_id=channel_id,
+                channel_type=channel_type,
                 # Asking a human is where "whose turn is it" matters most: a
                 # request that names nobody has to be broadcast to the room,
                 # and whoever answers first answers for someone else.

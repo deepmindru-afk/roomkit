@@ -97,9 +97,9 @@ if TYPE_CHECKING:
     from roomkit.skills.executor import ScriptExecutor
     from roomkit.skills.models import Skill
     from roomkit.skills.registry import SkillRegistry
+    from roomkit.tools._human_input_channel import ChannelHumanInput
     from roomkit.tools.context import _ToolLoopContext
     from roomkit.tools.external import BeforeToolCallback, ExternalToolHandler
-    from roomkit.tools.human_input import HumanInputToolHandler
 
     ToolResult = str | list[AITextPart | AIImagePart]
     ToolHandler = Callable[[str, dict[str, Any]], Awaitable[ToolResult]]
@@ -176,7 +176,7 @@ class AIToolsMixin(_AIChannelContract):
     _tool_usage: ToolUsageMemory
     _skill_activation: SkillActivationMemory
     _planner: TaskPlanner | None
-    _human_input_handler: HumanInputToolHandler | None
+    _human_input: ChannelHumanInput | None
     _collisions: CollisionLog
     _registry: ChannelRegistry
     _tool_timeouts: ToolTimeouts
@@ -910,8 +910,8 @@ class AIToolsMixin(_AIChannelContract):
         """
         names = {e.name for e in self._registry.entries(None, source=ToolSource.CHANNEL)}
         names |= self._sandbox_tool_names()
-        if self._human_input_handler is not None:
-            names |= {tool.name for tool in self._human_input_handler.tools or ()}
+        if self._human_input is not None:
+            names |= self._human_input.declared_names
         return names
 
     def _served_tool_names(self, room_id: str | None) -> set[str]:
@@ -927,7 +927,7 @@ class AIToolsMixin(_AIChannelContract):
         return declared_once(tools, _tool_name, served, self._collisions)
 
     async def _channel_tool_handler(self, name: str, arguments: dict[str, Any]) -> ToolResult:
-        """Unified tool dispatcher: channel-managed -> sandbox -> skill -> user tools.
+        """Unified tool dispatcher: channel-managed -> sandbox -> person -> user tools.
 
         The outcomes the channel decides itself (a repeat the guard stops, a
         tool outside the turn's toolset) are refusals, raised as
@@ -958,6 +958,9 @@ class AIToolsMixin(_AIChannelContract):
             raise ChannelRefusalError(
                 json.dumps({"error": f"Tool '{name}' is not available in the current turn."})
             )
+        # The person's tools, before the host's handler (RFC §9.3).
+        if self._human_input is not None and self._human_input.serves(name):
+            return as_tool_result(await self._human_input.serve(name, arguments))
         if self._user_tool_handler is None:
             raise UnservedToolCallError(name)
         # The host's answer alone may be the "not mine" envelope (RFC §21.4):
@@ -1286,7 +1289,7 @@ class AIToolsMixin(_AIChannelContract):
         """The tools outside the registry that carry a bound of their own: a
         person's answer under its handler's timeout, a sandbox command under its
         ``timeout`` argument."""
-        names = set(self._human_input_handler.tool_names) if self._human_input_handler else set()
+        names = set(self._human_input.names) if self._human_input is not None else set()
         if self._sandbox is not None:
             names.add(TOOL_SANDBOX_BASH)
         return names

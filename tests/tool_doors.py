@@ -5,7 +5,10 @@ provider call, a recovered call and a backend's raw gate call, an agent
 reasoning backend's loop, and a conference. :func:`run_door` returns what
 ON_TOOL_CALL's SYNC chain, its ASYNC observers, BEFORE_TOOL_USE and the
 ``tool_call`` framework event saw, the stored TOOL_CALL_END rows, and what
-the model read.
+the model read. *channel* passes options every door's channel takes under
+the same name (``human_input_handler``, ``tool_timeout_seconds``,
+``tool_timeouts``): an AIChannel's, a realtime channel's, or a conference's
+realtime configuration.
 """
 
 from __future__ import annotations
@@ -127,7 +130,12 @@ def _install(kit: RoomKit, seen: Seen, hooks: Hooks) -> None:
 
 
 async def _text_door(
-    handler: Any, streaming: bool, call: AIToolCall, hooks: Hooks, schema: dict[str, Any]
+    handler: Any,
+    streaming: bool,
+    call: AIToolCall,
+    hooks: Hooks,
+    schema: dict[str, Any],
+    channel: dict[str, Any],
 ) -> Seen:
     provider = MockAIProvider(
         ai_responses=[
@@ -137,7 +145,7 @@ async def _text_door(
         streaming=streaming,
     )
     tool = TOOL.model_copy(update={"parameters": schema})
-    ai = AIChannel("ai1", provider=provider, tool_handler=handler, tools=[tool])
+    ai = AIChannel("ai1", provider=provider, tool_handler=handler, tools=[tool], **channel)
     kit = RoomKit()
     kit.register_channel(SimpleChannel("sms1"))
     kit.register_channel(ai)
@@ -180,9 +188,14 @@ async def _realtime(
 
 
 async def _realtime_door(
-    door: str, handler: Any, call: AIToolCall, hooks: Hooks, schema: dict[str, Any]
+    door: str,
+    handler: Any,
+    call: AIToolCall,
+    hooks: Hooks,
+    schema: dict[str, Any],
+    options: dict[str, Any],
 ) -> Seen:
-    kit, channel, provider, session = await _realtime(handler, schema)
+    kit, channel, provider, session = await _realtime(handler, schema, **options)
     seen = Seen()
     _install(kit, seen, hooks)
     arguments = dict(call.arguments)
@@ -203,7 +216,7 @@ async def _realtime_door(
 
 
 async def _agent_backend_door(
-    handler: Any, call: AIToolCall, hooks: Hooks, schema: dict[str, Any]
+    handler: Any, call: AIToolCall, hooks: Hooks, schema: dict[str, Any], channel: dict[str, Any]
 ) -> Seen:
     ai_provider = MockAIProvider(
         ai_responses=[
@@ -212,7 +225,9 @@ async def _agent_backend_door(
         ]
     )
     backend = AgentReasoningBackend(Agent("reasoner", provider=ai_provider))
-    kit, _, provider, session = await _realtime(handler, schema, reasoning_backend=backend)
+    kit, _, provider, session = await _realtime(
+        handler, schema, reasoning_backend=backend, **channel
+    )
     seen = Seen()
     _install(kit, seen, hooks)
     await provider.simulate_delegation(session, "d1", "integrator")
@@ -227,7 +242,7 @@ async def _agent_backend_door(
 
 
 async def _conference_door(
-    handler: Any, call: AIToolCall, hooks: Hooks, schema: dict[str, Any]
+    handler: Any, call: AIToolCall, hooks: Hooks, schema: dict[str, Any], channel: dict[str, Any]
 ) -> Seen:
     provider = MockRealtimeProvider()
 
@@ -235,7 +250,7 @@ async def _conference_door(
         return await handler(name, arguments)
 
     config = ConferenceRealtimeConfig(
-        provider=provider, tools=[_tool_dict(schema)], tool_handler=served
+        provider=provider, tools=[_tool_dict(schema)], tool_handler=served, **channel
     )
     kit, channel, _, _ = await realtime_kit(provider=provider, config=config)
     seen = Seen()
@@ -256,16 +271,19 @@ async def run_door(
     hooks: Hooks | None = None,
     call: AIToolCall | None = None,
     schema: dict[str, Any] = SCHEMA,
+    channel: dict[str, Any] | None = None,
 ) -> Seen:
     """Run one ``lookup`` call with *arguments* through *door*, served by
     *handler* ``(name, arguments)``, around the kit's *hooks*; or the model's
-    *call* as it stands, when given; the tool declared with *schema*."""
+    *call* as it stands, when given; the tool declared with *schema*, on a
+    channel given the options in *channel*."""
     call = call or AIToolCall(id="c1", name="lookup", arguments=dict(arguments or {}))
     hooks = hooks or Hooks()
+    options = dict(channel or {})
     if door.startswith("text-"):
-        return await _text_door(handler, door == "text-stream", call, hooks, schema)
+        return await _text_door(handler, door == "text-stream", call, hooks, schema, options)
     if door == "rt-agent-backend":
-        return await _agent_backend_door(handler, call, hooks, schema)
+        return await _agent_backend_door(handler, call, hooks, schema, options)
     if door == "conference":
-        return await _conference_door(handler, call, hooks, schema)
-    return await _realtime_door(door, handler, call, hooks, schema)
+        return await _conference_door(handler, call, hooks, schema, options)
+    return await _realtime_door(door, handler, call, hooks, schema, options)

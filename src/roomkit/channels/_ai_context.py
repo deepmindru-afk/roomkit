@@ -55,8 +55,8 @@ if TYPE_CHECKING:
     from roomkit.sandbox.executor import SandboxExecutor
     from roomkit.skills.executor import ScriptExecutor
     from roomkit.skills.registry import SkillRegistry
+    from roomkit.tools._human_input_channel import ChannelHumanInput
     from roomkit.tools.context import _ToolLoopContext
-    from roomkit.tools.human_input import HumanInputToolHandler
     from roomkit.tools.policy import ToolPolicy
 
 if TYPE_CHECKING:
@@ -115,7 +115,7 @@ class AIContextMixin(_AIChannelContract):
     _skills_in_prompt: bool
     _script_executor: ScriptExecutor | None
     _sandbox: SandboxExecutor | None
-    _human_input_handler: HumanInputToolHandler | None
+    _human_input: ChannelHumanInput | None
     _memory: MemoryProvider
     _describe_empty_event: EmptyEventDescriber | None
     _eviction: ToolEviction
@@ -149,10 +149,10 @@ class AIContextMixin(_AIChannelContract):
         Once per channel per name: the wiring does not change between turns,
         and a line per turn would bury the one that matters.
         """
-        handler = self._human_input_handler
-        if handler is None:
+        human = self._human_input
+        if human is None:
             return
-        missing = handler.tool_names - offered - self._warned_unoffered_human_tools
+        missing = human.names - offered - self._warned_unoffered_human_tools
         if not missing:
             return
         self._warned_unoffered_human_tools |= missing
@@ -331,8 +331,8 @@ class AIContextMixin(_AIChannelContract):
         tools.extend(self._orchestration_tools(binding.room_id))
 
         # Inject human-input tool definitions (e.g. AskUserQuestion)
-        if self._human_input_handler is not None:
-            tools.extend(self._human_input_handler.tools or ())
+        if self._human_input is not None:
+            tools.extend(self._human_input.definitions)
         return tools
 
     async def _add_channel_features(
