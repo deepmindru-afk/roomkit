@@ -796,6 +796,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A realtime `activate_skill` for a name that is no skill hints none of the
+  tools the channel serves itself (RMK-461, RFC §24.4), as the text path:
+  it named `activate_skill`, `read_skill_reference`, `find_tools` or
+  `list_tools`, which a fixed-declaration provider then failed to call.
+
 - `delegate_task`'s cache answers a repeat of a call only once its task
   completed (RMK-462, RFC §23.3): a failed or cancelled task is run again,
   where the cache returned its `delegated` answer for five minutes.

@@ -429,6 +429,32 @@ async def test_a_text_activation_hints_no_tool_the_channel_serves_itself(tmp_pat
     assert "tools_hint" not in answer
 
 
+@pytest.mark.parametrize("wanted", ["skill", "tools"])
+async def test_a_realtime_activation_hints_no_tool_the_channel_serves_itself(
+    tmp_path: Path, wanted: str
+) -> None:
+    """As on the text path (RFC §24.4): only the session's own catalogue is
+    matched, never activate_skill, read_skill_reference or Tool Search's."""
+    provider = MockRealtimeProvider()
+    channel = RealtimeVoiceChannel(
+        "rt",
+        provider=provider,
+        transport=MockRealtimeTransport(),
+        tools=[_schema(n) for n in ("weather_now", "reader_feed", *(f"x{i}" for i in range(30)))],
+        tool_handler=_Recorder(),
+        skills=_skills(tmp_path, "guide"),
+        tool_search=True,
+    )
+    kit, session = await _session(channel)
+
+    result = json.loads(
+        await _call(channel, provider, session, "activate_skill", {"name": wanted})
+    )
+    await kit.close()
+
+    assert "tools_hint" not in result
+
+
 async def test_a_fixed_provider_hint_points_to_call_tool(tmp_path: Path) -> None:
     provider = _FixedProvider()
     channel = RealtimeVoiceChannel(
