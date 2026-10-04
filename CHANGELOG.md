@@ -784,6 +784,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A conference call no tool handler serves reads as unserved (RMK-465, RFC
+  §9.3, §21.4), as on every channel: an `ON_TOOL_CALL` hook may still serve
+  it, and otherwise the model reads `No handler for tool <name>` and the call
+  is reported failed, where the conference refused it.
+
 - A response that fails mid-stream is no longer handed again to the channel
   that streamed it (RMK-467, RFC §12.2 step 13s). When the provider raised
   after a sentence, the text already streamed went back to that channel as an

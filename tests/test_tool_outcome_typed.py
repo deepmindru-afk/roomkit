@@ -281,3 +281,43 @@ def test_a_dangling_call_patched_as_cancelled_reads_as_failed() -> None:
     result = patched[-1].content[0]
     assert result.tool_call_id == "c1"
     assert result.is_error
+
+
+async def test_a_conference_without_a_handler_reads_a_call_as_unserved() -> None:
+    """Nothing serves it: unserved, a failure the hooks may still serve, as on
+    every channel (RFC §9.3, §21.4), never a refusal."""
+    provider = MockRealtimeProvider()
+    kit, channel, _, _ = await realtime_kit(
+        provider=provider, config=ConferenceRealtimeConfig(provider=provider)
+    )
+    session = await channel._realtime.ensure_session(ROOM)  # noqa: SLF001
+    observed: list[ToolCallEvent] = []
+
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    async def audit(event: ToolCallEvent, ctx: RoomContext) -> None:
+        observed.append(event)
+
+    await provider.simulate_tool_call(session, "c1", "lookup", {})
+    await until(lambda: bool(provider.tool_results) and bool(observed))
+    await kit.close()
+
+    assert json.loads(provider.tool_results[0][2]) == {"error": "No handler for tool lookup"}
+    assert [(e.is_error, e.refused) for e in observed] == [(True, False)]
+
+
+async def test_a_conference_hook_may_serve_a_call_no_handler_serves() -> None:
+    provider = MockRealtimeProvider()
+    kit, channel, _, _ = await realtime_kit(
+        provider=provider, config=ConferenceRealtimeConfig(provider=provider)
+    )
+    session = await channel._realtime.ensure_session(ROOM)  # noqa: SLF001
+
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="serve")
+    async def serve(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
+        return HookResult.modify(replace(event, result='{"found": true}'))
+
+    await provider.simulate_tool_call(session, "c1", "lookup", {})
+    await until(lambda: bool(provider.tool_results))
+    await kit.close()
+
+    assert json.loads(provider.tool_results[0][2]) == {"found": True}

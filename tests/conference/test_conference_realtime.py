@@ -390,7 +390,7 @@ class TestToolCalls:
         await until(lambda: bool(provider.tool_results))
 
         (_, _, result) = provider.tool_results[0]
-        assert "no handler" in result
+        assert json.loads(result) == {"error": "No handler for tool surprise"}
 
 
 _LOOKUP = {

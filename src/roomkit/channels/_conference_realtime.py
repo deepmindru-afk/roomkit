@@ -53,7 +53,7 @@ from roomkit.channels._realtime_tool_executor import (
 )
 from roomkit.channels._served_tools import CollisionLog, dict_tool_name, warn_tools_uncallable
 from roomkit.channels._tool_registry import schema_tool
-from roomkit.core.exceptions import ToolRefusedError
+from roomkit.core.exceptions import UnservedToolCallError
 from roomkit.core.task_utils import log_task_exception
 from roomkit.models.event import TextContent
 from roomkit.models.tool_call import ToolCallEvent
@@ -610,9 +610,9 @@ class ConferenceRealtime:
         at the depth of the answer that issued it (RFC §21.4, §8.3)."""
         config = self._config
         if config is None or config.tool_handler is None:
-            raise ToolRefusedError(
-                json.dumps({"error": f"no handler is configured for tool {call.name!r}"})
-            )
+            # Nothing serves it: unserved, which the hooks may still serve,
+            # as on every channel (RFC §9.3, §21.4).
+            raise UnservedToolCallError(call.name)
         room_id = str(call.room_id)
         room = self._rooms.get(room_id)
         loop_ctx = await tool_loop_context(
