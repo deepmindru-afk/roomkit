@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from roomkit.core.task_utils import log_task_exception
 from roomkit.voice.base import VoiceCapability, speaker_label
+from roomkit.voice.pipeline._ended_streams import EndedStreams
 from roomkit.voice.pipeline._telemetry import _PipelineTelemetry, active_stage_names
 from roomkit.voice.pipeline.aec.base import AECProvider
 from roomkit.voice.pipeline.vad.base import VADEventType
@@ -31,11 +32,6 @@ if TYPE_CHECKING:
     from roomkit.voice.pipeline.vad.base import VADEvent
 
 logger = logging.getLogger("roomkit.voice.pipeline")
-
-# How many ended streams the engine remembers (RMK-466). A mark only has to
-# outlive the frames still in flight and a backend's last deliveries, a matter
-# of seconds; keeping one per session forever would itself leak.
-_ENDED_STREAMS_KEPT = 4096
 
 
 def _maybe_schedule(result: object, home_loop: asyncio.AbstractEventLoop | None = None) -> None:
@@ -195,8 +191,7 @@ class AudioPipeline:
         self._in_speech_sessions: set[str] = set()
         # Streams handed to the stages — the keys reset() must release.
         self._stage_streams: set[str] = set()
-        # Ended streams, oldest first -> released yet (see _mark_ended).
-        self._ended_streams: dict[str, bool] = {}
+        self._ended_streams = EndedStreams()
         self._speaker_change_callbacks: list[SpeakerChangeCallback] = []
         self._dtmf_callbacks: list[DTMFCallback] = []
         self._recording_started_callbacks: list[RecordingStartedCallback] = []
@@ -966,7 +961,7 @@ class AudioPipeline:
             except RuntimeError:
                 self._home_loop = None
 
-        self._ended_streams.pop(session.id, None)
+        self._ended_streams.forget(session.id)
         self._cleanup_session_state(session.id)
         self._outbound_locks[session.id] = threading.Lock()
 
@@ -1134,24 +1129,11 @@ class AudioPipeline:
         until :meth:`on_session_ended`, which the channel calls once the
         teardown is done.
         """
-        self._mark_ended(session.id, released=False)
-
-    def _mark_ended(self, stream: str, *, released: bool) -> None:
-        """Remember how far a stream's end has gone, forgetting the oldest beyond the bound.
-
-        The mark maps the stream to whether ``on_session_ended`` has released it
-        yet. Work still arriving for a marked stream (a frame in flight on a DSP
-        worker, a callback queued for the loop, a last TTS chunk) is abandoned,
-        or leaves nothing behind once the stream is released.
-        """
-        self._ended_streams.pop(stream, None)
-        self._ended_streams[stream] = released
-        while len(self._ended_streams) > _ENDED_STREAMS_KEPT:
-            del self._ended_streams[next(iter(self._ended_streams))]
+        self._ended_streams.mark(session.id, released=False)
 
     def _release_if_released(self, stream: str) -> None:
         """Release again what work that crossed a stream's release rebuilt for it."""
-        if self._ended_streams.get(stream):
+        if self._ended_streams.released(stream):
             self._release_stream_state(stream)
 
     def on_session_ended(self, session: VoiceSession) -> None:
@@ -1161,7 +1143,7 @@ class AudioPipeline:
         stages' state for this stream, then stops recording and debug taps if
         active.
         """
-        self._mark_ended(session.id, released=True)
+        self._ended_streams.mark(session.id, released=True)
         self._release_stream_state(session.id)
         self._outbound_locks.pop(session.id, None)
 

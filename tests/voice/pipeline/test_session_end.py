@@ -13,11 +13,9 @@ from __future__ import annotations
 import asyncio
 import threading
 
-import pytest
-
 from roomkit.voice.audio_frame import AudioFrame
 from roomkit.voice.base import VoiceSession
-from roomkit.voice.pipeline import engine
+from roomkit.voice.pipeline._ended_streams import EndedStreams
 from roomkit.voice.pipeline.aec.mock import MockAECProvider
 from roomkit.voice.pipeline.config import AudioPipelineConfig
 from roomkit.voice.pipeline.denoiser.mock import MockDenoiserProvider
@@ -190,16 +188,14 @@ class TestOutbound:
         assert pipeline._aec_active_sources == {}
 
 
-def test_the_engine_forgets_the_oldest_ended_streams_beyond_its_bound(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(engine, "_ENDED_STREAMS_KEPT", 2)
-    vad = _speech_vad()
-    pipeline = AudioPipeline(AudioPipelineConfig(vad=vad))
-    sessions = [_session(f"s{i}") for i in range(3)]
-    for session in sessions:
-        pipeline.on_session_ended(session)
+def test_the_oldest_ended_streams_are_forgotten_beyond_the_bound() -> None:
+    ended = EndedStreams(kept=2)
+    for stream in ("s0", "s1", "s2"):
+        ended.mark(stream, released=True)
 
-    assert list(pipeline._ended_streams) == ["s1", "s2"]
-    pipeline.process_inbound(sessions[0], _frame())
-    assert len(vad.frames) == 1
+    assert "s0" not in ended
+    assert "s1" in ended and "s2" in ended
+    ended.mark("s1", released=False)  # marked again: the newest, not yet released
+    ended.mark("s3", released=True)
+    assert "s2" not in ended
+    assert not ended.released("s1")
