@@ -897,7 +897,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A delegated worker's turn cut at its bound no longer leaves its context in
   the delegating call (RMK-478, RFC §23.3): an inline delegation
-  (`kit.delegate(wait=True)`) runs the worker's turn in a task of its own. A
+  (`kit.delegate(wait=True)`) runs the worker's turn in a task of its own,
+  and a turn that ended before its caller was cancelled ends as it stands,
+  completed with its output, the cancellation going on after. A
   supervisor's worker cut at its `task_timeout` while running inline under
   the supervisor's call (the supervised sequential `delegate_workers`) left
   the worker's tool-loop context in the call's task, and the supervisor's

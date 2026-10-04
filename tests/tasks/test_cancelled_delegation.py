@@ -495,3 +495,41 @@ async def test_a_task_that_ran_ends_whole_though_its_runner_task_is_cancelled() 
     assert seen == [TaskStatus.COMPLETED, "done"]
     assert completed == [(TaskStatus.COMPLETED, None)]
     await kit.close()
+
+
+async def test_an_inline_task_whose_turn_ended_before_its_caller_was_cut_ends_completed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The caller is cancelled once the worker's turn ended, before it
+    resumed: the work ran, so the task ends as it stands, completed with its
+    output, then the cancellation goes on (RFC §23.3)."""
+    real_turn = delegation.run_agent_in_child_room
+    caller: list[asyncio.Task[Any]] = []
+
+    async def turn_then_cut_the_caller(*args: Any, **kwargs: Any) -> Any:
+        answer = await real_turn(*args, **kwargs)
+        asyncio.get_running_loop().call_soon(caller[0].cancel)  # before the caller resumes
+        return answer
+
+    monkeypatch.setattr(delegation, "run_agent_in_child_room", turn_then_cut_the_caller)
+    kit = RoomKit()
+    ends: list[tuple[str, str]] = []
+
+    @kit.hook(HookTrigger.ON_TASK_COMPLETED, execution=HookExecution.ASYNC)
+    async def _ended(event: Any, ctx: Any) -> None:
+        ends.append((str(event.metadata["task_status"]), event.content.body))
+
+    kit.register_channel(Agent("w1", provider=MockAIProvider(responses=["The findings."])))
+    await kit.create_room(room_id="r")
+
+    async def delegate() -> None:
+        caller.append(asyncio.current_task())  # type: ignore[arg-type]
+        await kit.delegate("r", "w1", "Find it.", wait=True)
+
+    task = asyncio.create_task(delegate())
+    await asyncio.wait({task})
+    await asyncio.sleep(0.05)
+    await kit.close()
+
+    assert task.cancelled()
+    assert ends == [("completed", "The findings.")]

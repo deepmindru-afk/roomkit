@@ -120,6 +120,28 @@ class _DelegationSpan:
         )
 
 
+async def _turn_outcome(
+    turn: asyncio.Task[str | None],
+) -> tuple[str | None, Exception | None, bool]:
+    """A delegated turn's answer or failure once it ended, and whether its
+    caller was cancelled after it had: a turn that ran to its end ends as it
+    stands (RFC §23.3). A cancellation that cut the turn itself goes on."""
+    try:
+        return await turn, None, False
+    except asyncio.CancelledError:
+        if not turn.done() or turn.cancelled():
+            raise
+        # The caller was cancelled once the turn had ended.
+        failure = turn.exception()
+        if failure is None:
+            return turn.result(), None, True
+        if isinstance(failure, Exception):
+            return None, failure, True
+        raise
+    except Exception as exc:
+        return None, exc, False
+
+
 def _unstarted_task_fields(cut: BaseException, context: dict[str, Any] | None) -> dict[str, Any]:
     """The outcome of a task its delegation cut before it ran: cancelled,
     or failed with what cut it."""
@@ -451,23 +473,14 @@ class DelegationMixin(HelpersMixin):
         """Run the agent inline and return a pre-completed task."""
         start = time.monotonic()
         handle.status = TaskStatus.IN_PROGRESS
-        agent_response: str | None = None
-        failure: Exception | None = None
-
+        turn = self._child_turn(
+            handle,
+            require_structured_result=require_structured_result,
+            max_result_retries=max_result_retries,
+            result_tool=result_tool,
+        )
         try:
-            # In a task of its own: the worker's turn sets its tool-loop
-            # context in a copy of the caller's, so a cut that ends the turn
-            # elsewhere never leaves it in the delegating call's (RFC §23.3).
-            agent_response = await asyncio.create_task(
-                run_agent_in_child_room(
-                    self,  # ty: ignore[invalid-argument-type]
-                    handle.child_room_id,
-                    handle.task,
-                    require_structured_result=require_structured_result,
-                    max_result_retries=max_result_retries,
-                    result_tool=result_tool,
-                )
-            )
+            agent_response, failure, caller_cut = await _turn_outcome(turn)
         except asyncio.CancelledError:
             # A caller cancelled this delegation (a supervisor's per-task
             # timeout through asyncio.wait_for): the task ends as any task
@@ -479,10 +492,8 @@ class DelegationMixin(HelpersMixin):
             )
             await shielded(self._complete_inline(handle, cancelled, on_complete, span))
             raise
-        except Exception as exc:
-            log_failure(_tasks_logger, exc, f"Inline task {handle.id}")
-            failure = exc
-
+        if failure is not None:
+            log_failure(_tasks_logger, failure, f"Inline task {handle.id}")
         elapsed = (time.monotonic() - start) * 1000
         result = _result_from_handle(
             handle,
@@ -491,7 +502,31 @@ class DelegationMixin(HelpersMixin):
         )
         # Its work ran: it ends as it stands, whatever cancels its caller now.
         await shielded(self._complete_inline(handle, result, on_complete, span))
+        if caller_cut:
+            raise asyncio.CancelledError
         return handle
+
+    def _child_turn(
+        self,
+        handle: DelegatedTask,
+        *,
+        require_structured_result: bool,
+        max_result_retries: int,
+        result_tool: ResultTool | None,
+    ) -> asyncio.Task[str | None]:
+        """The delegated turn, in a task of its own: the worker's turn sets
+        its tool-loop context in a copy of the caller's, so a cut that ends
+        the turn elsewhere never leaves it in the delegating call's (RFC §23.3)."""
+        return asyncio.create_task(
+            run_agent_in_child_room(
+                self,  # ty: ignore[invalid-argument-type]
+                handle.child_room_id,
+                handle.task,
+                require_structured_result=require_structured_result,
+                max_result_retries=max_result_retries,
+                result_tool=result_tool,
+            )
+        )
 
     async def _complete_inline(
         self,
