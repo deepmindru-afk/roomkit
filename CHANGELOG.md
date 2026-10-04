@@ -704,6 +704,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A reasoning backend is offered the tools the participant's current role
+  admits (RMK-458, RFC §12.4.1, §21.1). Its catalogue and the refusals it is
+  handed (`unavailable`) were built with the role and the room's agent as the
+  session last read them, while the gate reads them again at each call: a
+  participant promoted mid-session was still not offered the tool, and one
+  demoted was offered a tool its call was then refused. They are now read
+  when each delegation starts. On a door through which the channel serves
+  none of its own tools, skill gating exempts none of them either, as the
+  policy already did: the exemption is read once per door.
+
 - A supervisor's background workers whose pipeline fails hand the failure
   back to the supervisor (RMK-451, RFC §19.7.3). A delegation that raised
   under the dispatch tool (`delegate_workers`, voice or text with a

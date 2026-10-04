@@ -169,6 +169,13 @@ class RealtimeToolGateMixin:
         """The channel's own tools that escape the policy and skill gating (RFC §21.1)."""
         return frozenset(self._registry.names(None, lambda traits: traits.exempt))
 
+    def _door_exempt(self, channel_serves: bool) -> frozenset[str]:
+        """What escapes the policy and skill gating on a door: the channel's
+        exempt tools where it serves its own tools, nothing where it does not
+        (a reasoning backend, a call recovered from speech), whose calls name
+        no tool of the channel's (RFC §21.1)."""
+        return self._exempt_tool_names() if channel_serves else frozenset()
+
     def _declared_once(
         self, tools: list[dict[str, Any]], room_id: str | None
     ) -> list[dict[str, Any]]:
@@ -322,8 +329,7 @@ class RealtimeToolGateMixin:
         # Access before the arguments: a refused tool never names its schema
         # (RFC §21.1).
         await self._refresh_session_policies(session, room_id)
-        exempt = self._exempt_tool_names() if channel_serves else frozenset()
-        cause = self._access_cause(name, session.id, exempt)
+        cause = self._access_cause(name, session.id, self._door_exempt(channel_serves))
         if cause is not None:
             logger.warning("Realtime tool %s refused: %s", name, cause)
             return arguments, GateRefusal(json.dumps({"error": cause})), None
@@ -376,14 +382,14 @@ class RealtimeToolGateMixin:
         """Why the session may not call *name*, in the words every gate uses
         (RFC §21.1): its tool policies, resolved for its participant, then
         skill gating, as on the classic path; *exempt* as
-        :meth:`_session_admits` reads it. *can_activate* is false for a model
-        that cannot activate a skill itself (a reasoning backend)."""
+        :meth:`_session_admits` reads it, for both. *can_activate* is false for
+        a model that cannot activate a skill itself (a reasoning backend)."""
         if not self._session_admits(session_id, name, exempt):
             return policy_refusal(name)
         # Hiding a gated tool from the catalogue is not enforcement — the model
         # may still name one it saw before the skill was deactivated.
         support = self._skill_support
-        if support is not None and support.is_gated(name, session_id):
+        if support is not None and support.is_gated(name, session_id, exempt=exempt):
             closed = support.is_closed_for_good(name)
             return gated_tool_refusal(name, can_activate=can_activate, closed=closed)
         return None

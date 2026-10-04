@@ -378,3 +378,60 @@ async def test_the_skills_preamble_says_scripts_cannot_run_when_the_policy_denie
     note = SKILLS_NO_SCRIPTS_NOTE.strip()
     assert note in await prompt_under(ToolPolicy(deny=["run_skill_script"]))
     assert note not in await prompt_under(None)
+
+
+class _Lister(ReasoningBackend):
+    """Records the catalogue of each delegation it serves."""
+
+    def __init__(self) -> None:
+        self.catalogues: list[list[str]] = []
+
+    async def run(self, request: ReasoningRequest) -> AsyncIterator[ReasoningOutput]:
+        self.catalogues.append([tool["name"] for tool in request.tools or []])
+        yield ReasoningOutput("done", is_final=True)
+
+
+async def test_a_delegation_offers_the_tools_the_participant_s_current_role_admits() -> None:
+    """RMK-458: the backend's catalogue is read as the gate reads its calls,
+    with the role as it stands at the delegation, not at the session's start."""
+    observer_cannot_delete = ToolPolicy(
+        role_overrides={"observer": RoleOverride(deny=["delete_*"])}
+    )
+    calls, backend = _Calls(), _Lister()
+    kit, _, provider, session = await _channel(
+        calls, policy=observer_cannot_delete, role="observer", backend=backend
+    )
+    await provider.simulate_delegation(session, "d1", "integrator")
+    await until(lambda: len(backend.catalogues) == 1)
+
+    promoted = await kit.store.get_participant("r1", "u1")
+    assert promoted is not None
+    await kit.store.update_participant(promoted.model_copy(update={"role": "member"}))
+    await provider.simulate_delegation(session, "d2", "integrator")
+    await until(lambda: len(backend.catalogues) == 2)
+
+    assert backend.catalogues == [["lookup_account"], ["lookup_account", "delete_account"]]
+    await kit.close()
+
+
+async def test_a_door_that_serves_no_channel_tool_exempts_none_from_gating(
+    tmp_path: Path,
+) -> None:
+    """RFC §21.1: what escapes the policy escapes skill gating, door by door;
+    on a reasoning backend's door nothing of the channel's own escapes."""
+    folder = tmp_path / "everything"
+    folder.mkdir()
+    (folder / "SKILL.md").write_text(
+        '---\nname: everything\ndescription: gates all\nallowed_tools: "*"\n---\nBody.',
+        encoding="utf-8",
+    )
+    registry = SkillRegistry()
+    registry.discover(tmp_path)
+    kit, channel, _, session = await _channel(_Calls(), policy=ToolPolicy(), skills=registry)
+
+    served = channel._access_cause("activate_skill", session.id, channel._door_exempt(True))
+    backend = channel._access_cause("activate_skill", session.id, channel._door_exempt(False))
+
+    assert served is None
+    assert backend is not None
+    await kit.close()

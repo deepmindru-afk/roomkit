@@ -75,7 +75,8 @@ class RealtimeDelegationHost(Protocol):
 
     Cross-mixin methods (implemented elsewhere in the MRO):
         _track_task, _rt_span_ctx, _update_idle_event,
-        _tool_reachable, _access_cause, _open_tool_call, _close_tool_call,
+        _access_cause, _door_exempt,
+        _refresh_session_policies, _open_tool_call, _close_tool_call,
         _tool_call_span,
         and the executor's host steps.
     """
@@ -124,8 +125,9 @@ class RealtimeDelegationMixin:
     _rt_span_ctx: Any  # see RealtimeDelegationHost — cross-mixin
     _expect_provider_output: Any
     _update_idle_event: Any  # see RealtimeDelegationHost — cross-mixin
-    _tool_reachable: Any  # see RealtimeToolsMixin
     _access_cause: Any  # see RealtimeToolsMixin
+    _door_exempt: Any  # see RealtimeToolGateMixin
+    _refresh_session_policies: Any  # see RealtimeToolGateMixin
     _open_tool_call: Any  # see RealtimeToolsMixin
     _close_tool_call: Any  # see RealtimeToolsMixin
     _tool_calls: Any  # see RealtimeToolsMixin
@@ -284,6 +286,12 @@ class RealtimeDelegationMixin:
         backend = self._reasoning_backend
         if backend is None:
             return
+        # The catalogue the backend is offered follows the participant's role
+        # and the room's agent as they stand now, as the gate reads them at
+        # each call (RFC §12.4.1).
+        with self._state_lock:
+            room_id = self._session_rooms.get(session.id)
+        await self._refresh_session_policies(session, room_id)
         request = self._reasoning_request(session, delegation_id)
         answered = False
 
@@ -350,11 +358,18 @@ class RealtimeDelegationMixin:
 
     def _backend_catalogue(self, session_id: str) -> list[dict[str, Any]]:
         """The session's tools a backend may call: none its policy denies or a
-        skill gates, so a tool the backend is offered is one it may call."""
+        skill gates, read as its door's gate reads them (nothing of the
+        channel's own escapes), so a tool the backend is offered is one it
+        may call."""
         with self._state_lock:
             declared = session_id in self._session_tools
         tools = self._session_catalogue(session_id) if declared else []
-        return [dict(t) for t in tools if self._tool_reachable(str(t.get("name", "")), session_id)]
+        exempt = self._door_exempt(False)
+        return [
+            dict(t)
+            for t in tools
+            if self._access_cause(str(t.get("name", "")), session_id, exempt) is None
+        ]
 
     def _backend_unavailable(self, session_id: str) -> dict[str, str]:
         """The session's tools a backend is not offered, each with the refusal
@@ -363,8 +378,9 @@ class RealtimeDelegationMixin:
         with self._state_lock:
             declared = session_id in self._session_tools
         names = (str(t.get("name", "")) for t in self._session_catalogue(session_id))
+        exempt = self._door_exempt(False)
         causes = {
-            name: self._access_cause(name, session_id, can_activate=False)
+            name: self._access_cause(name, session_id, exempt, can_activate=False)
             for name in names
             if declared
         }

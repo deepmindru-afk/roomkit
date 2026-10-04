@@ -255,7 +255,14 @@ class RealtimeSkillSupport:
         opened = activated | {pending.name} if pending is not None else activated
         return self._skills.gated_tool_names(opened)
 
-    def is_gated(self, name: str, session_id: str, gated: set[str] | None = None) -> bool:
+    def is_gated(
+        self,
+        name: str,
+        session_id: str,
+        gated: set[str] | None = None,
+        *,
+        exempt: Container[str] | None = None,
+    ) -> bool:
         """Whether *name* is gated by a skill this session has not activated.
 
         Hiding a tool from the catalogue is not enforcement: a model that saw
@@ -272,9 +279,11 @@ class RealtimeSkillSupport:
         and is gated like any other tool.
 
         *gated* lets a caller filtering a whole catalogue compute the gated set
-        once instead of once per tool.
+        once instead of once per tool. *exempt* is what escapes on the door
+        asking, as its policy reads it (RFC §21.1); by default the channel's
+        exempt tools.
         """
-        if name in self._exempt_tools():
+        if name in (self._exempt_tools() if exempt is None else exempt):
             return False
         if gated is None:
             gated = self._gated_tool_names(session_id)
