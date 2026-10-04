@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `AudioPipeline.on_session_ending(session)` (RMK-466): a session's end has
+  begun and its teardown still awaits. From there the session's inbound
+  frames are not processed and the callbacks still due for it are dropped;
+  its state and recording stay until `on_session_ended`.
+  `RealtimeVoiceChannel` calls it as the session turns `ENDED`.
+
 - `TOOL_SEARCH_INFRA_TOOL_NAMES`, `TOOL_FIND_TOOLS` and `TOOL_LIST_TOOLS`,
   exported from `roomkit` and `roomkit.channels` (RMK-468): the names of the
   two discovery tools a channel serves itself under Tool Search, `find_tools`
@@ -735,6 +741,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to `RealtimeVoiceChannel(..., skills=...)`.
 
 ### Fixed
+
+- Audio work of a session whose end has begun reaches nothing and rebuilds
+  nothing (RMK-466). A frame still in the stages on an `inbound_dsp_threads`
+  worker when its session ended, and the callbacks it sent back to the loop,
+  reached the channel after the end: a realtime provider heard
+  `send_activity_start` and a truncate after its `disconnect`, the client a
+  `clear_audio`, and a `VoiceChannel` recreated the per-session entries
+  `unbind_session` had removed. A frame a backend still delivered after
+  `unbind_session` ran the whole pipeline again, and a frame reaching a
+  realtime session during its teardown's awaits (`provider.disconnect`,
+  `transport.disconnect`) went through it before `on_session_ended`. Each
+  rebuilt the stages' per-stream state (VAD, denoiser, AEC: native memory)
+  for good, one leak per session ended with audio in flight. The pipeline
+  now remembers the streams it ended: their frames are not processed, the
+  callbacks still due for them are dropped, a frame in flight across the
+  release leaves nothing behind, a frame played to an ended session is
+  processed and leaves no stage state, and its AEC reference and activity
+  are ignored.
 
 - A voice `Loop` (`async_delivery=True`) hands its outcome back to the voice
   channel that started it, success and failure alike (RMK-462, RFC §19.7.4),

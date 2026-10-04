@@ -100,6 +100,9 @@ class TestBridgedSessionsHaveIndependentVAD:
         alice = _session("alice")
         pipeline.process_inbound(alice, _frame())
         pipeline.on_session_ended(alice)
+        # A returning speaker is activated again; until then, its frames are
+        # those of an ended session and are not processed (RMK-466).
+        pipeline.on_session_active(alice)
         pipeline.process_inbound(alice, _frame())
 
         # Not resumed halfway through a stale sequence.

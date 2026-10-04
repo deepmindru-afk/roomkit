@@ -1562,10 +1562,11 @@ class RealtimeVoiceChannel(
 
     async def _end_session_owned(self, session: VoiceSession) -> None:
         """The teardown itself, run once per session by ``end_session``."""
-        # Stop admitting calls before the first asynchronous cleanup step.
-        # A session hangup must also stop its in-flight tools without touching
-        # calls owned by other sessions sharing this channel.
+        # Stop admitting calls and audio before the first asynchronous cleanup
+        # step. A session hangup must also stop its in-flight tools without
+        # touching calls owned by other sessions sharing this channel.
         session.state = VoiceSessionState.ENDED
+        self._pipeline_session_ending(session)
         await self._stop_session_tools(session)
 
         with self._state_lock:
@@ -1595,7 +1596,6 @@ class RealtimeVoiceChannel(
         except Exception:
             logger.exception("Error disconnecting transport for session %s", session.id)
 
-        # Notify pipeline of session end
         self._pipeline_session_ended(session)
 
         # Clean up skill activation state

@@ -24,6 +24,8 @@ from roomkit.voice.backends.mock import MockVoiceBackend
 from roomkit.voice.base import AudioChunk, TranscriptionResult
 from roomkit.voice.pipeline import AudioPipelineConfig, MockVADProvider
 from roomkit.voice.pipeline.denoiser.mock import MockDenoiserProvider
+from roomkit.voice.pipeline.diarization.base import DiarizationResult
+from roomkit.voice.pipeline.diarization.mock import MockDiarizationProvider
 from roomkit.voice.pipeline.offload import InboundFrameOffload
 from roomkit.voice.pipeline.vad.base import VADEvent, VADEventType
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
@@ -414,3 +416,146 @@ class TestCloseWithAFrameInFlight:
         assert calls[calls.index("disconnect") + 1 :] == ["close"], calls
         types = [message.get("type") for _, message in transport.sent_messages]
         assert "clear_audio" not in types[types.index("session_ended") :], types
+
+
+class _SlowDisconnect(MockRealtimeProvider):
+    """A provider whose disconnect waits to be released, as a real socket close does."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.disconnecting = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def disconnect(self, session: Any) -> None:
+        self.disconnecting.set()
+        await self.release.wait()
+        await super().disconnect(session)
+
+
+class TestSessionEndWithAFrameInFlight:
+    """Audio work of a session whose end has begun reaches nothing (RMK-466).
+
+    Unlike ``close()``, a session's end leaves the channel running: a frame
+    still in the stages, a callback the pool sent home, a frame the transport
+    delivers during the teardown's awaits must neither reach the provider or
+    the client nor recreate the session's state.
+    """
+
+    @_PATHS
+    async def test_voice_channel_unbind_leaves_no_session_state(self, threads: int | None) -> None:
+        backend = MockVoiceBackend()
+        kit = RoomKit(voice=backend)
+        channel = VoiceChannel(
+            "voice-1",
+            stt=_StreamingSTT(),
+            tts=MockTTSProvider(),
+            backend=backend,
+            pipeline=AudioPipelineConfig(
+                vad=MockVADProvider(
+                    events=[
+                        VADEvent(type=VADEventType.SPEECH_START),
+                        VADEvent(type=VADEventType.SPEECH_END, audio_bytes=_FRAME),
+                    ]
+                ),
+                denoiser=_SlowDenoiser(0.05),
+                diarization=MockDiarizationProvider(
+                    results=[
+                        DiarizationResult(
+                            speaker_id="speaker_0", confidence=0.9, is_new_speaker=False
+                        )
+                    ]
+                    * 2
+                ),
+                inbound_dsp_threads=threads,
+            ),
+            pipeline_speakers=True,
+        )
+        kit.register_channel(channel)
+        room = await kit.create_room()
+        await kit.attach_channel(room.id, "voice-1")
+        session = await kit.join(room.id, "voice-1", participant_id="user-1")
+
+        # On the pool the SPEECH_START frame is still in the denoiser when the
+        # session is unbound; the SPEECH_END frame arrives after, as a backend
+        # still connected keeps delivering.
+        await backend.simulate_audio_received(session, AudioFrame(data=_FRAME))
+        channel.unbind_session(session)
+        await backend.simulate_audio_received(session, AudioFrame(data=_FRAME))
+        await asyncio.sleep(0.2)
+
+        tally = channel._pipeline_speaker_tally
+        assert tally is not None
+        assert session.id not in channel._last_input_level_at
+        assert session.id not in channel._turn_speech_state
+        assert session.id not in channel._queued_speech
+        assert session.id not in tally._seconds
+        assert session.id not in tally._unjudged
+        assert session.id not in tally._claims
+        await kit.close()
+
+    @_PATHS
+    async def test_realtime_frame_during_the_teardown_reaches_nothing(
+        self, threads: int | None
+    ) -> None:
+        provider = _SlowDisconnect()
+        transport = MockRealtimeTransport()
+        channel = RealtimeVoiceChannel(
+            "rt-1",
+            provider=provider,
+            transport=transport,
+            pipeline=AudioPipelineConfig(
+                vad=MockVADProvider(events=[VADEvent(type=VADEventType.SPEECH_START)]),
+                inbound_dsp_threads=threads,
+            ),
+        )
+        kit = RoomKit()
+        kit.register_channel(channel)
+        room = await kit.create_room()
+        await kit.attach_channel(room.id, "rt-1")
+        session = await channel.start_session(room.id, "user-1", "fake-ws")
+
+        ending = asyncio.create_task(channel.end_session(session))
+        await provider.disconnecting.wait()
+        await transport.simulate_client_audio(session, _FRAME)
+        await asyncio.sleep(0.1)
+        provider.release.set()
+        await ending
+        await asyncio.sleep(0.1)
+
+        calls = [call.method for call in provider.calls]
+        assert "send_activity_start" not in calls, calls
+        assert "truncate_audio" not in calls, calls
+        types = [message.get("type") for _, message in transport.sent_messages]
+        assert "clear_audio" not in types, types
+        await channel.close()
+
+    async def test_realtime_frame_in_flight_at_the_end_reaches_nothing(self) -> None:
+        provider = MockRealtimeProvider()
+        transport = MockRealtimeTransport()
+        channel = RealtimeVoiceChannel(
+            "rt-1",
+            provider=provider,
+            transport=transport,
+            pipeline=AudioPipelineConfig(
+                vad=MockVADProvider(events=[VADEvent(type=VADEventType.SPEECH_START)]),
+                denoiser=_SlowDenoiser(0.05),
+                inbound_dsp_threads=2,
+            ),
+        )
+        kit = RoomKit()
+        kit.register_channel(channel)
+        room = await kit.create_room()
+        await kit.attach_channel(room.id, "rt-1")
+        session = await channel.start_session(room.id, "user-1", "fake-ws")
+
+        # Still in the denoiser on a worker when the session ends.
+        await transport.simulate_client_audio(session, _FRAME)
+        await channel.end_session(session)
+        await asyncio.sleep(0.2)
+
+        calls = [call.method for call in provider.calls]
+        assert calls[calls.index("disconnect") + 1 :] == [], calls
+        assert "send_activity_start" not in calls, calls
+        types = [message.get("type") for _, message in transport.sent_messages]
+        assert "clear_audio" not in types, types
+        await channel.close()

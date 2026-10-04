@@ -189,6 +189,19 @@ class VoicePipelineMixin:
         if self._pipeline is not None:
             self._pipeline.on_session_active(session)
 
+    def _pipeline_session_ending(self, session: VoiceSession) -> None:
+        """Tell the pipeline a session's end has begun.
+
+        Call this when a teardown starts and still has awaits ahead of it:
+        audio arriving meanwhile is dropped, along with the frames the DSP
+        pool still holds for the session. :meth:`_pipeline_session_ended`
+        follows once the teardown is done.
+        """
+        if self._inbound_offload is not None:
+            self._inbound_offload.release(session.id)
+        if self._pipeline is not None:
+            self._pipeline.on_session_ending(session)
+
     def _pipeline_session_ended(self, session: VoiceSession) -> None:
         """Notify the pipeline that a session has ended.
 

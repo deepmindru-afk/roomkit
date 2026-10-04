@@ -32,6 +32,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("roomkit.voice.pipeline")
 
+# How many ended streams the engine remembers (RMK-466). A mark only has to
+# outlive the frames still in flight and a backend's last deliveries, a matter
+# of seconds; keeping one per session forever would itself leak.
+_ENDED_STREAMS_KEPT = 4096
+
 
 def _maybe_schedule(result: object, home_loop: asyncio.AbstractEventLoop | None = None) -> None:
     """Schedule a coroutine if the callback returned one.
@@ -190,6 +195,11 @@ class AudioPipeline:
         self._in_speech_sessions: set[str] = set()
         # Streams handed to the stages — the keys reset() must release.
         self._stage_streams: set[str] = set()
+        # Streams whose session's end has begun, oldest first, mapped to whether
+        # on_session_ended has released them yet. Work still arriving for one
+        # (a frame in flight on a DSP worker, a callback queued for the loop, a
+        # last TTS chunk) is abandoned or leaves nothing behind.
+        self._ended_streams: dict[str, bool] = {}
         self._speaker_change_callbacks: list[SpeakerChangeCallback] = []
         self._dtmf_callbacks: list[DTMFCallback] = []
         self._recording_started_callbacks: list[RecordingStartedCallback] = []
@@ -394,7 +404,12 @@ class AudioPipeline:
         One listener raising must not cost the rest their notification, nor
         interrupt the frame that is still being processed — the pipeline runs
         on the media path and there is no caller to unwind to.
+
+        A session whose end has begun has nobody left to hear: a frame still in
+        flight when it ended does not reach the channel's handlers.
         """
+        if subject.id in self._ended_streams:
+            return
         for callback in callbacks:
             try:
                 _maybe_schedule(callback(subject, payload), self._home_loop)
@@ -415,8 +430,14 @@ class AudioPipeline:
 
         Order: [Resampler] -> [Recorder tap] -> [DTMF] -> [AEC] -> [AGC] ->
                [Denoiser] -> [VAD] -> [Diarization]
+
+        A frame of a session whose end has begun is not processed. One still in
+        the stages when its session was released leaves nothing behind.
         """
+        if session.id in self._ended_streams:
+            return
         self._run_inbound(session.id, session, frame)
+        self._release_if_released(session.id)
 
     def process_inbound_stream(self, stream: str, frame: AudioFrame) -> InboundResult:
         """Process a frame for a stream that has no VoiceSession behind it.
@@ -660,10 +681,14 @@ class AudioPipeline:
         if lock is not None:
             lock.acquire()
         try:
-            return self._process_outbound_unlocked(session, frame)
+            processed = self._process_outbound_unlocked(session, frame)
         finally:
             if lock is not None:
                 lock.release()
+        # Audio still played to a session that has ended is processed for
+        # whoever sends it, and leaves no stage state behind.
+        self._release_if_released(session.id)
+        return processed
 
     def _process_outbound_unlocked(self, session: VoiceSession, frame: AudioFrame) -> AudioFrame:
         """Internal outbound processing (caller holds per-session lock)."""
@@ -769,6 +794,7 @@ class AudioPipeline:
             self._config.aec is None
             or VoiceCapability.NATIVE_AEC in self._backend_capabilities
             or self._backend_feeds_aec_ref
+            or stream in self._ended_streams
         ):
             return
         try:
@@ -842,7 +868,7 @@ class AudioPipeline:
         the destructive reset.
         """
         aec = self._config.aec
-        if aec is None or not self.runs_aec:
+        if aec is None or not self.runs_aec or stream in self._ended_streams:
             return
         with self._aec_active_sources_lock:
             was_globally_active = any(self._aec_active_sources.values())
@@ -943,6 +969,7 @@ class AudioPipeline:
             except RuntimeError:
                 self._home_loop = None
 
+        self._ended_streams.pop(session.id, None)
         self._cleanup_session_state(session.id)
         self._outbound_locks[session.id] = threading.Lock()
 
@@ -1102,12 +1129,36 @@ class AudioPipeline:
         except Exception:
             logger.exception("AEC deactivation error for stream %s", session_id)
 
+    def on_session_ending(self, session: VoiceSession) -> None:
+        """Called when a voice session's end begins, before its teardown awaits.
+
+        From here the session's inbound frames are not processed and the
+        callbacks still due for it are dropped. Its state and recording stay
+        until :meth:`on_session_ended`, which the channel calls once the
+        teardown is done.
+        """
+        self._mark_ended(session.id, released=False)
+
+    def _mark_ended(self, stream: str, *, released: bool) -> None:
+        """Remember how far a stream's end has gone, forgetting the oldest beyond the bound."""
+        self._ended_streams.pop(stream, None)
+        self._ended_streams[stream] = released
+        while len(self._ended_streams) > _ENDED_STREAMS_KEPT:
+            del self._ended_streams[next(iter(self._ended_streams))]
+
+    def _release_if_released(self, stream: str) -> None:
+        """Release again what work that crossed a stream's release rebuilt for it."""
+        if self._ended_streams.get(stream):
+            self._release_stream_state(stream)
+
     def on_session_ended(self, session: VoiceSession) -> None:
         """Called when a voice session ends.
 
-        Releases the stages' state for this stream, then stops recording and
-        debug taps if active.
+        Marks the session ended (see :meth:`on_session_ending`), releases the
+        stages' state for this stream, then stops recording and debug taps if
+        active.
         """
+        self._mark_ended(session.id, released=True)
         self._release_stream_state(session.id)
         self._outbound_locks.pop(session.id, None)
 
