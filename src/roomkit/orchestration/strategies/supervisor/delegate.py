@@ -84,8 +84,8 @@ async def _async_run_and_deliver(
     inside ``_run_sequential`` / ``_run_parallel``. This run posts one
     additional terminal entry under ``agent_id="orchestration"`` so
     subscribers can observe the pipeline as a whole: ``COMPLETED`` once its
-    results are handed back, ``FAILED`` when its workers failed or the
-    hand-back reached nobody.
+    results are handed back, ``FAILED`` when it raised, no worker's task
+    completed, or the hand-back reached nobody.
 
     ``on_done`` is called once with ``success=<bool>``, whether the workers
     completed, so callers can distinguish success from failure — e.g. to
@@ -115,25 +115,42 @@ async def _async_run_and_deliver(
         notify=supervisor_id,
         work=work,
         told=_outcome_text,
-        ended=lambda _results: (StatusLevel.COMPLETED, f"{len(workers)} worker(s) completed"),
+        ended=_pipeline_ended,
         post=post,
         release=lambda succeeded: on_done(success=succeeded),
     )
     await run_in_background(kit, run)
 
 
+def _completed_count(worker_results: list[dict[str, Any]]) -> int:
+    """How many of the workers' tasks completed."""
+    return sum(1 for r in worker_results if r.get("completed"))
+
+
+def _pipeline_ended(worker_results: list[dict[str, Any]]) -> tuple[StatusLevel, str]:
+    """A background pipeline's terminal entry, once handed back: failed when
+    no worker's task completed, as a Loop whose producer failed (RFC §19.7.3)."""
+    done = _completed_count(worker_results)
+    if not done:
+        return StatusLevel.FAILED, "no worker completed"
+    return StatusLevel.COMPLETED, f"{done} worker(s) completed"
+
+
 def _outcome_text(worker_results: list[dict[str, Any]] | None) -> str:
     """What the supervisor reads of its background workers (RFC §19.7.3,
-    §23.3): each worker's output bounded, or, for a pipeline that failed
-    (``None``), that the work could not be completed, without the failure's
-    message, so the supervisor can tell the user."""
+    §23.3): each worker's output bounded, under a header that says whether
+    any completed; for a pipeline that failed (``None``), that the work could
+    not be completed, without the failure's message, so the supervisor can
+    tell the user."""
     if worker_results is None:
         return background_failure_text("workers")
     each_bounded = [{**r, "output": bounded(str(r.get("output") or ""))} for r in worker_results]
-    return result_text(
-        "[Your background workers completed. Share their results with the user.]",
-        _format_worker_results(each_bounded),
+    header = (
+        "[Your background workers completed. Share their results with the user.]"
+        if _completed_count(worker_results)
+        else "[Your background workers could not complete the work. Tell the user.]"
     )
+    return result_text(header, _format_worker_results(each_bounded))
 
 
 def _results_event(event: RoomEvent, body: str) -> RoomEvent:

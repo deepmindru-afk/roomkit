@@ -64,7 +64,7 @@ async def _run(
         await asyncio.sleep(0.01)
         if fails:
             raise RuntimeError("connection refused: postgres://admin:secret@db")
-        return [{"worker": "w1", "output": f"Done {task}"}]
+        return [{"worker": "w1", "output": f"Done {task}", "completed": True}]
 
     monkeypatch.setattr(supervisor_delegate, "_run_workers", run_workers)
     kit = RoomKit(max_chain_depth=5)

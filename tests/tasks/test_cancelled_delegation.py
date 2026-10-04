@@ -225,7 +225,9 @@ async def test_a_supervisors_worker_is_free_once_its_task_was_cancelled() -> Non
 
     await kit.create_room(
         room_id="r",
-        orchestration=Supervisor(supervisor=supervisor, workers=[worker], wait_for_result=False),
+        orchestration=Supervisor(
+            supervisor=supervisor, workers=[worker], wait_for_result=False, task_timeout=0.2
+        ),
     )
     await kit.attach_channel("r", "sms")
 
@@ -236,11 +238,12 @@ async def test_a_supervisors_worker_is_free_once_its_task_was_cancelled() -> Non
         await asyncio.sleep(0.2)
 
     await ask("Find it.")
-    await kit.task_runner.cancel(delegated[0])
+    await asyncio.sleep(0.2)  # its task is cut at the supervisor's task_timeout
     await ask("Try again.")
 
-    # The second call delegated anew, the worker no longer "already running".
-    assert len(delegated) == 2
+    # The next call delegated anew, the worker no longer "already running"
+    # (the supervisor's turn on the cut task's hand-back delegates too).
+    assert len(delegated) >= 2
     await kit.close()
 
 

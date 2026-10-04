@@ -24,6 +24,7 @@ from roomkit.orchestration.state import get_conversation_state
 from roomkit.orchestration.strategies.supervisor import Supervisor
 from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
+from tests.conference.test_conference_realtime import until
 from tests.test_framework import SimpleChannel
 from tests.tool_room import room_tool_names, tool_call_in
 
@@ -155,6 +156,7 @@ class TestSupervisorInstall:
 
         assert parsed["status"] == "delegated"
         assert parsed["worker"] == "w1"
+        await until(lambda: kit.delegate.called)  # in the background run
         kit.delegate.assert_called_once()
 
     async def test_unknown_tool_falls_through(self):
@@ -211,6 +213,7 @@ class TestSupervisorShareChannels:
 
         with tool_call_in("r1"):
             await boss._channel_tool_handler("delegate_to_w1", {"task": "Do something"})
+        await until(lambda: kit.delegate.called)  # in the background run, when not waited
 
         _, kwargs = kit.delegate.call_args
         assert kwargs["share_channels"] == ["system", "ws-status"]
@@ -236,6 +239,7 @@ class TestSupervisorShareChannels:
 
         with tool_call_in("r1"):
             await boss._channel_tool_handler("delegate_to_w1", {"task": "Do something"})
+        await until(lambda: kit.delegate.called)  # in the background run, when not waited
 
         _, kwargs = kit.delegate.call_args
         assert kwargs["share_channels"] == ["email-out"]
@@ -306,6 +310,7 @@ class TestSupervisorShareChannels:
 
         with tool_call_in("r1"):
             await boss._channel_tool_handler("delegate_to_w1", {"task": "Do something"})
+        await until(lambda: kit.delegate.called)  # in the background run, when not waited
 
         _, kwargs = kit.delegate.call_args
         assert not kwargs["share_channels"]
@@ -414,6 +419,7 @@ class TestSupervisorShareChannels:
         await s.install(kit, "r1")
         with tool_call_in("r1"):
             await boss._channel_tool_handler("delegate_to_w1", {"task": "Do something"})
+        await until(lambda: kit.delegate.called)  # in the background run, when not waited
 
         _, kwargs = kit.delegate.call_args
         assert kwargs["share_channels"] == ["system"]

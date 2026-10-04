@@ -281,9 +281,8 @@ class TestWaitForResultFalse:
                 await supervisor._channel_tool_handler("delegate_to_worker", {"task": "Do it"})
             )
 
-        # Async delegation returns immediately with task_id
+        # Async delegation returns immediately, the worker running in the background
         assert result["status"] == "delegated"
-        assert "task_id" in result
         assert result["worker"] == "worker"
 
         await kit.close()

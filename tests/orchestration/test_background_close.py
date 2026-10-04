@@ -78,7 +78,7 @@ async def _supervisor_tool(kit: RoomKit, worker: Agent) -> Callable[[], Awaitabl
     return call
 
 
-_RUNS = ("_async_run_and_deliver", "_async_loop_and_deliver")
+_RUNS = ("_async_run_and_deliver", "_async_loop_and_deliver", "run_in_background")
 
 
 def _runs_alive() -> list[str]:
@@ -90,10 +90,24 @@ def _runs_alive() -> list[str]:
     ]
 
 
+async def _per_worker(kit: RoomKit, worker: Agent) -> Callable[[], Awaitable[Any]]:
+    boss = Agent("boss", provider=MockAIProvider(responses=["ok"]))
+    kit.register_channel(boss)
+    strategy = Supervisor(boss, [worker], wait_for_result=False)
+    await kit.create_room(room_id="r", orchestration=strategy)
+
+    async def call() -> Any:
+        with tool_call_in("r"):
+            return await boss._channel_tool_handler("delegate_to_worker", {"task": "Write it."})
+
+    return call
+
+
 DOORS = {
     "supervisor-voice": _supervisor_voice,
     "loop-voice": _loop_voice,
     "supervisor-tool": _supervisor_tool,
+    "per-worker": _per_worker,
 }
 
 

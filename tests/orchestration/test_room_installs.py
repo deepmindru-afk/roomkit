@@ -110,7 +110,7 @@ async def test_each_room_s_per_worker_tools_run_with_its_own_install(streaming: 
     )
     await _until(lambda: bool(delegated))
 
-    assert delegated == [("clinic-B", "worker_b", ["b"])]
+    assert delegated[0] == ("clinic-B", "worker_b", ["b"])
     await kit.close()
 
 

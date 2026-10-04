@@ -11,24 +11,25 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._tool_registry import orchestration_tool
-from roomkit.orchestration._call_room import in_call_room
-from roomkit.orchestration._worker_run import (
-    WorkerStatus,
-    run_worker,
-    task_completed,
-    task_output,
+from roomkit.orchestration._background import (
+    BackgroundRun,
+    background_failure_text,
+    run_in_background,
+    start_background_run,
 )
+from roomkit.orchestration._call_room import in_call_room
+from roomkit.orchestration._worker_run import WorkerOutcome, WorkerStatus, run_worker
 from roomkit.orchestration.status_bus import StatusLevel
 from roomkit.orchestration.strategies.supervisor._common import (
     _post_worker_status,
     logger,
 )
 from roomkit.providers.ai.base import AITool
+from roomkit.tasks.handback import bounded, result_text
 
 if TYPE_CHECKING:
     from roomkit.channels.agent import Agent
     from roomkit.core.framework import RoomKit
-    from roomkit.tasks.models import DelegatedTask
 
 
 class _PerWorkerToolMixin:
@@ -93,7 +94,7 @@ class _PerWorkerToolServer:
         try:
             if self._wait:
                 return await self._delegate_and_wait(rid, worker_id, task_desc)
-            return await self._delegate_in_background(rid, worker_id, task_desc)
+            return self._delegate_in_background(rid, worker_id, task_desc)
         except Exception:
             # Raised on: the channel reads it as any failed call, the class for
             # the model and the message for the observers (RFC §9.3).
@@ -121,55 +122,83 @@ class _PerWorkerToolServer:
             }
         )
 
-    async def _delegate_in_background(self, rid: str, worker_id: str, task_desc: str) -> str:
-        """Start the worker on *task_desc*, and answer at once."""
-        kit = self._kit
+    def _delegate_in_background(self, rid: str, worker_id: str, task_desc: str) -> str:
+        """Start the worker on *task_desc* in the background, and answer at
+        once; its outcome is handed back to the supervisor (RFC §19.7.3)."""
         pending = self._pending
         if (rid, worker_id) in pending:
             return _already_working(worker_id)
-
-        delegated = await kit.delegate(
-            rid,
-            worker_id,
-            task_desc,
-            notify=self._supervisor.channel_id,
-            share_channels=self._share_channels,
-        )
         pending.add((rid, worker_id))
-        _post_worker_status(
-            kit,
-            worker_id,
-            StatusLevel.PENDING,
-            detail=task_desc,
-            metadata={
-                "room_id": rid,
-                "mode": "per_worker_async",
-                "task_id": delegated.id,
-            },
-        )
-
-        self._track_completion(rid, worker_id, delegated)
-        return _dispatched(worker_id, delegated.id)
-
-    def _track_completion(self, rid: str, worker_id: str, delegated: DelegatedTask) -> None:
-        """Free the worker in *rid* and post its outcome when *delegated* ends."""
-        pending = self._pending
-        kit = self._kit
-        original_set = delegated._set_result
-        task_id = delegated.id
-
-        def _patched_set(r: Any) -> None:
+        # If the start raises (shutdown race), free the worker so it isn't
+        # stuck in already_running.
+        try:
+            run = self._background_run(rid, worker_id, task_desc)
+            start_background_run(self._kit, run_in_background(self._kit, run))
+        except BaseException:
             pending.discard((rid, worker_id))
+            raise
+        return _dispatched(worker_id)
+
+    def _background_run(
+        self, rid: str, worker_id: str, task_desc: str
+    ) -> BackgroundRun[WorkerOutcome]:
+        """The worker's background run: its delegation, bounded and followed
+        as a waited one is, the worker freed in *rid* before its outcome is
+        handed back."""
+        kit = self._kit
+        metadata = {"room_id": rid, "mode": "per_worker_async"}
+
+        def post(level: StatusLevel, detail: str) -> None:
             _post_worker_status(
                 kit,
-                worker_id,
-                StatusLevel.COMPLETED if task_completed(r) else StatusLevel.FAILED,
-                detail=task_output(r),
-                metadata={"room_id": rid, "mode": "per_worker_async", "task_id": task_id},
+                "orchestration",
+                level,
+                action="worker",
+                detail=detail,
+                metadata={**metadata, "worker": worker_id},
             )
-            original_set(r)
 
-        delegated._set_result = _patched_set  # ty: ignore[invalid-assignment]
+        async def work() -> WorkerOutcome:
+            return await run_worker(
+                kit,
+                rid,
+                worker_id,
+                task_desc,
+                timeout=self._task_timeout,
+                status=WorkerStatus(metadata),
+                share_channels=self._share_channels,
+            )
+
+        return BackgroundRun(
+            room_id=rid,
+            notify=self._supervisor.channel_id,
+            work=work,
+            told=lambda outcome: _worker_told(worker_id, outcome),
+            ended=_worker_ended,
+            post=post,
+            release=lambda _returned: self._pending.discard((rid, worker_id)),
+        )
+
+
+def _worker_told(worker_id: str, outcome: WorkerOutcome | None) -> str:
+    """What the supervisor reads of a background worker: its outcome bounded
+    and set apart as a worker's; for a run that raised (``None``), that the
+    task could not be completed."""
+    if outcome is None:
+        return background_failure_text(f"task for {worker_id}")
+    status = "completed" if outcome.completed else "did not complete"
+    return result_text(
+        f"[Your background task for {worker_id} {status}. Share the outcome with the user.]",
+        bounded(outcome.output or "No output"),
+    )
+
+
+def _worker_ended(outcome: WorkerOutcome) -> tuple[StatusLevel, str]:
+    """A background worker's terminal entry, once handed back: completed or
+    failed, as its task ended."""
+    if outcome.completed:
+        return StatusLevel.COMPLETED, "completed"
+    return StatusLevel.FAILED, "not completed"
 
 
 def _already_working(worker_id: str) -> str:
@@ -187,12 +216,11 @@ def _already_working(worker_id: str) -> str:
     )
 
 
-def _dispatched(worker_id: str, task_id: str) -> str:
+def _dispatched(worker_id: str) -> str:
     """What the model reads when the worker was started in the background."""
     return json.dumps(
         {
             "status": "delegated",
-            "task_id": task_id,
             "worker": worker_id,
             "message": (
                 f"Task dispatched to {worker_id}. "

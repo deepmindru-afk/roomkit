@@ -25,6 +25,7 @@ from roomkit.orchestration.state import get_conversation_state
 from roomkit.orchestration.strategies.loop import Loop
 from roomkit.orchestration.strategies.supervisor import Supervisor
 from roomkit.providers.ai.mock import MockAIProvider
+from tests.conference.test_conference_realtime import until
 from tests.tool_room import room_tool_names, tool_call_in
 
 # -- Helpers ------------------------------------------------------------------
@@ -140,6 +141,7 @@ class TestSupervisorHandlerIdempotency:
         assert parsed["status"] == "delegated"
 
         # The call of r2 runs r2's install, not the first one's.
+        await until(lambda: kit2.delegate.called)  # in the background run
         assert kit1.delegate.call_count == 0
         assert kit2.delegate.call_count == 1
 

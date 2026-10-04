@@ -448,7 +448,7 @@ class TestPerWorkerDelegation:
             result = await boss._channel_tool_handler("delegate_to_w1", {"task": "Do work"})
         parsed = json.loads(result)
         assert parsed["status"] == "delegated"
-        assert parsed["task_id"] == "task-123"
+        assert parsed["worker"] == "w1"
 
     async def test_no_wait_already_running(self) -> None:
         boss = _make_agent("boss")

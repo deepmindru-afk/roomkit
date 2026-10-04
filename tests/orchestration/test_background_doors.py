@@ -131,14 +131,42 @@ async def test_one_run_per_room_whichever_voice_channel_asks(
     assert started == ["r"]
 
 
-async def test_a_loop_its_producer_stopped_posts_a_failed_terminal_entry(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    async def stopped(**kwargs: Any) -> Any:
-        return loop_module._LoopOutcome(stopped="producer_failed")
+class _Raising(MockAIProvider):
+    async def generate(self, context: Any) -> Any:
+        raise RuntimeError("boom")
 
-    monkeypatch.setattr(loop_module, "_execute_loop", stopped)
-    kit, provider, (session,) = await _room("loop", ("voice",))
+
+FAILED_WORK = {
+    "loop": (
+        lambda: Loop(
+            agent=Agent("writer", provider=_Raising()),
+            reviewer=Agent("editor", provider=MockAIProvider(responses=["APPROVED"])),
+            async_delivery=True,
+        ),
+        ("loop", "producer_failed", "stopped before any output"),
+    ),
+    "supervisor": (
+        lambda: Supervisor(
+            supervisor=Agent("boss", provider=MockAIProvider(responses=["ok"])),
+            workers=[Agent("analyst", provider=_Raising())],
+            strategy="parallel",
+            auto_delegate=True,
+            async_delivery=True,
+        ),
+        ("pipeline", "no worker completed", "could not complete the work"),
+    ),
+}
+
+
+@BOTH
+async def test_a_run_whose_work_failed_posts_a_failed_terminal_entry(
+    door: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Its producer's task failed, or none of its workers' (RFC §19.7.3,
+    §19.7.4): the run's terminal entry is failed, and the caller is told."""
+    build, (action, detail, told) = FAILED_WORK[door]
+    monkeypatch.setitem(DOORS, door, (DOORS[door][0], build))
+    kit, provider, (session,) = await _room(door, ("voice",))
     posted: list[tuple[str, Any, str]] = []
     real_post = kit.status_bus.post
 
@@ -148,9 +176,10 @@ async def test_a_loop_its_producer_stopped_posts_a_failed_terminal_entry(
         return real_post(agent_id, action, status, **kwargs)
 
     kit.status_bus.post = post  # type: ignore[method-assign]
-    await provider.simulate_tool_call(session, "c1", "delegate_loop", {"task": "Write it."})
+    await provider.simulate_tool_call(session, "c1", DOORS[door][0], {"task": "Write it."})
     await until(lambda: bool(posted))
     await kit.close()
 
-    assert posted == [("loop", StatusLevel.FAILED, "producer_failed")]
+    assert posted == [(action, StatusLevel.FAILED, detail)]
     assert _told(provider) == [(session.id, "system")]
+    assert any(told in str(c.args.get("text")) for c in provider.calls)
