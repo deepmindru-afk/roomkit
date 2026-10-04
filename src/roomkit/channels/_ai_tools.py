@@ -124,10 +124,12 @@ class _CallRound:
     executed_arguments: dict[str, dict[str, Any]] | None
 
 
-def _refused_with(error: dict[str, Any], detail: str | None = None) -> GateRefusal:
+def _refused_with(
+    error: dict[str, Any], detail: str | None = None, *, arguments: dict[str, Any] | None = None
+) -> GateRefusal:
     """A gate's refusal of a call: *error* as the model reads it, *detail* for
-    the observers."""
-    return GateRefusal(json.dumps(error), detail)
+    the observers, *arguments* as the gate had them."""
+    return GateRefusal(json.dumps(error), detail, arguments)
 
 
 def _log_answer(name: str, result: Any, started: float) -> None:
@@ -456,13 +458,31 @@ class AIToolsMixin(_AIChannelContract):
         # handler, using the effective payload after folds and hooks.
         guard = self._repeated_call_guard(tc.name, tc.arguments)
         body = guard or stopped.body
+        # Reported with the arguments the gate had, as a call that ran is
+        # with those it ran with; the model's when it stopped before them.
+        arguments = stopped.arguments if stopped.arguments is not None else tc.arguments
+        self._record_call_arguments(tc, arguments, scope)
         await self._fire_tool_refusal(
-            tc, tc.arguments, body, scope.room_id, detail=stopped.detail, refused=True
+            tc, arguments, body, scope.room_id, detail=stopped.detail, refused=True
         )
         # Bounded as any outcome the model reads (RFC §21.5): a hook's reason
         # can be as large as a result.
         bounded = self._bound_tool_result(tc.name, body, tc.id)
         return ToolOutcome(OutcomeKind.REFUSED, bounded).as_part(tc.id, tc.name)
+
+    def _record_call_arguments(
+        self, tc: Any, arguments: dict[str, Any], scope: _CallRound
+    ) -> None:
+        """Keep the arguments *tc* runs with, or that its gate had when it
+        stopped it, for its END row and for its report if the turn cuts it:
+        every report of a call carries those (RFC §9.3). Snapshot before user
+        code sees them, so persistence tells the model's request from what
+        executed."""
+        if scope.executed_arguments is not None:
+            scope.executed_arguments[tc.id] = dict(arguments)
+        announced = self._get_loop_ctx().announced_calls
+        if tc.id in announced:
+            announced[tc.id] = tc.model_copy(update={"arguments": dict(arguments)})
 
     async def _gate_call(
         self, tc: Any, scope: _CallRound
@@ -535,7 +555,8 @@ class AIToolsMixin(_AIChannelContract):
         if arg_error is not None:
             logger.warning("Tool %s arguments rejected: %s", tc.name, arg_error)
             return call_arguments, _refused_with(
-                {"error": f"Invalid arguments for '{tc.name}': {arg_error}"}
+                {"error": f"Invalid arguments for '{tc.name}': {arg_error}"},
+                arguments=call_arguments,
             )
         return call_arguments, None
 
@@ -568,7 +589,7 @@ class AIToolsMixin(_AIChannelContract):
             if not decision:
                 logger.info("Tool %s denied by BEFORE_TOOL_USE hook", tc.name)
                 denial = pre_execution_denial(tc.name, decision.reason)
-                return _refused_with({"error": denial}, decision.detail)
+                return _refused_with({"error": denial}, decision.detail, arguments=arguments)
             if decision.arguments is not None:
                 arguments = decision.arguments
                 arguments_rewritten = True
@@ -587,7 +608,8 @@ class AIToolsMixin(_AIChannelContract):
                 qualifier = "rewritten " if arguments_rewritten else ""
                 logger.warning("Tool %s %sarguments rejected: %s", tc.name, qualifier, arg_error)
                 return _refused_with(
-                    {"error": (f"Invalid {qualifier}arguments for '{tc.name}': {arg_error}")}
+                    {"error": (f"Invalid {qualifier}arguments for '{tc.name}': {arg_error}")},
+                    arguments=arguments,
                 )
         return arguments
 
@@ -599,11 +621,7 @@ class AIToolsMixin(_AIChannelContract):
         scope: _CallRound,
     ) -> AIToolResultPart:
         """A call past its gates, served and judged, as the model reads it."""
-        if scope.executed_arguments is not None:
-            # Snapshot the post-hook payload before handing it to user
-            # code. Persistence can then distinguish what the model
-            # requested from what actually executed.
-            scope.executed_arguments[tc.id] = dict(arguments)
+        self._record_call_arguments(tc, arguments, scope)
         outcome = await self._judged_call(tc, arguments, scope)
         self._settle_served_call(tc.id, served=not outcome.failed)
         kept = kept_in_tool_memory(outcome.kind)

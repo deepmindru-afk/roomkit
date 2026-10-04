@@ -812,6 +812,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A call's report carries the arguments it ran with, or that the gate had
+  when it stopped it, on every door (RMK-480, RFC §9.3): an AIChannel
+  reported a call BEFORE_TOOL_USE blocked, or rewrote into a shape the schema
+  refuses, and a call its turn cut while it ran, with the model's own
+  arguments, where a realtime session, a backend and a conference report the
+  gate's (repaired, rewritten). Observers of a refused or cut call on the
+  text door now see the executed arguments (a de-tokenising hook's values
+  included), as they already did for a served call; its TOOL_CALL_END row
+  carries the same. The END row of a call the turn cut keeps its START row's.
+
 - RoomKit's decision on an ACP call's permission stands however the agent
   ends the call (RMK-480, RFC §9.3): a call whose permission the external
   tool handler refused, then left open as the turn ended, was reported

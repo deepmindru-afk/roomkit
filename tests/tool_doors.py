@@ -42,6 +42,11 @@ SCHEMA = {"type": "object", "properties": {"q": {"type": "string"}}}
 TOOL_DICT = {"name": "lookup", "description": "Look up", "parameters": SCHEMA}
 TOOL = AITool(name="lookup", description="Look up", parameters=SCHEMA)
 
+
+def _tool_dict(schema: dict[str, Any]) -> dict[str, Any]:
+    return {**TOOL_DICT, "parameters": schema}
+
+
 DOORS = (
     "text-stream",
     "text-nostream",
@@ -121,7 +126,9 @@ def _install(kit: RoomKit, seen: Seen, hooks: Hooks) -> None:
         hooks.setup(kit)
 
 
-async def _text_door(handler: Any, streaming: bool, call: AIToolCall, hooks: Hooks) -> Seen:
+async def _text_door(
+    handler: Any, streaming: bool, call: AIToolCall, hooks: Hooks, schema: dict[str, Any]
+) -> Seen:
     provider = MockAIProvider(
         ai_responses=[
             AIResponse(content="", finish_reason="tool_calls", tool_calls=[call]),
@@ -129,7 +136,8 @@ async def _text_door(handler: Any, streaming: bool, call: AIToolCall, hooks: Hoo
         ],
         streaming=streaming,
     )
-    ai = AIChannel("ai1", provider=provider, tool_handler=handler, tools=[TOOL])
+    tool = TOOL.model_copy(update={"parameters": schema})
+    ai = AIChannel("ai1", provider=provider, tool_handler=handler, tools=[tool])
     kit = RoomKit()
     kit.register_channel(SimpleChannel("sms1"))
     kit.register_channel(ai)
@@ -151,14 +159,16 @@ async def _text_door(handler: Any, streaming: bool, call: AIToolCall, hooks: Hoo
     return seen
 
 
-async def _realtime(handler: Any, **kwargs: Any) -> tuple[RoomKit, Any, Any, Any]:
+async def _realtime(
+    handler: Any, schema: dict[str, Any], **kwargs: Any
+) -> tuple[RoomKit, Any, Any, Any]:
     provider = MockRealtimeProvider(full_duplex="reasoning_backend" in kwargs)
     channel = RealtimeVoiceChannel(
         "rt",
         provider=provider,
         transport=MockRealtimeTransport(),
         tool_handler=handler,
-        tools=[TOOL_DICT],
+        tools=[_tool_dict(schema)],
         **kwargs,
     )
     kit = RoomKit()
@@ -169,8 +179,10 @@ async def _realtime(handler: Any, **kwargs: Any) -> tuple[RoomKit, Any, Any, Any
     return kit, channel, provider, session
 
 
-async def _realtime_door(door: str, handler: Any, call: AIToolCall, hooks: Hooks) -> Seen:
-    kit, channel, provider, session = await _realtime(handler)
+async def _realtime_door(
+    door: str, handler: Any, call: AIToolCall, hooks: Hooks, schema: dict[str, Any]
+) -> Seen:
+    kit, channel, provider, session = await _realtime(handler, schema)
     seen = Seen()
     _install(kit, seen, hooks)
     arguments = dict(call.arguments)
@@ -190,7 +202,9 @@ async def _realtime_door(door: str, handler: Any, call: AIToolCall, hooks: Hooks
     return seen
 
 
-async def _agent_backend_door(handler: Any, call: AIToolCall, hooks: Hooks) -> Seen:
+async def _agent_backend_door(
+    handler: Any, call: AIToolCall, hooks: Hooks, schema: dict[str, Any]
+) -> Seen:
     ai_provider = MockAIProvider(
         ai_responses=[
             AIResponse(content="", finish_reason="tool_calls", tool_calls=[call]),
@@ -198,7 +212,7 @@ async def _agent_backend_door(handler: Any, call: AIToolCall, hooks: Hooks) -> S
         ]
     )
     backend = AgentReasoningBackend(Agent("reasoner", provider=ai_provider))
-    kit, _, provider, session = await _realtime(handler, reasoning_backend=backend)
+    kit, _, provider, session = await _realtime(handler, schema, reasoning_backend=backend)
     seen = Seen()
     _install(kit, seen, hooks)
     await provider.simulate_delegation(session, "d1", "integrator")
@@ -212,13 +226,17 @@ async def _agent_backend_door(handler: Any, call: AIToolCall, hooks: Hooks) -> S
     return seen
 
 
-async def _conference_door(handler: Any, call: AIToolCall, hooks: Hooks) -> Seen:
+async def _conference_door(
+    handler: Any, call: AIToolCall, hooks: Hooks, schema: dict[str, Any]
+) -> Seen:
     provider = MockRealtimeProvider()
 
     async def served(room_id: str, name: str, arguments: dict[str, Any]) -> Any:
         return await handler(name, arguments)
 
-    config = ConferenceRealtimeConfig(provider=provider, tools=[TOOL_DICT], tool_handler=served)
+    config = ConferenceRealtimeConfig(
+        provider=provider, tools=[_tool_dict(schema)], tool_handler=served
+    )
     kit, channel, _, _ = await realtime_kit(provider=provider, config=config)
     seen = Seen()
     _install(kit, seen, hooks)
@@ -237,16 +255,17 @@ async def run_door(
     arguments: dict[str, Any] | None = None,
     hooks: Hooks | None = None,
     call: AIToolCall | None = None,
+    schema: dict[str, Any] = SCHEMA,
 ) -> Seen:
     """Run one ``lookup`` call with *arguments* through *door*, served by
     *handler* ``(name, arguments)``, around the kit's *hooks*; or the model's
-    *call* as it stands, when given."""
+    *call* as it stands, when given; the tool declared with *schema*."""
     call = call or AIToolCall(id="c1", name="lookup", arguments=dict(arguments or {}))
     hooks = hooks or Hooks()
     if door.startswith("text-"):
-        return await _text_door(handler, door == "text-stream", call, hooks)
+        return await _text_door(handler, door == "text-stream", call, hooks, schema)
     if door == "rt-agent-backend":
-        return await _agent_backend_door(handler, call, hooks)
+        return await _agent_backend_door(handler, call, hooks, schema)
     if door == "conference":
-        return await _conference_door(handler, call, hooks)
-    return await _realtime_door(door, handler, call, hooks)
+        return await _conference_door(handler, call, hooks, schema)
+    return await _realtime_door(door, handler, call, hooks, schema)

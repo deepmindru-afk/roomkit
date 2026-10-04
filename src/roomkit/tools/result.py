@@ -217,11 +217,14 @@ class GateRefusal:
 
     *body* is what the model reads; *detail*, the error of a BEFORE_TOOL_USE
     hook that failed closed, is for the log and the observers only
-    (``ToolCallEvent.error_detail``).
+    (``ToolCallEvent.error_detail``); *arguments*, the arguments the gate had
+    when it stopped the call (repaired, rewritten by BEFORE_TOOL_USE), which
+    its report carries, ``None`` when it stopped it before reading them.
     """
 
     body: str
     detail: str | None = None
+    arguments: dict[str, Any] | None = None
 
 
 def gated_tool_refusal(name: str, *, can_activate: bool = True, closed: bool = False) -> str:
