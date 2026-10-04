@@ -591,12 +591,6 @@ class DelegationMixin(HelpersMixin):
         """
         if not (result.output or result.error):
             return
-        if self._closed:
-            # A closing framework starts no turn (RFC §23.3).
-            _tasks_logger.info(
-                "Task %s ended while the framework closes: no hand-back", result.task_id
-            )
-            return
         try:
             await hand_back(
                 self,  # ty: ignore[invalid-argument-type]

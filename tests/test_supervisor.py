@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from roomkit.channels.agent import Agent
+from roomkit.core._fallback import FALLBACK_FAILED
 from roomkit.core.exceptions import UnservedToolCallError
 from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
@@ -22,6 +23,7 @@ from roomkit.models.enums import ChannelType
 from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.models.room import Room
 from roomkit.orchestration.state import get_conversation_state
+from roomkit.orchestration.status_bus import StatusLevel
 from roomkit.orchestration.strategies.supervisor import (
     Supervisor,
     WorkerStrategy,
@@ -75,6 +77,7 @@ def _make_agent(
 
 def _make_mock_kit(room: Room) -> MagicMock:
     kit = MagicMock()
+    kit._closed = False
     kit.get_room = AsyncMock(return_value=room)
     kit.store.update_room = AsyncMock()
     # Every channel asked about is attached to the room.
@@ -1434,7 +1437,7 @@ class TestAsyncRunAndDeliver:
         on_done.assert_called_once_with(success=False)
         kit.deliver.assert_called_once()
         told = kit.deliver.call_args[0][1]
-        assert "workers failed" in told and "could not be completed" in told
+        assert told == f"[Your background workers failed: {FALLBACK_FAILED} Tell the user.]"
         assert "Boom" not in told and "secret" not in told
         assert kit.deliver.call_args.kwargs["addressed_to"] == ["boss"]
         assert kit.deliver.call_args.kwargs["chain_depth"] == 2
@@ -1471,6 +1474,61 @@ class TestAsyncRunAndDeliver:
         )
 
         assert order == [("released", not fails), "handed back"]
+
+    async def test_a_hand_back_that_fails_posts_the_one_terminal_entry(self) -> None:
+        """The pipeline's terminal entry follows its hand-back: workers that
+        completed and an outcome that could not be handed back are one
+        FAILED entry, never COMPLETED then FAILED."""
+        kit = _make_mock_kit(Room(id="r1"))
+        kit.get_channel = MagicMock(return_value=_make_agent("boss"))
+        kit.delegate = AsyncMock(return_value=_delegated_task_with_output("Done"))
+        kit.deliver = AsyncMock(side_effect=RuntimeError("deliver boom"))
+        kit.status_bus.post = MagicMock()
+
+        await _async_run_and_deliver(
+            kit=kit,
+            room_id="r1",
+            supervisor_id="boss",
+            strategy=WorkerStrategy.SEQUENTIAL,
+            workers=[_make_agent("w1")],
+            task_desc="task",
+            on_done=MagicMock(),
+        )
+        terminal = [
+            (call.args[2], call.kwargs["detail"])
+            for call in kit.status_bus.post.call_args_list
+            if call.args[0] == "orchestration"
+        ]
+        assert terminal == [(StatusLevel.FAILED, "deliver boom")]
+
+    async def test_a_cancelled_run_releases_the_room_and_stays_cancelled(self) -> None:
+        kit = _make_mock_kit(Room(id="r1"))
+        started = asyncio.Event()
+
+        async def hangs(*args: Any, **kwargs: Any) -> None:
+            started.set()
+            await asyncio.Event().wait()
+
+        kit.delegate = AsyncMock(side_effect=hangs)
+        outcomes: list[bool] = []
+        run = asyncio.create_task(
+            _async_run_and_deliver(
+                kit=kit,
+                room_id="r1",
+                supervisor_id="boss",
+                strategy=WorkerStrategy.SEQUENTIAL,
+                workers=[_make_agent("w1")],
+                task_desc="task",
+                on_done=lambda *, success: outcomes.append(success),
+            )
+        )
+        await started.wait()
+        run.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await run
+        assert outcomes == [False]
+        kit.deliver.assert_not_called()
 
 
 # -- Tests: Auto-delegate wrapped on_event -----------------------------------

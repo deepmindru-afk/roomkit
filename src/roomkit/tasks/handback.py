@@ -50,8 +50,13 @@ async def hand_back(
     addressed to it, through the room's transport; a realtime voice channel, an
     instruction in its session. Another transport has no model to direct and
     receives a message through it. A channel not attached to the room is told
-    nothing (``None``), and a hand-back that is not delivered is logged.
+    nothing (``None``), and a hand-back that is not delivered is logged. A
+    framework that closes starts no turn (RFC §23.3): nothing is handed back
+    (``None``).
     """
+    if kit._closed:
+        logger.info("Result for %s in room %s not handed back: closing", notify, room_id)
+        return None
     if await kit.store.get_binding(room_id, notify) is None:
         # delegate()'s default notify, the worker, is never in the parent room.
         logger.info("Result for %s not handed back: not attached to room %s", notify, room_id)

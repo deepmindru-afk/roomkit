@@ -207,15 +207,16 @@ class _StrategyToolServer:
         self._running.add(rid)
 
         def _clear(*, success: bool = True, _rid: str = rid) -> None:
-            """Release the room and evict the dedup entry on failure.
+            """Release the room and evict its dedup entry, whatever the outcome.
 
-            A failed pipeline must drop its cached ``"dispatched"`` response —
-            otherwise callers get that stale string for the full dedup window
-            and never learn the run failed.
+            The cached ``"dispatched"`` answer belongs to the run that ended: a
+            dispatch after it (the supervisor's follow-up to the results it is
+            handed, or to a failure) starts a new run, rather than reading
+            that stale answer for the rest of the dedup window and promising
+            results that never come.
             """
             self._running.discard(_rid)
-            if not success:
-                self._dedup_cache.pop(_rid, None)
+            self._dedup_cache.pop(_rid, None)
 
         # Create the task + populate dedup atomically with the _running flag.
         # If create_task raises (shutdown race) we must release _running so

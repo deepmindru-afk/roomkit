@@ -31,6 +31,7 @@ from roomkit.orchestration.strategies.supervisor.delegate import (
 )
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.tasks import DelegateHandler, setup_delegation
+from roomkit.tasks.handback import hand_back
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
 from tests.test_framework import SimpleChannel
 from tests.tool_room import tool_call_in
@@ -294,4 +295,22 @@ async def test_a_supervisor_s_failed_background_workers_hand_back_their_failure(
     assert "not registered" not in told
     [entry] = await kit.status_bus.recent(5, agent_id="orchestration")
     assert entry.status == StatusLevel.FAILED and "not registered" in entry.detail
+    await kit.close()
+
+
+async def test_a_closing_framework_hands_nothing_back() -> None:
+    """RFC §23.3: a closing framework starts no turn, whichever background
+    result comes back (one place: hand_back)."""
+    kit = RoomKit()
+    supervisor = AIChannel("supervisor", provider=MockAIProvider(responses=["ok"]))
+    kit.register_channel(supervisor)
+    await kit.create_room(room_id="call")
+    await kit.attach_channel("call", "supervisor", category=ChannelCategory.INTELLIGENCE)
+    kit._closed = True
+
+    outcome = await hand_back(kit, "call", "supervisor", "results", 0)
+
+    assert outcome is None
+    assert supervisor._provider.calls == []
+    kit._closed = False
     await kit.close()

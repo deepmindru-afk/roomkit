@@ -83,7 +83,9 @@ async def _async_run_and_deliver(
     Individual worker lifecycle events are posted to ``kit.status_bus``
     inside ``_run_sequential`` / ``_run_parallel``. This helper emits
     one additional terminal entry under ``agent_id="orchestration"``
-    so subscribers can observe the pipeline as a whole.
+    so subscribers can observe the pipeline as a whole: ``COMPLETED`` once
+    its results are handed back, ``FAILED`` when its workers or that hand-back
+    failed.
 
     ``on_done`` is called once with ``success=<bool>``, whether the workers
     completed, so callers can distinguish success from failure — e.g. to
@@ -105,19 +107,16 @@ async def _async_run_and_deliver(
         )
     finally:
         on_done(success=worker_results is not None)
-    if worker_results is not None:
-        _post_worker_status(
-            kit,
-            "orchestration",
-            StatusLevel.COMPLETED,
-            action="pipeline",
-            detail=f"{len(workers)} worker(s) completed",
-            metadata=pipeline_meta,
-        )
     try:
         await _hand_back_outcome(kit, room_id, supervisor_id, worker_results, chain_depth)
     except Exception as exc:
-        _pipeline_failed(kit, exc, pipeline_meta)
+        logger.error("[async_delegate] Handing the outcome back failed", exc_info=exc)
+        if worker_results is not None:
+            _post_pipeline_status(kit, StatusLevel.FAILED, str(exc), pipeline_meta)
+        return
+    if worker_results is not None:
+        detail = f"{len(workers)} worker(s) completed"
+        _post_pipeline_status(kit, StatusLevel.COMPLETED, detail, pipeline_meta)
 
 
 async def _workers_or_none(
@@ -144,13 +143,15 @@ def _pipeline_failed(kit: RoomKit, exc: Exception, pipeline_meta: dict[str, Any]
     """Log a failed pipeline and post it FAILED, with its message: for the
     logs and the status bus, never for a model (RFC §9.3)."""
     logger.error("[async_delegate] Pipeline failed", exc_info=exc)
+    _post_pipeline_status(kit, StatusLevel.FAILED, str(exc), pipeline_meta)
+
+
+def _post_pipeline_status(
+    kit: RoomKit, status: StatusLevel, detail: str, pipeline_meta: dict[str, Any]
+) -> None:
+    """Post the pipeline's one terminal entry on the status bus."""
     _post_worker_status(
-        kit,
-        "orchestration",
-        StatusLevel.FAILED,
-        action="pipeline",
-        detail=str(exc),
-        metadata=pipeline_meta,
+        kit, "orchestration", status, action="pipeline", detail=detail, metadata=pipeline_meta
     )
 
 
@@ -170,10 +171,8 @@ async def _hand_back_outcome(
     """
     if worker_results is None:
         logger.info("[async_delegate] Workers failed, handing the failure back")
-        text = result_text(
-            "[Your background workers failed. Tell the user the work could not be completed.]",
-            FALLBACK_FAILED,
-        )
+        # The framework's words, not a worker's output: nothing to fence.
+        text = f"[Your background workers failed: {FALLBACK_FAILED} Tell the user.]"
     else:
         each_bounded = [
             {**r, "output": bounded(str(r.get("output") or ""))} for r in worker_results

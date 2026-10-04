@@ -721,7 +721,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   supervisor, which had told the user results would follow, never heard
   of it. It now receives an instruction that the work could not be
   completed, as it receives the workers' results, without the error's
-  message, which stays in the logs and on the status bus.
+  message, which stays in the logs and on the status bus. The room is
+  released and its cached `dispatched` answer dropped before the supervisor
+  hears the outcome, success included: a dispatch it makes in answer starts a
+  new run (bounded by `max_chain_depth`) where it read that stale answer and
+  promised results that never came. A run posts one terminal status entry,
+  after its hand-back, and no background result is handed back while the
+  framework closes (one check, in `hand_back`).
 
 - A `find_tools` call an `ON_TOOL_CALL` hook blocked, or one that failed, no
   longer reveals its matches (RMK-447, RFC §6.4). A text turn revealed them
