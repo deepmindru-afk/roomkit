@@ -123,7 +123,7 @@ class ToolCallBook:
         held = calls.get(call.call_id, [])
         if any(not earlier.delivered for earlier in held):
             call.unanswerable = json.dumps(
-                {"error": f"Tool call '{call.call_id}' is already running"}
+                {"error": f"Tool call '{call.call_id}' has not had its result yet"}
             )
             return False
         calls[call.call_id] = [*held, call]

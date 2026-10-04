@@ -875,6 +875,39 @@ class TestGeminiLiveProvider:
         mock_live_session.send_client_content.assert_awaited_once()
         assert len(state.queued_text_injections) == 0
 
+    async def test_an_injection_made_during_the_send_queues_behind_the_held_one(self):
+        """RMK-441: the blocking call is released before its result is sent,
+        so an injection made while the send yields finds nothing blocking; it
+        queues behind the one the call held, and goes out after it."""
+        mod = _load_provider()
+        provider = mod.GeminiLiveProvider(api_key="test-key", model="gemini-2.0-flash-live-001")
+        session = _make_session()
+        mock_live_session = _make_mock_live_session()
+        state = mod._GeminiSessionState(
+            session=session,
+            live_session=mock_live_session,
+            pending_call_ids={"call-1"},
+            blocking_call_ids={"call-1"},
+        )
+        provider._sessions[session.id] = state
+        await provider.inject_text(session, "held", role="user")
+
+        async def send(**kwargs):
+            await provider.inject_text(session, "during", role="user")
+
+        mock_live_session.send_tool_response = AsyncMock(side_effect=send)
+
+        await provider.submit_tool_result(session, "call-1", '{"ok": true}')
+
+        sent = [
+            str(call.kwargs)
+            for call in mock_live_session.send_client_content.await_args_list
+            + mock_live_session.send_realtime_input.await_args_list
+        ]
+        assert len(sent) == 2
+        assert "held" in sent[0] and "during" in sent[1]
+        assert state.queued_text_injections == []
+
     async def test_send_audio_sets_realtime_input_sent(self):
         mod = _load_provider()
         provider = mod.GeminiLiveProvider(api_key="test-key")
@@ -1094,29 +1127,31 @@ class TestGeminiLiveProvider:
     async def test_a_call_is_released_as_its_result_goes(self):
         """Off the books before the send yields, as the channel frees the id
         at the same step: a call Gemini issues under it meanwhile is a new
-        call (RMK-441). The response still carries the call's name."""
+        call (RMK-441), which keeps its booking. The response still carries
+        the call's name."""
         mod = _load_provider()
         provider = mod.GeminiLiveProvider(api_key="test-key", model="gemini-3.8-live")
         session = _make_session()
         state = mod._GeminiSessionState(session=session, live_session=_make_mock_live_session())
         provider._sessions[session.id] = state
-        await provider._on_tool_call(
-            session,
-            state,
-            SimpleNamespace(function_calls=[SimpleNamespace(name="lookup", id="c1", args={})]),
-        )
+        issued = SimpleNamespace(function_calls=[SimpleNamespace(name="lookup", id="c1", args={})])
+        await provider._on_tool_call(session, state, issued)
         during_send: list[bool] = []
 
         async def send(**kwargs):
             during_send.append("c1" in state.call_names or "c1" in state.pending_call_ids)
+            await provider._on_tool_call(session, state, issued)  # issued again meanwhile
 
         state.live_session.send_tool_response = AsyncMock(side_effect=send)
 
         await provider.submit_tool_result(session, "c1", "ok")
 
         assert during_send == [False]
-        sent = state.live_session.send_tool_response.await_args.kwargs["function_responses"][0]
+        sent = state.live_session.send_tool_response.await_args_list[0].kwargs[
+            "function_responses"
+        ][0]
         assert sent.name == "lookup"
+        assert "c1" in state.pending_call_ids and state.call_names["c1"] == "lookup"
 
     async def test_a_result_for_a_call_never_issued_goes_out_unnamed(self):
         mod = _load_provider()

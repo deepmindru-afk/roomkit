@@ -88,7 +88,7 @@ async def test_a_second_call_under_an_id_in_flight_sends_nothing() -> None:
 
     assert handler.started == 1
     assert [r[2] for r in provider.tool_results] == ["r1"]
-    assert "already running" in json.loads(observed[0].result)["error"]
+    assert "has not had its result yet" in json.loads(observed[0].result)["error"]
     await kit.close()
 
 

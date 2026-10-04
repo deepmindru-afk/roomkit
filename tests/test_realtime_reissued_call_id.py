@@ -118,7 +118,125 @@ async def test_a_session_answers_an_id_reissued_while_its_report_runs() -> None:
     await kit.close()
 
     assert [result[1] for result in provider.tool_results] == ["c1", "c1"]
-    assert not any("already running" in body for body in observed)
+    assert len(observed) == 2 and all("not declared" in body for body in observed)
+
+
+async def _lookup_session(
+    provider: MockRealtimeProvider, handler: Any
+) -> tuple[RoomKit, RealtimeVoiceChannel, Any]:
+    channel = RealtimeVoiceChannel(
+        "rt",
+        provider=provider,
+        transport=MockRealtimeTransport(),
+        tools=TOOLS,
+        tool_handler=handler,
+    )
+    kit = RoomKit()
+    kit.register_channel(channel)
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "rt")
+    return kit, channel, await channel.start_session("r1", "u", "ws")
+
+
+class _ReissuingProvider(MockRealtimeProvider):
+    """Frees the id with the result, then the send yields while the vendor
+    issues the id again."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.reissued = False
+
+    async def submit_tool_result(self, session: Any, call_id: str, result: str) -> None:
+        await super().submit_tool_result(session, call_id, result)
+        if not self.reissued:
+            self.reissued = True
+            await self.simulate_tool_call(session, call_id, "lookup", {})
+            await asyncio.sleep(0.02)
+
+
+async def test_an_id_reissued_while_the_result_is_sent_is_answered() -> None:
+    """The call counts delivered before its result is sent: a call the vendor
+    issues under the id during the send is a new call, answered."""
+    provider = _ReissuingProvider()
+    kit, _, session = await _lookup_session(provider, AsyncMock(return_value="found"))
+    observed: list[str] = []
+
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    async def audit(event: Any, ctx: Any) -> None:
+        observed.append(str(event.result))
+
+    await provider.simulate_tool_call(session, "c1", "lookup", {})
+    await until(lambda: len(observed) == 2 and len(provider.tool_results) == 2)
+    await kit.close()
+
+    assert [(result[1], result[2]) for result in provider.tool_results] == [
+        ("c1", "found"),
+        ("c1", "found"),
+    ]
+    assert observed == ["found", "found"]
+
+
+async def test_a_cancellation_names_the_call_reissued_under_the_id() -> None:
+    """The provider cancels the id while its first call's report runs and
+    the second call works: the second call is the one abandoned."""
+    provider = MockRealtimeProvider()
+    never = asyncio.Event()
+
+    async def handler(name: str, arguments: dict[str, Any]) -> str:
+        await never.wait()
+        return "late"
+
+    kit, _, session = await _lookup_session(provider, handler)
+    observed: list[tuple[str, bool]] = []
+
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    async def audit(event: Any, ctx: Any) -> None:
+        observed.append((event.name, event.cancelled))
+
+    gate = _slow_reports(kit)
+    await provider.simulate_tool_call(session, "c1", "ghost", {})
+    await until(lambda: len(provider.tool_results) == 1)
+    await provider.simulate_tool_call(session, "c1", "lookup", {})
+    await asyncio.sleep(0.02)
+    await provider.simulate_tool_call_cancellation(session, ["c1"])
+    gate.set()
+    await until(lambda: len(observed) == 2)
+    await kit.close()
+
+    assert sorted(observed) == [("ghost", False), ("lookup", True)]
+    assert len(provider.tool_results) == 1
+
+
+async def test_a_reconnect_the_first_call_caused_abandons_the_reissued_call() -> None:
+    """The first call's own follow-up orphans the id the vendor issued again:
+    the call it now names is another one, abandoned as any other, not spared
+    as the follow-up's own call."""
+    provider = MockRealtimeProvider()
+    never = asyncio.Event()
+
+    async def handler(name: str, arguments: dict[str, Any]) -> str:
+        await never.wait()
+        return "late"
+
+    kit, _, session = await _lookup_session(provider, handler)
+    observed: list[tuple[str, bool]] = []
+
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    async def audit(event: Any, ctx: Any) -> None:
+        observed.append((event.name, event.cancelled))
+        if event.name == "ghost":
+            # In the first call's context: the vendor issues c1 again, then
+            # a reconnect this call caused orphans what the provider holds.
+            await provider.simulate_tool_call(session, "c1", "lookup", {})
+            await asyncio.sleep(0.01)
+            await provider._abandon_tool_calls(session, ["c1"])
+
+    await provider.simulate_tool_call(session, "c1", "ghost", {})
+    await until(lambda: len(observed) == 2)
+    await kit.close()
+
+    assert observed == [("ghost", False), ("lookup", True)]
+    assert len(provider.tool_results) == 1
 
 
 async def test_a_conference_answers_an_id_reissued_while_its_report_runs() -> None:
@@ -155,6 +273,12 @@ async def test_elevenlabs_answers_an_id_reissued_while_its_report_runs(
     )
     kit = RoomKit()
     kit.register_channel(channel)
+
+    # An observer, or no report is made and the window never opens.
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    async def audit(event: Any, ctx: Any) -> None:
+        pass
+
     await kit.create_room(room_id="r1")
     await kit.attach_channel("r1", "rt")
     gate = _slow_reports(kit)

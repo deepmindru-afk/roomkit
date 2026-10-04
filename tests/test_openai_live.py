@@ -538,6 +538,34 @@ class TestDelegation:
         await _settle()
         assert len(ws.of_type("response.create")) == 1
 
+    async def test_an_id_issued_again_during_the_send_holds_the_response(
+        self, session: VoiceSession
+    ) -> None:
+        """RMK-441: the id leaves the response's books before the send yields;
+        a call issued under it during the send is a new call, and the backend
+        resumes only once that one is answered too."""
+        provider = _provider(delegation=HostedReasoning(model="gpt-5.6-terra"))
+        ws, _ = await _connect(provider, session, tools=[TOOL])
+        ws.push(_response_event({"type": "response.created"}))
+        ws.push(_function_call("call_1", "get_weather", "{}"))
+        ws.push(_response_event({"type": "response.completed", "response": {}}))
+        await _settle()
+        state = provider._states[session.id]
+        original = ws.send
+
+        async def send(message: str) -> None:
+            await original(message)
+            if len(ws.of_type("response.item.create")) == 1:
+                item = _function_call("call_1", "get_weather", "{}")["event"]["item"]
+                await provider._on_backend_output_item(state, "d1", item)
+
+        ws.send = send  # type: ignore[method-assign]
+        await provider.submit_tool_result(session, "call_1", "{}")
+        assert ws.of_type("response.create") == [], "the call issued again is open"
+
+        await provider.submit_tool_result(session, "call_1", "{}")
+        assert len(ws.of_type("response.create")) == 1
+
     async def test_text_only_response_needs_no_continuation(self, session: VoiceSession) -> None:
         provider = _provider(delegation=HostedReasoning(model="gpt-5.6-terra"))
         ws, _ = await _connect(provider, session)

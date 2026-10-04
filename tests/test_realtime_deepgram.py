@@ -1072,24 +1072,26 @@ class TestOutbound:
     async def test_a_call_is_released_as_its_result_goes(
         self, provider: DeepgramAgentProvider, session: VoiceSession
     ) -> None:
-        """Off the books before the send yields (RMK-441)."""
+        """Off the books before the send yields (RMK-441): a call Deepgram
+        issues under the id meanwhile is a new call, which keeps its booking."""
         tool_call = _Recorder()
         provider.on_tool_call(tool_call)
         ws = await _connect(provider, session)
-        ws.push(
-            json.dumps(
-                {
-                    "type": "FunctionCallRequest",
-                    "functions": [{"id": "fc_1", "name": "lookup", "arguments": "{}"}],
-                }
-            )
+        request = json.dumps(
+            {
+                "type": "FunctionCallRequest",
+                "functions": [{"id": "fc_1", "name": "lookup", "arguments": "{}"}],
+            }
         )
+        ws.push(request)
         await tool_call.wait()
         during_send: list[bool] = []
         original = ws.send
 
         async def send(payload: str) -> None:
             during_send.append("fc_1" in provider._states[session.id].pending_calls)
+            ws.push(request)  # Deepgram issues the id again meanwhile
+            await tool_call.wait()
             await original(payload)
 
         with patch.object(ws, "send", side_effect=send):
@@ -1097,6 +1099,7 @@ class TestOutbound:
 
         assert during_send == [False]
         assert ws.last_of_type("FunctionCallResponse")["name"] == "lookup"
+        assert "fc_1" in provider._states[session.id].pending_calls
         await provider.disconnect(session)
 
     async def test_a_failed_tool_result_send_still_releases_the_call(

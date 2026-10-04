@@ -20,8 +20,9 @@ class ElevenLabsRealtimeConfig(BaseModel):
             the provider answers the agent with an error.  ``None`` (the
             default) leaves the wait to the channel, which bounds each call
             itself (``tool_timeout_seconds`` / ``tool_timeouts``, RFC §21.6):
-            a bound set here caps the channel's, and a call cut here leaves
-            the channel's handler running.  The ElevenLabs agent applies its
+            a bound set here caps the channel's, and a call cut here is
+            abandoned: the channel cancels its handler and reports it
+            cancelled.  The ElevenLabs agent applies its
             own per-tool timeout server-side; keep any bound set here above
             it so the agent's own timeout is what the user hears.
         response_idle_ms: Quiet period after the last audio chunk of a turn

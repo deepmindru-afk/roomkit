@@ -166,8 +166,9 @@ class GeminiLiveInputMixin(RealtimeVoiceProvider):
         # Queue while a blocking tool call is outstanding: the API refuses
         # input until its function response comes back. A background call is
         # not one the API waits on, and queueing there would hold the
-        # injection back for no reason.
-        if state.blocking_call_ids:
+        # injection back for no reason. Queue too behind injections still
+        # waiting to go out (the flush is draining them), so none overtakes.
+        if state.blocking_call_ids or state.queued_text_injections:
             logger.debug(
                 "Queuing text injection for session %s (blocking tool calls: %d)",
                 session.id,
@@ -260,8 +261,8 @@ class GeminiLiveInputMixin(RealtimeVoiceProvider):
 
         # Same guard as inject_text: only a blocking call makes the API refuse
         # client_content. Queue the injection and flush after
-        # submit_tool_result.
-        if state.blocking_call_ids:
+        # submit_tool_result, and behind images still waiting to go out.
+        if state.blocking_call_ids or state.queued_injections:
             logger.debug(
                 "Queuing image injection for session %s (blocking tool calls: %d)",
                 session.id,

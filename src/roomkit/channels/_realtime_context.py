@@ -8,6 +8,7 @@ from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from roomkit.channels._realtime_tool_calls import RealtimeToolCall
     from roomkit.voice.base import VoiceSession
 
 _current_voice_session: contextvars.ContextVar[VoiceSession | None] = contextvars.ContextVar(
@@ -34,14 +35,15 @@ class _ServedCall:
     go, since the new socket never issued the id (RFC §9.3). A task the
     handler starts inherits the record, and one can outlive the call (a
     provider's new receive loop does); ``finished`` keeps it from naming a
-    call that has ended.
+    call that has ended. The record names the call itself, not its id: a
+    vendor may issue the id again once the call's result went out (RFC §12.4),
+    and the call it then names is another one.
     """
 
-    __slots__ = ("call_id", "finished", "orphaned", "session_id")
+    __slots__ = ("call", "finished", "orphaned")
 
-    def __init__(self, session_id: str, call_id: str) -> None:
-        self.session_id = session_id
-        self.call_id = call_id
+    def __init__(self, call: RealtimeToolCall) -> None:
+        self.call = call
         self.orphaned = False
         self.finished = False
 
@@ -53,9 +55,9 @@ _served_call: contextvars.ContextVar[_ServedCall | None] = contextvars.ContextVa
 
 
 @contextlib.contextmanager
-def serving_call(session_id: str, call_id: str) -> Iterator[None]:
+def serving_call(call: RealtimeToolCall) -> Iterator[None]:
     """Run a provider call's handling as that call's own context."""
-    served = _ServedCall(session_id, call_id)
+    served = _ServedCall(call)
     token = _served_call.set(served)
     try:
         yield
@@ -64,16 +66,14 @@ def serving_call(session_id: str, call_id: str) -> Iterator[None]:
         _served_call.reset(token)
 
 
-def _this_task_serves(session_id: str, call_id: str) -> _ServedCall | None:
+def _this_task_serves(call: RealtimeToolCall) -> _ServedCall | None:
     served = _served_call.get()
-    if served is None or served.finished:
-        return None
-    if (served.session_id, served.call_id) != (session_id, call_id):
+    if served is None or served.finished or served.call is not call:
         return None
     return served
 
 
-def spare_own_orphaned_call(session_id: str, call_id: str) -> bool:
+def spare_own_orphaned_call(call: RealtimeToolCall) -> bool:
     """Whether the orphaned call is the one this task's handler is serving.
 
     Called where a provider reports orphaned calls. When the report runs
@@ -81,14 +81,14 @@ def spare_own_orphaned_call(session_id: str, call_id: str) -> bool:
     the reconnect: the call is marked so that its result is not sent, and it
     is not to be interrupted.
     """
-    served = _this_task_serves(session_id, call_id)
+    served = _this_task_serves(call)
     if served is None:
         return False
     served.orphaned = True
     return True
 
 
-def own_call_orphaned(session_id: str, call_id: str) -> bool:
+def own_call_orphaned(call: RealtimeToolCall) -> bool:
     """Whether this task's call lost its id to a reconnect its handler caused."""
-    served = _this_task_serves(session_id, call_id)
+    served = _this_task_serves(call)
     return served is not None and served.orphaned

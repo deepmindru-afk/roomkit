@@ -255,6 +255,36 @@ class TestAResultTheConversationHasLeft:
         assert _wire(ws) == ["item(call_a)", "item(call_c)", "response.create"]
 
 
+class TestAnIdIssuedAgainDuringTheSend:
+    async def test_the_new_call_holds_its_response(
+        self, provider: OpenAIRealtimeBase, session: VoiceSession
+    ) -> None:
+        """RMK-441: the id leaves the response's books before the send
+        yields, as it leaves the open calls; a call issued under it during
+        the send is a new call, which holds its response until answered."""
+        ws = _attach(provider, session)
+        await _response_created(provider, session)
+        await _call(provider, session, "c1")
+        await _response_done(provider, session)
+        reissued = False
+
+        async def send(payload: str) -> None:
+            nonlocal reissued
+            if json.loads(payload)["type"] == "conversation.item.create" and not reissued:
+                reissued = True
+                await _response_created(provider, session)
+                await _call(provider, session, "c1")
+
+        ws.send.side_effect = send
+        await _result(provider, session, "c1")
+        await _response_done(provider, session)
+
+        assert _wire(ws) == ["item(c1)"]
+        await _result(provider, session, "c1")
+
+        assert _wire(ws) == ["item(c1)", "item(c1)", "response.create"]
+
+
 class TestARequestNotYetBegun:
     async def test_a_result_in_between_waits_for_the_requested_response(
         self, provider: OpenAIRealtimeBase, session: VoiceSession

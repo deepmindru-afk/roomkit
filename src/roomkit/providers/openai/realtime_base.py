@@ -338,6 +338,12 @@ class OpenAIRealtimeBase(OpenAIRealtimeEventHandlersMixin):
         ws = self._connections.get(session.id)
         if ws is None:
             return
+        # Off the response's books before the send yields, as off the open
+        # calls: a call issued under the id meanwhile is a new call, which
+        # holds its response (RFC §12.4).
+        current = self._pending_responses.get(session.id)
+        if current is not None:
+            current.call_ids.discard(call_id)
 
         await ws.send(
             json.dumps(
@@ -355,7 +361,6 @@ class OpenAIRealtimeBase(OpenAIRealtimeEventHandlersMixin):
         # A call of a response the conversation has left joins the one in
         # progress, or continues at once when none is (RFC §12.4)
         pending = self._pending_responses.setdefault(session.id, PendingResponse(finished=True))
-        pending.call_ids.discard(call_id)
         pending.had_calls = True
         await self._continue_after_tool_results(session)
 

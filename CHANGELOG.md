@@ -747,10 +747,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   duplicate and booked by the provider as awaiting, and never answered, which
   left an ElevenLabs response open for good. An id now names its call until
   its result goes out, on the channel (`ToolCallBook`) and the conference;
-  Gemini Live and Deepgram free the id before the send yields, as OpenAI
-  Realtime, xAI, GPT-Live and ElevenLabs already did; an ElevenLabs handler's
-  cleanup takes only its own future. Deepgram no longer keeps a call whose
-  result send failed: nothing resends it.
+  Gemini Live and Deepgram free the id before the send yields, as ElevenLabs
+  already did, and OpenAI Realtime, xAI and GPT-Live now take it off the
+  response's books there too (a call issued under it during the send lost its
+  hold on the response, which then resumed without its answer); an
+  ElevenLabs handler's cleanup takes only its own future. The call issued
+  under the id is another call to the channel throughout: a reconnect the
+  first call's handler caused abandons it rather than sparing it as the
+  handler's own. A Gemini injection made while a blocking call's result is
+  sent queues behind the ones that call held instead of overtaking them.
+  Deepgram no longer keeps a call whose result send failed: nothing resends
+  it.
 
 - A skill's `requires` and gates read the same on every door (RMK-429, RFC
   §24.3): a text turn now checks `requires` as a realtime session does, with

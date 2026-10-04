@@ -212,6 +212,12 @@ class OpenAILiveHostedDelegationMixin(RealtimeVoiceProvider):
         logger.debug(
             "[%s →] response.item.create call=%s (session %s)", _LOG_TAG, call_id, session.id
         )
+        # Off the response's books before the send yields, as off the open
+        # calls: a call issued under the id meanwhile is a new call, which
+        # holds its response (RFC §12.4).
+        pending = state.pending.get(key)
+        if pending is not None:
+            pending.call_ids.discard(call_id)
         await state.ws.send(
             json.dumps(
                 {
@@ -220,7 +226,4 @@ class OpenAILiveHostedDelegationMixin(RealtimeVoiceProvider):
                 }
             )
         )
-        pending = state.pending.get(key)
-        if pending is not None:
-            pending.call_ids.discard(call_id)
         await self._maybe_continue_response(state, key)

@@ -83,7 +83,7 @@ async def test_a_second_call_under_an_id_in_flight_is_refused_and_sends_nothing(
     assert handler.started == 1
     assert provider.tool_results == []
     assert [(e.tool_call_id, e.is_error) for e in observed] == [("c1", True)]
-    assert "already running" in json.loads(observed[0].result)["error"]
+    assert "has not had its result yet" in json.loads(observed[0].result)["error"]
 
     handler.release.set()
     await until(lambda: bool(provider.tool_results))

@@ -164,29 +164,28 @@ class GeminiLiveToolsMixin(RealtimeVoiceProvider):
         """Send what the blocking calls held back, text first, then images.
 
         Called once nothing blocks any more: a result came back, the server
-        cancelled the call, or the connection that owned it is gone.
+        cancelled the call, or the connection that owned it is gone. Each
+        queue drains from its head, so an injection made meanwhile queues
+        behind it rather than overtaking it, and a call that blocks again
+        stops the drain.
         """
-        if state.queued_text_injections:
-            text_injections = state.queued_text_injections[:]
-            state.queued_text_injections.clear()
-            for text, role, silent in text_injections:
-                logger.debug(
-                    "Flushing queued text injection for session %s (len=%d)",
-                    state.session.id,
-                    len(text),
-                )
-                await self._send_text(state, text, role, silent)
-        if state.queued_injections:
-            injections = state.queued_injections[:]
-            state.queued_injections.clear()
-            for image_data, mime_type, prompt, silent in injections:
-                logger.debug(
-                    "Flushing queued image injection for session %s (mime=%s, size=%d)",
-                    state.session.id,
-                    mime_type,
-                    len(image_data),
-                )
-                await self._send_image(state, image_data, mime_type, prompt, silent)
+        while state.queued_text_injections and not state.blocking_call_ids:
+            text, role, silent = state.queued_text_injections.pop(0)
+            logger.debug(
+                "Flushing queued text injection for session %s (len=%d)",
+                state.session.id,
+                len(text),
+            )
+            await self._send_text(state, text, role, silent)
+        while state.queued_injections and not state.blocking_call_ids:
+            image_data, mime_type, prompt, silent = state.queued_injections.pop(0)
+            logger.debug(
+                "Flushing queued image injection for session %s (mime=%s, size=%d)",
+                state.session.id,
+                mime_type,
+                len(image_data),
+            )
+            await self._send_image(state, image_data, mime_type, prompt, silent)
 
     @staticmethod
     def _release_call(state: _GeminiSessionState, call_id: str) -> None:
