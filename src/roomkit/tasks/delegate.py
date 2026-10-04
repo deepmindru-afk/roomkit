@@ -15,6 +15,7 @@ from roomkit.channels._tool_registry import orchestration_tool
 from roomkit.orchestration._call_room import in_call_room
 from roomkit.providers.ai.base import AITool
 from roomkit.tasks.cache import CompletedTaskCache
+from roomkit.tasks.models import TaskStatus
 
 if TYPE_CHECKING:
     from roomkit.channels.ai import AIChannel
@@ -232,10 +233,13 @@ class DelegateHandler:
 
             async def _cache_on_complete() -> None:
                 try:
-                    await task.wait(timeout=600.0)
-                    cache.put(room_id, agent_id, task_text, result)
+                    ended = await task.wait(timeout=600.0)
                 except Exception:  # nosec B110
-                    pass  # timeout or error — don't cache
+                    return  # timeout or error — don't cache
+                # Only a completed task answers a repeat of its call: a failed
+                # or cancelled one is run again, as a strategy's dispatch is.
+                if ended.status == TaskStatus.COMPLETED:
+                    cache.put(room_id, agent_id, task_text, result)
 
             t = asyncio.create_task(_cache_on_complete())
             bg_tasks.add(t)

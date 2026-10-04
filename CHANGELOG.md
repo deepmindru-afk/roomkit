@@ -796,6 +796,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `delegate_task`'s cache answers a repeat of a call only once its task
+  completed (RMK-462, RFC §23.3): a failed or cancelled task is run again,
+  where the cache returned its `delegated` answer for five minutes.
+
 - ElevenLabs reads a call's parameters with the rule every realtime
   provider applies (`readable_arguments`, RMK-455, RFC §6.4): text that
   reads as an object runs with it and blank text or `null` with `{}`,
