@@ -585,37 +585,8 @@ class LocalAudioBackend(VoiceBackend):
             audio: Raw PCM-16 LE bytes or an async iterator of AudioChunks.
         """
         if self._realtime_mode:
-            # Realtime path: queue bytes into persistent output buffer
-            if isinstance(audio, bytes) and audio and not self._rt_closing.is_set():
-                with self._rt_buf_lock:
-                    was_interrupted = self._rt_interrupted
-                    self._rt_interrupted = False
-                    available = max(0, self._rt_max_buffer_bytes - self._rt_buffered_bytes)
-                    frame_width = self._channels * 2
-                    available -= available % frame_width
-                    accepted = audio[:available]
-                    dropped = len(audio) - len(accepted)
-                    if accepted:
-                        self._rt_output_buffer.append(accepted)
-                        self._rt_buffered_bytes += len(accepted)
-                    self._rt_dropped_bytes += dropped
-                    # New audio means a response is in flight: a stale
-                    # end-of-response must not release the priming gate early.
-                    self._rt_response_complete = False
-                    self._rt_prime_idle_blocks = 0
-                # Add after releasing the buffer lock. If the callback just
-                # observed an empty buffer and clears playing state, this final
-                # write wins; adding before the append had a race that could
-                # unmute capture while newly queued audio was about to play.
-                if accepted:
-                    self._playing_sessions.add(session.id)
-                if dropped and self._rt_dropped_bytes == dropped:
-                    logger.warning(
-                        "Realtime speaker buffer reached its %ds bound; dropping excess audio",
-                        _MAX_REALTIME_BUFFER_SECONDS,
-                    )
-                if was_interrupted:
-                    logger.info("[INTERRUPT] cleared — buffering for resume")
+            if isinstance(audio, bytes):
+                self._buffer_realtime_audio(session, audio)
             return
 
         # VoiceChannel path
@@ -629,6 +600,40 @@ class LocalAudioBackend(VoiceBackend):
             logger.exception("Error playing audio for session %s", session.id)
         finally:
             self._playing_sessions.discard(session.id)
+
+    def _buffer_realtime_audio(self, session: VoiceSession, audio: bytes) -> None:
+        """Queue a realtime response's bytes in the speaker's persistent buffer."""
+        if not audio or self._rt_closing.is_set():
+            return
+        with self._rt_buf_lock:
+            was_interrupted = self._rt_interrupted
+            self._rt_interrupted = False
+            available = max(0, self._rt_max_buffer_bytes - self._rt_buffered_bytes)
+            frame_width = self._channels * 2
+            available -= available % frame_width
+            accepted = audio[:available]
+            dropped = len(audio) - len(accepted)
+            if accepted:
+                self._rt_output_buffer.append(accepted)
+                self._rt_buffered_bytes += len(accepted)
+            self._rt_dropped_bytes += dropped
+            # New audio means a response is in flight: a stale
+            # end-of-response must not release the priming gate early.
+            self._rt_response_complete = False
+            self._rt_prime_idle_blocks = 0
+        # Add after releasing the buffer lock. If the callback just
+        # observed an empty buffer and clears playing state, this final
+        # write wins; adding before the append had a race that could
+        # unmute capture while newly queued audio was about to play.
+        if accepted:
+            self._playing_sessions.add(session.id)
+        if dropped and self._rt_dropped_bytes == dropped:
+            logger.warning(
+                "Realtime speaker buffer reached its %ds bound; dropping excess audio",
+                _MAX_REALTIME_BUFFER_SECONDS,
+            )
+        if was_interrupted:
+            logger.info("[INTERRUPT] cleared — buffering for resume")
 
     async def _play_pcm(self, pcm_data: bytes) -> None:
         """Play a complete PCM-16 LE buffer through speakers."""
