@@ -41,7 +41,7 @@ from typing import Any
 
 from roomkit.models.enums import ChannelType
 from roomkit.models.tool_call import ToolCallEvent
-from roomkit.tools.policy import ToolPolicy, policy_refusal
+from roomkit.tools.policy import ToolPolicy, call_admitted, policy_refusal
 from roomkit.tools.result import cancelled_tool_error, pre_execution_denial
 
 logger = logging.getLogger("roomkit.tools.external")
@@ -407,7 +407,8 @@ class PolicyExternalToolHandler(ExternalToolHandler):
     ) -> ToolDecision:
         # The policy before BEFORE_TOOL_USE, as every gate orders them (RFC
         # §21.1): an approval hook is never asked about a tool it may not run.
-        if self._policy and not self._policy.is_allowed(tool_name):
+        # Under an MCP alias too: the agent names MCP tools that way (RFC §21.1).
+        if self._policy and not call_admitted(self._policy, tool_name):
             return ToolDecision(approved=False, reason=policy_refusal(tool_name))
 
         decision = await self._fire_before_hook(

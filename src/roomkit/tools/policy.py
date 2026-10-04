@@ -52,6 +52,19 @@ def judged_names(name: str) -> tuple[str, ...]:
     return (name,) if served == name else (name, served)
 
 
+def call_admitted(policy: ToolPolicy, name: str) -> bool:
+    """Whether *policy* admits a call to *name* under every name it is judged
+    by (:func:`judged_names`): the one reading for a channel's gate, an
+    external handler's and a host's (RFC §21.1)."""
+    return all(policy.is_allowed(judged) for judged in judged_names(name))
+
+
+def call_gated(name: str, patterns: Iterable[str]) -> bool:
+    """Whether a glob of *patterns* (a skill's gate, RFC §24.2) covers a call
+    to *name* under any name it is judged by (:func:`judged_names`)."""
+    return any(matches_any_pattern(judged, patterns) for judged in judged_names(name))
+
+
 def policy_refusal(name: str) -> str:
     """What the model reads of a call the tool policy refused, whichever
     gate refused it (an AI channel, a realtime session, a conference, an

@@ -8,7 +8,6 @@ still served for a tool they admit.
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -16,13 +15,22 @@ import mcp.types as mt
 import pytest
 
 from roomkit import ConferenceRealtimeConfig, RoomKit
+from roomkit.channels.ai import AIChannel
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
-from roomkit.providers.ai.base import AITool
+from roomkit.models.channel import ChannelBinding
+from roomkit.models.context import RoomContext
+from roomkit.models.enums import ChannelType
+from roomkit.models.room import Room
+from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
+from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.tools.external import PolicyExternalToolHandler
 from roomkit.tools.mcp import MCPToolProvider
-from roomkit.tools.policy import ToolPolicy, judged_names, served_tool_name
+from roomkit.tools.policy import ToolPolicy, judged_names, policy_refusal, served_tool_name
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
 from tests.conference.test_conference_realtime import ROOM, realtime_kit, until
+from tests.conftest import make_event
 from tests.test_realtime_skills import _registry_with_skill
+from tests.tool_loop_modes import respond
 
 ALIAS = "mcp__crm__delete_records"
 
@@ -122,7 +130,6 @@ async def test_an_alias_of_an_admitted_tool_is_still_served(door: str) -> None:
 
     assert "search_records done" in answer
     assert server.ran == ["search_records"]
-    await asyncio.sleep(0)
 
 
 async def test_a_tool_a_skill_gates_never_runs_under_its_alias(tmp_path: Path) -> None:
@@ -147,3 +154,71 @@ async def test_a_tool_a_skill_gates_never_runs_under_its_alias(tmp_path: Path) -
 
     assert "gated by a skill" in provider.tool_results[0][2]
     assert server.ran == []
+
+
+def _text_channel(server: _Server, **kwargs: Any) -> tuple[AIChannel, MockAIProvider]:
+    """A text channel declaring the tool under its alias, as a host that names
+    MCP tools that way does; its model calls the alias once."""
+    provider = MockAIProvider(
+        ai_responses=[
+            AIResponse(
+                content="",
+                finish_reason="tool_calls",
+                tool_calls=[AIToolCall(id="c1", name=ALIAS, arguments={})],
+            ),
+            AIResponse(content="done"),
+        ]
+    )
+    channel = AIChannel(
+        "ai1",
+        provider=provider,
+        tools=[AITool(name=ALIAS, description="delete", parameters={})],
+        tool_handler=_mcp_handler(server),
+        tool_search=False,
+        **kwargs,
+    )
+    return channel, provider
+
+
+async def _text_answer(channel: AIChannel, provider: MockAIProvider) -> str:
+    binding = ChannelBinding(channel_id="ai1", room_id="r1", channel_type=ChannelType.AI)
+    await respond(
+        channel, make_event(room_id="r1", body="go"), binding, RoomContext(room=Room(id="r1"))
+    )
+    [answer] = [
+        str(part.result)
+        for message in provider.calls[1].messages
+        if message.role == "tool"
+        for part in message.content
+    ]
+    return answer
+
+
+async def test_a_text_turn_judges_an_alias_under_both_names() -> None:
+    server = _Server()
+    channel, provider = _text_channel(server, tool_policy=ToolPolicy(deny=["delete_*"]))
+
+    answer = await _text_answer(channel, provider)
+
+    assert "not permitted by the agent's tool policy" in answer
+    assert server.ran == []
+
+
+async def test_a_text_turn_gates_an_alias_as_its_tool(tmp_path: Path) -> None:
+    server = _Server()
+    skills = _registry_with_skill(tmp_path, allowed_tools="delete_*")
+    channel, provider = _text_channel(server, skills=skills)
+
+    answer = await _text_answer(channel, provider)
+
+    assert "gated by a skill" in answer
+    assert server.ran == []
+
+
+async def test_an_external_handler_judges_an_alias_under_both_names() -> None:
+    handler = PolicyExternalToolHandler(policy=ToolPolicy(deny=["delete_*"]))
+
+    decision = await handler.process_tool_call(ALIAS, {})
+
+    assert decision.approved is False
+    assert decision.reason == policy_refusal(ALIAS)

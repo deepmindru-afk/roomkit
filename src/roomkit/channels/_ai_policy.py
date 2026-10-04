@@ -15,7 +15,12 @@ from roomkit.channels._tool_reopen import (
 )
 from roomkit.models.tool_call import DeclaredTool, ToolDeclarationOrigin
 from roomkit.providers.ai.base import AIContext, AIMessage, AITool, AIToolResultPart
-from roomkit.tools.policy import ToolPolicy, judged_names, matches_any_pattern, policy_refusal
+from roomkit.tools.policy import (
+    ToolPolicy,
+    call_admitted,
+    call_gated,
+    policy_refusal,
+)
 from roomkit.tools.result import gated_tool_refusal
 
 if TYPE_CHECKING:
@@ -49,9 +54,7 @@ def policy_admits(policy: ToolPolicy | None, name: str, exempt: Container[str]) 
     one of these names is not the channel's, and the policy governs it. A call
     under an MCP alias is judged under both names (:func:`judged_names`).
     """
-    if name in exempt or policy is None:
-        return True
-    return all(policy.is_allowed(judged) for judged in judged_names(name))
+    return name in exempt or policy is None or call_admitted(policy, name)
 
 
 def policy_check(
@@ -218,9 +221,9 @@ class AIToolPolicyMixin(_AIChannelContract):
         if not policy_admits(self._effective_tool_policy, name, exempt):
             logger.warning("Tool %s blocked by policy", name)
             return {"error": policy_refusal(name)}
-        if matches_any_pattern(name, self._gated_tool_names):
+        if call_gated(name, self._gated_tool_names):
             logger.warning("Tool %s blocked by skill gating", name)
-            closed = self._skills is not None and matches_any_pattern(
+            closed = self._skills is not None and call_gated(
                 name, self._skills.unopenable_tool_names()
             )
             return {"error": gated_tool_refusal(name, closed=closed)}
@@ -259,7 +262,7 @@ class AIToolPolicyMixin(_AIChannelContract):
             return False
         # ``gated`` holds ToolPolicy globs, not names (RFC §24.2): an
         # exact-membership test would let ``search_*`` gate nothing at all.
-        return not any(matches_any_pattern(judged, gated) for judged in judged_names(name))
+        return not call_gated(name, gated)
 
     def _apply_tool_filters(self, tools: list[AITool]) -> list[AITool]:
         """Apply tool policy, skill gating, and Tool Search to a list of tools.

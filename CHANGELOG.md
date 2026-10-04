@@ -1907,11 +1907,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   framework registered has no room to read and raises `RoomNotFoundError`.
 
 - A call under an MCP alias is judged by the tool policy and skill gating
-  under both names (RMK-483, RFC §21.1). `MCPToolProvider.as_tool_handler()`
-  runs `mcp__<server>__<tool>` as `<tool>` after the gate judged the alias:
-  on a realtime session or a conference that declares no catalogue, a policy
-  denying `delete_*` let `mcp__crm__delete_records` delete the records. The
-  alias is still served for a tool the policy and the gates admit.
+  under both names (RMK-483, RFC §21.1), on every gate: a channel's (text,
+  realtime, conference) and `PolicyExternalToolHandler`'s.
+  `MCPToolProvider.as_tool_handler()` runs `mcp__<server>__<tool>` as
+  `<tool>` after the gate judged the alias: on a realtime session or a
+  conference that declares no catalogue, a policy denying `delete_*` let
+  `mcp__crm__delete_records` delete the records; an external agent (which
+  names MCP tools that way) got the call approved; and a text channel that
+  declares the tool under its alias ran it although a skill gated
+  `delete_*`. The alias is still served for a tool the policy and the gates
+  admit. A policy's patterns judge the tool's own name: an allow-list
+  written in alias form (`mcp__crm__*`) now refuses the alias calls too,
+  since the tool they run is not on it.
 
 - A model could pass its own tool call off as one the provider already ran
   by writing `_result` among its arguments, so the call skipped the tool
