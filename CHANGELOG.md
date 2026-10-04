@@ -845,7 +845,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nothing for the abandoned call even when its handler answers anyway, and
   answer the new call. A call a reconnect its own handler caused orphans,
   which runs on, frees its id the same way: the new connection never issued
-  it.
+  it. ElevenLabs frees a call `tool_timeout_s` abandons before the channel
+  hears of it, as every provider does.
 
 - The line between a refused and a failed call reads the same everywhere
   (RMK-459, RFC §9.3). A reasoning backend's relay of a call its loop

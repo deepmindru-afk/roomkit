@@ -760,6 +760,27 @@ class TestClientToolBridge:
 
         assert provider._pending_tools[session.id] == {}
 
+    async def test_a_timed_out_call_frees_its_id_before_the_channel_hears(
+        self, session: VoiceSession
+    ) -> None:
+        """A cancellation callback that suspends must find the id free: a call
+        the agent issues under it meanwhile is a new call (RFC §12.4)."""
+        provider = ElevenLabsRealtimeProvider(
+            ElevenLabsRealtimeConfig(api_key="k", agent_id="a", tool_timeout_s=0.01)
+        )
+        provider.on_tool_call(lambda *_: None)
+        held: list[set[str]] = []
+
+        async def cancelled(session: VoiceSession, call_ids: list[str]) -> None:
+            held.append(set(provider._pending_tools.get(session.id, {})))
+            await asyncio.sleep(0)
+
+        provider.on_tool_call_cancelled(cancelled)
+        with pytest.raises(RuntimeError, match="did not return within"):
+            await provider._make_tool_handler(session, "slow")({"tool_call_id": "call-1"})
+
+        assert held == [set()]
+
     async def test_by_default_a_call_waits_for_the_channel_to_answer(
         self, session: VoiceSession
     ) -> None:

@@ -598,7 +598,9 @@ class ElevenLabsRealtimeProvider(RealtimeVoiceProvider):
                 return await asyncio.wait_for(future, timeout=self._config.tool_timeout_s)
             except TimeoutError:
                 # The agent reads an error now and never the result: the call
-                # is abandoned, which the channel is told (RFC §12.4).
+                # is abandoned, its id freed before the channel is told, as
+                # every provider frees it (RFC §12.4).
+                self._forget_pending(session.id, call_id, future)
                 await self._abandon_tool_calls(session, [call_id])
                 # Raising is how the SDK is told this is an error result;
                 # returning a string would read as a successful call.
@@ -606,13 +608,17 @@ class ElevenLabsRealtimeProvider(RealtimeVoiceProvider):
                     f"Tool '{name}' did not return within {self._config.tool_timeout_s:g}s"
                 ) from None
             finally:
-                # Its own future only: once its result went out, the id may
-                # already name a newer call, whose future this must not take.
-                pending = self._pending_tools.get(session.id)
-                if pending is not None and pending.get(call_id) is future:
-                    del pending[call_id]
+                self._forget_pending(session.id, call_id, future)
 
         return handler
+
+    def _forget_pending(self, session_id: str, call_id: str, future: asyncio.Future[str]) -> None:
+        """Drop *call_id*'s pending future when it is still *future*: once its
+        result went out, the id may already name a newer call, whose future
+        this must not take."""
+        pending = self._pending_tools.get(session_id)
+        if pending is not None and pending.get(call_id) is future:
+            del pending[call_id]
 
     async def _hand_on_unanswerable(
         self, session: VoiceSession, call_id: str, name: str, arguments: dict[str, Any] | str
