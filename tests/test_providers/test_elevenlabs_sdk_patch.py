@@ -9,6 +9,8 @@ through ``handle``: the patch is then dropped, or reworked.
 from __future__ import annotations
 
 import asyncio
+import json
+import threading
 from types import SimpleNamespace
 from typing import Any
 
@@ -181,3 +183,55 @@ async def test_the_sdk_still_lets_a_parameter_replace_the_call_id() -> None:
     )
 
     assert received[0]["tool_call_id"] == "forged"
+
+
+async def test_elevenlabs_hands_on_parameters_that_are_no_object_as_text() -> None:
+    """The SDK's ``**parameters`` raised on them, which ended the
+    conversation; they reach the channel as the model's text, which it
+    refuses as unreadable."""
+    _, (patched, handler), heard, sent = _patched_elevenlabs()
+
+    await _wire(
+        patched, handler, {"tool_call_id": "real-3", "tool_name": "lookup", "parameters": [1, 2]}
+    )
+
+    assert heard == [("real-3", "lookup", "[1, 2]")]
+    assert [response["tool_call_id"] for response in sent] == ["real-3"]
+
+
+class _Socket:
+    def __init__(self) -> None:
+        self.sent: list[dict[str, Any]] = []
+
+    async def send(self, data: str) -> None:
+        self.sent.append(json.loads(data))
+
+
+async def test_the_sdks_own_message_handling_goes_through_the_patch() -> None:
+    """Through the SDK's ``_handle_message``, the entry its socket loop calls:
+    an SDK that stopped routing through ``_handle_message_core_async`` would
+    hand the model's ``tool_call_id`` over as the call's id again."""
+    provider, (patched, _), heard, _ = _patched_elevenlabs()
+    session = _session()
+    provider._register_client_tools(patched.client_tools, session, [{"name": "lookup"}])
+    patched._should_stop = threading.Event()
+    patched._conversation_id = None
+    patched._last_interrupt_id = 0
+    patched.audio_interface = None
+    for callback in (
+        "callback_agent_response",
+        "callback_agent_response_correction",
+        "callback_agent_chat_response_part",
+        "callback_user_transcript",
+        "callback_latency_measurement",
+        "callback_audio_alignment",
+    ):
+        setattr(patched, callback, None)
+    socket = _Socket()
+    call = {"tool_call_id": "real-4", "tool_name": "lookup", "parameters": {"tool_call_id": "x"}}
+
+    await patched._handle_message({"type": "client_tool_call", "client_tool_call": call}, socket)
+    await asyncio.sleep(0.15)
+
+    assert heard == [("real-4", "lookup", {"tool_call_id": "x"})]
+    assert [message.get("tool_call_id") for message in socket.sent] == ["real-4"]

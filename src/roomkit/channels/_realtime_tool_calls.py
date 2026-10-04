@@ -115,9 +115,8 @@ class ToolCallBook:
         without an id or under one whose call's result has not gone out yet,
         which then keeps the id (RFC §12.4)."""
         if not call.call_id:
-            call.unanswerable = json.dumps(
-                {"error": f"Tool call '{call.name}' came without an id"}
-            )
+            what = f"Tool call '{call.name}'" if call.name else "A tool call"
+            call.unanswerable = json.dumps({"error": f"{what} came without an id"})
             return False
         calls = self._calls.setdefault(call.session.id, {})
         held = calls.get(call.call_id, [])

@@ -34,7 +34,10 @@ no ``tool_call_id`` raises ``KeyError``, which ends the conversation.
 :func:`conversation` builds the SDK's ``AsyncConversation`` with its message
 handling rewriting such a call first: the model's parameters go under one
 reserved key, which :func:`split_call` reads back, and a missing id becomes
-``None``, a call the channel refuses as one without an id. Remove it, with
+``None``, a call the channel refuses as one without an id. Parameters that are
+no object (a string, a list), which the SDK's ``**parameters`` raised on and
+the conversation ended with, go on as the model's text, which the channel
+refuses as unreadable (RFC §6.4). Remove it, with
 :func:`conversation` and :func:`split_call` (back to ``AsyncConversation`` and
 the ``tool_call_id`` pop in ``_make_tool_handler``), when
 ``test_the_sdk_still_lets_a_parameter_replace_the_call_id`` fails.
@@ -47,6 +50,7 @@ they pass on the new minor.
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -92,16 +96,25 @@ def _service_id_first(message: Any) -> Any:
     if not isinstance(message, dict) or message.get("type") != "client_tool_call":
         return message
     call = dict(message.get("client_tool_call") or {})
-    call["parameters"] = {_ARGUMENTS: dict(call.get("parameters") or {})}
+    call["parameters"] = {_ARGUMENTS: _model_arguments(call.get("parameters"))}
     call.setdefault(CALL_ID, None)
     return {**message, "client_tool_call": call}
 
 
-def split_call(parameters: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+def _model_arguments(parameters: Any) -> dict[str, Any] | str:
+    """The model's parameters: an object as a mapping, anything else as its
+    text, which the channel refuses as unreadable (RFC §6.4)."""
+    if parameters is None or isinstance(parameters, dict):
+        return dict(parameters or {})
+    return parameters if isinstance(parameters, str) else json.dumps(parameters)
+
+
+def split_call(parameters: dict[str, Any]) -> tuple[str, dict[str, Any] | str]:
     """A call's id, the service's, and the model's arguments, from the
     parameters the SDK hands a tool; a ``tool_call_id`` the model wrote is
     one of the arguments (RFC §12.4)."""
     call_id = str(parameters.get(CALL_ID) or "")
     if _ARGUMENTS in parameters:
-        return call_id, dict(parameters[_ARGUMENTS])
+        arguments = parameters[_ARGUMENTS]
+        return call_id, dict(arguments) if isinstance(arguments, dict) else str(arguments)
     return call_id, {key: value for key, value in parameters.items() if key != CALL_ID}

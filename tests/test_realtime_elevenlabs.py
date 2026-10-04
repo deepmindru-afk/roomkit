@@ -227,6 +227,27 @@ class TestConnectReadiness:
             await routed
         await provider.disconnect(session)
 
+    async def test_connect_builds_its_conversation_through_the_patch(
+        self,
+        provider: ElevenLabsRealtimeProvider,
+        session: VoiceSession,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """RMK-442: the conversation keeps a call's id the service's
+        (``sdk_patch.conversation``), not the SDK's class as it stands."""
+        _install_fake_sdk(monkeypatch)
+        connect_task = asyncio.create_task(provider.connect(session))
+        while not _FakeAsyncConversation.instances:
+            await asyncio.sleep(0)
+        conversation = _FakeAsyncConversation.instances[0]
+        await conversation.started.wait()
+        await conversation.audio_interface.start(AsyncMock())
+        await connect_task
+
+        assert type(conversation) is not _FakeAsyncConversation
+        assert "_handle_message_core_async" in vars(type(conversation))
+        await provider.disconnect(session)
+
     async def test_connect_clamps_voice_speed_into_the_tts_override(
         self,
         provider: ElevenLabsRealtimeProvider,

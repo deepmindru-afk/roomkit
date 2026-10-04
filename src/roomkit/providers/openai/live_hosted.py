@@ -136,7 +136,7 @@ class OpenAILiveHostedDelegationMixin(RealtimeVoiceProvider):
             self._tool_call_callbacks,
             state.session,
             call_id,
-            str(name),
+            name,
             arguments,
             label="tool_call",
         )

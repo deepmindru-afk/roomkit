@@ -710,19 +710,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Every realtime call reaches the channel, and every refusal at its entry
   takes the path of any call (RMK-442, RFC §12.4). A call that named no tool
   was dropped by Deepgram and GPT-Live (the vendor then waited on it) and
-  handed on with `name=None` by ElevenLabs and Gemini; every provider now
-  hands it on, and the channel refuses it before the gate (`Tool call named
-  no tool`) and answers under its id, its `ToolCallEvent.name` `""`. A call
-  without an id or under an id in flight was reported before the
-  transcription barrier and under `call_tool` rather than the tool it
-  carried, and an id-less one on an ended session as refused rather than
-  cancelled: it now runs the normal path and sends nothing. ElevenLabs keeps
+  handed on with `name=None` by ElevenLabs, Gemini, and OpenAI Realtime and
+  xAI for an explicit `"name": null` (an explicit `"call_id": null` came
+  through as `None` too); every provider now hands it on, and the channel
+  refuses it before the gate (`Tool call named no tool`) and answers under
+  its id, its `ToolCallEvent.name` `""`. A call without an id or under an id
+  in flight was reported before the transcription barrier and under
+  `call_tool` rather than the tool it carried: it now runs the normal path,
+  its refusal naming the carried tool, and sends nothing; one still behind
+  the barrier when the channel closes is reported, cancelled, where it was
+  lost. A call on an ended session is cancelled rather than refused, an
+  id-less, nameless or unreadable one included, and leaves no barrier lock
+  behind. ElevenLabs keeps
   the service's call id: a `tool_call_id` the model wrote replaced it (the
   SDK answered on the wire under the model's text) and is now an argument
   like any, which a schema refusing unknown keys refuses; a call without one
   raised `KeyError` in the SDK, which ended the conversation, and is now
   refused as id-less (`sdk_patch.conversation` and `split_call`, with a
-  canary).
+  canary); `parameters` that are no object (a string, a list) ended it too
+  and now reach the channel as the model's text, which it refuses as
+  unreadable.
 
 - A TTS that fails mid-sentence is reported on the local, RTP, FastRTC and
   Buzz backends too (RMK-448, RFC §12.2). They absorbed every exception

@@ -39,6 +39,7 @@ from roomkit.channels._skill_constants import TOOL_ACTIVATE_SKILL
 from roomkit.channels._tool_registry import ChannelRegistry, schema_tool
 from roomkit.channels._tool_search_constants import TOOL_CALL_TOOL, TOOL_LIST_TOOLS
 from roomkit.core.exceptions import ToolRefusedError, UnservedToolCallError
+from roomkit.core.task_utils import shielded
 from roomkit.models.enums import ChannelType
 from roomkit.models.tool_call import (
     ToolCallEvent,
@@ -251,6 +252,11 @@ class RealtimeToolsMixin:
         call = RealtimeToolCall.from_provider(
             session, call_id, name, arguments, mutes=self._mute_on_tool_call
         )
+        if call.unreadable is None:
+            # Unwrapped first, so the books, the span and every report, a
+            # refusal at entry included, name the tool a fixed-declaration
+            # call_tool carries, not the transport.
+            call.unreadable = self._unwrap_call_tool(call)
         if not self._open_tool_call(call):
             # No result can name it (no id, or an id whose call has not had its
             # result yet): it takes the path of any call, the session's end
@@ -260,7 +266,7 @@ class RealtimeToolsMixin:
             kind = "duplicate" if call_id else "unidentified"
             self._track_task(
                 loop,
-                self._handle_tool_call(call),
+                self._serve_unbooked_call(call),
                 name=f"rt_tool_{kind}:{session.id}:{call_id or call.name}",
             )
             return
@@ -381,13 +387,24 @@ class RealtimeToolsMixin:
         with serving_call(call):
             await self._execute_tool_call(call)
 
+    async def _serve_unbooked_call(self, call: RealtimeToolCall) -> None:
+        """Take a call no result can name down the path of any call, off the
+        books (RFC §12.4).
+
+        It sends nothing, so it serves no call's context: a reconnect its
+        observers cause orphans the call its id names, not this one. A cut
+        before its outcome (the channel closing while it waits behind the
+        transcription barrier) still reports it once, cancelled (RFC §9.3).
+        """
+        try:
+            await self._execute_tool_call(call)
+        except asyncio.CancelledError:
+            await shielded(report_cancelled_call(self, call, "The session ended"))
+            raise
+
     async def _execute_tool_call(self, call: RealtimeToolCall) -> None:
         """Serve a provider's function call and submit its outcome (RFC §12.4)."""
         session = call.session
-        # Unwrapped first, so the books, the span and every report name the
-        # tool a fixed-declaration call_tool carries, not the transport.
-        if call.unreadable is None:
-            call.unreadable = self._unwrap_call_tool(call)
         await self._after_earlier_transcriptions(session)
         call.room_id = self._session_room(session) or call.room_id
         with self._tool_call_span(call, SpanKind.REALTIME_TOOL_CALL, "realtime_tool") as span:
@@ -405,10 +422,14 @@ class RealtimeToolsMixin:
         tool calls run in their own task — unbarriered, the tool reaches the
         application first and the late final reads as new user speech. The
         call passes through the same FIFO lock, then releases it: tool
-        execution itself must not hold transcriptions back.
+        execution itself must not hold transcriptions back. No lock, no
+        transcription ahead of it: the call creates none, so one arriving
+        once its session ended leaves nothing behind.
         """
         with self._state_lock:
-            order_lock = self._transcription_order_locks.setdefault(session.id, asyncio.Lock())
+            order_lock = self._transcription_order_locks.get(session.id)
+        if order_lock is None:
+            return
         async with order_lock:
             pass
 

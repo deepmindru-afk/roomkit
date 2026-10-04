@@ -615,7 +615,7 @@ class ElevenLabsRealtimeProvider(RealtimeVoiceProvider):
         return handler
 
     async def _hand_on_unanswerable(
-        self, session: VoiceSession, call_id: str, name: str, arguments: dict[str, Any]
+        self, session: VoiceSession, call_id: str, name: str, arguments: dict[str, Any] | str
     ) -> NoReturn:
         """Hand on a call no result can be sent for (no id, or an id still in
         flight): the channel refuses and reports it, and nothing goes out, the
