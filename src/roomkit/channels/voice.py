@@ -603,20 +603,28 @@ class VoiceChannel(
             if binding.access in (Access.READ_ONLY, Access.NONE) or binding.muted:
                 return
 
-        # Audio frame rate limiting — drop excess frames (thread-safe:
-        # _pipeline_on_audio_received is called from audio callback threads)
-        if self._max_fps is not None:
-            with self._state_lock:
-                now = time.monotonic()
-                window_start, count = self._frame_counts.get(session.id, (now, 0))
-                if now - window_start >= 1.0:
-                    window_start, count = now, 0
-                count += 1
-                self._frame_counts[session.id] = (window_start, count)
-                if count > self._max_fps:
-                    return
+        # A session unbound since is not counted: the pipeline drops its frames,
+        # and a count would outlive the session.
+        if binding_info is not None and self._over_frame_rate(session.id):
+            return
 
         self._pipeline_submit_inbound(session, frame)
+
+    def _over_frame_rate(self, session_id: str) -> bool:
+        """Count one frame against the session's per-second budget; whether it is over.
+
+        Thread-safe: frames arrive from audio callback threads.
+        """
+        if self._max_fps is None:
+            return False
+        with self._state_lock:
+            now = time.monotonic()
+            window_start, count = self._frame_counts.get(session_id, (now, 0))
+            if now - window_start >= 1.0:
+                window_start, count = now, 0
+            count += 1
+            self._frame_counts[session_id] = (window_start, count)
+            return count > self._max_fps
 
     def _on_pipeline_speech_end(self, session: VoiceSession, audio: bytes) -> None:
         """Handle speech end from pipeline — fire hooks and transcribe."""
@@ -818,23 +826,33 @@ class VoiceChannel(
 
     def _on_processed_frame_for_level(self, session: VoiceSession, frame: AudioFrame) -> None:
         """Fire ON_INPUT_AUDIO_LEVEL hook, throttled to ~10/sec per session."""
+        self._fire_level_hook(
+            session, frame.data, self._last_input_level_at, HookTrigger.ON_INPUT_AUDIO_LEVEL
+        )
+
+    def _fire_level_hook(
+        self,
+        session: VoiceSession,
+        data: bytes,
+        last_fired: dict[str, float],
+        trigger: HookTrigger,
+    ) -> None:
+        """Fire an audio level hook for a bound session, at most every 100 ms.
+
+        The binding is read before the throttle's timestamp is written: audio
+        still flowing for a session unbound since leaves no entry behind.
+        """
         now = time.monotonic()
         with self._state_lock:
-            if now - self._last_input_level_at.get(session.id, 0.0) < 0.1:
-                return
-            self._last_input_level_at[session.id] = now
             binding_info = self._session_bindings.get(session.id)
-        if not binding_info or not self._framework:
+            if binding_info is None or now - last_fired.get(session.id, 0.0) < 0.1:
+                return
+            last_fired[session.id] = now
+        if not self._framework:
             return
-        room_id, _ = binding_info
         self._schedule(
-            self._fire_audio_level_hook(
-                session,
-                rms_db(frame.data),
-                room_id,
-                HookTrigger.ON_INPUT_AUDIO_LEVEL,
-            ),
-            name=f"input_audio_level:{session.id}",
+            self._fire_audio_level_hook(session, rms_db(data), binding_info[0], trigger),
+            name=f"{trigger.value.removeprefix('on_')}:{session.id}",
         )
 
     def _on_audio_played_for_level(self, session: VoiceSession, frame: AudioFrame) -> None:
@@ -843,23 +861,8 @@ class VoiceChannel(
         Shares ``_last_output_level_at`` with ``_fire_output_level`` in the
         TTS mixin so they naturally deduplicate.
         """
-        now = time.monotonic()
-        with self._state_lock:
-            if now - self._last_output_level_at.get(session.id, 0.0) < 0.1:
-                return
-            self._last_output_level_at[session.id] = now
-            binding_info = self._session_bindings.get(session.id)
-        if not binding_info or not self._framework:
-            return
-        room_id, _ = binding_info
-        self._schedule(
-            self._fire_audio_level_hook(
-                session,
-                rms_db(frame.data),
-                room_id,
-                HookTrigger.ON_OUTPUT_AUDIO_LEVEL,
-            ),
-            name=f"output_audio_level:{session.id}",
+        self._fire_level_hook(
+            session, frame.data, self._last_output_level_at, HookTrigger.ON_OUTPUT_AUDIO_LEVEL
         )
 
     def _on_processed_frame_for_bridge(self, session: VoiceSession, frame: AudioFrame) -> None:
@@ -1061,13 +1064,15 @@ class VoiceChannel(
 
     def _on_pipeline_dtmf(self, session: VoiceSession, dtmf_event: Any) -> None:
         """Handle DTMF event from pipeline — fire ON_DTMF hook."""
+        with self._state_lock:
+            binding_info = self._session_bindings.get(session.id)
+        if not binding_info:
+            return  # unbound since: its TTS context is released, nothing to note
         redaction = self._pipeline_config.dtmf_redaction if self._pipeline_config else None
         if self._tts_context is not None and redaction is not None and redaction.enabled:
             # In-band tones carry the digits: the turn keeps no audio (RFC §17.6).
             self._tts_context.note_dtmf(session.id)
-        with self._state_lock:
-            binding_info = self._session_bindings.get(session.id)
-        if not binding_info or not self._framework:
+        if not self._framework:
             return
 
         room_id, _ = binding_info
@@ -1400,6 +1405,7 @@ class VoiceChannel(
         self._burst_words.pop(session_id, None)
         self._burst_backchannel.pop(session_id, None)
         self._speech_started_at.pop(session_id, None)
+        self._barge_in_energy_count.pop(session_id, None)
         self._suppressed_sessions.discard(session_id)
         self._queueing_sessions.discard(session_id)
         self._queued_speech.pop(session_id, None)

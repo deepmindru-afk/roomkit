@@ -19,7 +19,6 @@ from roomkit.telemetry.base import Attr, SpanKind, TelemetryProvider
 from roomkit.telemetry.noop import NoopTelemetryProvider
 from roomkit.telemetry.redaction import redact
 from roomkit.voice.base import VoiceCapability, require_pcm16
-from roomkit.voice.utils import rms_db
 
 _NOOP = NoopTelemetryProvider()
 
@@ -105,6 +104,7 @@ class TTSHost(Protocol):
     _schedule: Any  # VoiceChannel._schedule
     _resolve_session_backend: Any  # VoiceChannel._resolve_session_backend
     _fire_audio_level_hook: Any  # VoiceHooksMixin._fire_audio_level_hook
+    _fire_level_hook: Any  # VoiceChannel._fire_level_hook
     interrupt: Any  # VoiceChannel.interrupt
 
 
@@ -138,6 +138,7 @@ class VoiceTTSMixin:
     _schedule: Any  # see TTSHost — VoiceChannel._schedule
     _resolve_session_backend: Any  # see TTSHost — VoiceChannel._resolve_session_backend
     _fire_audio_level_hook: Any  # see TTSHost — VoiceHooksMixin._fire_audio_level_hook
+    _fire_level_hook: Any  # see TTSHost — VoiceChannel._fire_level_hook
     interrupt: Any  # see TTSHost — VoiceChannel.interrupt
     _flush_queued_speech: Any  # see TTSHost — VoiceChannel._flush_queued_speech
 
@@ -152,23 +153,8 @@ class VoiceTTSMixin:
 
     def _fire_output_level(self, session: VoiceSession, data: bytes) -> None:
         """Fire ON_OUTPUT_AUDIO_LEVEL hook from the outbound pipeline, throttled."""
-        now = time.monotonic()
-        with self._state_lock:
-            if now - self._last_output_level_at.get(session.id, 0.0) < 0.1:
-                return
-            self._last_output_level_at[session.id] = now
-            binding_info = self._session_bindings.get(session.id)
-        if not binding_info or not self._framework:
-            return
-        room_id, _ = binding_info
-        self._schedule(
-            self._fire_audio_level_hook(
-                session,
-                rms_db(data),
-                room_id,
-                HookTrigger.ON_OUTPUT_AUDIO_LEVEL,
-            ),
-            name=f"output_audio_level:{session.id}",
+        self._fire_level_hook(
+            session, data, self._last_output_level_at, HookTrigger.ON_OUTPUT_AUDIO_LEVEL
         )
 
     def _resolve_voice(self, channel_id: str) -> str | None:
