@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `TOOL_SEARCH_INFRA_TOOL_NAMES`, `TOOL_FIND_TOOLS` and `TOOL_LIST_TOOLS`,
+  exported from `roomkit` and `roomkit.channels` (RMK-468): the names of the
+  two discovery tools a channel serves itself under Tool Search, `find_tools`
+  and `list_tools`, as a set and one by one, for a host that treats them
+  apart (a guard that must not judge a catalogue schema as tool output, a
+  view that labels them) without spelling them. `call_tool` is not one of
+  them: it runs the tool it names.
+
 - `realtime_call_arguments(raw, *, cut)` and `CutArguments`, exported from
   `roomkit.providers.ai` beside `readable_arguments` (RMK-455, RFC §6.4): the
   rule a realtime provider whose wire tells a cut reads a call through, for a

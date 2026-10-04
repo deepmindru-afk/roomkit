@@ -14,10 +14,18 @@ from __future__ import annotations
 from typing import Any
 
 TOOL_FIND_TOOLS = "find_tools"
+"""The Tool Search tool that searches the catalogue by query and reveals its matches."""
 TOOL_LIST_TOOLS = "list_tools"
+"""The Tool Search tool that lists the catalogue; on a fixed-declaration realtime
+provider it also reads one tool's schema (``name=``)."""
 TOOL_CALL_TOOL = "call_tool"
 
 TOOL_SEARCH_INFRA_TOOL_NAMES: frozenset[str] = frozenset({TOOL_FIND_TOOLS, TOOL_LIST_TOOLS})
+"""The names of the discovery tools a channel serves itself under Tool Search,
+``find_tools`` and ``list_tools``, beside the host's tools. Their results are
+the catalogue's own descriptions and schemas, not data a tool brought back.
+``call_tool``, which a fixed-declaration realtime provider gets as well, is not
+one of them: it runs the tool it names."""
 
 # Default ceiling — matches Google's "10–20 active tools" guidance.
 # Used by the realtime channel, and by the text channel as the FALLBACK

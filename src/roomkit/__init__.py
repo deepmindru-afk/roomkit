@@ -6,6 +6,9 @@ import contextlib
 
 from roomkit._version import __version__
 from roomkit.channels import (
+    TOOL_FIND_TOOLS,
+    TOOL_LIST_TOOLS,
+    TOOL_SEARCH_INFRA_TOOL_NAMES,
     TURN_NOTES_HEADER,
     BuzzChannel,
     DiscordChannel,
@@ -356,6 +359,10 @@ __all__ = [
     "TURN_NOTES_HEADER",
     "add_turn_note",
     "split_turn_notes",
+    # Tool Search
+    "TOOL_FIND_TOOLS",
+    "TOOL_LIST_TOOLS",
+    "TOOL_SEARCH_INFRA_TOOL_NAMES",
     # Reasoning delegation (RFC §12.4.1)
     "AgentReasoningBackend",
     "AIProviderReasoningBackend",
