@@ -845,6 +845,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A reasoning block with no text (redacted, a signature alone) goes back as
+  nothing in an assistant answer without calls on a wire that replays
+  reasoning inline (RMK-484, RFC §6.4), as it already did in a round with
+  calls: it went as an empty `<think></think>` block.
+
 - A streamed call whose arguments a server sends as an object, not as text,
   reads as the text it spells on every chat wire (RMK-484, RFC §6.4): OpenAI's
   wire and PolarGrid failed the stream (`can only concatenate str`), where

@@ -201,6 +201,22 @@ class TestReplay:
 
         assert ("redacted", "RRR") in items
 
+    @pytest.mark.parametrize(
+        "block",
+        [AIThinkingPart(thinking="", signature="S0"), AIThinkingPart(thinking="", redacted="RRR")],
+        ids=["signature-only", "redacted"],
+    )
+    async def test_a_reasoning_block_without_text_goes_back_inline_as_nothing(
+        self, driver: Driver, block: AIThinkingPart
+    ) -> None:
+        """A block with no text is not replayed as an empty ``<think>`` in an
+        answer without calls, as it is not in a round with calls (RMK-484)."""
+        follow_up = AIMessage(role="user", content="and then?")
+        items = await _replay(driver, _round(block, AITextPart(text="ok")), follow_up)
+
+        assert ("inline", "") not in items
+        assert ("text", "ok") in items
+
 
 _REASONING_KINDS = ("thinking", "redacted", "inline", "field", "signature")
 # What a received round's reasoning ("why", signed "S0") goes back as.

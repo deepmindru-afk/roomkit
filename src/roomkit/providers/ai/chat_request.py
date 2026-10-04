@@ -172,7 +172,9 @@ def _plain(message: AIMessage, dialect: ChatDialect, provider: str) -> list[dict
             blocks.append({"type": "text", "text": part.text})
         elif isinstance(part, AIImagePart):
             blocks.append(_image(part, provider))
-        elif isinstance(part, AIThinkingPart) and inline:
+        elif isinstance(part, AIThinkingPart) and inline and part.thinking:
+            # A block with no text (redacted, a signature alone) goes as
+            # nothing, as in a round with calls (``round_text``).
             blocks.append({"type": "text", "text": f"<think>{part.thinking}</think>"})
     # A message whose only part is reasoning moved to a field keeps an empty
     # string for content.
