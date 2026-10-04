@@ -634,7 +634,7 @@ class ConferenceRealtime:
             answered = await answer_within(config.tool_bound(call.name), call.name, answer)
         return result_text(declined_answer(answered, call.name))
 
-    def _bound_call_result(self, call: RealtimeToolCall, text: str) -> str:
+    def _bound_call_result(self, call: RealtimeToolCall, text: str, *, served: bool = True) -> str:
         return bound_result(text, call.name)
 
     async def _submit_tool_result(

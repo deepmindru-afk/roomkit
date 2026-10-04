@@ -572,12 +572,13 @@ class RealtimeToolsMixin:
         await asyncio.sleep(0)
         return text
 
-    def _bound_call_result(self, call: RealtimeToolCall, text: str) -> str:
+    def _bound_call_result(self, call: RealtimeToolCall, text: str, *, served: bool = True) -> str:
         """*text* within ``tool_result_max_length`` (RFC §21.5). The complete
-        schema ``list_tools(name=...)`` reads is exempt: the model needs it
-        whole to call the tool. (An activated skill's instructions, exempt
-        too, go out with the activation itself.)"""
-        if call.name == TOOL_LIST_TOOLS and call.arguments.get("name"):
+        schema ``list_tools(name=...)`` serves is exempt: the model needs it
+        whole to call the tool. A refusal or a hook's replacement in its
+        place (*served* false) is bounded as any result. (An activated
+        skill's instructions, exempt too, go out with the activation itself.)"""
+        if served and call.name == TOOL_LIST_TOOLS and call.arguments.get("name"):
             return text
         return bounded_result(text, self._tool_result_max_length, call.name)
 
@@ -674,6 +675,7 @@ class RealtimeToolsMixin:
             result, skill = await support.prepare_activation(call.arguments, session.id, tools)
         except ToolRefusedError as refusal:
             return ToolOutcome(OutcomeKind.REFUSED, refusal.message)
+        catalogue = self._session_base_tools(session.id)
         result, hinted = self._unknown_skill_hint(call, result, skill, tools)
         outcome, skill = await self._judge_activation(call, carrying, result, skill)
         # Provider updates (discovery, handoff, activation) are serialised on
@@ -681,7 +683,9 @@ class RealtimeToolsMixin:
         async with lock:
             if session.state == VoiceSessionState.ENDED:
                 return ended_outcome(call)
-            return await self._deliver_activation(call, door, outcome, result, skill, hinted)
+            return await self._deliver_activation(
+                call, door, outcome, result, skill, hinted, catalogue=catalogue
+            )
 
     def _unknown_skill_hint(
         self, call: RealtimeToolCall, result: str, skill: Any, tools: list[dict[str, Any]]
@@ -734,14 +738,17 @@ class RealtimeToolsMixin:
         result: str,
         skill: Any,
         hinted: list[str],
+        *,
+        catalogue: list[dict[str, Any]],
     ) -> ToolOutcome:
         """Deliver the judged activation, then open its gates when it was
-        served, or reveal the tools a name that is no skill matched."""
+        served, or reveal the tools a name that is no skill matched
+        (*hinted*, matched in the session's *catalogue*)."""
         # An activated skill's instructions go out whole (RFC §21.5); a
         # refusal, a block or a hook's replacement is bounded.
         if not (outcome.kind is OutcomeKind.SERVED and outcome.result == result):
             text = result_text(outcome.result)
-            outcome = replace(outcome, result=self._bound_call_result(call, text))
+            outcome = replace(outcome, result=self._bound_call_result(call, text, served=False))
         # The call ID belongs to the current connection. Deliver before
         # native reconfiguration can replace that connection.
         delivered = await deliver_once(call, door, outcome)
@@ -750,14 +757,24 @@ class RealtimeToolsMixin:
         if skill is not None:
             await self._open_skill_gates(call.session, skill)
         elif hinted:
-            await self._reveal_names(call.session, hinted)
+            await self._reveal_names(call.session, hinted, catalogue)
         return outcome
 
-    async def _reveal_names(self, session: VoiceSession, names: list[str]) -> None:
+    async def _reveal_names(
+        self, session: VoiceSession, names: list[str], catalogue: list[dict[str, Any]]
+    ) -> None:
         """Reveal the tools a served ``find_tools`` call matched, or an
-        activation's hint named. Their observers judged the call before it
-        went out, so a failed reconfiguration is logged by
-        :meth:`_reveal_tools`, never reported to them."""
+        activation's hint named, in the session's *catalogue*.
+
+        A reconfiguration that gave the session another catalogue while the
+        call was judged (a handoff) reset the reveal window, and the names
+        were matched in the old one: nothing is revealed. Their observers
+        judged the call before it went out, so a failed reconfiguration is
+        logged by :meth:`_reveal_tools`, never reported to them.
+        """
+        if self._session_base_tools(session.id) is not catalogue:
+            logger.debug("Reveal for session %s dropped: its catalogue changed", session.id)
+            return
         search = self._tool_search_support
         if (
             search is not None
@@ -826,22 +843,28 @@ class RealtimeToolsMixin:
         async with lock:
             if session.state == VoiceSessionState.ENDED:
                 return ended_outcome(call)
+            catalogue = self._session_base_tools(session.id)
             result, names = await self._tool_search_support.handle_tool_call(
                 call.name, call.arguments, session.id
             )
         served = ToolOutcome(OutcomeKind.SERVED, result)
         judged = await judge_tool_call(self, call, served, carrying)
-        outcome = replace(judged, result=self._bound_call_result(call, result_text(judged.result)))
+        # The schema list_tools(name=...) serves goes out whole; a refusal or
+        # a hook's replacement in its place is bounded (RFC §21.5).
+        whole = judged.kind is OutcomeKind.SERVED and judged.result == result
+        text = self._bound_call_result(call, result_text(judged.result), served=whole)
+        outcome = replace(judged, result=text)
         async with lock:
             if session.state == VoiceSessionState.ENDED:
                 return ended_outcome(call)
             delivered = await deliver_once(call, door, outcome)
             if delivered and outcome.kind is OutcomeKind.SERVED and names:
-                await self._reveal_names(session, names)
+                await self._reveal_names(session, names, catalogue)
         logger.info(
-            "Tool-search %s(%s) handled for session %s (%d matches)",
+            "Tool-search %s(%s) %s for session %s (%d matches)",
             call.name,
             call.call_id,
+            outcome.kind,
             session.id,
             len(names),
         )

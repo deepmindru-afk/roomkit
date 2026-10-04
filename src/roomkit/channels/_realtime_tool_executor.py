@@ -108,8 +108,10 @@ class ToolCallHost(Protocol):
         """
         ...
 
-    def _bound_call_result(self, call: RealtimeToolCall, text: str) -> str:
-        """*text* within the bound on what the model reads (RFC §21.5)."""
+    def _bound_call_result(self, call: RealtimeToolCall, text: str, *, served: bool = True) -> str:
+        """*text* within the bound on what the model reads (RFC §21.5);
+        *served* when it is the call's own answer, not a refusal or a hook's
+        replacement."""
         ...
 
 
@@ -253,7 +255,9 @@ async def finish_tool_call(
     The delivery precedes the report: the provider holds a turn open on the
     result, and an observer must not stand in front of it.
     """
-    bounded = replace(outcome, result=host._bound_call_result(call, result_text(outcome.result)))
+    text = result_text(outcome.result)
+    served = outcome.kind is OutcomeKind.SERVED
+    bounded = replace(outcome, result=host._bound_call_result(call, text, served=served))
     if outcome.failed:
         # Reported after it goes out: an ending that cuts in between still
         # owes the observers this outcome.

@@ -282,9 +282,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `list_tools` on a realtime session were reported to the hooks after their
   result went out, so nothing a SYNC hook returned counted. They are now
   judged as any call, as `activate_skill` is: a BLOCK is what the model
-  reads and reveals nothing, a replacement is what it reads, and the hooks'
-  latency now precedes the result. A reconfiguration that fails after a
-  served search is logged, no longer reported as a failed call. Migration: a
+  reads and reveals nothing, a replacement is what it reads (a served call
+  still reveals its matches, as a served activation opens its gates), and
+  the hooks' latency now precedes the result. The hooks receive the whole
+  result, where the observers read the bounded copy (RFC §21.5); a
+  replacement or a refusal in place of `list_tools(name=...)` is bounded,
+  only the schema it serves goes out whole. A reconfiguration that fails
+  after a served search is logged, no longer reported as a failed call, and
+  a handoff that gives the session another catalogue while the call is
+  judged drops its reveal (so for an activation's hint). Migration: a
   SYNC `ON_TOOL_CALL` hook that blocks or rewrites every call by default now
   reaches Tool Search too; let `find_tools` and `list_tools` through to keep
   the old behaviour.
@@ -1003,10 +1009,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     interrupted is reported to ON_TOOL_CALL's observers with that outcome: a
     call the provider ran, a call an external handler decided (no longer
     reported a second time, cancelled, when cut while its observers ran), a
-    realtime Tool Search call, a realtime call refused or failed whose result
-    went out. Every report runner claims the report once the observers'
-    context is built, and an ACP call's end reaches its report even when its
-    task is cut.
+    realtime call refused or failed whose result went out (a realtime Tool
+    Search call is judged before its result goes out since RMK-447). Every
+    report runner claims the report once the observers' context is built,
+    and an ACP call's end reaches its report even when its task is cut.
   - A call issued once its session ended (by the provider, from speech, by
     a reasoning backend, or by a conference session left behind) runs no
     gate and is reported once, cancelled: it was reported nowhere. Every
@@ -1488,7 +1494,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     shorter than the truncation note cuts the text alone rather than exceed
     its limit;
   - a Tool Search call whose reconfiguration fails once its result went out
-    is reported as failed with the result the model read;
+    sends no second result (since RMK-447 its observers judged it before it
+    went out, and the failure is logged);
   - a call's span is opened once a fixed-declaration `call_tool` is
     unwrapped, so it names the tool it carries. A gate refusal's span carries
     `realtime.tool_denied` as a handler refusal's did, and a recovered or a

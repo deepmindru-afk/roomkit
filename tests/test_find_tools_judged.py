@@ -10,9 +10,12 @@ only after the call's result went out.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import replace
 from typing import Any
+
+import pytest
 
 from roomkit import HookExecution, HookResult, HookTrigger, RoomKit, ToolCallEvent
 from roomkit.channels.ai import AIChannel
@@ -21,7 +24,7 @@ from roomkit.models.channel import ChannelBinding
 from roomkit.models.enums import ChannelType
 from roomkit.providers.ai.base import AIResponse
 from roomkit.providers.ai.mock import MockAIProvider
-from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
+from roomkit.voice.realtime.mock import MockCall, MockRealtimeProvider, MockRealtimeTransport
 from tests.conftest import make_event
 from tests.test_toolset_edges import (
     SPOTIFY,
@@ -127,6 +130,26 @@ class TestText:
         assert _round_declares(provider, 2) >= FOUND
         await kit.close()
 
+    async def test_a_replaced_search_still_reveals_its_matches(self) -> None:
+        """Served is served: a hook's replacement is what the model reads, and
+        the matches are revealed, as a served activation opens its gates."""
+        kit, channel, provider = await _text_kit(
+            [_calling("find_tools", query="spotify"), AIResponse(content="done")]
+        )
+        _judge_search(kit, "replace")
+
+        await _text_turn(kit, channel)
+
+        [answer] = [
+            str(part.result)
+            for message in provider.calls[1].messages
+            if message.role == "tool"
+            for part in message.content
+        ]
+        assert answer == '{"matches": []}'
+        assert _round_declares(provider, 1) >= FOUND
+        await kit.close()
+
     async def test_a_search_that_finds_nothing_keeps_the_window(self) -> None:
         kit, channel, provider = await _text_kit(
             [
@@ -196,6 +219,9 @@ class TestRealtime:
         assert [(e.name, e.is_error, e.result) for e in seen] == [
             ("find_tools", False, '{"matches": []}')
         ]
+        # The call was served: its matches are revealed whatever the hook
+        # replaced its result with, as a served activation opens its gates.
+        assert {t.get("name") for t in _declared(provider)} >= FOUND
         await kit.close()
 
     async def test_a_search_that_finds_nothing_keeps_what_was_revealed(self) -> None:
@@ -230,3 +256,123 @@ class TestRealtime:
         assert {m["name"] for m in json.loads(result)["matches"]} >= FOUND
         assert [c.method for c in provider.calls[before:]] == ["submit_tool_result"]
         await kit.close()
+
+
+class _InBand(MockRealtimeProvider):
+    """Reconfigures in band (OpenAI Realtime's ``session.update``): no
+    reconnect, the call id in flight stays the session's."""
+
+    async def reconfigure(self, session: Any, **kwargs: Any) -> None:  # type: ignore[override]
+        self.calls.append(MockCall(method="reconfigure", args=kwargs))
+
+
+AFTER_HANDOFF = ("spotify_play", *(f"y{i}" for i in range(30)))
+
+
+class TestRealtimeReview:
+    async def test_a_handoff_during_the_judgement_drops_the_reveal(self) -> None:
+        """The search matched names in the catalogue the handoff replaced: the
+        new catalogue's reveal window stays as the handoff left it."""
+        provider = _InBand()
+        kit, channel, session = await _realtime_kit(provider)
+
+        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="handoff")
+        async def handoff(event: ToolCallEvent, ctx: Any) -> HookResult:
+            if event.name == "find_tools":
+                tools = [_schema(n) for n in AFTER_HANDOFF]
+                await channel.reconfigure_session(session, tools=tools)
+            return HookResult.allow()
+
+        await _call(channel, provider, session, "find_tools", {"query": "spotify"})
+
+        assert not channel._tool_search_support._exposed.get(session.id)
+        assert not FOUND & {t.get("name") for t in _declared(provider)}
+        await kit.close()
+
+    async def test_a_call_its_hook_s_reconnect_orphaned_reveals_nothing(self) -> None:
+        provider = MockRealtimeProvider()
+        kit, channel, session = await _realtime_kit(provider)
+
+        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="handoff")
+        async def handoff(event: ToolCallEvent, ctx: Any) -> HookResult:
+            if event.name == "find_tools":
+                await channel.reconfigure_session(session, system_prompt="New agent")
+                await provider.simulate_tool_call_cancellation(session, [event.tool_call_id])
+            return HookResult.allow()
+
+        await provider.simulate_tool_call(session, "c1", "find_tools", {"query": "spotify"})
+        for _ in range(50):
+            await asyncio.gather(*list(channel._scheduled_tasks), return_exceptions=True)
+            await asyncio.sleep(0.01)
+
+        assert provider.tool_results == []
+        assert not FOUND & channel._tool_search_support._exposed.get(session.id, set())
+        await kit.close()
+
+    async def test_the_hooks_judge_the_whole_result_the_model_reads_bounded(self) -> None:
+        provider = MockRealtimeProvider()
+        channel = RealtimeVoiceChannel(
+            "rt",
+            provider=provider,
+            transport=MockRealtimeTransport(),
+            tools=[_schema(n) for n in SPOTIFY],
+            tool_handler=_Recorder(),
+            tool_search=True,
+            tool_result_max_length=200,
+        )
+        kit, session = await _session(channel)
+        judged: list[int] = []
+
+        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="size")
+        async def size(event: ToolCallEvent, ctx: Any) -> HookResult:
+            judged.append(len(str(event.result)))
+            return HookResult.allow()
+
+        read = await _call(channel, provider, session, "list_tools")
+
+        assert judged[0] > 200 and len(read) < judged[0]
+        await kit.close()
+
+
+BIG_TOOL = {"name": "big_tool", "description": "y" * 3000, "parameters": {"type": "object"}}
+
+
+async def _fixed_list_tools(verdict: str, arguments: dict[str, Any]) -> str:
+    provider = _FixedProvider()
+    channel = RealtimeVoiceChannel(
+        "rt",
+        provider=provider,
+        transport=MockRealtimeTransport(),
+        tools=[BIG_TOOL, *(_schema(n) for n in SPOTIFY)],
+        tool_handler=_Recorder(),
+        tool_search=True,
+        tool_result_max_length=500,
+    )
+    kit, session = await _session(channel)
+    big = "x" * 5000
+    trigger = HookTrigger.BEFORE_TOOL_USE if verdict == "refuse" else HookTrigger.ON_TOOL_CALL
+
+    @kit.hook(trigger, execution=HookExecution.SYNC, name="judge")
+    async def judge(event: ToolCallEvent, ctx: Any) -> HookResult:
+        if event.name != "list_tools":
+            return HookResult.allow()
+        if verdict == "replace":
+            return HookResult.modify(replace(event, result=json.dumps({"note": big})))
+        if verdict in ("block", "refuse"):
+            return HookResult.block(big)
+        return HookResult.allow()
+
+    read = await _call(channel, provider, session, "list_tools", arguments)
+    await kit.close()
+    return read
+
+
+@pytest.mark.parametrize("verdict", ["replace", "block", "refuse"])
+async def test_only_the_schema_list_tools_serves_goes_out_uncut(verdict: str) -> None:
+    """RFC §21.5: a hook's replacement, a BLOCK or a gate refusal in place of
+    ``list_tools(name=...)`` is bounded; the served schema is not."""
+    read = await _fixed_list_tools(verdict, {"name": "big_tool"})
+    whole = await _fixed_list_tools("allow", {"name": "big_tool"})
+
+    assert len(read) < 1000
+    assert json.loads(whole)["tool"]["description"] == "y" * 3000
