@@ -5,7 +5,12 @@ from __future__ import annotations
 from typing import Any
 
 from roomkit.voice.audio_frame import AudioFrame
-from roomkit.voice.backends.base import AudioReceivedCallback, SessionReadyCallback, VoiceBackend
+from roomkit.voice.backends.base import (
+    AudioReceivedCallback,
+    PlaybackErrors,
+    SessionReadyCallback,
+    VoiceBackend,
+)
 from roomkit.voice.base import (
     AudioChunk,
     BargeInCallback,
@@ -149,6 +154,7 @@ __all__ = [
     "SpeakerSegment",
     "TranscriptionResult",
     "VoiceBackend",
+    "PlaybackErrors",
     "VoiceCapability",
     "VoiceSession",
     "VoiceSessionState",

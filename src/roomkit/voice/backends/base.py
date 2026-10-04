@@ -15,7 +15,7 @@ from roomkit.voice.base import (
 )
 
 if TYPE_CHECKING:
-    pass
+    from types import TracebackType
 
 # Callback type for raw audio from the transport.
 # VoiceChannel backends deliver AudioFrame; realtime transports deliver bytes.
@@ -39,14 +39,7 @@ logger = logging.getLogger("roomkit.voice.backend")
 
 
 class ChunkSource(AsyncIterator[AudioChunk]):
-    """The chunks a backend plays, remembering the exception their stream raised.
-
-    A backend logs and absorbs its own transport errors, but a failure of the
-    stream it reads (the TTS provider's, or a chunk the VoiceChannel refused)
-    belongs to the caller of ``send_audio`` (RFC section 12.2). A backend reads
-    the chunks through this wrapper and calls :meth:`raise_failure` first in
-    the ``except`` that absorbs its own errors.
-    """
+    """The chunks a backend plays, remembering the exception their stream raised."""
 
     def __init__(self, chunks: AsyncIterator[AudioChunk]) -> None:
         self._chunks = chunks
@@ -64,10 +57,48 @@ class ChunkSource(AsyncIterator[AudioChunk]):
             self.failure = exc
             raise
 
-    def raise_failure(self) -> None:
-        """Raise the exception the stream raised, if it raised one."""
-        if self.failure is not None:
-            raise self.failure
+
+class PlaybackErrors:
+    """Log and absorb a backend's own errors while it plays, never its stream's.
+
+    An exception raised by the stream ``send_audio`` reads (the TTS provider's,
+    or a chunk the VoiceChannel refused) belongs to the caller (RFC section
+    12.2): it leaves the block even when the backend caught it on the way. The
+    backend's own errors, its transport's, are logged with *message* and end
+    the block quietly. A cancellation is never touched::
+
+        with PlaybackErrors(logger, "Error sending audio to %s", session.id) as playback:
+            async for chunk in playback.watch(audio):
+                ...
+    """
+
+    def __init__(self, log: logging.Logger, message: str, *args: object) -> None:
+        self._log = log
+        self._message = message
+        self._args = args
+        self._source: ChunkSource | None = None
+
+    def watch(self, chunks: AsyncIterator[AudioChunk]) -> ChunkSource:
+        """The stream to read, so its failure is told apart from the backend's."""
+        self._source = ChunkSource(chunks)
+        return self._source
+
+    def __enter__(self) -> PlaybackErrors:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> bool:
+        failure = self._source.failure if self._source is not None else None
+        if failure is not None and failure is not exc:
+            raise failure
+        if failure is not None or not isinstance(exc, Exception):
+            return False
+        self._log.error(self._message, *self._args, exc_info=exc)
+        return True
 
 
 class VoiceBackend(ABC):
@@ -160,6 +191,11 @@ class VoiceBackend(ABC):
         The audio is decoded 16-bit signed PCM: a VoiceChannel refuses a TTS
         chunk in another encoding before it gets here (RFC section 12.2), and
         encoding for the wire (G.711, Opus) is the backend's own work.
+
+        An exception raised by the chunk stream (a TTS failing mid-sentence)
+        is raised to the caller once the backend has stopped playing; the
+        backend may log and absorb errors of its own transport. Reading the
+        stream inside :class:`PlaybackErrors` does both.
 
         Args:
             session: The target session.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator
 from typing import Any
 from unittest.mock import AsyncMock
@@ -15,7 +16,7 @@ from roomkit.models.context import RoomContext
 from roomkit.models.enums import ChannelType
 from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.models.room import Room
-from roomkit.voice.backends.base import ChunkSource
+from roomkit.voice.backends.base import PlaybackErrors
 from roomkit.voice.backends.fastrtc import FastRTCVoiceBackend
 from roomkit.voice.base import AudioChunk, VoiceSession
 from roomkit.voice.tts.base import TTSProvider
@@ -155,25 +156,50 @@ class TestDeliverStream:
         await call.kit.close()
 
 
-class TestChunkSource:
-    async def test_it_hands_the_chunks_on_and_remembers_nothing_on_success(self) -> None:
-        async def chunks() -> AsyncIterator[AudioChunk]:
-            yield AudioChunk(data=AUDIO)
+class TestPlaybackErrors:
+    """One rule for every backend: the stream's failure leaves, the backend's own stays."""
 
-        source = ChunkSource(chunks())
-
-        assert [chunk.data async for chunk in source] == [AUDIO]
-        source.raise_failure()  # nothing to raise
-
-    async def test_it_remembers_and_raises_the_stream_failure(self) -> None:
+    async def test_the_stream_failure_leaves_the_block(self) -> None:
         async def chunks() -> AsyncIterator[AudioChunk]:
             yield AudioChunk(data=AUDIO)
             raise RuntimeError("tts down")
 
-        source = ChunkSource(chunks())
-        with pytest.raises(RuntimeError, match="tts down"):
-            async for _chunk in source:
+        with (
+            pytest.raises(RuntimeError, match="tts down"),
+            PlaybackErrors(logging.getLogger("test"), "playing %s", "s1") as play,
+        ):
+            async for _chunk in play.watch(chunks()):
                 pass
 
-        with pytest.raises(RuntimeError, match="tts down"):
-            source.raise_failure()
+    async def test_it_leaves_even_when_the_backend_caught_it(self) -> None:
+        async def chunks() -> AsyncIterator[AudioChunk]:
+            raise RuntimeError("tts down")
+            yield AudioChunk(data=AUDIO)  # pragma: no cover
+
+        with (
+            pytest.raises(RuntimeError, match="tts down"),
+            PlaybackErrors(logging.getLogger("test"), "playing %s", "s1") as play,
+        ):
+            try:
+                async for _chunk in play.watch(chunks()):
+                    pass
+            except RuntimeError:
+                pass  # a backend helper that swallows what it reads
+
+    async def test_the_backend_failure_is_logged_and_absorbed(self, caplog: Any) -> None:
+        async def chunks() -> AsyncIterator[AudioChunk]:
+            yield AudioChunk(data=AUDIO)
+
+        with PlaybackErrors(logging.getLogger("test"), "playing %s", "s1") as play:
+            async for _chunk in play.watch(chunks()):
+                raise OSError("socket gone")
+
+        assert "playing s1" in caplog.text
+        assert "socket gone" in caplog.text
+
+    async def test_a_cancellation_is_not_touched(self) -> None:
+        with (
+            pytest.raises(asyncio.CancelledError),
+            PlaybackErrors(logging.getLogger("test"), "playing %s", "s1"),
+        ):
+            raise asyncio.CancelledError

@@ -44,7 +44,7 @@ from roomkit.voice.audio_frame import AudioFrame
 from roomkit.voice.backends.base import (
     AudioPlayedCallback,
     AudioReceivedCallback,
-    ChunkSource,
+    PlaybackErrors,
     SessionReadyCallback,
     SpeakerChangeCallback,
     TransportDisconnectCallback,
@@ -592,17 +592,12 @@ class LocalAudioBackend(VoiceBackend):
 
         # VoiceChannel path
         self._playing_sessions.add(session.id)
-        source: ChunkSource | None = None
         try:
-            if isinstance(audio, bytes):
-                await self._play_pcm(audio)
-            else:
-                source = ChunkSource(audio)
-                await self._play_stream(session, source)
-        except Exception:
-            if source is not None:
-                source.raise_failure()  # the TTS's failure is the caller's
-            logger.exception("Error playing audio for session %s", session.id)
+            with PlaybackErrors(logger, "Error playing audio for session %s", session.id) as play:
+                if isinstance(audio, bytes):
+                    await self._play_pcm(audio)
+                else:
+                    await self._play_stream(session, play.watch(audio))
         finally:
             self._playing_sessions.discard(session.id)
 
@@ -626,10 +621,9 @@ class LocalAudioBackend(VoiceBackend):
             # end-of-response must not release the priming gate early.
             self._rt_response_complete = False
             self._rt_prime_idle_blocks = 0
-        # Add after releasing the buffer lock. If the callback just
-        # observed an empty buffer and clears playing state, this final
-        # write wins; adding before the append had a race that could
-        # unmute capture while newly queued audio was about to play.
+        # Added after releasing the buffer lock: when the callback has just
+        # seen an empty buffer and clears the playing state, this write comes
+        # last, so capture stays muted while the new audio plays.
         if accepted:
             self._playing_sessions.add(session.id)
         if dropped and self._rt_dropped_bytes == dropped:

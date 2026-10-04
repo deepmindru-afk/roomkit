@@ -52,7 +52,7 @@ from roomkit.voice.auth import AuthCallback, auth_context
 from roomkit.voice.backends._mulaw import pcm16_to_mulaw as _pcm16_to_mulaw
 from roomkit.voice.backends.base import (
     AudioReceivedCallback,
-    ChunkSource,
+    PlaybackErrors,
     SessionReadyCallback,
     TransportDisconnectCallback,
     VoiceBackend,
@@ -290,44 +290,44 @@ class FastRTCVoiceBackend(VoiceBackend):
         audio: bytes | AsyncIterator[AudioChunk],
     ) -> None:
         if self._is_webrtc_session(session):
-            queue = self._get_emit_queue(session)
-            if queue is None:
-                logger.warning("No emit queue for WebRTC session %s", session.id)
-                return
-            sample_rate = session.metadata.get("output_sample_rate", self._output_sample_rate)
-            source: ChunkSource | None = None
-            try:
-                if isinstance(audio, bytes):
-                    self._enqueue_frame(queue, self._pcm_to_numpy(audio, sample_rate))
-                else:
-                    source = ChunkSource(audio)
-                    async for chunk in source:
-                        if chunk.data:
-                            self._enqueue_frame(queue, self._pcm_to_numpy(chunk.data, sample_rate))
-            except Exception:
-                if source is not None:
-                    source.raise_failure()  # the TTS's failure is the caller's
-                logger.exception("Error sending audio to WebRTC session %s", session.id)
-            return
+            await self._send_webrtc_audio(session, audio)
+        else:
+            await self._send_websocket_audio(session, audio)
 
-        # WebSocket path
+    async def _send_webrtc_audio(
+        self, session: VoiceSession, audio: bytes | AsyncIterator[AudioChunk]
+    ) -> None:
+        """Queue *audio* on the session's WebRTC track, as numpy frames."""
+        queue = self._get_emit_queue(session)
+        if queue is None:
+            logger.warning("No emit queue for WebRTC session %s", session.id)
+            return
+        sample_rate = session.metadata.get("output_sample_rate", self._output_sample_rate)
+        with PlaybackErrors(
+            logger, "Error sending audio to WebRTC session %s", session.id
+        ) as play:
+            if isinstance(audio, bytes):
+                self._enqueue_frame(queue, self._pcm_to_numpy(audio, sample_rate))
+            else:
+                async for chunk in play.watch(audio):
+                    if chunk.data:
+                        self._enqueue_frame(queue, self._pcm_to_numpy(chunk.data, sample_rate))
+
+    async def _send_websocket_audio(
+        self, session: VoiceSession, audio: bytes | AsyncIterator[AudioChunk]
+    ) -> None:
+        """Send *audio* on the session's WebSocket, in the configured format."""
         websocket = self._resolve_websocket(session)
         if not websocket:
             logger.warning("No WebSocket for session %s", session.id)
             return
-        ws_source: ChunkSource | None = None
-        try:
+        with PlaybackErrors(logger, "Error sending audio to session %s", session.id) as play:
             if isinstance(audio, bytes):
                 await self._send_ws_audio(websocket, audio)
             else:
-                ws_source = ChunkSource(audio)
-                async for chunk in ws_source:
+                async for chunk in play.watch(audio):
                     if chunk.data:
                         await self._send_ws_audio(websocket, chunk.data)
-        except Exception:
-            if ws_source is not None:
-                ws_source.raise_failure()  # the TTS's failure is the caller's
-            logger.exception("Error sending audio to session %s", session.id)
 
     @staticmethod
     def _ws_is_connected(websocket: Any) -> bool:
