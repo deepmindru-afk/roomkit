@@ -387,8 +387,9 @@ def post_agent_lifecycle(
       ``COMPLETED`` / ``FAILED`` on terminal, ``INFO`` for transitions
       (handoffs, iteration boundaries).
     - ``action``: short verb — ``"task"`` for delegations,
-      ``"handoff"`` for handoff hops, ``"iteration"`` for loop rounds,
-      ``"pipeline"`` and ``"loop"`` for a background run's terminal entry.
+      ``"handoff"`` for handoff hops, ``"iteration"`` and ``"review"`` for
+      a loop's producer and reviewers, ``"pipeline"``, ``"loop"`` and
+      ``"worker"`` for a background run's terminal entry.
     - ``detail``: human-readable summary, truncated to 200 chars.
     - ``metadata``: structured context (``room_id``, ``strategy``,
       ``task_id``, etc.).

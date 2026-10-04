@@ -87,15 +87,15 @@ async def _async_run_and_deliver(
     could not be completed (RFC §19.7.3). The steps are every strategy's
     background run (:func:`run_in_background`).
 
-    Individual worker lifecycle events are posted to ``kit.status_bus``
-    inside ``_run_sequential`` / ``_run_parallel``. This run posts one
-    additional terminal entry under ``agent_id="orchestration"`` so
-    subscribers can observe the pipeline as a whole: ``COMPLETED`` once its
-    results are handed back, ``FAILED`` when it raised, no worker's task
-    completed, or the hand-back reached nobody.
+    Each worker's lifecycle is posted to ``kit.status_bus`` by its
+    delegation (:func:`~roomkit.orchestration._worker_run.run_worker`). This
+    run posts one additional terminal entry under ``agent_id="orchestration"``
+    so subscribers can observe the pipeline as a whole: ``COMPLETED`` once its
+    results are handed back, ``FAILED`` when it raised, was cancelled, its
+    work did not complete, or the hand-back reached nobody.
 
-    ``on_done`` is called once with ``success=<bool>``, whether the workers
-    completed, so callers can distinguish success from failure — e.g. to
+    ``on_done`` is called once with ``success=<bool>``, whether the run
+    returned its results, so callers can distinguish success from failure — e.g. to
     evict cached dispatch responses that should not be re-served after a
     failed pipeline. It is called before the outcome is handed back: the
     supervisor's turn on it may dispatch again, and must find the room free

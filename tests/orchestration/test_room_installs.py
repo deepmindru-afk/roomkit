@@ -89,6 +89,8 @@ async def test_each_room_s_per_worker_tools_run_with_its_own_install(streaming: 
     worker_a = Agent("worker_a", provider=MockAIProvider(responses=["a"]), tool_search=False)
     worker_b = Agent("worker_b", provider=MockAIProvider(responses=["b"]), tool_search=False)
     sup_model = _calling("delegate_to_worker_b", {"task": "file it"}, times=1, streaming=streaming)
+    # The failure handed back gets an answer, not a second dispatch.
+    sup_model._ai_responses.append(AIResponse(content="Noted."))
     sup = Agent("sup", provider=sup_model, tool_search=False)
     kit = await _two_rooms(
         sup,
@@ -110,7 +112,8 @@ async def test_each_room_s_per_worker_tools_run_with_its_own_install(streaming: 
     )
     await _until(lambda: bool(delegated))
 
-    assert delegated[0] == ("clinic-B", "worker_b", ["b"])
+    await asyncio.sleep(0.05)  # the failure is handed back and answered
+    assert delegated == [("clinic-B", "worker_b", ["b"])]
     await kit.close()
 
 
