@@ -79,6 +79,59 @@ class _SlowDenoiser(MockDenoiserProvider):
         return super().process(frame, stream)
 
 
+_SPEECH_START = VADEvent(type=VADEventType.SPEECH_START)
+
+
+def _slow_pipeline(
+    threads: int | None, events: list[VADEvent | None], **stages: Any
+) -> AudioPipelineConfig:
+    """VAD events per frame, behind a denoiser slow enough to keep a frame in flight."""
+    return AudioPipelineConfig(
+        vad=MockVADProvider(events=events),
+        denoiser=_SlowDenoiser(0.05),
+        inbound_dsp_threads=threads,
+        **stages,
+    )
+
+
+async def _voice_session(
+    pipeline: AudioPipelineConfig, **channel_kwargs: Any
+) -> tuple[RoomKit, VoiceChannel, MockVoiceBackend, Any]:
+    """A VoiceChannel with a streaming STT, attached to a room, one session joined."""
+    backend = MockVoiceBackend()
+    kit = RoomKit(voice=backend)
+    channel = VoiceChannel(
+        "voice-1",
+        stt=_StreamingSTT(),
+        tts=MockTTSProvider(),
+        backend=backend,
+        pipeline=pipeline,
+        **channel_kwargs,
+    )
+    kit.register_channel(channel)
+    room = await kit.create_room()
+    await kit.attach_channel(room.id, "voice-1")
+    session = await kit.join(room.id, "voice-1", participant_id="user-1")
+    return kit, channel, backend, session
+
+
+async def _realtime_session(
+    pipeline: AudioPipelineConfig, provider: MockRealtimeProvider | None = None
+) -> tuple[RealtimeVoiceChannel, MockRealtimeProvider, MockRealtimeTransport, Any]:
+    """A RealtimeVoiceChannel attached to a room, one session started."""
+    provider = provider or MockRealtimeProvider()
+    transport = MockRealtimeTransport()
+    channel = RealtimeVoiceChannel(
+        "rt-1", provider=provider, transport=transport, pipeline=pipeline
+    )
+    kit = RoomKit()
+    kit.register_channel(channel)
+    room = await kit.create_room()
+    await kit.attach_channel(room.id, "rt-1")
+    session = await channel.start_session(room.id, "user-1", "fake-ws")
+    return channel, provider, transport, session
+
+
 class TestInboundFrameOffload:
     def test_one_stream_is_fifo_whatever_the_pool_size(self) -> None:
         # Queue bound above the burst: this test is about ordering, not drops.
@@ -311,20 +364,7 @@ class TestRealtimeVoiceChannelBehindThePool:
     async def _start(
         self, threads: int | None, vad: MockVADProvider | None = None
     ) -> tuple[RealtimeVoiceChannel, MockRealtimeProvider, MockRealtimeTransport, Any]:
-        provider = MockRealtimeProvider()
-        transport = MockRealtimeTransport()
-        channel = RealtimeVoiceChannel(
-            "rt-1",
-            provider=provider,
-            transport=transport,
-            pipeline=AudioPipelineConfig(vad=vad, inbound_dsp_threads=threads),
-        )
-        kit = RoomKit()
-        kit.register_channel(channel)
-        room = await kit.create_room()
-        await kit.attach_channel(room.id, "rt-1")
-        session = await channel.start_session(room.id, "user-1", "fake-ws")
-        return channel, provider, transport, session
+        return await _realtime_session(AudioPipelineConfig(vad=vad, inbound_dsp_threads=threads))
 
     @_PATHS
     async def test_every_frame_reaches_the_provider(self, threads: int | None) -> None:
@@ -359,23 +399,9 @@ class TestCloseWithAFrameInFlight:
 
     @_PATHS
     async def test_voice_channel_leaves_no_stt_stream(self, threads: int | None) -> None:
-        backend = MockVoiceBackend()
-        kit = RoomKit(voice=backend)
-        channel = VoiceChannel(
-            "voice-1",
-            stt=_StreamingSTT(),
-            tts=MockTTSProvider(),
-            backend=backend,
-            pipeline=AudioPipelineConfig(
-                vad=MockVADProvider(events=[VADEvent(type=VADEventType.SPEECH_START)]),
-                denoiser=_SlowDenoiser(0.05),
-                inbound_dsp_threads=threads,
-            ),
+        kit, channel, backend, session = await _voice_session(
+            _slow_pipeline(threads, [_SPEECH_START])
         )
-        kit.register_channel(channel)
-        room = await kit.create_room()
-        await kit.attach_channel(room.id, "voice-1")
-        session = await kit.join(room.id, "voice-1", participant_id="user-1")
         await backend.simulate_audio_received(session, AudioFrame(data=_FRAME))
 
         await channel.close()
@@ -390,23 +416,9 @@ class TestCloseWithAFrameInFlight:
     async def test_realtime_provider_hears_nothing_after_disconnect(
         self, threads: int | None
     ) -> None:
-        provider = MockRealtimeProvider()
-        transport = MockRealtimeTransport()
-        channel = RealtimeVoiceChannel(
-            "rt-1",
-            provider=provider,
-            transport=transport,
-            pipeline=AudioPipelineConfig(
-                vad=MockVADProvider(events=[VADEvent(type=VADEventType.SPEECH_START)]),
-                denoiser=_SlowDenoiser(0.05),
-                inbound_dsp_threads=threads,
-            ),
+        channel, provider, transport, session = await _realtime_session(
+            _slow_pipeline(threads, [_SPEECH_START])
         )
-        kit = RoomKit()
-        kit.register_channel(channel)
-        room = await kit.create_room()
-        await kit.attach_channel(room.id, "rt-1")
-        session = await channel.start_session(room.id, "user-1", "fake-ws")
         await transport.simulate_client_audio(session, _FRAME)
 
         await channel.close()
@@ -443,37 +455,13 @@ class TestSessionEndWithAFrameInFlight:
 
     @_PATHS
     async def test_voice_channel_unbind_leaves_no_session_state(self, threads: int | None) -> None:
-        backend = MockVoiceBackend()
-        kit = RoomKit(voice=backend)
-        channel = VoiceChannel(
-            "voice-1",
-            stt=_StreamingSTT(),
-            tts=MockTTSProvider(),
-            backend=backend,
-            pipeline=AudioPipelineConfig(
-                vad=MockVADProvider(
-                    events=[
-                        VADEvent(type=VADEventType.SPEECH_START),
-                        VADEvent(type=VADEventType.SPEECH_END, audio_bytes=_FRAME),
-                    ]
-                ),
-                denoiser=_SlowDenoiser(0.05),
-                diarization=MockDiarizationProvider(
-                    results=[
-                        DiarizationResult(
-                            speaker_id="speaker_0", confidence=0.9, is_new_speaker=False
-                        )
-                    ]
-                    * 2
-                ),
-                inbound_dsp_threads=threads,
-            ),
-            pipeline_speakers=True,
+        speaker = DiarizationResult(speaker_id="speaker_0", confidence=0.9, is_new_speaker=False)
+        pipeline = _slow_pipeline(
+            threads,
+            [_SPEECH_START, VADEvent(type=VADEventType.SPEECH_END, audio_bytes=_FRAME)],
+            diarization=MockDiarizationProvider(results=[speaker] * 2),
         )
-        kit.register_channel(channel)
-        room = await kit.create_room()
-        await kit.attach_channel(room.id, "voice-1")
-        session = await kit.join(room.id, "voice-1", participant_id="user-1")
+        kit, channel, backend, session = await _voice_session(pipeline, pipeline_speakers=True)
 
         # On the pool the SPEECH_START frame is still in the denoiser when the
         # session is unbound; the SPEECH_END frame arrives after, as a backend
@@ -498,21 +486,10 @@ class TestSessionEndWithAFrameInFlight:
         self, threads: int | None
     ) -> None:
         provider = _SlowDisconnect()
-        transport = MockRealtimeTransport()
-        channel = RealtimeVoiceChannel(
-            "rt-1",
-            provider=provider,
-            transport=transport,
-            pipeline=AudioPipelineConfig(
-                vad=MockVADProvider(events=[VADEvent(type=VADEventType.SPEECH_START)]),
-                inbound_dsp_threads=threads,
-            ),
+        pipeline = AudioPipelineConfig(
+            vad=MockVADProvider(events=[_SPEECH_START]), inbound_dsp_threads=threads
         )
-        kit = RoomKit()
-        kit.register_channel(channel)
-        room = await kit.create_room()
-        await kit.attach_channel(room.id, "rt-1")
-        session = await channel.start_session(room.id, "user-1", "fake-ws")
+        channel, _, transport, session = await _realtime_session(pipeline, provider)
 
         ending = asyncio.create_task(channel.end_session(session))
         await provider.disconnecting.wait()
@@ -530,23 +507,9 @@ class TestSessionEndWithAFrameInFlight:
         await channel.close()
 
     async def test_realtime_frame_in_flight_at_the_end_reaches_nothing(self) -> None:
-        provider = MockRealtimeProvider()
-        transport = MockRealtimeTransport()
-        channel = RealtimeVoiceChannel(
-            "rt-1",
-            provider=provider,
-            transport=transport,
-            pipeline=AudioPipelineConfig(
-                vad=MockVADProvider(events=[VADEvent(type=VADEventType.SPEECH_START)]),
-                denoiser=_SlowDenoiser(0.05),
-                inbound_dsp_threads=2,
-            ),
+        channel, provider, transport, session = await _realtime_session(
+            _slow_pipeline(2, [_SPEECH_START])
         )
-        kit = RoomKit()
-        kit.register_channel(channel)
-        room = await kit.create_room()
-        await kit.attach_channel(room.id, "rt-1")
-        session = await channel.start_session(room.id, "user-1", "fake-ws")
 
         # Still in the denoiser on a worker when the session ends.
         await transport.simulate_client_audio(session, _FRAME)
