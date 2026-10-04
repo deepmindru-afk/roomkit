@@ -1315,9 +1315,7 @@ class VoiceChannel(
         self._cancel_stt_stream(session.id)
         with self._state_lock:
             self._session_ready_pending.discard(session.id)
-            self._held_for_transcript.pop(session.id, None)
-            self._burst_words.pop(session.id, None)
-            self._burst_backchannel.pop(session.id, None)
+            self._forget_speech_state(session.id)
             binding_info = self._session_bindings.pop(session.id, None)
             self._session_backends.pop(session.id, None)
         if binding_info is None:
@@ -1391,6 +1389,20 @@ class VoiceChannel(
                 self._emit_session_ended(session, room_id),
                 name=f"session_ended:{session.id}",
             )
+
+    def _forget_speech_state(self, session_id: str) -> None:
+        """Drop what the VAD handlers keep about a session's speech; the caller holds the lock.
+
+        A session unbound mid-utterance saw its SPEECH_START and never its
+        SPEECH_END, which is what would have cleared most of this.
+        """
+        self._held_for_transcript.pop(session_id, None)
+        self._burst_words.pop(session_id, None)
+        self._burst_backchannel.pop(session_id, None)
+        self._speech_started_at.pop(session_id, None)
+        self._suppressed_sessions.discard(session_id)
+        self._queueing_sessions.discard(session_id)
+        self._queued_speech.pop(session_id, None)
 
     # -------------------------------------------------------------------------
     # Properties
