@@ -717,26 +717,7 @@ class AudioPipeline:
                     logger.exception("Recorder outbound tap error")
 
         # Stage 3: Feed AEC reference (so it can model echo)
-        # Skipped when the backend feeds reference at the transport level
-        # (time-aligned with actual speaker output), when the backend
-        # has NATIVE_AEC, or when playback-time feeding is wired via
-        # feed_aec_reference().  The reference must match the inbound
-        # sample rate — resample if the outbound frame is at a different rate.
-        if (
-            self._config.aec is not None
-            and VoiceCapability.NATIVE_AEC not in self._backend_capabilities
-            and not self._backend_feeds_aec_ref
-            and not self._playback_aec_wired
-        ):
-            try:
-                ref_frame = self._normalize_aec_reference(
-                    current_frame,
-                    session.id,
-                    playback=False,
-                )
-                self._config.aec.feed_reference(ref_frame, session.id)
-            except Exception:
-                logger.exception("AEC feed_reference error")
+        self._feed_generated_reference(current_frame, session.id)
 
         # Stage 4: Outbound resampler (internal → transport format)
         if self._resampler is not None and self._config.contract is not None:
@@ -753,6 +734,30 @@ class AudioPipeline:
                 logger.exception("Outbound resampler error")
 
         return current_frame
+
+    def _feed_generated_reference(self, frame: AudioFrame, stream: str) -> None:
+        """Feed the AEC the audio as it is generated, when nothing feeds it at playback.
+
+        Skipped when the backend feeds reference at the transport level
+        (time-aligned with actual speaker output), when the backend has
+        NATIVE_AEC, when playback-time feeding is wired via
+        feed_aec_reference(), or when the stream's session has ended (no
+        capture is left to cancel). The reference must match the inbound
+        sample rate — resampled if the outbound frame is at a different rate.
+        """
+        if (
+            self._config.aec is None
+            or VoiceCapability.NATIVE_AEC in self._backend_capabilities
+            or self._backend_feeds_aec_ref
+            or self._playback_aec_wired
+            or stream in self._ended_streams
+        ):
+            return
+        try:
+            ref_frame = self._normalize_aec_reference(frame, stream, playback=False)
+            self._config.aec.feed_reference(ref_frame, stream)
+        except Exception:
+            logger.exception("AEC feed_reference error")
 
     # -----------------------------------------------------------------
     # External AEC reference (playback-time aligned)

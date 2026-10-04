@@ -169,7 +169,7 @@ class TestOutbound:
         frame = pipeline.process_outbound(session, _frame())
 
         assert frame.data == _frame().data
-        assert aec.reference_streams == [session.id]
+        assert aec.reference_streams == []  # no capture is left to cancel
         assert aec.reset_streams[released:] == [session.id]
         assert pipeline._stage_streams == set()
 
