@@ -452,3 +452,54 @@ async def test_regenerate_non_streaming_failure_fires_on_error() -> None:
     assert result is not None and result.error is not None
     assert len(errors) == before + 1  # regenerate fired its own ON_ERROR card
     assert errors[-1].metadata["error_type"] == "ProviderError"
+
+
+class _RaisingIntelligence(SimpleChannel):
+    """An intelligence channel that fails before any stream exists: its
+    failure reaches the broadcast's errors, not a stream."""
+
+    async def on_event(
+        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        raise RuntimeError(self.channel_id)
+
+
+async def test_regenerate_fires_on_error_for_each_failed_agent() -> None:
+    """As the inbound path: one ON_ERROR card per intelligence channel whose
+    failure the broadcast reports, the first one on InboundResult.error."""
+    kit = RoomKit()
+    kit.register_channel(SimpleChannel("sms1"))
+    kit.register_channel(_RaisingIntelligence("ai1"))
+    kit.register_channel(_RaisingIntelligence("ai2"))
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "sms1")
+    await kit.attach_channel("r1", "ai1", category=ChannelCategory.INTELLIGENCE)
+    await kit.attach_channel("r1", "ai2", category=ChannelCategory.INTELLIGENCE)
+
+    errors: list[RoomEvent] = []
+
+    async def on_error(event: RoomEvent, _ctx: RoomContext) -> None:
+        errors.append(event)
+
+    kit.hook_engine.register(
+        HookRegistration(
+            trigger=HookTrigger.ON_ERROR,
+            execution=HookExecution.ASYNC,
+            fn=on_error,
+            name="test_capture_errors",
+        )
+    )
+    await kit.process_inbound(
+        InboundMessage(channel_id="sms1", sender_id="u1", content=TextContent(body="go"))
+    )
+    await asyncio.sleep(0.05)
+    inbound = sorted(event.source.channel_id for event in errors)
+    errors.clear()
+
+    result = await kit.regenerate_response("r1")
+    await asyncio.sleep(0.05)
+    await kit.close()
+
+    assert inbound == ["ai1", "ai2"]
+    assert sorted(event.source.channel_id for event in errors) == ["ai1", "ai2"]
+    assert result is not None and str(result.error) == "ai1"

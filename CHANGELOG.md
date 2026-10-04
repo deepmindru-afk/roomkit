@@ -306,6 +306,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `regenerate_response` fires `ON_ERROR` for every intelligence channel whose
+  failure the broadcast reports, as `process_inbound` does, not only the first
+  (RMK-402); the first failure stays the one on `InboundResult.error`. It reads
+  them through the same helpers as the inbound path.
+
 - **BREAKING — `MCPToolProvider.as_tool_handler()` raises `ToolFailedError`
   for a result that says `isError`, no longer `ToolRefusedError`** (RMK-459,
   RFC §9.3): the tool ran and failed. Observers read `refused=False` and the
