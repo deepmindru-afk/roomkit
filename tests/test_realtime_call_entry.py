@@ -159,8 +159,9 @@ async def test_an_entry_refusal_waits_behind_the_barrier_under_the_wrapped_tool(
     await asyncio.sleep(0.1)
     reported_while_held = list(seen)
     barrier.release()
-    for _ in range(100):
-        if len(seen) == 3:
+    # The served call's result may go out after its report: wait for both.
+    for _ in range(250):
+        if len(seen) == 3 and provider.tool_results:
             break
         await asyncio.sleep(0.02)
     await kit.close()
