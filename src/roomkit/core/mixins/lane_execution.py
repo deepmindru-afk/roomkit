@@ -741,7 +741,7 @@ class LaneExecutionMixin(HelpersMixin):
             # there instead — copying them here would freeze late tool writes.
             for channel_id, output in result.outputs.items():
                 if output.response_stream is None:
-                    _record_buffered_reply(cascade, channel_id, output, root=plan.emit_processed)
+                    record_buffered_reply(cascade, channel_id, output, root=plan.emit_processed)
 
         # A stream any pass started is read by the caller (RFC §8.3); one a
         # reentry pass or a streamed segment's delivery started answers an
@@ -1028,7 +1028,7 @@ class LaneExecutionMixin(HelpersMixin):
             )
 
 
-def _record_buffered_reply(
+def record_buffered_reply(
     cascade: DeliveryCascade, channel_id: str, output: ChannelOutput, *, root: bool
 ) -> None:
     """Merge a buffered reply's record into the caller's, final once the

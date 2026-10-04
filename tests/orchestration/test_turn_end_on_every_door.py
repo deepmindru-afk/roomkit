@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from roomkit import RoomKit
+from roomkit import HookResult, HookTrigger, RoomKit
 from roomkit.channels.agent import Agent
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelCategory
@@ -119,3 +119,29 @@ async def test_a_task_formulation_pass_ends_as_a_room_turn_does(ending: str) -> 
 
     assert room_turns is not None
     assert pass_turns == room_turns
+
+
+@pytest.mark.parametrize("orchestrated", [True, False], ids=["pass-1-cut", "room-turn-cut"])
+async def test_a_regenerated_reply_ends_as_its_inbound_did(orchestrated: bool) -> None:
+    kit = await _kit(_Loops(streaming=True), orchestrated=orchestrated)
+    inbound = await _turns(kit)
+    again = await kit.regenerate_response("r")
+    await kit.close()
+
+    assert dict(again.response_metadata).get("turns") == inbound
+
+
+async def test_a_turns_key_a_hook_wrote_never_reaches_a_regeneration() -> None:
+    kit = await _kit(_Loops(streaming=True), orchestrated=True)
+
+    @kit.hook(HookTrigger.BEFORE_AI_GENERATION)
+    async def forge(event: Any, ctx: Any) -> HookResult:
+        event.ai_context.response_metadata["turns"] = {"sup": {"loop_end_reason": "forged"}}
+        return HookResult.allow()
+
+    inbound = await _turns(kit)
+    again = await kit.regenerate_response("r")
+    await kit.close()
+
+    assert inbound["sup"]["loop_end_reason"] == "max_rounds"
+    assert dict(again.response_metadata).get("turns") == inbound

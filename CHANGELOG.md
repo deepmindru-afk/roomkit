@@ -812,6 +812,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `regenerate_response` reads its buffered replies as `process_inbound` does
+  (RMK-479, RFC §6.4): a regenerated reply that carries its end on its last
+  message (a supervisor's pass 1 cut by its round cap) left the caller's
+  `turns` without its entry, and a `turns` key a turn's hook wrote reached
+  the caller.
+
 - A supervisor's task-formulation pass tells its caller how it ended, as a
   room turn does (RMK-479, RFC §6.4): a pass that failed with an error, was
   cancelled, or completed without a task left the caller's `turns` without
