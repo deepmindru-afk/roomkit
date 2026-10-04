@@ -53,7 +53,7 @@ from roomkit.channels import _conference_activity
 from roomkit.channels._conference_operations import ConferenceResource
 from roomkit.channels._conference_room_state import LeavingSession
 from roomkit.conference.models import BotSession, ConferenceGrants
-from roomkit.core.exceptions import RoomNotAttachedError
+from roomkit.core.exceptions import ConferenceCapabilityError, RoomNotAttachedError
 from roomkit.models.enums import ChannelType, HookTrigger
 from roomkit.models.session_event import SessionStartedEvent
 
@@ -156,11 +156,19 @@ class ConferenceSessionMixin:
         Raises:
             RoomNotAttachedError: the channel is not attached to *room_id*, or
                 was detached from it while joining.
+            ConferenceCapabilityError: the channel is configured with nothing
+                to consume or say: its bot would be a silent observer, which
+                the lazy join never makes either.
             Exception: the backend's ``join_as_bot`` failed.
         """
         if self._attached_room(room_id) is None:
             raise RoomNotAttachedError(
                 f"Channel {self.channel_id!r} is not attached to room {room_id!r}"
+            )
+        if self._transport_only:
+            raise ConferenceCapabilityError(
+                f"Channel {self.channel_id!r} has nothing to consume or say "
+                "(no stt, tts, recording or realtime): no bot joins it"
             )
         return await self._ensure_bot(room_id)
 

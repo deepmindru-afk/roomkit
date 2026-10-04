@@ -15,7 +15,7 @@ import pytest
 
 from roomkit import HookExecution, HookTrigger, MockConferenceBackend, RoomKit
 from roomkit.channels.conference import ConferenceChannel
-from roomkit.core.exceptions import RoomNotAttachedError
+from roomkit.core.exceptions import ConferenceCapabilityError, RoomNotAttachedError
 from roomkit.voice.stt.mock import MockSTTProvider
 
 ROOM = "room-1"
@@ -79,4 +79,21 @@ async def test_a_room_the_channel_is_not_attached_to_is_refused() -> None:
 
     assert backend.bots == []
     assert "elsewhere" not in channel._rooms  # no record left for an unknown room
+    await kit.close()
+
+
+async def test_a_channel_with_nothing_to_consume_or_say_refuses_a_bot() -> None:
+    """Its bot would be the silent observer the lazy join never makes either
+    (RFC §12.10.4)."""
+    backend = MockConferenceBackend()
+    channel = ConferenceChannel("conf", backend=backend)
+    kit = RoomKit()
+    kit.register_channel(channel)
+    await kit.create_room(ROOM)
+    await kit.attach_channel(ROOM, "conf")
+
+    with pytest.raises(ConferenceCapabilityError):
+        await channel.ensure_bot(ROOM)
+
+    assert backend.bots == []
     await kit.close()

@@ -116,7 +116,9 @@ class ParticipantNotAdmittedError(RoomKitError):
 
 
 class ConferenceCapabilityError(RoomKitError):
-    """Raised when a conference operation needs a capability the backend lacks.
+    """Raised when a conference operation needs a capability the backend, or the
+    channel's configuration, lacks (a bot asked of a channel with nothing to
+    consume or say).
 
     Refusing at the boundary rather than degrading silently: a moderation UI
     that offers an unmute the SFU will reject, or a recording that never
