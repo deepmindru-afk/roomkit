@@ -101,8 +101,9 @@ if TYPE_CHECKING:
 ToolResult = str | list[AITextPart | AIImagePart]
 ToolHandler = Callable[[str, dict[str, Any]], Awaitable[ToolResult]]
 # What a handler returns is the tool's answer. To decline a call instead, raise
-# ``roomkit.ToolRefusedError``: the message reaches the model verbatim and the
-# call is marked failed, where a returned body would read as work that was done.
+# ``roomkit.ToolRefusedError``; to say it ran and failed, ``roomkit.ToolFailedError``:
+# the message reaches the model verbatim and the call is marked failed (refused, for
+# the first), where a returned body would read as work that was done.
 
 
 # What an AI channel's transcript says of an event whose content extracts to

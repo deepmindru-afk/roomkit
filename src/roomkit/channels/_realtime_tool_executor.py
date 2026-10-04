@@ -108,8 +108,9 @@ class ToolCallHost(Protocol):
     async def _answer_call(self, call: RealtimeToolCall, carrying: RoomContext | None) -> str:
         """The answer to *call*, as text, inside its tool call context.
 
-        Raises :class:`UnservedToolCallError` when nothing serves the call and
-        :class:`ToolRefusedError` when its handler refuses it.
+        Raises :class:`UnservedToolCallError` when nothing serves the call,
+        :class:`ToolRefusedError` when its handler refuses it and
+        :class:`ToolFailedError` when it ran and failed in its own words.
         """
         ...
 
@@ -205,10 +206,12 @@ async def serve_tool_call(
         outcome = ToolOutcome(OutcomeKind.UNSERVED, unserved_tool_error(call.name))
     except ToolRefusedError as refusal:
         # A refusal in the handler's words, which the model reads.
+        logger.info("Tool %s refused: %s", call.name, refusal.message)
         return ToolOutcome(OutcomeKind.REFUSED, refusal.message)
     except ToolFailedError as failure:
         # A failure in the handler's words: the model reads it, the observers
         # read it as the detail.
+        logger.warning("Tool %s failed: %s", call.name, failure.message)
         return ToolOutcome(OutcomeKind.FAILED, failure.message, detail=failure.message)
     else:
         outcome = ToolOutcome(OutcomeKind.SERVED, answer)

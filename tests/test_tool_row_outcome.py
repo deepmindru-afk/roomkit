@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, get_args
 
-from roomkit import ToolCallOutcome, ToolRefusedError
+from roomkit import ToolCallOutcome, ToolFailedError, ToolRefusedError
 from roomkit.channels._tool_usage import ToolUsageMemory
 from roomkit.channels.ai import AIChannel
 from roomkit.core.framework import RoomKit
@@ -32,7 +32,7 @@ _TOOLS = [
         description=name,
         parameters={"type": "object", "properties": {"q": {"type": "string"}}},
     )
-    for name in ("ok", "boom", "refuse")
+    for name in ("ok", "boom", "refuse", "fails")
 ]
 
 
@@ -49,6 +49,8 @@ async def _handler(name: str, arguments: dict[str, Any]) -> str:
         raise RuntimeError("postgres://user:secret@db")
     if name == "refuse":
         raise ToolRefusedError("not today")
+    if name == "fails":
+        raise ToolFailedError("the disk is full")
     return f"answer-{arguments['q']}"
 
 
@@ -104,6 +106,7 @@ async def test_each_end_row_states_how_its_call_ended(streaming: bool) -> None:
         _call("c2", "boom"),
         _call("c3", "refuse"),
         _call("c4", "ghost"),
+        _call("c5", "fails"),
     )
 
     assert await _outcomes(kit) == {
@@ -111,6 +114,7 @@ async def test_each_end_row_states_how_its_call_ended(streaming: bool) -> None:
         "boom": "failed",
         "refuse": "refused",
         "ghost": "refused",
+        "fails": "failed",
     }
 
 
@@ -122,10 +126,11 @@ async def test_the_rebuilt_memory_reads_like_the_live_one(streaming: bool) -> No
         _call("c2", "boom"),
         _call("c3", "refuse"),
         _call("c4", "ghost"),
+        _call("c5", "fails"),
     )
 
     live, rebuilt = await _digests(kit, ai)
 
     assert live == rebuilt
-    assert "ok(q='c1')" in live and "boom(q='c2')" in live
+    assert "ok(q='c1')" in live and "boom(q='c2')" in live and "fails(q='c5')" in live
     assert "refuse" not in live and "ghost" not in live

@@ -367,13 +367,16 @@ class AgentReasoningBackend(ReasoningBackend):
         request = _DELEGATION.get()
         if request is None or request.report_refusal is None:
             return
+        # Only what a refusal or a cut does not say goes as a keyword, so a
+        # reporter written to ``(name, arguments, body, *, cancelled=False)``
+        # still hears those.
+        outcome: dict[str, Any] = {"cancelled": event.cancelled}
+        if not (event.cancelled or event.refused):
+            outcome["refused"] = False
+        if event.error_detail is not None:
+            outcome["detail"] = event.error_detail
         await request.report_refusal(
-            event.name,
-            dict(event.arguments),
-            str(event.result or ""),
-            cancelled=event.cancelled,
-            refused=event.refused,
-            detail=event.error_detail,
+            event.name, dict(event.arguments), str(event.result or ""), **outcome
         )
 
     async def session_ended(self, session_id: str) -> None:

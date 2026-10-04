@@ -28,7 +28,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from roomkit.core.exceptions import ToolRefusedError, UnservedToolCallError
+from roomkit.core.exceptions import ToolFailedError, ToolRefusedError, UnservedToolCallError
 from roomkit.tools.result import result_text
 
 logger = logging.getLogger("roomkit.orchestration.tool_audit")
@@ -205,8 +205,9 @@ def audit_tool_handler(
     The wrapper returns the handler's answer itself, content parts and
     structured values included, and re-raises what the handler raised: the
     channel reads the call as it would without the audit. The record reads
-    the answer as text. A refusal (``ToolRefusedError``) or a decline
-    (``UnservedToolCallError``) records ``failed``, an exception ``error``,
+    the answer as text. A refusal (``ToolRefusedError``), a failure in the
+    handler's words (``ToolFailedError``, an MCP ``isError``) or a decline
+    (``UnservedToolCallError``) records ``failed``, another exception ``error``,
     a cancellation ``cancelled`` (RFC §15.8.1). A call the channel's per-call
     bound cut short (RFC §21.6) reaches the handler as a cancellation, so it
     records ``cancelled`` too, its duration the bound; the channel itself
@@ -238,6 +239,12 @@ def audit_tool_handler(
             # Refused in the handler's words, or not its tool: the call did
             # not run, which an audit must not count as an error or as ok.
             status, recorded = "failed", str(declined)
+            raise
+        except ToolFailedError as failure:
+            # A failure the handler stated in its words: the structured form
+            # of the failure envelope, which reads "failed" too (an MCP
+            # isError, through call_tool or as_tool_handler alike).
+            status, recorded = "failed", failure.message
             raise
         except Exception as exc:
             status, recorded = "error", str(exc)

@@ -357,8 +357,9 @@ class MCPToolProvider:
     ) -> Any:
         """Call the tool and return the server's ``CallToolResult`` as it is.
 
-        A refusal is the result's ``isError``, not an exception: :meth:`call_tool`
-        renders it into its error envelope, the tool handler raises it. For a
+        A failure is the result's ``isError``, not an exception: :meth:`call_tool`
+        renders it into its error envelope, the tool handler raises it
+        (:class:`~roomkit.core.exceptions.ToolFailedError`). For a
         host relaying the raw result (an MCP App's frame calling its server).
         A successful result's ``structuredContent`` is also published to the
         tool call in progress, when there is one (the model's own calls).

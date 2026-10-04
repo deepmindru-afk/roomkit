@@ -554,7 +554,8 @@ class RealtimeToolsMixin:
 
         Raises :class:`~roomkit.core.exceptions.UnservedToolCallError` when
         nothing serves the call, and lets the handler's
-        :class:`~roomkit.core.exceptions.ToolRefusedError` through.
+        :class:`~roomkit.core.exceptions.ToolRefusedError` and
+        :class:`~roomkit.core.exceptions.ToolFailedError` through.
         """
         name, session = call.name, call.session
         if not self._serves_tool(name, call.room_id or session.room_id):

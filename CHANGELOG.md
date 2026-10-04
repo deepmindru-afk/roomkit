@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ToolFailedError(message)` (RMK-459, RFC §9.3), beside `ToolRefusedError`:
+  a handler's failure in its own words. The tool ran and could not do it;
+  the model reads the message verbatim, the call is failed
+  (`refused=False`), its observers read the message as `error_detail`, its
+  stored end row says `failed` and the room's tool memory keeps it, on the
+  text and realtime doors alike. An audit records it `failed`, as the
+  failure envelope.
+
 - `FastRTCRealtimeTransport.reject_connection(webrtc_id, *, message=None)`
   (RMK-408): refuse a peer the host will not serve, told why on its data
   channel, what carries it closed (its peer connection, or a websocket
@@ -276,6 +284,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cannot encrypt is deleted rather than left in the clear.
 
 ### Changed
+
+- **BREAKING — `MCPToolProvider.as_tool_handler()` raises `ToolFailedError`
+  for a result that says `isError`, no longer `ToolRefusedError`** (RMK-459,
+  RFC §9.3): the tool ran and failed. Observers read `refused=False` and the
+  server's words as `error_detail`, the stored end row says `failed`, and the
+  call enters the room's tool memory and digest, where a refusal stayed out;
+  an audit still records `failed`. Migration: code that catches
+  `ToolRefusedError` around an MCP handler to tell a server's answer from an
+  unexpected exception catches `ToolFailedError` beside it.
 
 - **BREAKING — a realtime Tool Search call is judged by `ON_TOOL_CALL`
   before the model reads it** (RMK-447, RFC §6.4, §9.3). `find_tools` and
@@ -705,20 +722,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - The line between a refused and a failed call reads the same everywhere
-  (RMK-459, RFC §9.3). `ToolFailedError(message)` (new, beside
-  `ToolRefusedError`) is a handler's failure in its own words: the tool ran
-  and could not do it, the model reads the message, the call is failed
-  (`refused=False`) and the observers read the message as `error_detail`, on
-  the text and realtime doors alike. **An MCP tool whose result says
-  `isError` is now a failure, no longer a refusal**
-  (`MCPToolProvider.as_tool_handler()` raises `ToolFailedError`; an audit
-  records it `error` rather than `failed`). A reasoning backend's relay of a
-  call its loop ended before the gate keeps the outcome (refused, cancelled
-  or failed) and what failed, where every such call reached the observers
-  refused and without its detail (`report_refusal(..., refused=, detail=)`).
-  A refused, failed or cancelled call whose observers' context does not
-  build, and a call an external handler ran, still emit their `tool_call`
-  framework event.
+  (RMK-459, RFC §9.3). A reasoning backend's relay of a call its loop
+  ended before the gate keeps the outcome and what failed: a failed call
+  reached the observers refused and without its detail. The reporter is
+  now called with `refused=False` for a failure and `detail=` when one is
+  set, so a host reporter written to `(name, arguments, body, *,
+  cancelled=False)` still hears refusals and cuts. A refused, failed or
+  cancelled call whose observers' context does not build, and a call an
+  external handler ran, still emit their `tool_call` framework event.
 
 - A realtime call its response cut runs only when its argument text reads,
   as on a text turn (RMK-455, RFC §6.4, §12.4). OpenAI Realtime and xAI

@@ -235,7 +235,8 @@ class RealtimeVoiceChannel(
                 Signature: ``async (name, arguments) -> str``.
                 If not set, falls back to handlers extracted from Tool
                 objects, or ``ON_TOOL_CALL`` hooks.
-                Raise ``roomkit.ToolRefusedError`` to decline a call: the
+                Raise ``roomkit.ToolRefusedError`` to decline a call, or
+                ``roomkit.ToolFailedError`` to say it ran and failed: the
                 message reaches the model verbatim and the call is marked
                 failed, where a returned body would read as work that was done.
             mute_on_tool_call: If True, mute the transport microphone during

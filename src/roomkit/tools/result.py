@@ -164,7 +164,9 @@ def tool_failure(name: str, exc: BaseException) -> str:
     The message can hold anything the failing code held (a connection string
     with its password, a path, a record); it goes to the log and to the
     observers (:func:`failure_detail`). A handler that wants the model to read
-    its words raises :class:`~roomkit.core.exceptions.ToolRefusedError`.
+    its words says which outcome they carry: a refusal
+    (:class:`~roomkit.core.exceptions.ToolRefusedError`) or a failure
+    (:class:`~roomkit.core.exceptions.ToolFailedError`).
     """
     return json.dumps({"error": f"Tool '{name}' failed ({type(exc).__name__})"})
 
