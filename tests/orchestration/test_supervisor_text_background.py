@@ -149,10 +149,15 @@ async def test_a_worker_past_its_bound_is_told_as_not_completed(door: str) -> No
     assert [status for _, status, _ in posted] == [StatusLevel.FAILED]
 
 
-async def _team_delegations(*, async_delivery: bool, voice: bool) -> list[str]:
-    """The agents a sequential team's run delegates to, in order."""
+async def _team_delegations(
+    *, async_delivery: bool, voice: bool, config_only: bool = False
+) -> list[str]:
+    """The agents a sequential team's run delegates to, in order; the
+    supervisor without a model when *config_only*."""
     kit = RoomKit()
-    boss = Agent("boss", provider=MockAIProvider(responses=["ok"]))
+    boss = (
+        Agent("boss") if config_only else Agent("boss", provider=MockAIProvider(responses=["ok"]))
+    )
     workers = [Agent(w, provider=MockAIProvider(responses=[w])) for w in ("w1", "w2")]
     delegated: list[str] = []
 
@@ -179,7 +184,7 @@ async def _team_delegations(*, async_delivery: bool, voice: bool) -> list[str]:
         await kit.create_room(room_id="r1", orchestration=strategy)
         with tool_call_in("r1"):
             await boss._channel_tool_handler("delegate_workers", {"task": "Do it."})
-    await until(lambda: len(delegated) >= 3)
+    await until(lambda: len(delegated) >= (2 if config_only else 3))
     await asyncio.sleep(0.05)
     await kit.close()
     return delegated
@@ -240,3 +245,12 @@ async def test_a_rejected_supervised_chain_is_told_failed_in_the_background(
     assert told[0].startswith("[Your background workers could not complete the work.")
     assert "(UNVALIDATED)" in told[0]
     assert posted == [(StatusLevel.FAILED, "a step was not validated")]
+
+
+async def test_a_supervisor_without_a_model_lets_its_chain_run_unsupervised() -> None:
+    """A voice supervisor is often configuration only: it cannot frame nor
+    judge a step, so its sequential team runs unsupervised, every worker in
+    order (RFC §19.7.3)."""
+    delegated = await _team_delegations(async_delivery=True, voice=True, config_only=True)
+
+    assert delegated == ["w1", "w2"]

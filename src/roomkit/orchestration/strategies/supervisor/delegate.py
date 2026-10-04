@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeGuard
 
 from roomkit.core._failure_log import log_failure
 from roomkit.core._fallback import FALLBACK_FAILED
@@ -207,10 +207,14 @@ async def _run_workers(
     """Run workers according to strategy and return their reviewed results.
 
     Sequential goes through the supervised hub-&-spoke loop when a *supervisor*
-    is given (every output returns to the supervisor, which validates it and
-    frames the next worker's task); parallel runs all workers on the same task.
+    that can answer is given (every output returns to the supervisor, which
+    validates it and frames the next worker's task); a supervisor without a
+    model (a configuration-only agent, as a voice supervisor often is) cannot
+    frame nor judge, and its chain runs unsupervised, each worker given the
+    task and the work done before it (RFC §19.7.3). Parallel runs all workers
+    on the same task.
     """
-    if strategy == WorkerStrategy.SEQUENTIAL and supervisor is not None:
+    if strategy == WorkerStrategy.SEQUENTIAL and _supervises(supervisor):
         return await _run_supervised_sequential(
             kit,
             room_id,
@@ -241,6 +245,11 @@ async def _run_workers(
         )
     parsed = json.loads(result_json)
     return parsed.get("results", [])
+
+
+def _supervises(supervisor: Agent | None) -> TypeGuard[Agent]:
+    """Whether *supervisor* can frame and judge a sequential team's steps."""
+    return supervisor is not None and not supervisor.is_config_only
 
 
 async def _formulate_task(

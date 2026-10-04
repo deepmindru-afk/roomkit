@@ -870,7 +870,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   supervisor never framed nor validated, and every background run ignored
   the install's `task_timeout` and `max_revisions` (120 s whatever was set).
   A voice `auto_delegate` install registers its supervisor on the kit, not
-  attached to the room, for the supervised flow to delegate to.
+  attached to the room, for the supervised flow to delegate to. A supervisor
+  without a model (a configuration-only agent, as a voice supervisor often
+  is) cannot frame nor judge a step: its sequential team runs unsupervised,
+  as before.
 
 - A supervisor's per-worker background delegation (`delegate_to_<id>` with
   `wait_for_result=False`) is the strategies' background run (RMK-478,

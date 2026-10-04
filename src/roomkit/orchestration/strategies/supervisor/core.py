@@ -204,10 +204,11 @@ class Supervisor(
         return [self._supervisor]
 
     def _register_agents(self, kit: RoomKit, *, supervisor_in_room: bool) -> None:
-        """Register the workers on the kit, not attached to the room, and the
-        supervisor when it is not in the room: the supervised flow delegates
-        to it to frame and validate each step (RFC §19.7.3)."""
-        agents = [*self._workers] if supervisor_in_room else [*self._workers, self._supervisor]
+        """Register the workers on the kit, not attached to the room, and a
+        supervisor that can answer when it is not in the room: the supervised
+        flow delegates to it to frame and validate each step (RFC §19.7.3)."""
+        supervises = not (supervisor_in_room or self._supervisor.is_config_only)
+        agents = [*self._workers, self._supervisor] if supervises else [*self._workers]
         for agent in agents:
             if agent.channel_id not in kit.channels:
                 kit.register_channel(agent)
