@@ -14,13 +14,14 @@ from typing import TYPE_CHECKING, Any
 
 from roomkit.core._failure_log import log_failure
 from roomkit.core._fallback import FALLBACK_FAILED
-from roomkit.core.event_router import StreamingResponse
+from roomkit.core.event_router import StreamingResponse, stream_record
 from roomkit.core.mixins._child_execution import persist_tool_calls
 from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import ChannelType as _ChannelType
 from roomkit.models.enums import EventType
 from roomkit.models.event import EventSource, RoomEvent, TextContent
+from roomkit.models.response_metadata import recorded_turn_end
 from roomkit.orchestration._background import (
     BackgroundRun,
     background_failure_text,
@@ -308,8 +309,17 @@ async def _pass1_task(
         # Logged once, at its own level: whoever opened the turn may not
         # receive it (``send_event``, a delivery).
         log_failure(logger, exc, f"Pass 1 of {supervisor.channel_id} in room {room_id}")
-        return _Pass1(_read(output, error=exc))
+        record = dict(stream_record(stream))
+        return _Pass1(_read(output, error=exc), end=recorded_turn_end(record), record=record)
     return _Pass1(_read(output), turn.answer, turn.end, turn.record)
+
+
+def _with_record(pass1: _Pass1) -> ChannelOutput:
+    """The pass's output carrying its turn's record (its end, its usage)."""
+    if not pass1.record:
+        return pass1.output
+    metadata = {**pass1.output.response_metadata, **pass1.record}
+    return pass1.output.model_copy(update={"response_metadata": metadata})
 
 
 def _read(output: ChannelOutput, *, error: Exception | None = None) -> ChannelOutput:
@@ -325,10 +335,11 @@ def _pass1_answer(supervisor: Agent, event: RoomEvent, pass1: _Pass1) -> Channel
     """What the room reads of a pass that handed on no task: the supervisor's
     fallback when the pass stopped short of its answer, so the message it
     answered gets one, the turn's record on it (RFC §19.7.3); else the pass's
-    own output, its error included. A pass stopped on purpose
-    (``cancelled``) is no failure to report."""
-    if pass1.end in (None, "completed", "cancelled"):
-        return pass1.output
+    own output, its error included, carrying the pass's record so the caller
+    reads how it ended as of any turn (RFC §6.4). A pass stopped on purpose
+    (``cancelled``), or that failed with an error, has no fallback."""
+    if pass1.output.error is not None or pass1.end in (None, "completed", "cancelled"):
+        return _with_record(pass1)
     fallback = RoomEvent(
         room_id=event.room_id,
         type=EventType.MESSAGE,

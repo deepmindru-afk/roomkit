@@ -812,6 +812,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A supervisor's task-formulation pass tells its caller how it ended, as a
+  room turn does (RMK-479, RFC §6.4): a pass that failed with an error, was
+  cancelled, or completed without a task left the caller's `turns` without
+  its entry (only a pass its round cap cut carried one).
+
 - `read_skill_reference` on a skill the registry does not offer is refused,
   on the AI channel as on a realtime session (RMK-480, RFC §9.3): it was
   reported served with an `{"error": ...}` body. The model reads the same
