@@ -62,6 +62,11 @@ class ToolCallDoor(Protocol):
     the provider's function calls do; a recovered or a backend call reaches
     the host's tools only (RFC §21.1)."""
 
+    can_activate: bool
+    """Whether the model that issued the call can activate a skill itself,
+    so a skill's refusal tells it to (RFC §21.1): the realtime model can; a
+    reasoning backend cannot."""
+
     async def deliver(self, call: RealtimeToolCall, outcome: ToolOutcome) -> bool:
         """Hand *outcome* to whoever waits for it; whether it reached them."""
         ...

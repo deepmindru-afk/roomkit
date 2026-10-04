@@ -799,6 +799,7 @@ class _ConferenceDoor:
     call's result, through the realtime resource."""
 
     channel_serves = False
+    can_activate = False
 
     def __init__(self, realtime: ConferenceRealtime, config: ConferenceRealtimeConfig) -> None:
         self._realtime = realtime

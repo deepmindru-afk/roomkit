@@ -157,6 +157,7 @@ class _ProviderDoor:
     """The provider's function call: its outcome goes back as the call's result."""
 
     channel_serves = True
+    can_activate = True
 
     def __init__(self, channel: RealtimeToolsMixin) -> None:
         self._channel = channel
@@ -516,6 +517,7 @@ class RealtimeToolsMixin:
             call.room_id,
             call.session,
             channel_serves=door.channel_serves,
+            can_activate=door.can_activate,
         )
         return denial, context
 

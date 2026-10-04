@@ -739,9 +739,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   session last read them, while the gate reads them again at each call: a
   participant promoted mid-session was still not offered the tool, and one
   demoted was offered a tool its call was then refused. They are now read
-  when each delegation starts. On a door through which the channel serves
-  none of its own tools, skill gating exempts none of them either, as the
-  policy already did: the exemption is read once per door.
+  when the channel hands each delegation to the backend, inside the
+  delegation's bound (a read that fails is answered by the spoken fallback);
+  a delegation the backend queues behind another keeps what was read then,
+  its calls still judged at the gate. Each delegation takes its transcript
+  and `first` in the order it was announced. On a door through which the
+  channel serves none of its own tools, skill gating exempts none of them
+  either, as the policy already did, and a backend's call to a gated tool
+  reads, at the gate, the refusal worded for a model that cannot activate a
+  skill, as in `unavailable` (it was told to activate one).
 
 - A supervisor's background workers whose pipeline fails hand the failure
   back to the supervisor (RMK-451, RFC §19.7.3). A delegation that raised

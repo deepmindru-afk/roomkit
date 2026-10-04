@@ -235,6 +235,7 @@ class _RecoveredDoor:
     goes back as injected context, never as a tool result (RFC §12.4)."""
 
     channel_serves = False
+    can_activate = True
 
     def __init__(self, channel: RealtimeToolRecoveryMixin) -> None:
         self._channel = channel

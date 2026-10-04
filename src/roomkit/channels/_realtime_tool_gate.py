@@ -297,6 +297,7 @@ class RealtimeToolGateMixin:
         session: VoiceSession,
         *,
         channel_serves: bool = True,
+        can_activate: bool = True,
     ) -> tuple[dict[str, Any], GateRefusal | None, RoomContext | None]:
         """Pre-execution gate for realtime tool calls (parity with the classic
         AI path), in RFC §12.4's order.
@@ -305,6 +306,8 @@ class RealtimeToolGateMixin:
         tools (Tool Search, skills): the provider's function calls do; a
         reasoning backend's calls and a recovered spoken call reach the
         handler only, so on them no name is the channel's (RFC §21.1).
+        *can_activate* is false for a model that cannot activate a skill
+        itself (a reasoning backend), whose skill refusal says so.
 
         Checks the tool is declared, applies the tool policy and skill gating,
         folds a flattened hub-tool call back into ``params`` and validates the
@@ -329,7 +332,8 @@ class RealtimeToolGateMixin:
         # Access before the arguments: a refused tool never names its schema
         # (RFC §21.1).
         await self._refresh_session_policies(session, room_id)
-        cause = self._access_cause(name, session.id, self._door_exempt(channel_serves))
+        exempt = self._door_exempt(channel_serves)
+        cause = self._access_cause(name, session.id, exempt, can_activate=can_activate)
         if cause is not None:
             logger.warning("Realtime tool %s refused: %s", name, cause)
             return arguments, GateRefusal(json.dumps({"error": cause})), None

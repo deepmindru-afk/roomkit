@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+from dataclasses import dataclass
 from functools import partial
 from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 from uuid import uuid4
@@ -286,17 +287,12 @@ class RealtimeDelegationMixin:
         backend = self._reasoning_backend
         if backend is None:
             return
-        # The catalogue the backend is offered follows the participant's role
-        # and the room's agent as they stand now, as the gate reads them at
-        # each call (RFC §12.4.1).
-        with self._state_lock:
-            room_id = self._session_rooms.get(session.id)
-        await self._refresh_session_policies(session, room_id)
-        request = self._reasoning_request(session, delegation_id)
+        handover = self._take_handover(session)
         answered = False
 
         async def _relay() -> None:
             nonlocal answered
+            request = await self._reasoning_request(session, delegation_id, handover)
             async for output in backend.run(request):
                 if session.state == VoiceSessionState.ENDED:
                     return
@@ -334,17 +330,34 @@ class RealtimeDelegationMixin:
             else:
                 logger.info("Delegation %s served (session %s)", delegation_id, session.id)
 
-    def _reasoning_request(self, session: VoiceSession, delegation_id: str) -> ReasoningRequest:
-        """What the backend receives for one delegation: the transcript since
-        the previous one, the session's catalogue, and the door to its tools."""
+    def _take_handover(self, session: VoiceSession) -> _Handover:
+        """What a delegation takes as it is handed over, in the order the
+        delegations were announced: whether it is the session's first, and
+        the transcript recorded since the previous one (RFC §12.4.1)."""
         with self._state_lock:
             first = session.id not in self._delegated_before
             self._delegated_before.add(session.id)
+            room_id = self._session_rooms.get(session.id) or session.room_id
+        return _Handover(first, self._take_transcript(session.id), room_id)
+
+    async def _reasoning_request(
+        self, session: VoiceSession, delegation_id: str, handover: _Handover
+    ) -> ReasoningRequest:
+        """What the backend receives for one delegation: what it took when
+        handed over, the session's catalogue, and the door to its tools.
+
+        The catalogue follows the participant's role and the room's agent as
+        they stand when the backend is handed the delegation, as the gate
+        reads them at each call; their read runs inside the delegation's
+        bound, so one that fails is answered by its spoken fallback
+        (RFC §12.4.1).
+        """
+        await self._refresh_session_policies(session, handover.room_id)
         return ReasoningRequest(
             session=session,
             delegation_id=delegation_id,
-            transcript=self._take_transcript(session.id),
-            first=first,
+            transcript=handover.transcript,
+            first=handover.first,
             tools=self._backend_catalogue(session.id),
             unavailable=self._backend_unavailable(session.id),
             execute_tool=lambda name, arguments: self._execute_backend_tool(
@@ -494,11 +507,21 @@ class RealtimeDelegationMixin:
         await report_failed_call(cast("ToolCallHost", self), call, outcome)
 
 
+@dataclass(frozen=True)
+class _Handover:
+    """What a delegation took when it was handed over."""
+
+    first: bool
+    transcript: list[TranscriptLine]
+    room_id: str | None
+
+
 class _BackendDoor:
     """A reasoning backend's call: its outcome goes back to the backend's
     model, which awaits it, never to the provider (RFC §12.4.1)."""
 
     channel_serves = False
+    can_activate = False
 
     async def deliver(self, call: RealtimeToolCall, outcome: ToolOutcome) -> bool:
         return True

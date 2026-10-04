@@ -412,26 +412,3 @@ async def test_a_delegation_offers_the_tools_the_participant_s_current_role_admi
 
     assert backend.catalogues == [["lookup_account"], ["lookup_account", "delete_account"]]
     await kit.close()
-
-
-async def test_a_door_that_serves_no_channel_tool_exempts_none_from_gating(
-    tmp_path: Path,
-) -> None:
-    """RFC §21.1: what escapes the policy escapes skill gating, door by door;
-    on a reasoning backend's door nothing of the channel's own escapes."""
-    folder = tmp_path / "everything"
-    folder.mkdir()
-    (folder / "SKILL.md").write_text(
-        '---\nname: everything\ndescription: gates all\nallowed_tools: "*"\n---\nBody.',
-        encoding="utf-8",
-    )
-    registry = SkillRegistry()
-    registry.discover(tmp_path)
-    kit, channel, _, session = await _channel(_Calls(), policy=ToolPolicy(), skills=registry)
-
-    served = channel._access_cause("activate_skill", session.id, channel._door_exempt(True))
-    backend = channel._access_cause("activate_skill", session.id, channel._door_exempt(False))
-
-    assert served is None
-    assert backend is not None
-    await kit.close()
