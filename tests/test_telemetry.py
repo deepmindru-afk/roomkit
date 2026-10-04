@@ -9,6 +9,7 @@ import pytest
 
 from roomkit.channels.ai import AIChannel
 from roomkit.channels.base import Channel
+from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 from roomkit.channels.voice import VoiceChannel
 from roomkit.core.exceptions import ProviderDeliveryError
 from roomkit.core.framework import RoomKit
@@ -37,6 +38,7 @@ from roomkit.voice.backends.mock import MockVoiceBackend
 from roomkit.voice.pipeline.config import AudioPipelineConfig
 from roomkit.voice.pipeline.vad.base import VADEvent, VADEventType
 from roomkit.voice.pipeline.vad.mock import MockVADProvider
+from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
 from roomkit.voice.stt.mock import MockSTTProvider
 from roomkit.voice.tts.mock import MockTTSProvider
 
@@ -1746,6 +1748,42 @@ class TestPipelineSpeechSegmentTelemetry:
         ]
         assert [span.parent_id for span in segments] == [voice_span]
         await kit.close()
+
+    async def test_a_realtime_sessions_segments_hang_under_its_session_span(self) -> None:
+        """RealtimeVoiceChannel hands its REALTIME_SESSION span to the pipeline (RMK-466)."""
+        mock = MockTelemetryProvider()
+        transport = MockRealtimeTransport()
+        kit = RoomKit(telemetry=mock)
+        channel = RealtimeVoiceChannel(
+            "rt1",
+            provider=MockRealtimeProvider(),
+            transport=transport,
+            pipeline=AudioPipelineConfig(
+                vad=MockVADProvider(
+                    events=[
+                        VADEvent(type=VADEventType.SPEECH_START),
+                        VADEvent(type=VADEventType.SPEECH_END, audio_bytes=b"audio"),
+                    ]
+                ),
+                telemetry=mock,
+            ),
+        )
+        kit.register_channel(channel)
+        room = await kit.create_room()
+        await kit.attach_channel(room.id, "rt1")
+        session = await channel.start_session(room.id, "user1", "fake-ws")
+
+        for _ in range(2):
+            await transport.simulate_client_audio(session, b"\x00" * 640)
+
+        session_span = channel._session_spans[session.id]
+        segments = [
+            span
+            for span in mock.get_spans(SpanKind.PIPELINE_SPEECH_SEGMENT)
+            if span.session_id == session.id
+        ]
+        assert [span.parent_id for span in segments] == [session_span]
+        await channel.close()
 
     def test_speech_segment_has_stage_timings(self) -> None:
         """Segment span should have per-stage timing attributes > 0."""

@@ -1383,7 +1383,7 @@ class RealtimeVoiceChannel(
         # per-session pipeline state first so the earliest callback cannot run
         # through an uninitialized recorder/AEC/debug stream.
         if self._pipeline is not None:
-            self._pipeline_session_active(session)
+            self._pipeline_session_active(session, parent_span=session_span_id)
 
         async def accept_transport() -> None:
             resolved = await connection if inspect.isawaitable(connection) else connection
@@ -1562,8 +1562,8 @@ class RealtimeVoiceChannel(
 
     async def _end_session_owned(self, session: VoiceSession) -> None:
         """The teardown itself, run once per session by ``end_session``."""
-        # Stop admitting calls and audio before the first asynchronous cleanup
-        # step. A session hangup must also stop its in-flight tools without
+        # Stop admitting calls and audio before this teardown's asynchronous
+        # steps. A session hangup must also stop its in-flight tools without
         # touching calls owned by other sessions sharing this channel.
         session.state = VoiceSessionState.ENDED
         self._pipeline_session_ending(session)

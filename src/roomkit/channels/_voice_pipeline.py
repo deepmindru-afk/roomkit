@@ -180,14 +180,21 @@ class VoicePipelineMixin:
             return transport_rate
         return self._pipeline.inbound_sample_rate(transport_rate)
 
-    def _pipeline_session_active(self, session: VoiceSession) -> None:
-        """Notify the pipeline that a session is active.
+    def _pipeline_session_active(
+        self, session: VoiceSession, *, parent_span: str | None = None
+    ) -> None:
+        """Activate a session in the pipeline, its speech segment spans under *parent_span*.
 
         Call this when a voice session starts (after binding or accepting).
-        Starts recording, debug taps, and per-session state.
+        Starts recording, debug taps, and per-session state. The span is handed
+        over after the activation, which clears what a previous session left
+        under the same id, spans included.
         """
-        if self._pipeline is not None:
-            self._pipeline.on_session_active(session)
+        if self._pipeline is None:
+            return
+        self._pipeline.on_session_active(session)
+        if parent_span is not None:
+            self._pipeline.set_parent_span(session.id, parent_span)
 
     def _pipeline_session_ending(self, session: VoiceSession) -> None:
         """Tell the pipeline a session's end has begun.
