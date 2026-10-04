@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._realtime_context import get_current_voice_session
 from roomkit.core._fallback import FALLBACK_FAILED
+from roomkit.core.exceptions import RoomKitError
 from roomkit.core.task_utils import log_task_exception
 from roomkit.orchestration.status_bus import StatusLevel
 from roomkit.tasks.handback import hand_back, not_handed_back
@@ -70,7 +71,14 @@ class BackgroundRun[T]:
 
 def start_background_run(kit: RoomKit, run: Coroutine[Any, Any, None]) -> None:
     """Start a strategy's background *run* as a task *kit* holds until it
-    ends, so ``close()`` cancels it (RFC §19.7.3, §19.7.4)."""
+    ends, so ``close()`` cancels it (RFC §19.7.3, §19.7.4).
+
+    Raises:
+        RoomKitError: *kit* is closing: a run started now would outlive it.
+    """
+    if kit._closed:
+        run.close()
+        raise RoomKitError("The framework is closing: no background run starts")
     task = asyncio.create_task(run)
     runs = kit._background_runs
     runs.add(task)

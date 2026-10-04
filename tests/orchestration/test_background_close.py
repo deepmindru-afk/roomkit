@@ -9,6 +9,7 @@ its starts against the closed kit.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -146,3 +147,28 @@ async def test_close_ends_a_background_run(door: str) -> None:
         ("orchestration", StatusLevel.FAILED, "cancelled"),
     ]
     assert worker._provider.calls == []  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("door", list(DOORS))
+async def test_a_run_asked_for_while_the_kit_closes_never_starts(door: str) -> None:
+    """A call that lands once ``close()`` began (a voice session still open
+    while the delegated tasks close) starts no run that would outlive it."""
+    started, release = asyncio.Event(), asyncio.Event()
+    worker = Agent("worker", provider=_Held(started, release, responses=["The draft."]))
+    kit = RoomKit()
+    call = await DOORS[door](kit, worker)
+    runner_close = kit._task_runner.close
+
+    async def close_runner() -> None:
+        with contextlib.suppress(Exception):
+            await call()
+        await asyncio.sleep(0.01)
+        await runner_close()
+
+    kit._task_runner.close = close_runner  # type: ignore[method-assign]
+    await asyncio.wait_for(kit.close(), 10)
+    release.set()
+    await asyncio.sleep(0.05)
+
+    assert _runs_alive() == []
+    assert not started.is_set()

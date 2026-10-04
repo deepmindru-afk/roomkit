@@ -881,7 +881,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   workers still generating after `close()` returned, with no terminal entry.
   The kit holds each run and `close()` cancels it before the delegated tasks:
   its worker's delegation ends cancelled, its room is freed, and its terminal
-  entry is posted `failed` (`cancelled`), with nothing handed back.
+  entry is posted `failed` (`cancelled`), with nothing handed back. A run
+  asked for once `close()` began (a voice session still open while the kit
+  closes) does not start: the call that asked for it fails.
 
 - A strategy's worker delegation is one sequence on every door (RMK-478,
   RFC §19.7.3, §19.7.4): the supervisor's workers (sequential, parallel,
