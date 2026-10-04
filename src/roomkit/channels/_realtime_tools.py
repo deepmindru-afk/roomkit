@@ -15,7 +15,6 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.channels._realtime_context import (
     _current_voice_session,
-    own_call_orphaned,
     serving_call,
     spare_own_orphaned_call,
 )
@@ -309,14 +308,14 @@ class RealtimeToolsMixin:
                 continue
             if self._spared_by_own_reconnect(call):
                 continue
-            if self._tool_calls.abandonable(session.id, call_id) is None:
+            if self._tool_calls.abandon(session.id, call_id) is None:
                 logger.debug(
                     "Cancelled tool call %s already gave its outcome for session %s",
                     call_id,
                     session.id,
                 )
                 continue
-            assert call.task is not None  # abandonable  # noqa: S101
+            assert call.task is not None  # abandon  # noqa: S101
             call.task.cancel()
             logger.info(
                 "Tool call %s(%s) abandoned by the provider for session %s",
@@ -810,15 +809,10 @@ class RealtimeToolsMixin:
         the provider's protocol can say so (RFC §12.4); whether it reached a
         live session.
 
-        False when the session ended, or when the call lost its id to a
-        reconnect its own handler caused: the new socket never issued it, and
-        no provider output is awaited for it (RFC §9.3).
+        False when the session ended.
         """
         session = call.session
         if session.state == VoiceSessionState.ENDED:
-            return False
-        if own_call_orphaned(call):
-            # The new socket never issued this id (RFC §9.3)
             return False
         self._expect_provider_output(session.id)
         await submit_tool_outcome(self._provider, session, call.call_id, result, failed=failed)

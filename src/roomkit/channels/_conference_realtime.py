@@ -556,10 +556,10 @@ class ConferenceRealtime:
         if room is None:
             return
         for call_id in call_ids:
-            call = self._tool_calls.abandonable(session.id, call_id)
+            call = self._tool_calls.abandon(session.id, call_id)
             if call is None:
                 continue
-            assert call.task is not None  # abandonable  # noqa: S101
+            assert call.task is not None  # abandon  # noqa: S101
             call.task.cancel()
             # Off the provider's callback: an audit hook must not hold up the
             # interruption it reports.

@@ -31,20 +31,18 @@ class _ServedCall:
 
     A reconnect its own handler causes (a handoff reconfiguring its session)
     orphans it like every other call, but the model did not abandon it: the
-    handler runs on, and ``orphaned`` records that its result has nowhere to
-    go, since the new socket never issued the id (RFC §9.3). A task the
-    handler starts inherits the record, and one can outlive the call (a
-    provider's new receive loop does); ``finished`` keeps it from naming a
-    call that has ended. The record names the call itself, not its id: a
+    handler runs on, its id released, since the new socket never issued it
+    (RFC §9.3, §12.4). A task the handler starts inherits the record, and one
+    can outlive the call (a provider's new receive loop does); ``finished``
+    keeps it from naming a call that has ended. The record names the call itself, not its id: a
     vendor may issue the id again once the call's result went out (RFC §12.4),
     and the call it then names is another one.
     """
 
-    __slots__ = ("call", "finished", "orphaned")
+    __slots__ = ("call", "finished")
 
     def __init__(self, call: RealtimeToolCall) -> None:
         self.call = call
-        self.orphaned = False
         self.finished = False
 
 
@@ -78,17 +76,10 @@ def spare_own_orphaned_call(call: RealtimeToolCall) -> bool:
 
     Called where a provider reports orphaned calls. When the report runs
     inside the call's own handler, or a task it started, that handler caused
-    the reconnect: the call is marked so that its result is not sent, and it
-    is not to be interrupted.
+    the reconnect: the call is not to be interrupted, and it releases its id,
+    so its result is not sent (RFC §12.4).
     """
-    served = _this_task_serves(call)
-    if served is None:
+    if _this_task_serves(call) is None:
         return False
-    served.orphaned = True
+    call.released = True
     return True
-
-
-def own_call_orphaned(call: RealtimeToolCall) -> bool:
-    """Whether this task's call lost its id to a reconnect its handler caused."""
-    served = _this_task_serves(call)
-    return served is not None and served.orphaned

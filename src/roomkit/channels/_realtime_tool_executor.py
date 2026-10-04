@@ -288,12 +288,16 @@ async def deliver_once(call: RealtimeToolCall, door: ToolCallDoor, outcome: Tool
 
     The call counts as delivered from here on: a cancellation that lands while
     the result goes out, or a step that fails after it, adds no second outcome.
+    A call the provider released sends nothing: nobody waits for its result,
+    and its id may already name a newer call.
     """
     if call.delivered or call.unanswerable is not None:
         # Nothing names a call without an id, and an id in flight is its first
         # call's: no result goes out for either (RFC §12.4).
         return False
     call.delivered = True
+    if call.released:
+        return False
     return await door.deliver(call, outcome)
 
 

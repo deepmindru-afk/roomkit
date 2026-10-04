@@ -728,6 +728,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A realtime call the provider abandons frees its id at once (RMK-460, RFC
+  §12.4), as RMK-441 made a delivered call free it. The provider freed the id
+  when it reported the abandonment, the channel only once the interrupted
+  handler had finished: a call the vendor issued under the id while that
+  handler cleaned up was refused as a duplicate by the channel and booked by
+  the provider, and never answered (a Gemini Live blocking call froze the
+  input). The channel and the conference now free it at the same step, send
+  nothing for the abandoned call even when its handler answers anyway, and
+  answer the new call. A call a reconnect its own handler caused orphans,
+  which runs on, frees its id the same way: the new connection never issued
+  it.
+
 - The line between a refused and a failed call reads the same everywhere
   (RMK-459, RFC §9.3). A reasoning backend's relay of a call its loop
   ended before the gate keeps the outcome and what failed: a failed call

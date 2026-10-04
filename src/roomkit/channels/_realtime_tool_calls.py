@@ -57,6 +57,10 @@ class RealtimeToolCall:
     ``structuredContent``), carried to ON_TOOL_CALL (RFC §9.3)."""
     task: asyncio.Task[Any] | None = field(default=None, repr=False)
     delivered: bool = False
+    released: bool = False
+    """The provider no longer waits for its result (it abandoned the call, or
+    a reconnect the call's own handler caused orphaned it): its id is free,
+    and nothing is sent for it (RFC §12.4)."""
     reported: bool = False
     owed: ToolOutcome | None = None
     """The failure the model reads, kept from its delivery, which the call's
@@ -95,6 +99,12 @@ class RealtimeToolCall:
         refusal = json.dumps(cut_call_error(name) if cut else unreadable_call_error(name))
         return cls(session, call_id, name, tool_arguments(arguments), unreadable=refusal, **fields)
 
+    @property
+    def holds_id(self) -> bool:
+        """Whether the call's id still names it: its result has not gone out
+        and the provider still waits for it (RFC §12.4)."""
+        return not (self.delivered or self.released)
+
     def claim_report(self) -> bool:
         """Claim the call's one report: False when it was already made."""
         if self.reported:
@@ -106,10 +116,12 @@ class RealtimeToolCall:
 class ToolCallBook:
     """The realtime tool calls in flight, per session.
 
-    An id names its call from the call until its result goes out (RFC §12.4):
-    a second call under it meanwhile is refused, while one after it is a new
-    call, recorded beside the first, which may still be finishing its report.
-    The provider frees the id at the same step, when it sends the result.
+    An id names its call from the call until its result goes out or the
+    provider abandons it (RFC §12.4): a second call under it meanwhile is
+    refused, while one after it is a new call, recorded beside the first,
+    which may still be finishing its report or its interrupted handler. The
+    provider frees the id at the same step, when it sends the result or
+    reports the abandonment.
     """
 
     def __init__(self) -> None:
@@ -117,15 +129,15 @@ class ToolCallBook:
 
     def open(self, call: RealtimeToolCall) -> bool:
         """Record *call*: False, the call marked unanswerable, when it came
-        without an id or under one whose call's result has not gone out yet,
-        which then keeps the id (RFC §12.4)."""
+        without an id or under one that still names a call in flight, which
+        then keeps the id (RFC §12.4)."""
         if not call.call_id:
             what = f"Tool call '{call.name}'" if call.name else "A tool call"
             call.unanswerable = json.dumps({"error": f"{what} came without an id"})
             return False
         calls = self._calls.setdefault(call.session.id, {})
         held = calls.get(call.call_id, [])
-        if any(not earlier.delivered for earlier in held):
+        if any(earlier.holds_id for earlier in held):
             call.unanswerable = json.dumps(
                 {"error": f"Tool call '{call.call_id}' has not had its result yet"}
             )
@@ -157,15 +169,22 @@ class ToolCallBook:
         held = (self._calls.get(session_id) or {}).get(call_id)
         return held[-1] if held else None
 
-    def abandonable(self, session_id: str, call_id: str) -> RealtimeToolCall | None:
-        """The call a provider cancellation for *call_id* interrupts: in
-        flight, its task running, its result not out, its outcome not
-        reported. ``None`` when there is nothing left to interrupt."""
+    def abandon(self, session_id: str, call_id: str) -> RealtimeToolCall | None:
+        """The call a provider cancellation for *call_id* interrupts, its id
+        released: in flight, its task running, its result not out, its
+        outcome not reported. ``None`` when there is nothing left to
+        interrupt.
+
+        The provider freed the id when it reported the abandonment: a call it
+        issues under the id from then on is a new call, answered while the
+        interrupted handler finishes (RFC §12.4).
+        """
         call = self.get(session_id, call_id)
-        if call is None or call.delivered or call.reported:
+        if call is None or not call.holds_id or call.reported:
             return None
         if call.task is None or call.task.done():
             return None
+        call.released = True
         return call
 
     def busy(self, session_id: str) -> bool:
