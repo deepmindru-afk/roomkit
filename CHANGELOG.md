@@ -845,6 +845,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A provider that holds no tool unseen receives each tool result as its text
+  (RMK-484, RFC §6.4): the references a Tool Search result carries, which only
+  a deferring provider reads, stayed on it, and Anthropic behind a `base_url`
+  sent them as `tool_reference` blocks a gateway does not take, where OpenAI
+  sent the text. `declared_for` drops them with the held tools.
+
 - A `<think>` block the output cap cut before its close is reasoning, never
   answer, through `generate()` as on the stream (RMK-484, RFC §6.4): OpenAI's
   wire and PolarGrid handed it over as the answer's text. `extract_think_tags`

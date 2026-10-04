@@ -428,19 +428,38 @@ class AIToolPolicyMixin(_AIChannelContract):
 def declared_for(provider: Any, context: AIContext) -> AIContext:
     """*context* as *provider* can take it: where it cannot hold a tool unseen,
     the held tools are dropped and those a result referenced declared plainly
-    (a fallback provider receives what the turn made visible, RFC §6.4). The
+    (a fallback provider receives what the turn made visible, RFC §6.4), and
+    each result goes as its text, without the references only such a
+    provider reads (a provider behind a gateway that does not take them). The
     exchange that reopened tools at the turn's start is left out: it only
     stood for their references, and the tools are declared instead."""
-    if provider.supports_deferred_tools or not any(t.defer_loading for t in context.tools):
+    if provider.supports_deferred_tools:
         return context
     referenced = _references_in(context.messages)
+    if not referenced and not any(t.defer_loading for t in context.tools):
+        return context
     tools = [
         t.model_copy(update={"defer_loading": False}) if t.defer_loading else t
         for t in context.tools
         if not t.defer_loading or t.name in referenced
     ]
-    messages = [m for m in context.messages if not m.metadata.get(REOPENING)]
+    messages = [_without_references(m) for m in context.messages if not m.metadata.get(REOPENING)]
     return context.model_copy(update={"tools": tools, "messages": messages})
+
+
+def _without_references(message: AIMessage) -> AIMessage:
+    """*message* with its tool results carrying their text alone."""
+    if not isinstance(message.content, list) or not any(
+        isinstance(part, AIToolResultPart) and part.references for part in message.content
+    ):
+        return message
+    content = [
+        part.model_copy(update={"references": []})
+        if isinstance(part, AIToolResultPart) and part.references
+        else part
+        for part in message.content
+    ]
+    return message.model_copy(update={"content": content})
 
 
 def _references_in(messages: list[AIMessage]) -> set[str]:
