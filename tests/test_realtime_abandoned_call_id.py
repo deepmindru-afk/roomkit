@@ -1,11 +1,10 @@
 """A realtime call the provider abandons frees its id at once (RMK-460, RFC §12.4).
 
 The provider frees the id when it reports the abandonment, while the handler
-it interrupts may still be finishing (a cleanup that awaits). The channel
-frees it at the same step: a call the vendor issues under the id meanwhile is
-a new call, answered, and nothing is sent for the abandoned one. Before, the
-channel held the id until the abandoned call's task ended, and refused the
-new call as a duplicate the provider had booked: it was never answered.
+it interrupts may still be finishing (a cleanup that awaits), or while its
+observers still hear its outcome. The channel and the conference free it at
+the same step: a call the vendor issues under the id meanwhile is a new call,
+answered, and nothing is sent for the abandoned one.
 """
 
 from __future__ import annotations
@@ -13,6 +12,8 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 from typing import Any
+
+import pytest
 
 from roomkit import ConferenceRealtimeConfig, HookExecution, HookTrigger, RoomKit
 from roomkit.channels._realtime_tool_calls import RealtimeToolCall, ToolCallBook
@@ -36,26 +37,35 @@ class TestTheBook:
         first = self._running(session)
         book.open(first)
 
-        assert book.abandon("s1", "c1") is first
+        assert book.release("s1", "c1") is first and first.interruptible
         second = RealtimeToolCall(session, "c1", "lookup", {})
         assert book.open(second)
         assert book.get("s1", "c1") is second and book.holds(first)
 
-    def test_a_call_is_abandoned_once(self) -> None:
+    def test_a_call_is_released_once(self) -> None:
         book, session = ToolCallBook(), SimpleNamespace(id="s1")
         book.open(self._running(session))
-        book.abandon("s1", "c1")
+        book.release("s1", "c1")
 
-        assert book.abandon("s1", "c1") is None
+        assert book.release("s1", "c1") is None
 
-    def test_a_delivered_call_is_not_abandoned(self) -> None:
+    def test_a_delivered_call_is_not_released(self) -> None:
         book, session = ToolCallBook(), SimpleNamespace(id="s1")
         call = self._running(session)
         book.open(call)
         call.delivered = True
 
-        assert book.abandon("s1", "c1") is None
+        assert book.release("s1", "c1") is None
         assert not call.released
+
+    def test_a_reported_call_is_released_but_not_interrupted(self) -> None:
+        book, session = ToolCallBook(), SimpleNamespace(id="s1")
+        call = self._running(session)
+        book.open(call)
+        call.reported = True
+
+        assert book.release("s1", "c1") is call
+        assert call.released and not call.interruptible
 
 
 def _slow_cleanup_handler(*, swallow: bool = False) -> Any:
@@ -80,25 +90,45 @@ def _slow_cleanup_handler(*, swallow: bool = False) -> Any:
     return handler
 
 
-async def _session(provider: MockRealtimeProvider, handler: Any) -> tuple[RoomKit, Any, list]:
-    channel = RealtimeVoiceChannel(
-        "rt",
-        provider=provider,
-        transport=MockRealtimeTransport(),
-        tools=TOOLS,
-        tool_handler=handler,
-    )
-    kit = RoomKit()
-    kit.register_channel(channel)
-    observed: list[tuple[str, bool, str]] = []
+async def _door(
+    door: str, handler: Any, hold_first_report: asyncio.Event | None = None
+) -> tuple[RoomKit, MockRealtimeProvider, Any, list[tuple[str, bool]]]:
+    """A session on the realtime channel or on a conference, its tool calls
+    served by *handler*, and what ON_TOOL_CALL's observers hear. The first
+    report waits on *hold_first_report* when given: an audit writing it."""
+    provider = MockRealtimeProvider()
+    if door == "session":
+        channel = RealtimeVoiceChannel(
+            "rt",
+            provider=provider,
+            transport=MockRealtimeTransport(),
+            tools=TOOLS,
+            tool_handler=handler,
+        )
+        kit = RoomKit()
+        kit.register_channel(channel)
+        await kit.create_room(room_id="r1")
+        await kit.attach_channel("r1", "rt")
+        session = await channel.start_session("r1", "u", "ws")
+    else:
+
+        async def room_handler(room_id: str, name: str, arguments: dict[str, Any]) -> str:
+            return await handler(name, arguments)
+
+        config = ConferenceRealtimeConfig(
+            provider=provider, tools=TOOLS, tool_handler=room_handler
+        )
+        kit, conference, _, _ = await realtime_kit(provider=provider, config=config)
+        session = await conference._realtime.ensure_session(ROOM)
+    observed: list[tuple[str, bool]] = []
 
     @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: Any, ctx: Any) -> None:
-        observed.append((event.tool_call_id, event.cancelled, str(event.result)))
+        observed.append((event.tool_call_id, event.cancelled))
+        if hold_first_report is not None and len(observed) == 1:
+            await hold_first_report.wait()
 
-    await kit.create_room(room_id="r1")
-    await kit.attach_channel("r1", "rt")
-    return kit, await channel.start_session("r1", "u", "ws"), observed
+    return kit, provider, session, observed
 
 
 async def _reissue_during_cleanup(provider: MockRealtimeProvider, session: Any) -> None:
@@ -109,9 +139,12 @@ async def _reissue_during_cleanup(provider: MockRealtimeProvider, session: Any) 
     await provider.simulate_tool_call(session, "c1", "lookup", {})  # the vendor issues c1 again
 
 
-async def test_a_session_answers_an_id_reissued_while_the_abandoned_call_cleans_up() -> None:
-    provider = MockRealtimeProvider()
-    kit, session, observed = await _session(provider, _slow_cleanup_handler())
+DOORS = pytest.mark.parametrize("door", ["session", "conference"])
+
+
+@DOORS
+async def test_an_id_reissued_while_the_abandoned_call_cleans_up_is_answered(door: str) -> None:
+    kit, provider, session, observed = await _door(door, _slow_cleanup_handler())
 
     await _reissue_during_cleanup(provider, session)
     await until(lambda: len(observed) == 2)
@@ -119,17 +152,14 @@ async def test_a_session_answers_an_id_reissued_while_the_abandoned_call_cleans_
     await kit.close()
 
     assert [(r[1], r[2]) for r in provider.tool_results] == [("c1", "found2")]
-    assert sorted((call_id, cancelled) for call_id, cancelled, _ in observed) == [
-        ("c1", False),
-        ("c1", True),
-    ]
+    assert sorted(observed) == [("c1", False), ("c1", True)]
 
 
-async def test_an_abandoned_call_that_answers_anyway_sends_nothing() -> None:
-    """Its handler swallows the cancellation and answers: the id now names the
-    new call, which must not read the abandoned call's answer."""
-    provider = MockRealtimeProvider()
-    kit, session, observed = await _session(provider, _slow_cleanup_handler(swallow=True))
+@DOORS
+async def test_an_abandoned_call_that_answers_anyway_sends_nothing(door: str) -> None:
+    """Its handler swallows the cancellation and answers: the id names the new
+    call, which must not read the abandoned call's answer."""
+    kit, provider, session, observed = await _door(door, _slow_cleanup_handler(swallow=True))
 
     await _reissue_during_cleanup(provider, session)
     await until(lambda: len(observed) == 2)
@@ -137,25 +167,35 @@ async def test_an_abandoned_call_that_answers_anyway_sends_nothing() -> None:
     await kit.close()
 
     assert [(r[1], r[2]) for r in provider.tool_results] == [("c1", "found2")]
+    assert sorted(observed) == [("c1", False), ("c1", True)]
 
 
-async def test_a_conference_answers_an_id_reissued_while_the_abandoned_call_cleans_up() -> None:
-    provider = MockRealtimeProvider()
-    handler = _slow_cleanup_handler()
+@DOORS
+async def test_an_id_reissued_while_the_observers_hear_the_call_is_answered(door: str) -> None:
+    """The provider abandons a call whose observers already heard it, before
+    its result went out: nothing is sent for it, and the call issued under its
+    id gets its own answer."""
+    calls = 0
 
-    async def room_handler(room_id: str, name: str, arguments: dict[str, Any]) -> str:
-        return await handler(name, arguments)
+    async def counting(name: str, arguments: dict[str, Any]) -> str:
+        nonlocal calls
+        calls += 1
+        return f"found{calls}"
 
-    config = ConferenceRealtimeConfig(provider=provider, tools=TOOLS, tool_handler=room_handler)
-    kit, channel, _, _ = await realtime_kit(provider=provider, config=config)
-    session = await channel._realtime.ensure_session(ROOM)
+    release = asyncio.Event()
+    kit, provider, session, observed = await _door(door, counting, hold_first_report=release)
 
-    await _reissue_during_cleanup(provider, session)
-    await until(lambda: len(provider.tool_results) == 1)
+    await provider.simulate_tool_call(session, "c1", "lookup", {})
+    await until(lambda: len(observed) == 1)  # the audit writes "found1"
+    await provider.simulate_tool_call_cancellation(session, ["c1"])
+    await provider.simulate_tool_call(session, "c1", "lookup", {})
+    release.set()
+    await until(lambda: len(observed) == 2)
     await asyncio.sleep(0.1)
     await kit.close()
 
     assert [(r[1], r[2]) for r in provider.tool_results] == [("c1", "found2")]
+    assert observed == [("c1", False), ("c1", False)]
 
 
 async def test_the_new_socket_answers_the_id_of_the_call_whose_handler_reconnected() -> None:

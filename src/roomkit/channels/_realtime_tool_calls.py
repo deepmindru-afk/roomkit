@@ -48,7 +48,7 @@ class RealtimeToolCall:
     refused before the gate."""
     unanswerable: str | None = None
     """Why no result can be sent for the call (it came without an id, or under
-    an id whose call's result has not gone out): refused on the normal path,
+    an id that still names a call in flight): refused on the normal path,
     reported, and nothing sent (RFC §12.4)."""
     mutes: bool = False
     """The call holds the session's input muted while it runs."""
@@ -98,6 +98,12 @@ class RealtimeToolCall:
         )
         refusal = json.dumps(cut_call_error(name) if cut else unreadable_call_error(name))
         return cls(session, call_id, name, tool_arguments(arguments), unreadable=refusal, **fields)
+
+    @property
+    def interruptible(self) -> bool:
+        """Whether a cancellation still has something to interrupt: the
+        call's task runs and its outcome was not reported (RFC §9.3)."""
+        return not self.reported and self.task is not None and not self.task.done()
 
     @property
     def holds_id(self) -> bool:
@@ -169,20 +175,16 @@ class ToolCallBook:
         held = (self._calls.get(session_id) or {}).get(call_id)
         return held[-1] if held else None
 
-    def abandon(self, session_id: str, call_id: str) -> RealtimeToolCall | None:
-        """The call a provider cancellation for *call_id* interrupts, its id
-        released: in flight, its task running, its result not out, its
-        outcome not reported. ``None`` when there is nothing left to
-        interrupt.
+    def release(self, session_id: str, call_id: str) -> RealtimeToolCall | None:
+        """Free *call_id* from the call the provider abandoned under it, and
+        return that call; ``None`` when the id names no call that holds it.
 
-        The provider freed the id when it reported the abandonment: a call it
-        issues under the id from then on is a new call, answered while the
-        interrupted handler finishes (RFC §12.4).
+        The provider freed the id when it reported the abandonment: nothing is
+        sent for the call from then on, its observers told or not, and a call
+        the provider issues under the id is a new call, answered (RFC §12.4).
         """
         call = self.get(session_id, call_id)
-        if call is None or not call.holds_id or call.reported:
-            return None
-        if call.task is None or call.task.done():
+        if call is None or not call.holds_id:
             return None
         call.released = True
         return call

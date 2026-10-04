@@ -143,8 +143,9 @@ async def test_a_cancellation_while_the_observers_run_adds_no_second_report() ->
     await until(in_observer.is_set)
     await provider.simulate_tool_call_cancellation(session, ["c1"])
     release.set()
-    await until(lambda: bool(provider.tool_results))
-    await asyncio.sleep(0.05)
+    await asyncio.sleep(0.1)
 
+    # One report, and nothing sent: the provider freed the id (RFC §12.4).
     assert [(e.tool_call_id, e.cancelled) for e in observed] == [("c1", False)]
+    assert provider.tool_results == []
     await kit.close()

@@ -548,18 +548,19 @@ class ConferenceRealtime:
         handlers, send nothing, and report them to ON_TOOL_CALL's observers as
         cancelled.
 
-        A call whose result went out, or whose outcome ON_TOOL_CALL already
-        has, is left to finish: a second report would put two outcomes on one
-        call, and the result it is submitting is the provider's to drop.
+        Each call's id is freed, as the provider freed it, so nothing is sent
+        for the call and a call issued under the id is a new one (RFC §12.4).
+        A call whose outcome ON_TOOL_CALL already has is left to finish,
+        sending nothing: a second report would put two outcomes on one call.
         """
         room = self._guarded(session)
         if room is None:
             return
         for call_id in call_ids:
-            call = self._tool_calls.abandon(session.id, call_id)
-            if call is None:
+            call = self._tool_calls.release(session.id, call_id)
+            if call is None or not call.interruptible:
                 continue
-            assert call.task is not None  # abandon  # noqa: S101
+            assert call.task is not None  # interruptible  # noqa: S101
             call.task.cancel()
             # Off the provider's callback: an audit hook must not hold up the
             # interruption it reports.

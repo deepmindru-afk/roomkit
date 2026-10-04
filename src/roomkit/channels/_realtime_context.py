@@ -34,9 +34,9 @@ class _ServedCall:
     handler runs on, its id released, since the new socket never issued it
     (RFC §9.3, §12.4). A task the handler starts inherits the record, and one
     can outlive the call (a provider's new receive loop does); ``finished``
-    keeps it from naming a call that has ended. The record names the call itself, not its id: a
-    vendor may issue the id again once the call's result went out (RFC §12.4),
-    and the call it then names is another one.
+    keeps it from naming a call that has ended. The record names the call
+    itself, not its id: a vendor may issue the id again once the call's
+    result went out (RFC §12.4), and the call it then names is another one.
     """
 
     __slots__ = ("call", "finished")

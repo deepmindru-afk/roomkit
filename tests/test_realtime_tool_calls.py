@@ -208,7 +208,8 @@ async def test_a_call_whose_handler_ends_its_session_is_reported_once() -> None:
 
 async def test_a_cancellation_while_the_observers_run_adds_no_second_report() -> None:
     """The judgement claims the call's report before its observers run, so a
-    cancellation landing meanwhile finds the outcome reported (RFC §12.4)."""
+    cancellation landing meanwhile finds the outcome reported: no second
+    report, and nothing sent, the provider having freed the id (RFC §12.4)."""
 
     async def found(name: str, arguments: dict[str, Any]) -> str:
         return "found"
@@ -225,11 +226,10 @@ async def test_a_cancellation_while_the_observers_run_adds_no_second_report() ->
     await until(in_observer.is_set)
     await provider.simulate_tool_call_cancellation(session, ["c1"])
     release.set()
-    await until(lambda: bool(provider.tool_results))
-    await asyncio.sleep(0.05)
+    await asyncio.sleep(0.1)
 
     assert [(e.tool_call_id, e.cancelled) for e in observed] == [("c1", False)]
-    assert [r[2] for r in provider.tool_results] == ["found"]
+    assert provider.tool_results == []
     await kit.close()
 
 

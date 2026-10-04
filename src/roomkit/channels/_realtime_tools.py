@@ -258,8 +258,8 @@ class RealtimeToolsMixin:
             # call_tool carries, not the transport.
             call.unreadable = self._unwrap_call_tool(call)
         if not self._open_tool_call(call):
-            # No result can name it (no id, or an id whose call has not had its
-            # result yet): it takes the path of any call, the session's end
+            # No result can name it (no id, or an id that still names a call
+            # in flight): it takes the path of any call, the session's end
             # and the transcription barrier included, is refused there and
             # sends nothing (RFC §12.4).
             # Off the books, so the session's end does not cancel it.
@@ -280,17 +280,18 @@ class RealtimeToolsMixin:
     def _on_provider_tool_call_cancelled(self, session: VoiceSession, call_ids: list[str]) -> Any:
         """Provider callback: the model will not read these calls' results (RFC §12.4).
 
-        The handler still running for one of them is working for a result
-        nobody will read. Its task is cancelled and the call is reported to
-        ON_TOOL_CALL's observers as cancelled. A call no longer in the books
-        (its result left before the cancellation arrived) has no event to
-        build: the provider dropped the stale result and logged it. A call
-        whose result went out, or whose outcome the observers already
-        received, is left to finish for the same reason: a second event would
-        put two outcomes on one ``tool_call_id``, and the result it is
-        submitting is the provider's to drop. A reconnect the call's own
-        handler caused (a handoff reconfiguring its session) orphans that call
-        too, and it is not abandoned: it runs on, its result kept off the wire
+        The provider freed each call's id: the channel frees it too, so
+        nothing is sent for the call and a call issued under the id is a new
+        one (RFC §12.4). The handler still running for one of them is working
+        for a result nobody will read: its task is cancelled and the call is
+        reported to ON_TOOL_CALL's observers as cancelled. A call no longer in
+        the books (its result left before the cancellation arrived) has no
+        event to build: the provider dropped the stale result and logged it. A
+        call whose outcome the observers already received is left to finish,
+        sending nothing: a second event would put two outcomes on one
+        ``tool_call_id``. A reconnect the call's own handler caused (a handoff
+        reconfiguring its session) orphans that call too, and it is not
+        abandoned: it runs on, its id freed and its result kept off the wire
         (RFC §9.3).
         """
         try:
@@ -308,14 +309,14 @@ class RealtimeToolsMixin:
                 continue
             if self._spared_by_own_reconnect(call):
                 continue
-            if self._tool_calls.abandon(session.id, call_id) is None:
+            if self._tool_calls.release(session.id, call_id) is None or not call.interruptible:
                 logger.debug(
                     "Cancelled tool call %s already gave its outcome for session %s",
                     call_id,
                     session.id,
                 )
                 continue
-            assert call.task is not None  # abandon  # noqa: S101
+            assert call.task is not None  # interruptible  # noqa: S101
             call.task.cancel()
             logger.info(
                 "Tool call %s(%s) abandoned by the provider for session %s",
