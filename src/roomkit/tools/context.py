@@ -169,6 +169,9 @@ class _ToolLoopContext:
     # keeps it for later turns); a call refused before it ran, or that
     # nothing served, reveals nothing (RFC §6.4).
     pending_recoveries: dict[str, str] = field(default_factory=dict)
+    # The tools served recoveries revealed this loop: used, so a find_tools
+    # swap of the reveal window keeps them.
+    recovered_tools: set[str] = field(default_factory=set)
     # Whether Tool Search is active for this turn (catalogue over threshold).
     # Decided once in ``_build_context`` and read by ``_apply_tool_filters`` on
     # every round, so it is inherited across for_loop like ``all_context_tools``.

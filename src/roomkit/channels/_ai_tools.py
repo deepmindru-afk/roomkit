@@ -1024,7 +1024,8 @@ class AIToolsMixin(_AIChannelContract):
         revealed = {name for name in names if name not in never}
         if not revealed:
             return
-        loop_ctx.revealed_tools = revealed
+        # A tool a served recovery revealed was used: the swap keeps it.
+        loop_ctx.revealed_tools = revealed | loop_ctx.recovered_tools
         self._tool_usage.record_revealed(loop_ctx.room_id, revealed)
 
     def _settle_served_call(self, tool_call_id: str, *, served: bool) -> None:
@@ -1041,10 +1042,12 @@ class AIToolsMixin(_AIChannelContract):
     def _settle_recovery(self, tool_call_id: str, *, kept: bool) -> None:
         """Reveal the tool a call recovered for the turn's next rounds when the
         room's tool memory keeps the call, which re-reveals it on later turns
-        as any tool used; a call it does not keep reveals nothing (RFC §6.4)."""
+        as any tool used; a call it does not keep reveals nothing (RFC §6.4).
+        The reveal outlasts a ``find_tools`` of the round (``_reveal``)."""
         loop_ctx = self._get_loop_ctx()
         name = loop_ctx.pending_recoveries.pop(tool_call_id, None)
         if name is not None and kept:
+            loop_ctx.recovered_tools.add(name)
             loop_ctx.revealed_tools.add(name)
 
     def _record_activation(self, loop_ctx: _ToolLoopContext, skill_name: str) -> None:

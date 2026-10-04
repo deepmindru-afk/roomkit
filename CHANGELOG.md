@@ -796,6 +796,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A hidden tool a served recovery revealed stays revealed when a
+  `find_tools` of the same round swaps the reveal window, whichever call
+  settles first (RMK-461, RFC §6.4): it was dropped when the recovery
+  settled before the search.
+
 - A conference call no tool handler serves reads as unserved (RMK-465, RFC
   §9.3, §21.4), as on every channel: an `ON_TOOL_CALL` hook may still serve
   it, and otherwise the model reads `No handler for tool <name>` and the call

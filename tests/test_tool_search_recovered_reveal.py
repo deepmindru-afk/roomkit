@@ -218,3 +218,17 @@ async def test_a_sibling_answered_while_a_recovery_waits_does_not_reference_it(
     ]
     assert [part.name for part in parts] == ["lookup", "send_sms"]
     assert all("send_sms" not in (part.references or []) for part in parts)
+
+
+@pytest.mark.parametrize("search_first", [True, False], ids=["search-first", "recovery-first"])
+async def test_a_served_recovery_survives_a_find_tools_of_its_round(
+    streaming: bool, search_first: bool
+) -> None:
+    """A find_tools of the same round swaps the reveal window; the tool a
+    served recovery used stays shown, whichever call settles first."""
+    search = AIToolCall(id="s1", name="find_tools", arguments={"query": "operate widget number"})
+    calls = (search, _sms()) if search_first else (_sms(), search)
+    provider = _provider(streaming, *calls)
+    await _two_turns(provider, _served)
+
+    assert _revealed(provider) == (True, True)
