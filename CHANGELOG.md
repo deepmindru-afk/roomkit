@@ -796,6 +796,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- ElevenLabs reads a call's parameters with the rule every realtime
+  provider applies (`readable_arguments`, RMK-455, RFC §6.4): text that
+  reads as an object runs with it and blank text or `null` with `{}`,
+  where ElevenLabs refused them as unreadable.
+
 - A realtime call an ending cuts before its task ran, or that arrives while
   the session is torn down, is reported once, cancelled, on every door
   (RMK-460, RFC §12.4): a call recovered from speech is booked on arrival

@@ -199,6 +199,24 @@ async def test_elevenlabs_hands_on_parameters_that_are_no_object_as_text() -> No
     assert [response["tool_call_id"] for response in sent] == ["real-3"]
 
 
+@pytest.mark.parametrize(
+    ("parameters", "arguments"),
+    [('{"q": "a"}', {"q": "a"}), ("", {}), ("null", {}), ("  ", {}), ("[1]", "[1]")],
+)
+async def test_elevenlabs_reads_text_parameters_as_every_realtime_provider(
+    parameters: str, arguments: Any
+) -> None:
+    """The shared rule (``readable_arguments``): text that reads as an object
+    is that object, no arguments are ``{}``, anything else stays text."""
+    _, (patched, handler), heard, _ = _patched_elevenlabs()
+
+    await _wire(
+        patched, handler, {"tool_call_id": "c1", "tool_name": "lookup", "parameters": parameters}
+    )
+
+    assert heard == [("c1", "lookup", arguments)]
+
+
 class _Socket:
     def __init__(self) -> None:
         self.sent: list[dict[str, Any]] = []

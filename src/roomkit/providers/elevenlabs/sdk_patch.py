@@ -50,9 +50,10 @@ they pass on the new minor.
 from __future__ import annotations
 
 import asyncio
-import json
 from collections.abc import Awaitable, Callable
 from typing import Any
+
+from roomkit.providers.ai.tool_calls import readable_arguments
 
 Route = Callable[[str, dict[str, Any]], Awaitable[Any]]
 
@@ -102,11 +103,10 @@ def _service_id_first(message: Any) -> Any:
 
 
 def _model_arguments(parameters: Any) -> dict[str, Any] | str:
-    """The model's parameters: an object as a mapping, anything else as its
-    text, which the channel refuses as unreadable (RFC §6.4)."""
-    if parameters is None or isinstance(parameters, dict):
-        return dict(parameters or {})
-    return parameters if isinstance(parameters, str) else json.dumps(parameters)
+    """The model's parameters as every realtime provider reads a call's
+    (``readable_arguments``): a mapping, or the model's text, which the
+    channel refuses as unreadable (RFC §6.4)."""
+    return readable_arguments(parameters)
 
 
 def split_call(parameters: dict[str, Any]) -> tuple[str, dict[str, Any] | str]:
