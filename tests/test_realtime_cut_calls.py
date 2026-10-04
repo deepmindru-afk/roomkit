@@ -47,12 +47,12 @@ def test_the_shared_rule(raw: str, cut: bool, expected: Any) -> None:
     assert isinstance(read, CutArguments) == isinstance(expected, CutArguments)
 
 
-def _item(status: str, arguments: str) -> dict[str, Any]:
+def _item(status: str, arguments: str, call_id: str = "c1") -> dict[str, Any]:
     return {
         "type": "response.output_item.done",
         "item": {
             "type": "function_call",
-            "call_id": "c1",
+            "call_id": call_id,
             "name": "save_note",
             "arguments": arguments,
             "status": status,
@@ -85,8 +85,8 @@ async def test_openai_realtime_hands_a_call_on_once_its_item_says_whether_it_was
     )
     assert heard == []
     await provider._handle_server_event(session, _item("incomplete", cut_text))
-    await provider._handle_server_event(session, _item("incomplete", ""))
-    await provider._handle_server_event(session, _item("completed", "{}"))
+    await provider._handle_server_event(session, _item("incomplete", "", "c2"))
+    await provider._handle_server_event(session, _item("completed", "{}", "c3"))
 
     assert heard == [CutArguments(cut_text), CutArguments(""), {}]
     assert [isinstance(a, CutArguments) for a in heard] == [True, True, False]
@@ -136,3 +136,63 @@ async def test_the_channel_refuses_a_cut_call_as_cut_off() -> None:
     assert ran == []
     assert json.loads(provider.tool_results[0][2])["error"] == CUT_OFF
     assert seen == [(True, CUT_OFF)]
+
+
+@pytest.mark.parametrize("vendor", sorted(_PROVIDERS))
+async def test_a_message_item_done_is_no_call(vendor: str) -> None:
+    """Every response's spoken or written message ends with its own
+    ``output_item.done``: it hands nothing on as a call."""
+    provider = _PROVIDERS[vendor]()
+    session = VoiceSession(id="s1", room_id="r1", participant_id="p1", channel_id="voice")
+    _attach(provider, session)
+    heard: list[Any] = []
+    provider.on_tool_call(lambda *a: heard.append(a))
+
+    await provider._handle_server_event(
+        session,
+        {
+            "type": "response.output_item.done",
+            "item": {"type": "message", "status": "completed", "content": []},
+        },
+    )
+
+    assert heard == []
+
+
+async def test_gpt_live_hands_on_no_message_item() -> None:
+    message = {"type": "message", "status": "completed", "content": []}
+    _, heard = await _gpt_live_calls([message])
+
+    assert heard == []
+
+
+async def test_whole_argument_text_under_a_cut_runs() -> None:
+    """The mock reads a cut as real providers do: text that reads runs."""
+    provider = MockRealtimeProvider()
+    ran: list[dict[str, Any]] = []
+
+    async def handler(name: str, arguments: dict[str, Any]) -> str:
+        ran.append(arguments)
+        return "ok"
+
+    channel = RealtimeVoiceChannel(
+        "rt",
+        provider=provider,
+        transport=MockRealtimeTransport(),
+        tools=[{"name": "save_note", "parameters": {"type": "object"}}],
+        tool_handler=handler,
+    )
+    kit = RoomKit()
+    kit.register_channel(channel)
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "rt")
+    session = await channel.start_session("r1", "u", "ws")
+
+    await provider.simulate_tool_call(session, "c1", "save_note", CutArguments('{"note": "hi"}'))
+    for _ in range(100):
+        if provider.tool_results:
+            break
+        await asyncio.sleep(0.01)
+    await kit.close()
+
+    assert ran == [{"note": "hi"}]

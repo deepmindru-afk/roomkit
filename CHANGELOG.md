@@ -723,15 +723,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A realtime call its response cut runs only when its argument text reads,
   as on a text turn (RMK-455, RFC §6.4, §12.4). OpenAI Realtime and xAI
   handed a call on at `response.function_call_arguments.done`, before the
-  item's status says whether the output cap cut it, and GPT-Live read the
-  status but not the rule: a call cut before any argument ran with `{}`,
-  and one cut mid-arguments was refused as unreadable. They now hand a call
-  on once its item is done (`response.output_item.done`), and a cut call
-  whose text does not read reaches the channel marked cut, refused before
-  the gate as `Tool call cut off`, as the text providers refuse it. Measured
-  on OpenAI Realtime (`max_output_tokens` 40): the cut call's arguments, then
-  its item `incomplete`, then the response `incomplete`. Deepgram's requests
-  carry no sign of a cut.
+  item's status says whether the response cut it, and GPT-Live never read
+  that status: a call cut before any argument ran with `{}`, and one cut
+  mid-arguments was refused as unreadable. They now hand a call on once its
+  item is done (`response.output_item.done`), and a cut call whose text
+  does not read reaches the channel marked cut, refused before the gate as
+  `Tool call cut off`, as the text providers refuse it, whether the output
+  cap or a cancel (a barge-in's `response.cancel`) cut the response; the
+  hint now says to call again if still needed, with shorter arguments if
+  the response ran out of room (on every channel). Measured on OpenAI
+  Realtime (`max_output_tokens` 40): the cut call's arguments, then its item
+  `incomplete`, then the response `incomplete`. Deepgram's requests carry no
+  sign of a cut.
 
 - A reasoning backend is offered the tools the participant's current role
   admits (RMK-458, RFC §12.4.1, §21.1). Its catalogue and the refusals it is

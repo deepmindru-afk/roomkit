@@ -237,7 +237,8 @@ def cut_call_error(name: str) -> dict[str, Any]:
         "tool": name,
         "hint": (
             "This call was cut off before its arguments were complete, so it did "
-            "not run. Call it again, with shorter arguments if you can."
+            "not run. Call it again if it is still needed, with shorter arguments "
+            "if the response ran out of room."
         ),
     }
 

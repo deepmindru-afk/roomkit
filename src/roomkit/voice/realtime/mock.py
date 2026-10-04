@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
 
-from roomkit.providers.ai.tool_calls import CutArguments, readable_arguments
+from roomkit.providers.ai.tool_calls import CutArguments, realtime_call_arguments
 from roomkit.voice.backends.base import (
     AudioReceivedCallback,
     TransportDisconnectCallback,
@@ -274,11 +274,11 @@ class MockRealtimeProvider(RealtimeVoiceProvider):
         (:func:`~roomkit.providers.ai.tool_calls.readable_arguments`): text
         that reads as an object becomes that mapping, and text that does not
         reaches the callbacks as text, an unreadable call. A
-        :class:`~roomkit.providers.ai.tool_calls.CutArguments` passes as it
-        is, a call its response cut.
+        :class:`~roomkit.providers.ai.tool_calls.CutArguments` is read as a
+        call its response cut, by the rule real providers apply
+        (:func:`~roomkit.providers.ai.tool_calls.realtime_call_arguments`).
         """
-        cut = isinstance(arguments, CutArguments)
-        args = arguments if cut else readable_arguments(arguments)
+        args = realtime_call_arguments(arguments, cut=isinstance(arguments, CutArguments))
         for cb in self._tool_call_callbacks:
             result = cb(session, call_id, name, args)
             if hasattr(result, "__await__"):

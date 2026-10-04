@@ -602,9 +602,13 @@ class RealtimeVoiceProvider(ABC):
         call's arguments as a mapping, or the text the model wrote when they
         do not read as one (invalid JSON, an array, a fragment): read the
         wire's arguments with
-        :func:`~roomkit.providers.ai.tool_calls.readable_arguments`. The
-        channel refuses a call that arrives as text, so it never runs on a
-        mapping that only passes for arguments (RFC §12.4).
+        :func:`~roomkit.providers.ai.tool_calls.readable_arguments`, or, on a
+        wire that says whether the response cut the call, with
+        :func:`~roomkit.providers.ai.tool_calls.realtime_call_arguments`, which
+        marks a cut call :class:`~roomkit.providers.ai.tool_calls.CutArguments`.
+        The channel refuses a call that arrives as text (one marked cut as cut
+        off), so it never runs on a mapping that only passes for arguments
+        (RFC §6.4, §12.4).
         """
         self._tool_call_callbacks.append(callback)
 
