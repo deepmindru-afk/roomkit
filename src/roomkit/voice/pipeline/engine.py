@@ -897,10 +897,7 @@ class AudioPipeline:
         would accumulate one speaker's worth of buffers for every session the
         room ever had.
         """
-        self._release_stage_streams(session_id)
-        self._in_speech_sessions.discard(session_id)
-        self._telemetry.release(session_id)
-        self._last_speaker_id.pop(session_id, None)
+        self._release_stream_state(session_id)
         self._outbound_locks.pop(session_id, None)
         # A recording still awaiting its announcement is stopped too — that is
         # how a handler refuses during ON_RECORDING_STARTED, and how a session
@@ -919,6 +916,17 @@ class AudioPipeline:
                 dt.close()
             except Exception:
                 logger.exception("Failed to close stale debug taps for %s", session_id)
+
+    def _release_stream_state(self, stream: str) -> None:
+        """Drop what processing a stream's frames built up, in the engine and the stages.
+
+        The telemetry release closes an open segment span too: a stream may go
+        away mid-speech.
+        """
+        self._release_stage_streams(stream)
+        self._in_speech_sessions.discard(stream)
+        self._telemetry.release(stream)
+        self._last_speaker_id.pop(stream, None)
 
     def on_session_active(self, session: VoiceSession) -> None:
         """Called when a voice session becomes active.
@@ -1100,11 +1108,7 @@ class AudioPipeline:
         Releases the stages' state for this stream, then stops recording and
         debug taps if active.
         """
-        self._release_stage_streams(session.id)
-        self._in_speech_sessions.discard(session.id)
-        # Closes an active segment span too — the session may end mid-speech.
-        self._telemetry.release(session.id)
-        self._last_speaker_id.pop(session.id, None)
+        self._release_stream_state(session.id)
         self._outbound_locks.pop(session.id, None)
 
         # Close debug taps
