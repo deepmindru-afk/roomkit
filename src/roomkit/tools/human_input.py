@@ -59,7 +59,12 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 from uuid import uuid4
 
-from roomkit.core.exceptions import ToolRefusedError, UnservedToolCallError
+from roomkit.core.exceptions import (
+    HumanInputRejectedError,
+    ToolFailedError,
+    ToolRefusedError,
+    UnservedToolCallError,
+)
 from roomkit.core.task_utils import log_task_exception
 from roomkit.models.enums import ChannelType
 from roomkit.models.pending_input import PendingInput, PendingInputEvent, PendingInputStatus
@@ -373,7 +378,8 @@ class HumanInputHandler:
         Raises:
             asyncio.TimeoutError: If the timeout expires, or if a retained
                 request had timed out.
-            RuntimeError: If the request was rejected.
+            HumanInputRejectedError: If the request was rejected (a
+                :class:`RuntimeError`).
             ValueError: If *pending_id* is unknown — never seen, or retired
                 long enough ago to have been evicted from the retention.
         """
@@ -439,7 +445,7 @@ class HumanInputHandler:
     def _outcome(pending: PendingInput) -> str:
         """Report a terminal request as its result or its failure."""
         if pending.status == PendingInputStatus.REJECTED:
-            raise RuntimeError(pending.reject_reason or "Request rejected")
+            raise HumanInputRejectedError(pending.reject_reason or "Request rejected")
 
         if pending.status == PendingInputStatus.RESOLVED:
             return pending.result or ""
@@ -528,9 +534,12 @@ class HumanInputToolHandler:
     async def __call__(self, name: str, arguments: dict[str, Any]) -> str:
         """ToolHandler protocol — blocks on matching tools, falls through otherwise.
 
-        Raises :class:`~roomkit.core.exceptions.ToolRefusedError` when nobody
-        answers within :attr:`timeout` or the human rejects the request: the
-        call carries the failure marker and the model reads the reason.
+        Raises :class:`~roomkit.core.exceptions.ToolRefusedError` when the
+        human rejects the request, the model reading the reason, and
+        :class:`~roomkit.core.exceptions.ToolFailedError` when nobody answers
+        within :attr:`timeout`: the tool ran and got no answer. Any other
+        error takes the generic failure path, its message withheld from the
+        model (RFC §9.3).
         """
         if name not in self.tool_names:
             raise UnservedToolCallError(f"tool {name!r} is not served here")
@@ -554,12 +563,13 @@ class HumanInputToolHandler:
             )
             return await self._handler.wait(pending.pending_id, timeout=self.timeout)
         except TimeoutError:
-            # Refusals, not answers: the call carries the failure marker and
-            # the model reads the reason (RFC §9.3).
-            raise ToolRefusedError(
+            # The tool ran and nobody answered: a failure, in words the model
+            # reads (RFC §9.3).
+            raise ToolFailedError(
                 json.dumps(
                     {"error": f"Human input timed out after {self.timeout}s for tool '{name}'"}
                 )
             ) from None
-        except RuntimeError as exc:
+        except HumanInputRejectedError as exc:
+            # A human said no: a refusal, with the reason they gave.
             raise ToolRefusedError(json.dumps({"error": f"Human input rejected: {exc}"})) from exc

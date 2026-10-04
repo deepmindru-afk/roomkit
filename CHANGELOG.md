@@ -15,6 +15,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its state and recording stay until `on_session_ended`.
   `RealtimeVoiceChannel` calls it as the session turns `ENDED`.
 
+- `ToolCallResult.refused` (RMK-465, RFC §12.4.1), a last field defaulting to
+  `False`: among the errors a reasoning backend reads, a refusal. The voice
+  channel fills it from the call's outcome, and an agent backend's loop reads
+  a call its gate refused as refused and any other error as failed (a failed
+  call read as refused, logged as one and left out of its tool memory). A
+  backend that builds its own `ToolCallResult` is untouched; an
+  `execute_tool_call` of its own that returns `is_error` without `refused`
+  is read as failed.
+
+- `HumanInputRejectedError` (RMK-465, RFC §9.3), exported from `roomkit`: what
+  `HumanInputHandler.wait()` raises for a rejected request (by the human, an
+  `ON_USER_INPUT_REQUIRED` hook, or the handler closing). A `RuntimeError`, so
+  a caller catching `RuntimeError` around `wait()` still catches it.
+
 - `TOOL_SEARCH_INFRA_TOOL_NAMES`, `TOOL_FIND_TOOLS` and `TOOL_LIST_TOOLS`,
   exported from `roomkit` and `roomkit.channels` (RMK-468): the names of the
   two discovery tools a channel serves itself under Tool Search, `find_tools`
@@ -310,6 +324,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   failure the broadcast reports, as `process_inbound` does, not only the first
   (RMK-402); the first failure stays the one on `InboundResult.error`. It reads
   them through the same helpers as the inbound path.
+
+- The human-input tool reads only a rejection as a refusal (RMK-465, RFC
+  §9.3). A request nobody answered in time is a failure (`ToolFailedError`,
+  `refused=False`): the tool ran and got no answer, where it was refused. Any
+  other error (a `RuntimeError` that is not a rejection) takes the generic
+  failure path, its message withheld from the model, where the model read it
+  as a refusal's reason.
 
 - **BREAKING — `MCPToolProvider.as_tool_handler()` raises `ToolFailedError`
   for a result that says `isError`, no longer `ToolRefusedError`** (RMK-459,

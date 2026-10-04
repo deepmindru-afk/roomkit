@@ -470,7 +470,11 @@ class RealtimeDelegationMixin:
             delegation_id,
             session.id,
         )
-        return ToolCallResult(result_text(outcome.result), is_error=outcome.failed)
+        return ToolCallResult(
+            result_text(outcome.result),
+            is_error=outcome.failed,
+            refused=outcome.kind is OutcomeKind.REFUSED,
+        )
 
     async def _report_cut_backend_call(self, call: RealtimeToolCall) -> None:
         """Report a backend call the end of its delegation cut, once, as

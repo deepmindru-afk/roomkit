@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
 from roomkit.channels.ai import AIChannel
-from roomkit.core.exceptions import ToolRefusedError, TurnCutShortError
+from roomkit.core.exceptions import ToolFailedError, ToolRefusedError, TurnCutShortError
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.streaming import LoopEndMarker, SegmentBreakMarker, ToolCallStartMarker
 from roomkit.models.tool_call import ToolCallEvent
@@ -53,10 +53,14 @@ class ToolCallResult:
         text: What the model reads: the result, or why the call failed.
         is_error: The call was refused, failed, blocked, served by nothing or
             cancelled, as every tool loop marks such a call (RFC §9.3).
+        refused: Among those, the call was refused (a gate, a hook's block
+            before it ran, its handler's refusal): the backend's loop reads it
+            refused, and any other error failed (RFC §9.3, §12.4.1).
     """
 
     text: str
     is_error: bool = False
+    refused: bool = False
 
 
 ToolCallExecutor = Callable[[str, dict[str, Any]], Awaitable[ToolCallResult]]
@@ -349,16 +353,20 @@ class AgentReasoningBackend(ReasoningBackend):
         """Serve one of the agent's calls through the voice channel's gate.
 
         The gate serves, judges and reports the call: its one report is claimed
-        before it goes, so the loop reports it no second time (RFC §9.3).
+        before it goes, so the loop reports it no second time (RFC §9.3). The
+        loop reads a call the gate refused as refused and any other error as
+        failed, in the words the gate gave the model.
         """
         call = current_tool_call()
         loop_ctx = _current_loop_ctx.get()
         if call is not None and loop_ctx is not None:
             loop_ctx.claim_report(call.tool_call_id)
         done = await _execute(_DELEGATION.get(), name, arguments)
-        if done.is_error:
+        if not done.is_error:
+            return done.text
+        if done.refused:
             raise ToolRefusedError(done.text)
-        return done.text
+        raise ToolFailedError(done.text)
 
     async def _report_loop_refusal(self, event: ToolCallEvent) -> None:
         """Report a call the loop ended before the gate (its arguments did not
