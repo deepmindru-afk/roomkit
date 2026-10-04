@@ -698,6 +698,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A supervisor's background workers whose pipeline fails hand the failure
+  back to the supervisor (RMK-451, RFC §19.7.3). A delegation that raised
+  under the dispatch tool (`delegate_workers`, voice or text with a
+  strategy) was logged and posted `FAILED` on the status bus, and the
+  supervisor, which had told the user results would follow, never heard
+  of it. It now receives an instruction that the work could not be
+  completed, as it receives the workers' results, without the error's
+  message, which stays in the logs and on the status bus.
+
 - A `find_tools` call an `ON_TOOL_CALL` hook blocked, or one that failed, no
   longer reveals its matches (RMK-447, RFC §6.4). A text turn revealed them
   from the handler, before the hooks judged the call: the next round declared

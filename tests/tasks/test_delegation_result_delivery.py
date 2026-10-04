@@ -23,7 +23,12 @@ from roomkit.core.delivery import DeliveryContext, Immediate
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import DeliveryOutcome
 from roomkit.models.event import RoomEvent
-from roomkit.orchestration.strategies.supervisor.delegate import _deliver_worker_results
+from roomkit.orchestration.status_bus import StatusLevel
+from roomkit.orchestration.strategies.supervisor import WorkerStrategy
+from roomkit.orchestration.strategies.supervisor.delegate import (
+    _async_run_and_deliver,
+    _hand_back_outcome,
+)
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.tasks import DelegateHandler, setup_delegation
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
@@ -228,7 +233,7 @@ async def test_a_supervisor_s_background_workers_hand_back_to_it() -> None:
         {"worker": "b", "role": "Critic", "output": "Short."},
     ]
 
-    await _deliver_worker_results(kit, "call", "supervisor", results, 0)
+    await _hand_back_outcome(kit, "call", "supervisor", results, 0)
     (told,) = await _told(supervisor, 1)
 
     assert told.startswith("[Instruction from the application")
@@ -254,4 +259,39 @@ async def test_a_notify_channel_outside_the_room_is_told_nothing() -> None:
     await asyncio.sleep(0.05)
 
     assert seen == [] and notified._provider.calls == []
+    await kit.close()
+
+
+async def test_a_supervisor_s_failed_background_workers_hand_back_their_failure() -> None:
+    """RMK-451: the supervisor, which told the user results would follow,
+    hears that the work failed; the error's message stays in the logs and on
+    the status bus (RFC §9.3, §19.7.3)."""
+    kit = RoomKit()
+    supervisor = AIChannel("supervisor", provider=MockAIProvider(responses=["Sorry."]))
+    kit.register_channel(supervisor)
+    kit.register_channel(SimpleChannel("phone"))
+    await kit.create_room(room_id="call")
+    await kit.attach_channel("call", "phone")
+    await kit.attach_channel("call", "supervisor", category=ChannelCategory.INTELLIGENCE)
+    # Never registered: delegating to it raises, and the pipeline fails.
+    unregistered = Agent("worker", provider=MockAIProvider(responses=["never"]))
+    outcomes: list[bool] = []
+
+    await _async_run_and_deliver(
+        kit=kit,
+        room_id="call",
+        supervisor_id="supervisor",
+        strategy=WorkerStrategy.SEQUENTIAL,
+        workers=[unregistered],
+        task_desc="Analyse the call.",
+        on_done=lambda *, success: outcomes.append(success),
+    )
+    (told,) = await _told(supervisor, 1)
+    await asyncio.sleep(0.05)
+
+    assert outcomes == [False]
+    assert "workers failed" in told and "could not be completed" in told
+    assert "not registered" not in told
+    [entry] = await kit.status_bus.recent(5, agent_id="orchestration")
+    assert entry.status == StatusLevel.FAILED and "not registered" in entry.detail
     await kit.close()

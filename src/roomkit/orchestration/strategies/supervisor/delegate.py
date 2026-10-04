@@ -71,6 +71,10 @@ async def _async_run_and_deliver(
 ) -> None:
     """Background: run workers → hand their results back to *supervisor_id*.
 
+    A pipeline that fails hands its failure back the same way, so the
+    supervisor, which told the user results would follow, can say the work
+    could not be completed (RFC §19.7.3).
+
     Started as a task by the tool call that dispatched the workers, so the
     context it copied is that call's (RFC §21.4): the results continue the
     chain of the turn that made it (§23.3), and a supervisor re-dispatching on
@@ -81,10 +85,12 @@ async def _async_run_and_deliver(
     one additional terminal entry under ``agent_id="orchestration"``
     so subscribers can observe the pipeline as a whole.
 
-    ``on_done`` is called in ``finally`` with ``success=<bool>`` regardless
-    of outcome, so callers can distinguish success from failure — e.g. to
+    ``on_done`` is called once with ``success=<bool>``, whether the workers
+    completed, so callers can distinguish success from failure — e.g. to
     evict cached dispatch responses that should not be re-served after a
-    failed pipeline.
+    failed pipeline. It is called before the outcome is handed back: the
+    supervisor's turn on it may dispatch again, and must find the room free
+    rather than the stale ``dispatched`` answer.
     """
     chain_depth = _current_turn_chain_depth()
     pipeline_meta = {
@@ -92,17 +98,14 @@ async def _async_run_and_deliver(
         "strategy": str(strategy) if strategy else None,
         "workers": [w.channel_id for w in workers],
     }
-    pipeline_success = False
+    worker_results: list[dict[str, Any]] | None = None
     try:
-        worker_results = await _run_workers(
-            kit,
-            room_id,
-            strategy,
-            workers,
-            task_desc,
-            share_channels=share_channels,
+        worker_results = await _workers_or_none(
+            kit, room_id, strategy, workers, task_desc, share_channels, pipeline_meta
         )
-        await _deliver_worker_results(kit, room_id, supervisor_id, worker_results, chain_depth)
+    finally:
+        on_done(success=worker_results is not None)
+    if worker_results is not None:
         _post_worker_status(
             kit,
             "orchestration",
@@ -111,39 +114,75 @@ async def _async_run_and_deliver(
             detail=f"{len(workers)} worker(s) completed",
             metadata=pipeline_meta,
         )
-        pipeline_success = True
+    try:
+        await _hand_back_outcome(kit, room_id, supervisor_id, worker_results, chain_depth)
     except Exception as exc:
-        logger.exception("[async_delegate] Pipeline failed")
-        _post_worker_status(
-            kit,
-            "orchestration",
-            StatusLevel.FAILED,
-            action="pipeline",
-            detail=str(exc),
-            metadata=pipeline_meta,
+        _pipeline_failed(kit, exc, pipeline_meta)
+
+
+async def _workers_or_none(
+    kit: RoomKit,
+    room_id: str,
+    strategy: WorkerStrategy | None,
+    workers: list[Agent],
+    task_desc: str,
+    share_channels: list[str] | None,
+    pipeline_meta: dict[str, Any],
+) -> list[dict[str, Any]] | None:
+    """The workers' results, or ``None`` when the pipeline failed, which is
+    logged and posted to the status bus."""
+    try:
+        return await _run_workers(
+            kit, room_id, strategy, workers, task_desc, share_channels=share_channels
         )
-    finally:
-        on_done(success=pipeline_success)
+    except Exception as exc:
+        _pipeline_failed(kit, exc, pipeline_meta)
+        return None
 
 
-async def _deliver_worker_results(
+def _pipeline_failed(kit: RoomKit, exc: Exception, pipeline_meta: dict[str, Any]) -> None:
+    """Log a failed pipeline and post it FAILED, with its message: for the
+    logs and the status bus, never for a model (RFC §9.3)."""
+    logger.error("[async_delegate] Pipeline failed", exc_info=exc)
+    _post_worker_status(
+        kit,
+        "orchestration",
+        StatusLevel.FAILED,
+        action="pipeline",
+        detail=str(exc),
+        metadata=pipeline_meta,
+    )
+
+
+async def _hand_back_outcome(
     kit: RoomKit,
     room_id: str,
     supervisor_id: str,
-    worker_results: list[dict[str, Any]],
+    worker_results: list[dict[str, Any]] | None,
     chain_depth: int,
 ) -> None:
-    """Hand the workers' results back to the supervisor, at the dispatching turn's depth.
+    """Hand the pipeline's outcome back to the supervisor, at the dispatching turn's depth.
 
     As a background delegation's result is (RFC §19.7.3, §23.3): an instruction
-    addressed to the supervisor, each worker's output bounded.
+    addressed to the supervisor, with each worker's output bounded, or, for a
+    pipeline that failed (``None``), that the work could not be completed,
+    without the failure's message, so the supervisor can tell the user.
     """
-    each_bounded = [{**r, "output": bounded(str(r.get("output") or ""))} for r in worker_results]
-    logger.info("[async_delegate] Workers completed, handing results back")
-    text = result_text(
-        "[Your background workers completed. Share their results with the user.]",
-        _format_worker_results(each_bounded),
-    )
+    if worker_results is None:
+        logger.info("[async_delegate] Workers failed, handing the failure back")
+        text = result_text(
+            "[Your background workers failed. Tell the user the work could not be completed.]",
+            FALLBACK_FAILED,
+        )
+    else:
+        each_bounded = [
+            {**r, "output": bounded(str(r.get("output") or ""))} for r in worker_results
+        ]
+        logger.info("[async_delegate] Workers completed, handing results back")
+        text = result_text(
+            "[Your background workers completed. Share their results with the user.]",
+            _format_worker_results(each_bounded),
+        )
     await hand_back(kit, room_id, supervisor_id, text, chain_depth)
 
 

@@ -1412,10 +1412,53 @@ class TestAsyncRunAndDeliver:
 
         assert kit.deliver.call_args.kwargs["chain_depth"] == 3
 
-    async def test_calls_on_done_even_on_failure(self) -> None:
+    async def test_a_failed_pipeline_hands_its_failure_back(self) -> None:
+        """RMK-451: the supervisor hears that the work failed, not the
+        exception's message (RFC §9.3, §19.7.3); on_done reads the failure."""
         kit = _make_mock_kit(Room(id="r1"))
-        kit.delegate = AsyncMock(side_effect=RuntimeError("Boom"))
+        kit.get_channel = MagicMock(return_value=_make_agent("boss"))
+        kit.delegate = AsyncMock(side_effect=RuntimeError("Boom: secret dsn"))
         on_done = MagicMock()
+
+        with tool_call_in("r1", chain_depth=2):
+            await _async_run_and_deliver(
+                kit=kit,
+                room_id="r1",
+                supervisor_id="boss",
+                strategy=WorkerStrategy.SEQUENTIAL,
+                workers=[_make_agent("w1")],
+                task_desc="task",
+                on_done=on_done,
+            )
+
+        on_done.assert_called_once_with(success=False)
+        kit.deliver.assert_called_once()
+        told = kit.deliver.call_args[0][1]
+        assert "workers failed" in told and "could not be completed" in told
+        assert "Boom" not in told and "secret" not in told
+        assert kit.deliver.call_args.kwargs["addressed_to"] == ["boss"]
+        assert kit.deliver.call_args.kwargs["chain_depth"] == 2
+
+    @pytest.mark.parametrize("fails", [False, True])
+    async def test_the_room_is_released_before_the_outcome_is_handed_back(
+        self, fails: bool
+    ) -> None:
+        """RMK-451: the supervisor's turn on the outcome may dispatch again;
+        it must find the room free, not the stale ``dispatched`` answer."""
+        kit = _make_mock_kit(Room(id="r1"))
+        kit.get_channel = MagicMock(return_value=_make_agent("boss"))
+        kit.delegate = (
+            AsyncMock(side_effect=RuntimeError("Boom"))
+            if fails
+            else AsyncMock(return_value=_delegated_task_with_output("Done"))
+        )
+        order: list[Any] = []
+
+        async def deliver(*args: Any, **kwargs: Any) -> MagicMock:
+            order.append("handed back")
+            return MagicMock(status="delivered")
+
+        kit.deliver = AsyncMock(side_effect=deliver)
 
         await _async_run_and_deliver(
             kit=kit,
@@ -1424,13 +1467,10 @@ class TestAsyncRunAndDeliver:
             strategy=WorkerStrategy.SEQUENTIAL,
             workers=[_make_agent("w1")],
             task_desc="task",
-            on_done=on_done,
+            on_done=lambda *, success: order.append(("released", success)),
         )
 
-        # on_done should still be called in finally block
-        on_done.assert_called_once()
-        # deliver should not have been called
-        kit.deliver.assert_not_called()
+        assert order == [("released", not fails), "handed back"]
 
 
 # -- Tests: Auto-delegate wrapped on_event -----------------------------------
