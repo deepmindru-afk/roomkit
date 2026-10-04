@@ -93,7 +93,8 @@ realtime = RealtimeVoiceChannel(
 A host that will not serve a WebRTC peer (no session waits for it, its call
 expired) refuses it with `await transport.reject_connection(webrtc_id,
 message=...)` on a `FastRTCRealtimeTransport`: the message sent as is on the
-peer's data channel, the peer connection closed, the stream cleaned and the
+peer's data channel, the peer connection (or a websocket client's socket)
+closed, the stream cleaned and the
 handler unregistered, each step even when an earlier one fails. A peer the
 transport's own `auth` refuses is closed the same way.
 

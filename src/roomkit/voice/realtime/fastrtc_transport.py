@@ -45,7 +45,7 @@ from roomkit.voice.backends.base import (
     VoiceBackend,
 )
 from roomkit.voice.base import AudioChunk, VoiceSession
-from roomkit.webrtc import AsyncStreamHandler
+from roomkit.webrtc import AsyncStreamHandler, WebSocketHandler
 
 if TYPE_CHECKING:
     import numpy as np
@@ -407,8 +407,9 @@ class FastRTCRealtimeTransport(VoiceBackend):
 
         For a peer the host will not serve (no session waits for it, its call
         expired). In order: *message* sent as is on its data channel, when its
-        handler is registered and the channel open; its peer connection
-        closed; the stream's record of it cleaned; its handler unregistered,
+        handler is registered and the channel open; what carries it closed, its
+        peer connection or, for a websocket client, its socket; the stream's
+        record of it cleaned; its handler unregistered,
         which fires the disconnect callbacks of a session bound to it. Each
         step runs even when an earlier one fails; a close that failed is raised
         once the peer is forgotten. An unknown id does nothing.
@@ -420,10 +421,9 @@ class FastRTCRealtimeTransport(VoiceBackend):
         except Exception:
             logger.warning("Could not tell rejected peer %s why", webrtc_id, exc_info=True)
         stream = self._stream
-        peer = stream.pcs.get(webrtc_id) if stream is not None else None
         try:
-            if peer is not None:
-                await peer.close()
+            if stream is not None:
+                await _close_carrier(stream, webrtc_id)
         finally:
             try:
                 if stream is not None:
@@ -457,6 +457,7 @@ class FastRTCRealtimeTransport(VoiceBackend):
             handler._playback.close()
             handler._session_bound.set()
         self._handlers.clear()
+        await asyncio.gather(*self._rejections, return_exceptions=True)
 
     # ------------------------------------------------------------------
     # Internal methods called by _PassthroughHandler
@@ -548,6 +549,25 @@ class FastRTCRealtimeTransport(VoiceBackend):
                     await result
             except Exception:
                 logger.exception("Error in disconnect callback for session %s", session.id)
+
+
+async def _close_carrier(stream: Stream, webrtc_id: str) -> None:
+    """Close what carries *webrtc_id*: its WebRTC peer connection, or the
+    socket of a websocket client. Cleaning the stream alone forgets a socket
+    without closing it: it stays open, no longer counted against the stream's
+    ``concurrency_limit``."""
+    peer = stream.pcs.get(webrtc_id)
+    sockets = [
+        handler.websocket
+        for handler in stream.connections.get(webrtc_id, [])
+        if isinstance(handler, WebSocketHandler) and handler.websocket is not None
+    ]
+    try:
+        if peer is not None:
+            await peer.close()
+    finally:
+        for socket in sockets:
+            await socket.close()
 
 
 def mount_fastrtc_realtime(

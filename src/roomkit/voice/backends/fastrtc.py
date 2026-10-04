@@ -46,6 +46,7 @@ from typing import TYPE_CHECKING, Any
 os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
 os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 
+from roomkit.core.task_utils import log_task_exception
 from roomkit.voice.audio_frame import AudioFrame
 from roomkit.voice.auth import AuthCallback, auth_context
 from roomkit.voice.backends._mulaw import pcm16_to_mulaw as _pcm16_to_mulaw
@@ -144,6 +145,9 @@ class FastRTCVoiceBackend(VoiceBackend):
 
         # Session ready callbacks
         self._session_ready_callbacks: list[SessionReadyCallback] = []
+
+        # Closings of websocket clients ``auth`` refused, held until they finish
+        self._rejections: set[asyncio.Task[None]] = set()
 
     @property
     def name(self) -> str:
@@ -467,6 +471,17 @@ class FastRTCVoiceBackend(VoiceBackend):
             await self.disconnect(session)
         self._websockets.clear()
         self._emit_queues.clear()
+        await asyncio.gather(*self._rejections, return_exceptions=True)
+
+    def _close_refused(self, websocket: Any) -> None:
+        """Close a websocket client ``auth`` refused, in a task of its own: the
+        refusal runs in the connection's start-up task, which the socket's
+        closing cancels. Left open, the client kept its socket and its emit
+        loops while counting against nothing."""
+        task = asyncio.get_running_loop().create_task(websocket.close())
+        self._rejections.add(task)
+        task.add_done_callback(self._rejections.discard)
+        task.add_done_callback(log_task_exception)
 
     # -------------------------------------------------------------------------
     # FastRTC integration methods (called by mount_fastrtc_voice)
@@ -655,18 +670,27 @@ def mount_fastrtc_voice(
             # WebRTC connections have no websocket object
             self._is_webrtc = ctx.websocket is None
 
-            if auth is not None and ctx.websocket is not None:
-                try:
-                    result = await auth(ctx.websocket)
-                    if result is None:
-                        self._rejected = True
-                        logger.warning("Auth rejected for id=%s", self._webrtc_id)
-                        return
-                    self._auth_meta = result
-                except Exception:
-                    self._rejected = True
-                    logger.exception("Auth error for id=%s", self._webrtc_id)
-                    return
+            websocket = ctx.websocket
+            if (
+                auth is not None
+                and websocket is not None
+                and not await self._authorized(auth, websocket)
+            ):
+                self._rejected = True
+                backend._close_refused(websocket)
+
+        async def _authorized(self, auth: AuthCallback, websocket: Any) -> bool:
+            """Whether *auth* admits the client; its metadata kept when it does."""
+            try:
+                result = await auth(websocket)
+            except Exception:
+                logger.exception("Auth error for id=%s", self._webrtc_id)
+                return False
+            if result is None:
+                logger.warning("Auth rejected for id=%s", self._webrtc_id)
+                return False
+            self._auth_meta = result
+            return True
 
         async def receive(self, frame: tuple[int, Any]) -> None:
             from roomkit.webrtc.utils import current_context

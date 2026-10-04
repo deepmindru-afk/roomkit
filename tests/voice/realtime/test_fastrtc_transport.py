@@ -36,6 +36,7 @@ def _load_module():
 
     fake_webrtc = SimpleNamespace(
         AsyncStreamHandler=FakeAsyncStreamHandler,
+        WebSocketHandler=type("WebSocketHandler", (), {}),
         Stream=lambda **kw: SimpleNamespace(mount=lambda app, path: None),
     )
 

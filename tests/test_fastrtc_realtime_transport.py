@@ -491,8 +491,13 @@ class _Peer:
     def __init__(self, calls: list[str], *, fails: bool = False) -> None:
         self._calls = calls
         self._fails = fails
+        # What closing the peer cancels: FastRTC's callback for it.
+        self.cancels: asyncio.Task[None] | None = None
 
     async def close(self) -> None:
+        if self.cancels is not None:
+            self.cancels.cancel()
+            await asyncio.sleep(0)  # a close completes past a yield, or is cut short
         self._calls.append("peer closed")
         if self._fails:
             raise RuntimeError("peer close failed")
@@ -502,6 +507,7 @@ class _Stream:
     def __init__(self, calls: list[str], peers: dict[str, _Peer]) -> None:
         self._calls = calls
         self.pcs = peers
+        self.connections: dict[str, list[object]] = {}
 
     def clean_up(self, webrtc_id: str) -> None:
         self._calls.append(f"cleaned {webrtc_id}")
@@ -563,13 +569,18 @@ class TestAuthRefusal:
         from roomkit.webrtc.utils import Context, current_context
 
         calls: list[str] = []
-        transport._stream = _Stream(calls, {"rtc-1": _Peer(calls)})
+        peer = _Peer(calls)
+        transport._stream = _Stream(calls, {"rtc-1": peer})
         handler = _PassthroughHandler(
             transport, input_sample_rate=16000, output_sample_rate=24000, auth=auth
         )
         token = current_context.set(Context(webrtc_id="rtc-1"))
         try:
-            await handler.start_up()
+            # start_up runs inside FastRTC's callback for the peer, which
+            # closing the peer cancels: the cleanup must survive it.
+            callback = asyncio.create_task(handler.start_up())
+            peer.cancels = callback
+            await asyncio.gather(callback, return_exceptions=True)
         finally:
             current_context.reset(token)
         await asyncio.sleep(0)

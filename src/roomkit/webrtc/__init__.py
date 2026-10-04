@@ -26,6 +26,7 @@ from .utils import (
     current_context,
     get_current_context,
 )
+from .websocket import WebSocketHandler
 
 __all__ = [
     "Stream",
@@ -43,4 +44,5 @@ __all__ = [
     "WebRTCError",
     "current_context",
     "get_current_context",
+    "WebSocketHandler",
 ]
