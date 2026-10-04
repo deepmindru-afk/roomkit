@@ -302,7 +302,7 @@ def test_an_agent_with_skills_is_refused_at_the_install(tmp_path: Path) -> None:
 
     hooks = len(kit._hook_engine._global_hooks)
 
-    with pytest.raises(ValueError, match="carry skills of their own"):
+    with pytest.raises(ValueError, match="carries skills"):
         ConversationPipeline(stages=[PipelineStage(phase="a", agent_id="teller")]).install(
             kit, [agent], voice_channel_id="rtv"
         )

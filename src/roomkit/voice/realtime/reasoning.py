@@ -24,6 +24,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
+from roomkit.channels._agent_features import unserved_on_realtime
 from roomkit.channels.ai import AIChannel
 from roomkit.core.exceptions import ToolFailedError, ToolRefusedError, TurnCutShortError
 from roomkit.core.task_utils import shielded
@@ -467,16 +468,11 @@ class AIProviderReasoningBackend(AgentReasoningBackend):
 
 
 def _refuse_own_tools(agent: AIChannel) -> None:
-    """Refuse an agent whose own tools would bypass the voice channel's gate."""
-    own = {
-        "tools": bool(agent._user_tools or agent._user_tool_handler),
-        "skills": agent._skills is not None,
-        "a sandbox": agent._sandbox is not None,
-        "an external tool handler": agent._external_tool_handler is not None,
-        "a human-input handler": agent._human_input is not None,
-        "planning": agent._planner is not None,
-    }
-    if carried := [what for what, has in own.items() if has]:
+    """Refuse an agent whose own tools would bypass the voice channel's gate:
+    its host tools, and what a realtime session never serves for an agent."""
+    carried = ["tools"] if agent._user_tools or agent._user_tool_handler else []
+    carried += [feature.what for feature in unserved_on_realtime(agent)]
+    if carried:
         raise ValueError(
             f"A reasoning backend's agent serves the voice session's tools only, through "
             f"the voice channel's gate (RFC §12.4.1); agent {agent.channel_id!r} carries "

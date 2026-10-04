@@ -17,6 +17,7 @@ import logging
 from collections.abc import Collection
 from typing import TYPE_CHECKING, Any
 
+from roomkit.channels._agent_features import UnservedFeature, unserved_on_realtime
 from roomkit.channels._tool_registry import SessionConfig, orchestration_tool
 from roomkit.core.exceptions import UnservedToolCallError
 from roomkit.orchestration.handoff import (
@@ -325,14 +326,29 @@ def _channel_tool_names(rtv: RealtimeVoiceChannel) -> set[str]:
     return {name for t in rtv._tools or [] if (name := t.get("name"))}
 
 
-def refuse_agents_with_skills(agents: list[Agent], channel_id: str) -> None:
-    """Refuse an agent that carries skills: a realtime session serves the
-    channel's skills, never an agent's, so its gated tools would run without
-    their skill and its activation would reach nothing (RFC §19.5)."""
-    carried = [a.channel_id for a in agents if a._skills is not None and a._skills.has_entries]
-    if carried:
-        raise ValueError(
-            f"A realtime pipeline on channel {channel_id!r} serves the channel's skills "
-            f"only (RFC §19.5); agent(s) {', '.join(map(repr, carried))} carry skills of "
-            f"their own: pass them to RealtimeVoiceChannel({channel_id!r}, skills=...)"
-        )
+def refuse_agents_with_unserved(agents: list[Agent], channel_id: str) -> None:
+    """Refuse an agent that carries what a realtime session never serves for
+    it (skills, a human-input handler, planning, a sandbox, an external tool
+    handler), each cause named: its gated tools would run without their skill,
+    and its other ones would be called by a model never told of them (RFC
+    §19.5). Its own host tools stay served."""
+    causes = [
+        _unserved_cause(agent.channel_id, feature, channel_id)
+        for agent in agents
+        for feature in unserved_on_realtime(agent)
+    ]
+    if causes:
+        raise ValueError(" ".join(causes))
+
+
+def _unserved_cause(agent_id: str, feature: UnservedFeature, channel_id: str) -> str:
+    """Why *agent_id* is refused for *feature*, and what serves it instead."""
+    where = (
+        f"pass it to RealtimeVoiceChannel({channel_id!r}, {feature.instead}...)"
+        if feature.instead is not None
+        else "a realtime session serves no agent's own"
+    )
+    return (
+        f"Agent {agent_id!r} carries {feature.what}, which a realtime pipeline on channel "
+        f"{channel_id!r} does not serve for it (RFC §19.5): {where}."
+    )

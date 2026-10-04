@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from roomkit.models.enums import EventType, HookExecution, HookTrigger
 from roomkit.orchestration._realtime_pipeline import (
     RealtimePipeline,
-    refuse_agents_with_skills,
+    refuse_agents_with_unserved,
 )
 from roomkit.orchestration.handoff import HandoffHandler, build_handoff_tool, setup_handoff
 from roomkit.orchestration.router import ConversationRouter, RoutingConditions, RoutingRule
@@ -165,7 +165,7 @@ class ConversationPipeline:
             is_realtime = isinstance(kit.channels.get(voice_channel_id), RealtimeVoiceChannel)
         if is_realtime:
             # Refused before anything is installed.
-            refuse_agents_with_skills(agents, voice_channel_id)  # ty: ignore[invalid-argument-type]
+            refuse_agents_with_unserved(agents, voice_channel_id)  # ty: ignore[invalid-argument-type]
 
         router = self.to_router()
 

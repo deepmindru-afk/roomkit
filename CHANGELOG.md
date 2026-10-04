@@ -361,6 +361,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A realtime pipeline refuses, at its install, an agent that carries a
+  human-input handler, planning, a sandbox or an external tool handler, as it
+  already refused one carrying skills (RMK-482, RFC §19.5): a realtime session
+  serves none of these for an agent, so the model called a tool nothing
+  declared (`Tool 'ask_user' is not declared.`). Each cause is named, with the
+  voice channel's own option where it has one
+  (`RealtimeVoiceChannel(..., skills=...)`, `human_input_handler=...`). A
+  configuration that installed without serving those tools now raises. The
+  rule is the one a reasoning backend's agent is refused by, which no longer
+  refuses an empty skill registry: it offers the agent nothing.
+
 - **BREAKING — a channel that streams a response which then fails no longer
   gets its text again through `deliver()`** (RMK-467, RFC §12.2 step 13s):
   the text reaches it once, inside the stream, as a text row before the
