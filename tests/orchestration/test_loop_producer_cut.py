@@ -188,6 +188,7 @@ async def _async_text(producer: Agent) -> str:
     await _async_loop_and_deliver(
         kit=kit,
         room_id="r",
+        notify="sms",
         producer=producer,
         reviewers=[reviewer],
         strategy=None,
@@ -204,15 +205,18 @@ async def test_the_async_loop_names_the_producers_cut() -> None:
     text = await _async_text(_producer([LOOPING] * 10))
 
     assert text == (
-        "The review loop stopped before any output: "
-        "the producer's task failed (cut short: max_rounds)."
+        "[Your background review loop stopped before any output: "
+        "the producer's task failed (cut short: max_rounds). Tell the user.]"
     )
 
 
 async def test_the_async_loop_says_its_producer_failed_without_the_error() -> None:
     text = await _async_text(Agent("producer", provider=_Refused()))
 
-    assert text == "The review loop stopped before any output: the producer's task failed."
+    assert text == (
+        "[Your background review loop stopped before any output: "
+        "the producer's task failed. Tell the user.]"
+    )
     assert "SECRET" not in text
 
 
@@ -271,4 +275,7 @@ async def test_a_producer_failing_after_a_round_gives_its_error_not_a_cut() -> N
 async def test_the_async_loop_names_a_producer_failing_after_a_round_as_failed() -> None:
     text = await _async_text(_failing_after_a_round())
 
-    assert text == "The review loop stopped before any output: the producer's task failed."
+    assert text == (
+        "[Your background review loop stopped before any output: "
+        "the producer's task failed. Tell the user.]"
+    )

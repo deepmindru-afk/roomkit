@@ -13,7 +13,8 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from roomkit.channels._tool_registry import orchestration_tool, schema_tool
+from roomkit.channels._tool_registry import ToolEntry, orchestration_tool, schema_tool
+from roomkit.core._fallback import FALLBACK_FAILED
 from roomkit.core.exceptions import RoomKitError, TaskCutShortError
 from roomkit.core.task_utils import log_task_exception
 from roomkit.models.channel import ChannelBinding, ChannelOutput
@@ -30,12 +31,14 @@ from roomkit.orchestration.state import (
 )
 from roomkit.orchestration.status_bus import StatusLevel, post_agent_lifecycle
 from roomkit.orchestration.strategies.supervisor import WorkerStrategy
+from roomkit.tasks.handback import bounded, hand_back, result_text
 from roomkit.tasks.models import task_cut_reason, task_work
 from roomkit.tools.context import _current_turn_chain_depth
 
 if TYPE_CHECKING:
     from roomkit.channels.agent import Agent
     from roomkit.channels.ai import ToolResult
+    from roomkit.channels.realtime_voice import RealtimeVoiceChannel
     from roomkit.core.framework import RoomKit
     from roomkit.tasks.models import DelegatedTask, DelegatedTaskResult
 
@@ -105,8 +108,9 @@ class Loop(Orchestration):
                   single reviewer doesn't need a strategy.
 
             async_delivery: If ``True``, the loop runs in the background
-                and results are delivered via ``kit.deliver()`` when
-                ready. The conversation continues uninterrupted.
+                and its outcome is handed back to the voice channel that
+                started it when ready, as a background delegation's result
+                is. The conversation continues uninterrupted.
         """
         self._agent = agent
 
@@ -187,11 +191,19 @@ class Loop(Orchestration):
         second room's install serves its own reviewers.
         """
         tool = schema_tool(_loop_tool(self._reviewers))
-        server = _VoiceLoopServer(
-            kit, self._agent, self._reviewers, self._strategy, self._max_iterations
-        )
-        entry = orchestration_tool(tool, in_call_room(tool.name, server.serve), waits=True)
-        set_up_for_voice_room(kit, room_id, self, lambda _channel: entry)
+
+        def entry_for(voice_channel: RealtimeVoiceChannel) -> ToolEntry:
+            server = _VoiceLoopServer(
+                kit,
+                voice_channel.channel_id,
+                self._agent,
+                self._reviewers,
+                self._strategy,
+                self._max_iterations,
+            )
+            return orchestration_tool(tool, in_call_room(tool.name, server.serve), waits=True)
+
+        set_up_for_voice_room(kit, room_id, self, entry_for)
 
 
 class _LoopTurns:
@@ -256,17 +268,20 @@ def _loop_tool(reviewers: list[Agent]) -> dict[str, Any]:
 
 class _VoiceLoopServer:
     """Serves a voice channel's ``delegate_loop``: runs the loop in the
-    background for the room of the call, and answers at once."""
+    background for the room of the call, and answers at once; the loop's
+    outcome is handed back to that channel (*notify*)."""
 
     def __init__(
         self,
         kit: RoomKit,
+        notify: str,
         producer: Agent,
         reviewers: list[Agent],
         strategy: WorkerStrategy | None,
         max_iterations: int,
     ) -> None:
         self._kit = kit
+        self._notify = notify
         self._producer = producer
         self._reviewers = reviewers
         self._strategy = strategy
@@ -286,6 +301,7 @@ class _VoiceLoopServer:
                 _async_loop_and_deliver(
                     kit=self._kit,
                     room_id=rid,
+                    notify=self._notify,
                     producer=self._producer,
                     reviewers=self._reviewers,
                     strategy=self._strategy,
@@ -409,21 +425,28 @@ def _failed_task_text(result: DelegatedTaskResult | None) -> str:
     )
 
 
-def _delivered_text(outcome: _LoopOutcome) -> str:
-    """What an async loop delivers: how it ended, then its output."""
+def _delivered_text(outcome: _LoopOutcome | None) -> str:
+    """What an async loop hands back: how it ended, then its output bounded and
+    set apart as a worker's; for a loop that raised (``None``), that the work
+    could not be completed, in the framework's words (RFC §19.7.4)."""
+    if outcome is None:
+        return f"[Your background review loop failed: {FALLBACK_FAILED} Tell the user.]"
     if outcome.stopped != "producer_failed":
         status = "approved" if outcome.approved else "max iterations reached"
-        return f"The review loop has completed ({status}).\n\n{outcome.output}"
+        header = f"[Your background review loop has completed ({status}). Share its result.]"
+        return result_text(header, bounded(outcome.output))
     why = _failed_task_text(outcome.failure)
     if not outcome.output:
-        return f"The review loop stopped before any output: {why}."
-    return f"The review loop stopped: {why}. Its last output, not approved:\n\n{outcome.output}"
+        return f"[Your background review loop stopped before any output: {why}. Tell the user.]"
+    header = f"[Your background review loop stopped: {why}. Its last output, not approved:]"
+    return result_text(header, bounded(outcome.output))
 
 
 async def _async_loop_and_deliver(
     *,
     kit: RoomKit,
     room_id: str,
+    notify: str,
     producer: Agent,
     reviewers: list[Agent],
     strategy: WorkerStrategy | None,
@@ -431,13 +454,16 @@ async def _async_loop_and_deliver(
     max_iterations: int,
     on_done: Any,
 ) -> None:
-    """Background: run loop → deliver results via kit.deliver().
+    """Background: run the loop, then hand its outcome back to *notify*.
 
     Started as a task by the tool call that asked for the loop, so the context
-    it copied is that call's (RFC §21.4): the results continue the chain of
-    the turn that made it (§23.3).
+    it copied is that call's (RFC §21.4): the outcome continues the chain of
+    the turn that made it (§23.3). The room is released (*on_done*) before
+    the outcome is handed back: the model's turn on it may start a new loop.
     """
     chain_depth = _current_turn_chain_depth()
+    meta = {"room_id": room_id, "producer": producer.channel_id}
+    outcome: _LoopOutcome | None = None
     try:
         outcome = await _execute_loop(
             kit=kit,
@@ -448,12 +474,53 @@ async def _async_loop_and_deliver(
             task_desc=task_desc,
             max_iterations=max_iterations,
         )
-        logger.info("[loop] Complete (%s), delivering results", outcome.stopped)
-        await kit.deliver(room_id, _delivered_text(outcome), chain_depth=chain_depth)
-    except Exception:
+    except Exception as exc:
+        # The message is for the logs and the status bus, never the model
+        # (RFC §9.3).
         logger.exception("[loop] Async loop failed")
+        post_agent_lifecycle(
+            kit, "orchestration", StatusLevel.FAILED, action="loop", detail=str(exc), metadata=meta
+        )
     finally:
         on_done()
+    await _hand_back_loop_outcome(kit, room_id, notify, outcome, chain_depth, meta)
+
+
+async def _hand_back_loop_outcome(
+    kit: RoomKit,
+    room_id: str,
+    notify: str,
+    outcome: _LoopOutcome | None,
+    chain_depth: int,
+    meta: dict[str, Any],
+) -> None:
+    """Hand an async loop's outcome back to *notify* as a background
+    delegation's result is (RFC §19.7.4, §23.3 step 8), and post the loop's
+    terminal entry on the status bus once it is handed back."""
+    try:
+        await hand_back(kit, room_id, notify, _delivered_text(outcome), chain_depth)
+    except Exception as exc:
+        logger.error("[loop] Handing the outcome back failed", exc_info=exc)
+        if outcome is not None:
+            post_agent_lifecycle(
+                kit,
+                "orchestration",
+                StatusLevel.FAILED,
+                action="loop",
+                detail=str(exc),
+                metadata=meta,
+            )
+        return
+    if outcome is not None:
+        logger.info("[loop] Complete (%s), outcome handed back", outcome.stopped)
+        post_agent_lifecycle(
+            kit,
+            "orchestration",
+            StatusLevel.COMPLETED,
+            action="loop",
+            detail=outcome.stopped,
+            metadata=meta,
+        )
 
 
 async def _execute_loop(

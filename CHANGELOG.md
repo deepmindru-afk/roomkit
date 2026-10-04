@@ -736,6 +736,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A voice `Loop` (`async_delivery=True`) hands its outcome back to the voice
+  channel that started it, success and failure alike (RMK-462, RFC §19.7.4),
+  as the supervisor's background door does since RMK-451. A loop that raised
+  was only logged: the model, which had told the user results would follow,
+  never heard. Its success went to the room through `kit.deliver()` and
+  reached the session as the user's words, unbounded and unfenced. Both now
+  go through `hand_back`: an instruction to the voice channel, the output
+  bounded and fenced as a worker's, and for a loop that raised, that the work
+  could not be completed, without the error's message. The room is released
+  before the outcome is handed back, and the loop posts one terminal status
+  entry (`orchestration`, `loop`) after its hand-back.
+
 - A hidden tool the model calls by its exact name under Tool Search stays
   revealed only once the tool answered the call (RMK-461, RFC §6.4). The
   recovery recorded the reveal for the room before any gate ran: a call a
