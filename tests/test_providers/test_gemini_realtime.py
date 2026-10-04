@@ -1091,6 +1091,33 @@ class TestGeminiLiveProvider:
         assert sent.name == "lookup_contact"
         assert state.call_names == {}, "released with the call"
 
+    async def test_a_call_is_released_as_its_result_goes(self):
+        """Off the books before the send yields, as the channel frees the id
+        at the same step: a call Gemini issues under it meanwhile is a new
+        call (RMK-441). The response still carries the call's name."""
+        mod = _load_provider()
+        provider = mod.GeminiLiveProvider(api_key="test-key", model="gemini-3.8-live")
+        session = _make_session()
+        state = mod._GeminiSessionState(session=session, live_session=_make_mock_live_session())
+        provider._sessions[session.id] = state
+        await provider._on_tool_call(
+            session,
+            state,
+            SimpleNamespace(function_calls=[SimpleNamespace(name="lookup", id="c1", args={})]),
+        )
+        during_send: list[bool] = []
+
+        async def send(**kwargs):
+            during_send.append("c1" in state.call_names or "c1" in state.pending_call_ids)
+
+        state.live_session.send_tool_response = AsyncMock(side_effect=send)
+
+        await provider.submit_tool_result(session, "c1", "ok")
+
+        assert during_send == [False]
+        sent = state.live_session.send_tool_response.await_args.kwargs["function_responses"][0]
+        assert sent.name == "lookup"
+
     async def test_a_result_for_a_call_never_issued_goes_out_unnamed(self):
         mod = _load_provider()
         provider = mod.GeminiLiveProvider(api_key="test-key", model="gemini-3.8-live")

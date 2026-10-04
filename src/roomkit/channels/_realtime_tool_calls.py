@@ -82,30 +82,50 @@ class RealtimeToolCall:
 
 
 class ToolCallBook:
-    """The realtime tool calls in flight, per session."""
+    """The realtime tool calls in flight, per session.
+
+    An id names its call from the call until its result goes out (RFC §12.4):
+    a second call under it meanwhile is refused, while one after it is a new
+    call, recorded beside the first, which may still be finishing its report.
+    The provider frees the id at the same step, when it sends the result.
+    """
 
     def __init__(self) -> None:
-        self._calls: dict[str, dict[str, RealtimeToolCall]] = {}
+        self._calls: dict[str, dict[str, list[RealtimeToolCall]]] = {}
 
     def open(self, call: RealtimeToolCall) -> bool:
-        """Record *call*: False when a call with its id is already in flight,
-        which then keeps the id (RFC §12.4)."""
+        """Record *call*: False when a call under its id has not had its result
+        sent yet, which then keeps the id (RFC §12.4)."""
         calls = self._calls.setdefault(call.session.id, {})
-        if call.call_id in calls:
+        held = calls.get(call.call_id, [])
+        if any(not earlier.delivered for earlier in held):
             return False
-        calls[call.call_id] = call
+        calls[call.call_id] = [*held, call]
         return True
 
     def close(self, call: RealtimeToolCall) -> None:
-        """Forget *call*, if it is still the one its id names."""
+        """Forget *call*, whatever call its id names now."""
         calls = self._calls.get(call.session.id)
-        if calls is not None and calls.get(call.call_id) is call:
+        held = calls.get(call.call_id) if calls is not None else None
+        if calls is None or held is None or call not in held:
+            return
+        held = [other for other in held if other is not call]
+        if held:
+            calls[call.call_id] = held
+        else:
             del calls[call.call_id]
-            if not calls:
-                del self._calls[call.session.id]
+        if not calls:
+            del self._calls[call.session.id]
+
+    def holds(self, call: RealtimeToolCall) -> bool:
+        """Whether *call* is still on the books."""
+        held = (self._calls.get(call.session.id) or {}).get(call.call_id, [])
+        return any(other is call for other in held)
 
     def get(self, session_id: str, call_id: str) -> RealtimeToolCall | None:
-        return (self._calls.get(session_id) or {}).get(call_id)
+        """The latest call under *call_id*: the one its id names now."""
+        held = (self._calls.get(session_id) or {}).get(call_id)
+        return held[-1] if held else None
 
     def abandonable(self, session_id: str, call_id: str) -> RealtimeToolCall | None:
         """The call a provider cancellation for *call_id* interrupts: in
@@ -124,8 +144,13 @@ class ToolCallBook:
 
     def muting(self, session_id: str) -> bool:
         """Whether a call holding the input muted is in flight on the session."""
-        return any(call.mutes for call in (self._calls.get(session_id) or {}).values())
+        return any(call.mutes for call in self._all(session_id))
 
     def take(self, session_id: str) -> list[RealtimeToolCall]:
         """Every call in flight on the session, off the books: the session ends."""
-        return list(self._calls.pop(session_id, {}).values())
+        calls = self._all(session_id)
+        self._calls.pop(session_id, None)
+        return calls
+
+    def _all(self, session_id: str) -> list[RealtimeToolCall]:
+        return [call for held in (self._calls.get(session_id) or {}).values() for call in held]

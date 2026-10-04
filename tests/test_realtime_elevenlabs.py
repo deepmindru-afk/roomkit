@@ -702,6 +702,27 @@ class TestClientToolBridge:
         await provider.submit_tool_result(session, "same", "ok")
         assert await first == "ok"
 
+    async def test_a_finished_call_leaves_a_newer_call_s_future_under_its_id(
+        self, provider: ElevenLabsRealtimeProvider, session: VoiceSession
+    ) -> None:
+        """Once its result went out, the id may name a newer call (RMK-441):
+        the first handler's cleanup takes only its own future."""
+        provider.on_tool_call(lambda *_: None)
+        handler = provider._make_tool_handler(session, "lookup")
+        first = asyncio.create_task(handler({"tool_call_id": "c1"}))
+        for _ in range(100):
+            if "c1" in provider._pending_tools.get(session.id, {}):
+                break
+            await asyncio.sleep(0)
+
+        await provider.submit_tool_result(session, "c1", "one")
+        # The newer call's future, booked before the first handler resumes.
+        newer: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+        provider._pending_tools[session.id]["c1"] = newer
+        assert await first == "one"
+
+        assert provider._pending_tools[session.id].get("c1") is newer
+
     async def test_a_call_nobody_answers_times_out_as_an_error(
         self, session: VoiceSession
     ) -> None:

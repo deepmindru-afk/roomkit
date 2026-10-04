@@ -58,7 +58,7 @@ class GeminiLiveToolsMixin(RealtimeVoiceProvider):
     async def _submit_function_response(
         self, session: VoiceSession, call_id: str, result: str, *, is_error: bool
     ) -> None:
-        """Answer *call_id* with *result*, then release the call."""
+        """Answer *call_id* with *result*, releasing the call as it goes."""
         types = genai_types()
 
         state = self._sessions.get(session.id)
@@ -120,12 +120,15 @@ class GeminiLiveToolsMixin(RealtimeVoiceProvider):
             else:
                 warn_unsupported(self._model, "tool_response_scheduling", state.warned_unsupported)
 
+        # The call is released as its result goes, before the send yields:
+        # the channel frees the id at the same step, so a call the model
+        # issues under it meanwhile is a new call to both (RFC §12.4).
+        self._release_call(state, call_id)
         await state.live_session.send_tool_response(
             function_responses=[types.FunctionResponse(**response_kwargs)],
         )
 
-        # Release the call and flush what its blocking waited on.
-        self._release_call(state, call_id)
+        # Flush what its blocking waited on.
         if not state.blocking_call_ids:
             await self._flush_queued_injections(state)
 

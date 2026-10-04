@@ -1069,9 +1069,42 @@ class TestOutbound:
         assert ws.last_of_type("FunctionCallResponse")["thought_signature"] == "opaque-signature"
         await provider.disconnect(session)
 
-    async def test_failed_tool_result_send_keeps_pending_call(
+    async def test_a_call_is_released_as_its_result_goes(
         self, provider: DeepgramAgentProvider, session: VoiceSession
     ) -> None:
+        """Off the books before the send yields (RMK-441)."""
+        tool_call = _Recorder()
+        provider.on_tool_call(tool_call)
+        ws = await _connect(provider, session)
+        ws.push(
+            json.dumps(
+                {
+                    "type": "FunctionCallRequest",
+                    "functions": [{"id": "fc_1", "name": "lookup", "arguments": "{}"}],
+                }
+            )
+        )
+        await tool_call.wait()
+        during_send: list[bool] = []
+        original = ws.send
+
+        async def send(payload: str) -> None:
+            during_send.append("fc_1" in provider._states[session.id].pending_calls)
+            await original(payload)
+
+        with patch.object(ws, "send", side_effect=send):
+            await provider.submit_tool_result(session, "fc_1", "done")
+
+        assert during_send == [False]
+        assert ws.last_of_type("FunctionCallResponse")["name"] == "lookup"
+        await provider.disconnect(session)
+
+    async def test_a_failed_tool_result_send_still_releases_the_call(
+        self, provider: DeepgramAgentProvider, session: VoiceSession
+    ) -> None:
+        """Released as the result goes, before the send yields (RMK-441): the
+        channel counts the call delivered at that step and sends nothing
+        again, so the id is free for the next call Deepgram issues under it."""
         tool_call = _Recorder()
         provider.on_tool_call(tool_call)
         ws = await _connect(provider, session)
@@ -1091,7 +1124,7 @@ class TestOutbound:
         ):
             await provider.submit_tool_result(session, "fc_retry", "done")
 
-        assert provider._states[session.id].pending_calls["fc_retry"].name == "lookup"
+        assert "fc_retry" not in provider._states[session.id].pending_calls
         await provider.disconnect(session)
 
     async def test_interrupt_sends_nothing(

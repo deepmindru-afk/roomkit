@@ -607,9 +607,11 @@ class ElevenLabsRealtimeProvider(RealtimeVoiceProvider):
                     f"Tool '{name}' did not return within {self._config.tool_timeout_s:g}s"
                 ) from None
             finally:
+                # Its own future only: once its result went out, the id may
+                # already name a newer call, whose future this must not take.
                 pending = self._pending_tools.get(session.id)
-                if pending is not None:
-                    pending.pop(call_id, None)
+                if pending is not None and pending.get(call_id) is future:
+                    del pending[call_id]
 
         return handler
 

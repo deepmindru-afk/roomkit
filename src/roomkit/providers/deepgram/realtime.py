@@ -741,7 +741,10 @@ class DeepgramAgentProvider(RealtimeVoiceProvider):
         state = self._states.get(session.id)
         if state is None:
             return
-        pending = state.pending_calls.get(call_id)
+        # Released as its result goes, before the send yields: the channel
+        # frees the id at the same step, so a call Deepgram issues under it
+        # meanwhile is a new call to both (RFC §12.4).
+        pending = state.pending_calls.pop(call_id, None)
         fname = pending.name if pending is not None else ""
         if pending is None:
             logger.warning(
@@ -759,10 +762,6 @@ class DeepgramAgentProvider(RealtimeVoiceProvider):
         if pending is not None and pending.thought_signature is not None:
             response["thought_signature"] = pending.thought_signature
         await state.ws.send(json.dumps(response))
-        # Do not lose the call metadata when the send fails. Also avoid removing
-        # a newer call if Deepgram reused the id while this send was in flight.
-        if pending is not None and state.pending_calls.get(call_id) is pending:
-            state.pending_calls.pop(call_id, None)
 
     async def interrupt(self, session: VoiceSession) -> None:
         """Mark the agent's turn as over locally.

@@ -447,7 +447,7 @@ class RealtimeDelegationMixin:
         """Report a backend call the end of its delegation cut, once, as
         cancelled (RFC §9.3). A call the session's end took off the books is
         reported there, with its own reason."""
-        if self._tool_calls.get(call.session.id, call.call_id) is not call:
+        if not self._tool_calls.holds(call):
             return
         await shielded(
             report_cancelled_call(cast("ToolCallHost", self), call, "The delegation ended")

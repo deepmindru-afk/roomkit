@@ -686,6 +686,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A realtime call issued under an id whose result already went out gets its
+  answer (RMK-441, RFC §12.4). The provider freed the id with the result and
+  the channel only once the call's task ended, its report included: a call
+  the vendor issued under the id in between was refused by the channel as a
+  duplicate and booked by the provider as awaiting, and never answered, which
+  left an ElevenLabs response open for good. An id now names its call until
+  its result goes out, on the channel (`ToolCallBook`) and the conference;
+  Gemini Live and Deepgram free the id before the send yields, as OpenAI
+  Realtime, xAI, GPT-Live and ElevenLabs already did; an ElevenLabs handler's
+  cleanup takes only its own future. Deepgram no longer keeps a call whose
+  result send failed: nothing resends it.
+
 - A skill's `requires` and gates read the same on every door (RMK-429, RFC
   §24.3): a text turn now checks `requires` as a realtime session does, with
   one rule (`missing_required_tools`, exported from `roomkit.skills`), against the tools
