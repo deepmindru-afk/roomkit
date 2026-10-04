@@ -129,6 +129,9 @@ class SegmentWriter:
         self._accumulated: list[str] = []
         self._writing: set[asyncio.Task[RoomEvent | None]] = set()
         self._started: set[str] = set()
+        # Whether the reader was handed anything, a thinking delta included:
+        # from there the turn began, and a stop cuts it.
+        self._began = False
         self.persisted: list[RoomEvent] = []
         # How :meth:`stream` ended: read to its end, or on the response's failure.
         self.read_to_end = False
@@ -154,14 +157,17 @@ class SegmentWriter:
         self._sr.turn_record = self._turn_record
 
     def end_stopped(self) -> None:
-        """A turn its reader stopped once it began ends ``cancelled``, unless
-        its record names an end already (its loop's, an ACP agent's): its
+        """A turn its reader stopped once it began ends ``cancelled``: its
         record rides the stream and its kept text, never read as a turn that
-        completed (RFC §6.4, §12.2 step 13s). A turn never read names none."""
-        began = bool(self._accumulated or self.persisted or self._started)
+        completed (RFC §6.4, §12.2 step 13s). An end its loop's record names
+        holds (the reader was handed it, so it read the whole turn), and so
+        does one an ACP agent's names when it says how the turn was cut
+        (``interrupted``, a stop reason); its ``completed`` says the agent
+        finished, not that the reader read it. A turn never read names none."""
+        began = self._began or bool(self._accumulated or self.persisted or self._started)
         if not began or self._turn_record is not None:
             return
-        if recorded_turn_end(stream_record(self._sr)) is not None:
+        if recorded_turn_end(stream_record(self._sr)) not in (None, "completed"):
             return
         self._turn_record = {"loop_end_reason": "cancelled"}
         self._record_owed = True
@@ -221,6 +227,7 @@ class SegmentWriter:
                 delta = await reader.next()
             except StopAsyncIteration:
                 return
+            self._began = True
             if isinstance(delta, str):
                 self.add_text(delta)
                 yield delta
