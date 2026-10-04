@@ -71,6 +71,8 @@ from roomkit.models.enums import (
 from roomkit.models.event import EventSource, RoomEvent
 from roomkit.telemetry.base import Attr, SpanKind
 from roomkit.telemetry.noop import NoopTelemetryProvider
+from roomkit.tools._human_input_channel import ChannelHumanInput
+from roomkit.tools.human_input import HumanInputToolHandler
 from roomkit.tools.timeout import ToolTimeouts
 from roomkit.voice.backends.base import VoiceBackend
 from roomkit.voice.base import VoiceSession, VoiceSessionState
@@ -191,6 +193,7 @@ class RealtimeVoiceChannel(
         transport_sample_rate: int | None = None,
         emit_transcription_events: bool = True,
         tool_handler: ToolHandler | None = None,
+        human_input_handler: HumanInputToolHandler | None = None,
         mute_on_tool_call: bool = False,
         tool_result_max_length: int = 16384,
         tool_timeout_seconds: float | None = 10.0,
@@ -242,6 +245,15 @@ class RealtimeVoiceChannel(
                 ``roomkit.ToolFailedError`` to say it ran and failed: the
                 message reaches the model verbatim and the call is marked
                 failed, where a returned body would read as work that was done.
+            human_input_handler: The tools that ask a person, as on an
+                ``AIChannel``: the channel declares their
+                ``tool_definitions`` in every session and serves them before
+                *tool_handler*, on every door (the provider's call, a call
+                recovered from speech, a reasoning backend's), under the
+                handler's own ``timeout`` rather than the default call bound.
+                Each request fires ``ON_USER_INPUT_REQUIRED``, whose BLOCK
+                rejects it, and the requests still open are settled when the
+                channel closes (RFC §9.3, §21.6).
             mute_on_tool_call: If True, mute the transport microphone during
                 tool execution to prevent barge-in that causes providers
                 (e.g. Gemini) to silently drop the tool result.  Defaults
@@ -387,6 +399,7 @@ class RealtimeVoiceChannel(
                 provider.name,
             )
 
+        self._init_human_input(human_input_handler)
         self._init_host_tools(tools, tool_handler)
         self._mute_on_tool_call = mute_on_tool_call
         self._tool_result_max_length = tool_result_max_length
@@ -539,6 +552,14 @@ class RealtimeVoiceChannel(
                 transport.on_audio_played(self._on_transport_audio_played)
             )
 
+    def _init_human_input(self, human_input_handler: HumanInputToolHandler | None) -> None:
+        """The person's tools, which the channel serves itself (RFC §9.3)."""
+        self._human_input = (
+            ChannelHumanInput(human_input_handler, self.channel_type)
+            if human_input_handler is not None
+            else None
+        )
+
     def _init_host_tools(
         self, tools: list[dict[str, Any] | Any] | None, tool_handler: ToolHandler | None
     ) -> None:
@@ -612,7 +633,7 @@ class RealtimeVoiceChannel(
         self._register_channel_tools()
         refuse_served_names(
             (dict_tool_name(tool) for tool in self._tools or []),
-            self._channel_tool_names(),
+            self._channel_tool_names() | self._human_input_names(),
             self.channel_id,
         )
 
@@ -672,8 +693,10 @@ class RealtimeVoiceChannel(
             self._registry.register(channel_tool(schema_tool(schema), None), owner=self)
 
     def _host_tool_names(self) -> list[str]:
-        """The names the host's own tools carry, served by the handler it gave."""
-        return [name for tool in self._tools or [] if (name := dict_tool_name(tool))]
+        """The names the host's own tools carry: its definitions and its
+        human-input tools, served by the handlers it gave."""
+        names = [name for tool in self._tools or [] if (name := dict_tool_name(tool))]
+        return names + sorted(self._human_input_names())
 
     @property
     def _telemetry_provider(self) -> NoopTelemetryProvider:
@@ -804,6 +827,9 @@ class RealtimeVoiceChannel(
         """
         self._framework = framework
         self._sync_trace_emitter()
+        if self._human_input is not None:
+            hook = framework._build_on_user_input_required_hook(self.channel_id)
+            self._human_input.register(self.channel_id, hook)
 
     def on_trace(
         self,
@@ -859,7 +885,8 @@ class RealtimeVoiceChannel(
         if tools is not None:
             names = [dict_tool_name(tool) for tool in tools]
             refuse_unnamable(names, self.channel_id)
-            refuse_served_names(names, self._channel_tool_names(), self.channel_id)
+            served = self._channel_tool_names() | self._human_input_names()
+            refuse_served_names(names, served, self.channel_id)
             refuse_given_twice(names, self.channel_id)
             self._registry.refuse_host_names(names)
         if system_prompt is not None:
@@ -1822,10 +1849,12 @@ class RealtimeVoiceChannel(
         if not self._provider.supports_tools:
             return None  # the model calls no tool (RFC §12.4)
         session_id, room_id = session.id, session.room_id
-        orchestration = self._orchestration_dicts(room_id)
+        # What orchestration set up for the room and the person's tools are
+        # declared whatever Tool Search hides (RFC §9.3, §21.1).
+        always = self._orchestration_dicts(room_id) + self._human_input_dicts()
         if (
             tools is None
-            and not orchestration
+            and not always
             and not self._tool_search_support
             and not self._skill_support
         ):
@@ -1839,9 +1868,7 @@ class RealtimeVoiceChannel(
                 keep=self._registry.names(room_id, lambda traits: not traits.deferrable),
                 active=search_active,
             )
-        # What orchestration set up for the room is declared whatever Tool
-        # Search hides (RFC §21.1).
-        visible += orchestration
+        visible += always
         if self._skill_support:
             visible = self._skill_support.skill_tool_dicts() + visible
             visible = self._skill_support.get_visible_tools(visible, session_id, pending_skill)
@@ -2121,6 +2148,10 @@ class RealtimeVoiceChannel(
         # The reports of abandoned calls finish first: the sweep below would
         # cut them before their claim.
         await self._settle_tool_reports()
+        # The person's requests the ended sessions left open are settled, and
+        # the channel takes no more.
+        if self._human_input is not None:
+            await self._human_input.close(self.channel_id)
 
         # Cancel all outstanding scheduled tasks with timeout
         tasks = list(self._scheduled_tasks)

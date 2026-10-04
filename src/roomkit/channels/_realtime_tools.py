@@ -61,6 +61,7 @@ from roomkit.voice.base import VoiceSessionState
 if TYPE_CHECKING:
     from roomkit.core.framework import RoomKit
     from roomkit.models.context import RoomContext
+    from roomkit.tools._human_input_channel import ChannelHumanInput
     from roomkit.tools.context import _ToolLoopContext
     from roomkit.voice.backends.base import VoiceBackend
     from roomkit.voice.base import VoiceSession
@@ -210,6 +211,7 @@ class RealtimeToolsMixin:
     _session_tools: dict[str, Any]
     _session_config_locks: dict[str, asyncio.Lock]
     _tool_handler: Any
+    _human_input: ChannelHumanInput | None
     _tools: Any
     _system_prompt: str | None
     _mute_on_tool_call: bool
@@ -664,28 +666,37 @@ class RealtimeToolsMixin:
 
     def _call_timeout(self, name: str, room_id: str | None) -> float | None:
         """The bound of one call to *name* (RFC §21.6): the channel's, unless
-        the tool keeps a bound of its own."""
-        return self._registry.bound(name, room_id, self._tool_timeouts)
+        the tool keeps a bound of its own (a person's answer, under its
+        handler's timeout)."""
+        human = self._human_input
+        own = human is not None and human.serves(name)
+        return self._registry.bound(name, room_id, self._tool_timeouts, own=own)
 
     async def _answer(self, name: str, arguments: dict[str, Any], room_id: str | None) -> Any:
         """The answer of what orchestration set up for *room_id*, else of the
-        host's handler; a handler that declines the call raises
-        :class:`~roomkit.core.exceptions.UnservedToolCallError` (RFC §21.4).
+        person's tools, else of the host's handler; a handler that declines
+        the call raises :class:`~roomkit.core.exceptions.UnservedToolCallError`
+        (RFC §21.4).
 
         Only the host's answer may be the "not mine" envelope: orchestration's
-        tools answer what they ran.
+        tools answer what they ran, and a person what they said.
         """
         entry = self._registry.lookup(name, room_id)
         if entry is not None and entry.serve is not None:
             result = entry.serve(arguments)
             return await result if inspect.isawaitable(result) else result
+        if self._human_input is not None and self._human_input.serves(name):
+            return await self._human_input.serve(name, arguments)
         return declined_answer(await self._tool_handler(name, arguments), name)
 
     def _serves_tool(self, name: str, room_id: str | None) -> bool:
         """Whether something serves a call to *name* in *room_id*: what
-        orchestration set up there, or the host's handler."""
+        orchestration set up there, the person's tools, or the host's handler."""
         entry = self._registry.lookup(name, room_id)
-        return (entry is not None and entry.serve is not None) or self._tool_handler is not None
+        if entry is not None and entry.serve is not None:
+            return True
+        human = self._human_input
+        return (human is not None and human.serves(name)) or self._tool_handler is not None
 
     async def _serve_skill_activation(
         self, call: RealtimeToolCall, door: ToolCallDoor, carrying: RoomContext | None

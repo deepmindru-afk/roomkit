@@ -33,6 +33,7 @@ from roomkit.tools.validation import fold_hoisted_arguments, validate_tool_argum
 if TYPE_CHECKING:
     from roomkit.core.framework import RoomKit
     from roomkit.models.context import RoomContext
+    from roomkit.tools._human_input_channel import ChannelHumanInput
     from roomkit.tools.policy import ToolPolicy
     from roomkit.voice.base import VoiceSession
     from roomkit.voice.realtime.provider import RealtimeVoiceProvider
@@ -54,6 +55,7 @@ class RealtimeToolGateMixin:
     _sessions: dict[str, VoiceSession]
     _room_session_config: Any  # RealtimeVoiceChannel — cross-mixin
     _collisions: CollisionLog
+    _human_input: ChannelHumanInput | None
     _registry: ChannelRegistry
     _tool_search_support: Any
     _provider: RealtimeVoiceProvider
@@ -67,12 +69,25 @@ class RealtimeToolGateMixin:
 
     def _session_catalogue(self, session_id: str) -> list[dict[str, Any]]:
         """Every tool the session declares beside the channel's own: its base
-        catalogue, then what orchestration set up for its room (RFC §19.7).
-        What a call is checked, validated and recovered against."""
+        catalogue, what orchestration set up for its room (RFC §19.7), then
+        the person's tools (RFC §9.3). What a call is checked, validated and
+        recovered against, on every door."""
         with self._state_lock:
             base = list(self._session_tools.get(session_id, self._tools or []))
             room_id = self._session_rooms.get(session_id)
-        return base + self._orchestration_dicts(room_id, {dict_tool_name(t) for t in base})
+        orchestration = self._orchestration_dicts(room_id, {dict_tool_name(t) for t in base})
+        return base + orchestration + self._human_input_dicts()
+
+    def _human_input_dicts(self) -> list[dict[str, Any]]:
+        """The declarations of the person's tools, served by the channel on
+        every door and in every session (RFC §9.3)."""
+        human = self._human_input
+        return [tool_dict(tool) for tool in human.definitions] if human is not None else []
+
+    def _human_input_names(self) -> frozenset[str]:
+        """The names the person's tools declare, which no other tool takes."""
+        human = self._human_input
+        return human.declared_names if human is not None else frozenset()
 
     def _orchestration_dicts(
         self, room_id: str | None, skip: Container[str | None] = ()
@@ -182,8 +197,10 @@ class RealtimeToolGateMixin:
         """A session's host tools in *room_id*: none under a name the channel or
         orchestration declares itself there, each name once (RFC §21.1,
         :func:`declared_once`). Those are composed in afterwards."""
-        served = self._channel_tool_names() | self._registry.names(
-            room_id, lambda traits: traits.always_declared
+        served = (
+            self._channel_tool_names()
+            | self._human_input_names()
+            | self._registry.names(room_id, lambda traits: traits.always_declared)
         )
         return declared_once(tools, dict_tool_name, served, self._collisions)
 
