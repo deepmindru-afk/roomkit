@@ -769,15 +769,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   WebSocket, an output device gone) stay logged and absorbed. The four
   backends read the stream inside one context manager,
   `roomkit.voice.PlaybackErrors`, and the video backends inherit it.
-  - Every session whose synthesis fails is reported once, as `tts_error`
-    with its `session_id`, on `say()`, `deliver()` and streamed responses
-    alike, a session failing beside served ones included; `AFTER_TTS` fires
-    only for what a session heard. A TTS without `synthesize_stream()` is one
-    such failure: `say()` and `deliver()` no longer fire `AFTER_TTS` for it.
+  - Every session whose synthesis or playback fails is reported once, as
+    `tts_error` with its `session_id`, once its playback is released (a
+    handler waiting for the playback no longer waits on it), on `say()`,
+    `deliver()` and streamed responses alike: a session failing beside
+    served ones, a session the channel never bound, and a session that
+    failed before the AI did included. `AFTER_TTS` fires only when a session
+    was served. A TTS without `synthesize_stream()` is one such failure:
+    `say()` and `deliver()` no longer fire `AFTER_TTS` for it.
   - On a streamed response, a session whose TTS fails stops early, as a
     barge-in does (RFC §12.2 step 12s.d). Once every session has stopped,
-    the response is stored as it stood with `metadata.cancelled` and the
-    rest is not generated (step 13s); `ON_ERROR` does not fire. The failure
+    the response is stored as it stood (`metadata.cancelled` when the
+    generation was still running, which then ends) per step 13s; `ON_ERROR`
+    does not fire. The failure
     used to reach the inbound stream as the AI's (on Twilio, SIP and
     WebTransport already): `ON_ERROR` fired and the text was replayed to the
     `VoiceChannel`, so the user heard the start of the answer twice. A

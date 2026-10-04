@@ -209,3 +209,24 @@ class TestPlaybackErrors:
             PlaybackErrors(logging.getLogger("test"), "playing %s", "s1"),
         ):
             raise asyncio.CancelledError
+
+    async def test_a_cancellation_after_a_caught_failure_stays_a_cancellation(self) -> None:
+        async def chunks() -> AsyncIterator[AudioChunk]:
+            raise RuntimeError("tts down")
+            yield AudioChunk(data=AUDIO)  # pragma: no cover
+
+        async def play() -> None:
+            with PlaybackErrors(logging.getLogger("test"), "playing %s", "s1") as playback:
+                try:
+                    async for _chunk in playback.watch(chunks()):
+                        pass
+                except RuntimeError:
+                    pass  # a backend helper that swallows what it reads
+                await asyncio.sleep(10)  # draining, when the caller cancels
+
+        task = asyncio.create_task(play())
+        await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert task.cancelled()

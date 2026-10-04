@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator
 
 import pytest
 
-from roomkit import RoomKit, VoiceChannel
+from roomkit import HookExecution, HookTrigger, RoomKit, VoiceChannel
 from roomkit.channels._stream_fanout import StreamBranch, StreamFanOut
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.context import RoomContext
@@ -313,3 +313,54 @@ class TestStreamFanOut:
                 await anext(branch)
         await producer
         assert isinstance(fan_out.error, ValueError)
+
+
+class TestStreamedSessionFailure:
+    """A session whose playback fails is reported, whatever the others do (RMK-448)."""
+
+    @staticmethod
+    def _watch(kit: RoomKit) -> tuple[list[dict], list[str]]:
+        tts_errors: list[dict] = []
+        after_tts: list[str] = []
+
+        @kit.on("tts_error")
+        async def on_tts_error(event) -> None:  # type: ignore[no-untyped-def]
+            tts_errors.append(event.data)
+
+        @kit.hook(HookTrigger.AFTER_TTS, execution=HookExecution.ASYNC)
+        async def on_after_tts(text, ctx) -> None:  # type: ignore[no-untyped-def]
+            after_tts.append(text)
+
+        return tts_errors, after_tts
+
+    async def test_a_failed_session_is_reported_beside_a_served_one(self) -> None:
+        backend, tts = _ScriptedBackend(), _RecordingTTS()
+        kit, channel, sessions, event, binding, context = await _setup(backend, tts)
+        tts_errors, after_tts = self._watch(kit)
+        backend.fail.add(sessions[0].id)
+
+        await channel.deliver_stream(_text(), event, binding, context)
+        await asyncio.sleep(0.05)
+
+        assert [e["session_id"] for e in tts_errors] == [sessions[0].id]
+        assert len(after_tts) == 1  # the other session heard it
+        await kit.close()
+
+    async def test_a_session_that_failed_before_the_ai_did_is_still_reported(self) -> None:
+        backend, tts = _ScriptedBackend(), _RecordingTTS()
+        kit, channel, sessions, event, binding, context = await _setup(backend, tts)
+        tts_errors, _ = self._watch(kit)
+        backend.fail.add(sessions[0].id)
+
+        async def failing_ai() -> AsyncIterator[str]:
+            yield SENTENCES[0] + " "
+            await asyncio.sleep(0.01)
+            raise RuntimeError("ai down")
+
+        with pytest.raises(RuntimeError, match="ai down"):
+            await channel.deliver_stream(failing_ai(), event, binding, context)
+        await asyncio.sleep(0.05)
+
+        # The AI's failure is the response's; the session's own failure is reported.
+        assert [e["session_id"] for e in tts_errors] == [sessions[0].id]
+        await kit.close()

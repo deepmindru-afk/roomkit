@@ -92,10 +92,12 @@ class PlaybackErrors:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> bool:
+        if exc is not None and not isinstance(exc, Exception):
+            return False  # a cancellation, never touched
         failure = self._source.failure if self._source is not None else None
         if failure is not None and failure is not exc:
             raise failure
-        if failure is not None or not isinstance(exc, Exception):
+        if failure is not None or exc is None:
             return False
         self._log.error(self._message, *self._args, exc_info=exc)
         return True

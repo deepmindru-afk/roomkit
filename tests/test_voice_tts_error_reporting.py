@@ -93,6 +93,7 @@ class _Room:
             self.after_tts.append(text)
 
         room = await kit.create_room()
+        self.room_id = room.id
         await kit.attach_channel(room.id, "voice-1")
         for n in range(participants):
             session = await kit.join(room.id, "voice-1", participant_id=f"user-{n}")
@@ -164,4 +165,52 @@ async def test_a_session_failing_beside_a_served_one_is_reported() -> None:
 
     assert room.reported() == [("WorkingTTS", room.sessions[1].id)]
     assert room.after_tts == ["Bonjour."]  # the other session heard it
+    await room.kit.close()
+
+
+@pytest.mark.parametrize("speak", [_Room.say, _Room.deliver], ids=["say", "deliver"])
+async def test_a_session_the_channel_never_bound_is_reported_in_its_room(speak: Speak) -> None:
+    """deliver() reaches a session connected on the backend alone (RMK-448)."""
+    room = await _Room().open(_FailingTTS(), participants=0)
+    session = await room.backend.connect(room.room_id, "user-x", "voice-1")
+    room.sessions.append(session)
+
+    await speak(room)
+    await _settle()
+
+    assert room.reported() == [("FailingTTS", session.id)]
+    await room.kit.close()
+
+
+@pytest.mark.parametrize("speak", [_Room.say, _Room.deliver], ids=["say", "deliver"])
+async def test_the_report_comes_once_the_playback_is_released(speak: Speak) -> None:
+    """A tts_error handler that waits for the playback does not wait on this session."""
+    room = await _Room().open(_FailingTTS(), participants=1)
+    waited: list[float] = []
+
+    @room.kit.on("tts_error")
+    async def wait_for_playback(event: Any) -> None:
+        start = asyncio.get_running_loop().time()
+        await room.channel.wait_playback_done(room.room_id, timeout=1.0)
+        waited.append(asyncio.get_running_loop().time() - start)
+
+    await speak(room)
+    await _settle()
+
+    assert len(waited) == 1
+    assert waited[0] < 0.5
+    await room.kit.close()
+
+
+async def test_a_delivery_nobody_heard_fires_no_after_tts() -> None:
+    room = await _Room().open(_WorkingTTS(), participants=0)
+    # Only to name the room deliver() targets: the backend holds no session.
+    room.sessions.append(
+        VoiceSession(id="nobody", room_id=room.room_id, participant_id="p", channel_id="voice-1")
+    )
+
+    await room.deliver()  # the room has no voice session at all
+    await _settle()
+
+    assert room.after_tts == []
     await room.kit.close()
