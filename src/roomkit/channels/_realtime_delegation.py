@@ -478,13 +478,20 @@ class RealtimeDelegationMixin:
         body: str,
         *,
         cancelled: bool = False,
+        refused: bool = True,
+        detail: str | None = None,
     ) -> None:
-        """Report a call the backend's own loop refused before the gate (its
-        arguments did not read, a stop cut it), as the gate reports one."""
+        """Report a call the backend's own loop ended before the gate (its
+        arguments did not read, a stop cut it), as the gate reports one, with
+        its outcome: cancelled, refused, or failed, and what failed."""
         call = RealtimeToolCall(session, f"{delegation_id}:{uuid4().hex[:8]}", name, arguments)
         call.room_id = self._session_rooms.get(session.id) or session.room_id
-        kind = OutcomeKind.CANCELLED if cancelled else OutcomeKind.REFUSED
-        await report_failed_call(cast("ToolCallHost", self), call, ToolOutcome(kind, body))
+        if cancelled:
+            kind = OutcomeKind.CANCELLED
+        else:
+            kind = OutcomeKind.REFUSED if refused else OutcomeKind.FAILED
+        outcome = ToolOutcome(kind, body, detail=detail)
+        await report_failed_call(cast("ToolCallHost", self), call, outcome)
 
 
 class _BackendDoor:

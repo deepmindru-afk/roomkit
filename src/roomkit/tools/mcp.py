@@ -11,7 +11,7 @@ from contextlib import AsyncExitStack
 from types import TracebackType
 from typing import Any
 
-from roomkit.core.exceptions import ToolRefusedError, UnservedToolCallError
+from roomkit.core.exceptions import ToolFailedError, UnservedToolCallError
 from roomkit.providers.ai.base import AITool, some_vendor_accepts_tool_name
 from roomkit.tools._mcp_result import error_text, handler_result, text_body
 from roomkit.tools.compose import ToolHandler, ToolResult
@@ -393,7 +393,7 @@ class MCPToolProvider:
 
         The error envelope is this method's contract and does not change. A tool
         loop reads :meth:`as_tool_handler` instead, which raises
-        :class:`~roomkit.core.exceptions.ToolRefusedError` so the outcome does
+        :class:`~roomkit.core.exceptions.ToolFailedError` so the outcome does
         not have to be recognised in the body.
         """
         result = await self.call_tool_result(name, arguments, timeout=timeout)
@@ -418,10 +418,10 @@ class MCPToolProvider:
         ``UnservedToolCallError``, so it sits last in a
         ``compose_tool_handlers`` chain: nothing after it would be reached.
 
-        A tool the server *refused* raises
-        :class:`~roomkit.core.exceptions.ToolRefusedError` either way: the tool
-        loop marks the call failed and hands the server's message to the model
-        unchanged.
+        A tool whose result says ``isError`` raises
+        :class:`~roomkit.core.exceptions.ToolFailedError` either way: the tool
+        ran and failed, so the tool loop marks the call failed (not refused)
+        and hands the server's message to the model unchanged.
 
         A result that carries an image (PNG, JPEG, GIF or WebP, with a payload
         that decodes) comes back as content parts
@@ -442,10 +442,10 @@ class MCPToolProvider:
                 raise UnservedToolCallError(f"tool {name!r} is not served here")
             result = await self.call_tool_result(lookup, arguments, timeout=_DEFAULT_CALL_TIMEOUT)
             if result.isError:
-                # The server refused; say so instead of returning a body the
-                # loop would have to recognise, and keep the server's words —
-                # they are what the model is meant to read.
-                raise ToolRefusedError(error_text(result))
+                # The tool ran and failed (MCP ``isError``); say so instead of
+                # returning a body the loop would have to recognise, and keep
+                # the server's words: they are what the model is meant to read.
+                raise ToolFailedError(error_text(result))
             return handler_result(result)
 
         return _handler

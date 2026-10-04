@@ -1042,6 +1042,7 @@ class HelpersMixin:
             # returns reaches the agent.
             chain = await self._run_tool_call_chain(event, event.room_id)
             if chain is None:
+                await self._report_unreachable_tool_call(event, channel_id, claim)
                 return
             _, context = chain
         if claim is not None and not claim():
@@ -1164,6 +1165,9 @@ class HelpersMixin:
         if self._hook_engine.has_hooks(HookTrigger.ON_TOOL_CALL):
             context = await self._hook_context(event.room_id, HookTrigger.ON_TOOL_CALL)
             if context is None:
+                # The observers need the context that failed; the framework
+                # event still reports the call once, as for a served call.
+                await self._report_unreachable_tool_call(event, channel_id, claim)
                 return
         if claim is not None and not claim():
             return

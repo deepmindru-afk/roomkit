@@ -48,6 +48,7 @@ from roomkit.channels._tool_search_constants import (
 )
 from roomkit.core.exceptions import (
     ChannelRefusalError,
+    ToolFailedError,
     ToolRefusedError,
     UnservedToolCallError,
 )
@@ -700,6 +701,12 @@ class AIToolsMixin(_AIChannelContract):
                 body,
                 recorded=exc.message,
             )
+        if isinstance(exc, ToolFailedError):
+            # A failure in the handler's words: the tool ran, and this is
+            # what the model reads of it; the observers read it as the detail.
+            logger.warning("Tool %s failed: %s", tc.name, exc.message)
+            body = await self._failed_call(tc, arguments, room_id, exc.message, detail=exc.message)
+            return ToolOutcome(OutcomeKind.FAILED, body, recorded=exc.message)
         logger.warning("Tool %s raised %s: %s", tc.name, type(exc).__name__, exc)
         # The class, never the message (RFC §9.3): it goes to the log above
         # and to the observers, not to the model. The memory records what the

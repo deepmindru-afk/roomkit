@@ -212,6 +212,11 @@ log and to `ON_TOOL_CALL` observers as `event.error_detail`. The call is marked
 failed, observers see `event.is_error`, and the stored `TOOL_CALL_END` carries
 what the model read.
 
+A tool that ran and failed, with words for the model, raises `ToolFailedError`:
+the message reaches the model verbatim and the observers as `error_detail`, and
+the call is failed, not refused (`event.refused` is false). An MCP tool whose
+result says `isError` raises it.
+
 ### Tool Protocol (Tool ABC)
 
 For structured tool definitions, use the `Tool` base class:

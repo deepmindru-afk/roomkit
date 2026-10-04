@@ -704,6 +704,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The line between a refused and a failed call reads the same everywhere
+  (RMK-459, RFC §9.3). `ToolFailedError(message)` (new, beside
+  `ToolRefusedError`) is a handler's failure in its own words: the tool ran
+  and could not do it, the model reads the message, the call is failed
+  (`refused=False`) and the observers read the message as `error_detail`, on
+  the text and realtime doors alike. **An MCP tool whose result says
+  `isError` is now a failure, no longer a refusal**
+  (`MCPToolProvider.as_tool_handler()` raises `ToolFailedError`; an audit
+  records it `error` rather than `failed`). A reasoning backend's relay of a
+  call its loop ended before the gate keeps the outcome (refused, cancelled
+  or failed) and what failed, where every such call reached the observers
+  refused and without its detail (`report_refusal(..., refused=, detail=)`).
+  A refused, failed or cancelled call whose observers' context does not
+  build, and a call an external handler ran, still emit their `tool_call`
+  framework event.
+
 - A realtime call its response cut runs only when its argument text reads,
   as on a text turn (RMK-455, RFC §6.4, §12.4). OpenAI Realtime and xAI
   handed a call on at `response.function_call_arguments.done`, before the

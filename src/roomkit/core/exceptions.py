@@ -189,6 +189,25 @@ class ToolRefusedError(RoomKitError):
         self.message = message
 
 
+class ToolFailedError(RoomKitError):
+    """Raised by a tool handler for a call that ran and failed, with the words
+    the model should read.
+
+    The sibling of :class:`ToolRefusedError` on the other side of the line
+    between a refusal and a failure (RFC §9.3): a refusal says nothing ran, a
+    failure says the tool ran and could not do it. Any other exception a
+    handler raises is a failure too, but its message is withheld from the
+    model (it can hold anything the failing code held); this one hands
+    :attr:`message` to the model unchanged. The call is marked failed, its
+    ON_TOOL_CALL observers read ``refused=False`` and the message as
+    ``error_detail``. An MCP tool whose result says ``isError`` raises it.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
+
 class ChannelRefusalError(ToolRefusedError):
     """A refusal the channel decided itself, before any tool ran (RFC §9.3).
 

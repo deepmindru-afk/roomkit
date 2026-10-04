@@ -18,7 +18,7 @@ from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import replace
 from typing import TYPE_CHECKING, Protocol
 
-from roomkit.core.exceptions import ToolRefusedError, UnservedToolCallError
+from roomkit.core.exceptions import ToolFailedError, ToolRefusedError, UnservedToolCallError
 from roomkit.models.tool_call import ToolCallVerdict
 from roomkit.tools._outcome import OutcomeKind, ToolOutcome, read_outcome
 from roomkit.tools.context import (
@@ -201,6 +201,10 @@ async def serve_tool_call(
     except ToolRefusedError as refusal:
         # A refusal in the handler's words, which the model reads.
         return ToolOutcome(OutcomeKind.REFUSED, refusal.message)
+    except ToolFailedError as failure:
+        # A failure in the handler's words: the model reads it, the observers
+        # read it as the detail.
+        return ToolOutcome(OutcomeKind.FAILED, failure.message, detail=failure.message)
     else:
         outcome = ToolOutcome(OutcomeKind.SERVED, answer)
     return await judge_tool_call(host, call, outcome, carrying)

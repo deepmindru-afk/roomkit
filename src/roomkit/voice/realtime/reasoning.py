@@ -63,8 +63,10 @@ ToolCallExecutor = Callable[[str, dict[str, Any]], Awaitable[ToolCallResult]]
 """``(name, arguments) -> ToolCallResult`` — the same call, with its outcome."""
 
 RefusalReporter = Callable[..., Awaitable[None]]
-"""``(name, arguments, body, *, cancelled=False)`` — reports a call the backend
-refused before the channel's gate to its ON_TOOL_CALL observers."""
+"""``(name, arguments, body, *, cancelled=False, refused=True, detail=None)`` —
+reports a call the backend's loop ended before the channel's gate to its
+ON_TOOL_CALL observers, with its outcome: refused, cancelled, or failed
+(``refused=False``), and what failed (*detail*)."""
 
 
 class ReasoningCutShortError(TurnCutShortError):
@@ -109,10 +111,11 @@ class ReasoningRequest:
         execute_tool_call: The same call, returning a :class:`ToolCallResult`
             that also says whether it failed, so the backend's model reads a
             refused or failed call as one. A backend SHOULD prefer it.
-        report_refusal: Reports a call the backend's own loop refused before
+        report_refusal: Reports a call the backend's own loop ended before
             the gate (its arguments did not read, a stop cut it) to the
             channel's ON_TOOL_CALL observers, as ``(name, arguments, body,
-            cancelled=...)``: a backend's call is reported wherever it ends.
+            cancelled=..., refused=..., detail=...)``, its outcome kept: a
+            backend's call is reported wherever it ends.
         unavailable: The session's tools the model is not offered, each with
             the refusal a call to it reads (the tool policy's, a skill's
             gating), so a backend refuses it in the gate's words (RFC §21.1).
@@ -358,13 +361,19 @@ class AgentReasoningBackend(ReasoningBackend):
         return done.text
 
     async def _report_loop_refusal(self, event: ToolCallEvent) -> None:
-        """Report a call the loop refused before the gate (its arguments did
-        not read, a turn cut it) to the voice channel's observers."""
+        """Report a call the loop ended before the gate (its arguments did not
+        read, a turn cut it) to the voice channel's observers, with the
+        outcome the loop gave it and what failed (RFC §9.3)."""
         request = _DELEGATION.get()
         if request is None or request.report_refusal is None:
             return
         await request.report_refusal(
-            event.name, dict(event.arguments), str(event.result or ""), cancelled=event.cancelled
+            event.name,
+            dict(event.arguments),
+            str(event.result or ""),
+            cancelled=event.cancelled,
+            refused=event.refused,
+            detail=event.error_detail,
         )
 
     async def session_ended(self, session_id: str) -> None:

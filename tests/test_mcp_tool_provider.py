@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from roomkit.core.exceptions import ToolRefusedError, UnservedToolCallError
+from roomkit.core.exceptions import ToolFailedError, UnservedToolCallError
 from roomkit.providers.ai.base import AIImagePart, AITextPart, AITool
 from roomkit.tools.mcp import MCPToolProvider
 
@@ -217,10 +217,11 @@ async def test_call_tool_error() -> None:
     assert parsed == {"error": "something failed"}
 
 
-async def test_tool_handler_raises_on_a_refused_call() -> None:
-    """The handler a tool loop reads states the refusal; ``call_tool`` renders it.
+async def test_tool_handler_raises_on_a_failed_call() -> None:
+    """The handler a tool loop reads states the failure (MCP ``isError``: the
+    tool ran and failed, RMK-459); ``call_tool`` renders it.
 
-    The loop cannot recognise a refusal in a body, so the outcome has to reach
+    The loop cannot recognise a failure in a body, so the outcome has to reach
     it some other way. ``call_tool`` keeps the envelope its own callers have
     always been given, and both read the same server verdict.
     """
@@ -232,7 +233,7 @@ async def test_tool_handler_raises_on_a_refused_call() -> None:
     )
     handler = provider.as_tool_handler()
 
-    with pytest.raises(ToolRefusedError) as raised:
+    with pytest.raises(ToolFailedError) as raised:
         await handler("search", {"query": "hello"})
     # The server's words reach the model unchanged — no envelope around them.
     assert raised.value.message == "Missing X-Tenant-ID header"
@@ -350,8 +351,8 @@ async def test_as_tool_handler_ungated_forwards_an_undiscovered_name() -> None:
     assert calls == [("nonexistent", {"q": 1}), ("search", {"query": "x"})]
 
 
-async def test_as_tool_handler_ungated_still_raises_on_a_refused_call() -> None:
-    """Skipping the gate skips only the gate: the server's refusal is still raised."""
+async def test_as_tool_handler_ungated_still_raises_on_a_failed_call() -> None:
+    """Skipping the gate skips only the gate: the server's failure is still raised."""
     provider = _make_provider_connected(
         [SEARCH_TOOL],
         call_tool_side_effect=lambda name, args: MockCallToolResult(
@@ -360,7 +361,7 @@ async def test_as_tool_handler_ungated_still_raises_on_a_refused_call() -> None:
     )
     handler = provider.as_tool_handler(gate_discovery=False)
 
-    with pytest.raises(ToolRefusedError) as raised:
+    with pytest.raises(ToolFailedError) as raised:
         await handler("nonexistent", {})
     assert raised.value.message == "Missing X-Tenant-ID header"
 
