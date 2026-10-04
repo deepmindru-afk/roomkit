@@ -205,6 +205,68 @@ class _CancelsItsPull(_BufferingChannel):
         return ChannelOutput.empty()
 
 
+class _KeepsItsStream(_BufferingChannel):
+    """A transport that keeps the stream it is handed, to see whether it was closed."""
+
+    handed: Any = None
+
+    def _closed(self) -> bool:
+        return self.handed is not None and self.handed.ag_frame is None
+
+
+class _StopsAtTheRow(_KeepsItsStream):
+    """Renders the deltas, then stops reading at the first row (the failed text's)."""
+
+    async def deliver_stream(
+        self,
+        text_stream: AsyncIterator[Any],
+        event: RoomEvent,
+        binding: ChannelBinding,
+        context: RoomContext,
+    ) -> ChannelOutput:
+        self.handed = text_stream
+        async for chunk in text_stream:
+            if isinstance(chunk, RoomEvent):
+                break
+        return ChannelOutput.empty()
+
+
+class _DropsMidStream(_KeepsItsStream):
+    """Takes the first delta, then its own transport drops."""
+
+    async def deliver_stream(
+        self,
+        text_stream: AsyncIterator[Any],
+        event: RoomEvent,
+        binding: ChannelBinding,
+        context: RoomContext,
+    ) -> ChannelOutput:
+        self.handed = text_stream
+        await anext(text_stream)
+        raise ConnectionError("socket gone")
+
+
+class _HangsAfterADelta(_KeepsItsStream):
+    """Takes the first delta, then waits on its transport until the turn is cancelled."""
+
+    def __init__(self, channel_id: str) -> None:
+        super().__init__(channel_id)
+        self.pulled = asyncio.Event()
+
+    async def deliver_stream(
+        self,
+        text_stream: AsyncIterator[Any],
+        event: RoomEvent,
+        binding: ChannelBinding,
+        context: RoomContext,
+    ) -> ChannelOutput:
+        self.handed = text_stream
+        await anext(text_stream)
+        self.pulled.set()
+        await asyncio.Event().wait()
+        return ChannelOutput.empty()  # pragma: no cover
+
+
 class _VoiceBench:
     def __init__(self) -> None:
         self.backend = MockVoiceBackend()
@@ -472,3 +534,39 @@ async def test_a_pull_cancelled_while_the_failed_response_ends_leaves_no_call_pe
     assert sorted(c.tool_id for c in ends) == ["c1", "c2"]
     assert all(c.status == "failed" for c in ends)
     assert str(turn.result.error) == "ai down"
+
+
+@pytest.mark.parametrize(
+    "channel_type", [_StopsAtTheRow, _DropsMidStream], ids=["stops-at-the-row", "channel-fails"]
+)
+async def test_the_stream_handed_to_the_channel_is_closed_when_the_turn_fails(
+    channel_type: type[_KeepsItsStream],
+) -> None:
+    channel = channel_type("stream")
+    turn = await _run(RoomKit(), channel)
+
+    assert turn.result.error is not None
+    assert channel._closed()
+
+
+async def test_the_stream_handed_to_the_channel_is_closed_when_the_turn_is_cancelled() -> None:
+    kit, channel = RoomKit(), _HangsAfterADelta("stream")
+    kit.register_channel(channel)
+    kit.register_channel(AIChannel("ai-1", provider=_FailsMidAnswer()))
+    room = await kit.create_room()
+    await kit.attach_channel(room.id, "stream")
+    await kit.attach_channel(room.id, "ai-1", category=ChannelCategory.INTELLIGENCE)
+    turn = asyncio.create_task(
+        kit.process_inbound(
+            InboundMessage(channel_id="stream", sender_id="user", content=TextContent(body="Hi")),
+            room_id=room.id,
+        )
+    )
+    await asyncio.wait_for(channel.pulled.wait(), 2)
+
+    turn.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await turn
+
+    assert channel._closed()
+    await kit.close()

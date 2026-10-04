@@ -85,6 +85,20 @@ class InboundStreamingHost(Protocol):
     ) -> None: ...
 
 
+async def _close_handed_stream(segments: Any, room_id: str) -> None:
+    """Close the stream a channel was handed, wherever it stopped reading it.
+
+    Closing a stream already ended is a no-op. One a channel left a read of
+    running cannot be closed from here: that is logged, not raised.
+    """
+    try:
+        await segments.aclose()
+    except Exception:
+        logger.warning(
+            "Could not close the stream handed to the channel (room %s)", room_id, exc_info=True
+        )
+
+
 class InboundStreamingMixin(HelpersMixin):
     """Streaming response handling extracted from the inbound pipeline.
 
@@ -256,27 +270,15 @@ class InboundStreamingMixin(HelpersMixin):
         room_id = placeholder.room_id
         # Rows ride it besides text: the ABC's AsyncIterator[str] names only the text.
         segments: Any = writer.stream(reader)
-        channel_error: Exception | None = None
         try:
-            await channel.deliver_stream(segments, placeholder, binding, context)
-            # A transport that hands back early (every voice session barged
-            # in, RFC §12.2 step 13s; or one that never reads it at all) left
-            # the response unread: it is closed and stored cancelled.
-            if not writer.read_to_end and writer.failure is None:
-                await self._stop_unread_stream(segments, sr, reader, writer, room_id)
-        except asyncio.CancelledError:
-            # A turn interrupted on purpose (the console's Esc). What was
-            # already streamed is on the user's screen, so the timeline
-            # MUST hold it too: dropping it would leave the room
-            # disagreeing with what the human read, and the agent's next
-            # context missing what it already said. Not an error — nobody
-            # failed — so ON_ERROR stays silent and the cancellation
-            # propagates untouched.
-            await writer.end_cancelled(reader)
-            raise
-        except Exception as exc:
-            channel_error = exc
-        failure = await self._end_failed_stream(writer, reader, channel_error)
+            channel_error = await self._deliver_segments(
+                channel, binding, placeholder, segments, sr, writer, reader, context
+            )
+            failure = await self._end_failed_stream(writer, reader, channel_error)
+        finally:
+            # On every exit: a channel that failed, or stopped reading at the
+            # failed text's row, leaves it suspended, and nothing else closes it.
+            await _close_handed_stream(segments, room_id)
         if failure is not None:
             if channel_error is not None and channel_error is not failure:
                 log_failure(
@@ -294,6 +296,39 @@ class InboundStreamingMixin(HelpersMixin):
                 correlation_id=correlation_id,
             )
         return failure
+
+    async def _deliver_segments(
+        self,
+        channel: Channel,
+        binding: ChannelBinding,
+        placeholder: RoomEvent,
+        segments: Any,
+        sr: StreamingResponse,
+        writer: SegmentWriter,
+        reader: ResponseReader,
+        context: RoomContext,
+    ) -> Exception | None:
+        """Run the channel's deliver_stream over *segments*; the error it raised, if any."""
+        try:
+            await channel.deliver_stream(segments, placeholder, binding, context)
+            # A transport that hands back early (every voice session barged
+            # in, RFC §12.2 step 13s; or one that never reads it at all) left
+            # the response unread: it is closed and stored cancelled.
+            if not writer.read_to_end and writer.failure is None:
+                await self._stop_unread_stream(segments, sr, reader, writer, placeholder.room_id)
+        except asyncio.CancelledError:
+            # A turn interrupted on purpose (the console's Esc). What was
+            # already streamed is on the user's screen, so the timeline
+            # MUST hold it too: dropping it would leave the room
+            # disagreeing with what the human read, and the agent's next
+            # context missing what it already said. Not an error — nobody
+            # failed — so ON_ERROR stays silent and the cancellation
+            # propagates untouched.
+            await writer.end_cancelled(reader)
+            raise
+        except Exception as exc:
+            return exc
+        return None
 
     @staticmethod
     async def _end_failed_stream(
