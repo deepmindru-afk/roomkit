@@ -8,6 +8,7 @@ import logging
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
+from roomkit.core.exceptions import ToolRefusedError
 from roomkit.skills.errors import SkillPathError
 
 if TYPE_CHECKING:
@@ -137,7 +138,9 @@ async def handle_read_reference(
     filename = arguments.get("filename", "")
     skill = await asyncio.to_thread(skills.get_skill, skill_name)
     if skill is None:
-        return json.dumps({"error": missing_skill_error(skills, skill_name)})
+        # A skill the registry does not offer: the call is refused, as a
+        # call to a tool it cannot reach is (RFC §9.3).
+        raise ToolRefusedError(json.dumps({"error": missing_skill_error(skills, skill_name)}))
 
     try:
         content = await asyncio.to_thread(skill.read_reference, filename)

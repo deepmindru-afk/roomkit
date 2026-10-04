@@ -812,6 +812,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `read_skill_reference` on a skill the registry does not offer is refused,
+  on the AI channel as on a realtime session (RMK-480, RFC §9.3): it was
+  reported served with an `{"error": ...}` body. The model reads the same
+  error. `activate_skill` on a name that is no skill stays an answer, its
+  hint revealing the tools it names (RFC §6.4).
+
 - A call's report carries the arguments it ran with, or that the gate had
   when it stopped it, on every door (RMK-480, RFC §9.3): an AIChannel
   reported a call BEFORE_TOOL_USE blocked, or rewrote into a shape the schema
