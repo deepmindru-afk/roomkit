@@ -91,6 +91,28 @@ def _tool_turn() -> list[AIResponse]:
     ]
 
 
+async def _alice_by_voice(kit: RoomKit, handler: ToolHandler, room: Room) -> None:
+    """Serve *handler* from a realtime voice session Alice speaks in."""
+    print("\n=== Alice asks by voice (same handler, realtime channel) ===")
+    rt_provider = MockRealtimeProvider()
+    voice = RealtimeVoiceChannel(
+        "voice-billing",
+        provider=rt_provider,
+        transport=MockRealtimeTransport(),
+        tool_handler=handler,
+    )
+    kit.register_channel(voice)
+    await kit.attach_channel(room.id, "voice-billing")
+    session = await voice.start_session(room.id, "alice", "fake-ws")
+    # The realtime channel installs the per-call context around the handler:
+    # room, Room and actor read back as on the text path; the toolset and the
+    # response record are the AI channel's and read None here.
+    await rt_provider.simulate_tool_call(session, "call-voice", "my_invoices", {})
+    await asyncio.sleep(0.1)
+    _session_id, _call_id, submitted = rt_provider.tool_results[0]
+    print(f"  {submitted}")
+
+
 async def _alice_in_a_test(handler: ToolHandler, room: Room) -> None:
     """Call *handler* directly, as a unit test would, during Alice's turn."""
     print("\n=== Alice's turn, described by a test (no channel runs) ===")
@@ -190,25 +212,7 @@ async def main() -> None:
         if isinstance(event.content, ToolCallContent) and event.content.status == "completed":
             print(f"  {event.content.result}")
 
-    print("\n=== Alice asks by voice (same handler, realtime channel) ===")
-    rt_provider = MockRealtimeProvider()
-    voice = RealtimeVoiceChannel(
-        "voice-billing",
-        provider=rt_provider,
-        transport=MockRealtimeTransport(),
-        tool_handler=my_invoices,
-    )
-    kit.register_channel(voice)
-    await kit.attach_channel(room.id, "voice-billing")
-    session = await voice.start_session(room.id, "alice", "fake-ws")
-    # The realtime channel installs the per-call context around the handler:
-    # room, Room and actor read back as on the text path; the toolset and the
-    # response record are the AI channel's and read None here.
-    await rt_provider.simulate_tool_call(session, "call-voice", "my_invoices", {})
-    await asyncio.sleep(0.1)
-    _session_id, _call_id, submitted = rt_provider.tool_results[0]
-    print(f"  {submitted}")
-
+    await _alice_by_voice(kit, my_invoices, room)
     await _alice_in_a_test(my_invoices, room)
     await kit.close()
 
