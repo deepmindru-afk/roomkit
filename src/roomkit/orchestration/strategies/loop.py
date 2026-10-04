@@ -672,7 +672,10 @@ def _approves(review: str) -> bool:
 
 
 def _review_ended(reviewed: WorkerOutcome) -> WorkerEnd:
-    """A review's terminal entry: completed when it approves, info otherwise."""
+    """A review's terminal entry: completed when it approves, info when it
+    asks for a revision, failed when the reviewer's task did not complete."""
+    if not reviewed.completed:
+        return WorkerEnd(StatusLevel.FAILED, reviewed.output, {"approved": False})
     output = task_work(reviewed.result)
     approved = _approves(output)
     level = StatusLevel.COMPLETED if approved else StatusLevel.INFO
