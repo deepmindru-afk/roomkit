@@ -97,6 +97,7 @@ class VoiceOpsMixin(HelpersMixin):
         metadata: dict[str, Any] | None = None,
         backend: VoiceBackend | None = None,
         connection: Any = None,
+        organization_id: str | None = None,
     ) -> VoiceSession | VideoSession:
         """Join a participant to a room via a channel.
 
@@ -127,16 +128,22 @@ class VoiceOpsMixin(HelpersMixin):
                 under the same cancellable join. Bound that wait at the call
                 site (e.g. the dial timeout); no active session or started hook
                 is exposed until both transport and provider are ready.
+            organization_id: The organization the caller acts for (RFC §17.2).
+                The room is read scoped to it before any session is created
+                or bound: another organization's room is not found, and none
+                of its recordings is told of the session. Left unset, the
+                read is unscoped.
 
         Returns:
             The voice or video session (created or passed in).
 
         Raises:
-            RoomNotFoundError: If the room does not exist.
+            RoomNotFoundError: If the room does not exist, or is another
+                organization's.
             ChannelNotRegisteredError: If the channel is not registered.
             ChannelNotFoundError: If the channel is not attached to the room.
         """
-        await self.get_room(room_id)
+        await self.get_room(room_id, organization_id=organization_id)
         channel = self._channels.get(channel_id)
         if channel is None:
             raise ChannelNotRegisteredError(f"Channel {channel_id} not registered")

@@ -111,6 +111,11 @@ session = await kit.join(
 await kit.leave(session)
 ```
 
+`join()` and `RealtimeVoiceChannel.start_session()` take `organization_id=`:
+the room is read with that scope before the session exists (RFC §17.2), so
+another organization's room raises `RoomNotFoundError` and no session joins
+it or reaches its recordings. Left unset, nothing changes.
+
 ## Tool Calling
 
 Realtime voice channels support tool calling during conversations:

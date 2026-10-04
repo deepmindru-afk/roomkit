@@ -57,6 +57,7 @@ from roomkit.channels._voice_pipeline import VoicePipelineMixin
 from roomkit.channels._voice_recording_hooks import VoiceRecordingHooksMixin
 from roomkit.channels.ai import ToolResult
 from roomkit.channels.base import Channel, FrameworkAwareChannel
+from roomkit.core.exceptions import RoomNotFoundError
 from roomkit.core.task_utils import _finish_cleanup
 from roomkit.models.channel import ChannelBinding, ChannelCapabilities, ChannelOutput
 from roomkit.models.context import RoomContext
@@ -1143,6 +1144,7 @@ class RealtimeVoiceChannel(
         connection: Any,
         *,
         metadata: dict[str, Any] | None = None,
+        organization_id: str | None = None,
     ) -> VoiceSession:
         """Start a new realtime voice session.
 
@@ -1164,12 +1166,23 @@ class RealtimeVoiceChannel(
                 ``connection_timing`` for measuring setup and pre-answer cost.
             metadata: Optional session metadata. May include overrides
                 for system_prompt, voice, tools, temperature.
+            organization_id: The organization the caller acts for (RFC §17.2).
+                The room is read scoped to it before the session exists:
+                another organization's room is not found, and none of its
+                recordings is told of the session. Left unset, the room is
+                not read, as before.
 
         Returns:
             The created VoiceSession.
+
+        Raises:
+            RoomNotFoundError: *organization_id* is set and the room is
+                missing, another organization's, or unreadable because the
+                channel is not registered with a framework.
         """
         if self._closing:
             raise RuntimeError("Realtime voice channel is closing")
+        await self._check_room_scope(room_id, organization_id)
         session = VoiceSession(
             id=uuid4().hex,
             room_id=room_id,
@@ -1187,6 +1200,18 @@ class RealtimeVoiceChannel(
             return await task
         finally:
             self._connecting_sessions.pop(session.id, None)
+
+    async def _check_room_scope(self, room_id: str, organization_id: str | None) -> None:
+        """Refuse a room the caller's organization does not see (RFC §17.2).
+
+        Unscoped, nothing is read. A channel no framework registered has no
+        room to read, so a scoped start on it is refused as not found.
+        """
+        if organization_id is None:
+            return
+        if self._framework is None:
+            raise RoomNotFoundError(f"Room {room_id} not found")
+        await self._framework.get_room(room_id, organization_id=organization_id)
 
     async def _start_session(self, session: VoiceSession, connection: Any) -> VoiceSession:
         try:

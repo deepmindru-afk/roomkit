@@ -152,13 +152,18 @@ class RealtimeAudioVideoChannel(VideoHooksMixin, RealtimeVoiceChannel):
         connection: Any,
         *,
         metadata: dict[str, Any] | None = None,
+        organization_id: str | None = None,
     ) -> VoiceSession:
-        """Start a realtime A/V session, then fire video hooks."""
+        """Start a realtime A/V session, then fire video hooks.
+
+        *organization_id* scopes the room read, as on the voice channel.
+        """
         session = await super().start_session(
             room_id,
             participant_id,
             connection,
             metadata=metadata,
+            organization_id=organization_id,
         )
 
         # Cache event loop for cross-thread video callback scheduling

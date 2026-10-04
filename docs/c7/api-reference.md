@@ -302,7 +302,7 @@ kit = RoomKit(
 
 | Method | Description |
 |--------|-------------|
-| `join(room_id, channel_id, participant_id?, ...)` | Join voice/video session |
+| `join(room_id, channel_id, participant_id?, ..., *, organization_id=None)` | Join voice/video session; the room read with its scope (another organization's is not found, no session joins it) |
 | `leave(session)` | Leave voice/video session |
 | `transcribe(audio)` | Speech-to-text |
 | `synthesize(text, voice?)` | Text-to-speech |

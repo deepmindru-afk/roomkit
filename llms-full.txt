@@ -2756,6 +2756,11 @@ session = await kit.join(
 await kit.leave(session)
 ```
 
+A host serving several organizations passes `organization_id=` to `join()`:
+the room is read with that scope first (RFC §17.2), so another
+organization's room raises `RoomNotFoundError` and no session joins it or
+reaches its recordings. Left unset, the read is unscoped.
+
 ## STT Providers
 
 | Provider | Class | Config | Extra |
@@ -3476,6 +3481,11 @@ session = await kit.join(
 # Leave when done
 await kit.leave(session)
 ```
+
+`join()` and `RealtimeVoiceChannel.start_session()` take `organization_id=`:
+the room is read with that scope before the session exists (RFC §17.2), so
+another organization's room raises `RoomNotFoundError` and no session joins
+it or reaches its recordings. Left unset, nothing changes.
 
 ## Tool Calling
 
@@ -5783,7 +5793,7 @@ kit = RoomKit(
 
 | Method | Description |
 |--------|-------------|
-| `join(room_id, channel_id, participant_id?, ...)` | Join voice/video session |
+| `join(room_id, channel_id, participant_id?, ..., *, organization_id=None)` | Join voice/video session; the room read with its scope (another organization's is not found, no session joins it) |
 | `leave(session)` | Leave voice/video session |
 | `transcribe(audio)` | Speech-to-text |
 | `synthesize(text, voice?)` | Text-to-speech |

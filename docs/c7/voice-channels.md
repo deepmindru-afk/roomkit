@@ -52,6 +52,11 @@ session = await kit.join(
 await kit.leave(session)
 ```
 
+A host serving several organizations passes `organization_id=` to `join()`:
+the room is read with that scope first (RFC §17.2), so another
+organization's room raises `RoomNotFoundError` and no session joins it or
+reaches its recordings. Left unset, the read is unscoped.
+
 ## STT Providers
 
 | Provider | Class | Config | Extra |

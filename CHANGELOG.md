@@ -1897,6 +1897,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- `kit.join()` and a realtime channel's `start_session()` take
+  `organization_id=None` (RMK-475, RFC §17.2): the room is read scoped to it
+  before any session is created or bound, so a host acting for one
+  organization that knows another's room id gets `RoomNotFoundError` there,
+  and no session joins that room nor declares a track to its recordings.
+  `join()` read the room unscoped and `start_session()` did not read it; left
+  unset, both behave as before. A scoped `start_session()` on a channel no
+  framework registered has no room to read and raises `RoomNotFoundError`.
+
 - A call under an MCP alias is judged by the tool policy and skill gating
   under both names (RMK-483, RFC §21.1). `MCPToolProvider.as_tool_handler()`
   runs `mcp__<server>__<tool>` as `<tool>` after the gate judged the alias:
