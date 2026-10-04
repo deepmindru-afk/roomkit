@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from roomkit.channels.ai import AIChannel
 from roomkit.core.exceptions import ToolFailedError, ToolRefusedError, TurnCutShortError
+from roomkit.core.task_utils import shielded
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.streaming import LoopEndMarker, SegmentBreakMarker, ToolCallStartMarker
 from roomkit.models.tool_call import ToolCallEvent
@@ -404,18 +405,19 @@ class AgentReasoningBackend(ReasoningBackend):
 
     async def _report_provider_call(self, event: ToolCallEvent) -> None:
         """Report a call the agent's provider served (``AIToolCall.served``)
-        to the voice channel's hooks, with its outcome (RFC §9.3)."""
+        to the voice channel's hooks, with its outcome (RFC §9.3).
+
+        Its one report is claimed before it goes, as a call served through the
+        gate is, so the loop's end reports it no second time; and it is made
+        to its end whatever ends the delegation meanwhile.
+        """
         request = _DELEGATION.get()
         if request is None or request.report_call is None:
             return
-        await request.report_call(
-            event.name,
-            dict(event.arguments),
-            str(event.result or ""),
-            is_error=event.is_error,
-            detail=event.error_detail,
-            tool_call_id=event.tool_call_id,
-        )
+        loop_ctx = _current_loop_ctx.get()
+        if loop_ctx is not None and not loop_ctx.claim_report(event.tool_call_id):
+            return
+        await shielded(_relay_report(request, event))
 
     async def session_ended(self, session_id: str) -> None:
         self._histories.pop(session_id, None)
@@ -491,6 +493,20 @@ _REGISTERED = (
 def _registered(agent: AIChannel) -> bool:
     """Whether *agent* is registered with a kit, which wires its reports."""
     return agent._tool_observer_hook is not None or agent._tool_report_hook is not None
+
+
+async def _relay_report(request: ReasoningRequest, event: ToolCallEvent) -> None:
+    """Hand *event*, a call served outside the gate, to the request's reporter."""
+    if request.report_call is None:
+        return
+    await request.report_call(
+        event.name,
+        dict(event.arguments),
+        str(event.result or ""),
+        is_error=event.is_error,
+        detail=event.error_detail,
+        tool_call_id=event.tool_call_id,
+    )
 
 
 async def _execute(
