@@ -127,6 +127,16 @@ class RealtimeToolGateMixin:
             return True
         return any(isinstance(tool, dict) and tool.get("name") == name for tool in tools)
 
+    def _admitted_catalogue(self, session_id: str) -> list[dict[str, Any]]:
+        """The session's catalogue its tool policies admit, skill gating aside:
+        what a skill's ``requires`` is checked against, and the schemas an
+        activation may hand over (RFC §24.3)."""
+        return [
+            tool
+            for tool in self._session_catalogue(session_id)
+            if (name := dict_tool_name(tool)) and self._session_admits(session_id, name)
+        ]
+
     def _session_declared_tools(self, session_id: str) -> list[dict[str, Any]]:
         """Every tool the session can call: its catalogue, then the channel's
         own it declares (Tool Search's while active, the skills')."""

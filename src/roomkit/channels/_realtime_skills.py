@@ -34,6 +34,7 @@ from roomkit.channels._skill_handlers import (
     tools_hint,
 )
 from roomkit.core.exceptions import ToolRefusedError
+from roomkit.skills.models import missing_required_tools, missing_tools_error
 from roomkit.skills.registry import SkillRegistry
 from roomkit.tools.policy import matches_any_pattern
 
@@ -57,10 +58,7 @@ class RequiredToolsCheck:
     catalogue, read when asked: after the activation's hooks ran, before
     anyone is told (RFC §9.3)."""
 
-    def __init__(
-        self, support: Any, skill: Skill | None, catalogue: Callable[[], list[dict[str, Any]]]
-    ) -> None:
-        self._support = support
+    def __init__(self, skill: Skill | None, catalogue: Callable[[], list[dict[str, Any]]]) -> None:
         self._skill = skill
         self._catalogue = catalogue
         self.missing: list[str] | None = None
@@ -70,7 +68,7 @@ class RequiredToolsCheck:
         """Check the catalogue now: whether every required tool is in it."""
         skill = self._skill
         self.missing = (
-            self._support.missing_required_tools(skill, self._catalogue()) if skill else []
+            missing_required_tools(skill.metadata, _names(self._catalogue())) if skill else []
         )
         return not self.missing
 
@@ -236,12 +234,8 @@ class RealtimeSkillSupport:
     def _gated_tool_names(self, session_id: str, pending: Skill | None = None) -> set[str]:
         """Collect tool names gated by skills not yet activated in this session."""
         activated = self._activated_skills.get(session_id, set())
-        gated: set[str] = set()
-        for meta in self._skills.all_metadata():
-            if meta.name in activated or (pending is not None and meta.name == pending.name):
-                continue
-            gated.update(meta.gated_tool_names)
-        return gated
+        opened = activated | {pending.name} if pending is not None else activated
+        return self._skills.gated_tool_names(opened)
 
     def is_gated(self, name: str, session_id: str, gated: set[str] | None = None) -> bool:
         """Whether *name* is gated by a skill this session has not activated.
@@ -310,16 +304,6 @@ class RealtimeSkillSupport:
             if self._delivery_mode == "on_demand":
                 self._activated_bodies[session_id].append((skill.name, skill.instructions))
 
-    @staticmethod
-    def missing_required_tools(skill: Skill, tools: list[dict[str, Any]]) -> list[str]:
-        """The tools *skill* requires that the catalogue *tools* lacks."""
-        names = {name for tool in tools if (name := dict_tool_name(tool))}
-        return [name for name in skill.metadata.required_tool_names if name not in names]
-
-    @staticmethod
-    def missing_tools_error(missing: list[str]) -> str:
-        return json.dumps({"error": f"Required tools not available: {', '.join(missing)}"})
-
     def unknown_skill_hint(
         self, result: str, skill_name: str, reachable: Iterable[str], *, call_tool: bool = False
     ) -> tuple[str, list[str]]:
@@ -341,10 +325,10 @@ class RealtimeSkillSupport:
                 }
             ), None
         catalogue = {name: tool for tool in tools if (name := dict_tool_name(tool))}
-        missing = self.missing_required_tools(skill, tools)
+        missing = missing_required_tools(skill.metadata, _names(tools))
         if missing:
             # A refusal, as the activation itself refuses it (RMK-395).
-            raise ToolRefusedError(self.missing_tools_error(missing))
+            raise ToolRefusedError(missing_tools_error(missing))
 
         if self.uses_tool_result:
             result = await asyncio.to_thread(activation_content, skill)
@@ -389,3 +373,7 @@ class RealtimeSkillSupport:
     async def _handle_run_script(self, arguments: dict[str, Any]) -> str:
         """Execute a script via the configured ScriptExecutor."""
         return await handle_run_script(arguments, self._skills, self._script_executor)
+
+
+def _names(tools: list[dict[str, Any]]) -> list[str]:
+    return [name for tool in tools if (name := dict_tool_name(tool))]

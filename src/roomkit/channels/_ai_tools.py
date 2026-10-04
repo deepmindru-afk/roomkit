@@ -62,6 +62,7 @@ from roomkit.providers.ai.base import (
 )
 from roomkit.providers.ai.tool_calls import partial_call_error
 from roomkit.sandbox.tools import SANDBOX_TOOL_PREFIX, TOOL_SANDBOX_BASH
+from roomkit.skills.models import missing_required_tools, missing_tools_error
 from roomkit.telemetry.base import SpanKind, TelemetryProvider
 from roomkit.telemetry.redaction import redact
 from roomkit.tools._outcome import OutcomeKind, ToolOutcome, kept_in_tool_memory, read_outcome
@@ -92,6 +93,7 @@ if TYPE_CHECKING:
     from roomkit.realtime.base import RealtimeBackend
     from roomkit.sandbox.executor import SandboxExecutor
     from roomkit.skills.executor import ScriptExecutor
+    from roomkit.skills.models import Skill
     from roomkit.skills.registry import SkillRegistry
     from roomkit.tools.context import _ToolLoopContext
     from roomkit.tools.external import BeforeToolCallback, ExternalToolHandler
@@ -955,6 +957,9 @@ class AIToolsMixin(_AIChannelContract):
             )
             self._defer_reveal(loop_ctx, matching)
             return result_str
+        if skill is not None and (missing := self._missing_required_tools(skill)):
+            # Refused as every door refuses it (RFC §24.3): nothing opens.
+            raise ToolRefusedError(missing_tools_error(missing))
         # Recorded once the call's outcome is known: an ON_TOOL_CALL hook that
         # blocks the call, or a failure, must open no gate (_settle_activation).
         already_active = self._skill_activation.is_active(loop_ctx.room_id, skill_name)
@@ -965,6 +970,16 @@ class AIToolsMixin(_AIChannelContract):
         # the model before the turn started, so the body just built above would
         # be a second copy of rules it already holds. Ack instead.
         return activation_ack(skill, ALREADY_ACTIVE_NOTE, already_active=True)
+
+    def _missing_required_tools(self, skill: Skill) -> list[str]:
+        """The tools *skill* requires that this turn does not offer once its
+        tool policy is applied, skill gating aside (RFC §24.3); none to check
+        outside a turn, which resolved no toolset."""
+        base = self._get_loop_ctx().all_context_tools
+        if base is None:
+            return []
+        admitted = (tool.name for tool in base if self._policy_allows(tool.name))
+        return missing_required_tools(skill.metadata, admitted)
 
     def _defer_activation(self, loop_ctx: _ToolLoopContext, skill_name: str) -> None:
         """Hold an activation until its call is served, or record it now.

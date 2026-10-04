@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -76,6 +78,21 @@ class SkillMetadata:
         so a skill and a policy agree on what a pattern covers.
         """
         return matches_any_pattern(tool_name, self.gated_tool_names)
+
+
+def missing_required_tools(metadata: SkillMetadata, admitted: Iterable[str]) -> list[str]:
+    """The tools *metadata* requires that the conversation does not offer
+    (RFC §24.3): its ``requires`` names absent from *admitted*, the tools the
+    conversation declares once its tool policy is applied, skill gating aside,
+    since activating the skill opens what it gates. Every door checks an
+    activation with this one rule."""
+    offered = set(admitted)
+    return [name for name in metadata.required_tool_names if name not in offered]
+
+
+def missing_tools_error(missing: list[str]) -> str:
+    """What the model reads of an activation whose required tools are missing."""
+    return json.dumps({"error": f"Required tools not available: {', '.join(missing)}"})
 
 
 @dataclass

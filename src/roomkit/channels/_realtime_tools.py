@@ -45,6 +45,7 @@ from roomkit.models.enums import ChannelType
 from roomkit.models.tool_call import (
     ToolCallEvent,
 )
+from roomkit.skills.models import missing_tools_error
 from roomkit.telemetry.base import Attr, SpanKind
 from roomkit.telemetry.context import reset_span, set_current_span
 from roomkit.tools._outcome import OutcomeKind, ToolOutcome
@@ -233,6 +234,7 @@ class RealtimeToolsMixin:
     _authorize_realtime_tool: Any  # RealtimeToolGateMixin — cross-mixin
     _session_base_tools: Any  # RealtimeToolGateMixin — cross-mixin
     _session_catalogue: Any  # RealtimeToolGateMixin — cross-mixin
+    _admitted_catalogue: Any  # RealtimeToolGateMixin — cross-mixin
     _session_declared_tools: Any  # RealtimeToolGateMixin — cross-mixin
     _session_policy_check: Any  # RealtimeToolGateMixin — cross-mixin
     _tool_reachable: Any  # RealtimeToolGateMixin — cross-mixin
@@ -648,8 +650,10 @@ class RealtimeToolsMixin:
         if lock is None:
             return ended_outcome(call)
         # A skill requires tools the session declares, whoever set them up
-        # (its catalogue, orchestration).
-        tools = self._session_catalogue(session.id)
+        # (its catalogue, orchestration), once its tool policy is applied: a
+        # tool the policy denies is no tool the skill can use, and its schema
+        # never goes out with the activation (RFC §24.3).
+        tools = self._admitted_catalogue(session.id)
         try:
             result, skill = await support.prepare_activation(call.arguments, session.id, tools)
         except ToolRefusedError as refusal:
@@ -692,18 +696,13 @@ class RealtimeToolsMixin:
         landing after that does not withdraw the activation; the skill's calls
         to a tool it removed are then refused as undeclared.
         """
-        support = self._skill_support
-        check = RequiredToolsCheck(
-            support, skill, lambda: self._session_catalogue(call.session.id)
-        )
+        check = RequiredToolsCheck(skill, lambda: self._admitted_catalogue(call.session.id))
         served = ToolOutcome(OutcomeKind.SERVED, result)
         outcome = await judge_tool_call(self, call, served, carrying, admit=check.held)
         if check.missing is None:  # no framework judged the call
             check.held()
         if check.missing and outcome.kind is OutcomeKind.SERVED:
-            return ToolOutcome(
-                OutcomeKind.REFUSED, support.missing_tools_error(check.missing)
-            ), None
+            return ToolOutcome(OutcomeKind.REFUSED, missing_tools_error(check.missing)), None
         return outcome, skill
 
     async def _deliver_activation(

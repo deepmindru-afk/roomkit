@@ -662,6 +662,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A skill's `requires` and gates read the same on every door (RMK-429, RFC
+  §24.3): a text turn now checks `requires` as a realtime session does, with
+  one rule (`roomkit.skills.models.missing_required_tools`), against the tools
+  the conversation declares once its tool policy is applied; a text activation
+  of a skill whose required tool is absent was served. A realtime session
+  counted a tool its policy denies as available, and on a fixed-declaration
+  provider in `on_demand` the activation handed the model that tool's full
+  schema; it now refuses the activation (`Required tools not available`).
+  `SkillRegistry.mark_unavailable` no longer opens the tools the skill gated:
+  they stay closed, read through the new `SkillRegistry.gated_tool_names()`,
+  which every door uses.
+
 - A refusal reads the same text for the same cause on every door (RMK-428,
   RFC §21.1, §12.4): an `AIChannel` turn, a reasoning backend's turn, a
   `RealtimeVoiceChannel` session and a conference now say `Tool 'X' is not

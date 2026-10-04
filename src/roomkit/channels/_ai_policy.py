@@ -117,13 +117,7 @@ class AIToolPolicyMixin(_AIChannelContract):
         room = (
             set() if loop_ctx.standalone else self._skill_activation.active_names(loop_ctx.room_id)
         )
-        activated = loop_ctx.activated_skills | room
-        gated: set[str] = set()
-        for meta in self._skills.all_metadata():
-            if meta.name in activated:
-                continue
-            gated.update(meta.gated_tool_names)
-        return gated
+        return self._skills.gated_tool_names(loop_ctx.activated_skills | room)
 
     def _record_declared_tools(
         self, loop_ctx: _ToolLoopContext, tools: list[AITool] | None

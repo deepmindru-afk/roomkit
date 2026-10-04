@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
+from collections.abc import Container, Iterable
 from html import escape
 from pathlib import Path
 
@@ -35,6 +35,9 @@ class SkillRegistry:
         self._skills: dict[str, Skill] = {}
         self._paths: dict[str, Path] = {}
         self._unavailable: dict[str, str] = {}
+        # The patterns a skill marked unavailable gated: it can never be
+        # activated here, so what it gates stays closed (RFC §24.2).
+        self._closed_gates: dict[str, list[str]] = {}
         self._unlisted: set[str] = set()
 
     def discover(self, *directories: str | Path, strict: bool = True) -> int:
@@ -154,6 +157,7 @@ class SkillRegistry:
         self._skills.pop(metadata.name, None)
         # Registering makes the skill usable again — drop any stale mark
         self._unavailable.pop(metadata.name, None)
+        self._closed_gates.pop(metadata.name, None)
         self._unlisted.discard(metadata.name)
         logger.log(log_level, "Registered skill: %s", metadata.name)
 
@@ -193,6 +197,9 @@ class SkillRegistry:
             copied._unavailable = {
                 name: reason for name, reason in self._unavailable.items() if name in wanted
             }
+            copied._closed_gates = {
+                name: gates for name, gates in self._closed_gates.items() if name in wanted
+            }
         return copied
 
     def get_metadata(self, name: str) -> SkillMetadata | None:
@@ -224,11 +231,29 @@ class SkillRegistry:
         the skill-tool error paths, so callers can say WHY it is missing
         instead of leaving a silent gap (e.g. a ``requires`` gate dropping
         a skill whose tools are not granted in this execution context).
+
+        What it gated stays closed: no activation can open it any more
+        (:meth:`gated_tool_names`).
         """
-        self._metadata.pop(name, None)
+        metadata = self._metadata.pop(name, None)
+        if metadata is not None and metadata.gated_tool_names:
+            self._closed_gates[name] = metadata.gated_tool_names
         self._skills.pop(name, None)
         self._paths.pop(name, None)
         self._unavailable[name] = reason
+
+    def gated_tool_names(self, activated: Container[str] = ()) -> set[str]:
+        """The tool patterns skills keep closed (RFC §24.2): those of every
+        registered skill not in *activated*, and those of every skill marked
+        unavailable, which nothing can activate. Every door reads skill
+        gating through this one rule."""
+        gated: set[str] = set()
+        for metadata in self._metadata.values():
+            if metadata.name not in activated:
+                gated.update(metadata.gated_tool_names)
+        for gates in self._closed_gates.values():
+            gated.update(gates)
+        return gated
 
     def mark_unlisted(self, name: str) -> None:
         """Keep *name* activatable but out of the prompt manifest.
