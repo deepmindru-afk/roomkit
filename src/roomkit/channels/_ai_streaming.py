@@ -549,17 +549,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
         """Orchestrate generation, termination decisions and local tool rounds."""
         async with self._streaming_tool_turn(context, parent_loop_ctx, parent_span_id) as turn:
             loop_ctx = turn.loop_ctx
-            external = _ExternalStreamTools(
-                channel_id=self.channel_id,
-                room_id=turn.room_id,
-                loop_ctx=loop_ctx,
-                publish=self._publish_tool_event,
-                serves_locally=partial(self._serves_locally, loop_ctx),
-                bound=self._bound_provider_result,
-                handler=self._external_tool_handler,
-                report=self._tool_report_hook,
-                observe=self._tool_observer_hook,
-            )
+            external = self._external_stream_tools(turn)
             context, cancelled = self._drain_steering_queue(context, loop_ctx)
             if cancelled:
                 yield turn.end("cancelled")
@@ -603,6 +593,20 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
 
             # An empty-response retry can consume the final generation slot.
             yield _answered_end(context, turn, "max_rounds")
+
+    def _external_stream_tools(self, turn: _StreamTurnState) -> _ExternalStreamTools:
+        """The turn's routing of the calls its provider serves."""
+        return _ExternalStreamTools(
+            channel_id=self.channel_id,
+            room_id=turn.room_id,
+            loop_ctx=turn.loop_ctx,
+            publish=self._publish_tool_event,
+            serves_locally=partial(self._serves_locally, turn.loop_ctx),
+            bound=self._bound_provider_result,
+            handler=self._external_tool_handler,
+            report=self._tool_report_hook,
+            observe=self._tool_observer_hook,
+        )
 
     def _new_stream_round(
         self,

@@ -50,6 +50,9 @@ class _ToolState:
     failure: str | None = None
     """What failed when the external tool handler raised deciding the
     permission: the call is reported failed, by the channel, with it."""
+    failure_error: str | None = None
+    """That failure as the AI door words it for a model: the tool failed and
+    the failure's class, never its message."""
     channel_refused: bool = False
     """The channel, not the handler, refused the permission: the handler
     approved with an input or a result ACP cannot apply."""

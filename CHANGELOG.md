@@ -863,8 +863,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tool handler refused, then left open as the turn ended, was reported
   `cancelled` (now refused, with the handler's reason, as on the AI door);
   one whose handler raised read `cancelled` too (now failed, with what
-  failed); and a refusal for a call the agent never announced was reported
-  nowhere.
+  failed, its body the AI door's `Tool '<name>' failed (<class>)`); and a
+  refusal for a call the agent never announced was reported nowhere. A
+  permission the handler approved with an input or a result ACP cannot apply
+  is refused with the channel's reason, no longer the approval's.
 
 - A provider-served call's result is bounded as every outcome the model
   reads (RMK-480, RFC §21.5): in a round mixing it with a call the channel

@@ -35,7 +35,7 @@ from roomkit.models.streaming import (
 )
 from roomkit.models.tool_call import ToolCallEvent
 from roomkit.realtime.base import EphemeralEvent, EphemeralEventType
-from roomkit.tools.result import cancelled_tool_error, failure_detail
+from roomkit.tools.result import cancelled_tool_error, failure_detail, tool_failure
 
 if TYPE_CHECKING:
     from roomkit.channels.acp_transport import ACPTransport
@@ -79,11 +79,56 @@ def _end_outcome(tool: _ToolState, status: str, *, interrupted: bool) -> ToolCal
 
 
 def _decided_error(tool: _ToolState) -> str | None:
-    """The error of a call RoomKit refused, as the gate's refusal reads
-    (RFC §9.3); ``None`` for any other call."""
-    if not tool.refused:
-        return None
-    return json.dumps({"error": tool.refusal or f"Tool '{tool.name}' was denied"})
+    """The error of a call RoomKit decided, as the AI door words it: its
+    refusal, or its handler's failure (RFC §9.3); ``None`` for any other
+    call."""
+    if tool.refused:
+        return json.dumps({"error": tool.refusal or f"Tool '{tool.name}' was denied"})
+    return tool.failure_error
+
+
+_UNAPPLIABLE = "ACP cannot apply an approval that rewrites the call's input or result"
+"""Why the channel refuses a permission its handler approved with an override."""
+
+
+@dataclass(frozen=True, slots=True)
+class _PermissionDecision:
+    """RoomKit's decision on an ACP call's permission."""
+
+    approved: bool = False
+    failure: str | None = None
+    """What failed, when the handler raised deciding it."""
+    failure_error: str | None = None
+    """That failure as a model reads it."""
+    channel_refused: bool = False
+    refusal: str | None = None
+
+
+def _record_decision(tool: _ToolState, decision: _PermissionDecision) -> None:
+    """Keep *decision* on its call, the last one standing: a refused call's
+    end reads as refused, not as a tool that failed; one approved later can
+    fail on its own. A handler that raised refused nothing: the call failed,
+    and the channel reports it with what failed (RFC §9.3)."""
+    tool.failure = decision.failure
+    tool.failure_error = decision.failure_error
+    tool.refused = not decision.approved and decision.failure is None
+    tool.refusal = decision.refusal if tool.refused else None
+    tool.channel_refused = decision.channel_refused
+
+
+def _permission_response(sdk: Any, options: list[Any], *, approved: bool) -> Any:
+    """The ACP answer to a permission request: the agent's allow option when
+    approved, its reject option otherwise, a denial when it offered neither."""
+    preferred = ("allow_once", "allow_always") if approved else ("reject_once", "reject_always")
+    for kind in preferred:
+        option = next((item for item in options if _option_kind(item) == kind), None)
+        if option is not None:
+            return sdk.schema.RequestPermissionResponse(
+                outcome=sdk.schema.AllowedOutcome(outcome="selected", option_id=option.option_id)
+            )
+    return sdk.schema.RequestPermissionResponse(
+        outcome=sdk.schema.DeniedOutcome(outcome="cancelled")
+    )
 
 
 def _tool_end(
@@ -427,7 +472,8 @@ class ACPEventsMixin:
         *,
         stream: bool,
     ) -> bool:
-        """Fail every tool the turn started and never closed.
+        """Close every tool the turn started and never closed, and every call
+        RoomKit decided that the agent never announced.
 
         A turn can die mid-tool — the agent process restarts, the node goes
         away, the user presses Stop — and the agent then never sends the
@@ -614,57 +660,45 @@ class ACPEventsMixin:
             else (tool.arguments if tool is not None else {})
         )
 
-        approved = False
-        failure: str | None = None
-        channel_refused = False
-        refusal: str | None = None
-        if self._external_tool_handler is not None:
-            try:
-                decision = await self._external_tool_handler.process_tool_call(
-                    tool_name,
-                    arguments,
-                    tool_call_id=tool_id,
-                    session_id=session_id,
-                    room_id=room_id,
-                )
-                approved = decision.approved
-                refusal = decision.reason
-                if decision.modified_input is not None or decision.result is not None:
-                    logger.warning(
-                        "ACP cannot apply ExternalToolHandler input/result overrides; "
-                        "rejecting tool call %s",
-                        tool_id,
-                    )
-                    approved = False
-                    channel_refused = True
-            except Exception as exc:
-                logger.exception("ACP external permission handler failed")
-                failure = failure_detail(exc)
+        decision = await self._decide_permission(
+            tool_name, arguments, tool_id=tool_id, session_id=session_id, room_id=room_id
+        )
         if tool is not None:
-            # The last decision stands: a refused call's end reads as refused,
-            # not as a tool that failed; one approved later can fail on its own.
-            # A handler that raised refused nothing: the call failed, and the
-            # channel reports it with what failed (RFC §9.3).
-            tool.failure = failure
-            tool.refused = not approved and failure is None
-            tool.refusal = refusal if tool.refused else None
-            tool.channel_refused = channel_refused
+            _record_decision(tool, decision)
+        return _permission_response(sdk, options, approved=decision.approved)
 
-        preferred = (
-            ("allow_once", "allow_always") if approved else ("reject_once", "reject_always")
-        )
-        for kind in preferred:
-            option = next((item for item in options if _option_kind(item) == kind), None)
-            if option is not None:
-                return sdk.schema.RequestPermissionResponse(
-                    outcome=sdk.schema.AllowedOutcome(
-                        outcome="selected",
-                        option_id=option.option_id,
-                    )
-                )
-        return sdk.schema.RequestPermissionResponse(
-            outcome=sdk.schema.DeniedOutcome(outcome="cancelled")
-        )
+    async def _decide_permission(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        *,
+        tool_id: str,
+        session_id: str,
+        room_id: str | None,
+    ) -> _PermissionDecision:
+        """The external tool handler's decision on a call's permission: no
+        handler refuses it; one that approves with an input or a result ACP
+        cannot apply is refused by the channel; one that raises fails it."""
+        handler = self._external_tool_handler
+        if handler is None:
+            return _PermissionDecision()
+        try:
+            decision = await handler.process_tool_call(
+                tool_name, arguments, tool_call_id=tool_id, session_id=session_id, room_id=room_id
+            )
+        except Exception as exc:
+            logger.exception("ACP external permission handler failed")
+            return _PermissionDecision(
+                failure=failure_detail(exc), failure_error=tool_failure(tool_name, exc)
+            )
+        if decision.modified_input is not None or decision.result is not None:
+            logger.warning(
+                "ACP cannot apply ExternalToolHandler input/result overrides; "
+                "rejecting tool call %s",
+                tool_id,
+            )
+            return _PermissionDecision(channel_refused=True, refusal=_UNAPPLIABLE)
+        return _PermissionDecision(approved=decision.approved, refusal=decision.reason)
 
     async def _publish(
         self,
