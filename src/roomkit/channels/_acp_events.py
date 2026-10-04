@@ -113,6 +113,16 @@ def _end_marker(tool: _ToolState, end: _ToolEnd) -> ToolCallEndMarker:
     )
 
 
+def _channel_decided(tool: _ToolState, end: _ToolEnd) -> bool:
+    """Whether the channel, not the handler, decided a call that never ran:
+    it refused a permission the handler approved with what ACP cannot apply,
+    or the handler raised deciding it, and the agent reported the call
+    refused or failed."""
+    if end.outcome == "refused" and tool.channel_refused:
+        return True
+    return tool.failure is not None and end.status == "failed"
+
+
 def _reported_body(tool: _ToolState, end: _ToolEnd) -> str:
     """What a call's report carries, with an external handler or without:
     a cancelled call's cancellation envelope, a failed or refused call's
@@ -138,6 +148,7 @@ class ACPEventsMixin:
     _transport: ACPTransport
     _external_tool_handler: ExternalToolHandler | None
     _tool_report_hook: ToolCallObserver | None
+    _tool_observer_hook: ToolCallObserver | None
     _realtime: RealtimeBackend | None
 
     async def _receive_update(self, session_id: str, update: Any) -> None:
@@ -470,12 +481,15 @@ class ACPEventsMixin:
         """Publish a closed call's end and report it, once."""
         if room_id is not None:
             await self._publish_tool_end(room_id, tool, end)
-        if self._external_tool_handler is not None and tool.failure is None:
+        if _channel_decided(tool, end):
+            # A call that never ran because the channel refused it or its
+            # handler raised: the channel reports it, to the observers only.
+            await self._report_agent_call(room_id, tool, end, observe=True)
+        elif self._external_tool_handler is not None:
             await self._report_tool_end(self._external_tool_handler, room_id, tool, end)
         elif self._tool_report_hook is not None:
-            # No handler to report it, or one that raised deciding it:
-            # ON_TOOL_CALL still hears of every call, as of a call an AI
-            # provider ran itself (RFC §9.3).
+            # No handler to report it: ON_TOOL_CALL still hears of every call,
+            # as of a call an AI provider ran itself (RFC §9.3).
             await self._report_agent_call(room_id, tool, end)
 
     async def _publish_tool_end(self, room_id: str, tool: _ToolState, end: _ToolEnd) -> None:
@@ -497,12 +511,13 @@ class ACPEventsMixin:
         )
 
     async def _report_agent_call(
-        self, room_id: str | None, tool: _ToolState, end: _ToolEnd
+        self, room_id: str | None, tool: _ToolState, end: _ToolEnd, *, observe: bool = False
     ) -> None:
         """Report a call the agent ran to ON_TOOL_CALL, through the kit: with
         the body a handler would report (:func:`_reported_body`), refused or
-        cancelled to the observers only (RFC §9.3)."""
-        report = self._tool_report_hook
+        cancelled to the observers only (RFC §9.3), and to them alone when
+        *observe* (a call the channel decided that never ran)."""
+        report = (self._tool_observer_hook if observe else None) or self._tool_report_hook
         if report is None:
             return
         event = ToolCallEvent(
@@ -581,6 +596,7 @@ class ACPEventsMixin:
 
         approved = False
         failure: str | None = None
+        channel_refused = False
         if self._external_tool_handler is not None:
             try:
                 decision = await self._external_tool_handler.process_tool_call(
@@ -598,6 +614,7 @@ class ACPEventsMixin:
                         tool_id,
                     )
                     approved = False
+                    channel_refused = True
             except Exception as exc:
                 logger.exception("ACP external permission handler failed")
                 failure = failure_detail(exc)
@@ -608,6 +625,7 @@ class ACPEventsMixin:
             # channel reports it with what failed (RFC §9.3).
             tool.failure = failure
             tool.refused = not approved and failure is None
+            tool.channel_refused = channel_refused
 
         preferred = (
             ("allow_once", "allow_always") if approved else ("reject_once", "reject_always")

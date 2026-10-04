@@ -107,19 +107,6 @@ class ToolCallEvent:
     like a refusal's; :attr:`result` carries a short envelope saying so.
     """
 
-    refused: bool = False
-    """Whether a gate or the handler refused the call before it ran (RFC §9.3).
-
-    A pre-execution refusal (undeclared tool, invalid or cut arguments,
-    denied by policy, gated behind a skill, denied by ``BEFORE_TOOL_USE``), a
-    handler's refusal (:meth:`~roomkit.tools.external.ExternalToolHandler.on_tool_refused`,
-    a rejected ACP permission). ``True`` with :attr:`is_error`, and apart
-    from a failure (a handler that raised) or a cancellation, so an audit
-    counts each. Like a cancellation, a refusal reaches ON_TOOL_CALL's
-    observers only, on every door: a SYNC hook could serve the call, and a
-    refused call is not to be served.
-    """
-
     structured_content: dict[str, Any] | None = None
     """The call's structured copy, carried beside :attr:`result` on its
     tool-call event for UI surfaces (MCP ``structuredContent``); never read by
@@ -141,6 +128,19 @@ class ToolCallEvent:
     :attr:`result`, the failure without the message: that message can hold
     anything the failing code held, a connection string with its password
     included. ``None`` for every other outcome.
+    """
+
+    refused: bool = False
+    """Whether a gate or the handler refused the call before it ran (RFC §9.3).
+
+    A pre-execution refusal (undeclared tool, invalid or cut arguments,
+    denied by policy, gated behind a skill, denied by ``BEFORE_TOOL_USE``), a
+    handler's refusal (:meth:`~roomkit.tools.external.ExternalToolHandler.on_tool_refused`,
+    a rejected ACP permission). ``True`` with :attr:`is_error`, and apart
+    from a failure (a handler that raised) or a cancellation, so an audit
+    counts each. Like a cancellation, a refusal reaches ON_TOOL_CALL's
+    observers only, on every door: a SYNC hook could serve the call, and a
+    refused call is not to be served.
     """
 
 

@@ -197,6 +197,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
     _before_generation_hook: BeforeGenerationHook | None
     _after_tool_round_hook: AfterToolRoundHook | None
     _tool_report_hook: ToolCallObserver | None
+    _tool_observer_hook: ToolCallObserver | None
     _external_tool_handler: ExternalToolHandler | None
     channel_id: str
 
@@ -567,6 +568,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                 serves_locally=partial(self._serves_locally, loop_ctx),
                 handler=self._external_tool_handler,
                 report=self._tool_report_hook,
+                observe=self._tool_observer_hook,
             )
             context, cancelled = self._drain_steering_queue(context, loop_ctx)
             if cancelled:

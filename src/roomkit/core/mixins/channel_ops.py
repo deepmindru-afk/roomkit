@@ -160,6 +160,7 @@ class ChannelOpsMixin(HelpersMixin):
         if isinstance(channel, ACPChannel):
             channel._realtime = self._realtime
             channel._tool_report_hook = self._build_tool_report_hook(channel.channel_id)
+            channel._tool_observer_hook = self._build_tool_observer_hook(channel.channel_id)
             if channel._external_tool_handler is not None:
                 self._wire_external_tool_handler(
                     channel.channel_id, channel._external_tool_handler

@@ -11,6 +11,7 @@ and without an external handler.
 from __future__ import annotations
 
 import asyncio
+import json
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -30,10 +31,12 @@ from roomkit import (
 )
 from roomkit.channels.ai import AIChannel
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
+from roomkit.core.exceptions import ToolRefusedError
 from roomkit.models.tool_call import ToolCallEvent
-from roomkit.providers.ai.base import AIResponse, AIToolCall
+from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.tools.external import PolicyExternalToolHandler, ToolDecision
+from roomkit.tools.result import cancelled_tool_error
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
 from tests.test_channels.test_acp import _channel
 from tests.test_framework import SimpleChannel
@@ -99,6 +102,9 @@ async def _external_door(handler: Any, call: AIToolCall) -> _Heard:
 
 
 BASH = AIToolCall(id="p1", name="Bash", arguments={"cmd": "ls"})
+_BASH_TOOL = AITool(
+    name="Bash", description="Runs a command.", parameters={"type": "object", "properties": {}}
+)
 CUT = AIToolCall(id="p1", name="Bash", arguments={"raw": "[1"}, partial=True)
 
 
@@ -120,7 +126,9 @@ async def test_an_external_door_refusal_reaches_the_observers_only(
 async def test_an_external_handler_that_raises_is_a_failure_with_its_detail() -> None:
     heard = await _external_door(_Raising(), BASH)
 
-    [event] = [*heard.sync, *heard.observed][:1]
+    # The call never ran: no SYNC hook hears of it, as on the local door.
+    assert heard.sync == []
+    [event] = heard.observed
     assert (event.is_error, event.refused) == (True, False)
     assert event.error_detail == f"RuntimeError: {SECRET}"
     assert SECRET not in str(event.result)
@@ -141,6 +149,30 @@ async def _acp(handler: Any, *, status: str, raw_output: Any) -> _Heard:
         kit = RoomKit()
         channel, connection, _ = _channel(Path(tmp), handler=handler, emit_updates=False)
         connection.prompt = lambda *a, **k: prompt(connection, *a, **k)  # type: ignore[method-assign]
+        kit.register_channel(channel)
+        heard = _Heard(kit)
+        await _room(kit, "acp-agent")
+        await _ask(kit)
+        await kit.close()
+        return heard
+
+
+async def _acp_cut(handler: Any) -> _Heard:
+    """An ACP turn that stops while its tool runs: the call is cancelled."""
+
+    async def start_then_stop(
+        connection: Any, session_id: str, *a: Any, **k: Any
+    ) -> PromptResponse:
+        await connection.client.session_update(
+            session_id,
+            acp.start_tool_call("tool-1", "Write", kind="edit", status="in_progress"),
+        )
+        return PromptResponse(stop_reason="cancelled")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        kit = RoomKit()
+        channel, connection, _ = _channel(Path(tmp), handler=handler, emit_updates=False)
+        connection.prompt = lambda *a, **k: start_then_stop(connection, *a, **k)  # type: ignore[method-assign]
         kit.register_channel(channel)
         heard = _Heard(kit)
         await _room(kit, "acp-agent")
@@ -175,7 +207,8 @@ async def test_a_rejected_acp_permission_reaches_the_observers_only(handler: Any
 async def test_an_acp_handler_that_raises_is_a_failure_with_its_detail() -> None:
     heard = await _acp_permission(_Raising())
 
-    [event] = [*heard.sync, *heard.observed][:1]
+    assert heard.sync == []
+    [event] = heard.observed
     assert (event.is_error, event.refused) == (True, False)
     assert event.error_detail == f"RuntimeError: {SECRET}"
 
@@ -241,3 +274,121 @@ async def test_a_gate_refusal_is_marked_refused_on_a_realtime_session() -> None:
     assert heard.sync == []
     [event] = heard.observed
     assert (event.is_error, event.refused) == (True, True)
+
+
+class _Recording(PolicyExternalToolHandler):
+    """Approves with an input ACP cannot apply, and records what reaches it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.refused: list[str] = []
+        self.results: list[str] = []
+
+    async def process_tool_call(self, tool_name: str, tool_input: Any, **kw: Any) -> ToolDecision:
+        return ToolDecision(approved=True, modified_input={"path": "/elsewhere"})
+
+    async def on_tool_result(self, tool_name: str, *args: Any, **kwargs: Any) -> None:
+        self.results.append(tool_name)
+
+    async def on_tool_refused(
+        self, tool_name: str, tool_input: Any, reason: str, **kwargs: Any
+    ) -> None:
+        self.refused.append(tool_name)
+        await super().on_tool_refused(tool_name, tool_input, reason, **kwargs)
+
+
+async def test_a_call_the_external_door_cut_is_the_channel_s_to_report() -> None:
+    handler = _Recording()
+
+    heard = await _external_door(handler, CUT)
+
+    assert (handler.refused, handler.results) == ([], [])
+    [event] = heard.observed
+    assert event.refused
+
+
+async def test_an_acp_refusal_the_channel_imposed_is_the_channel_s_to_report() -> None:
+    """The handler approved with an input ACP cannot apply: the channel
+    refused, so the handler is not told it refused (RMK-432)."""
+    handler = _Recording()
+
+    heard = await _acp_permission(handler)
+
+    assert handler.refused == []
+    assert heard.sync == []
+    [event] = heard.observed
+    assert (event.is_error, event.refused) == (True, True)
+
+
+async def test_the_tool_call_framework_event_carries_refused() -> None:
+    kit = RoomKit()
+    provider = MockAIProvider(
+        ai_responses=[
+            AIResponse(content="", finish_reason="tool_calls", tool_calls=[BASH]),
+            AIResponse(content="done"),
+        ]
+    )
+    kit.register_channel(AIChannel("ai1", provider=provider, tool_handler=lambda *a: "ran"))
+    framework: list[dict[str, Any]] = []
+
+    @kit.on("tool_call")
+    async def on_tool_call(event: Any) -> None:
+        framework.append(dict(event.data))
+
+    await _room(kit, "ai1")
+    await _ask(kit)
+    await kit.close()
+
+    [data] = framework
+    assert data.get("refused") is True
+
+
+async def test_a_handler_s_tool_refused_error_is_marked_refused() -> None:
+    async def refuses(name: str, arguments: dict[str, Any]) -> str:
+        raise ToolRefusedError(json.dumps({"error": "not today"}))
+
+    kit = RoomKit()
+    provider = MockAIProvider(
+        ai_responses=[
+            AIResponse(content="", finish_reason="tool_calls", tool_calls=[BASH]),
+            AIResponse(content="done"),
+        ]
+    )
+    kit.register_channel(
+        AIChannel("ai1", provider=provider, tools=[_BASH_TOOL], tool_handler=refuses)
+    )
+    heard = _Heard(kit)
+    await _room(kit, "ai1")
+    await _ask(kit)
+    await kit.close()
+
+    [event] = heard.observed
+    assert (event.is_error, event.refused) == (True, True)
+
+
+async def test_an_acp_cancellation_reports_the_cancellation_envelope() -> None:
+    heard = await _acp_cut(None)
+
+    [event] = heard.observed
+    assert json.loads(str(event.result)) == json.loads(
+        cancelled_tool_error("Write", "The turn ended before its result.")
+    )
+
+
+async def test_a_handler_can_report_what_failed() -> None:
+    class _Detailing(PolicyExternalToolHandler):
+        async def on_tool_result(self, tool_name: str, tool_input: Any, result: str, **kw: Any):
+            await self._fire_on_tool_hook(
+                tool_name,
+                tool_input,
+                result,
+                is_error=True,
+                error_detail="disk full",
+                tool_call_id=kw.get("tool_call_id", ""),
+                room_id=kw.get("room_id"),
+            )
+
+    heard = await _external_door(_Detailing(), BASH)
+
+    [event] = [*heard.sync, *heard.observed][-1:]
+    assert event.error_detail == "disk full"

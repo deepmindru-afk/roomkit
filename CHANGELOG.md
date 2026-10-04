@@ -277,6 +277,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING — a refused call reaches `ON_TOOL_CALL`'s observers only, on
+  every door, and an external handler hears its own refusal through
+  `on_tool_refused`** (RMK-432, RFC §9.3). `ToolCallEvent` gains `refused`
+  (beside `cancelled`), set by every gate and handler that refuses a call, and
+  the `tool_call` framework event carries it. On the external-handler and ACP
+  doors a call that never ran reached the SYNC hooks: a handler's denial, a
+  call the external door refused itself because its arguments were cut, a
+  rejected ACP permission with or without a handler, and a handler that
+  raised while it decided; each now reaches the observers only.
+  `ExternalToolHandler.on_tool_refused(tool_name, tool_input, reason, ...)`
+  (not abstract) hears the handler's own refusal and reports it by default.
+  **`on_tool_result` no longer hears a refusal, a call the channel refused
+  itself, or a call whose `process_tool_call` raised**: the channel reports
+  the last two, a raise with what failed (`error_detail`, which the external
+  door dropped and ACP read as a refusal; it ends `failed`, no longer
+  `refused`). A refusal ACP imposes on a handler's approval it cannot apply
+  (an input or a result) is the channel's too. Migration: a handler that
+  recorded refusals in `on_tool_result` overrides `on_tool_refused` (and
+  calls `super()` to keep the report). An ACP call reports the same body with
+  and without a handler: a cancellation's `cancelled_tool_error` envelope, a
+  failure's bounded error, which a handler's `on_tool_result` now receives
+  too (a failed call carrying an image reported 614 456 characters through a
+  handler, 78 without).
+
 - A peer that `FastRTCRealtimeTransport`'s `auth` refuses is closed
   (RMK-408): its peer connection, or a websocket client's socket, closed and
   the stream cleaned, through `reject_connection`. It was left connected with
@@ -661,23 +685,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to `RealtimeVoiceChannel(..., skills=...)`.
 
 ### Fixed
-
-- A refused call reaches `ON_TOOL_CALL`'s observers only, on every door
-  (RMK-432, RFC §9.3). `ToolCallEvent` gains `refused` (beside `cancelled`),
-  set by every gate and handler that refuses a call, and the `tool_call`
-  framework event carries it. On the external-handler and ACP doors a refusal
-  reached the SYNC hooks: a handler's denial, a call the external door refused
-  itself because its arguments were cut, a rejected ACP permission with or
-  without a handler. `ExternalToolHandler.on_tool_refused(tool_name,
-  tool_input, reason, ...)` (not abstract) now hears the handler's own
-  refusal and reports it by default; **`on_tool_result` no longer hears of a
-  refusal**, so a handler that recorded refusals there overrides
-  `on_tool_refused`. A `process_tool_call` that raises is a failure the
-  channel reports with what failed (`error_detail`, which the external door
-  dropped and ACP read as a refusal). An ACP call reports the same body with
-  and without a handler: a cancellation's `cancelled_tool_error` envelope, a
-  failure's bounded error (a failed call carrying an image reported 614 456
-  characters through a handler, 78 without).
 
 - A skill's `requires` and gates read the same on every door (RMK-429, RFC
   §24.3): a text turn now checks `requires` as a realtime session does, with

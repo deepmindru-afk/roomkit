@@ -68,6 +68,9 @@ class _ExternalStreamTools:
     handler: ExternalToolHandler | None = None
     # ON_TOOL_CALL as a report, for a call the provider already ran (RFC §9.3).
     report: ToolCallObserver | None = None
+    # ON_TOOL_CALL's observers only, for a call that never ran and that the
+    # channel decided itself (RFC §9.3).
+    observe: ToolCallObserver | None = None
 
     def takes(self, call: StreamToolCall) -> bool:
         """Whether *call* is the provider's: one it already ran (it says so
@@ -200,6 +203,12 @@ class _ExternalStreamTools:
             error_detail=decided.detail,
         )
         self.loop_ctx.known_outcomes[call.id] = event
+        if decided.by_channel and self.observe is not None:
+            # It never ran: the observers alone hear of it, as of a local call
+            # refused or failed (RFC §9.3).
+            await self.observe(event)
+            self.loop_ctx.claim_report(call.id)
+            return
         handler = None if decided.by_channel else self.handler
         if handler is not None and refused:
             await handler.on_tool_refused(

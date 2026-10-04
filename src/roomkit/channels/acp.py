@@ -219,6 +219,9 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
         self._external_tool_handler = external_tool_handler
         # ON_TOOL_CALL's report on a call the agent ran, wired by the kit.
         self._tool_report_hook: ToolCallObserver | None = None
+        # ON_TOOL_CALL's observers only, for a call that never ran and that
+        # the channel decided itself (RFC §9.3).
+        self._tool_observer_hook: ToolCallObserver | None = None
         if room_history < 0:
             raise ValueError(
                 "room_history is a count of messages to catch up on: pass 0 to turn "

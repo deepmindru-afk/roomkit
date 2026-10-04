@@ -48,6 +48,9 @@ class _ToolState:
     failure: str | None = None
     """What failed when the external tool handler raised deciding the
     permission: the call is reported failed, by the channel, with it."""
+    channel_refused: bool = False
+    """The channel, not the handler, refused the permission: the handler
+    approved with an input or a result ACP cannot apply."""
 
 
 @dataclass(slots=True)
