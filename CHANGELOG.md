@@ -829,9 +829,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   recovery recorded the reveal for the room before any gate ran: a call a
   `BEFORE_TOOL_USE` hook blocked, or one the handler refused, left the tool
   declared on the turn's next rounds and on later turns. Such a call now
-  reveals nothing; a call the tool answered (served, failed, its result
-  withheld by an `ON_TOOL_CALL` hook) keeps it revealed, as the tool memory
-  keeps any tool used.
+  reveals nothing, and leaves every other reveal of its round as it was; a
+  call the tool answered (served, failed, its result withheld by an
+  `ON_TOOL_CALL` hook) reveals the tool once it answered, as the tool memory
+  keeps any tool used, so a sibling call that answers first references
+  nothing of it.
 
 - A realtime call the provider abandons frees its id at once (RMK-460, RFC
   §12.4), as RMK-441 made a delivered call free it. The provider freed the id

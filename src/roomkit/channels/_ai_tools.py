@@ -211,13 +211,13 @@ class AIToolsMixin(_AIChannelContract):
         Small models routinely skip the two-step discovery protocol and call a
         catalogue tool they saw (via list_tools, or a prior turn) without
         revealing it first. The name being exact, the call is trivially
-        recoverable: reveal the tool as find_tools would have and let the call
-        proceed — provided it survives the same visibility filter a reveal is
-        subject to (tool policy, glob-aware skill gating). The execution guard
-        applies that rule again to the call, but a name the filter refuses
-        must not even be revealed. The reveal stands once the tool answered
-        the call *call_id*, as the room's tool memory keeps any tool used
-        (``_settle_recovery``): a call refused before it ran reveals nothing.
+        recoverable: let the call proceed, and reveal the tool as find_tools
+        would have once the tool answered the call *call_id*, as the room's
+        tool memory keeps any tool used (``_settle_recovery``) — provided it
+        passes what a reveal is subject to (tool policy, glob-aware skill
+        gating). The execution guard applies that rule again to the call, but
+        a name it refuses must not even be recovered. A call refused before
+        it ran reveals nothing, and touches no other call's reveal.
 
         Returns the catalogue tool (its schema keeps argument validation
         fail-closed) or ``None`` when the name is not recoverable.
@@ -230,12 +230,9 @@ class AIToolsMixin(_AIChannelContract):
         tool = next((t for t in loop_ctx.all_context_tools or () if t.name == name), None)
         if tool is None:
             return None
-        # Reveal first: while Tool Search is active the filter keeps only
-        # pinned/revealed/sticky names, so the eligibility probe needs the name
-        # in the reveal set. Rolled back when the probe fails.
-        loop_ctx.revealed_tools.add(name)
-        if not self._apply_tool_filters([tool]):
-            loop_ctx.revealed_tools.discard(name)
+        # What a reveal is subject to, read without revealing: the window is
+        # left as it is until the call settles.
+        if not self._reachable_tools([tool]):
             return None
         loop_ctx.pending_recoveries[call_id] = name
         return tool
@@ -1042,13 +1039,13 @@ class AIToolsMixin(_AIChannelContract):
             self._reveal(loop_ctx, names)
 
     def _settle_recovery(self, tool_call_id: str, *, kept: bool) -> None:
-        """Keep the tool a call recovered in the turn's reveal window when the
+        """Reveal the tool a call recovered for the turn's next rounds when the
         room's tool memory keeps the call, which re-reveals it on later turns
-        as any tool used, or take it out of the window (RFC §6.4)."""
+        as any tool used; a call it does not keep reveals nothing (RFC §6.4)."""
         loop_ctx = self._get_loop_ctx()
         name = loop_ctx.pending_recoveries.pop(tool_call_id, None)
-        if name is not None and not kept:
-            loop_ctx.revealed_tools.discard(name)
+        if name is not None and kept:
+            loop_ctx.revealed_tools.add(name)
 
     def _record_activation(self, loop_ctx: _ToolLoopContext, skill_name: str) -> None:
         # For this turn, so gated tools become visible on the next round...

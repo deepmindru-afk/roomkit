@@ -1,29 +1,30 @@
-"""A hidden tool called by its exact name stays revealed only once the tool
+"""A hidden tool called by its exact name is revealed only once the tool
 answered (RMK-461, RFC §6.4).
 
-Tool Search recovers an exact-name call to a catalogue tool it hides: the
-name joins the turn's reveal window while the call runs. The reveal then
-follows the room's tool memory, which re-reveals every tool used: a call the
-tool answered (served, failed, withheld by an ON_TOOL_CALL hook) keeps it
-revealed; a call refused before it ran (BEFORE_TOOL_USE, its handler's
-refusal) reveals nothing, for the turn's next rounds or for later turns.
-Before, the recovery recorded the reveal for the session before any gate ran.
+Tool Search recovers an exact-name call to a catalogue tool it hides, and
+reveals the tool as the room's tool memory keeps any tool used: a call the
+tool answered (served, failed, withheld by an ON_TOOL_CALL hook) reveals it
+for the turn's next rounds and later turns; a call refused before it ran
+(BEFORE_TOOL_USE, its handler's refusal, its arguments) or that nothing
+served reveals nothing, and leaves every other reveal of the round as it was.
 """
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
 
 from roomkit import HookExecution, HookResult, HookTrigger, RoomKit
 from roomkit.channels.ai import AIChannel
-from roomkit.core.exceptions import ToolFailedError, ToolRefusedError
+from roomkit.core.exceptions import ToolFailedError, ToolRefusedError, UnservedToolCallError
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.enums import ChannelCategory, ChannelType
-from roomkit.providers.ai.base import AIResponse, AIToolCall
+from roomkit.providers.ai.base import AIResponse, AIToolCall, AIToolResultPart
 from roomkit.providers.ai.mock import MockAIProvider
 from tests.conftest import make_event
+from tests.test_deferred_tools import HoldingProvider
 from tests.tool_loop_modes import respond
 
 _SMS_TOOL = {
@@ -35,28 +36,40 @@ _SMS_TOOL = {
         "required": ["to", "body"],
     },
 }
+_LOOKUP_TOOL = {"name": "lookup", "description": "Look a record up.", "parameters": {}}
 _CATALOGUE = [
     *({"name": f"widget_{i}", "description": f"Operate widget number {i}."} for i in range(5)),
     _SMS_TOOL,
 ]
+_SMS = {"to": "+15551234567", "body": "hi"}
+_DONE = AIResponse(content="done", finish_reason="stop")
 
 
-def _provider(streaming: bool) -> MockAIProvider:
-    """Calls send_sms directly, without find_tools, then stops."""
-    call = AIToolCall(id="t1", name="send_sms", arguments={"to": "+15551234567", "body": "hi"})
-    return MockAIProvider(
-        ai_responses=[
-            AIResponse(content="", finish_reason="tool_calls", tool_calls=[call]),
-            AIResponse(content="done", finish_reason="stop"),
-        ],
-        streaming=streaming,
+def _round(*calls: AIToolCall) -> AIResponse:
+    return AIResponse(content="", finish_reason="tool_calls", tool_calls=list(calls))
+
+
+def _sms(call_id: str = "t1", arguments: dict[str, Any] | None = None) -> AIToolCall:
+    return AIToolCall(
+        id=call_id, name="send_sms", arguments=_SMS if arguments is None else arguments
     )
 
 
-async def _turn(provider: MockAIProvider, handler: Any, hooks: Any = None) -> AIChannel:
-    channel = AIChannel("ai1", provider=provider, tool_search=True, tool_handler=handler)
+def _provider(streaming: bool, *first_round: AIToolCall, holding: bool = False) -> MockAIProvider:
+    """One round of *first_round* (a direct send_sms by default), its answer,
+    then a second turn that only answers."""
+    kind = HoldingProvider if holding else MockAIProvider
+    return kind(
+        ai_responses=[_round(*(first_round or (_sms(),))), _DONE, _DONE], streaming=streaming
+    )
+
+
+async def _two_turns(
+    provider: MockAIProvider, handler: Any, hooks: Any = None, **channel: Any
+) -> AIChannel:
+    ai = AIChannel("ai1", provider=provider, tool_search=True, tool_handler=handler, **channel)
     kit = RoomKit()
-    kit.register_channel(channel)
+    kit.register_channel(ai)
     if hooks is not None:
         hooks(kit)
     await kit.create_room(room_id="r1")
@@ -66,12 +79,23 @@ async def _turn(provider: MockAIProvider, handler: Any, hooks: Any = None) -> AI
         room_id="r1",
         channel_type=ChannelType.AI,
         category=ChannelCategory.INTELLIGENCE,
-        metadata={"tools": _CATALOGUE},
+        metadata={
+            "tools": [*_CATALOGUE, _LOOKUP_TOOL] if "tool_search_pinned" in channel else _CATALOGUE
+        },
     )
-    event = make_event(room_id="r1", body="go", channel_id="sms1")
-    await respond(channel, event, binding, await kit._build_context("r1"))
+    for body in ("go", "again"):
+        event = make_event(room_id="r1", body=body, channel_id="sms1")
+        await respond(ai, event, binding, await kit._build_context("r1"))
     await kit.close()
-    return channel
+    return ai
+
+
+def _revealed(provider: MockAIProvider) -> tuple[bool, bool]:
+    """Whether send_sms is declared on the turn's next round, and on the next
+    turn's first round."""
+    next_round = {tool.name for tool in provider.calls[1].tools}
+    next_turn = {tool.name for tool in provider.calls[2].tools}
+    return "send_sms" in next_round, "send_sms" in next_turn
 
 
 async def _served(name: str, arguments: dict[str, Any]) -> str:
@@ -86,6 +110,10 @@ async def _failing(name: str, arguments: dict[str, Any]) -> str:
     raise ToolFailedError("The SMS gateway is down.")
 
 
+async def _unserved(name: str, arguments: dict[str, Any]) -> str:
+    raise UnservedToolCallError(name)
+
+
 def _deny_before_use(kit: RoomKit) -> None:
     @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="deny")
     async def _deny(event: Any, ctx: Any) -> HookResult:
@@ -98,25 +126,23 @@ def _withhold_result(kit: RoomKit) -> None:
         return HookResult.block("withheld")
 
 
-def _revealed(provider: MockAIProvider, channel: AIChannel) -> tuple[bool, bool]:
-    """Whether send_sms is declared on the turn's next round, and kept for
-    the room's later turns."""
-    next_round = {tool.name for tool in provider.calls[1].tools}
-    return "send_sms" in next_round, "send_sms" in channel._tool_usage.tool_names("r1")
-
-
 @pytest.mark.parametrize(
-    ("handler", "hooks"),
-    [(_refusing, None), (_served, _deny_before_use)],
-    ids=["handler-refusal", "before-tool-use-block"],
+    ("handler", "hooks", "arguments"),
+    [
+        (_refusing, None, None),
+        (_served, _deny_before_use, None),
+        (_served, None, {"to": "+15551234567"}),
+        (_unserved, None, None),
+    ],
+    ids=["handler-refusal", "before-tool-use-block", "invalid-arguments", "nothing-served"],
 )
 async def test_a_call_refused_before_it_ran_reveals_nothing(
-    streaming: bool, handler: Any, hooks: Any
+    streaming: bool, handler: Any, hooks: Any, arguments: dict[str, Any] | None
 ) -> None:
-    provider = _provider(streaming)
-    channel = await _turn(provider, handler, hooks)
+    provider = _provider(streaming, _sms(arguments=arguments))
+    await _two_turns(provider, handler, hooks)
 
-    assert _revealed(provider, channel) == (False, False)
+    assert _revealed(provider) == (False, False)
 
 
 @pytest.mark.parametrize(
@@ -128,6 +154,67 @@ async def test_a_call_the_tool_answered_keeps_it_revealed(
     streaming: bool, handler: Any, hooks: Any
 ) -> None:
     provider = _provider(streaming)
-    channel = await _turn(provider, handler, hooks)
+    await _two_turns(provider, handler, hooks)
 
-    assert _revealed(provider, channel) == (True, True)
+    assert _revealed(provider) == (True, True)
+
+
+async def test_a_refused_recovery_leaves_a_find_tools_reveal_of_the_same_round(
+    streaming: bool,
+) -> None:
+    search = AIToolCall(
+        id="s1", name="find_tools", arguments={"query": "send an sms text message"}
+    )
+    provider = _provider(streaming, search, _sms())
+    await _two_turns(provider, _refusing)
+
+    assert _revealed(provider)[0] is True
+
+
+async def test_a_refused_recovery_leaves_a_served_one_of_the_same_round(streaming: bool) -> None:
+    calls = 0
+
+    async def first_served(name: str, arguments: dict[str, Any]) -> str:
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            raise ToolRefusedError("Only one message.")
+        return '{"sent": true}'
+
+    provider = _provider(streaming, _sms("t1"), _sms("t2"))
+    await _two_turns(provider, first_served)
+
+    assert _revealed(provider) == (True, True)
+
+
+async def test_a_sibling_answered_while_a_recovery_waits_does_not_reference_it(
+    streaming: bool,
+) -> None:
+    """On a provider that holds tools unseen, a pinned sibling that answers
+    while the recovered call waits on its gate references nothing of it."""
+
+    async def slow_lookup(name: str, arguments: dict[str, Any]) -> str:
+        await asyncio.sleep(0.01)  # answers while the recovery waits on its gate
+        return '{"found": true}'
+
+    def deny_after_a_wait(kit: RoomKit) -> None:
+        @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="approve")
+        async def _approve(event: Any, ctx: Any) -> HookResult:
+            if event.name == "send_sms":
+                await asyncio.sleep(0.05)
+                return HookResult.block("denied by the approver")
+            return HookResult.allow()
+
+    lookup = AIToolCall(id="c1", name="lookup", arguments={})
+    provider = _provider(streaming, lookup, _sms(), holding=True)
+    await _two_turns(provider, slow_lookup, deny_after_a_wait, tool_search_pinned={"lookup"})
+
+    parts = [
+        part
+        for message in provider.calls[1].messages
+        if message.role == "tool" and isinstance(message.content, list)
+        for part in message.content
+        if isinstance(part, AIToolResultPart)
+    ]
+    assert [part.name for part in parts] == ["lookup", "send_sms"]
+    assert all("send_sms" not in (part.references or []) for part in parts)

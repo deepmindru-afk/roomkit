@@ -165,9 +165,9 @@ class _ToolLoopContext:
     # activation is committed.
     pending_reveals: dict[str, list[str]] = field(default_factory=dict)
     # The catalogue tool a call named without ``find_tools``, by tool_call_id:
-    # in the reveal window while the call runs, kept there when the tool
-    # answered (the room's tool memory then keeps it for later turns), out of
-    # it again when the call was refused, unserved or cancelled (RFC §6.4).
+    # revealed once the tool answered the call (the room's tool memory then
+    # keeps it for later turns); a call refused before it ran, or that
+    # nothing served, reveals nothing (RFC §6.4).
     pending_recoveries: dict[str, str] = field(default_factory=dict)
     # Whether Tool Search is active for this turn (catalogue over threshold).
     # Decided once in ``_build_context`` and read by ``_apply_tool_filters`` on
