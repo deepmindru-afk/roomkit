@@ -398,6 +398,7 @@ class InboundStreamingMixin(HelpersMixin):
             await _aclose_stream(sr.stream)
         except Exception:
             logger.exception("Closing an unread response stream failed for room %s", room_id)
+        writer.end_stopped()
         await writer.flush_text(cancelled=True)
 
     async def _fire_stream_error_hook(

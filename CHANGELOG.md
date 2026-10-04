@@ -812,6 +812,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A response its transport stopped reading once it began (a barge-in) ends
+  `cancelled` (RMK-479, RFC §6.4, §12.2 step 13s): a delegated AIChannel
+  worker's task read it as a completed answer, where an ACP worker's failed,
+  and a room turn left the caller's `turns` without its entry. A response
+  never read still names no end, and one whose record names an end (an ACP
+  agent's `interrupted`) keeps it.
+
 - ON_ERROR fires once for a delegated turn that failed, whichever path its
   delegation took (RMK-479, RFC §23.3 step 6): a worker's turn on the trace
   path (no transport shared into its child room) failed silently, where the

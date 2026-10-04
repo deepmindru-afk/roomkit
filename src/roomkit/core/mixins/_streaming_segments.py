@@ -10,10 +10,12 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Protocol
 
 from roomkit.channels._tool_event_result import tool_event_payload
+from roomkit.core.event_router import stream_record
 from roomkit.core.mixins.helpers import _RECENT_EVENTS_LIMIT
 from roomkit.core.mixins.inbound_locked import _Blocked
 from roomkit.models.enums import EventStatus, EventType, Visibility
 from roomkit.models.event import EventSource, RoomEvent, TextContent, ToolCallContent
+from roomkit.models.response_metadata import recorded_turn_end
 from roomkit.models.streaming import (
     LoopEndMarker,
     SegmentBreakMarker,
@@ -148,6 +150,20 @@ class SegmentWriter:
         wrote no message at all.
         """
         self._turn_record = {"ai_usage": dict(marker.usage), "loop_end_reason": marker.reason}
+        self._record_owed = True
+        self._sr.turn_record = self._turn_record
+
+    def end_stopped(self) -> None:
+        """A turn its reader stopped once it began ends ``cancelled``, unless
+        its record names an end already (its loop's, an ACP agent's): its
+        record rides the stream and its kept text, never read as a turn that
+        completed (RFC §6.4, §12.2 step 13s). A turn never read names none."""
+        began = bool(self._accumulated or self.persisted or self._started)
+        if not began or self._turn_record is not None:
+            return
+        if recorded_turn_end(stream_record(self._sr)) is not None:
+            return
+        self._turn_record = {"loop_end_reason": "cancelled"}
         self._record_owed = True
         self._sr.turn_record = self._turn_record
 
