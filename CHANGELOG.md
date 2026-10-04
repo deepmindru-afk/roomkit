@@ -760,6 +760,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   processed and leaves no stage state, and its AEC reference and activity
   are ignored.
 
+- `VoiceChannel.unbind_session` forgets the speech state of a session
+  unbound mid-utterance (RMK-466): its speech onset, its suppression and the
+  segments queued for after playback stayed for good, since only the
+  SPEECH_END that never came would have cleared them.
+
+- A `VoiceChannel` session's `pipeline.speech_segment` spans hang under its
+  `voice.session` span again (RMK-466): `bind_session` handed the span to the
+  pipeline before activating the session, and the activation's cleanup of a
+  previous session's state dropped it, so every segment span had no parent.
+
 - A voice `Loop` (`async_delivery=True`) hands its outcome back to the voice
   channel that started it, success and failure alike (RMK-462, RFC §19.7.4),
   as the supervisor's background door does since RMK-451. A loop that raised
