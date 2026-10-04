@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     from roomkit.channels.base import Channel
     from roomkit.core.event_router import EventRouter, StreamingResponse
     from roomkit.core.hooks import HookEngine
+    from roomkit.models.channel import ChannelBinding
     from roomkit.models.context import RoomContext
     from roomkit.models.hook import InjectedEvent
     from roomkit.store.base import ConversationStore
@@ -170,79 +171,19 @@ class InboundStreamingMixin(HelpersMixin):
 
         reader = ResponseReader(sr.stream)
 
-        # Whether the transport read the response to its end. A transport that
-        # hands back early (every voice session barged in, RFC §12.2 step 13s;
-        # or one that never reads it at all) skips the final flush below, so
-        # the response is closed and stored cancelled once deliver_stream()
-        # returns.
-        exhausted = False
-
-        # Generator that yields text deltas and persisted events.
-        # Text deltas drive the streaming bubble; RoomEvents are delivered
-        # as regular events interleaved between stream chunks.
-        async def segment_stream() -> Any:
-            """Yield str for text deltas, RoomEvent for persisted segments.
-
-            Thinking markers pass straight through to the channel — they
-            carry transient display info only and are not persisted as
-            RoomEvents (the realtime bus still publishes a buffered
-            ``THINKING_END`` for out-of-band observers).
-            """
-            nonlocal exhausted
-            async with aclosing(writer.read(reader)) as items:
-                async for item in items:
-                    yield item
-
-            exhausted = True
-            row = await writer.flush_text()
-            if row is not None:
-                yield row
-
         stream_error: Exception | None = None
         if streaming_targets:
             channel, binding = streaming_targets[0]  # V1: single target
-            placeholder = RoomEvent(
-                room_id=room_id,
-                source=EventSource(
-                    channel_id=sr.source_channel_id,
-                    channel_type=sr.source_channel_type,
-                ),
-                content=TextContent(body=""),
-                chain_depth=chain_depth,
-                visibility=visibility,
+            stream_error = await self._stream_to_target(
+                channel,
+                binding,
+                self._stream_placeholder(sr, room_id, scope, correlation_id),
+                sr,
+                writer,
+                reader,
+                context,
                 correlation_id=correlation_id,
-                parent_event_id=parent_event_id,
             )
-            segments = segment_stream()
-            try:
-                await channel.deliver_stream(segments, placeholder, binding, context)
-                if not exhausted:
-                    await self._stop_unread_stream(segments, sr, reader, writer, room_id)
-            except asyncio.CancelledError:
-                # A turn interrupted on purpose (the console's Esc). What was
-                # already streamed is on the user's screen, so the timeline
-                # MUST hold it too: dropping it would leave the room
-                # disagreeing with what the human read, and the agent's next
-                # context missing what it already said. Not an error — nobody
-                # failed — so ON_ERROR stays silent and the cancellation
-                # propagates untouched.
-                await writer.end_cancelled(reader)
-                raise
-            except Exception as exc:
-                stream_error = exc
-                log_failure(
-                    logger,
-                    exc,
-                    f"streaming delivery of {sr.source_channel_id} to {binding.channel_id} "
-                    f"for room {room_id}",
-                    extra={"room_id": room_id, "channel_id": sr.source_channel_id},
-                )
-                # Persist any text accumulated before the error. The stream is
-                # gone, so this text never reached its channels — it goes out
-                # as an ordinary event, to everyone.
-                writer.stream_lost()
-                await writer.end_failed(reader)
-                await self._fire_stream_error_hook(exc, room_id, context, sr, correlation_id)
         else:
             # No streaming targets (e.g. a PII-locked / edge agent whose stream
             # send fn was withheld, or a headless one-shot call whose only
@@ -276,6 +217,98 @@ class InboundStreamingMixin(HelpersMixin):
             return None
 
         return _StreamingResult(events=writer.persisted, error=stream_error)
+
+    @staticmethod
+    def _stream_placeholder(
+        sr: StreamingResponse, room_id: str, scope: TurnScope, correlation_id: str
+    ) -> RoomEvent:
+        """The empty event a streaming channel renders the response under."""
+        return RoomEvent(
+            room_id=room_id,
+            source=EventSource(
+                channel_id=sr.source_channel_id,
+                channel_type=sr.source_channel_type,
+            ),
+            content=TextContent(body=""),
+            chain_depth=scope.chain_depth,
+            visibility=scope.visibility,
+            correlation_id=correlation_id,
+            parent_event_id=scope.parent_event_id,
+        )
+
+    async def _stream_to_target(
+        self,
+        channel: Channel,
+        binding: ChannelBinding,
+        placeholder: RoomEvent,
+        sr: StreamingResponse,
+        writer: SegmentWriter,
+        reader: ResponseReader,
+        context: RoomContext,
+        *,
+        correlation_id: str,
+    ) -> Exception | None:
+        """Hand the response to the channel that streams it; the failure it ended on, if any."""
+        room_id = placeholder.room_id
+        # Whether the transport read the response to its end. A transport that
+        # hands back early (every voice session barged in, RFC §12.2 step 13s;
+        # or one that never reads it at all) skips the final flush below, so
+        # the response is closed and stored cancelled once deliver_stream()
+        # returns.
+        exhausted = False
+
+        # Generator that yields text deltas and persisted events.
+        # Text deltas drive the streaming bubble; RoomEvents are delivered
+        # as regular events interleaved between stream chunks.
+        async def segment_stream() -> Any:
+            """Yield str for text deltas, RoomEvent for persisted segments.
+
+            Thinking markers pass straight through to the channel — they
+            carry transient display info only and are not persisted as
+            RoomEvents (the realtime bus still publishes a buffered
+            ``THINKING_END`` for out-of-band observers).
+            """
+            nonlocal exhausted
+            async with aclosing(writer.read(reader)) as items:
+                async for item in items:
+                    yield item
+
+            exhausted = True
+            row = await writer.flush_text()
+            if row is not None:
+                yield row
+
+        segments = segment_stream()
+        try:
+            await channel.deliver_stream(segments, placeholder, binding, context)
+            if not exhausted:
+                await self._stop_unread_stream(segments, sr, reader, writer, room_id)
+        except asyncio.CancelledError:
+            # A turn interrupted on purpose (the console's Esc). What was
+            # already streamed is on the user's screen, so the timeline
+            # MUST hold it too: dropping it would leave the room
+            # disagreeing with what the human read, and the agent's next
+            # context missing what it already said. Not an error — nobody
+            # failed — so ON_ERROR stays silent and the cancellation
+            # propagates untouched.
+            await writer.end_cancelled(reader)
+            raise
+        except Exception as exc:
+            log_failure(
+                logger,
+                exc,
+                f"streaming delivery of {sr.source_channel_id} to {binding.channel_id} "
+                f"for room {room_id}",
+                extra={"room_id": room_id, "channel_id": sr.source_channel_id},
+            )
+            # Persist any text accumulated before the error. The stream is
+            # gone, so this text never reached its channels — it goes out
+            # as an ordinary event, to everyone.
+            writer.stream_lost()
+            await writer.end_failed(reader)
+            await self._fire_stream_error_hook(exc, room_id, context, sr, correlation_id)
+            return exc
+        return None
 
     @staticmethod
     async def _stop_unread_stream(
