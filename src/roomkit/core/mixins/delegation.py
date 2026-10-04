@@ -455,13 +455,18 @@ class DelegationMixin(HelpersMixin):
         failure: Exception | None = None
 
         try:
-            agent_response = await run_agent_in_child_room(
-                self,  # ty: ignore[invalid-argument-type]
-                handle.child_room_id,
-                handle.task,
-                require_structured_result=require_structured_result,
-                max_result_retries=max_result_retries,
-                result_tool=result_tool,
+            # In a task of its own: the worker's turn sets its tool-loop
+            # context in a copy of the caller's, so a cut that ends the turn
+            # elsewhere never leaves it in the delegating call's (RFC §23.3).
+            agent_response = await asyncio.create_task(
+                run_agent_in_child_room(
+                    self,  # ty: ignore[invalid-argument-type]
+                    handle.child_room_id,
+                    handle.task,
+                    require_structured_result=require_structured_result,
+                    max_result_retries=max_result_retries,
+                    result_tool=result_tool,
+                )
             )
         except asyncio.CancelledError:
             # A caller cancelled this delegation (a supervisor's per-task

@@ -796,6 +796,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A delegated worker's turn cut at its bound no longer leaves its context in
+  the delegating call (RMK-478, RFC §23.3): an inline delegation
+  (`kit.delegate(wait=True)`) runs the worker's turn in a task of its own. A
+  supervisor's worker cut at its `task_timeout` while running inline under
+  the supervisor's call (the supervised sequential `delegate_workers`) left
+  the worker's tool-loop context in the call's task, and the supervisor's
+  call was reported twice on `ON_TOOL_CALL`: with its result, then as
+  cancelled when the turn ended.
+
 - A realtime call an ending interrupts is reported once, cancelled, on the
   conference as on the channel, and when a session's start fails (RMK-477,
   RFC §12.4): a conference's detach cut the refusal of a call issued under
