@@ -14,22 +14,29 @@ from roomkit.channels._tool_registry import orchestration_tool
 from roomkit.orchestration._background import (
     BackgroundRun,
     background_failure_text,
+    check_open,
     run_in_background,
     start_background_run,
 )
 from roomkit.orchestration._call_room import in_call_room
-from roomkit.orchestration._worker_run import WorkerOutcome, WorkerStatus, run_worker
+from roomkit.orchestration._worker_run import (
+    WorkerOutcome,
+    WorkerStatus,
+    follow_worker,
+    run_worker,
+)
 from roomkit.orchestration.status_bus import StatusLevel
 from roomkit.orchestration.strategies.supervisor._common import (
     _post_worker_status,
     logger,
 )
 from roomkit.providers.ai.base import AITool
-from roomkit.tasks.handback import bounded, result_text
+from roomkit.tasks.handback import CALLER_HANDS_BACK, bounded, result_text
 
 if TYPE_CHECKING:
     from roomkit.channels.agent import Agent
     from roomkit.core.framework import RoomKit
+    from roomkit.tasks.models import DelegatedTask
 
 
 class _PerWorkerToolMixin:
@@ -94,7 +101,7 @@ class _PerWorkerToolServer:
         try:
             if self._wait:
                 return await self._delegate_and_wait(rid, worker_id, task_desc)
-            return self._delegate_in_background(rid, worker_id, task_desc)
+            return await self._delegate_in_background(rid, worker_id, task_desc)
         except Exception:
             # Raised on: the channel reads it as any failed call, the class for
             # the model and the message for the observers (RFC §9.3).
@@ -122,9 +129,10 @@ class _PerWorkerToolServer:
             }
         )
 
-    def _delegate_in_background(self, rid: str, worker_id: str, task_desc: str) -> str:
-        """Start the worker on *task_desc* in the background, and answer at
-        once; its outcome is handed back to the supervisor (RFC §19.7.3)."""
+    async def _delegate_in_background(self, rid: str, worker_id: str, task_desc: str) -> str:
+        """Start the worker on *task_desc* as a task of the kit's task runner,
+        and answer at once; its background run waits for it within the task
+        timeout and hands its outcome back to the supervisor (RFC §19.7.3)."""
         pending = self._pending
         if (rid, worker_id) in pending:
             return _already_working(worker_id)
@@ -132,20 +140,35 @@ class _PerWorkerToolServer:
         # If the start raises (shutdown race), free the worker so it isn't
         # stuck in already_running.
         try:
-            run = self._background_run(rid, worker_id, task_desc)
-            start_background_run(self._kit, run_in_background(self._kit, run))
+            check_open(self._kit)
+            delegated = await self._kit.delegate(
+                rid,
+                worker_id,
+                task_desc,
+                notify=CALLER_HANDS_BACK,
+                share_channels=self._share_channels,
+            )
         except BaseException:
             pending.discard((rid, worker_id))
             raise
-        return _dispatched(worker_id)
+        self._follow(rid, delegated)
+        return _dispatched(worker_id, delegated.id)
 
-    def _background_run(
-        self, rid: str, worker_id: str, task_desc: str
-    ) -> BackgroundRun[WorkerOutcome]:
-        """The worker's background run: its delegation, bounded and followed
-        as a waited one is, the worker freed in *rid* before its outcome is
+    def _follow(self, rid: str, delegated: DelegatedTask) -> None:
+        """Start the run that waits for *delegated* and hands it back; when
+        none can start (the kit closing), the task is the runner's to end."""
+        try:
+            run = self._background_run(rid, delegated)
+            start_background_run(self._kit, run_in_background(self._kit, run))
+        except BaseException:
+            self._pending.discard((rid, delegated.agent_id))
+            raise
+
+    def _background_run(self, rid: str, delegated: DelegatedTask) -> BackgroundRun[WorkerOutcome]:
+        """The worker's background run: its task, waited for and followed as a
+        waited delegation is, the worker freed in *rid* before its outcome is
         handed back."""
-        kit = self._kit
+        kit, worker_id = self._kit, delegated.agent_id
         metadata = {"room_id": rid, "mode": "per_worker_async"}
 
         def post(level: StatusLevel, detail: str) -> None:
@@ -159,14 +182,8 @@ class _PerWorkerToolServer:
             )
 
         async def work() -> WorkerOutcome:
-            return await run_worker(
-                kit,
-                rid,
-                worker_id,
-                task_desc,
-                timeout=self._task_timeout,
-                status=WorkerStatus(metadata),
-                share_channels=self._share_channels,
+            return await follow_worker(
+                kit, delegated, timeout=self._task_timeout, status=WorkerStatus(metadata)
             )
 
         return BackgroundRun(
@@ -216,11 +233,12 @@ def _already_working(worker_id: str) -> str:
     )
 
 
-def _dispatched(worker_id: str) -> str:
+def _dispatched(worker_id: str, task_id: str) -> str:
     """What the model reads when the worker was started in the background."""
     return json.dumps(
         {
             "status": "delegated",
+            "task_id": task_id,
             "worker": worker_id,
             "message": (
                 f"Task dispatched to {worker_id}. "

@@ -27,6 +27,7 @@ from roomkit.orchestration.status_bus import StatusLevel
 from roomkit.orchestration.strategies.supervisor import Supervisor
 from roomkit.providers.ai.base import AIContext, AIResponse, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.tasks.memory import InMemoryTaskRunner
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
 from tests.conference.test_conference_realtime import until
 from tests.test_framework import SimpleChannel
@@ -254,3 +255,43 @@ async def test_a_supervisor_without_a_model_lets_its_chain_run_unsupervised() ->
     delegated = await _team_delegations(async_delivery=True, voice=True, config_only=True)
 
     assert delegated == ["w1", "w2"]
+
+
+class _RecordingRunner(InMemoryTaskRunner):
+    """The kit's task runner, recording what it is handed."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.submitted: list[str] = []
+
+    async def submit(self, kit: Any, task: Any, **kwargs: Any) -> None:
+        self.submitted.append(task.id)
+        await super().submit(kit, task, **kwargs)
+
+
+async def test_a_per_worker_background_task_is_the_task_runner_s() -> None:
+    """``delegate_to_<id>`` in the background answers with its task id, runs
+    on the kit's task runner (a custom one included), and the runner cancels
+    it: the worker is freed and the supervisor told it did not complete."""
+    runner = _RecordingRunner()
+    boss = _Redispatches("delegate_to_w1", limit=1)
+    supervisor = Supervisor(
+        Agent("boss", provider=boss, tool_search=False),
+        [Agent("w1", provider=_Slow())],
+        wait_for_result=False,
+    )
+    kit = RoomKit(task_runner=runner)
+    kit.register_channel(SimpleChannel("sms1"))
+    await kit.create_room(room_id="r1", orchestration=supervisor)
+    await kit.attach_channel("r1", "sms1")
+
+    await _ask(kit)
+    await until(lambda: bool(runner.submitted))
+    cancelled = await kit.task_runner.cancel(runner.submitted[0])
+    await until(lambda: bool(boss.told))
+    await kit.close()
+
+    assert cancelled is True
+    assert boss.answers == ["delegated"]
+    assert "[Your background task for w1 did not complete." in boss.told[0]
+    assert "The task was cancelled." in boss.told[0]

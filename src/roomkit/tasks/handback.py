@@ -27,6 +27,12 @@ MAX_RESULT_CHARS = 4000
 _NOT_DELIVERED = ("blocked", "unavailable", "failed")
 
 
+CALLER_HANDS_BACK = "roomkit:caller-hands-back"
+"""The ``notify`` of a background delegation whose caller hands its result
+back itself (a strategy's background run waits for it): the task runner
+delivers it to no one."""
+
+
 def bounded(output: str) -> str:
     """*output*, cut to the share a hand-back carries."""
     if len(output) <= MAX_RESULT_CHARS:

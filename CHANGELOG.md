@@ -876,14 +876,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as before.
 
 - A supervisor's per-worker background delegation (`delegate_to_<id>` with
-  `wait_for_result=False`) is the strategies' background run (RMK-478,
-  RFC §19.7.3): bounded by `task_timeout`, the worker freed before its
-  outcome is handed back (a dispatch made in answer read `already_running`),
-  its terminal entry posted under `orchestration` (action `worker`) and
-  `failed` when the outcome reached nobody, and ended by `kit.close()`. It is
-  no longer a task runner task (`kit.task_runner.cancel(task_id)` does not
-  reach it), and its dispatch answer no longer carries a `task_id`; the
-  worker's status entries keep it.
+  `wait_for_result=False`) is followed by the strategies' background run
+  (RMK-478, RFC §19.7.3): the delegation is still a task of the kit's task
+  runner (its `task_id` in the dispatch answer, `kit.task_runner.cancel`
+  ending it, a custom `TaskRunner` running it), and the run waits for it
+  within `task_timeout`, past which the runner cancels it. The worker is
+  freed before its outcome is handed back (a dispatch made in answer read
+  `already_running`), the run alone hands the outcome back, and its terminal
+  entry is posted under `orchestration` (action `worker`), `failed` when the
+  outcome reached nobody.
 
 - A supervisor's background run whose work did not complete posts its
   terminal entry `failed`, as a Loop whose producer failed, and the

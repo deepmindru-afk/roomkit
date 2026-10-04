@@ -12,7 +12,7 @@ cancelled.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, NamedTuple
 
@@ -126,8 +126,29 @@ async def run_worker(
     """
     post = _Posts(kit, worker_id, status)
     post(StatusLevel.PENDING, task)
+    return await _posted(
+        post, status, _delegate(kit, room_id, worker_id, task, timeout, delegation)
+    )
+
+
+async def follow_worker(
+    kit: RoomKit, task: DelegatedTask, *, timeout: float | None, status: WorkerStatus
+) -> WorkerOutcome:
+    """Wait for *task*, a delegation the task runner runs in the background
+    (``kit.delegate(wait=False)``), within *timeout*, past which the runner
+    cancels it and it reads as failed; posted on the status bus as
+    :func:`run_worker` posts, its pending entry once it was started."""
+    post = _Posts(kit, task.agent_id, status)
+    post(StatusLevel.PENDING, task.task, task=task)
+    return await _posted(post, status, _await_started(kit, task, timeout))
+
+
+async def _posted(
+    post: _Posts, status: WorkerStatus | None, delegation: Awaitable[WorkerOutcome]
+) -> WorkerOutcome:
+    """*delegation*'s outcome, its terminal entry posted however it ends."""
     try:
-        outcome = await _delegate(kit, room_id, worker_id, task, timeout, delegation)
+        outcome = await delegation
     except asyncio.CancelledError:
         post(StatusLevel.FAILED, "cancelled")
         raise
@@ -138,6 +159,19 @@ async def run_worker(
         end = status.ended(outcome)
         post(end.level, end.detail, task=outcome.task, metadata=end.metadata)
     return outcome
+
+
+async def _await_started(
+    kit: RoomKit, task: DelegatedTask, timeout: float | None
+) -> WorkerOutcome:
+    """A started delegation's outcome, the task runner cancelling it past
+    *timeout* (it then ends cancelled, and reads as timed out)."""
+    try:
+        result = await answer_within(timeout, task.agent_id, task.wait())
+    except ToolTimeoutError:
+        await kit.task_runner.cancel(task.id)
+        return WorkerOutcome(f"The task timed out after {timeout:g}s.", False, task)
+    return WorkerOutcome(task_output(result), task_completed(result), task)
 
 
 async def _delegate(

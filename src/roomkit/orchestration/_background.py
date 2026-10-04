@@ -69,16 +69,29 @@ class BackgroundRun[T]:
     release: Callable[[bool], None]
 
 
+def check_open(kit: RoomKit) -> None:
+    """Refuse a background run on a closing *kit*: started now, it would
+    outlive it (RFC §19.7.3).
+
+    Raises:
+        RoomKitError: *kit* is closing.
+    """
+    if kit._closed:
+        raise RoomKitError("The framework is closing: no background run starts")
+
+
 def start_background_run(kit: RoomKit, run: Coroutine[Any, Any, None]) -> None:
     """Start a strategy's background *run* as a task *kit* holds until it
     ends, so ``close()`` cancels it (RFC §19.7.3, §19.7.4).
 
     Raises:
-        RoomKitError: *kit* is closing: a run started now would outlive it.
+        RoomKitError: *kit* is closing (:func:`check_open`).
     """
-    if kit._closed:
+    try:
+        check_open(kit)
+    except RoomKitError:
         run.close()
-        raise RoomKitError("The framework is closing: no background run starts")
+        raise
     task = asyncio.create_task(run)
     runs = kit._background_runs
     runs.add(task)

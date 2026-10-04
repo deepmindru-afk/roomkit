@@ -35,7 +35,7 @@ from roomkit.models.enums import (
 )
 from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.tasks._child_status import record_task_end
-from roomkit.tasks.handback import bounded, hand_back, result_text
+from roomkit.tasks.handback import CALLER_HANDS_BACK, bounded, hand_back, result_text
 from roomkit.tasks.models import (
     DelegatedTask,
     DelegatedTaskResult,
@@ -568,7 +568,10 @@ class DelegationMixin(HelpersMixin):
         async def _on_bg_complete(result: DelegatedTaskResult) -> None:
             span.end(result)
             await self._on_delegation_complete(result)
-            await self._deliver_delegation_result(result, notify_channel, chain_depth, session_id)
+            if notify_channel != CALLER_HANDS_BACK:
+                await self._deliver_delegation_result(
+                    result, notify_channel, chain_depth, session_id
+                )
             if on_complete:
                 await on_complete(result)
 
