@@ -7,6 +7,8 @@ from typing import Any
 
 from pydantic import BaseModel, SecretStr, field_validator
 
+from roomkit.providers.vendor_endpoint import ANTHROPIC_BASE_URL, is_vendor_endpoint
+
 # Claude models that still take ``temperature`` and the ``budget_tokens``
 # thinking shape: the 4.6 generation and everything before it. Every other
 # ``claude-`` id gets the modern contract (adaptive thinking, no sampling
@@ -80,7 +82,9 @@ class AnthropicConfig(BaseModel):
 
     def model_post_init(self, __context: Any) -> None:
         """Apply safe defaults for Anthropic's modern first-party models."""
-        if self.base_url is not None or not _is_modern_claude(self.model):
+        if not is_vendor_endpoint(self.base_url, ANTHROPIC_BASE_URL):
+            return
+        if not _is_modern_claude(self.model):
             return
         if "use_adaptive_thinking" not in self.model_fields_set:
             self.use_adaptive_thinking = True

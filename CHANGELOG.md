@@ -841,6 +841,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A vendor's official URL written out as `base_url` is the vendor's own
+  endpoint (RMK-484, RFC §6.7): `https://api.openai.com/v1` for OpenAI's text
+  provider, `https://api.anthropic.com` for Anthropic's, the official URL with
+  a trailing slash for OpenAI Realtime and GPT-Live, `https://api.deepseek.com`
+  as well as its `/v1` for DeepSeek. Each read such a configuration as a
+  server behind a proxy, and dropped the vendor's tool-name rule, the
+  catalogue's tool-turn reasoning profile and a modern model's defaults
+  (Anthropic's adaptive thinking, its deferred tools). One helper,
+  `roomkit.providers.vendor_endpoint.is_vendor_endpoint`, decides it everywhere.
+
 - Arguments a `BEFORE_TOOL_USE` hook edited in place so they no longer fit
   the schema read `Invalid rewritten arguments` on an AIChannel too (RMK-482,
   RFC §21.1), as on a realtime session and a conference: the AI channel said

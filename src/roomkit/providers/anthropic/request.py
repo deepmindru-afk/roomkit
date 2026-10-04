@@ -25,6 +25,7 @@ from roomkit.providers.ai.image_parts import image_part_base64
 from roomkit.providers.ai.reasoning import thinking_switch
 from roomkit.providers.ai.tool_declaration import ToolNameRule, declared_parameters
 from roomkit.providers.anthropic.config import AnthropicConfig
+from roomkit.providers.vendor_endpoint import ANTHROPIC_BASE_URL, is_vendor_endpoint
 
 ANTHROPIC_TOOL_NAMES = ToolNameRule("anthropic", r"[A-Za-z0-9_-]{1,128}")
 """The tool names Anthropic accepts (measured 2026-10-02)."""
@@ -180,8 +181,8 @@ def build_kwargs(config: AnthropicConfig, context: AIContext) -> dict[str, Any]:
         kwargs["system"] = context.system_prompt
     kwargs.update(_thinking_or_temperature(config, context))
     if context.tools:
-        if config.base_url is None:
-            # Behind a base_url the server decides its names (RFC §6.7).
+        if is_vendor_endpoint(config.base_url, ANTHROPIC_BASE_URL):
+            # Behind another base_url the server decides its names (RFC §6.7).
             ANTHROPIC_TOOL_NAMES.check(t.name for t in context.tools)
         kwargs["tools"] = _tool_definitions(context.tools)
     if context.response_schema is not None:

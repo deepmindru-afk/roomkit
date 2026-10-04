@@ -6,6 +6,8 @@ from typing import Any
 
 from pydantic import BaseModel, SecretStr
 
+from roomkit.providers.vendor_endpoint import OPENAI_BASE_URL, is_vendor_endpoint
+
 _MAX_COMPLETION_TOKEN_MODEL_PREFIXES = ("gpt-4.1", "gpt-5", "gpt-6", "o1", "o3", "o4")
 _FIXED_TEMPERATURE_MODEL_PREFIXES = ("gpt-5", "gpt-6", "o1", "o3", "o4")
 
@@ -89,7 +91,7 @@ class OpenAIConfig(BaseModel):
 
     def model_post_init(self, __context: Any) -> None:
         """Apply safe defaults for modern models on OpenAI's own endpoint."""
-        if self.base_url is not None:
+        if not is_vendor_endpoint(self.base_url, OPENAI_BASE_URL):
             return
         if (
             self.model.startswith(_MAX_COMPLETION_TOKEN_MODEL_PREFIXES)

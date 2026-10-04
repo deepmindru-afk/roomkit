@@ -60,6 +60,7 @@ from roomkit.providers.ai.tool_declaration import ToolNameRule, chat_tool_declar
 from roomkit.providers.openai.config import OpenAIConfig
 from roomkit.providers.openai.models import MODELS
 from roomkit.providers.utils import _aclose_stream, http_timeout
+from roomkit.providers.vendor_endpoint import OPENAI_BASE_URL, is_vendor_endpoint
 
 if TYPE_CHECKING:
     import httpx
@@ -168,7 +169,8 @@ class OpenAIAIProvider(AIProvider):
         """Whether this request goes to OpenAI's own endpoint, whose models
         and rules this provider knows: not a derivative's service, not a
         server behind ``base_url``."""
-        return self._provider_name == "openai" and getattr(self._config, "base_url", None) is None
+        base_url = getattr(self._config, "base_url", None)
+        return self._provider_name == "openai" and is_vendor_endpoint(base_url, OPENAI_BASE_URL)
 
     @property
     def _tool_name_rule(self) -> ToolNameRule | None:
@@ -230,7 +232,8 @@ class OpenAIAIProvider(AIProvider):
         configured = getattr(self._config, "supports_response_schema_with_tools", None)
         if configured is not None:
             return configured
-        return self.supports_response_schema and getattr(self._config, "base_url", None) is None
+        base_url = getattr(self._config, "base_url", None)
+        return self.supports_response_schema and is_vendor_endpoint(base_url, OPENAI_BASE_URL)
 
     @classmethod
     def available_models(cls) -> list[ModelInfo]:

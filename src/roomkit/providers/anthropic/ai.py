@@ -36,6 +36,7 @@ from roomkit.providers.anthropic.request import build_kwargs
 from roomkit.providers.anthropic.stream_events import done_event, is_first_output, stream_events
 from roomkit.providers.anthropic.tool_blocks import ToolUseBlocks
 from roomkit.providers.utils import _aclose_stream
+from roomkit.providers.vendor_endpoint import ANTHROPIC_BASE_URL, is_vendor_endpoint
 
 logger = logging.getLogger("roomkit.providers.anthropic.ai")
 
@@ -189,10 +190,11 @@ class AnthropicAIProvider(AIProvider):
     def supports_deferred_tools(self) -> bool:
         """Read from the catalogue: a model it does not carry is assumed not to.
 
-        Never behind a ``base_url``: a proxy or gateway gets the request shape
-        it always got, as the configuration's other shape defaults leave it.
+        Never behind another ``base_url``: a proxy or gateway gets the request
+        shape it always got, as the configuration's other shape defaults leave
+        it.
         """
-        if self._config.base_url is not None:
+        if not is_vendor_endpoint(self._config.base_url, ANTHROPIC_BASE_URL):
             return False
         entry = self.catalog_entry()
         return entry is not None and "deferred_tools" in entry.capabilities

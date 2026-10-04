@@ -14,6 +14,7 @@ from roomkit.providers.ai.tool_declaration import ToolNameRule
 from roomkit.providers.openai.ai import OPENAI_TOOL_NAMES
 from roomkit.providers.openai.realtime_base import OpenAIRealtimeBase
 from roomkit.providers.openai.voices import VOICES as _VOICES
+from roomkit.providers.vendor_endpoint import is_vendor_endpoint
 from roomkit.voice.base import VoiceSession
 from roomkit.voice.realtime.provider import VoiceInfo
 
@@ -119,7 +120,7 @@ class OpenAIRealtimeProvider(OpenAIRealtimeBase):
     def _tool_name_rule(self) -> ToolNameRule | None:
         """OpenAI's rule on OpenAI's own endpoint (measured on
         ``gpt-realtime-2.1``: the text API's), none behind ``base_url``."""
-        return OPENAI_TOOL_NAMES if self._base_url == _DEFAULT_BASE_URL else None
+        return OPENAI_TOOL_NAMES if is_vendor_endpoint(self._base_url, _DEFAULT_BASE_URL) else None
 
     def _auth_headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._api_key.get_secret_value()}"}

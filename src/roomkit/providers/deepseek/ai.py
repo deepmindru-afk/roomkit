@@ -11,6 +11,7 @@ from roomkit.providers.ai.tool_declaration import ToolNameRule
 from roomkit.providers.deepseek.config import DeepSeekConfig
 from roomkit.providers.deepseek.models import MODELS
 from roomkit.providers.openai.ai import OpenAIAIProvider
+from roomkit.providers.vendor_endpoint import DEEPSEEK_BASE_URLS, is_vendor_endpoint
 
 # Measured 2026-10-02: a dot or a colon, or a 129th character, is a 400.
 DEEPSEEK_TOOL_NAMES = ToolNameRule("deepseek", r"[A-Za-z0-9_-]{1,128}")
@@ -59,8 +60,8 @@ class DeepSeekAIProvider(OpenAIAIProvider):
     def _tool_name_rule(self) -> ToolNameRule | None:
         """DeepSeek's rule on its own endpoint; behind another URL the server
         decides (RFC §6.7)."""
-        default = DeepSeekConfig.model_fields["base_url"].default
-        return DEEPSEEK_TOOL_NAMES if self._config.base_url == default else None
+        own = is_vendor_endpoint(self._config.base_url, *DEEPSEEK_BASE_URLS)
+        return DEEPSEEK_TOOL_NAMES if own else None
 
     @classmethod
     def available_models(cls) -> list[ModelInfo]:

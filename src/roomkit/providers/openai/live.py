@@ -58,6 +58,7 @@ from roomkit.providers.openai.live_events import (
 from roomkit.providers.openai.live_handlers import OpenAILiveEventHandlersMixin
 from roomkit.providers.openai.live_hosted import OpenAILiveHostedDelegationMixin
 from roomkit.providers.openai.live_models import MODELS
+from roomkit.providers.vendor_endpoint import is_vendor_endpoint
 from roomkit.voice._g711 import _get_codec
 from roomkit.voice.base import VoiceSession, VoiceSessionState
 from roomkit.voice.pipeline.resampler.linear import LinearResamplerProvider
@@ -222,7 +223,8 @@ class OpenAILiveProvider(
         later, opaquely (measured on ``gpt-live-1``, RFC §6.7). The integrator
         backend's own provider checks its tools; behind ``base_url`` the
         server decides."""
-        if isinstance(self._delegation, HostedReasoning) and self._base_url == _DEFAULT_BASE_URL:
+        own = is_vendor_endpoint(self._base_url, _DEFAULT_BASE_URL)
+        if isinstance(self._delegation, HostedReasoning) and own:
             return OPENAI_TOOL_NAMES
         return None
 
