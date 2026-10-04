@@ -29,6 +29,7 @@ from roomkit.channels._realtime_tool_executor import (
     report_cancelled_call,
     run_tool_call,
     serve_tool_call,
+    serve_unbooked,
     serving_tool_call,
     submit_tool_outcome,
     tool_loop_context,
@@ -38,7 +39,6 @@ from roomkit.channels._skill_constants import TOOL_ACTIVATE_SKILL
 from roomkit.channels._tool_registry import ChannelRegistry, schema_tool
 from roomkit.channels._tool_search_constants import TOOL_CALL_TOOL, TOOL_LIST_TOOLS
 from roomkit.core.exceptions import ToolRefusedError, UnservedToolCallError
-from roomkit.core.task_utils import shielded
 from roomkit.models.enums import ChannelType
 from roomkit.models.tool_call import (
     ToolCallEvent,
@@ -398,11 +398,9 @@ class RealtimeToolsMixin:
         before its outcome (the channel closing while it waits behind the
         transcription barrier) still reports it once, cancelled (RFC §9.3).
         """
-        try:
-            await self._execute_tool_call(call)
-        except asyncio.CancelledError:
-            await shielded(report_cancelled_call(self, call, "The session ended"))
-            raise
+        await serve_unbooked(
+            self, call, lambda: self._execute_tool_call(call), "The session ended"
+        )
 
     async def _execute_tool_call(self, call: RealtimeToolCall) -> None:
         """Serve a provider's function call and submit its outcome (RFC §12.4)."""

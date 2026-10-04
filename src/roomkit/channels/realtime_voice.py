@@ -1208,14 +1208,28 @@ class RealtimeVoiceChannel(
                 await _finish_cleanup(self.end_session(session))
             else:
                 await _finish_cleanup(self._cleanup_failed_start(session))
+                self._replay_queued_tool_calls(session)
             pending = self._connecting_sessions.get(session.id)
             if pending is not None and pending.failure is not None:
                 raise pending.failure from None
             raise
 
+    def _replay_queued_tool_calls(self, session: VoiceSession) -> None:
+        """Hand the executor the tool calls the provider issued while the
+        start that failed was pending: on the ended session it serves none and
+        reports each once, cancelled (RFC §12.4)."""
+        pending = self._connecting_sessions.get(session.id)
+        if pending is None:
+            return
+        for callback, args in pending.callbacks:
+            if callback == self._on_provider_tool_call:
+                callback(*args)
+
     async def _cleanup_failed_start(self, session: VoiceSession) -> None:
         """Roll back every partially initialized handshake through one path."""
         session.state = VoiceSessionState.ENDED
+        # Its in-flight calls end as at a session's end: stopped and reported.
+        await self._stop_session_tools(session)
         with contextlib.suppress(Exception):
             self._pipeline_session_ended(session)
         with self._state_lock:
@@ -1230,7 +1244,6 @@ class RealtimeVoiceChannel(
                 idle.set()
             self._user_speaking.pop(session.id, None)
             self._provider_idle.pop(session.id, None)
-            self._tool_calls.take(session.id)
             self._awaiting_tool_response.discard(session.id)
             self._session_tools.pop(session.id, None)
             self._session_roles.pop(session.id, None)

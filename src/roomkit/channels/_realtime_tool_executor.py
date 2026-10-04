@@ -19,6 +19,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Protocol
 
 from roomkit.core.exceptions import ToolFailedError, ToolRefusedError, UnservedToolCallError
+from roomkit.core.task_utils import shielded
 from roomkit.models.tool_call import ToolCallVerdict
 from roomkit.tools._outcome import OutcomeKind, ToolOutcome, read_outcome
 from roomkit.tools.context import (
@@ -313,6 +314,20 @@ async def submit_tool_outcome(
     failed, for a protocol that can say so (RFC §12.4)."""
     submit = provider.submit_tool_error if failed else provider.submit_tool_result
     await submit(session, call_id, result)
+
+
+async def serve_unbooked(
+    host: ToolCallHost, call: RealtimeToolCall, serve: Callable[[], Awaitable[None]], why: str
+) -> None:
+    """Take a call no result can name (no id, or an id in flight) down the
+    path of any call, off the books (RFC §12.4): a cut before its outcome
+    (the channel closing) still reports it once, cancelled (RFC §9.3).
+    """
+    try:
+        await serve()
+    except asyncio.CancelledError:
+        await shielded(report_cancelled_call(host, call, why))
+        raise
 
 
 async def report_cancelled_call(host: ToolCallHost, call: RealtimeToolCall, why: str) -> None:

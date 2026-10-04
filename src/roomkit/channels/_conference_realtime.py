@@ -47,6 +47,7 @@ from roomkit.channels._realtime_tool_executor import (
     report_cancelled_call,
     report_interrupted_calls,
     run_tool_call,
+    serve_unbooked,
     serving_tool_call,
     submit_tool_outcome,
     tool_loop_context,
@@ -74,6 +75,9 @@ if TYPE_CHECKING:
     from roomkit.voice.realtime.provider import RealtimeVoiceProvider
 
 logger = logging.getLogger("roomkit.channels.conference")
+
+_LEFT_THE_ROOM = "The conference left the room"
+"""Why a call a detach cut was cancelled before its result."""
 
 # Opens the bot's media connection for a room — the channel's _ensure_bot.
 EnsureBot = Callable[[str], "Awaitable[BotSession]"]
@@ -537,8 +541,12 @@ class ConferenceRealtime:
             return
         if not self._tool_calls.open(call):
             # No result can name it: refused on the path of any call, nothing
-            # sent (RFC §12.4).
-            room.spawn(self._answer_tool(call))
+            # sent. Tracked beside the teardown, not on the room: a detach
+            # does not cut it, and on a room gone it is reported cancelled
+            # (RFC §12.4).
+            self._track_report(
+                serve_unbooked(self, call, lambda: self._answer_tool(call), _LEFT_THE_ROOM)
+            )
             return
         call.task = room.spawn(self._answer_tool(call))
         call.task.add_done_callback(lambda _: self._tool_calls.close(call))
@@ -563,8 +571,9 @@ class ConferenceRealtime:
             assert call.task is not None  # interruptible  # noqa: S101
             call.task.cancel()
             # Off the provider's callback: an audit hook must not hold up the
-            # interruption it reports.
-            room.spawn(report_cancelled_call(self, call, ABANDONED_BY_PROVIDER))
+            # interruption it reports. Tracked beside the teardown, as a
+            # detach's reports are: a detach does not cut it.
+            self._track_report(report_cancelled_call(self, call, ABANDONED_BY_PROVIDER))
 
     async def _answer_tool(self, call: RealtimeToolCall) -> None:
         """Answer one tool call through the realtime tool executor.
@@ -701,7 +710,7 @@ class ConferenceRealtime:
         (after a detach or a reconnect): nothing serves it and nothing is
         sent, and it still gets its one report, cancelled (RFC §9.3), after
         a detach as after an unplug: the report needs no realtime config."""
-        self._track_report(report_cancelled_call(self, call, "The conference left the room"))
+        self._track_report(report_cancelled_call(self, call, _LEFT_THE_ROOM))
 
     def _track_report(self, coro: Awaitable[None]) -> None:
         """Run a report beside the teardown; the disconnect waits for it."""
@@ -719,7 +728,7 @@ class ConferenceRealtime:
         calls = self._tool_calls.take(session.id)
         if not calls:
             return
-        self._track_report(report_interrupted_calls(self, calls, "The conference left the room"))
+        self._track_report(report_interrupted_calls(self, calls, _LEFT_THE_ROOM))
 
     async def _settle_reports(self) -> None:
         """Wait for the reports of the calls detaches interrupted."""
