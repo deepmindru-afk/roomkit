@@ -397,7 +397,6 @@ class VoiceTTSMixin:
     ) -> ChannelOutput:
         """Deliver a streaming AI response via TTS."""
         from roomkit.models.channel import ChannelOutput as ChannelOutputModel
-        from roomkit.voice.tts.sentence_splitter import split_sentences
 
         if not self._tts or not self._backend:
             return ChannelOutputModel.empty()
@@ -418,14 +417,7 @@ class VoiceTTSMixin:
         room_id = event.room_id
         target_sessions = self._find_sessions(room_id, binding)
 
-        accumulated: list[str] = []
-
-        async def tracking_stream() -> AsyncIterator[str]:
-            async for delta in text_stream:
-                if not isinstance(delta, str):
-                    continue
-                accumulated.append(delta)
-                yield delta
+        text = _ResponseText()
 
         _t = getattr(self._framework, "_telemetry", None) if self._framework else None
         telemetry: TelemetryProvider | None = _t if isinstance(_t, TelemetryProvider) else None
@@ -438,18 +430,7 @@ class VoiceTTSMixin:
         # The stream is read, filtered and split once, then every session gets
         # its own copy of the sentences: reading it drives persistence upstream,
         # and each session must hear the whole response.
-        token_source: AsyncIterator[str] = tracking_stream()
-        if self._tts_filter is not None:
-            from roomkit.voice.tts.filters import TTSStreamFilter, filtered_stream
-
-            if isinstance(self._tts_filter, TTSStreamFilter):
-                token_source = filtered_stream(token_source, self._tts_filter)
-            else:
-                token_source = _filter_sentences_plain(token_source, self._tts_filter)
-        sentence_source = split_sentences(token_source)
-        gate = self._sentence_gate(room_id, context)
-        if gate is not None:
-            sentence_source = gate.run(sentence_source)
+        sentence_source, gate = self._sentences(text.read(text_stream), room_id, context)
         fan_out = StreamFanOut(sentence_source, len(target_sessions))
         producer = asyncio.create_task(fan_out.run(), name=f"tts_fan_out:{event.id}")
         voice = self._resolve_voice(event.source.channel_id)
@@ -463,7 +444,7 @@ class VoiceTTSMixin:
                         room_id=room_id,
                         tts_name=tts_name,
                         telemetry=telemetry,
-                        accumulated=accumulated,
+                        accumulated=text.accumulated,
                         speaker_id=event.source.channel_id,
                     )
                     for session, branch in zip(target_sessions, fan_out.branches, strict=True)
@@ -493,9 +474,29 @@ class VoiceTTSMixin:
             raise fan_out.error
         delivered = _served_sessions(target_sessions, results)
 
-        full_text = self._streamed_text(accumulated, gate)
+        full_text = self._streamed_text(text.accumulated, gate)
         await self._close_streamed_response(delivered, full_text, room_id, context, _vs_parent)
         return ChannelOutputModel.empty()
+
+    def _sentences(
+        self, tokens: AsyncIterator[str], room_id: str, context: RoomContext
+    ) -> tuple[AsyncIterator[str], SentenceHookGate | None]:
+        """The sentences the sessions read from *tokens*: filtered, split, then gated."""
+        from roomkit.voice.tts.sentence_splitter import split_sentences
+
+        token_source = tokens
+        if self._tts_filter is not None:
+            from roomkit.voice.tts.filters import TTSStreamFilter, filtered_stream
+
+            if isinstance(self._tts_filter, TTSStreamFilter):
+                token_source = filtered_stream(token_source, self._tts_filter)
+            else:
+                token_source = _filter_sentences_plain(token_source, self._tts_filter)
+        sentence_source = split_sentences(token_source)
+        gate = self._sentence_gate(room_id, context)
+        if gate is not None:
+            sentence_source = gate.run(sentence_source)
+        return sentence_source, gate
 
     async def _stop_failed_sessions(
         self,
@@ -1245,6 +1246,21 @@ async def _close_stream(stream: AsyncIterator[AudioChunk] | None) -> None:
         await aclose()
     except Exception:
         logger.debug("Closing the TTS stream failed", exc_info=True)
+
+
+class _ResponseText:
+    """The text of a streamed response, as its sessions read it."""
+
+    def __init__(self) -> None:
+        self.accumulated: list[str] = []
+
+    async def read(self, text_stream: AsyncIterator[Any]) -> AsyncIterator[str]:
+        """Each text delta of *text_stream*, kept as it passes."""
+        async for delta in text_stream:
+            if not isinstance(delta, str):
+                continue
+            self.accumulated.append(delta)
+            yield delta
 
 
 def _served_sessions(sessions: list[VoiceSession], results: list[Any]) -> list[VoiceSession]:
