@@ -13,14 +13,11 @@ single test seam over ``_delegate_and_wait`` covers the whole flow.
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING, Any
 
+from roomkit.orchestration._worker_run import WorkerEnd, WorkerOutcome, WorkerStatus, run_worker
 from roomkit.orchestration.status_bus import StatusLevel
-from roomkit.orchestration.strategies.supervisor._common import (
-    _DEFAULT_TASK_TIMEOUT_SECONDS,
-    _post_worker_status,
-)
+from roomkit.orchestration.strategies.supervisor._common import _DEFAULT_TASK_TIMEOUT_SECONDS
 from roomkit.orchestration.strategies.supervisor.prompts import (
     _VERDICT_INSTRUCTIONS,
     SUBMIT_VERDICT,
@@ -30,8 +27,6 @@ from roomkit.orchestration.strategies.supervisor.prompts import (
 )
 from roomkit.orchestration.strategies.supervisor.results import (
     _render_result,
-    _result_completed,
-    _result_output,
     _worker_label,
     _worker_profile,
 )
@@ -52,30 +47,34 @@ async def _delegate_and_wait(
     task_timeout: float,
     require_structured_result: bool = False,
     result_tool: ResultTool | None = None,
+    status: WorkerStatus | None = None,
 ) -> tuple[str, bool]:
     """Delegate *task* to an agent and wait for its result, bounded by
-    *task_timeout*. Returns ``(output, completed_ok)``. When
-    *require_structured_result* is set, ``output`` is the JSON-encoded payload
-    of the forced result tool (*result_tool*, ``submit_result`` by default: a
-    worker hands its work back through it, the supervisor its verdict through
-    ``submit_verdict``); otherwise it is the agent's free text."""
-    try:
-        delegated = await asyncio.wait_for(
-            kit.delegate(
-                room_id,
-                channel_id,
-                task,
-                wait=True,
-                share_channels=share_channels,
-                require_structured_result=require_structured_result,
-                result_tool=result_tool,
-            ),
-            timeout=task_timeout,
-        )
-    except TimeoutError:
-        return (f"(timed out after {task_timeout:.0f}s)", False)
-    result = delegated.result
-    return (_result_output(result), _result_completed(result))
+    *task_timeout*, posted on the status bus as *status* says (a worker's
+    step; the supervisor's own passes post nothing). Returns
+    ``(output, completed_ok)``. When *require_structured_result* is set,
+    ``output`` is the JSON-encoded payload of the forced result tool
+    (*result_tool*, ``submit_result`` by default: a worker hands its work back
+    through it, the supervisor its verdict through ``submit_verdict``);
+    otherwise it is the agent's free text."""
+    outcome = await run_worker(
+        kit,
+        room_id,
+        channel_id,
+        task,
+        timeout=task_timeout,
+        status=status,
+        share_channels=share_channels,
+        require_structured_result=require_structured_result,
+        result_tool=result_tool,
+    )
+    return outcome.output, outcome.completed
+
+
+def _step_ended(outcome: WorkerOutcome) -> WorkerEnd:
+    """A supervised step's terminal entry: its structured result, rendered."""
+    level = StatusLevel.COMPLETED if outcome.completed else StatusLevel.FAILED
+    return WorkerEnd(level, _render_result(outcome.output))
 
 
 async def _supervisor_dispatch(
@@ -182,8 +181,10 @@ async def _run_supervised_sequential(
     """Hub & spoke sequential: fixed worker order, but every output returns to the
     supervisor, which validates it (rework up to *max_revisions*) and frames the
     next worker's task. Returns the reviewed steps
-    (``{worker, role, output, approved}``) for the caller to present/summarize."""
+    (``{worker, role, output, approved, completed}``, ``completed`` whether the
+    step's last task completed) for the caller to present/summarize."""
     steps: list[dict[str, Any]] = []
+    status = WorkerStatus({"room_id": room_id, "strategy": "supervised"}, ended=_step_ended)
     # The supervisor leads: it reads the user goal + its own instructions and
     # frames the FIRST worker's task, rather than forwarding the raw user message.
     task = (
@@ -204,15 +205,9 @@ async def _run_supervised_sequential(
         revisions = 0
         approved = False
         rendered = ""
+        ok = False
         verdict: dict[str, Any] = {}
         while True:
-            _post_worker_status(
-                kit,
-                worker.channel_id,
-                StatusLevel.PENDING,
-                detail=task,
-                metadata={"room_id": room_id, "strategy": "supervised"},
-            )
             # The worker MUST hand its work back via submit_result (forced
             # structure + a guaranteed result); ``output`` is the JSON payload.
             output, ok = await _delegate_and_wait(
@@ -223,15 +218,9 @@ async def _run_supervised_sequential(
                 share_channels=share_channels,
                 task_timeout=task_timeout,
                 require_structured_result=True,
+                status=status,
             )
             rendered = _render_result(output)
-            _post_worker_status(
-                kit,
-                worker.channel_id,
-                StatusLevel.COMPLETED if ok else StatusLevel.FAILED,
-                detail=rendered,
-                metadata={"room_id": room_id, "strategy": "supervised"},
-            )
             if not ok:
                 # The delegation itself FAILED — a timeout, or a provider error
                 # like an exhausted credit balance. This is infrastructure, not
@@ -265,6 +254,7 @@ async def _run_supervised_sequential(
                 "role": _worker_label(worker),
                 "output": rendered,
                 "approved": approved,
+                "completed": ok,
             }
         )
         if not approved:

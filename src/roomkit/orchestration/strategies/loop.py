@@ -29,6 +29,7 @@ from roomkit.orchestration._background import (
 )
 from roomkit.orchestration._call_room import in_call_room
 from roomkit.orchestration._installs import set_up_for_voice_room
+from roomkit.orchestration._worker_run import WorkerEnd, WorkerOutcome, WorkerStatus, run_worker
 from roomkit.orchestration.base import Orchestration
 from roomkit.orchestration.state import (
     ConversationState,
@@ -44,7 +45,7 @@ if TYPE_CHECKING:
     from roomkit.channels.agent import Agent
     from roomkit.channels.ai import ToolResult
     from roomkit.core.framework import RoomKit
-    from roomkit.tasks.models import DelegatedTask, DelegatedTaskResult
+    from roomkit.tasks.models import DelegatedTaskResult
 
 logger = logging.getLogger("roomkit.orchestration.strategies.loop")
 
@@ -511,13 +512,11 @@ async def _execute_loop(
 
     for iteration in range(1, max_iterations + 1):
         logger.info("[loop] Iteration %d/%d — producer", iteration, max_iterations)
-        delegated = await _produce(
-            kit, room_id, producer, current_input, iteration, max_iterations
-        )
-        producer_output = task_work(delegated.result)
+        produced = await _produce(kit, room_id, producer, current_input, iteration, max_iterations)
+        producer_output = task_work(produced)
         if not producer_output:
             logger.info("[loop] The producer's task failed at iteration %d: stopping", iteration)
-            outcome.stopped, outcome.failure = "producer_failed", delegated.result
+            outcome.stopped, outcome.failure = "producer_failed", produced
             break
         outcome.iteration, outcome.output = iteration, producer_output
 
@@ -540,39 +539,27 @@ async def _produce(
     task: str,
     iteration: int,
     max_iterations: int,
-) -> DelegatedTask:
-    """One producer iteration: its task delegated, with its status posts."""
-    metadata = {"room_id": room_id, "role": "producer", "iteration": iteration}
-    post_agent_lifecycle(
-        kit,
-        producer.channel_id,
-        StatusLevel.PENDING,
-        action="iteration",
-        detail=task,
-        metadata={**metadata, "max_iterations": max_iterations},
+) -> DelegatedTaskResult | None:
+    """One producer iteration: its task delegated, with its status posts;
+    the task's result."""
+    metadata = {
+        "room_id": room_id,
+        "role": "producer",
+        "iteration": iteration,
+        "max_iterations": max_iterations,
+    }
+    status = WorkerStatus(metadata, action="iteration", ended=_iteration_ended)
+    produced = await run_worker(
+        kit, room_id, producer.channel_id, task, timeout=None, status=status
     )
-    try:
-        delegated = await kit.delegate(room_id, producer.channel_id, task, wait=True)
-    except Exception as exc:
-        post_agent_lifecycle(
-            kit,
-            producer.channel_id,
-            StatusLevel.FAILED,
-            action="iteration",
-            detail=str(exc),
-            metadata=metadata,
-        )
-        raise
-    output = task_work(delegated.result)
-    post_agent_lifecycle(
-        kit,
-        producer.channel_id,
-        StatusLevel.COMPLETED if output else StatusLevel.FAILED,
-        action="iteration",
-        detail=output or _failed_task_text(delegated.result).capitalize() + ".",
-        metadata={**metadata, "task_id": delegated.id},
-    )
-    return delegated
+    return produced.result
+
+
+def _iteration_ended(produced: WorkerOutcome) -> WorkerEnd:
+    """A producer iteration's terminal entry: its output, or that it failed."""
+    if output := task_work(produced.result):
+        return WorkerEnd(StatusLevel.COMPLETED, output)
+    return WorkerEnd(StatusLevel.FAILED, _failed_task_text(produced.result).capitalize() + ".")
 
 
 def _revision_prompt(producer_output: str, review_results: list[dict[str, Any]]) -> str:
@@ -634,54 +621,12 @@ async def _review_sequential(
     current_input = review_input
 
     for reviewer in reviewers:
-        post_agent_lifecycle(
-            kit,
-            reviewer.channel_id,
-            StatusLevel.PENDING,
-            action="review",
-            detail=current_input,
-            metadata={"room_id": room_id, "role": "reviewer", "strategy": "sequential"},
-        )
-        try:
-            delegated = await kit.delegate(room_id, reviewer.channel_id, current_input, wait=True)
-        except Exception as exc:
-            post_agent_lifecycle(
-                kit,
-                reviewer.channel_id,
-                StatusLevel.FAILED,
-                action="review",
-                detail=str(exc),
-                metadata={"room_id": room_id, "role": "reviewer", "strategy": "sequential"},
-            )
-            raise
-        output = task_work(delegated.result)
-        is_approved = "APPROVED" in output.upper() if output else False
-
-        name = getattr(reviewer, "role", None) or reviewer.channel_id
-        post_agent_lifecycle(
-            kit,
-            reviewer.channel_id,
-            StatusLevel.COMPLETED if is_approved else StatusLevel.INFO,
-            action="review",
-            detail=output,
-            metadata={
-                "room_id": room_id,
-                "role": "reviewer",
-                "strategy": "sequential",
-                "approved": is_approved,
-                "task_id": delegated.id,
-            },
-        )
-        results.append(
-            {
-                "reviewer": name,
-                "approved": is_approved,
-                "feedback": output,
-            }
-        )
+        review = await _review(kit, room_id, reviewer, current_input, "sequential")
+        results.append(review)
+        name, output = review["reviewer"], review["feedback"]
 
         # Next reviewer sees previous feedback appended
-        if not is_approved and output:
+        if not review["approved"] and output:
             current_input = f"{current_input}\n\n--- {name} feedback ---\n{output}"
 
     return results
@@ -694,46 +639,41 @@ async def _review_parallel(
     review_input: str,
 ) -> list[dict[str, Any]]:
     """Run all reviewers in parallel on the same content."""
-
-    async def _review_one(reviewer: Agent) -> dict[str, Any]:
-        post_agent_lifecycle(
-            kit,
-            reviewer.channel_id,
-            StatusLevel.PENDING,
-            action="review",
-            detail=review_input,
-            metadata={"room_id": room_id, "role": "reviewer", "strategy": "parallel"},
-        )
-        try:
-            delegated = await kit.delegate(room_id, reviewer.channel_id, review_input, wait=True)
-        except Exception as exc:
-            post_agent_lifecycle(
-                kit,
-                reviewer.channel_id,
-                StatusLevel.FAILED,
-                action="review",
-                detail=str(exc),
-                metadata={"room_id": room_id, "role": "reviewer", "strategy": "parallel"},
-            )
-            raise
-        output = task_work(delegated.result)
-        is_approved = "APPROVED" in output.upper() if output else False
-        name = getattr(reviewer, "role", None) or reviewer.channel_id
-        post_agent_lifecycle(
-            kit,
-            reviewer.channel_id,
-            StatusLevel.COMPLETED if is_approved else StatusLevel.INFO,
-            action="review",
-            detail=output,
-            metadata={
-                "room_id": room_id,
-                "role": "reviewer",
-                "strategy": "parallel",
-                "approved": is_approved,
-                "task_id": delegated.id,
-            },
-        )
-        return {"reviewer": name, "approved": is_approved, "feedback": output}
-
-    results = await asyncio.gather(*[_review_one(r) for r in reviewers])
+    results = await asyncio.gather(
+        *[_review(kit, room_id, r, review_input, "parallel") for r in reviewers]
+    )
     return list(results)
+
+
+async def _review(
+    kit: RoomKit, room_id: str, reviewer: Agent, review_input: str, strategy: str
+) -> dict[str, Any]:
+    """One reviewer's review of *review_input*, with its status posts:
+    ``{reviewer, approved, feedback}``."""
+    status = WorkerStatus(
+        {"room_id": room_id, "role": "reviewer", "strategy": strategy},
+        action="review",
+        ended=_review_ended,
+    )
+    reviewed = await run_worker(
+        kit, room_id, reviewer.channel_id, review_input, timeout=None, status=status
+    )
+    output = task_work(reviewed.result)
+    return {
+        "reviewer": getattr(reviewer, "role", None) or reviewer.channel_id,
+        "approved": _approves(output),
+        "feedback": output,
+    }
+
+
+def _approves(review: str) -> bool:
+    """Whether a reviewer's output approves the work."""
+    return "APPROVED" in review.upper()
+
+
+def _review_ended(reviewed: WorkerOutcome) -> WorkerEnd:
+    """A review's terminal entry: completed when it approves, info otherwise."""
+    output = task_work(reviewed.result)
+    approved = _approves(output)
+    level = StatusLevel.COMPLETED if approved else StatusLevel.INFO
+    return WorkerEnd(level, output, {"approved": approved})

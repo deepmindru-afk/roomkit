@@ -1,8 +1,9 @@
 """Worker execution for the deterministic strategies (sequential / parallel).
 
-Runs workers directly via ``kit.delegate`` with a per-task timeout and posts
-lifecycle events. The supervised hub-&-spoke variant lives in
-``supervised.py``.
+Runs each worker through the strategies' shared delegation
+(:func:`~roomkit.orchestration._worker_run.run_worker`): bounded by the
+per-task timeout and followed on the status bus. The supervised hub-&-spoke
+variant lives in ``supervised.py``.
 """
 
 from __future__ import annotations
@@ -11,16 +12,9 @@ import asyncio
 import json
 from typing import TYPE_CHECKING
 
-from roomkit.orchestration.status_bus import StatusLevel
-from roomkit.orchestration.strategies.supervisor._common import (
-    _DEFAULT_TASK_TIMEOUT_SECONDS,
-    _post_worker_status,
-)
-from roomkit.orchestration.strategies.supervisor.results import (
-    _result_completed,
-    _result_output,
-    _worker_label,
-)
+from roomkit.orchestration._worker_run import WorkerStatus, run_worker
+from roomkit.orchestration.strategies.supervisor._common import _DEFAULT_TASK_TIMEOUT_SECONDS
+from roomkit.orchestration.strategies.supervisor.results import _worker_label
 
 if TYPE_CHECKING:
     from roomkit.channels.agent import Agent
@@ -58,66 +52,26 @@ async def _run_sequential(
 
     Each delegation is bounded by *task_timeout*; a worker that exceeds it is
     recorded as failed and the chain continues so the rest of the team — and
-    the supervisor's review — still runs on partial results."""
-    results: list[dict[str, str]] = []
+    the supervisor's review — still runs on partial results. Each result says
+    whether the worker's task ``completed``."""
+    results: list[dict[str, object]] = []
     prior_steps: list[tuple[str, str]] = []
+    status = WorkerStatus({"room_id": room_id, "strategy": "sequential"})
 
     for worker in workers:
-        worker_input = _compose_sequential_input(task_desc, prior_steps)
-        _post_worker_status(
+        outcome = await run_worker(
             kit,
+            room_id,
             worker.channel_id,
-            StatusLevel.PENDING,
-            detail=worker_input,
-            metadata={"room_id": room_id, "strategy": "sequential"},
+            _compose_sequential_input(task_desc, prior_steps),
+            timeout=task_timeout,
+            status=status,
+            share_channels=share_channels,
         )
-        try:
-            delegated = await asyncio.wait_for(
-                kit.delegate(
-                    room_id,
-                    worker.channel_id,
-                    worker_input,
-                    wait=True,
-                    share_channels=share_channels,
-                ),
-                timeout=task_timeout,
-            )
-        except TimeoutError:
-            timeout_msg = f"Worker timed out after {task_timeout:.0f}s"
-            _post_worker_status(
-                kit,
-                worker.channel_id,
-                StatusLevel.FAILED,
-                detail=timeout_msg,
-                metadata={"room_id": room_id, "strategy": "sequential"},
-            )
-            results.append({"worker": worker.channel_id, "output": timeout_msg})
-            prior_steps.append((_worker_label(worker), timeout_msg))
-            continue
-        except Exception as exc:
-            _post_worker_status(
-                kit,
-                worker.channel_id,
-                StatusLevel.FAILED,
-                detail=str(exc),
-                metadata={"room_id": room_id, "strategy": "sequential"},
-            )
-            raise
-        output = _result_output(delegated.result)
-        status_ok = _result_completed(delegated.result)
-        _post_worker_status(
-            kit,
-            worker.channel_id,
-            StatusLevel.COMPLETED if status_ok else StatusLevel.FAILED,
-            detail=output,
-            metadata={
-                "room_id": room_id,
-                "strategy": "sequential",
-                "task_id": delegated.id,
-            },
+        results.append(
+            {"worker": worker.channel_id, "output": outcome.output, "completed": outcome.completed}
         )
-        results.append({"worker": worker.channel_id, "output": output})
-        prior_steps.append((_worker_label(worker), output))
+        prior_steps.append((_worker_label(worker), outcome.output))
 
     return json.dumps({"status": "completed", "results": results})
 
@@ -133,60 +87,24 @@ async def _run_parallel(
 ) -> str:
     """Run all workers concurrently on the same task. Each is bounded by
     *task_timeout*; one that exceeds it is recorded as failed without aborting
-    its siblings."""
+    its siblings. Each result says whether the worker's task ``completed``."""
+    status = WorkerStatus({"room_id": room_id, "strategy": "parallel"})
 
-    async def _delegate_one(worker: Agent) -> dict[str, str]:
-        _post_worker_status(
+    async def _delegate_one(worker: Agent) -> dict[str, object]:
+        outcome = await run_worker(
             kit,
+            room_id,
             worker.channel_id,
-            StatusLevel.PENDING,
-            detail=task_desc,
-            metadata={"room_id": room_id, "strategy": "parallel"},
+            task_desc,
+            timeout=task_timeout,
+            status=status,
+            share_channels=share_channels,
         )
-        try:
-            delegated = await asyncio.wait_for(
-                kit.delegate(
-                    room_id,
-                    worker.channel_id,
-                    task_desc,
-                    wait=True,
-                    share_channels=share_channels,
-                ),
-                timeout=task_timeout,
-            )
-        except TimeoutError:
-            timeout_msg = f"Worker timed out after {task_timeout:.0f}s"
-            _post_worker_status(
-                kit,
-                worker.channel_id,
-                StatusLevel.FAILED,
-                detail=timeout_msg,
-                metadata={"room_id": room_id, "strategy": "parallel"},
-            )
-            return {"worker": worker.channel_id, "output": timeout_msg}
-        except Exception as exc:
-            _post_worker_status(
-                kit,
-                worker.channel_id,
-                StatusLevel.FAILED,
-                detail=str(exc),
-                metadata={"room_id": room_id, "strategy": "parallel"},
-            )
-            raise
-        output = _result_output(delegated.result)
-        status_ok = _result_completed(delegated.result)
-        _post_worker_status(
-            kit,
-            worker.channel_id,
-            StatusLevel.COMPLETED if status_ok else StatusLevel.FAILED,
-            detail=output,
-            metadata={
-                "room_id": room_id,
-                "strategy": "parallel",
-                "task_id": delegated.id,
-            },
-        )
-        return {"worker": worker.channel_id, "output": output}
+        return {
+            "worker": worker.channel_id,
+            "output": outcome.output,
+            "completed": outcome.completed,
+        }
 
     results = await asyncio.gather(*[_delegate_one(w) for w in workers])
     return json.dumps({"status": "completed", "results": list(results)})

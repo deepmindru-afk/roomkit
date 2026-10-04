@@ -27,8 +27,8 @@ from roomkit.models.context import RoomContext
 from roomkit.models.enums import ChannelCategory, ChannelType, TaskStatus
 from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.models.response_metadata import ResponseMetadata
+from roomkit.orchestration._worker_run import task_output
 from roomkit.orchestration.strategies.loop import _execute_loop
-from roomkit.orchestration.strategies.supervisor.results import _result_output
 from roomkit.orchestration.strategies.supervisor.supervised import _supervisor_dispatch
 from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
@@ -179,7 +179,7 @@ def test_a_supervisor_reads_a_cut_worker_as_failed() -> None:
     )
 
     assert task_work(cut) == ""
-    assert _result_output(cut) == "The task failed."
+    assert task_output(cut) == "The task failed."
 
 
 @pytest.mark.parametrize("cut", [LOOPING, SILENT_LOOPING], ids=["narrated", "silent"])

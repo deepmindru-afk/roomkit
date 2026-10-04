@@ -21,9 +21,9 @@ from roomkit.core.mixins import delegation
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import TaskStatus
 from roomkit.models.event import TextContent
+from roomkit.orchestration._worker_run import task_output
 from roomkit.orchestration.strategies.supervisor import Supervisor
 from roomkit.orchestration.strategies.supervisor.execution import _run_sequential
-from roomkit.orchestration.strategies.supervisor.results import _result_output
 from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.tasks.models import DelegatedTaskResult, cancelled_task_fields
@@ -447,7 +447,7 @@ def test_a_supervisor_reads_a_cancelled_task_as_cancelled() -> None:
         **cancelled_task_fields(None),
     )
 
-    assert _result_output(cancelled) == "The task was cancelled."
+    assert task_output(cancelled) == "The task was cancelled."
 
 
 async def test_a_cancel_that_took_a_task_ends_it_once_though_its_worker_finished(

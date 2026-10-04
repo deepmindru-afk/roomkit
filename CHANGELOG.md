@@ -796,6 +796,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A strategy's worker delegation is one sequence on every door (RMK-478,
+  RFC §19.7.3, §19.7.4): the supervisor's workers (sequential, parallel,
+  supervised, `delegate_to_<id>` waiting) and the Loop's producer and
+  reviewers post their pending entry, are bounded by the supervisor's
+  `task_timeout` (the Loop has none), and post one terminal entry however the
+  delegation ends. A delegation its caller cancelled (a call bound, a turn
+  cut) left its worker `pending` on the status bus, `delegate_to_<id>` with
+  `wait_for_result=True` ignored `task_timeout`, and a worker past its bound
+  now reads `The task timed out after <n>s.` on every door.
+
 - A delegated worker's turn cut at its bound no longer leaves its context in
   the delegating call (RMK-478, RFC §23.3): an inline delegation
   (`kit.delegate(wait=True)`) runs the worker's turn in a task of its own. A

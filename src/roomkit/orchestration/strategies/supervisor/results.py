@@ -11,9 +11,7 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from roomkit.models.channel import ChannelOutput
-from roomkit.models.enums import TaskStatus
 from roomkit.models.event import answer_text
-from roomkit.tasks.models import task_work
 
 if TYPE_CHECKING:
     from roomkit.channels.agent import Agent
@@ -31,29 +29,6 @@ def _worker_roles_csv(workers: list[Agent]) -> str:
     """Comma-separated worker roles (falling back to ``channel_id``), for the
     ``delegate_workers`` tool description listing the team."""
     return ", ".join(getattr(w, "role", None) or w.channel_id for w in workers)
-
-
-def _result_output(result: Any) -> str:
-    """The text a supervisor reads of a delegated task result: its work.
-
-    A failed task reads as failed, never with its error, which is an
-    exception's message for the logs and hooks, not for a model (RFC §9.3),
-    nor with the narration a worker cut short keeps as its output (RFC
-    §23.3). Accepts a real result, a duck-typed object, or ``None``.
-    """
-    if result is None:
-        return ""
-    if work := task_work(result):
-        return work
-    if getattr(result, "status", None) == TaskStatus.CANCELLED:
-        return "The task was cancelled."
-    failed = getattr(result, "error", None) or getattr(result, "status", None) == TaskStatus.FAILED
-    return "The task failed." if failed else ""
-
-
-def _result_completed(result: Any) -> bool:
-    """Whether a delegated task result reports ``completed`` status."""
-    return getattr(result, "status", None) == "completed"
 
 
 _PROFILE_CAP = 600

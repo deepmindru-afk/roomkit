@@ -1,15 +1,17 @@
-"""A supervisor's worker past its task timeout, on every door that waits for
-it (RFC §19.7.3, §23.3).
+"""A supervisor's worker delegation, bounded and followed, on every door that
+waits for it (RFC §19.7.3, §23.3; RMK-478).
 
-The worker's delegation is cut at the bound and ends cancelled; the call that
-delegated answers once, with the worker read as failed, its tool loop left as
-it was by the cut turn of the worker that ran inline under it.
+Past its task timeout the worker's delegation is cut and ends cancelled; the
+call that delegated answers once, with the worker read as failed, its tool
+loop left as it was by the cut turn of the worker that ran inline under it.
+However the delegation ends, the worker's last status entry is terminal.
 """
 
 from __future__ import annotations
 
 import asyncio
 import time
+from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
@@ -18,6 +20,7 @@ from roomkit import HookExecution, HookTrigger, RoomKit, ToolCallEvent
 from roomkit.channels.agent import Agent
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.event import TextContent
+from roomkit.orchestration.status_bus import StatusLevel
 from roomkit.orchestration.strategies.supervisor import Supervisor
 from roomkit.providers.ai.base import AIContext, AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
@@ -30,7 +33,9 @@ _WORK = 1.5
 DOORS = {
     "parallel": ("delegate_workers", {"strategy": "parallel"}),
     "supervised-sequential": ("delegate_workers", {"strategy": "sequential"}),
+    "per-worker-wait": ("delegate_to_worker", {"wait_for_result": True}),
 }
+EVERY_DOOR = pytest.mark.parametrize("door", list(DOORS))
 
 
 class _CallsOnce(MockAIProvider):
@@ -53,13 +58,25 @@ async def _slow_lookup(name: str, arguments: dict[str, Any]) -> str:
     return "found"
 
 
-async def _run(door: str) -> tuple[list[str], list[str], float]:
-    """One supervisor turn through *door*: the worker's task ends, what the
-    delegating call reported, and how long the turn took."""
+@dataclass
+class _Turn:
+    """What one supervisor turn left: the worker's task ends, the delegating
+    call's reports, the worker's status entries, and how long it took."""
+
+    ends: list[str] = field(default_factory=list)
+    reports: list[str] = field(default_factory=list)
+    entries: list[tuple[StatusLevel, str]] = field(default_factory=list)
+    elapsed: float = 0.0
+
+
+async def _run(door: str, *, bound: float = _BOUND, call_bound: float | None = None) -> _Turn:
+    """One supervisor turn through *door*, its workers bounded by *bound*, its
+    delegating call by *call_bound* when given."""
     tool, settings = DOORS[door]
     kit = RoomKit()
     kit.register_channel(SimpleChannel("sms"))
-    supervisor = Agent("sup", provider=_CallsOnce(tool))
+    call_bounds = {tool: call_bound} if call_bound is not None else None
+    supervisor = Agent("sup", provider=_CallsOnce(tool), tool_timeouts=call_bounds)
     worker = Agent(
         "worker",
         provider=_CallsOnce("lookup"),
@@ -68,37 +85,47 @@ async def _run(door: str) -> tuple[list[str], list[str], float]:
         tool_search=False,
     )
     kit.register_channel(supervisor)
-    strategy = Supervisor(supervisor=supervisor, workers=[worker], task_timeout=_BOUND, **settings)
+    strategy = Supervisor(supervisor=supervisor, workers=[worker], task_timeout=bound, **settings)
     await kit.create_room(room_id="r", orchestration=strategy)
     await kit.attach_channel("r", "sms")
-    ends: list[str] = []
-    reports: list[str] = []
+    turn = _Turn()
 
     @kit.hook(HookTrigger.ON_TASK_COMPLETED, execution=HookExecution.ASYNC)
     async def _ended(event: Any, ctx: Any) -> None:
         if event.metadata["agent_id"] == "worker":
-            ends.append(str(event.metadata["task_status"]))
+            turn.ends.append(str(event.metadata["task_status"]))
 
     @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC)
     async def _reported(event: ToolCallEvent, ctx: Any) -> None:
         if event.name == tool:
-            reports.append(str(event.result))
+            turn.reports.append(str(event.result))
 
     started = time.monotonic()
     await kit.process_inbound(
         InboundMessage(channel_id="sms", sender_id="u", content=TextContent(body="Find it."))
     )
-    elapsed = time.monotonic() - started
+    turn.elapsed = time.monotonic() - started
     await asyncio.sleep(0.05)
+    entries = await kit.status_bus.recent(20, agent_id="worker")
+    turn.entries = [(entry.status, entry.detail) for entry in entries]
     await kit.close()
-    return ends, reports, elapsed
+    return turn
 
 
-@pytest.mark.parametrize("door", list(DOORS))
+@EVERY_DOOR
 async def test_a_worker_past_its_bound_is_cut_and_the_call_answers_once(door: str) -> None:
-    ends, reports, elapsed = await _run(door)
+    turn = await _run(door)
 
-    assert ends == ["cancelled"]
-    assert elapsed < _WORK
-    assert len(reports) == 1
-    assert "Tool call cancelled" not in reports[0]
+    assert turn.ends == ["cancelled"]
+    assert turn.elapsed < _WORK
+    assert len(turn.reports) == 1
+    assert "Tool call cancelled" not in turn.reports[0]
+    assert turn.entries[-1] == (StatusLevel.FAILED, "The task timed out after 0.3s.")
+
+
+@EVERY_DOOR
+async def test_a_delegation_its_call_cut_posts_the_worker_failed(door: str) -> None:
+    turn = await _run(door, bound=30.0, call_bound=_BOUND)
+
+    assert turn.ends == ["cancelled"]
+    assert turn.entries[-1] == (StatusLevel.FAILED, "cancelled")

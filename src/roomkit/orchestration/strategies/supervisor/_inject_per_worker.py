@@ -12,14 +12,16 @@ from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._tool_registry import orchestration_tool
 from roomkit.orchestration._call_room import in_call_room
+from roomkit.orchestration._worker_run import (
+    WorkerStatus,
+    run_worker,
+    task_completed,
+    task_output,
+)
 from roomkit.orchestration.status_bus import StatusLevel
 from roomkit.orchestration.strategies.supervisor._common import (
     _post_worker_status,
     logger,
-)
-from roomkit.orchestration.strategies.supervisor.results import (
-    _result_completed,
-    _result_output,
 )
 from roomkit.providers.ai.base import AITool
 
@@ -36,6 +38,7 @@ class _PerWorkerToolMixin:
     _workers: list[Agent]
     _wait_for_result: bool
     _share_channels: list[str]
+    _task_timeout: float
 
     def _inject_per_worker_tools(self, kit: RoomKit, room_id: str) -> None:
         """Declare per-worker ``delegate_to_<id>`` tools in *room_id*'s turns,
@@ -52,6 +55,7 @@ class _PerWorkerToolMixin:
             tool_to_worker,
             wait=self._wait_for_result,
             share_channels=self._share_channels,
+            task_timeout=self._task_timeout,
         )
         entries = [
             orchestration_tool(tool, in_call_room(tool.name, server.serve), waits=True)
@@ -71,12 +75,14 @@ class _PerWorkerToolServer:
         *,
         wait: bool,
         share_channels: list[str],
+        task_timeout: float,
     ) -> None:
         self._kit = kit
         self._supervisor = supervisor
         self._tool_to_worker = tool_to_worker
         self._wait = wait
         self._share_channels = share_channels
+        self._task_timeout = task_timeout
         # Per room: a worker busy in one room is free in another.
         self._pending: set[tuple[str, str]] = set()  # (room_id, worker_id)
 
@@ -95,55 +101,23 @@ class _PerWorkerToolServer:
             raise
 
     async def _delegate_and_wait(self, rid: str, worker_id: str, task_desc: str) -> str:
-        """Run the worker on *task_desc* and answer with its result."""
-        kit = self._kit
-        _post_worker_status(
-            kit,
-            worker_id,
-            StatusLevel.PENDING,
-            detail=task_desc,
-            metadata={"room_id": rid, "mode": "per_worker_wait"},
-        )
-        try:
-            delegated = await kit.delegate(
-                rid,
-                worker_id,
-                task_desc,
-                wait=True,
-                notify=self._supervisor.channel_id,
-                share_channels=self._share_channels,
-            )
-        except Exception as exc:
-            _post_worker_status(
-                kit,
-                worker_id,
-                StatusLevel.FAILED,
-                detail=str(exc),
-                metadata={"room_id": rid, "mode": "per_worker_wait"},
-            )
-            raise
-        return self._report_result(rid, worker_id, delegated)
-
-    def _report_result(self, rid: str, worker_id: str, delegated: DelegatedTask) -> str:
-        """Post a finished delegation's outcome, and answer the model with it."""
-        result = delegated.result
-        result_output = _result_output(result)
-        _post_worker_status(
+        """Run the worker on *task_desc*, bounded by the task timeout, and
+        answer with its result."""
+        outcome = await run_worker(
             self._kit,
+            rid,
             worker_id,
-            StatusLevel.COMPLETED if _result_completed(result) else StatusLevel.FAILED,
-            detail=result_output,
-            metadata={
-                "room_id": rid,
-                "mode": "per_worker_wait",
-                "task_id": delegated.id,
-            },
+            task_desc,
+            timeout=self._task_timeout,
+            status=WorkerStatus({"room_id": rid, "mode": "per_worker_wait"}),
+            share_channels=self._share_channels,
         )
+        result = outcome.result
         return json.dumps(
             {
                 "status": result.status if result else "failed",
                 "worker": worker_id,
-                "result": result_output,
+                "result": outcome.output,
             }
         )
 
@@ -189,8 +163,8 @@ class _PerWorkerToolServer:
             _post_worker_status(
                 kit,
                 worker_id,
-                StatusLevel.COMPLETED if _result_completed(r) else StatusLevel.FAILED,
-                detail=_result_output(r),
+                StatusLevel.COMPLETED if task_completed(r) else StatusLevel.FAILED,
+                detail=task_output(r),
                 metadata={"room_id": rid, "mode": "per_worker_async", "task_id": task_id},
             )
             original_set(r)
