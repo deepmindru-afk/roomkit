@@ -845,6 +845,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A `system` message in the history (a memory provider's summary, an
+  instruction) goes to Anthropic as a user turn, as to Gemini (RMK-484, RFC
+  §6.7): it went as a message role the Messages API does not take.
+
 - A reasoning block with no text (redacted, a signature alone) goes back as
   nothing in an assistant answer without calls on a wire that replays
   reasoning inline (RMK-484, RFC §6.4), as it already did in a round with

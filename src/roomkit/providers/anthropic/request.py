@@ -161,10 +161,16 @@ def _tool_result_content(
 
 
 def build_messages(messages: list[AIMessage]) -> list[dict[str, Any]]:
-    """Build Anthropic-formatted messages, mapping tool roles to user."""
+    """Build Anthropic-formatted messages, mapping tool roles to user.
+
+    A ``system`` message of the history (a memory provider's summary, an
+    instruction) becomes a user turn, as on Gemini: the Messages API takes
+    the roles ``user`` and ``assistant`` only, the system prompt being its
+    top-level ``system``.
+    """
     result: list[dict[str, Any]] = []
     for m in messages:
-        role = "user" if m.role == "tool" else m.role
+        role = "user" if m.role in ("tool", "system") else m.role
         result.append({"role": role, "content": format_content(m.content)})
     return result
 
