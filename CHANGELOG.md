@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `human_input_handler=` on `RealtimeVoiceChannel` and
+  `ConferenceRealtimeConfig` (RMK-481, RFC §9.3, §21.6), as on an
+  `AIChannel`: the channel declares the handler's `tool_definitions` in every
+  session and serves its tools before `tool_handler`, on every door (the
+  provider's call, a call recovered from speech, a reasoning backend's, a
+  conference's), under the handler's own `timeout` rather than the default
+  call bound that cut them at 10 s. Each request fires `ON_USER_INPUT_REQUIRED`,
+  whose BLOCK rejects it (it was never wired on a voice door), with
+  `channel_type` naming the door; the requests still open are settled when
+  the channel closes, and on a conference when its realtime provider is
+  unplugged. A host tool under a name the handler declares is refused. A
+  `HumanInputToolHandler` given as a realtime channel's `tool_handler` stays a
+  plain handler, and a warning points to the option.
+  `HumanInputToolHandler.ask(name, arguments, *, channel_type=...)` asks on a
+  door of that channel type; `ConferenceRealtimeConfig.tool_bound()` takes
+  `waits=`. Example: `examples/realtime_human_input.py`.
+
 - `ReasoningRequest.report_call` (RMK-480, RFC §12.4.1), a last field
   defaulting to `None`: reports a call the backend's own provider served,
   outside the channel's gate, to the channel's ON_TOOL_CALL hooks, served or
@@ -811,6 +828,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to `RealtimeVoiceChannel(..., skills=...)`.
 
 ### Fixed
+
+- An `AIChannel`'s human-input tools are served by the channel itself
+  (RMK-481, RFC §9.3), after its own tools and before the host's handler:
+  replacing `channel.tool_handler` dropped them, since the handler given as
+  `human_input_handler=` was composed into the host's. They keep their
+  declarations, their own timeout and `ON_USER_INPUT_REQUIRED`.
 
 - A turn constrained to a response schema that its round cap, deadline,
   budget or an interruption cuts fails `truncated` on every door that reads
