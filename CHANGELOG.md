@@ -11,9 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `AudioPipeline.on_session_ending(session)` (RMK-466): a session's end has
   begun and its teardown still awaits. From there the session's inbound
-  frames are not processed and the callbacks still due for it are dropped;
-  its state and recording stay until `on_session_ended`.
-  `RealtimeVoiceChannel` calls it as the session turns `ENDED`.
+  frames are not processed (nor recorded) and the callbacks still due for it
+  are dropped; its state stays, and its recording keeps the outbound audio,
+  until `on_session_ended`. `RealtimeVoiceChannel` calls it as the session
+  turns `ENDED`.
 
 - `ToolCallResult.refused` (RMK-465, RFC §12.4.1), a last field defaulting to
   `False`: among the errors a reasoning backend reads, a refusal. The voice
@@ -800,17 +801,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   callbacks still due for them are dropped, a frame in flight across the
   release leaves nothing behind, a frame played to an ended session is
   processed and leaves no stage state, and its AEC reference and activity
-  are ignored.
+  are ignored. For a direct `AudioPipeline` user, frames for a session after
+  `on_session_ended` are dropped until `on_session_active` activates it
+  again. The `VoiceChannel` doors outside the pipeline (the
+  `max_audio_frames_per_second` limiter, the input and output level hooks,
+  an out-of-band DTMF) no longer write an entry for a session unbound since.
 
 - `VoiceChannel.unbind_session` forgets the speech state of a session
-  unbound mid-utterance (RMK-466): its speech onset, its suppression and the
-  segments queued for after playback stayed for good, since only the
-  SPEECH_END that never came would have cleared them.
+  unbound mid-utterance (RMK-466): its speech onset, its energy barge-in
+  count, its suppression and the segments queued for after playback stayed
+  for good, since only the SPEECH_END that never came would have cleared
+  them.
 
-- A `VoiceChannel` session's `pipeline.speech_segment` spans hang under its
-  `voice.session` span again (RMK-466): `bind_session` handed the span to the
-  pipeline before activating the session, and the activation's cleanup of a
-  previous session's state dropped it, so every segment span had no parent.
+- A voice session's `pipeline.speech_segment` spans hang under its session
+  span (RMK-466). `VoiceChannel.bind_session` handed its `voice.session` span
+  to the pipeline before activating the session, whose cleanup of a previous
+  session's state dropped it; `RealtimeVoiceChannel` never handed over its
+  `realtime_session` span. Every segment span had no parent.
 
 - A voice `Loop` (`async_delivery=True`) hands its outcome back to the voice
   channel that started it, success and failure alike (RMK-462, RFC §19.7.4),
