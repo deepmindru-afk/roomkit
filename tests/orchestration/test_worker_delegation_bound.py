@@ -13,6 +13,7 @@ import asyncio
 import time
 from dataclasses import dataclass, field
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -20,6 +21,7 @@ from roomkit import HookExecution, HookTrigger, RoomKit, ToolCallEvent
 from roomkit.channels.agent import Agent
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.event import TextContent
+from roomkit.orchestration._worker_run import WorkerStatus, run_worker
 from roomkit.orchestration.status_bus import StatusLevel
 from roomkit.orchestration.strategies.supervisor import Supervisor
 from roomkit.providers.ai.base import AIContext, AIResponse, AITool, AIToolCall
@@ -129,3 +131,22 @@ async def test_a_delegation_its_call_cut_posts_the_worker_failed(door: str) -> N
 
     assert turn.ends == ["cancelled"]
     assert turn.entries[-1] == (StatusLevel.FAILED, "cancelled")
+
+
+async def test_a_timeout_the_delegation_raised_itself_is_its_own_failure() -> None:
+    """A ``TimeoutError`` from inside the delegation (a store read) is not the
+    worker's bound expiring: it fails the delegation as raised."""
+    kit = RoomKit()
+    kit.delegate = AsyncMock(side_effect=TimeoutError("store read timed out"))  # type: ignore[method-assign]
+    status = WorkerStatus({"room_id": "r"})
+
+    with pytest.raises(TimeoutError, match="store read"):
+        await run_worker(kit, "r", "worker", "Find it.", timeout=30.0, status=status)
+    await asyncio.sleep(0.01)  # the bus records its posts in the background
+    entries = await kit.status_bus.recent(5, agent_id="worker")
+    await kit.close()
+
+    assert [(e.status, e.detail) for e in entries][-1] == (
+        StatusLevel.FAILED,
+        "store read timed out",
+    )

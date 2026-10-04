@@ -16,9 +16,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, NamedTuple
 
+from roomkit.core.exceptions import ToolTimeoutError
 from roomkit.models.enums import TaskStatus
 from roomkit.orchestration.status_bus import StatusLevel, post_agent_lifecycle
 from roomkit.tasks.models import task_work
+from roomkit.tools.timeout import answer_within
 
 if TYPE_CHECKING:
     from roomkit.core.framework import RoomKit
@@ -146,14 +148,12 @@ async def _delegate(
     timeout: float | None,
     delegation: dict[str, Any],
 ) -> WorkerOutcome:
-    """The delegation itself, inline, within *timeout*."""
+    """The delegation itself, inline, within *timeout*: a ``TimeoutError``
+    the delegation raised itself is its own failure, not the bound's."""
+    answer = kit.delegate(room_id, worker_id, task, wait=True, **delegation)
     try:
-        delegated = await asyncio.wait_for(
-            kit.delegate(room_id, worker_id, task, wait=True, **delegation), timeout=timeout
-        )
-    except TimeoutError:
-        if timeout is None:
-            raise
+        delegated = await answer_within(timeout, worker_id, answer)
+    except ToolTimeoutError:
         return WorkerOutcome(f"The task timed out after {timeout:g}s.", False)
     result = delegated.result
     return WorkerOutcome(task_output(result), task_completed(result), delegated)
