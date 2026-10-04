@@ -85,6 +85,7 @@ def _make_event(
 def _make_mock_kit(room: Room, bindings: list[ChannelBinding] | None = None) -> MagicMock:
     """Create a mock kit that tracks room state across updates."""
     kit = MagicMock()
+    kit._closed = False
     # Track room state so get_room returns the latest version
     _room_state: dict[str, Room] = {room.id: room}
 
