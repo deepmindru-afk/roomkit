@@ -127,11 +127,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   starts recorders on an existing room, all or nothing, under its lock, each
   announced (`ON_RECORDING_STARTED`) before it returns, so a recording resumed
   after a restart announces its consent point again;
-  `room_recordings(room_id)` lists the running handles;
-  `add_room_recording_track(room_id, track)` declares a track and returns a
-  `RoomRecordingFeed` its media goes through; `stop_room_recording(room_id, *,
-  organization_id=None)` returns the results, and stops the recordings of a
-  room whose row is gone. A recording started on a live room joins the
+  `await room_recordings(room_id, *, organization_id=None)` lists the running
+  handles; `await add_room_recording_track(room_id, track, *,
+  organization_id=None)` declares a track and returns a `RoomRecordingFeed` its
+  media goes through; `stop_room_recording(room_id, *, organization_id=None)`
+  returns the results. All four read the room scoped to its organization
+  (RMK-469): another organization's room is not found, and nothing of its
+  recordings is listed, fed or stopped; list, feed and stop reach the
+  recordings of a room whose row is gone while they run. A recording started on a live room joins the
   room's media only once announced, each declared track told to it first; it
   captures the room's declared tracks, not a session that joined while the
   room recorded nothing. Example: `examples/room_recording_on_demand.py`.

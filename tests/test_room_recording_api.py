@@ -68,7 +68,7 @@ async def test_a_recording_started_on_an_existing_room_is_announced_before_any_m
         ("started", handles[0].id, "r1")
     ]
     assert recorder.chunks == []
-    assert kit.room_recordings("r1") == handles
+    assert await kit.room_recordings("r1") == handles
     await kit.close()
 
 
@@ -77,7 +77,7 @@ async def test_a_track_is_fed_through_the_framework() -> None:
     recorder = MockMediaRecorder()
     await kit.start_room_recording("r1", [_binding(recorder)])
 
-    feed = kit.add_room_recording_track("r1", _TRACK)
+    feed = await kit.add_room_recording_track("r1", _TRACK)
     assert feed is not None
     feed.feed(b"\x01\x02" * 480, 20.0)
     feed.close()
@@ -90,8 +90,8 @@ async def test_a_track_is_fed_through_the_framework() -> None:
 async def test_a_room_that_records_nothing_gives_no_feed() -> None:
     kit, _heard = await _kit()
 
-    assert kit.add_room_recording_track("r1", _TRACK) is None
-    assert kit.room_recordings("r1") == []
+    assert await kit.add_room_recording_track("r1", _TRACK) is None
+    assert await kit.room_recordings("r1") == []
     await kit.close()
 
 
@@ -103,7 +103,7 @@ async def test_the_start_is_all_or_nothing() -> None:
         await kit.start_room_recording("r1", [_binding(started), _binding(_Refusing())])
 
     assert len(started.results) == 1  # stopped, not left running
-    assert kit.room_recordings("r1") == []
+    assert await kit.room_recordings("r1") == []
     assert heard == []
     await kit.close()
 
@@ -146,7 +146,7 @@ async def test_an_explicit_stop_returns_and_announces_each_result() -> None:
     kind, event = heard[-1]
     assert (kind, event.id, event.room_id, event.session) == ("stopped", handle.id, "r1", None)
     assert event.urls == (results[0].url,)
-    assert kit.room_recordings("r1") == []
+    assert await kit.room_recordings("r1") == []
     await kit.close()
 
 
@@ -195,7 +195,7 @@ async def test_a_recording_joining_live_media_hears_it_only_once_announced() -> 
     consent point (RFC §12.11, §17.6)."""
     kit, _heard = await _kit()
     await kit.start_room_recording("r1", [_binding(MockMediaRecorder())])
-    feed = kit.add_room_recording_track("r1", _TRACK)
+    feed = await kit.add_room_recording_track("r1", _TRACK)
     assert feed is not None
     await kit.stop_room_recording("r1")
     later = MockMediaRecorder()
@@ -225,8 +225,54 @@ async def test_a_room_whose_row_is_gone_still_has_its_recordings_stopped() -> No
     results = await kit.stop_room_recording("r1", organization_id="tenant-a")
 
     assert [result.id for result in results] == [handle.id]
-    assert kit.room_recordings("r1") == []
     # Gone and recording nothing: not found, as another organization's room is.
     with pytest.raises(RoomNotFoundError):
         await kit.stop_room_recording("r1", organization_id="tenant-a")
+    with pytest.raises(RoomNotFoundError):
+        await kit.room_recordings("r1", organization_id="tenant-a")
+    await kit.close()
+
+
+async def test_another_tenants_recordings_are_neither_listed_nor_fed() -> None:
+    """Listing and feeding read the room with its scope, as a stop does (RFC
+    §12.11): another organization's room is not found, and nothing reaches its
+    recording."""
+    kit, _heard = await _kit()
+    recorder = MockMediaRecorder()
+    [handle] = await kit.start_room_recording("r1", [_binding(recorder)])
+
+    with pytest.raises(RoomNotFoundError):
+        await kit.room_recordings("r1", organization_id="tenant-b")
+    with pytest.raises(RoomNotFoundError):
+        await kit.add_room_recording_track("r1", _TRACK, organization_id="tenant-b")
+
+    assert recorder.tracks == []
+    assert await kit.room_recordings("r1", organization_id="tenant-a") == [handle]
+    await kit.close()
+
+
+async def test_a_gone_room_that_still_records_is_listed_and_fed() -> None:
+    """Its row is gone, its recordings run in memory: reached all the same,
+    as a stop reaches them."""
+    kit, _heard = await _kit()
+    recorder = MockMediaRecorder()
+    [handle] = await kit.start_room_recording("r1", [_binding(recorder)])
+    await kit.store.delete_room("r1")
+
+    assert await kit.room_recordings("r1", organization_id="tenant-a") == [handle]
+    feed = await kit.add_room_recording_track("r1", _TRACK, organization_id="tenant-a")
+    assert feed is not None
+    feed.feed(b"\x01\x02" * 480, 20.0)
+
+    assert [chunk.data for chunk in recorder.chunks] == [b"\x01\x02" * 480]
+    await kit.close()
+
+
+async def test_a_room_that_never_existed_is_not_found() -> None:
+    kit, _heard = await _kit()
+
+    with pytest.raises(RoomNotFoundError):
+        await kit.room_recordings("nowhere")
+    with pytest.raises(RoomNotFoundError):
+        await kit.add_room_recording_track("nowhere", _TRACK)
     await kit.close()

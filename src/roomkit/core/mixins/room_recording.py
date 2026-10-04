@@ -96,21 +96,38 @@ class RoomRecordingMixin(HelpersMixin):
             started = self._room_recorder_mgr.start(room_id, recorders)
             return await self._file_announced(room_id, started)
 
-    def room_recordings(self, room_id: str) -> list[MediaRecordingHandle]:
-        """The recordings *room_id* runs, in the order they started; empty when none."""
+    async def room_recordings(
+        self, room_id: str, *, organization_id: str | None = None
+    ) -> list[MediaRecordingHandle]:
+        """The recordings *room_id* runs, in the order they started; empty when none.
+
+        The room is read scoped to *organization_id*, as a stop reads it (RFC
+        §12.11): a room whose row is gone is listed while it still records.
+
+        Raises:
+            RoomNotFoundError: the room is another organization's, or it is
+                missing and records nothing.
+        """
+        await self._recording_room(room_id, organization_id)
         return self._room_recorder_mgr.handles(room_id)
 
-    def add_room_recording_track(
-        self, room_id: str, track: RecordingTrack
+    async def add_room_recording_track(
+        self, room_id: str, track: RecordingTrack, *, organization_id: str | None = None
     ) -> RoomRecordingFeed | None:
         """Declare *track* to the room's recordings; the feed its media goes through.
 
         For a source the framework does not wire itself (a channel that joins
         the room while it records wires its own). The track describes the
         media it will carry (RFC §12.11): the feed hands it as declared, and a
-        recording started later is told it before any of its media. ``None``
-        when the room records nothing.
+        recording started later is told it before any of its media. The room
+        is read scoped to *organization_id*, as a stop reads it. ``None`` when
+        the room records nothing.
+
+        Raises:
+            RoomNotFoundError: the room is another organization's, or it is
+                missing and records nothing.
         """
+        await self._recording_room(room_id, organization_id)
         if not self._room_recorder_mgr.has_recorders(room_id):
             return None
         self._room_recorder_mgr.on_track_added(room_id, track)
@@ -133,13 +150,26 @@ class RoomRecordingMixin(HelpersMixin):
                 missing and records nothing, as one would be told not found.
         """
         async with self._lock_manager.locked(room_id):
-            try:
-                await self.get_room(room_id, organization_id=organization_id)
-            except RoomNotFoundError:
-                gone = await self._store.get_room(room_id) is None
-                if not (gone and self._room_recorder_mgr.has_recorders(room_id)):
-                    raise
+            await self._recording_room(room_id, organization_id)
             return await self._stop_room_recordings(room_id)
+
+    async def _recording_room(self, room_id: str, organization_id: str | None) -> None:
+        """Refuse a room whose recordings the caller may not reach (RFC §12.11).
+
+        The room is read scoped to *organization_id*. A room whose row is gone
+        still has its recordings reached while they run (a file nothing stops
+        is never finalized); another organization's room, and a gone room that
+        records nothing, are not found.
+
+        Raises:
+            RoomNotFoundError: as above.
+        """
+        try:
+            await self.get_room(room_id, organization_id=organization_id)
+        except RoomNotFoundError:
+            gone = await self._store.get_room(room_id) is None
+            if not (gone and self._room_recorder_mgr.has_recorders(room_id)):
+                raise
 
     async def _stop_room_recordings(self, room_id: str) -> list[MediaRecordingResult]:
         """Stop *room_id*'s recordings and announce each that stopped: the one

@@ -7,7 +7,8 @@ any media (the consent point). Shows:
 - kit.start_room_recording(): recorders on an existing room, all or nothing,
   ON_RECORDING_STARTED for each before it returns
 - kit.add_room_recording_track(): a track declared to the room's recordings,
-  its media fed through the framework
+  its media fed through the framework; like every recording verb, it reads the
+  room scoped to the caller's organization
 - kit.stop_room_recording(): the results, ON_RECORDING_STOPPED for each
 - kit.commit_event(): a record outside the pipeline, its index counted
   delivered so the room's next event never waits on it
@@ -54,7 +55,7 @@ async def main() -> None:
     binding = RoomRecorderBinding(recorder=recorder, config=MediaRecordingConfig())
     await kit.start_room_recording("meeting", [binding], organization_id="acme")
 
-    feed = kit.add_room_recording_track("meeting", MIC)
+    feed = await kit.add_room_recording_track("meeting", MIC, organization_id="acme")
     assert feed is not None
     for frame in range(3):  # 20 ms of 48 kHz mono PCM each
         feed.feed(b"\x00\x00" * 960, frame * 20.0)

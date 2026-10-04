@@ -354,8 +354,8 @@ kit = RoomKit(
 | `send_event(room_id, channel_id, content, ...)` | Send event directly |
 | `commit_event(room_id, event, organization_id?)` | Commit a record no member receives, outside the pipeline: its index counted delivered, no hook, no broadcast (RFC §10.5) |
 | `start_room_recording(room_id, recorders, organization_id?)` | Start recorders on an existing room, all or nothing, each announced (ON_RECORDING_STARTED) before any media |
-| `room_recordings(room_id)` | The handles of the room's running recordings |
-| `add_room_recording_track(room_id, track)` | Declare a track to the room's recordings; returns a `RoomRecordingFeed` (`feed(data, timestamp_ms)`, `close()`), or `None` when the room records nothing |
+| `await room_recordings(room_id, *, organization_id=None)` | The handles of the room's running recordings; the room read with its scope (another organization's is not found) |
+| `await add_room_recording_track(room_id, track, *, organization_id=None)` | Declare a track to the room's recordings; returns a `RoomRecordingFeed` (`feed(data, timestamp_ms)`, `close()`), or `None` when the room records nothing; the room read with its scope |
 | `stop_room_recording(room_id, organization_id?)` | Stop the room's recordings, each result announced (ON_RECORDING_STOPPED) |
 | `get_timeline(room_id, offset?, limit?)` | Query event timeline |
 | `close()` | Shutdown framework |
