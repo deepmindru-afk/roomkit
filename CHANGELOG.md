@@ -858,11 +858,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A realtime call an ending interrupts is reported once, cancelled, on the
   conference as on the channel, and when a session's start fails (RMK-477,
-  RFC §12.4): a conference's detach cut the refusal of a call issued under
-  an id in flight, and the report of a call the provider abandoned, before
-  either was made; a call issued while a start that then failed was pending
-  was dropped unreported. Serving a call no result can name is one helper
-  (`serve_unbooked`) for both hosts.
+  RFC §12.4). On a conference, a detach, the unplug of its realtime provider
+  or a detach after its bot was lost cut the report of a call issued under an
+  id in flight, or of a call the provider abandoned, before it was made; the
+  channel's `close()` cut the latter. A call the provider issued while a
+  start that then failed was pending was dropped unreported, whether the
+  handshake was rolled back, the session ended once filed, the start
+  cancelled before or after the call, or the channel closed while the leg
+  rang. On a start whose connection is no awaitable, a call issued during the
+  handshake is now stopped and reported cancelled when the start fails: its
+  handler ran to its end and the call read as served.
 
 - A human-input request whose waiting call is cut (a turn cancelled, a
   session ended, a call abandoned) is withdrawn (RMK-465, RFC §9.3): it

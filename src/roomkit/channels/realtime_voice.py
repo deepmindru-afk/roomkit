@@ -28,7 +28,7 @@ from roomkit.channels._realtime_delegation import RealtimeDelegationMixin
 from roomkit.channels._realtime_response import RealtimeResponseMixin
 from roomkit.channels._realtime_speech import RealtimeSpeechMixin
 from roomkit.channels._realtime_tool_calls import ToolCallBook
-from roomkit.channels._realtime_tool_executor import report_interrupted_calls
+from roomkit.channels._realtime_tool_executor import SESSION_ENDED, report_interrupted_calls
 from roomkit.channels._realtime_tool_gate import RealtimeToolGateMixin
 from roomkit.channels._realtime_tool_recovery import RealtimeToolRecoveryMixin
 from roomkit.channels._realtime_tools import RealtimeToolsMixin
@@ -119,6 +119,9 @@ class _ConnectingSession:
     disconnected: bool = False
     deferred: bool = False
     callbacks: list[tuple[Callable[..., Any], tuple[Any, ...]]] = field(default_factory=list)
+    # The provider's tool calls the journal holds, and the ones it issued once
+    # the start failed: each is reported, cancelled, if the start fails.
+    tool_calls: list[tuple[Any, ...]] = field(default_factory=list)
     audio_bytes: int = 0
     failure: Exception | None = None
 
@@ -498,6 +501,7 @@ class RealtimeVoiceChannel(
 
         # Track fire-and-forget tasks for clean shutdown
         self._scheduled_tasks: set[asyncio.Task[Any]] = set()
+        self._tool_reports: set[asyncio.Task[Any]] = set()
 
         # Telemetry span tracking: session_id -> span_id
         self._session_spans: dict[str, str] = {}
@@ -509,7 +513,9 @@ class RealtimeVoiceChannel(
         provider.on_transcription(self._gate_provider_callback(self._on_transcript_fragment))
         provider.on_speech_start(self._gate_provider_callback(self._on_provider_speech_start))
         provider.on_speech_end(self._gate_provider_callback(self._on_provider_speech_end))
-        provider.on_tool_call(self._gate_provider_callback(self._on_provider_tool_call))
+        provider.on_tool_call(
+            self._gate_provider_callback(self._on_provider_tool_call, tool_call=True)
+        )
         provider.on_tool_call_cancelled(
             self._gate_provider_callback(self._on_provider_tool_call_cancelled)
         )
@@ -1204,26 +1210,25 @@ class RealtimeVoiceChannel(
         try:
             return await self._connect_session(session, connection)
         except (Exception, asyncio.CancelledError):
-            if session.id in self._sessions:
-                await _finish_cleanup(self.end_session(session))
-            else:
-                await _finish_cleanup(self._cleanup_failed_start(session))
-                self._replay_queued_tool_calls(session)
+            # Run to its end whatever cancels the start again: close() waits
+            # for this task, so nothing of the rollback is left to its sweep.
+            await _finish_cleanup(self._roll_back_start(session))
             pending = self._connecting_sessions.get(session.id)
             if pending is not None and pending.failure is not None:
                 raise pending.failure from None
             raise
 
-    def _replay_queued_tool_calls(self, session: VoiceSession) -> None:
-        """Hand the executor the tool calls the provider issued while the
-        start that failed was pending: on the ended session it serves none and
-        reports each once, cancelled (RFC §12.4)."""
+    async def _roll_back_start(self, session: VoiceSession) -> None:
+        """End a start that failed: the session's end once it was filed, else
+        the handshake's rollback; then the reports of the calls the provider
+        issued while it was pending (RFC §12.4)."""
+        if session.id in self._sessions:
+            await self.end_session(session)
+        else:
+            await self._cleanup_failed_start(session)
         pending = self._connecting_sessions.get(session.id)
-        if pending is None:
-            return
-        for callback, args in pending.callbacks:
-            if callback == self._on_provider_tool_call:
-                callback(*args)
+        if pending is not None and pending.tool_calls:
+            await self._report_start_calls(session, pending.tool_calls)
 
     async def _cleanup_failed_start(self, session: VoiceSession) -> None:
         """Roll back every partially initialized handshake through one path."""
@@ -1504,6 +1509,8 @@ class RealtimeVoiceChannel(
         self._check_connecting_session(session)
         pending = self._connecting_sessions[session.id]
         pending.deferred = False
+        # The journal's calls go to the executor now: none is left to report.
+        pending.tool_calls.clear()
         for callback, args in pending.callbacks:
             callback(*args)
         pending.callbacks.clear()
@@ -1583,7 +1590,7 @@ class RealtimeVoiceChannel(
                 logger.warning(
                     "Timed out cancelling %d tools for session %s", len(pending), session.id
                 )
-        await report_interrupted_calls(self, interrupted, "The session ended")
+        await report_interrupted_calls(self, interrupted, SESSION_ENDED)
 
     async def _end_session_owned(self, session: VoiceSession) -> None:
         """The teardown itself, run once per session by ``end_session``."""
@@ -2111,6 +2118,10 @@ class RealtimeVoiceChannel(
                 *(asyncio.shield(done) for done in outstanding), return_exceptions=True
             )
 
+        # The reports of abandoned calls finish first: the sweep below would
+        # cut them before their claim.
+        await self._settle_tool_reports()
+
         # Cancel all outstanding scheduled tasks with timeout
         tasks = list(self._scheduled_tasks)
         for task in tasks:
@@ -2216,18 +2227,25 @@ class RealtimeVoiceChannel(
 
     # -- Internal callbacks --
 
-    def _gate_provider_callback(self, callback: Callable[..., Any]) -> Callable[..., Any]:
+    def _gate_provider_callback(
+        self, callback: Callable[..., Any], *, tool_call: bool = False
+    ) -> Callable[..., Any]:
         """Keep startup events ordered until transport and authorization are ready.
 
         No application task runs while SIP is ringing. Audio enters the normal
         send FIFO only after the negotiated codec and binding are available.
-        Rollback discards the journal with its connecting-session owner.
+        Rollback discards the journal with its connecting-session owner; a
+        *tool_call* is kept apart as well, even once the start failed (the
+        provider is connected until the rollback disconnects it), and
+        reported, cancelled, if the start fails (RFC §12.4).
         """
 
         def dispatch(session: VoiceSession, *args: Any) -> Any:
             pending = self._connecting_sessions.get(session.id)
             if pending is None or not pending.deferred:
                 return callback(session, *args)
+            if tool_call:
+                pending.tool_calls.append(args)
             if pending.failure is not None or pending.task.cancelling():
                 return None
             size = sum(len(arg) for arg in args if isinstance(arg, bytes))

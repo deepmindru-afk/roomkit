@@ -1,11 +1,18 @@
 """A call an ending interrupts is reported once, cancelled, on the conference
 as on the realtime channel, and when the session's start fails
 (RMK-477, RFC §9.3, §12.4).
+
+Every ending of each door: a session's end and the channel's close; a
+conference's detach, the realtime's unplug, and a detach after the bot was
+lost. Every way a start fails: its handshake rolled back, its session ended
+once filed, the start cancelled before or after the provider's call, the
+channel closed while the leg rings, a connection that was no awaitable.
 """
 
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import pytest
@@ -47,7 +54,10 @@ async def _never(*_: Any) -> str:
     return "late"
 
 
-async def _session_door() -> tuple[RoomKit, MockRealtimeProvider, Any, Any]:
+Ending = Callable[[], Awaitable[Any]]
+
+
+async def _session_door() -> tuple[RoomKit, MockRealtimeProvider, Any, dict[str, Ending]]:
     provider = MockRealtimeProvider()
     channel = RealtimeVoiceChannel(
         "rt",
@@ -61,24 +71,49 @@ async def _session_door() -> tuple[RoomKit, MockRealtimeProvider, Any, Any]:
     await kit.create_room(room_id="r1")
     await kit.attach_channel("r1", "rt")
     session = await channel.start_session("r1", "u", "ws")
-    return kit, provider, session, lambda: channel.end_session(session)
+    endings: dict[str, Ending] = {
+        "end_session": lambda: channel.end_session(session),
+        "close": channel.close,
+    }
+    return kit, provider, session, endings
 
 
-async def _conference_door() -> tuple[RoomKit, MockRealtimeProvider, Any, Any]:
+async def _conference_door() -> tuple[RoomKit, MockRealtimeProvider, Any, dict[str, Ending]]:
     provider = MockRealtimeProvider()
     config = ConferenceRealtimeConfig(provider=provider, tools=TOOLS, tool_handler=_never)
-    kit, channel, _, _ = await realtime_kit(provider=provider, config=config)
+    kit, channel, backend, _ = await realtime_kit(provider=provider, config=config)
     session = await channel._realtime.ensure_session(ROOM)
-    return kit, provider, session, lambda: kit.detach_channel(ROOM, "conf")
+
+    async def bot_lost_then_detach() -> None:
+        await backend.simulate_bot_disconnected(backend.bots[-1])
+        await asyncio.sleep(0.01)  # the lost bot's disconnect waits on the reports
+        await kit.detach_channel(ROOM, "conf")
+
+    endings: dict[str, Ending] = {
+        "detach": lambda: kit.detach_channel(ROOM, "conf"),
+        "unplug": channel.unplug_realtime,
+        "bot-lost-detach": bot_lost_then_detach,
+    }
+    return kit, provider, session, endings
 
 
 DOORS = {"session": _session_door, "conference": _conference_door}
+ENDINGS = [
+    ("session", "end_session"),
+    ("session", "close"),
+    ("conference", "detach"),
+    ("conference", "unplug"),
+    ("conference", "bot-lost-detach"),
+]
+EVERY_ENDING = pytest.mark.parametrize(("door", "ending"), ENDINGS)
 
 
-@pytest.mark.parametrize("door", list(DOORS))
+@EVERY_ENDING
 @pytest.mark.parametrize("held", [False, True], ids=["same-step", "report-waiting"])
-async def test_a_refused_duplicate_an_ending_cuts_is_reported(door: str, held: bool) -> None:
-    kit, provider, session, end = await DOORS[door]()
+async def test_a_refused_duplicate_an_ending_cuts_is_reported(
+    door: str, ending: str, held: bool
+) -> None:
+    kit, provider, session, endings = await DOORS[door]()
     seen = _audit(kit)
     await provider.simulate_tool_call(session, "c1", "lookup", {})
     await asyncio.sleep(0.01)  # the first call runs its handler
@@ -87,7 +122,7 @@ async def test_a_refused_duplicate_an_ending_cuts_is_reported(door: str, held: b
     if gate is not None:
         await asyncio.sleep(0.01)  # the duplicate's report waits on its context
         asyncio.get_running_loop().call_later(0.1, gate.set)
-    await end()
+    await endings[ending]()
     await asyncio.sleep(0.3)
     await kit.close()
 
@@ -96,9 +131,9 @@ async def test_a_refused_duplicate_an_ending_cuts_is_reported(door: str, held: b
     assert ("c1", True, False) in seen
 
 
-@pytest.mark.parametrize("door", list(DOORS))
-async def test_an_abandonment_report_an_ending_cuts_is_kept(door: str) -> None:
-    kit, provider, session, end = await DOORS[door]()
+@EVERY_ENDING
+async def test_an_abandonment_report_an_ending_cuts_is_kept(door: str, ending: str) -> None:
+    kit, provider, session, endings = await DOORS[door]()
     seen = _audit(kit)
     await provider.simulate_tool_call(session, "c1", "lookup", {})
     await asyncio.sleep(0.01)
@@ -106,7 +141,7 @@ async def test_an_abandonment_report_an_ending_cuts_is_kept(door: str) -> None:
     await provider.simulate_tool_call_cancellation(session, ["c1"])
     await asyncio.sleep(0.01)  # the handler is cancelled, its report waits
     asyncio.get_running_loop().call_later(0.1, gate.set)
-    await end()
+    await endings[ending]()
     await asyncio.sleep(0.3)
     await kit.close()
 
@@ -114,25 +149,97 @@ async def test_an_abandonment_report_an_ending_cuts_is_kept(door: str) -> None:
 
 
 class _CallingOnConnect(MockRealtimeProvider):
+    """Calls ``lookup`` as soon as it is connected."""
+
     async def connect(self, session: Any, **kwargs: Any) -> None:
         await super().connect(session, **kwargs)
         await self.simulate_tool_call(session, "c1", "lookup", {})
 
 
-async def test_a_call_issued_while_a_failed_start_was_pending_is_reported() -> None:
-    provider = _CallingOnConnect()
-    ran: list[str] = []
+class _ClientGoneTransport(MockRealtimeTransport):
+    """Loses the client as the session's start is announced to it."""
+
+    async def send_message(self, session: Any, message: dict[str, Any]) -> None:
+        if message.get("type") == "session_started":
+            raise ConnectionError("client went away")
+        await super().send_message(session, message)
+
+
+class _DroppedWhileConnecting(_CallingOnConnect):
+    """Calls, then loses the client before its handshake ends."""
+
+    transport: MockRealtimeTransport
+
+    async def connect(self, session: Any, **kwargs: Any) -> None:
+        await super().connect(session, **kwargs)
+        await self.transport.simulate_client_disconnect(session)
+        await asyncio.sleep(0.05)
+
+
+async def _never_answered() -> Any:
+    await asyncio.sleep(0.01)
+    raise RuntimeError("the leg was never answered")
+
+
+async def _answered() -> str:
+    await asyncio.sleep(0.01)
+    return "ws"
+
+
+async def _failing_start(way: str, channel: RealtimeVoiceChannel, kit: RoomKit) -> None:
+    """Fail the session's start in *way*, its failure swallowed."""
+    provider = channel._provider
+    assert isinstance(provider, MockRealtimeProvider)
+    loop = asyncio.get_running_loop()
+    if way in ("rolled-back", "session-ended", "not-deferred"):
+        connection: Any = {"rolled-back": _never_answered, "session-ended": _answered}.get(
+            way, lambda: "ws"
+        )()
+        await asyncio.gather(channel.start_session("r1", "u", connection), return_exceptions=True)
+        return
+    ringing = loop.create_future()  # the leg never answers
+    start = asyncio.create_task(channel.start_session("r1", "u", ringing))
+    await asyncio.sleep(0.05)  # the provider is connected, the leg rings
+    if way == "closed-ringing":
+        gate = _hold_reports(kit)
+        loop.call_later(0.1, gate.set)
+        await channel.close()
+    else:
+        session = next(iter(provider._sessions.values()))
+        if way == "call-then-cancel":
+            await provider.simulate_tool_call(session, "c1", "lookup", {})
+        start.cancel()
+        if way == "cancel-then-call":
+            await provider.simulate_tool_call(session, "c1", "lookup", {})
+    await asyncio.gather(start, return_exceptions=True)
+
+
+_FAILED_STARTS = {
+    "rolled-back": (_CallingOnConnect, MockRealtimeTransport),
+    "session-ended": (_CallingOnConnect, _ClientGoneTransport),
+    "not-deferred": (_DroppedWhileConnecting, MockRealtimeTransport),
+    "closed-ringing": (_CallingOnConnect, MockRealtimeTransport),
+    "call-then-cancel": (MockRealtimeProvider, MockRealtimeTransport),
+    "cancel-then-call": (MockRealtimeProvider, MockRealtimeTransport),
+}
+
+
+@pytest.mark.parametrize("way", list(_FAILED_STARTS))
+async def test_a_call_issued_while_a_failed_start_was_pending_is_reported(way: str) -> None:
+    provider_kind, transport_kind = _FAILED_STARTS[way]
+    provider = provider_kind()
+    transport = transport_kind()
+    if isinstance(provider, _DroppedWhileConnecting):
+        provider.transport = transport
+    finished: list[str] = []
 
     async def handler(name: str, arguments: dict[str, Any]) -> str:
-        ran.append(name)
+        await asyncio.sleep(0.5)
+        finished.append(name)
         return "found"
 
     channel = RealtimeVoiceChannel(
-        "rt",
-        provider=provider,
-        transport=MockRealtimeTransport(),
-        tools=TOOLS,
-        tool_handler=handler,
+        "rt", provider=provider, transport=transport, tools=TOOLS, tool_handler=handler
     )
     kit = RoomKit()
     kit.register_channel(channel)
@@ -140,14 +247,9 @@ async def test_a_call_issued_while_a_failed_start_was_pending_is_reported() -> N
     await kit.create_room(room_id="r1")
     await kit.attach_channel("r1", "rt")
 
-    async def never_answered() -> Any:
-        await asyncio.sleep(0.01)
-        raise RuntimeError("the leg was never answered")
-
-    with pytest.raises(RuntimeError):
-        await channel.start_session("r1", "u", never_answered())
-    await asyncio.sleep(0.2)
+    await _failing_start(way, channel, kit)
+    await asyncio.sleep(0.6)
     await kit.close()
 
     assert seen == [("c1", True, False)]
-    assert ran == [] and provider.tool_results == []
+    assert finished == [] and provider.tool_results == []

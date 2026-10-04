@@ -541,9 +541,9 @@ class ConferenceRealtime:
             return
         if not self._tool_calls.open(call):
             # No result can name it: refused on the path of any call, nothing
-            # sent. Tracked beside the teardown, not on the room: a detach
-            # does not cut it, and on a room gone it is reported cancelled
-            # (RFC §12.4).
+            # sent. Tracked beside the teardown, not on the room: a detach or
+            # an unplug does not cut it, and on a room gone it is reported
+            # cancelled (RFC §12.4).
             self._track_report(
                 serve_unbooked(self, call, lambda: self._answer_tool(call), _LEFT_THE_ROOM)
             )
@@ -581,9 +581,12 @@ class ConferenceRealtime:
         A refused or failing call still submits a result: the provider's turn
         is waiting on it, and a turn nothing answers wedges the conversation.
         A refusal is reported once it is on the wire, never before (RFC 12.4).
+        A call the realtime's unplug left with nothing to serve it is
+        reported, cancelled.
         """
         config = self._config
         if config is None:
+            await report_cancelled_call(self, call, _LEFT_THE_ROOM)
             return
         await run_tool_call(self, call, _ConferenceDoor(self, config))
 
@@ -731,9 +734,10 @@ class ConferenceRealtime:
         self._track_report(report_interrupted_calls(self, calls, _LEFT_THE_ROOM))
 
     async def _settle_reports(self) -> None:
-        """Wait for the reports of the calls detaches interrupted."""
+        """Wait for the reports of the calls detaches interrupted. A wait
+        cancelled leaves them running: they are not this waiter's to cut."""
         if self._reports:
-            await asyncio.gather(*list(self._reports), return_exceptions=True)
+            await asyncio.wait(list(self._reports))
 
     def abandon_all(self) -> list[VoiceSession]:
         """Every room off the books at once — the channel is closing."""

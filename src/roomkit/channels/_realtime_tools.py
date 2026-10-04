@@ -22,11 +22,13 @@ from roomkit.channels._realtime_skills import RequiredToolsCheck
 from roomkit.channels._realtime_tool_calls import RealtimeToolCall, ToolCallBook
 from roomkit.channels._realtime_tool_executor import (
     ABANDONED_BY_PROVIDER,
+    SESSION_ENDED,
     ToolCallDoor,
     deliver_once,
     ended_outcome,
     judge_tool_call,
     report_cancelled_call,
+    report_interrupted_calls,
     run_tool_call,
     serve_tool_call,
     serve_unbooked,
@@ -95,6 +97,8 @@ class RealtimeToolsHost(Protocol):
         _framework: The RoomKit framework instance (or None).
         channel_id: Channel identifier.
         _telemetry_provider: Telemetry provider for spans.
+        _tool_reports: The reports of abandoned calls under way, which
+            ``close()`` lets finish before it cancels the channel's tasks.
 
     Cross-mixin methods (implemented elsewhere in the MRO):
         _track_task: Schedule an async task with exception handling.
@@ -120,6 +124,7 @@ class RealtimeToolsHost(Protocol):
     _framework: RoomKit | None
     _transcription_order_locks: dict[str, asyncio.Lock]
     _tool_calls: ToolCallBook
+    _tool_reports: set[asyncio.Task[Any]]
     channel_id: str
     _telemetry_provider: Any
 
@@ -218,6 +223,7 @@ class RealtimeToolsMixin:
     _framework: RoomKit | None
     _transcription_order_locks: dict[str, asyncio.Lock]
     _tool_calls: ToolCallBook
+    _tool_reports: set[asyncio.Task[Any]]
     channel_id: str
     _telemetry_provider: Any
 
@@ -250,14 +256,7 @@ class RealtimeToolsMixin:
             return
         # A call on a session that ended still gets its one report, cancelled
         # (RFC §9.3): the executor serves nothing for it.
-        call = RealtimeToolCall.from_provider(
-            session, call_id, name, arguments, mutes=self._mute_on_tool_call
-        )
-        if call.unreadable is None:
-            # Unwrapped first, so the books, the span and every report, a
-            # refusal at entry included, name the tool a fixed-declaration
-            # call_tool carries, not the transport.
-            call.unreadable = self._unwrap_call_tool(call)
+        call = self._provider_call(session, call_id, name, arguments)
         if not self._open_tool_call(call):
             # No result can name it (no id, or an id that still names a call
             # in flight): it takes the path of any call, the session's end
@@ -277,6 +276,34 @@ class RealtimeToolsMixin:
             name=f"rt_tool_call:{session.id}:{call_id}",
         )
         call.task.add_done_callback(lambda _: self._close_tool_call(call))
+
+    def _provider_call(
+        self,
+        session: VoiceSession,
+        call_id: str,
+        name: str,
+        arguments: dict[str, Any] | str,
+    ) -> RealtimeToolCall:
+        """The call a provider issued, unwrapped first, so the books, the span
+        and every report, a refusal at entry included, name the tool a
+        fixed-declaration call_tool carries, not the transport."""
+        call = RealtimeToolCall.from_provider(
+            session, call_id, name, arguments, mutes=self._mute_on_tool_call
+        )
+        if call.unreadable is None:
+            call.unreadable = self._unwrap_call_tool(call)
+        return call
+
+    async def _report_start_calls(
+        self, session: VoiceSession, issued: list[tuple[Any, ...]]
+    ) -> None:
+        """Report each call the provider *issued* while a start that failed
+        was pending, once, cancelled: none was served, nothing was sent
+        (RFC §12.4)."""
+        calls = [self._provider_call(session, *args) for args in issued]
+        for call in calls:
+            call.room_id = self._session_room(session) or session.room_id or None
+        await report_interrupted_calls(self, calls, SESSION_ENDED)
 
     def _on_provider_tool_call_cancelled(self, session: VoiceSession, call_ids: list[str]) -> Any:
         """Provider callback: the model will not read these calls' results (RFC §12.4).
@@ -325,11 +352,20 @@ class RealtimeToolsMixin:
                 call_id,
                 session.id,
             )
-            self._track_task(
+            report = self._track_task(
                 loop,
                 report_cancelled_call(self, call, ABANDONED_BY_PROVIDER),
                 name=f"rt_tool_cancelled:{session.id}:{call_id}",
             )
+            self._tool_reports.add(report)
+            report.add_done_callback(self._tool_reports.discard)
+
+    async def _settle_tool_reports(self) -> None:
+        """Wait for the reports of abandoned calls under way: the channel's
+        close would otherwise cut them before their claim (RFC §9.3). A wait
+        cancelled leaves them running."""
+        if self._tool_reports:
+            await asyncio.wait(list(self._tool_reports), timeout=5.0)
 
     @staticmethod
     def _spared_by_own_reconnect(call: RealtimeToolCall) -> bool:
@@ -398,9 +434,7 @@ class RealtimeToolsMixin:
         before its outcome (the channel closing while it waits behind the
         transcription barrier) still reports it once, cancelled (RFC §9.3).
         """
-        await serve_unbooked(
-            self, call, lambda: self._execute_tool_call(call), "The session ended"
-        )
+        await serve_unbooked(self, call, lambda: self._execute_tool_call(call), SESSION_ENDED)
 
     async def _execute_tool_call(self, call: RealtimeToolCall) -> None:
         """Serve a provider's function call and submit its outcome (RFC §12.4)."""

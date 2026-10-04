@@ -49,6 +49,10 @@ ABANDONED_BY_PROVIDER = "The provider abandoned this call"
 discarded it, a reconnect orphaned it, the provider's wait on it timed out,
 or the connection ended (RFC §12.4)."""
 
+SESSION_ENDED = "The session ended"
+"""Why a call its session's end, or a start that failed, cut was cancelled
+(RFC §12.4)."""
+
 
 class ToolCallDoor(Protocol):
     """Where a call's outcome goes: the one thing that differs between doors."""
@@ -432,4 +436,4 @@ def serving_tool_call(
 
 def ended_outcome(call: RealtimeToolCall) -> ToolOutcome:
     """The outcome of a call whose issuer is gone before it was served."""
-    return cancelled_outcome(call, "The session ended")
+    return cancelled_outcome(call, SESSION_ENDED)
