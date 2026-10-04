@@ -90,6 +90,7 @@ from roomkit.models.enums import (
     HookTrigger,
 )
 from roomkit.models.event import EventSource, RoomEvent, TextContent
+from roomkit.tools._human_input_channel import ChannelHumanInput
 from roomkit.voice.pipeline.config import AudioPipelineConfig, AudioPipelineContract
 from roomkit.voice.pipeline.engine import AudioPipeline
 from roomkit.voice.pipeline.vad.energy import EnergyVADProvider
@@ -433,9 +434,8 @@ class ConferenceChannel(
                 "keep the conference encrypted."
             )
         names = [dict_tool_name(t) for t in realtime.tools or []]
-        human = realtime.human_input_handler
-        asked = human.tool_names if human is not None else set()
-        if any(name not in asked for name in names) and realtime.tool_handler is None:
+        person = ChannelHumanInput(realtime.human_input_handler, ChannelType.CONFERENCE)
+        if any(name not in person.names for name in names) and realtime.tool_handler is None:
             raise ValueError(
                 "realtime.tools were configured with no tool_handler: the provider's "
                 "turn waits on a result nothing will ever submit. Pass "
@@ -446,8 +446,7 @@ class ConferenceChannel(
         # no vendor's name is refused here as at an AITool's definition (§6.7).
         refuse_unnamable(names, self.channel_id)
         refuse_given_twice(names, self.channel_id)
-        person = {tool.name for tool in human.tools} if human is not None else set()
-        refuse_served_names(names, person, self.channel_id)
+        refuse_served_names(names, person.declared_names, self.channel_id)
 
     @property
     def _realtime_config(self) -> ConferenceRealtimeConfig | None:

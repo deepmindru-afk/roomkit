@@ -47,7 +47,7 @@ _FEATURES = (
     UnservedFeature(
         "a human-input handler",
         "human_input_handler=",
-        lambda agent, _: agent._human_input is not None,
+        lambda agent, _: agent._human_input.given,
     ),
     UnservedFeature("planning", None, lambda agent, _: agent._planner is not None),
     UnservedFeature("a sandbox", None, lambda agent, _: agent._sandbox is not None),

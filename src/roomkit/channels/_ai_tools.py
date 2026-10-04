@@ -180,7 +180,7 @@ class AIToolsMixin(_AIChannelContract):
     _tool_usage: ToolUsageMemory
     _skill_activation: SkillActivationMemory
     _planner: TaskPlanner | None
-    _human_input: ChannelHumanInput | None
+    _human_input: ChannelHumanInput
     _collisions: CollisionLog
     _registry: ChannelRegistry
     _tool_timeouts: ToolTimeouts
@@ -901,8 +901,7 @@ class AIToolsMixin(_AIChannelContract):
         """
         names = {e.name for e in self._registry.entries(None, source=ToolSource.CHANNEL)}
         names |= self._sandbox_tool_names()
-        if self._human_input is not None:
-            names |= self._human_input.declared_names
+        names |= self._human_input.declared_names
         return names
 
     def _served_tool_names(self, room_id: str | None) -> set[str]:
@@ -950,7 +949,7 @@ class AIToolsMixin(_AIChannelContract):
                 json.dumps({"error": f"Tool '{name}' is not available in the current turn."})
             )
         # The person's tools, before the host's handler (RFC §9.3).
-        if self._human_input is not None and self._human_input.serves(name):
+        if self._human_input.serves(name):
             return as_tool_result(await self._human_input.serve(name, arguments))
         if self._user_tool_handler is None:
             raise UnservedToolCallError(name)
@@ -1280,7 +1279,7 @@ class AIToolsMixin(_AIChannelContract):
         """The tools outside the registry that carry a bound of their own: a
         person's answer under its handler's timeout, a sandbox command under its
         ``timeout`` argument."""
-        names = set(self._human_input.names) if self._human_input is not None else set()
+        names = set(self._human_input.names)
         if self._sandbox is not None:
             names.add(TOOL_SANDBOX_BASH)
         return names

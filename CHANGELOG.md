@@ -19,9 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whose BLOCK rejects it (it was never wired on a voice door), with
   `channel_type` naming the door; the requests still open are settled when
   the channel closes, and on a conference when its realtime provider is
-  unplugged. A host tool under a name the handler declares is refused. A
-  `HumanInputToolHandler` given as a realtime channel's `tool_handler` stays a
-  plain handler, and a warning points to the option.
+  unplugged. A host tool under a name the handler declares is refused where
+  the host gives it (the constructor, `configure()`, a conference's
+  configuration); one a session is reconfigured with is left out, the
+  person's kept. A provider that calls no tool is warned about, as for any
+  tool. A `HumanInputToolHandler` given as a realtime channel's
+  `tool_handler` stays a plain handler, and a warning points to the option.
+  A realtime pipeline's agent never carries one (RMK-482).
   `HumanInputToolHandler.ask(name, arguments, *, channel_type=...)` asks on a
   door of that channel type; `ConferenceRealtimeConfig.tool_bound()` takes
   `waits=`. Example: `examples/realtime_human_input.py`.

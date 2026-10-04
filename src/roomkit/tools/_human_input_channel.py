@@ -5,7 +5,8 @@ A channel given a :class:`~roomkit.tools.human_input.HumanInputToolHandler`
 ``AIChannel`` turn, a realtime voice session (the provider's call, a call
 recovered from speech, a reasoning backend's), a conference. Each holds one
 :class:`ChannelHumanInput`, which gives the tools the same rules wherever the
-model calls them:
+model calls them (a channel given none holds an empty one, which declares
+and serves nothing):
 
 * declared beside the host's tools and served before the host's handler;
 * bounded by the handler's own ``timeout``, never by the channel's default
@@ -20,6 +21,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from roomkit.core.exceptions import UnservedToolCallError
+
 if TYPE_CHECKING:
     from roomkit.models.enums import ChannelType
     from roomkit.providers.ai.base import AITool
@@ -30,7 +33,7 @@ class ChannelHumanInput:
     """The human-input tools of one channel object: what it declares, what it
     serves, and the scope of requests it owns."""
 
-    def __init__(self, tools: HumanInputToolHandler, channel_type: ChannelType) -> None:
+    def __init__(self, tools: HumanInputToolHandler | None, channel_type: ChannelType) -> None:
         self._tools = tools
         self._channel_type = channel_type
         # The token naming this channel object as the owner of its id's
@@ -39,15 +42,20 @@ class ChannelHumanInput:
         self._registration: int | None = None
 
     @property
+    def given(self) -> bool:
+        """Whether the channel was given a human-input handler."""
+        return self._tools is not None
+
+    @property
     def names(self) -> frozenset[str]:
         """Every tool name it serves: a call to one asks a person."""
-        return frozenset(self._tools.tool_names)
+        return frozenset(self._tools.tool_names) if self._tools is not None else frozenset()
 
     @property
     def definitions(self) -> list[AITool]:
         """The tools it declares to the model; a name it serves without a
         definition is declared by the host's tools."""
-        return self._tools.tools
+        return self._tools.tools if self._tools is not None else []
 
     @property
     def declared_names(self) -> frozenset[str]:
@@ -56,20 +64,25 @@ class ChannelHumanInput:
 
     def serves(self, name: str) -> bool:
         """Whether a call to *name* asks a person."""
-        return name in self._tools.tool_names
+        return name in self.names
 
     async def serve(self, name: str, arguments: dict[str, Any]) -> str:
         """The person's answer to the call, asked on this channel's door."""
+        if self._tools is None:
+            raise UnservedToolCallError(name)
         return await self._tools.ask(name, arguments, channel_type=self._channel_type)
 
     def register(self, channel_id: str, on_input_required: OnInputRequiredCallback) -> None:
         """Announce the requests of the channel *channel_id* through
         *on_input_required* (the kit's ``ON_USER_INPUT_REQUIRED`` hooks), this
         channel object owning them."""
+        if self._tools is None:
+            return
         handler = self._tools.handler
         self._registration = handler._set_on_input_required(channel_id, on_input_required)
 
     async def close(self, channel_id: str) -> None:
         """Settle the requests the channel still has open, and take no more
         until it registers again."""
-        await self._tools.handler.close(channel_id=channel_id, registration=self._registration)
+        if self._tools is not None:
+            await self._tools.handler.close(channel_id=channel_id, registration=self._registration)

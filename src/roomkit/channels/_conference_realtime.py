@@ -163,7 +163,7 @@ class ConferenceRealtime:
         self._ensure_bot = ensure_bot
         self._config: ConferenceRealtimeConfig | None = None
         # The person's tools of the configuration in force (RFC §9.3).
-        self._human_input: ChannelHumanInput | None = None
+        self._human_input = ChannelHumanInput(None, ChannelType.CONFERENCE)
         self._framework: RoomKit | None = None
         self._rooms: dict[str, _RoomRealtime] = {}
         self._tools = ConferenceToolGate(channel_id)
@@ -195,16 +195,16 @@ class ConferenceRealtime:
         """Announce the person's requests through the kit's
         ``ON_USER_INPUT_REQUIRED`` hooks, once both are known."""
         human, framework = self._human_input, self._framework
-        if human is not None and framework is not None:
+        if human.given and framework is not None:
             hook = framework._build_on_user_input_required_hook(self._channel_id)
             human.register(self._channel_id, hook)
 
     async def close_human_input(self) -> None:
         """Settle the person's requests the unplug or the close left open:
         the configuration that asked them is gone."""
-        human, self._human_input = self._human_input, None
-        if human is not None:
-            await human.close(self._channel_id)
+        human = self._human_input
+        self._human_input = ChannelHumanInput(None, ChannelType.CONFERENCE)
+        await human.close(self._channel_id)
 
     def session_for(self, room_id: str) -> VoiceSession | None:
         """The provider session serving a room, if one is connected."""
@@ -229,9 +229,10 @@ class ConferenceRealtime:
         warn_unused_role_overrides(config, self._channel_id)
         warn_tools_uncallable(config.tools, "tool(s)", config.provider, self._channel_id)
         self._config = config
-        human = config.human_input_handler
-        self._human_input = (
-            ChannelHumanInput(human, ChannelType.CONFERENCE) if human is not None else None
+        self._human_input = ChannelHumanInput(config.human_input_handler, ChannelType.CONFERENCE)
+        definitions = self._human_input.definitions
+        warn_tools_uncallable(
+            definitions, "human-input tool(s)", config.provider, self._channel_id
         )
         self._register_human_input()
         self.mixer.configure(input_sample_rate=config.input_sample_rate)
@@ -669,7 +670,7 @@ class ConferenceRealtime:
         """What serves *call*, and whether it asks a person: the person's
         tools before the configured handler; ``None`` when nothing does."""
         human = self._human_input
-        if human is not None and human.serves(call.name):
+        if human.serves(call.name):
             return partial(human.serve, call.name, call.arguments), True
         handler = config.tool_handler
         if handler is None:

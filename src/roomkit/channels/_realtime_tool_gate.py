@@ -59,7 +59,7 @@ class RealtimeToolGateMixin:
     _sessions: dict[str, VoiceSession]
     _room_session_config: Any  # RealtimeVoiceChannel — cross-mixin
     _collisions: CollisionLog
-    _human_input: ChannelHumanInput | None
+    _human_input: ChannelHumanInput
     _registry: ChannelRegistry
     _tool_search_support: Any
     _provider: RealtimeVoiceProvider
@@ -85,13 +85,11 @@ class RealtimeToolGateMixin:
     def _human_input_dicts(self) -> list[dict[str, Any]]:
         """The declarations of the person's tools, served by the channel on
         every door and in every session (RFC §9.3)."""
-        human = self._human_input
-        return [tool_dict(tool) for tool in human.definitions] if human is not None else []
+        return [tool_dict(tool) for tool in self._human_input.definitions]
 
     def _human_input_names(self) -> frozenset[str]:
         """The names the person's tools declare, which no other tool takes."""
-        human = self._human_input
-        return human.declared_names if human is not None else frozenset()
+        return self._human_input.declared_names
 
     def _orchestration_dicts(
         self, room_id: str | None, skip: Container[str | None] = ()

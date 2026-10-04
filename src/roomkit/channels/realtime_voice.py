@@ -556,11 +556,9 @@ class RealtimeVoiceChannel(
         self, human_input_handler: HumanInputToolHandler | None, tool_handler: ToolHandler | None
     ) -> None:
         """The person's tools, which the channel serves itself (RFC §9.3)."""
-        self._human_input = (
-            ChannelHumanInput(human_input_handler, self.channel_type)
-            if human_input_handler is not None
-            else None
-        )
+        self._human_input = ChannelHumanInput(human_input_handler, self.channel_type)
+        definitions = self._human_input.definitions
+        warn_tools_uncallable(definitions, "human-input tool(s)", self._provider, self.channel_id)
         if isinstance(tool_handler, HumanInputToolHandler):
             # Served as any host handler: under the channel's call bound, its
             # requests never announced nor settled with the channel.
@@ -838,7 +836,7 @@ class RealtimeVoiceChannel(
         """
         self._framework = framework
         self._sync_trace_emitter()
-        if self._human_input is not None:
+        if self._human_input.given:
             hook = framework._build_on_user_input_required_hook(self.channel_id)
             self._human_input.register(self.channel_id, hook)
 
@@ -2156,13 +2154,9 @@ class RealtimeVoiceChannel(
                 *(asyncio.shield(done) for done in outstanding), return_exceptions=True
             )
 
-        # The reports of abandoned calls finish first: the sweep below would
-        # cut them before their claim.
-        await self._settle_tool_reports()
-        # The person's requests the ended sessions left open are settled, and
-        # the channel takes no more.
-        if self._human_input is not None:
-            await self._human_input.close(self.channel_id)
+        # What the ended sessions left is settled first: the sweep below would
+        # cut it.
+        await self._settle_ended_sessions()
 
         # Cancel all outstanding scheduled tasks with timeout
         tasks = list(self._scheduled_tasks)
@@ -2200,6 +2194,13 @@ class RealtimeVoiceChannel(
             logger.exception("Error closing transport during channel close")
 
     # -- Client messaging --
+
+    async def _settle_ended_sessions(self) -> None:
+        """Settle what the ended sessions left: the reports of their abandoned
+        calls, then the person's requests still open, the channel taking no
+        more (RFC §9.3)."""
+        await self._settle_tool_reports()
+        await self._human_input.close(self.channel_id)
 
     async def _send_client_message(self, session: VoiceSession, message: dict[str, Any]) -> None:
         """Send a JSON message to the client via the transport.

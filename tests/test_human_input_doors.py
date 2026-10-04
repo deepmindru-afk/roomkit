@@ -23,6 +23,7 @@ from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 from roomkit.models.enums import ChannelType
 from roomkit.providers.ai.base import AITool, AIToolCall
 from roomkit.tools.human_input import HumanInputToolHandler
+from roomkit.tools.policy import ToolPolicy
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
 from tests.conference.test_conference_realtime import ROOM, realtime_kit
 from tests.tool_doors import DOORS, Hooks, run_door
@@ -115,6 +116,25 @@ async def test_a_bound_named_for_the_tool_still_applies(door: str) -> None:
     assert "ToolTimeoutError" in str(seen.model_read)
 
 
+@EVERY_DOOR
+async def test_a_name_the_host_declares_is_served_by_the_person(door: str) -> None:
+    """A handler that defines no tool serves the name the host's tools
+    declare, before the host's handler."""
+    human = HumanInputToolHandler({"lookup"}, timeout=3.0)
+    requests: list[Any] = []
+
+    def answer(event: Any) -> HookResult:
+        human.handler.resolve(event.pending_id, "the blue room")
+        return HookResult.allow()
+
+    hooks = Hooks(setup=_on_request(answer, requests))
+    options = {"human_input_handler": human}
+    seen = await run_door(door, _host, hooks=hooks, channel=options)
+
+    assert len(requests) == 1
+    assert "the blue room" in str(seen.model_read)
+
+
 def _replace_host_handler(kit: RoomKit) -> None:
     channel = kit.get_channel("ai1") or kit.get_channel("rt")
     assert channel is not None
@@ -145,7 +165,10 @@ async def _until_asked(human: HumanInputToolHandler) -> str:
     raise AssertionError("no request was raised")
 
 
-async def test_closing_a_realtime_channel_settles_its_requests() -> None:
+@pytest.mark.parametrize("ends", ["close", "end_session"])
+async def test_closing_a_realtime_channel_or_ending_the_session_settles_its_requests(
+    ends: str,
+) -> None:
     human = _human()
     provider = MockRealtimeProvider()
     channel = RealtimeVoiceChannel(
@@ -159,7 +182,7 @@ async def test_closing_a_realtime_channel_settles_its_requests() -> None:
     await provider.simulate_tool_call(session, "c1", "ask", {"q": "Which room?"})
     pending = await _until_asked(human)
 
-    await channel.close()
+    await (channel.close() if ends == "close" else channel.end_session(session))
 
     assert human.handler.pending == {}
     assert not human.handler.resolve(pending, "too late")
@@ -167,8 +190,10 @@ async def test_closing_a_realtime_channel_settles_its_requests() -> None:
     await kit.close()
 
 
-@pytest.mark.parametrize("ends", ["unplug", "close"])
-async def test_unplugging_or_closing_a_conference_settles_its_requests(ends: str) -> None:
+@pytest.mark.parametrize("ends", ["unplug", "close", "detach"])
+async def test_unplugging_closing_or_detaching_a_conference_settles_its_requests(
+    ends: str,
+) -> None:
     human = _human()
     provider = MockRealtimeProvider()
     config = ConferenceRealtimeConfig(provider=provider, human_input_handler=human)
@@ -178,7 +203,12 @@ async def test_unplugging_or_closing_a_conference_settles_its_requests(ends: str
     await provider.simulate_tool_call(session, "c1", "ask", {"q": "Which room?"})
     pending = await _until_asked(human)
 
-    await (channel.unplug_realtime() if ends == "unplug" else channel.close())
+    if ends == "unplug":
+        await channel.unplug_realtime()
+    elif ends == "close":
+        await channel.close()
+    else:
+        await kit.detach_channel(ROOM, "conf")
 
     assert human.handler.pending == {}
     assert not human.handler.resolve(pending, "too late")
@@ -257,3 +287,44 @@ def test_a_human_input_handler_given_as_tool_handler_is_warned_about(
         )
 
     assert "pass it as human_input_handler=" in caplog.text
+
+
+def _declared(provider: MockRealtimeProvider) -> list[str]:
+    """The names the last session configuration declared."""
+    last = [c for c in provider.calls if c.method in ("connect", "reconfigure")][-1]
+    return sorted(tool["name"] for tool in last.args["tools"] or [])
+
+
+async def _session(**options: Any) -> tuple[RoomKit, Any, MockRealtimeProvider, Any]:
+    provider = MockRealtimeProvider()
+    channel = RealtimeVoiceChannel(
+        "rt",
+        provider=provider,
+        transport=MockRealtimeTransport(),
+        tools=[{"name": "t1", "description": "t1", "parameters": {"type": "object"}}],
+        tool_handler=_host,
+        human_input_handler=_human(),
+        **options,
+    )
+    kit = RoomKit()
+    kit.register_channel(channel)
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "rt")
+    return kit, channel, provider, await channel.start_session("r1", "u1", "ws")
+
+
+async def test_the_person_s_tools_answer_to_the_session_s_policy() -> None:
+    kit, _, provider, _ = await _session(tool_policy=ToolPolicy(deny=["ask"]))
+
+    assert _declared(provider) == ["t1"]
+    await kit.close()
+
+
+async def test_the_person_s_tools_stay_declared_when_the_session_is_reconfigured() -> None:
+    kit, channel, provider, session = await _session()
+    t2 = {"name": "t2", "description": "t2", "parameters": {"type": "object"}}
+
+    await channel.reconfigure_session(session, tools=[t2])
+
+    assert _declared(provider) == ["ask", "t2"]
+    await kit.close()

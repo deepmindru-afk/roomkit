@@ -216,7 +216,7 @@ class ChannelOpsMixin(HelpersMixin):
         # ON_USER_INPUT_REQUIRED hooks; registering makes this object the
         # owner of its id's requests (a session channel registers its own
         # from set_framework).
-        if channel._human_input is not None:
+        if channel._human_input.given:
             channel._human_input.register(
                 channel.channel_id, self._build_on_user_input_required_hook(channel.channel_id)
             )

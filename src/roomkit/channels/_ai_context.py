@@ -115,7 +115,7 @@ class AIContextMixin(_AIChannelContract):
     _skills_in_prompt: bool
     _script_executor: ScriptExecutor | None
     _sandbox: SandboxExecutor | None
-    _human_input: ChannelHumanInput | None
+    _human_input: ChannelHumanInput
     _memory: MemoryProvider
     _describe_empty_event: EmptyEventDescriber | None
     _eviction: ToolEviction
@@ -331,8 +331,7 @@ class AIContextMixin(_AIChannelContract):
         tools.extend(self._orchestration_tools(binding.room_id))
 
         # Inject human-input tool definitions (e.g. AskUserQuestion)
-        if self._human_input is not None:
-            tools.extend(self._human_input.definitions)
+        tools.extend(self._human_input.definitions)
         return tools
 
     async def _add_channel_features(

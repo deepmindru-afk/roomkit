@@ -334,11 +334,7 @@ class AIChannel(
         """The tools this channel declares and the handlers that serve them."""
         # The person's tools, which the channel serves itself, before the
         # host's handler, under their own timeout (RFC §9.3, §21.6).
-        self._human_input = (
-            ChannelHumanInput(human_input_handler, self.channel_type)
-            if human_input_handler is not None
-            else None
-        )
+        self._human_input = ChannelHumanInput(human_input_handler, self.channel_type)
         # Names already reported as intercepted-but-never-offered; the
         # warning is a wiring diagnostic, not a per-turn event.
         self._warned_unoffered_human_tools: set[str] = set()
@@ -386,8 +382,7 @@ class AIChannel(
         """The names the host's own tools carry: its definitions and its
         human-input tools, served by the handlers it gave."""
         names = [tool.name for tool in self._user_tools]
-        if self._human_input is not None:
-            names.extend(self._human_input.declared_names)
+        names.extend(self._human_input.declared_names)
         return names
 
     def _in_usage_digest(self, name: str) -> bool:
@@ -603,8 +598,7 @@ class AIChannel(
 
     async def close(self) -> None:
         """Close the channel, its provider, memory, and executors."""
-        if self._human_input is not None:
-            await self._human_input.close(self.channel_id)
+        await self._human_input.close(self.channel_id)
         await super().close()
         await self._memory.close()
         if self._script_executor is not None:

@@ -211,7 +211,7 @@ class RealtimeToolsMixin:
     _session_tools: dict[str, Any]
     _session_config_locks: dict[str, asyncio.Lock]
     _tool_handler: Any
-    _human_input: ChannelHumanInput | None
+    _human_input: ChannelHumanInput
     _tools: Any
     _system_prompt: str | None
     _mute_on_tool_call: bool
@@ -668,8 +668,7 @@ class RealtimeToolsMixin:
         """The bound of one call to *name* (RFC §21.6): the channel's, unless
         the tool keeps a bound of its own (a person's answer, under its
         handler's timeout)."""
-        human = self._human_input
-        own = human is not None and human.serves(name)
+        own = self._human_input.serves(name)
         return self._registry.bound(name, room_id, self._tool_timeouts, own=own)
 
     async def _answer(self, name: str, arguments: dict[str, Any], room_id: str | None) -> Any:
@@ -685,7 +684,7 @@ class RealtimeToolsMixin:
         if entry is not None and entry.serve is not None:
             result = entry.serve(arguments)
             return await result if inspect.isawaitable(result) else result
-        if self._human_input is not None and self._human_input.serves(name):
+        if self._human_input.serves(name):
             return await self._human_input.serve(name, arguments)
         return declined_answer(await self._tool_handler(name, arguments), name)
 
@@ -695,8 +694,7 @@ class RealtimeToolsMixin:
         entry = self._registry.lookup(name, room_id)
         if entry is not None and entry.serve is not None:
             return True
-        human = self._human_input
-        return (human is not None and human.serves(name)) or self._tool_handler is not None
+        return self._human_input.serves(name) or self._tool_handler is not None
 
     async def _serve_skill_activation(
         self, call: RealtimeToolCall, door: ToolCallDoor, carrying: RoomContext | None
