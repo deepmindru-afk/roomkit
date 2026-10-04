@@ -471,7 +471,7 @@ def _refuse_own_tools(agent: AIChannel) -> None:
     """Refuse an agent whose own tools would bypass the voice channel's gate:
     its host tools, and what a realtime session never serves for an agent."""
     carried = ["tools"] if agent._user_tools or agent._user_tool_handler else []
-    carried += [feature.what for feature in unserved_on_realtime(agent)]
+    carried += [feature.what for feature in unserved_on_realtime(agent, runs_its_loop=True)]
     if carried:
         raise ValueError(
             f"A reasoning backend's agent serves the voice session's tools only, through "

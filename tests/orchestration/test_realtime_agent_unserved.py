@@ -100,6 +100,17 @@ def test_a_reasoning_backend_s_agent_is_refused_for_the_same_cause(cause: str) -
         AgentReasoningBackend(Agent("reasoner", provider=MockAIProvider(), **own()))
 
 
+def test_a_reasoning_backend_refuses_an_empty_skill_registry_a_pipeline_installs() -> None:
+    """The backend's agent runs its own loop, which would serve a registry
+    filled later outside the voice channel's gate; a pipeline agent's never
+    runs in a session."""
+    with pytest.raises(ValueError, match="skills"):
+        AgentReasoningBackend(Agent("reasoner", provider=MockAIProvider(), skills=SkillRegistry()))
+    agent = Agent("teller", provider=MockAIProvider(), skills=SkillRegistry())
+
+    _install(_voice_kit(agent), [agent])
+
+
 def test_each_cause_of_each_agent_is_named() -> None:
     teller = Agent("teller", provider=MockAIProvider(), enable_planning=True, skills=_skills())
     clerk = Agent("clerk", provider=MockAIProvider(), human_input_handler=_human())

@@ -30,26 +30,41 @@ class UnservedFeature:
     instead: str | None
     """The voice channel's own option that serves it in its sessions, if any."""
 
-    carried: Callable[[AIChannel], bool]
+    carried: Callable[[AIChannel, bool], bool]
+    """Whether an agent carries it, its own tool loop running or not."""
+
+
+def _carries_skills(agent: AIChannel, runs_its_loop: bool) -> bool:
+    """A registry offering skills; any registry when the agent's own loop
+    runs, since one filled later would be served by that loop, outside the
+    voice channel's gate."""
+    skills = agent._skills
+    return skills is not None and (runs_its_loop or skills.has_entries)
 
 
 _FEATURES = (
-    UnservedFeature(
-        "skills", "skills=", lambda agent: agent._skills is not None and agent._skills.has_entries
-    ),
+    UnservedFeature("skills", "skills=", _carries_skills),
     UnservedFeature(
         "a human-input handler",
         "human_input_handler=",
-        lambda agent: agent._human_input is not None,
+        lambda agent, _: agent._human_input is not None,
     ),
-    UnservedFeature("planning", None, lambda agent: agent._planner is not None),
-    UnservedFeature("a sandbox", None, lambda agent: agent._sandbox is not None),
+    UnservedFeature("planning", None, lambda agent, _: agent._planner is not None),
+    UnservedFeature("a sandbox", None, lambda agent, _: agent._sandbox is not None),
     UnservedFeature(
-        "an external tool handler", None, lambda agent: agent._external_tool_handler is not None
+        "an external tool handler",
+        None,
+        lambda agent, _: agent._external_tool_handler is not None,
     ),
 )
 
 
-def unserved_on_realtime(agent: AIChannel) -> list[UnservedFeature]:
-    """What *agent* carries that a realtime session would never serve for it."""
-    return [feature for feature in _FEATURES if feature.carried(agent)]
+def unserved_on_realtime(agent: AIChannel, *, runs_its_loop: bool) -> list[UnservedFeature]:
+    """What *agent* carries that a realtime session would never serve for it.
+
+    *runs_its_loop* when the agent's own tool loop runs beside the session (a
+    reasoning backend's agent): what it carries is then judged by what that
+    loop could serve, an empty skill registry included. A pipeline agent's
+    loop never runs in a session.
+    """
+    return [feature for feature in _FEATURES if feature.carried(agent, runs_its_loop)]

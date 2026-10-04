@@ -369,8 +369,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   voice channel's own option where it has one
   (`RealtimeVoiceChannel(..., skills=...)`, `human_input_handler=...`). A
   configuration that installed without serving those tools now raises. The
-  rule is the one a reasoning backend's agent is refused by, which no longer
-  refuses an empty skill registry: it offers the agent nothing.
+  rule is the one a reasoning backend's agent is refused by; an empty skill
+  registry is still installed in a pipeline and still refused for a backend,
+  whose agent's own loop would serve it once filled.
 
 - **BREAKING — a channel that streams a response which then fails no longer
   gets its text again through `deliver()`** (RMK-467, RFC §12.2 step 13s):

@@ -335,7 +335,7 @@ def refuse_agents_with_unserved(agents: list[Agent], channel_id: str) -> None:
     causes = [
         _unserved_cause(agent.channel_id, feature, channel_id)
         for agent in agents
-        for feature in unserved_on_realtime(agent)
+        for feature in unserved_on_realtime(agent, runs_its_loop=False)
     ]
     if causes:
         raise ValueError(" ".join(causes))

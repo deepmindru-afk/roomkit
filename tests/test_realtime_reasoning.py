@@ -14,7 +14,6 @@ import gc
 import json
 import logging
 from collections.abc import AsyncIterator
-from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -41,7 +40,6 @@ from roomkit.providers.ai.base import (
     ProviderError,
 )
 from roomkit.providers.ai.mock import MockAIProvider
-from roomkit.skills.models import Skill, SkillMetadata
 from roomkit.skills.registry import SkillRegistry
 from roomkit.telemetry.base import Attr, SpanKind
 from roomkit.telemetry.mock import MockTelemetryProvider
@@ -613,13 +611,6 @@ class TestAIProviderReasoningBackend:
             AIProviderReasoningBackend(MockAIProvider(), max_tool_rounds=-1)
 
 
-def _one_skill() -> SkillRegistry:
-    """A registry offering one skill: an empty one offers the agent nothing."""
-    registry = SkillRegistry()
-    registry.add(Skill(SkillMetadata(name="s", description="S"), "Body.", Path(".")))
-    return registry
-
-
 class TestAgentReasoningBackend:
     """The backend is an agent like any other, on the AI channel's tool loop
     (RMK-396, RFC §6.4 and §12.4.1)."""
@@ -662,7 +653,7 @@ class TestAgentReasoningBackend:
         [
             ({"tools": [AITool(name="own", description="own")]}, "tools"),
             ({"enable_planning": True}, "planning"),
-            ({"skills": _one_skill()}, "skills"),
+            ({"skills": SkillRegistry()}, "skills"),
             ({"sandbox": MagicMock()}, "a sandbox"),
             ({"external_tool_handler": MagicMock()}, "an external tool handler"),
             ({"human_input_handler": MagicMock()}, "a human-input handler"),
