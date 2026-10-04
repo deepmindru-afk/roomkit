@@ -203,6 +203,15 @@ class Supervisor(
             return []
         return [self._supervisor]
 
+    def _register_agents(self, kit: RoomKit, *, supervisor_in_room: bool) -> None:
+        """Register the workers on the kit, not attached to the room, and the
+        supervisor when it is not in the room: the supervised flow delegates
+        to it to frame and validate each step (RFC §19.7.3)."""
+        agents = [*self._workers] if supervisor_in_room else [*self._workers, self._supervisor]
+        for agent in agents:
+            if agent.channel_id not in kit.channels:
+                kit.register_channel(agent)
+
     async def install(self, kit: RoomKit, room_id: str) -> None:
         """Wire supervisor routing and delegation tools."""
         # Router only needed when the supervisor agent is in the room.
@@ -224,14 +233,7 @@ class Supervisor(
                 ),
             )
 
-        # Register workers on the kit (not attached to room)
-        for worker in self._workers:
-            if worker.channel_id not in kit.channels:
-                kit.register_channel(worker)
-        # And the supervisor when it is not in the room: the supervised flow
-        # delegates to it to frame and validate each step (RFC §19.7.3).
-        if not supervisor_in_room and self._supervisor.channel_id not in kit.channels:
-            kit.register_channel(self._supervisor)
+        self._register_agents(kit, supervisor_in_room=supervisor_in_room)
 
         # Wire delegation based on mode
         if self._auto_delegate:
