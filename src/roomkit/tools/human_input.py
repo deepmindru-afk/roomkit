@@ -400,6 +400,11 @@ class HumanInputHandler:
             pending.status = PendingInputStatus.TIMED_OUT
             self._retire(pending_id)
             raise
+        except asyncio.CancelledError:
+            # Nobody waits for the answer any more (the call was cut): the
+            # request is withdrawn, so a late answer is not taken for it.
+            self.release(pending_id)
+            raise
 
         self._retire(pending_id)
         return self._outcome(pending)

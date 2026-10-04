@@ -248,3 +248,18 @@ async def test_a_request_the_handler_gives_up_takes_the_generic_failure_path(
 
     assert not isinstance(error.value, (ToolRefusedError, ToolFailedError))
     assert not isinstance(error.value, HumanInputRejectedError)
+
+
+async def test_a_request_whose_call_is_cut_is_withdrawn() -> None:
+    """Nobody waits for its answer any more: a late answer is not taken."""
+    handler = HumanInputHandler()
+    pending = await handler.create("ask", {}, channel_id="ch1")
+    waiter = asyncio.create_task(handler.wait(pending.pending_id, timeout=5))
+    await asyncio.sleep(0.01)
+
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+
+    assert pending.pending_id not in handler.pending
+    assert handler.resolve(pending.pending_id, "too late") is False

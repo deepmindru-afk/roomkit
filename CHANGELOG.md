@@ -796,6 +796,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A human-input request whose waiting call is cut (a turn cancelled, a
+  session ended, a call abandoned) is withdrawn (RMK-465, RFC §9.3): it
+  stayed active, and a late answer was accepted for a call that was gone.
+
 - A realtime `activate_skill` for a name that is no skill hints none of the
   tools the channel serves itself (RMK-461, RFC §24.4), as the text path:
   it named `activate_skill`, `read_skill_reference`, `find_tools` or
