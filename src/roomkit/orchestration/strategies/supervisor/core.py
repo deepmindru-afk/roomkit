@@ -228,6 +228,10 @@ class Supervisor(
         for worker in self._workers:
             if worker.channel_id not in kit.channels:
                 kit.register_channel(worker)
+        # And the supervisor when it is not in the room: the supervised flow
+        # delegates to it to frame and validate each step (RFC §19.7.3).
+        if not supervisor_in_room and self._supervisor.channel_id not in kit.channels:
+            kit.register_channel(self._supervisor)
 
         # Wire delegation based on mode
         if self._auto_delegate:

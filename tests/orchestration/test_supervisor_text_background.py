@@ -4,7 +4,8 @@ its team tool and its per-worker tools (RMK-478, RFC §19.7.3, §23.3).
 Both doors are the strategies' background run: the work is bounded by the
 supervisor's ``task_timeout``, freed before its outcome is handed back (a
 dispatch made in answer starts anew), and its terminal entry says whether the
-outcome reached anyone and whether any worker's task completed.
+outcome reached anyone and whether any worker's task completed. A sequential
+team runs in the background as in the supervisor's turn: supervised.
 """
 
 from __future__ import annotations
@@ -15,8 +16,9 @@ from typing import Any
 
 import pytest
 
-from roomkit import HookResult, HookTrigger
+from roomkit import HookExecution, HookResult, HookTrigger
 from roomkit.channels.agent import Agent
+from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 from roomkit.core.framework import RoomKit
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.event import TextContent
@@ -24,8 +26,10 @@ from roomkit.orchestration.status_bus import StatusLevel
 from roomkit.orchestration.strategies.supervisor import Supervisor
 from roomkit.providers.ai.base import AIContext, AIResponse, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
 from tests.conference.test_conference_realtime import until
 from tests.test_framework import SimpleChannel
+from tests.tool_room import tool_call_in
 
 DOORS = {
     "team-tool": ("delegate_workers", {"strategy": "parallel", "async_delivery": True}),
@@ -130,7 +134,7 @@ async def test_an_outcome_no_one_hears_posts_its_run_failed(door: str) -> None:
     ]
 
 
-@pytest.mark.parametrize("door", ["per-worker"])
+@EVERY_DOOR
 async def test_a_worker_past_its_bound_is_told_as_not_completed(door: str) -> None:
     boss = _Redispatches(DOORS[door][0], limit=1)
     kit, posted = await _room(door, boss, _Slow(), task_timeout=0.2)
@@ -142,3 +146,55 @@ async def test_a_worker_past_its_bound_is_told_as_not_completed(door: str) -> No
     assert "The task timed out after 0.2s." in boss.told[0]
     assert "completed. Share" not in boss.told[0]
     assert [status for _, status, _ in posted] == [StatusLevel.FAILED]
+
+
+async def _team_delegations(*, async_delivery: bool, voice: bool) -> list[str]:
+    """The agents a sequential team's run delegates to, in order."""
+    kit = RoomKit()
+    boss = Agent("boss", provider=MockAIProvider(responses=["ok"]))
+    workers = [Agent(w, provider=MockAIProvider(responses=[w])) for w in ("w1", "w2")]
+    delegated: list[str] = []
+
+    @kit.hook(HookTrigger.ON_TASK_DELEGATED, execution=HookExecution.ASYNC)
+    async def _delegated(event: Any, ctx: Any) -> None:
+        delegated.append(event.metadata["agent_id"])
+
+    settings = {"auto_delegate": True} if voice else {}
+    strategy = Supervisor(
+        boss, workers, strategy="sequential", async_delivery=async_delivery, **settings
+    )
+    if voice:
+        provider = MockRealtimeProvider()
+        channel = RealtimeVoiceChannel(
+            "voice", provider=provider, transport=MockRealtimeTransport()
+        )
+        kit.register_channel(channel)
+        await kit.create_room(room_id="r1", orchestration=strategy)
+        await kit.attach_channel("r1", "voice")
+        session = await channel.start_session("r1", "u", "ws")
+        await provider.simulate_tool_call(session, "c1", "delegate_workers", {"task": "Do it."})
+    else:
+        kit.register_channel(boss)
+        await kit.create_room(room_id="r1", orchestration=strategy)
+        with tool_call_in("r1"):
+            await boss._channel_tool_handler("delegate_workers", {"task": "Do it."})
+    await until(lambda: len(delegated) >= 3)
+    await asyncio.sleep(0.05)
+    await kit.close()
+    return delegated
+
+
+@pytest.mark.parametrize(
+    ("async_delivery", "voice"),
+    [(True, False), (True, True)],
+    ids=["team-tool-background", "voice-background"],
+)
+async def test_a_sequential_team_is_supervised_in_the_background_as_in_its_turn(
+    async_delivery: bool, voice: bool
+) -> None:
+    """The supervisor frames and validates each step whether the team runs
+    in its turn or in the background (RFC §19.7.3)."""
+    in_turn = await _team_delegations(async_delivery=False, voice=False)
+
+    assert in_turn[0] == "boss"
+    assert await _team_delegations(async_delivery=async_delivery, voice=voice) == in_turn

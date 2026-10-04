@@ -67,13 +67,20 @@ async def _async_run_and_deliver(
     kit: RoomKit,
     room_id: str,
     supervisor_id: str,
+    supervisor: Agent,
     strategy: WorkerStrategy | None,
     workers: list[Agent],
     task_desc: str,
     share_channels: list[str] | None = None,
+    max_revisions: int = _DEFAULT_MAX_REVISIONS,
+    task_timeout: float = _DEFAULT_TASK_TIMEOUT_SECONDS,
     on_done: Callable[..., None],
 ) -> None:
     """Background: run workers, then hand their results back to *supervisor_id*.
+
+    The workers run as the install's synchronous delegation runs them, within
+    its bounds (*max_revisions*, *task_timeout*): a sequential team through
+    the supervised hub-&-spoke flow, *supervisor* validating each step.
 
     A pipeline that fails hands its failure back the same way, so the
     supervisor, which told the user results would follow, can say the work
@@ -107,7 +114,15 @@ async def _async_run_and_deliver(
 
     async def work() -> list[dict[str, Any]]:
         return await _run_workers(
-            kit, room_id, strategy, workers, task_desc, share_channels=share_channels
+            kit,
+            room_id,
+            strategy,
+            workers,
+            task_desc,
+            supervisor=supervisor,
+            max_revisions=max_revisions,
+            share_channels=share_channels,
+            task_timeout=task_timeout,
         )
 
     run = BackgroundRun(

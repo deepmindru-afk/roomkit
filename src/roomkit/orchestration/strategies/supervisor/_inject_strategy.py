@@ -228,10 +228,13 @@ class _StrategyToolServer:
                     kit=self._kit,
                     room_id=rid,
                     supervisor_id=self._supervisor.channel_id,
+                    supervisor=self._supervisor,
                     strategy=self._strategy,
                     workers=self._workers,
                     task_desc=task_desc,
                     share_channels=self._share_channels,
+                    max_revisions=self._max_revisions,
+                    task_timeout=self._task_timeout,
                     on_done=_clear,
                 ),
             )

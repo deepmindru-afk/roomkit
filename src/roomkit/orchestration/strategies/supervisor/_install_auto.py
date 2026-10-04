@@ -91,7 +91,15 @@ class _AutoDelegateInstallMixin:
         tool = schema_tool(_voice_delegate_tool(self._workers, self._strategy))
         # One server for every voice channel: one run per room, whichever
         # channel's session asked for it (RFC §19.7.3).
-        server = _VoiceDelegateServer(kit, self._workers, self._strategy, self._share_channels)
+        server = _VoiceDelegateServer(
+            kit,
+            self._supervisor,
+            self._workers,
+            self._strategy,
+            share_channels=self._share_channels,
+            max_revisions=self._max_revisions,
+            task_timeout=self._task_timeout,
+        )
         # A strategy's tool: the channel's default call bound does not apply
         # to it (RFC §21.6).
         entry = orchestration_tool(tool, in_call_room(tool.name, server.serve), waits=True)
@@ -197,14 +205,21 @@ class _VoiceDelegateServer:
     def __init__(
         self,
         kit: RoomKit,
+        supervisor: Agent,
         workers: list[Agent],
         strategy: WorkerStrategy | None,
+        *,
         share_channels: list[str],
+        max_revisions: int,
+        task_timeout: float,
     ) -> None:
         self._kit = kit
+        self._supervisor = supervisor
         self._workers = workers
         self._strategy = strategy
         self._share_channels = share_channels
+        self._max_revisions = max_revisions
+        self._task_timeout = task_timeout
         self._running: set[str] = set()  # rooms whose workers are running
 
     async def serve(self, rid: str, name: str, arguments: dict[str, Any]) -> str:
@@ -226,10 +241,13 @@ class _VoiceDelegateServer:
                     room_id=rid,
                     # The voice channel whose session made the call is told.
                     supervisor_id=calling_channel_id(),
+                    supervisor=self._supervisor,
                     strategy=self._strategy,
                     workers=self._workers,
                     task_desc=arguments.get("task", ""),
                     share_channels=self._share_channels,
+                    max_revisions=self._max_revisions,
+                    task_timeout=self._task_timeout,
                     on_done=lambda **_: running.discard(rid),
                 ),
             )
