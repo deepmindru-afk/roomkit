@@ -208,15 +208,15 @@ class ToolFailedError(RoomKitError):
         self.message = message
 
 
-class HumanInputRejectedError(RuntimeError):
+class HumanInputRejectedError(RoomKitError, RuntimeError):
     """Raised by :meth:`~roomkit.tools.human_input.HumanInputHandler.wait` for a
-    request that was rejected, with the reason given: by the human, by an
-    ``ON_USER_INPUT_REQUIRED`` hook, or by the handler closing (or the host
-    releasing the request) before an answer arrived.
+    request that was rejected, by a human or an ``ON_USER_INPUT_REQUIRED``
+    hook, with the reason given.
 
     A :class:`RuntimeError`, so a caller that catches ``RuntimeError`` around
     ``wait()`` still catches it. The human-input tool reads this one as a
-    refusal; a timeout is a failure, and any other error takes the generic
+    refusal; a timeout is a failure, and any other error (the handler closing
+    or releasing the request before an answer included) takes the generic
     failure path, its message withheld from the model (RFC §9.3).
     """
 

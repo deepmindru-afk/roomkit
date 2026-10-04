@@ -60,6 +60,9 @@ class PendingInput:
     authenticating it — resolve it against the room's roster before treating it
     as a principal, as ``current_tool_actor_id()`` documents."""
     _event: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
+    # Rejected by the handler itself (its close, a release), not by anyone's
+    # answer: ``wait()`` reports the handler giving it up, not a rejection.
+    _withdrawn: bool = field(default=False, repr=False)
 
 
 @dataclass(frozen=True)

@@ -170,6 +170,7 @@ class HumanInputHandler:
             if pending.status == PendingInputStatus.PENDING:
                 pending.reject_reason = "Human input handler closed"
                 pending.status = PendingInputStatus.REJECTED
+                pending._withdrawn = True
                 pending._event.set()
             self._retire(pending_id)
 
@@ -378,8 +379,10 @@ class HumanInputHandler:
         Raises:
             asyncio.TimeoutError: If the timeout expires, or if a retained
                 request had timed out.
-            HumanInputRejectedError: If the request was rejected (a
-                :class:`RuntimeError`).
+            HumanInputRejectedError: If the request was rejected, by a human
+                or an ``ON_USER_INPUT_REQUIRED`` hook (a :class:`RuntimeError`).
+            RuntimeError: If the handler gave the request up before an
+                answer (its close, a release), or is closed.
             ValueError: If *pending_id* is unknown — never seen, or retired
                 long enough ago to have been evicted from the retention.
         """
@@ -417,6 +420,7 @@ class HumanInputHandler:
         if pending.status == PendingInputStatus.PENDING:
             pending.reject_reason = "Released before an answer arrived"
             pending.status = PendingInputStatus.REJECTED
+            pending._withdrawn = True
             pending._event.set()
         self._retire(pending_id)
         return True
@@ -445,7 +449,11 @@ class HumanInputHandler:
     def _outcome(pending: PendingInput) -> str:
         """Report a terminal request as its result or its failure."""
         if pending.status == PendingInputStatus.REJECTED:
-            raise HumanInputRejectedError(pending.reject_reason or "Request rejected")
+            reason = pending.reject_reason or "Request rejected"
+            if pending._withdrawn:
+                # The handler gave the request up: nobody's answer (RFC §9.3).
+                raise RuntimeError(reason)
+            raise HumanInputRejectedError(reason)
 
         if pending.status == PendingInputStatus.RESOLVED:
             return pending.result or ""
@@ -535,11 +543,12 @@ class HumanInputToolHandler:
         """ToolHandler protocol — blocks on matching tools, falls through otherwise.
 
         Raises :class:`~roomkit.core.exceptions.ToolRefusedError` when the
-        human rejects the request, the model reading the reason, and
+        request is rejected (a human, an ``ON_USER_INPUT_REQUIRED`` hook), the
+        model reading why, and
         :class:`~roomkit.core.exceptions.ToolFailedError` when nobody answers
         within :attr:`timeout`: the tool ran and got no answer. Any other
-        error takes the generic failure path, its message withheld from the
-        model (RFC §9.3).
+        error, the handler giving the request up included, takes the generic
+        failure path, its message withheld from the model (RFC §9.3).
         """
         if name not in self.tool_names:
             raise UnservedToolCallError(f"tool {name!r} is not served here")
@@ -571,5 +580,5 @@ class HumanInputToolHandler:
                 )
             ) from None
         except HumanInputRejectedError as exc:
-            # A human said no: a refusal, with the reason they gave.
+            # The request was rejected (a human, a hook): a refusal, and why.
             raise ToolRefusedError(json.dumps({"error": f"Human input rejected: {exc}"})) from exc

@@ -26,9 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is read as failed.
 
 - `HumanInputRejectedError` (RMK-465, RFC §9.3), exported from `roomkit`: what
-  `HumanInputHandler.wait()` raises for a rejected request (by the human, an
-  `ON_USER_INPUT_REQUIRED` hook, or the handler closing). A `RuntimeError`, so
-  a caller catching `RuntimeError` around `wait()` still catches it.
+  `HumanInputHandler.wait()` raises for a request a human or an
+  `ON_USER_INPUT_REQUIRED` hook rejected. A `RoomKitError` and a
+  `RuntimeError`, so a caller catching `RuntimeError` around `wait()` still
+  catches it.
 
 - `TOOL_SEARCH_INFRA_TOOL_NAMES`, `TOOL_FIND_TOOLS` and `TOOL_LIST_TOOLS`,
   exported from `roomkit` and `roomkit.channels` (RMK-468): the names of the
@@ -329,12 +330,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (RMK-402); the first failure stays the one on `InboundResult.error`. It reads
   them through the same helpers as the inbound path.
 
-- The human-input tool reads only a rejection as a refusal (RMK-465, RFC
-  §9.3). A request nobody answered in time is a failure (`ToolFailedError`,
-  `refused=False`): the tool ran and got no answer, where it was refused. Any
-  other error (a `RuntimeError` that is not a rejection) takes the generic
-  failure path, its message withheld from the model, where the model read it
-  as a refusal's reason.
+- **BREAKING — the human-input tool reads only a rejection as a refusal**
+  (RMK-465, RFC §9.3). A request a human or an `ON_USER_INPUT_REQUIRED` hook
+  rejected is still refused (`ToolRefusedError`, the model reading why). A
+  request nobody answered in time is a failure (`ToolFailedError`): the tool
+  ran and got no answer, where it was refused. A request the handler gave up
+  on (closed or released before an answer, whether before the call or while
+  it waits) and any other `RuntimeError` take the generic failure path, the
+  message withheld from the model, where the model read it as a refusal's
+  reason. What follows for a timed-out call: its observers read
+  `refused=False` with the timeout's text in `error_detail`, its stored end
+  row says `failed`, and the room's tool memory keeps it (the next turn's
+  digest of tools already used names it). `HumanInputHandler.wait()` raises
+  `HumanInputRejectedError` for a rejection and a plain `RuntimeError` for a
+  request the handler gave up on. Migration: a host that told a refusal from
+  a timeout by `refused` reads `refused=False` plus the timeout text now; one
+  that catches `RuntimeError` around `wait()` is untouched, and one that
+  wants only rejections catches `HumanInputRejectedError`.
 
 - **BREAKING — `MCPToolProvider.as_tool_handler()` raises `ToolFailedError`
   for a result that says `isError`, no longer `ToolRefusedError`** (RMK-459,
