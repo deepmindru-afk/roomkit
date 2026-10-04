@@ -15,6 +15,7 @@ from roomkit.core.exceptions import ToolFailedError, UnservedToolCallError
 from roomkit.providers.ai.base import AITool, some_vendor_accepts_tool_name
 from roomkit.tools._mcp_result import error_text, handler_result, text_body
 from roomkit.tools.compose import ToolHandler, ToolResult
+from roomkit.tools.policy import served_tool_name
 
 logger = logging.getLogger("roomkit.tools.mcp")
 
@@ -435,10 +436,9 @@ class MCPToolProvider:
         self._ensure_connected()
 
         async def _handler(name: str, arguments: dict[str, Any]) -> ToolResult:
-            lookup = name
-            # Strip mcp__<server>__ prefix if present (e.g. from system prompt naming)
-            if lookup.startswith("mcp__") and "__" in lookup[5:]:
-                lookup = lookup.split("__", 2)[-1]
+            # An MCP alias (``mcp__<server>__<tool>``, from a prompt's naming)
+            # runs the tool it names; the gate judged both names.
+            lookup = served_tool_name(name)
             if gate_discovery and lookup not in self._tool_set:
                 raise UnservedToolCallError(f"tool {name!r} is not served here")
             result = await self.call_tool_result(lookup, arguments, timeout=_DEFAULT_CALL_TIMEOUT)

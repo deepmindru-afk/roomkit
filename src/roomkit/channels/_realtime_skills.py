@@ -41,7 +41,7 @@ from roomkit.skills.models import (
     serves_exactly,
 )
 from roomkit.skills.registry import SkillRegistry
-from roomkit.tools.policy import matches_any_pattern
+from roomkit.tools.policy import judged_names, matches_any_pattern
 
 if TYPE_CHECKING:
     from roomkit.skills.executor import ScriptExecutor
@@ -287,7 +287,10 @@ class RealtimeSkillSupport:
             return False
         if gated is None:
             gated = self._gated_tool_names(session_id)
-        return bool(gated) and matches_any_pattern(name, gated)
+        # Under its MCP alias too: the alias runs the gated tool (RFC §21.1).
+        return bool(gated) and any(
+            matches_any_pattern(judged, gated) for judged in judged_names(name)
+        )
 
     def get_visible_tools(
         self, all_tools: list[dict[str, Any]], session_id: str, pending: Skill | None = None

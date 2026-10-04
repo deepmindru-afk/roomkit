@@ -35,6 +35,23 @@ class RoleOverride(BaseModel):
     mode: Literal["restrict", "replace"] = "restrict"
 
 
+def served_tool_name(name: str) -> str:
+    """The tool a call to *name* runs: an MCP alias ``mcp__<server>__<tool>``
+    runs ``<tool>`` (``MCPToolProvider.as_tool_handler``); any other name runs
+    as itself."""
+    if name.startswith("mcp__") and "__" in name[5:]:
+        return name.split("__", 2)[-1]
+    return name
+
+
+def judged_names(name: str) -> tuple[str, ...]:
+    """Every name a gate judges for a call to *name*: the name called, and the
+    tool an MCP alias runs, so a policy or a skill's gate cannot be passed by
+    calling a tool under its alias (RFC §21.1)."""
+    served = served_tool_name(name)
+    return (name,) if served == name else (name, served)
+
+
 def policy_refusal(name: str) -> str:
     """What the model reads of a call the tool policy refused, whichever
     gate refused it (an AI channel, a realtime session, a conference, an

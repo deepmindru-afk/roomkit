@@ -15,7 +15,7 @@ from roomkit.channels._tool_reopen import (
 )
 from roomkit.models.tool_call import DeclaredTool, ToolDeclarationOrigin
 from roomkit.providers.ai.base import AIContext, AIMessage, AITool, AIToolResultPart
-from roomkit.tools.policy import ToolPolicy, matches_any_pattern, policy_refusal
+from roomkit.tools.policy import ToolPolicy, judged_names, matches_any_pattern, policy_refusal
 from roomkit.tools.result import gated_tool_refusal
 
 if TYPE_CHECKING:
@@ -46,9 +46,12 @@ def policy_admits(policy: ToolPolicy | None, name: str, exempt: Container[str]) 
     the policy's to allow. *exempt* names the tools the channel serves itself
     that only read or unlock and never act (the ``exempt`` trait of their
     entries): a tool of the host, of MCP, of orchestration or of a hook under
-    one of these names is not the channel's, and the policy governs it.
+    one of these names is not the channel's, and the policy governs it. A call
+    under an MCP alias is judged under both names (:func:`judged_names`).
     """
-    return name in exempt or policy is None or policy.is_allowed(name)
+    if name in exempt or policy is None:
+        return True
+    return all(policy.is_allowed(judged) for judged in judged_names(name))
 
 
 def policy_check(
@@ -256,7 +259,7 @@ class AIToolPolicyMixin(_AIChannelContract):
             return False
         # ``gated`` holds ToolPolicy globs, not names (RFC §24.2): an
         # exact-membership test would let ``search_*`` gate nothing at all.
-        return not matches_any_pattern(name, gated)
+        return not any(matches_any_pattern(judged, gated) for judged in judged_names(name))
 
     def _apply_tool_filters(self, tools: list[AITool]) -> list[AITool]:
         """Apply tool policy, skill gating, and Tool Search to a list of tools.

@@ -1897,6 +1897,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- A call under an MCP alias is judged by the tool policy and skill gating
+  under both names (RMK-483, RFC §21.1). `MCPToolProvider.as_tool_handler()`
+  runs `mcp__<server>__<tool>` as `<tool>` after the gate judged the alias:
+  on a realtime session or a conference that declares no catalogue, a policy
+  denying `delete_*` let `mcp__crm__delete_records` delete the records. The
+  alias is still served for a tool the policy and the gates admit.
+
 - A model could pass its own tool call off as one the provider already ran
   by writing `_result` among its arguments, so the call skipped the tool
   policy and the gate (RMK-439): the mark is now `AIToolCall.served`, which
