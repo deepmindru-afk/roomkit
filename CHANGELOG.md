@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ReasoningRequest.report_call` (RMK-480, RFC §12.4.1), a last field
+  defaulting to `None`: reports a call the backend's own provider served,
+  outside the channel's gate, to the channel's ON_TOOL_CALL hooks, served or
+  failed, once. `AgentReasoningBackend` relays its agent's provider-side
+  calls through it: they were reported nowhere, where the same provider on
+  an AIChannel reports them.
+
 - `roomkit.tools.tool_turn_context(...)` (RMK-476): a context manager that runs
   its block as a tool call of the turn its arguments describe (`room_id` or
   `room`, `actor_id`, `tools`, `chain_depth`, `call`), so a test calling a

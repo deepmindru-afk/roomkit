@@ -26,6 +26,7 @@ from roomkit.channels._realtime_tool_executor import (
     ToolCallHost,
     report_cancelled_call,
     report_failed_call,
+    report_served_elsewhere,
     run_tool_call,
 )
 from roomkit.core._failure_log import log_failure
@@ -367,6 +368,7 @@ class RealtimeDelegationMixin:
                 session, delegation_id, name, arguments
             ),
             report_refusal=partial(self._report_backend_refusal, session, delegation_id),
+            report_call=partial(self._report_backend_call, session, delegation_id),
         )
 
     def _backend_catalogue(self, session_id: str) -> list[dict[str, Any]]:
@@ -509,6 +511,27 @@ class RealtimeDelegationMixin:
             kind = OutcomeKind.REFUSED if refused else OutcomeKind.FAILED
         outcome = ToolOutcome(kind, body, detail=detail)
         await report_failed_call(cast("ToolCallHost", self), call, outcome)
+
+    async def _report_backend_call(
+        self,
+        session: VoiceSession,
+        delegation_id: str,
+        name: str,
+        arguments: dict[str, Any],
+        result: str,
+        *,
+        is_error: bool = False,
+        detail: str | None = None,
+        tool_call_id: str | None = None,
+    ) -> None:
+        """Report a call the backend's own provider served, outside the gate,
+        as an AIChannel reports one: served or failed, once (RFC §9.3)."""
+        call_id = f"{delegation_id}:{tool_call_id or uuid4().hex[:8]}"
+        call = RealtimeToolCall(session, call_id, name, arguments)
+        call.room_id = self._session_rooms.get(session.id) or session.room_id
+        await report_served_elsewhere(
+            cast("ToolCallHost", self), call, result, is_error=is_error, detail=detail
+        )
 
 
 @dataclass(frozen=True)

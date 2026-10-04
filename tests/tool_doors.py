@@ -202,7 +202,9 @@ async def _agent_backend_door(handler: Any, call: AIToolCall, hooks: Hooks) -> S
     seen = Seen()
     _install(kit, seen, hooks)
     await provider.simulate_delegation(session, "d1", "integrator")
-    await _until(lambda: len(ai_provider.calls) > 1 and _reported(seen))
+    await _until(lambda: _reported(seen))
+    # A call the provider served may end the loop without a round after it.
+    await _until(lambda: len(ai_provider.calls) > 1, timeout=0.2)
     if len(ai_provider.calls) > 1:
         parts = [p for m in ai_provider.calls[1].messages if m.role == "tool" for p in m.content]
         seen.model_read = parts[0].result if parts else None
@@ -234,10 +236,12 @@ async def run_door(
     *,
     arguments: dict[str, Any] | None = None,
     hooks: Hooks | None = None,
+    call: AIToolCall | None = None,
 ) -> Seen:
     """Run one ``lookup`` call with *arguments* through *door*, served by
-    *handler* ``(name, arguments)``, around the kit's *hooks*."""
-    call = AIToolCall(id="c1", name="lookup", arguments=dict(arguments or {}))
+    *handler* ``(name, arguments)``, around the kit's *hooks*; or the model's
+    *call* as it stands, when given."""
+    call = call or AIToolCall(id="c1", name="lookup", arguments=dict(arguments or {}))
     hooks = hooks or Hooks()
     if door.startswith("text-"):
         return await _text_door(handler, door == "text-stream", call, hooks)

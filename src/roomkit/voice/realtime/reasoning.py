@@ -72,6 +72,13 @@ reports a call the backend's loop ended before the channel's gate to its
 ON_TOOL_CALL observers, with its outcome: refused, cancelled, or failed
 (``refused=False``), and what failed (*detail*)."""
 
+CallReporter = Callable[..., Awaitable[None]]
+"""``(name, arguments, result, *, is_error=False, detail=None,
+tool_call_id=None)`` — reports a call something other than the channel's gate
+served (the backend's own provider ran it) to the channel's ON_TOOL_CALL
+hooks, once, with its outcome: served, or failed (*is_error*), and what
+failed (*detail*). Nothing a hook returns reaches the backend."""
+
 
 class ReasoningCutShortError(TurnCutShortError):
     """A backend's turn ended before its answer: the round cap, the deadline or
@@ -120,6 +127,10 @@ class ReasoningRequest:
             channel's ON_TOOL_CALL observers, as ``(name, arguments, body,
             cancelled=..., refused=..., detail=...)``, its outcome kept: a
             backend's call is reported wherever it ends.
+        report_call: Reports a call the backend's own provider served,
+            outside the gate, to the channel's ON_TOOL_CALL hooks, as
+            ``(name, arguments, result, is_error=..., detail=...,
+            tool_call_id=...)``: served or failed, reported once.
         unavailable: The session's tools the model is not offered, each with
             the refusal a call to it reads (the tool policy's, a skill's
             gating), so a backend refuses it in the gate's words (RFC §21.1).
@@ -134,6 +145,7 @@ class ReasoningRequest:
     execute_tool_call: ToolCallExecutor | None = None
     report_refusal: RefusalReporter | None = None
     unavailable: dict[str, str] = field(default_factory=dict)
+    report_call: CallReporter | None = None
 
 
 @dataclass(frozen=True)
@@ -258,6 +270,9 @@ class AgentReasoningBackend(ReasoningBackend):
         # loop does not: its own bound would cut a call the gate lets run.
         agent.tool_handler = self._serve_through_gate
         agent._tool_observer_hook = self._report_loop_refusal
+        # A call its provider served outside the gate is reported on the
+        # voice channel, as an AIChannel reports one (RFC §9.3, §12.4.1).
+        agent._tool_report_hook = self._report_provider_call
         agent._tool_timeouts = ToolTimeouts(None)
 
     @property
@@ -385,6 +400,21 @@ class AgentReasoningBackend(ReasoningBackend):
             outcome["detail"] = event.error_detail
         await request.report_refusal(
             event.name, dict(event.arguments), str(event.result or ""), **outcome
+        )
+
+    async def _report_provider_call(self, event: ToolCallEvent) -> None:
+        """Report a call the agent's provider served (``AIToolCall.served``)
+        to the voice channel's hooks, with its outcome (RFC §9.3)."""
+        request = _DELEGATION.get()
+        if request is None or request.report_call is None:
+            return
+        await request.report_call(
+            event.name,
+            dict(event.arguments),
+            str(event.result or ""),
+            is_error=event.is_error,
+            detail=event.error_detail,
+            tool_call_id=event.tool_call_id,
         )
 
     async def session_ended(self, session_id: str) -> None:

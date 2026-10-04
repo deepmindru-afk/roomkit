@@ -379,6 +379,22 @@ async def report_failed_call(
         logger.warning("ON_TOOL_CALL observation failed for tool %s", call.name, exc_info=True)
 
 
+async def report_served_elsewhere(
+    host: ToolCallHost, call: RealtimeToolCall, result: str, *, is_error: bool, detail: str | None
+) -> None:
+    """Tell ON_TOOL_CALL's hooks *call* was served outside the gate (a
+    backend's provider ran it), as a report: nothing they return reaches
+    anyone, and its outcome is reported once (RFC §9.3)."""
+    framework = host._tool_framework(call)
+    if framework is None:
+        return
+    event = replace(host._tool_event(call, result), is_error=is_error, error_detail=detail)
+    try:
+        await framework._report_tool_call(event, host.channel_id, claim=call.claim_report)
+    except Exception:
+        logger.warning("ON_TOOL_CALL report failed for tool %s", call.name, exc_info=True)
+
+
 def failed_outcome(call: RealtimeToolCall, exc: BaseException) -> ToolOutcome:
     """The outcome of a call that raised: the model reads the tool's failure
     and its class, the observers the message (RFC §9.3)."""
