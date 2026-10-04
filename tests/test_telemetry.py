@@ -9,6 +9,7 @@ import pytest
 
 from roomkit.channels.ai import AIChannel
 from roomkit.channels.base import Channel
+from roomkit.channels.voice import VoiceChannel
 from roomkit.core.exceptions import ProviderDeliveryError
 from roomkit.core.framework import RoomKit
 from roomkit.models.channel import ChannelBinding, ChannelOutput
@@ -32,6 +33,12 @@ from roomkit.telemetry import (
     SpanKind,
     TelemetryConfig,
 )
+from roomkit.voice.backends.mock import MockVoiceBackend
+from roomkit.voice.pipeline.config import AudioPipelineConfig
+from roomkit.voice.pipeline.vad.base import VADEvent, VADEventType
+from roomkit.voice.pipeline.vad.mock import MockVADProvider
+from roomkit.voice.stt.mock import MockSTTProvider
+from roomkit.voice.tts.mock import MockTTSProvider
 
 # ---------------------------------------------------------------------------
 # Test helpers
@@ -1697,6 +1704,48 @@ class TestPipelineSpeechSegmentTelemetry:
         spans = mock.get_spans(SpanKind.PIPELINE_SPEECH_SEGMENT)
         assert len(spans) == 1
         assert spans[0].parent_id == parent_span_id
+
+    async def test_a_bound_sessions_segments_hang_under_its_voice_session(self) -> None:
+        """VoiceChannel's VOICE_SESSION span survives the session's activation.
+
+        Activation clears what a previous session left under the id, the
+        parent span included, so bind_session hands the span over after it
+        (RMK-466).
+        """
+        mock = MockTelemetryProvider()
+        backend = MockVoiceBackend()
+        kit = RoomKit(voice=backend, telemetry=mock)
+        channel = VoiceChannel(
+            "voice1",
+            stt=MockSTTProvider(),
+            tts=MockTTSProvider(),
+            backend=backend,
+            pipeline=AudioPipelineConfig(
+                vad=MockVADProvider(
+                    events=[
+                        VADEvent(type=VADEventType.SPEECH_START),
+                        VADEvent(type=VADEventType.SPEECH_END, audio_bytes=b"audio"),
+                    ]
+                ),
+                telemetry=mock,
+            ),
+        )
+        kit.register_channel(channel)
+        room = await kit.create_room()
+        await kit.attach_channel(room.id, "voice1")
+        session = await kit.join(room.id, "voice1", participant_id="user1")
+
+        for _ in range(2):
+            await backend.simulate_audio_received(session, self._make_frame())
+
+        voice_span = channel._voice_session_spans[session.id]
+        segments = [
+            span
+            for span in mock.get_spans(SpanKind.PIPELINE_SPEECH_SEGMENT)
+            if span.session_id == session.id
+        ]
+        assert [span.parent_id for span in segments] == [voice_span]
+        await kit.close()
 
     def test_speech_segment_has_stage_timings(self) -> None:
         """Segment span should have per-stage timing attributes > 0."""
