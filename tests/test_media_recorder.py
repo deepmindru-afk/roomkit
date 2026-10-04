@@ -179,7 +179,7 @@ class TestRoomRecorderManager:
         active = mgr.start("room-1", [_binding(MockMediaRecorder())])
         assert not mgr.has_recorders("room-1")
 
-        handles = mgr.adopt("room-1", active)
+        handles = mgr.adopt("room-1", active, organization_id=None)
 
         assert mgr.has_recorders("room-1")
         assert handles[0].room_id == "room-1"

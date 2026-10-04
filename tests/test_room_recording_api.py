@@ -276,3 +276,38 @@ async def test_a_room_that_never_existed_is_not_found() -> None:
     with pytest.raises(RoomNotFoundError):
         await kit.add_room_recording_track("nowhere", _TRACK)
     await kit.close()
+
+
+async def _reach(kit: RoomKit, verb: str, organization_id: str | None) -> object:
+    if verb == "list":
+        return await kit.room_recordings("r1", organization_id=organization_id)
+    if verb == "feed":
+        return await kit.add_room_recording_track("r1", _TRACK, organization_id=organization_id)
+    return await kit.stop_room_recording("r1", organization_id=organization_id)
+
+
+@pytest.mark.parametrize("verb", ["list", "feed", "stop"])
+async def test_a_gone_rooms_recordings_are_reached_by_their_organization_only(verb: str) -> None:
+    """A gone room has no record to read its organization from: the one its
+    recordings were started under is kept while they run (RFC §12.11), so
+    another organization is refused on a gone room as on a live one."""
+    kit, _heard = await _kit()
+    recorder = MockMediaRecorder()
+    await kit.start_room_recording("r1", [_binding(recorder)], organization_id="tenant-a")
+    await kit.store.delete_room("r1")
+
+    with pytest.raises(RoomNotFoundError):
+        await _reach(kit, verb, "tenant-b")
+
+    assert recorder.tracks == [] and recorder.results == []
+    assert await _reach(kit, verb, "tenant-a")  # the owner reaches them
+    await kit.close()
+
+
+async def test_an_unscoped_caller_reaches_a_gone_rooms_recordings() -> None:
+    kit, _heard = await _kit()
+    [handle] = await kit.start_room_recording("r1", [_binding(MockMediaRecorder())])
+    await kit.store.delete_room("r1")
+
+    assert await kit.room_recordings("r1") == [handle]
+    await kit.close()

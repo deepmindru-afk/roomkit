@@ -29,9 +29,17 @@ class RoomRecorderManager:
         # The tracks each room declares, recorded or not, until they end: a
         # recording that joins the room later is told them before any media.
         self._tracks: dict[str, dict[str, RecordingTrack]] = {}
+        # The organization each room's recordings were started under, while
+        # they run: a room whose record is gone has no other place to read it
+        # from, and its recordings are reached by that organization only.
+        self._owners: dict[str, str | None] = {}
 
     def register(
-        self, room_id: str, bindings: list[RoomRecorderBinding]
+        self,
+        room_id: str,
+        bindings: list[RoomRecorderBinding],
+        *,
+        organization_id: str | None = None,
     ) -> list[MediaRecordingHandle]:
         """Start recordings for all bindings in a room, all or nothing, and file them.
 
@@ -41,7 +49,7 @@ class RoomRecorderManager:
         still precedes any audio. ``create_room`` calls :meth:`start` and
         :meth:`adopt` itself, to write the room in between.
         """
-        return self.adopt(room_id, self.start(room_id, bindings))
+        return self.adopt(room_id, self.start(room_id, bindings), organization_id=organization_id)
 
     def start(self, room_id: str, bindings: list[RoomRecorderBinding]) -> list[_ActiveBinding]:
         """Start every enabled binding for *room_id*, all or nothing, without filing them.
@@ -73,8 +81,11 @@ class RoomRecorderManager:
         )
         return handle
 
-    def adopt(self, room_id: str, active: list[_ActiveBinding]) -> list[MediaRecordingHandle]:
-        """File recordings :meth:`start` opened under *room_id*; returns their handles.
+    def adopt(
+        self, room_id: str, active: list[_ActiveBinding], *, organization_id: str | None
+    ) -> list[MediaRecordingHandle]:
+        """File recordings :meth:`start` opened under *room_id*, owned by
+        *organization_id*; returns their handles.
 
         Each is told the room's tracks first, so media already flowing in the
         room reaches it only once it knows the track's format (RFC §12.11).
@@ -89,6 +100,9 @@ class RoomRecorderManager:
                 binding.recorder.on_track_added(handle, track)
         if active:
             self._registry.setdefault(room_id, []).extend(active)
+            # The first owner stands while the room records: recordings a
+            # room id created again joins are still the first one's.
+            self._owners.setdefault(room_id, organization_id)
         return [handle for _binding, handle in active]
 
     @staticmethod
@@ -132,6 +146,7 @@ class RoomRecorderManager:
         room's other recordings still stop, and the room still closes.
         """
         results: list[MediaRecordingResult] = []
+        self._owners.pop(room_id, None)
         for binding, handle in self._registry.pop(room_id, []):
             result = _stop_quietly(binding, handle)
             if result is None:
@@ -149,6 +164,11 @@ class RoomRecorderManager:
         """Check if a room has active recorders."""
         return room_id in self._registry
 
+    def owned_by(self, room_id: str, organization_id: str | None) -> bool:
+        """Whether *organization_id* owns *room_id*'s running recordings; an
+        unscoped caller (``None``) is not checked."""
+        return organization_id is None or self._owners.get(room_id) == organization_id
+
     def handles(self, room_id: str) -> list[MediaRecordingHandle]:
         """The handles of the recordings *room_id* runs, in the order they started."""
         return [handle for _binding, handle in self._registry.get(room_id, [])]
@@ -162,6 +182,7 @@ class RoomRecorderManager:
         stopped: dict[str, list[MediaRecordingResult]] = {}
         seen_recorders: set[int] = set()
         self._tracks.clear()
+        self._owners.clear()
         for room_id in list(self._registry):
             for binding, handle in self._registry.pop(room_id, []):
                 result = _stop_quietly(binding, handle)

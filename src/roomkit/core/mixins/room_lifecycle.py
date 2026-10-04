@@ -179,7 +179,7 @@ class RoomLifecycleMixin(HelpersMixin):
         except BaseException:
             self._room_recorder_mgr.discard(started)
             raise
-        await self._file_announced(room.id, started)
+        await self._file_announced(room.id, started, room.organization_id)
         return stored
 
     async def get_room(self, room_id: str, *, organization_id: str | None = None) -> Room:
