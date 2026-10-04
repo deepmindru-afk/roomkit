@@ -866,11 +866,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reach it), and its dispatch answer no longer carries a `task_id`; the
   worker's status entries keep it.
 
-- A supervisor's background run whose workers all failed posts its terminal
-  entry `failed` (`no worker completed`), as a Loop whose producer failed,
-  and the supervisor is told the work could not be completed (RMK-478,
-  RFC §19.7.3): it read `completed` and `workers completed`. Each worker
-  result carries `completed`, whether its task completed.
+- A supervisor's background run whose work did not complete posts its
+  terminal entry `failed`, as a Loop whose producer failed, and the
+  supervisor is told the work could not be completed (RMK-478, RFC §19.7.3):
+  it read `completed` and `workers completed`. The work did not complete when
+  no worker's task completed (`no worker completed`), or when the supervisor
+  left a supervised step unvalidated and the chain stopped there (`a step was
+  not validated`), as it reads it within the turn. Each worker result carries
+  `completed`, whether its task completed.
 
 - `kit.close()` ends the strategies' background runs (RMK-478, RFC §19.7.3,
   §19.7.4): a supervisor's `delegate_workers` with `async_delivery` and a

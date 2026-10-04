@@ -137,33 +137,40 @@ async def _async_run_and_deliver(
     await run_in_background(kit, run)
 
 
-def _completed_count(worker_results: list[dict[str, Any]]) -> int:
-    """How many of the workers' tasks completed."""
-    return sum(1 for r in worker_results if r.get("completed"))
+def _why_failed(worker_results: list[dict[str, Any]]) -> str | None:
+    """Why a run's work did not complete, or ``None`` when it did: a
+    supervised step the supervisor left unvalidated (the chain stopped there,
+    as the supervisor reads it within the turn), or no worker's task completed
+    (RFC §19.7.3)."""
+    if any("approved" in r and not r["approved"] for r in worker_results):
+        return "a step was not validated"
+    if not any(r.get("completed") for r in worker_results):
+        return "no worker completed"
+    return None
 
 
 def _pipeline_ended(worker_results: list[dict[str, Any]]) -> tuple[StatusLevel, str]:
     """A background pipeline's terminal entry, once handed back: failed when
-    no worker's task completed, as a Loop whose producer failed (RFC §19.7.3)."""
-    done = _completed_count(worker_results)
-    if not done:
-        return StatusLevel.FAILED, "no worker completed"
+    its work did not complete, as a Loop whose producer failed (RFC §19.7.3)."""
+    if (why := _why_failed(worker_results)) is not None:
+        return StatusLevel.FAILED, why
+    done = sum(1 for r in worker_results if r.get("completed"))
     return StatusLevel.COMPLETED, f"{done} worker(s) completed"
 
 
 def _outcome_text(worker_results: list[dict[str, Any]] | None) -> str:
     """What the supervisor reads of its background workers (RFC §19.7.3,
     §23.3): each worker's output bounded, under a header that says whether
-    any completed; for a pipeline that failed (``None``), that the work could
-    not be completed, without the failure's message, so the supervisor can
-    tell the user."""
+    the work completed; for a pipeline that failed (``None``), that the work
+    could not be completed, without the failure's message, so the supervisor
+    can tell the user."""
     if worker_results is None:
         return background_failure_text("workers")
     each_bounded = [{**r, "output": bounded(str(r.get("output") or ""))} for r in worker_results]
     header = (
         "[Your background workers completed. Share their results with the user.]"
-        if _completed_count(worker_results)
-        else "[Your background workers could not complete the work. Tell the user.]"
+        if _why_failed(worker_results) is None
+        else "[Your background workers could not complete the work. Tell the user what failed.]"
     )
     return result_text(header, _format_worker_results(each_bounded))
 

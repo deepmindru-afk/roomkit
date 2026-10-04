@@ -20,8 +20,9 @@ from roomkit import HookExecution, HookResult, HookTrigger
 from roomkit.channels.agent import Agent
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 from roomkit.core.framework import RoomKit
-from roomkit.models.delivery import InboundMessage
+from roomkit.models.delivery import DeliveryOutcome, InboundMessage
 from roomkit.models.event import TextContent
+from roomkit.orchestration import _background as background_module
 from roomkit.orchestration.status_bus import StatusLevel
 from roomkit.orchestration.strategies.supervisor import Supervisor
 from roomkit.providers.ai.base import AIContext, AIResponse, AIToolCall
@@ -198,3 +199,44 @@ async def test_a_sequential_team_is_supervised_in_the_background_as_in_its_turn(
 
     assert in_turn[0] == "boss"
     assert await _team_delegations(async_delivery=async_delivery, voice=voice) == in_turn
+
+
+async def test_a_rejected_supervised_chain_is_told_failed_in_the_background(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The supervisor rejects step 1 and the chain stops: within the turn it
+    reads that the team could not complete the task; in the background it is
+    told the same, and the run's terminal entry is failed (RFC §19.7.3)."""
+    told: list[str] = []
+
+    async def captured(*args: Any, **kwargs: Any) -> DeliveryOutcome:
+        told.append(args[3])
+        return DeliveryOutcome(status="sent")
+
+    monkeypatch.setattr(background_module, "hand_back", captured)
+    # The supervisor never calls submit_verdict: every step is rejected.
+    boss = Agent("boss", provider=MockAIProvider(responses=["ok"]))
+    workers = [Agent(w, provider=MockAIProvider(responses=[f"{w} work"])) for w in ("w1", "w2")]
+    kit = RoomKit()
+    kit.register_channel(boss)
+    strategy = Supervisor(
+        boss, workers, strategy="sequential", async_delivery=True, max_revisions=1
+    )
+    await kit.create_room(room_id="r1", orchestration=strategy)
+    posted: list[tuple[Any, str]] = []
+    real_post = kit.status_bus.post
+
+    def post(agent_id: str, action: str, status: Any, **kwargs: Any) -> Any:
+        if agent_id == "orchestration":
+            posted.append((status, kwargs.get("detail", "")))
+        return real_post(agent_id, action, status, **kwargs)
+
+    kit.status_bus.post = post  # type: ignore[method-assign]
+    with tool_call_in("r1"):
+        await boss._channel_tool_handler("delegate_workers", {"task": "Do it."})
+    await until(lambda: bool(posted))
+    await kit.close()
+
+    assert told[0].startswith("[Your background workers could not complete the work.")
+    assert "(UNVALIDATED)" in told[0]
+    assert posted == [(StatusLevel.FAILED, "a step was not validated")]
